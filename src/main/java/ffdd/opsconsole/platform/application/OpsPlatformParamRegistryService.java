@@ -233,6 +233,9 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("treasury.d3.")) {
             return new Owner("D", "D3", "D3 资金池与负债", "/finance/pool");
         }
+        if ("commission/cooling-days".equals(key)) {
+            return new Owner("F", "F2", "F2 代际与同级佣金", "/network/royalty");
+        }
         if (key.contains(".binary.")) {
             return new Owner("F", "F3", "F3 双轨结算引擎", "/network/binary");
         }

@@ -127,6 +127,31 @@ class OpsPlatformParamRegistryServiceTest {
         });
     }
 
+    @Test
+    void registryRoutesCommissionCoolingDaysToF2AsItsCurrentAuthoritativeWriteOwner() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("commission/cooling-days", "30", "team")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).singleElement().satisfies(row -> {
+            assertThat(row.domain()).isEqualTo("F");
+            assertThat(row.ownerCode()).isEqualTo("F2");
+            assertThat(row.ownerRoute()).isEqualTo("/network/royalty");
+        });
+    }
+
+    @Test
+    void registryStillRejectsAnUnknownConfigFamilyFailClosed() {
+        when(source.findAllActive()).thenReturn(List.of(item("unknown/family", "1", "unknown")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        assertThatThrownBy(service::overview)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("A5_OWNER_MAPPING_MISSING:unknown/family");
+    }
+
     private PlatformConfigItem item(String key, String value, String group) {
         LocalDateTime now = LocalDateTime.of(2026, 7, 18, 10, 0);
         return new PlatformConfigItem(1L, key, value, "STRING", group, "ADMIN", "test", 1, now, now);

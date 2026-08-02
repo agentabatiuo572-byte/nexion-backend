@@ -12,10 +12,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.util.Map;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class MybatisRiskOpsRepositoryTest {
     private final RiskOpsMapper mapper = mock(RiskOpsMapper.class);
+
+    @Test
+    void k4DraftVersionAdvancesFromTheGreatestImmutableHistoryVersion() {
+        when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                112L, 1L, "active", "{}", "{}", "{}",
+                40, 70, 85, "baseline", "publisher", "publisher", "now", "now"));
+        when(mapper.draftScoreModel()).thenReturn(null).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                115L, 0L, "draft", "{}", "{}", "{}",
+                40, 70, 85, "next", "maker", null, "now", null));
+        when(mapper.maxScoreModelVersion()).thenReturn(114L);
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        var request = new ffdd.opsconsole.risk.dto.RiskScoringModelDraftRequest(
+                1L, Map.of(), Map.of(), Map.of(), 40, 70, 85, "next", "maker");
+
+        assertThat(repository.saveScoringModelDraft(1L, request, "maker")).isPresent();
+
+        ArgumentCaptor<Long> version = ArgumentCaptor.forClass(Long.class);
+        verify(mapper).insertScoreModelDraft(
+                version.capture(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), eq(40), eq(70), eq(85), eq("next"), eq("maker"));
+        assertThat(version.getValue()).isEqualTo(115L);
+    }
 
     @Test
     void firstHighK4ScoreClaimsOneDurableK5Crossing() {
@@ -138,6 +162,46 @@ class MybatisRiskOpsRepositoryTest {
                 eq("U00000052"), eq(45L), eq(15), eq(35), eq("manually-overridden"),
                 org.mockito.ArgumentMatchers.anyString(), eq("事实源刷新（保留人工覆盖）"), eq("system:k4"));
         verify(mapper).advanceScoreAsOfToLatestSource("U00000052");
+        var order = inOrder(mapper);
+        order.verify(mapper).lockScoreUserForUpdate("U00000052");
+        order.verify(mapper).activeScoreOverride("U00000052");
+        order.verify(mapper).updateScoreUserModelIfVersion("U00000052", 7L, 15, "k4-v45");
+    }
+
+    @Test
+    void k4OverrideLocksTheScoreRootBeforeCasAndOverrideRows() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        when(mapper.findScoreUser("U00000052")).thenReturn(
+                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
+        when(mapper.bumpScoreUserVersion("U00000052", 8L)).thenReturn(1);
+        when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
+        when(mapper.scoreContributions("U00000052")).thenReturn(java.util.List.of());
+        when(mapper.activeScoreOverride("U00000052")).thenReturn(
+                new ffdd.opsconsole.risk.domain.RiskScoreOverrideView(
+                        "U00000052", 15, 35, "manual", "operator", "now", true));
+
+        repository.overrideScore("U00000052", 8L, 35, "manual", "operator");
+
+        var order = inOrder(mapper);
+        order.verify(mapper).lockScoreUserForUpdate("U00000052");
+        order.verify(mapper).findScoreUser("U00000052");
+        order.verify(mapper).bumpScoreUserVersion("U00000052", 8L);
+        order.verify(mapper).deactivateScoreOverrides("U00000052");
+    }
+
+    @Test
+    void synchronizeScoringUsersUsesScoreOverrideContributionLockOrder() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        repository.synchronizeScoringUsers();
+
+        var order = inOrder(mapper);
+        order.verify(mapper).retireOrphanScoreUsers();
+        order.verify(mapper).ensureAllActiveUsersHaveScoreRows();
+        order.verify(mapper).deactivateOrphanScoreOverrides();
+        order.verify(mapper).retireOrphanScoreContributions();
     }
 
     @Test
@@ -382,6 +446,52 @@ class MybatisRiskOpsRepositoryTest {
         assertThat(row.histJson()).isEqualTo(history);
         assertThat(row.histJson()).doesNotContain("\",\"risk-admin\"]");
         assertThat(row.infoJson()).contains("initial", "merge-one", "merge-two");
+    }
+
+    @Test
+    void k1OverviewCanonicalizesLegacyJoinedAtArraysAndSpaceStringsWithoutInventingNullTimes() {
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+        String legacyNodes = """
+                [{"userNo":"U00000001","joinedAt":[2026,7,26,18,22,54]},
+                 {"userNo":"U00000002","joinedAt":[2026,7,26,18,22,55,123456789]},
+                 {"userNo":"U00000003","joinedAt":"2026-07-26 18:22:56"},
+                 {"userNo":"U00000004","joinedAt":null},
+                 {"userNo":"U00000005","joinedAt":[2026,7,26,18,22,54.9]},
+                 {"userNo":"U00000006","joinedAt":[2026,7,26,18]},
+                 {"userNo":"U00000007","joinedAt":[2026,7,26,18,22,54,0,1]},
+                 {"userNo":"U00000008","joinedAt":[2026,2,29,18,22,54]},
+                 {"userNo":"U00000009","joinedAt":[2026,7,26,18,22,1e2]},
+                 {"userNo":"U00000010","joinedAt":[2026,-1,26,18,22,54]},
+                 {"userNo":"U00000011","joinedAt":[2147483648,7,26,18,22,54]}]
+                """;
+        var legacy = new RiskOpsMapper.MultiAccountClusterRecord(
+                "K1-LEGACY", "设备 ••••LEGACY", "device", "设备指纹", 11, 0.8,
+                "2026-07-26 18:22 至 2026-07-26 18:23（1 分钟）", "detected", "legacy",
+                "[]", legacyNodes, "[]", null, 2L);
+        when(mapper.multiAccountClusters()).thenReturn(java.util.List.of(legacy));
+        when(mapper.countMultiAccountClustersByFilter(null, null)).thenReturn(1L);
+        when(mapper.pageMultiAccountClustersByFilter(null, null, "strength_desc", 0, 5))
+                .thenReturn(java.util.List.of(legacy));
+        when(mapper.riskParams("k1")).thenReturn(java.util.List.of());
+
+        Map<String, Object> overview = repository.multiAccountOverview(1, 5, null, null, "strength_desc", 1, 5);
+        var page = (ffdd.opsconsole.shared.api.PageResult<?>) overview.get("clusters");
+        var row = (RiskOpsMapper.MultiAccountClusterRecord) page.getRecords().get(0);
+
+        assertThat(row.nodesJson())
+                .contains("\"joinedAt\":\"2026-07-26T18:22:54\"")
+                .contains("\"joinedAt\":\"2026-07-26T18:22:55.123456789\"")
+                .contains("\"joinedAt\":\"2026-07-26T18:22:56\"")
+                .contains("\"joinedAt\":null")
+                .contains("\"joinedAt\":[2026,7,26,18,22,54.9]")
+                .contains("\"joinedAt\":[2026,7,26,18]")
+                .contains("\"joinedAt\":[2026,7,26,18,22,54,0,1]")
+                .contains("\"joinedAt\":[2026,2,29,18,22,54]")
+                .contains("\"joinedAt\":[2026,7,26,18,22,100.0]")
+                .contains("\"joinedAt\":[2026,-1,26,18,22,54]")
+                .contains("\"joinedAt\":[2147483648,7,26,18,22,54]")
+                .doesNotContain("\"joinedAt\":\"2026-07-26T18:22:54.9\"");
     }
 
     @Test

@@ -110,6 +110,82 @@ class GeoBlockEnforcementFilterTest {
     }
 
     @Test
+    void publicI18nBundleRequiresResolvedCountryAndFailsClosedWithoutIt() throws Exception {
+        when(repository.settingValue("emergency.geo.edgeJudgeSource"))
+                .thenReturn(Optional.of("nexion-gateway"));
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/api/content/i18n");
+        request.setRemoteAddr("127.0.0.1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("GEO_COUNTRY_UNRESOLVED");
+        verify(chain, never()).doFilter(request, response);
+        verify(policyService, never()).evaluate(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void trustedEdgeCountryAllowsPublicI18nBundleToReachTheController() throws Exception {
+        when(repository.settingValue("emergency.geo.edgeJudgeSource"))
+                .thenReturn(Optional.of("nexion-gateway"));
+        when(policyService.evaluate("JP", "GET", "/api/content/i18n"))
+                .thenReturn(GeoBlockDecision.allowed());
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/api/content/i18n");
+        request.setRemoteAddr("127.0.0.1");
+        request.addHeader("X-Nexion-Edge-Country", "JP");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        verify(policyService).evaluate("JP", "GET", "/api/content/i18n");
+        verify(chain).doFilter(request, response);
+    }
+
+    @Test
+    void untrustedClientCannotSpoofCountryForPublicI18nBundle() throws Exception {
+        when(repository.settingValue("emergency.geo.edgeJudgeSource"))
+                .thenReturn(Optional.of("nexion-gateway"));
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/api/content/i18n");
+        request.setRemoteAddr("198.51.100.10");
+        request.addHeader("X-Nexion-Edge-Country", "JP");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("GEO_EDGE_TRUST_REQUIRED");
+        verify(chain, never()).doFilter(request, response);
+        verify(policyService, never()).evaluate(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void invalidTrustedEdgeCountryCannotBypassPublicI18nGeoPolicy() throws Exception {
+        when(repository.settingValue("emergency.geo.edgeJudgeSource"))
+                .thenReturn(Optional.of("nexion-gateway"));
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/api/content/i18n");
+        request.setRemoteAddr("127.0.0.1");
+        request.addHeader("X-Nexion-Edge-Country", "ZZ");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("GEO_COUNTRY_INVALID");
+        verify(chain, never()).doFilter(request, response);
+        verify(policyService, never()).evaluate(anyString(), anyString(), anyString());
+    }
+
+    @Test
     void adminImpersonationSurfaceIsNotMistakenForAnAppUserGeoRequest() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/impersonation/view");
         request.setRemoteAddr("127.0.0.1");

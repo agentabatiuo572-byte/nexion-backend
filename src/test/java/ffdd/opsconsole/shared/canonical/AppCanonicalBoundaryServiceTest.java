@@ -15,6 +15,7 @@ import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -29,11 +30,12 @@ class AppCanonicalBoundaryServiceTest {
     private final TamperDetectionPublisher publisher = mock(TamperDetectionPublisher.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final AuditLogService audit = mock(AuditLogService.class);
     private final AppGrowthLifecyclePublisher growthLifecyclePublisher = mock(AppGrowthLifecyclePublisher.class);
     private final GrowthRhythmFacade growthRhythmFacade = mock(GrowthRhythmFacade.class);
     private final AppCanonicalBoundaryService service =
             new AppCanonicalBoundaryService(
-                    mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade);
+                    mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade, audit);
 
     AppCanonicalBoundaryServiceTest() {
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class),
@@ -55,13 +57,15 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.twoFactorEnabled(42L)).thenReturn(true);
         when(mapper.activeDeviceCount(42L)).thenReturn(3);
         when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
         when(mapper.consumeValidOtp(42L, "challenge-1", "123456")).thenReturn(0);
 
         assertRejected(service.trialEligibility(42L, "ELIGIBLE"), "TRIAL_STATE_CONFLICT");
         assertRejected(service.kycStatus(42L, false), "WALLET_PAIRING_CONFLICT");
         assertRejected(service.securityState(42L, false), "TWO_FACTOR_STATE_CONFLICT");
         assertRejected(service.productPhase(42L, "P6", true), "PRODUCT_PHASE_OVERRIDE_REJECTED");
-        assertRejected(service.activateDevice(42L, 9L, 99, "device-key"), "DEVICE_SLOT_CAP_EXCEEDED");
+        assertRejected(service.activateDevice(42L, 9L, 0L, 99, "device-key"), "DEVICE_SLOT_CAP_EXCEEDED");
         assertRejected(service.deviceEarnings(42L, true, true, new BigDecimal("999999")), "DEV_SEED_STATE_REJECTED");
         assertRejected(service.verifyOtp(42L, "challenge-1", "123456", true, "otp-key"), "OTP_VERIFICATION_REJECTED");
         verify(mapper).incrementOtpFailure(42L, "challenge-1");
@@ -89,7 +93,9 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.twoFactorEnabled(42L)).thenReturn(false);
         when(mapper.activeDeviceCount(42L)).thenReturn(1);
         when(mapper.deviceSlotCap()).thenReturn(3);
-        when(mapper.activateOwnedDevice(42L, 9L, 3)).thenReturn(1);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "INACTIVE", "OWNED", 0L));
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 0L, 3)).thenReturn(1);
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.deviceEarnings(42L)).thenReturn(new CanonicalStateMapper.DeviceEarnings(
                 new BigDecimal("12.5"), new BigDecimal("3.2")));
@@ -137,7 +143,7 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("withdrawPenaltyFeeRate", new BigDecimal("20"))
                 .containsEntry("binaryDailyCap", new BigDecimal("2000"))
                 .containsEntry("complianceHoldEnabled", false);
-        assertThat(service.activateDevice(42L, 9L, null, "device-key").getCode()).isZero();
+        assertThat(service.activateDevice(42L, 9L, 0L, null, "device-key").getCode()).isZero();
         var deviceState = service.deviceEarnings(42L, false, false, null);
         assertThat(deviceState.getCode()).isZero();
         assertThat((List<?>) deviceState.getData().get("devices")).hasSize(1);
@@ -282,17 +288,152 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void serializesMutationsOnTheUserBeforeCreatingAnIdempotencyRecord() {
         when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
         when(mapper.deviceSlotCap()).thenReturn(3);
         when(mapper.activeDeviceCount(42L)).thenReturn(0);
-        when(mapper.activateOwnedDevice(42L, 9L, 3)).thenReturn(1);
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
 
-        service.activateDevice(42L, 9L, null, "device-key");
+        service.activateDevice(42L, 9L, 1L, null, "device-key");
 
         var order = inOrder(mapper, idempotency);
         order.verify(mapper).lockUser(42L);
         order.verify(idempotency).execute(anyString(), eq("device-key"), anyString(),
                 eq(ffdd.opsconsole.shared.api.ApiResult.class),
                 org.mockito.ArgumentMatchers.<java.util.function.Supplier<ffdd.opsconsole.shared.api.ApiResult>>any());
+    }
+
+    @Test
+    void activationAdvancesVersionAndSameStateReplayDoesNotAdvanceOrDuplicateSideEffects() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
+        when(mapper.deviceSlotCap()).thenReturn(3);
+        when(mapper.activeDeviceCount(42L)).thenReturn(0);
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 3)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+
+        var activated = service.activateDevice(42L, 9L, 1L, null, "activate-v2");
+
+        assertThat(activated.getCode()).isZero();
+        assertThat(activated.getData()).containsEntry("rowVersion", 2L).containsEntry("alreadyActive", false);
+        verify(mapper).activateOwnedDeviceCas(42L, 9L, 1L, 3);
+        verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-9"), eq("device.activated"),
+                eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
+        verify(audit).recordRequiredForTrustedActor(any());
+
+        org.mockito.Mockito.reset(mapper, outbox, audit);
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
+
+        var replay = service.activateDevice(42L, 9L, 2L, null, "activate-same-state");
+
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData()).containsEntry("rowVersion", 2L).containsEntry("alreadyActive", true);
+        verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
+        verify(audit, never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void staleDeactivateFromBeforeReactivationIsRejected() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
+
+        var stale = service.deactivateDevice(42L, 9L, 1L, "stale-after-reactivate");
+
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("DEVICE_VERSION_CONFLICT");
+        verify(mapper, never()).deactivateOwnedDeviceCas(any(), any(), any());
+    }
+
+    @Test
+    void staleActivationCannotOverrideANewerDeactivation() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 3L));
+
+        var stale = service.activateDevice(42L, 9L, 1L, 3, "activate-before-deactivate");
+
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("DEVICE_VERSION_CONFLICT");
+        verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
+        verify(outbox, never()).publishUserEvent(eq("USER_DEVICE"), anyString(), eq("device.activated"),
+                any(), anyString(), any(), anyString(), any());
+        verify(audit, never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void deactivatesOnlyTheAuthenticatedUsersActiveDeviceWithCasAuditAndOutbox() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 7L));
+        when(mapper.deactivateOwnedDeviceCas(42L, 9L, 7L)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+
+        var result = service.deactivateDevice(42L, 9L, 7L, "device-deactivate-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("deviceId", 9L)
+                .containsEntry("instanceNo", "DEV-9")
+                .containsEntry("status", "DEACTIVATED")
+                .containsEntry("rowVersion", 8L)
+                .containsEntry("alreadyDeactivated", false);
+        verify(mapper).deactivateOwnedDeviceCas(42L, 9L, 7L);
+        verify(mapper).markDeviceRuntimeDeactivated(9L);
+        verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-9"), eq("device.deactivated"),
+                eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
+        verify(audit).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void deviceDeactivationRejectsMissingForeignAndStaleCommandsWithoutMutation() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+
+        assertThat(service.deactivateDevice(42L, null, 0L, "missing-device").getMessage())
+                .isEqualTo("DEVICE_ID_REQUIRED");
+
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(null);
+        assertThat(service.deactivateDevice(42L, 9L, 0L, "unknown-device").getMessage())
+                .isEqualTo("DEVICE_NOT_FOUND");
+
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 99L, "DEV-9", "ACTIVE", "OWNED", 7L));
+        assertThat(service.deactivateDevice(42L, 9L, 7L, "foreign-device").getMessage())
+                .isEqualTo("DEVICE_FORBIDDEN");
+
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 8L));
+        assertThat(service.deactivateDevice(42L, 9L, 7L, "stale-device").getMessage())
+                .isEqualTo("DEVICE_VERSION_CONFLICT");
+
+        verify(mapper, never()).deactivateOwnedDeviceCas(any(), any(), any());
+        verify(outbox, never()).publishUserEvent(eq("USER_DEVICE"), anyString(), eq("device.deactivated"),
+                any(), anyString(), any(), anyString(), any());
+        verify(audit, never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void alreadyDeactivatedDeviceIsIdempotentWithoutDuplicateAuditOrEvent() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 8L));
+
+        var result = service.deactivateDevice(42L, 9L, 8L, "device-deactivate-retry");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("alreadyDeactivated", true).containsEntry("rowVersion", 8L);
+        verify(mapper, never()).deactivateOwnedDeviceCas(any(), any(), any());
+        verify(outbox, never()).publishUserEvent(eq("USER_DEVICE"), anyString(), eq("device.deactivated"),
+                any(), anyString(), any(), anyString(), any());
+        verify(audit, never()).recordRequiredForTrustedActor(any());
     }
 
     private void assertRejected(ffdd.opsconsole.shared.api.ApiResult<?> result, String code) {

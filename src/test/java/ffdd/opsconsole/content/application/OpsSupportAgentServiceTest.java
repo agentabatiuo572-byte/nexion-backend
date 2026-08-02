@@ -6,6 +6,7 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -14,6 +15,7 @@ import ffdd.opsconsole.content.domain.SupportAgentOverview;
 import ffdd.opsconsole.content.domain.SupportAgentPageView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
+import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
@@ -81,6 +83,22 @@ class OpsSupportAgentServiceTest {
                 .anySatisfy(target -> assertThat(target).containsEntry("targetType", "agent").containsEntry("targetId", "2"));
         assertThat(result.getData().sources()).contains("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment");
         assertThat(fake.seededAdminIds).isEmpty();
+    }
+
+    @Test
+    void ticketAssigneeCandidatesUseOnlyTheNonMaterializingRepositoryProjection() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.ticketAssigneeCandidates.add(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
+
+        ApiResult<List<SupportTicketAssigneeCandidateView>> result = service.ticketAssigneeCandidates();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsExactly(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
+        assertThat(fake.seededAdminIds).isEmpty();
+        assertThat(fake.ensureSchemaCalls).isZero();
+        assertThat(fake.profiles).isEmpty();
+        verifyNoInteractions(accountService);
     }
 
     @Test
@@ -260,6 +278,81 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void assignSeatChangingOnlyPositionPreservesOmittedProfileFields() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(
+                2L,
+                "GENERAL",
+                "通用客服",
+                List.of("support"),
+                List.of("KYC", "提现", "账户"),
+                17,
+                false,
+                false,
+                true,
+                now());
+
+        var result = service.assignSeat(
+                2L,
+                "idem-seat-position-only",
+                new SupportAgentSeatAssignmentRequest(
+                        "客服主管",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        List.of(),
+                        "superadmin",
+                        "仅调整客服坐席岗位"));
+
+        assertThat(result.getCode()).isZero();
+        SupportAgentProfileRecord profile = fake.findProfile(2L).orElseThrow();
+        assertThat(profile.position()).isEqualTo("客服主管");
+        assertThat(profile.serviceTypes()).containsExactly("support");
+        assertThat(profile.tags()).containsExactly("KYC", "提现", "账户");
+        assertThat(profile.maxConcurrent()).isEqualTo(17);
+        assertThat(profile.enabled()).isFalse();
+        assertThat(profile.transferable()).isFalse();
+        assertThat(profile.busy()).isTrue();
+    }
+
+    @Test
+    void assignSeatExplicitEmptyTagsClearsTags() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(
+                2L,
+                "GENERAL",
+                "通用客服",
+                List.of("support"),
+                List.of("KYC", "提现", "账户"),
+                17,
+                true,
+                true,
+                false,
+                now());
+
+        var result = service.assignSeat(
+                2L,
+                "idem-seat-clear-tags",
+                new SupportAgentSeatAssignmentRequest(
+                        "通用客服",
+                        null,
+                        List.of(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        List.of(),
+                        "superadmin",
+                        "清空客服技能标签"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(fake.findProfile(2L).orElseThrow().tags()).isEmpty();
+    }
+
+    @Test
     void assignSeatRejectsNonSupervisorActor() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
@@ -373,10 +466,18 @@ class OpsSupportAgentServiceTest {
         private final List<SupportAgentAssignmentView> assignments = new ArrayList<>();
         private final List<Long> users = List.of(1001L, 1006L);
         private final List<Long> seededAdminIds = new ArrayList<>();
+        private final List<SupportTicketAssigneeCandidateView> ticketAssigneeCandidates = new ArrayList<>();
+        private int ensureSchemaCalls;
         private long assignmentId = 1L;
 
         @Override
         public void ensureSchema() {
+            ensureSchemaCalls += 1;
+        }
+
+        @Override
+        public List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates() {
+            return List.copyOf(ticketAssigneeCandidates);
         }
 
         @Override

@@ -2105,11 +2105,44 @@ class OpsEmergencyControlServiceTest {
                 .singleElement()
                 .satisfies(execution -> assertThat(execution)
                         .containsEntry("mode", "drill")
-                        .containsEntry("steps", List.of("done")));
+                        .containsEntry("steps", List.of("done"))
+                        .containsEntry("rollbackStatus", "NOT_REQUIRED")
+                        .containsEntry("rollbackReason", "VALIDATION_ONLY_NO_PRODUCTION_ACTIONS")
+                        .hasEntrySatisfying("notificationDispatch", notification ->
+                                assertThat((Map<String, Object>) notification)
+                                        .containsEntry("validationOnly", true)
+                                        .containsEntry("productionActionsExecuted", false)));
         Map<String, Object> stats = (Map<String, Object>) result.getData().get("stats");
         assertThat(stats).containsEntry("readyCount", 1L).containsEntry("drill90d", 1L);
         verify(killSwitchService, never()).changeFromJ4Execution(
                 anyString(), anyString(), anyString(), anyString());
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(request ->
+                "J4_SOP_PLAYBOOK_DRILL_COMPLETED".equals(request.getAction())
+                        && String.valueOf(request.getDetail()).contains("NOT_REQUIRED")
+                        && String.valueOf(request.getDetail()).contains("VALIDATION_ONLY_NO_PRODUCTION_ACTIONS")));
+    }
+
+    @Test
+    void rollbackRefusesAValidationOnlyDrillBeforeAnyProductionRecoveryBoundary() {
+        service.createPlaybook(
+                "idem-j4-drill-rollback-guard-create",
+                new SopPlaybookCreateRequest(
+                        "演练回滚防线", "监管点名", "合规审计", "15 分钟", true,
+                        "J1·熔断提现通道", "", "", "根因消除后逐步恢复", true,
+                        "create validation-only drill", "superadmin"));
+        service.drillPlaybook(
+                "SOP-CUSTOM-1", "idem-j4-drill-rollback-guard-run",
+                new SopPlaybookRunRequest(false, "validate sandbox only", "superadmin"));
+        String executionId = String.valueOf(emergencyRepository.executions.get(0).get("executionId"));
+
+        var result = service.rollbackPlaybookExecution(
+                "SOP-CUSTOM-1", executionId, "idem-j4-drill-rollback-guard",
+                new SopPlaybookRunRequest(false, "do not invent a production rollback", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("J4_DRILL_ROLLBACK_NOT_APPLICABLE:" + executionId);
+        verify(killSwitchService, never()).restoreFromJ4Execution(
+                anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2135,13 +2168,14 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
-    void executePlaybookRequiresEveryTargetDomainAuthority() {
+    void dedicatedJ4CheckerExecutesAnA2ReplayedPlaybookWithoutEveryTargetDirectWriteGrant() {
         service.createPlaybook(
                 "idem-j4-target-auth-create",
                 new SopPlaybookCreateRequest(
                         "处置权限校验", "监管点名", "合规审计", "15 分钟", true,
                         "J1·熔断提现通道", "", "", "根因消除后逐步恢复", false,
                         "create target auth playbook", "superadmin"));
+        markPlaybookReady("SOP-CUSTOM-1");
         SecurityContextHolder.getContext().setAuthentication(
                 UsernamePasswordAuthenticationToken.authenticated(
                         "j4-operator", "n/a",
@@ -2150,13 +2184,14 @@ class OpsEmergencyControlServiceTest {
         try {
             var result = service.executePlaybook(
                     "SOP-CUSTOM-1", "idem-j4-target-auth-run",
-                    new SopPlaybookRunRequest(true, "verify target permission", "spoofed-admin"));
+                    confirmedJ4RunRequest(
+                            "SOP-CUSTOM-1", true, "verify dedicated checker execution", "spoofed-admin"));
 
-            assertThat(result.getCode()).isEqualTo(403);
-            assertThat(result.getMessage()).isEqualTo(
-                    "J4_TARGET_AUTHORITY_REQUIRED:J1:emergency_j1_gate_kill");
-            assertThat(emergencyRepository.executions).isEmpty();
-            verify(killSwitchService, never()).changeFromJ4Execution(
+            assertThat(result.getCode()).as(result::getMessage).isZero();
+            assertThat(emergencyRepository.executions).singleElement()
+                    .extracting(row -> row.get("steps"))
+                    .isEqualTo(List.of("done"));
+            verify(killSwitchService).changeFromJ4Execution(
                     anyString(), anyString(), anyString(), anyString());
         } finally {
             SecurityContextHolder.clearContext();

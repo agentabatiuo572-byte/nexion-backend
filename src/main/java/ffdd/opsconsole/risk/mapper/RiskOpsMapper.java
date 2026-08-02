@@ -1799,6 +1799,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("SELECT id FROM nx_admin_risk_score_model WHERE state='draft' AND is_deleted=0 ORDER BY model_version DESC LIMIT 1 FOR UPDATE")
     Long lockDraftScoreModel();
 
+    @Select("SELECT COALESCE(MAX(model_version),0) FROM nx_admin_risk_score_model WHERE is_deleted=0")
+    Long maxScoreModelVersion();
+
     @Insert("""
             INSERT INTO nx_admin_risk_score_model
               (model_version,row_version,state,weights_json,input_sources_json,score_mapping_json,band_low_max,band_high_min,
@@ -2006,6 +2009,15 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
+    /** Per-user K4 mutation root. Every score/override/contribution write locks this row first. */
+    @Select("""
+            SELECT user_no
+              FROM nx_admin_risk_score_user
+             WHERE user_no = #{userNo} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    String lockScoreUserForUpdate(@Param("userNo") String userNo);
+
     @Select("""
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
@@ -2030,7 +2042,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
                AND u.is_deleted=0
              WHERE s.is_deleted=0
-             ORDER BY s.id
+             ORDER BY s.user_no
             """)
     List<String> scoreUserNos();
 
@@ -2075,7 +2087,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                 WHERE j3.user_id=u.id
                                   AND j3.updated_at > COALESCE(s.as_of,'1970-01-01'))
                     OR s.as_of < NOW() - INTERVAL 1 DAY)
-             ORDER BY s.id
+             ORDER BY s.user_no
              LIMIT #{limit}
             """)
     List<String> scoreUserNosNeedingProjection(

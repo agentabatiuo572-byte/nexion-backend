@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.application.OpsSupportTicketService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.SupportTicketDetail;
+import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.domain.SupportTicketEscalationResult;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.SupportTicketAssigneeRequest;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.content.dto.SupportLoadRebalanceRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.Map;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -44,6 +46,13 @@ public class OpsSupportTicketController {
     @GetMapping("/overview")
     public ApiResult<Map<String, Object>> overview() {
         return ticketService.overview();
+    }
+
+    // 新建/转交工单的最小坐席候选 — M2 读；不得复用 M1 坐席总览权限或返回其完整资料。
+    @PreAuthorize("hasAuthority('service_m2_read')")
+    @GetMapping("/assignee-candidates")
+    public ApiResult<List<SupportTicketAssigneeCandidateView>> assigneeCandidates() {
+        return supportAgentService.ticketAssigneeCandidates();
     }
 
     // 坐席负载配置查询 — M1 客服中心总览 读

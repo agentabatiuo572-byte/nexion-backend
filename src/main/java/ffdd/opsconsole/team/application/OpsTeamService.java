@@ -714,6 +714,7 @@ public class OpsTeamService implements AuditReplayable {
                 "newValue", value,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        publishApprovedUiConfigOutbox(key, oldValue, value, request);
         Map<String, Object> response = overview().getData();
         response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);
@@ -2629,6 +2630,34 @@ public class OpsTeamService implements AuditReplayable {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
+    }
+
+    /**
+     * A2 approval is the only safe boundary for publishing a UI-backed F-domain policy change.
+     * The ticket id is carried by {@link A2ReplayContext}, which makes the immutable outbox row
+     * directly reconcilable with the approved operation and keeps ordinary direct writes silent.
+     */
+    private void publishApprovedUiConfigOutbox(
+            String key,
+            String oldValue,
+            String newValue,
+            TeamCommissionConfigUpdateRequest request) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
+            return;
+        }
+        eventOutboxService.publish(
+                "A2_OPERATION",
+                operationId,
+                "F_TEAM_UI_CONFIG_APPROVED",
+                Map.of(
+                        "operationId", operationId,
+                        "domain", "F",
+                        "key", key,
+                        "oldValue", oldValue,
+                        "newValue", newValue,
+                        "operator", request.operator(),
+                        "reason", request.reason().trim()));
     }
 
     // ============================================================

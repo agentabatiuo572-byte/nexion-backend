@@ -38,4 +38,19 @@ class RiskOpsMapperK1ContractTest {
                 .contains("nx_admin_risk_param")
                 .contains("countRegisteredAccountsByClientIp24h");
     }
+
+    @Test
+    void projectionUpsertRewritesLegacyNodeJsonWithTheCurrentCanonicalPayload() throws Exception {
+        var upsert = RiskOpsMapper.class.getMethod(
+                        "upsertMultiAccountClusterProjection",
+                        String.class, String.class, String.class, String.class, int.class, double.class,
+                        String.class, String.class, String.class, boolean.class,
+                        String.class, String.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Insert.class);
+        String sql = String.join(" ", upsert.value()).replaceAll("\\s+", " ");
+
+        assertThat(sql)
+                .contains("nodes_json=VALUES(nodes_json)")
+                .contains("NOT(nodes_json <=> VALUES(nodes_json))");
+    }
 }

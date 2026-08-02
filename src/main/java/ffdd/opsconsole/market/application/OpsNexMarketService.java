@@ -1985,6 +1985,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if ("penalty".equals(def.key())) {
             return newNumber.compareTo(oldNumber) < 0;
         }
+        if ("min".equals(def.key())) {
+            return newNumber.compareTo(oldNumber) < 0;
+        }
         return false;
     }
 

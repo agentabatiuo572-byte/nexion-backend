@@ -67,9 +67,28 @@ public class OpsConversationStreamController {
     @GetMapping("/stream")
     public SseEmitter stream() {
         String adminId = resolveAdminId();
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        SseEmitter emitter = createEmitter(SSE_TIMEOUT_MS);
         EmitterBinding binding = new EmitterBinding(emitter, adminId);
         register(adminId, binding);
+
+        // 生命周期回调：任一结束路径都从 registry 移除，防内存泄漏。
+        emitter.onCompletion(() -> unregister(adminId, binding));
+        emitter.onTimeout(() -> {
+            // SseEmitter 超时后 Spring 会自动 complete；这里显式触发再清理一次，幂等。
+            emitter.complete();
+            unregister(adminId, binding);
+        });
+        emitter.onError(ex -> unregister(adminId, binding));
+
+        // 立即刷出一个合法 SSE 注释帧，避免 EventSource 要等首个 25 秒心跳才收到 200/onopen。
+        // 首帧失败说明连接已不可用：不登记心跳，摘除注册表并以错误完成，等浏览器按 SSE 语义重连。
+        try {
+            emitter.send(SseEmitter.event().comment("ready"));
+        } catch (IOException | IllegalStateException ex) {
+            unregister(adminId, binding);
+            emitter.completeWithError(ex);
+            return emitter;
+        }
 
         // 心跳：定期发 SSE 注释帧（:ping\n\n），防中间代理因空闲断链。
         // 注释帧不会触发前端 onmessage，仅保活。
@@ -81,17 +100,13 @@ public class OpsConversationStreamController {
             }
         }, HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
 
-        // 生命周期回调：任一结束路径都从 registry 移除，防内存泄漏。
-        emitter.onCompletion(() -> unregister(adminId, binding));
-        emitter.onTimeout(() -> {
-            // SseEmitter 超时后 Spring 会自动 complete；这里显式触发再清理一次，幂等。
-            emitter.complete();
-            unregister(adminId, binding);
-        });
-        emitter.onError(ex -> unregister(adminId, binding));
-
         log.debug("SSE stream connected: adminId={} activeEmitters={}", adminId, totalEmitters());
         return emitter;
+    }
+
+    /** 测试替身入口；生产路径始终创建 Spring 标准 SseEmitter。 */
+    protected SseEmitter createEmitter(long timeoutMs) {
+        return new SseEmitter(timeoutMs);
     }
 
     /**
@@ -151,6 +166,11 @@ public class OpsConversationStreamController {
 
     private int totalEmitters() {
         return registry.values().stream().mapToInt(List::size).sum();
+    }
+
+    /** 仅用于同包定向测试，避免通过反射读取连接注册表。 */
+    int activeEmitterCount() {
+        return totalEmitters();
     }
 
     @PreDestroy

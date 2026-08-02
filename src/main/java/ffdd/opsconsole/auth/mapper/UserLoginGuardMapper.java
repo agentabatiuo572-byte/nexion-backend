@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.auth.infrastructure.UserLoginGuardRecord;
+import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
@@ -23,6 +24,48 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTable();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_user_otp_send_guard (
+              login_key CHAR(64) PRIMARY KEY,
+              last_sent_at DATETIME(3) DEFAULT NULL,
+              window_started_at DATETIME(3) NOT NULL,
+              window_send_count INT NOT NULL DEFAULT 0,
+              day_started_at DATE NOT NULL,
+              day_send_count INT NOT NULL DEFAULT 0,
+              updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+              KEY idx_user_otp_send_guard_updated (updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createOtpSendGuardTable();
+
+    @Insert("""
+            INSERT IGNORE INTO nx_user_otp_send_guard(
+                login_key,window_started_at,window_send_count,day_started_at,day_send_count)
+            VALUES(#{loginKey},#{now},0,DATE(#{now}),0)
+            """)
+    void initializeOtpSendGuard(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT login_key AS loginKey,last_sent_at AS lastSentAt,
+                   window_started_at AS windowStartedAt,window_send_count AS windowSendCount,
+                   day_started_at AS dayStartedAt,day_send_count AS daySendCount
+            FROM nx_user_otp_send_guard WHERE login_key=#{loginKey} FOR UPDATE
+            """)
+    UserOtpSendGuardRecord lockOtpSendGuard(@Param("loginKey") String loginKey);
+
+    @Update("""
+            UPDATE nx_user_otp_send_guard
+               SET last_sent_at=#{now},window_started_at=#{windowStartedAt},
+                   window_send_count=#{windowSendCount},day_started_at=#{dayStartedAt},
+                   day_send_count=#{daySendCount}
+             WHERE login_key=#{loginKey}
+            """)
+    int recordOtpSend(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now,
+                      @Param("windowStartedAt") LocalDateTime windowStartedAt,
+                      @Param("windowSendCount") int windowSendCount,
+                      @Param("dayStartedAt") java.time.LocalDate dayStartedAt,
+                      @Param("daySendCount") int daySendCount);
 
     @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND COLUMN_NAME='user_id'")
     int countUserIdColumn();

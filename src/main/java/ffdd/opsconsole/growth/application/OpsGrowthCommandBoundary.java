@@ -10,6 +10,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 
 /** One atomic command boundary for every H1-H7 admin mutation. */
@@ -32,23 +33,30 @@ public class OpsGrowthCommandBoundary {
         String normalizedTarget = target == null || target.isBlank() ? "GLOBAL" : target.trim();
         String scope = "GROWTH:" + normalizedModule + ":" + normalizedOperation + ":" + normalizedTarget;
         String requestHash = hash(normalizedModule + "|" + normalizedOperation + "|" + normalizedTarget + "|" + String.valueOf(request));
-        return (ApiResult<Map<String, Object>>) idempotency.execute(
-                scope,
-                idempotencyKey,
-                requestHash,
-                ApiResult.class,
-                (Supplier) () -> {
-                    ApiResult<Map<String, Object>> result = action.get();
-                    if (result != null && result.getCode() == 0) {
-                        outbox.publish("GROWTH_COMMAND", normalizedModule + ":" + normalizedTarget,
-                                "admin.growth_config_changed", Map.of(
-                                        "module_id", normalizedModule,
-                                        "operation", normalizedOperation,
-                                        "target_id", normalizedTarget,
-                                        "idempotency_key", idempotencyKey.trim()));
-                    }
-                    return result;
-                });
+        try {
+            return (ApiResult<Map<String, Object>>) idempotency.execute(
+                    scope,
+                    idempotencyKey,
+                    requestHash,
+                    ApiResult.class,
+                    (Supplier) () -> {
+                        ApiResult<Map<String, Object>> result = action.get();
+                        if (result != null && result.getCode() == 0) {
+                            outbox.publish("GROWTH_COMMAND", normalizedModule + ":" + normalizedTarget,
+                                    "admin.growth_config_changed", Map.of(
+                                            "module_id", normalizedModule,
+                                            "operation", normalizedOperation,
+                                            "target_id", normalizedTarget,
+                                            "idempotency_key", idempotencyKey.trim()));
+                        }
+                        return result;
+                    });
+        } catch (PessimisticLockingFailureException ex) {
+            if ("H3".equals(normalizedModule) && "QUEST_CONFIG_UPDATE".equals(normalizedOperation)) {
+                return ApiResult.fail(422, "QUEST_CONFIG_STALE");
+            }
+            throw ex;
+        }
     }
 
     private String normalize(String value) {

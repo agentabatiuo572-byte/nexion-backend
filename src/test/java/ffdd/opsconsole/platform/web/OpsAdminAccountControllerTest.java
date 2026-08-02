@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
@@ -76,6 +77,16 @@ class OpsAdminAccountControllerTest {
         verify(accountService).reset2fa("idem-2fa", "op-001", actionRequest);
         verify(accountService).resetPassword("idem-password", "op-001", actionRequest);
         verify(accountService).revokeSessions("idem-session", "op-001", actionRequest);
+    }
+
+    @Test
+    void statusUpdateRejectsEmptyBodyBeforeIdempotencyOrBusinessMutation() {
+        ApiResult<AdminAccountOverview.OperatorRecord> result = controller.updateStatus(
+                "idem-empty-status", "0", null);
+
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(result.getMessage()).isEqualTo("REQUEST_BODY_REQUIRED");
+        verifyNoInteractions(accountService, idempotencyService);
     }
 
     @Test

@@ -391,8 +391,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> missionRows(@Param("missionType") String missionType);
 
     @Insert("""
-            INSERT IGNORE INTO nx_admin_operation_mutex(lock_key, updated_at)
+            INSERT INTO nx_admin_operation_mutex(lock_key, updated_at)
             VALUES('H3_CONFIG', NOW())
+            ON DUPLICATE KEY UPDATE updated_at = updated_at
             """)
     int ensureH3ConfigMutex();
 

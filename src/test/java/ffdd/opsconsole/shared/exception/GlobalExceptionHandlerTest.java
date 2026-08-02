@@ -19,6 +19,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.core.MethodParameter;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -144,6 +145,15 @@ class GlobalExceptionHandlerTest {
 
         assertThat(result.getCode()).isEqualTo(400);
         assertThat(result.getMessage()).isEqualTo("REQUEST_BODY_INVALID");
+    }
+
+    @Test
+    void unsupportedRequestMediaTypeReturnsStructured415InsteadOf500() {
+        ApiResult<Void> result = handler.handleUnsupportedMediaType(
+                new HttpMediaTypeNotSupportedException("text/plain"));
+
+        assertThat(result.getCode()).isEqualTo(415);
+        assertThat(result.getMessage()).isEqualTo("UNSUPPORTED_MEDIA_TYPE");
     }
 
     @Test

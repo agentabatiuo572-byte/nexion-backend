@@ -62,6 +62,7 @@ class OpsAuditCenterTransactionBoundaryTest {
                 mock(AuditObjectLockMapper.class),
                 mock(AuditReplayBusinessPermissionGuard.class),
                 mock(AuditReplayDispatcher.class),
+                mock(A2AccessPolicy.class),
                 new ObjectMapper().findAndRegisterModules(),
                 idempotencyService);
         ProxyFactory proxyFactory = new ProxyFactory(target);

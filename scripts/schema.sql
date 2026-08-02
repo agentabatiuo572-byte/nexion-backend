@@ -530,6 +530,7 @@ CREATE TABLE IF NOT EXISTS nx_admin (
   phone VARCHAR(32) NULL,
   super_admin TINYINT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
+  version BIGINT UNSIGNED NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -2255,7 +2256,9 @@ CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_admin_idem_scope_key (scope, idempotency_key),
   KEY idx_admin_idem_expires (expires_at),
-  KEY idx_admin_idem_status (status, updated_at)
+  KEY idx_admin_idem_status (status, updated_at),
+  KEY idx_admin_idem_status_expires_deleted (status, expires_at, is_deleted),
+  KEY idx_admin_idem_expiry_claim (status, is_deleted, expires_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_audit_log (
@@ -2393,6 +2396,7 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   activated_at DATETIME NULL,
   deactivated_at DATETIME NULL,
   pending_deactivate TINYINT NOT NULL DEFAULT 0,
+  row_version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -2435,6 +2439,10 @@ CREATE TABLE IF NOT EXISTS nx_trial_claim (
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_trial_claim' AND COLUMN_NAME = 'payment_method_id') = 0,
   'ALTER TABLE nx_trial_claim ADD COLUMN payment_method_id BIGINT NULL AFTER user_device_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_device' AND COLUMN_NAME = 'row_version') = 0,
+  'ALTER TABLE nx_user_device ADD COLUMN row_version BIGINT NOT NULL DEFAULT 0 AFTER pending_deactivate',
+  'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_trial_claim' AND INDEX_NAME = 'idx_trial_claim_payment_method') = 0,
   'ALTER TABLE nx_trial_claim ADD INDEX idx_trial_claim_payment_method (payment_method_id, status)', 'SELECT 1');
@@ -5101,6 +5109,7 @@ CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
   challenge_no VARCHAR(96) NOT NULL,
   country_code VARCHAR(8) NOT NULL,
   phone VARCHAR(32) NOT NULL,
+  client_ip VARCHAR(64) NOT NULL,
   code_hash CHAR(64) NOT NULL,
   expires_at DATETIME NOT NULL,
   attempts INT NOT NULL DEFAULT 0,

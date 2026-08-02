@@ -45,47 +45,11 @@ public class OpsI18nLearningController {
     @PreAuthorize("hasAnyAuthority('content_i6_read','content_i7_read')")
     public ApiResult<I18nLearningOverview> overview(Authentication authentication) {
         I18nLearningOverview source = i18nLearningService.overview().getData();
-        boolean superadmin = authentication != null && authentication.getAuthorities().stream()
-                .anyMatch(authority -> "ROLE_SUPER_ADMIN".equals(authority.getAuthority())
-                        || "SUPER_ADMIN".equals(authority.getAuthority()));
-        boolean canReadI6 = superadmin || hasAuthority(authentication, "content_i6_read");
-        boolean canReadI7 = superadmin || hasAuthority(authentication, "content_i7_read");
-        if (source == null) {
-            return ApiResult.ok(null);
-        }
-        return ApiResult.ok(filterOverview(source, canReadI6, canReadI7));
-    }
-
-    private boolean hasAuthority(Authentication authentication, String expected) {
-        return authentication != null && authentication.getAuthorities().stream()
-                .anyMatch(authority -> expected.equals(authority.getAuthority()));
-    }
-
-    private I18nLearningOverview filterOverview(I18nLearningOverview source, boolean canReadI6, boolean canReadI7) {
-        var stats = source.stats();
-        return new I18nLearningOverview(
-                new ffdd.opsconsole.content.domain.I18nLearningStats(
-                        canReadI6 ? stats.managedKeys() : 0,
-                        canReadI6 ? stats.totalKeys() : 0,
-                        canReadI6 ? stats.integrityIssues() : 0,
-                        canReadI7 ? stats.coursesOnline() : 0,
-                        canReadI7 ? stats.weeklyNexPayout() : "—",
-                        canReadI7 ? stats.coverageRatio() : java.math.BigDecimal.ZERO,
-                        canReadI7 ? stats.redlinePct() : java.math.BigDecimal.ZERO),
-                canReadI6 ? source.namespaces() : java.util.List.of(),
-                canReadI6 ? source.integrityIssues() : java.util.List.of(),
-                canReadI6 ? source.hardcodedFindings() : java.util.List.of(),
-                canReadI6 ? source.focusMessage() : null,
-                canReadI6 ? source.messages() : java.util.List.of(),
-                canReadI7 ? source.courses() : java.util.List.of(),
-                canReadI7 ? source.rewardRange() : null,
-                canReadI7 ? source.featuredCourseId() : "",
-                canReadI7 ? source.metrics() : java.util.List.of(),
-                canReadI7 ? source.categories() : java.util.List.of(),
-                canReadI7 ? source.formats() : java.util.List.of(),
-                canReadI7 ? source.levels() : java.util.List.of(),
-                canReadI7 ? source.statuses() : java.util.List.of(),
-                canReadI7 ? source.sources() : java.util.List.of());
+        // I6 is the merged i18n-and-learning read page. Once either read authority
+        // grants access to this endpoint, all overview fields are one authoritative
+        // global catalog; hiding the course metadata produces a malformed 200 for
+        // I6-only operators and makes the PC client correctly fail closed.
+        return ApiResult.ok(source);
     }
 
     @PostMapping("/rescan")

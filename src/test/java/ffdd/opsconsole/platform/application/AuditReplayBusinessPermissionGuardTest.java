@@ -8,9 +8,11 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.util.List;
 import java.util.Map;
@@ -24,8 +26,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class AuditReplayBusinessPermissionGuardTest {
     private final TrustDisclosureRepository repository = mock(TrustDisclosureRepository.class);
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
+    private final EmergencyControlRepository emergencyRepository = mock(EmergencyControlRepository.class);
     private final AuditReplayBusinessPermissionGuard guard =
-            new AuditReplayBusinessPermissionGuard(repository, roleResolver);
+            new AuditReplayBusinessPermissionGuard(repository, roleResolver, emergencyRepository);
 
     @AfterEach
     void clearContext() {
@@ -115,6 +118,180 @@ class AuditReplayBusinessPermissionGuardTest {
         }
     }
 
+    @Test
+    void i3CapAdjustmentUsesItsExactBusinessPermissionForProposalAndReplayActors() {
+        AuditReplayCommand command = new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                "tier", "critical", "cap", "50", "expectedCap", "∞ 永不淘汰"));
+
+        // A delegated proposer may create the A2 ticket only with the I3 CAP authority.
+        authenticate("platform_a2_proposal_create", "content_i3_cap_adjust");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+
+        // Missing business authority remains fail-closed for a delegated proposer.
+        authenticate("platform_a2_proposal_create");
+        var delegatedDenied = guard.validateProposal(command);
+        assertThat(delegatedDenied.getCode()).isEqualTo(403);
+        assertThat(delegatedDenied.getMessage()).endsWith("content_i3_cap_adjust");
+
+        // The real approval entry authority still needs the I3 business authority at replay time.
+        authenticate("platform_a2_operation_approve");
+        var replayDenied = guard.validateProposal(command);
+        assertThat(replayDenied.getCode()).isEqualTo(403);
+        assertThat(replayDenied.getMessage()).endsWith("content_i3_cap_adjust");
+
+        authenticate("platform_a2_operation_approve", "content_i3_cap_adjust");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+    }
+
+    @Test
+    void i3CapProposalCanonicalizesItsVisibleTierAndExactCasLock() {
+        AuditReplayCommand command = new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                "tier", "critical", "cap", "50", "expectedCap", "∞ 永不淘汰"));
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client supplied action", "critical", "client before", "50",
+                "i3-maker", "CONTENT", "param", false, false,
+                "client gate", "adjust critical cap", "I3", command,
+                new AuditLockTarget("I", "notification_cap", "critical"), null);
+
+        var result = guard.validateProposalContext(request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::beforeValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly(
+                        "调整通知优先级 CAP · critical",
+                        "critical",
+                        "以服务器执行时状态为准",
+                        "50 条",
+                        "I3",
+                        "param",
+                        false);
+        assertThat(result.getData().target())
+                .isEqualTo(new AuditLockTarget("I", "notification_cap", "critical"));
+    }
+
+    @Test
+    void i3CapProposalRejectsMissingCasOrMismatchedNotificationLock() {
+        authenticate("platform_a2_proposal_create", "content_i3_cap_adjust");
+        AuditReplayCommand missingExpectedCap = new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                "tier", "critical", "cap", "50"));
+        AuditOperationProposalRequest invalid = new AuditOperationProposalRequest(
+                "x", "critical", "x", "50", "i3-maker", "CONTENT", "param", false, false,
+                "x", "x", "I3", missingExpectedCap,
+                new AuditLockTarget("I", "notification_cap", "critical"), null);
+        assertThat(guard.validateProposalContext(invalid).getCode()).isEqualTo(403);
+
+        AuditReplayCommand command = new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                "tier", "critical", "cap", "50", "expectedCap", "40"));
+        AuditOperationProposalRequest wrongLock = new AuditOperationProposalRequest(
+                "x", "critical", "x", "50", "i3-maker", "CONTENT", "param", false, false,
+                "x", "x", "I3", command,
+                new AuditLockTarget("I", "notification_cap", "high"), null);
+        assertThat(guard.validateProposalContext(wrongLock).getCode()).isEqualTo(403);
+    }
+
+    @Test
+    void i3CapProposalCanonicalizesCaseWhitespaceAndEquivalentCapSpellingsIntoOneLock() {
+        AuditReplayCommand command = new AuditReplayCommand("I", "i3_cap_adjust", Map.of(
+                "tier", "  Critical ", "cap", "005 条", "expectedCap", "50 条"));
+        AuditOperationProposalRequest canonicalTarget = new AuditOperationProposalRequest(
+                "x", "critical", "x", "5 条", "i3-maker", "CONTENT", "param", false, false,
+                "x", "x", "I3", command,
+                new AuditLockTarget("I", "notification_cap", "critical"), null);
+
+        var result = guard.validateProposalContext(canonicalTarget);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().objectId()).isEqualTo("critical");
+        assertThat(result.getData().afterValue()).isEqualTo("5 条");
+        assertThat(result.getData().target()).isEqualTo(new AuditLockTarget("I", "notification_cap", "critical"));
+
+        AuditOperationProposalRequest mixedCaseLock = new AuditOperationProposalRequest(
+                "x", "Critical", "x", "005条", "i3-maker", "CONTENT", "param", false, false,
+                "x", "x", "I3", command,
+                new AuditLockTarget("I", "notification_cap", "Critical"), null);
+        assertThat(guard.validateProposalContext(mixedCaseLock).getCode()).isEqualTo(403);
+    }
+
+    @Test
+    void i3CapProposalRejectsUnknownTierAndMalformedOrOutOfRangeCap() {
+        authenticate("platform_a2_proposal_create", "content_i3_cap_adjust");
+        for (Map<String, Object> params : List.<Map<String, Object>>of(
+                Map.<String, Object>of("tier", "urgent", "cap", "5", "expectedCap", "50 条"),
+                Map.<String, Object>of("tier", "critical", "cap", "0", "expectedCap", "50 条"),
+                Map.<String, Object>of("tier", "critical", "cap", "10001", "expectedCap", "50 条"),
+                Map.<String, Object>of("tier", "critical", "cap", "5/day", "expectedCap", "50 条"))) {
+            AuditReplayCommand command = new AuditReplayCommand("I", "i3_cap_adjust", params);
+            AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                    "x", "critical", "x", "x", "i3-maker", "CONTENT", "param", false, false,
+                    "x", "x", "I3", command,
+                    new AuditLockTarget("I", "notification_cap", "critical"), null);
+            assertThat(guard.validateProposalContext(request).getCode()).isEqualTo(403);
+        }
+    }
+
+    @Test
+    void j4MakerMustHoldEveryFrozenTargetAuthorityForAMixedPlaybook() {
+        AuditReplayCommand raw = new AuditReplayCommand("J", "j4_playbook_execute", Map.of(
+                "code", "SOP-MIXED-1", "emergency", true));
+        stubPlaybook("SOP-MIXED-1", "2026-08-01T12:00:00", List.of("J1", "J2", "I3"));
+        AuditReplayCommand command = guard.canonicalizeProposalCommand(raw).getData();
+
+        authenticate("platform_a2_proposal_create", "emergency_j4_playbook_execute",
+                "emergency_j1_gate_kill", "emergency_j2_emergency_block");
+        var denied = guard.validateProposal(command);
+
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).endsWith("content_i3_write");
+
+        authenticate("platform_a2_proposal_create", "emergency_j4_playbook_execute",
+                "emergency_j1_gate_kill", "emergency_j2_emergency_block", "content_i3_write");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+    }
+
+    @Test
+    void j4DedicatedCheckerApprovesFrozenMixedPlaybookWithoutBecomingEveryTargetWriter() {
+        AuditReplayCommand raw = new AuditReplayCommand("J", "j4_playbook_execute", Map.of(
+                "code", "SOP-MIXED-2", "emergency", true));
+        stubPlaybook("SOP-MIXED-2", "2026-08-01T12:01:00", List.of("J1", "J2", "I3"));
+        authenticate("platform_a2_proposal_create", "emergency_j4_playbook_execute",
+                "emergency_j1_gate_kill", "emergency_j2_emergency_block", "content_i3_write");
+        AuditReplayCommand command = guard.canonicalizeProposalCommand(raw).getData();
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+
+        authenticate("platform_a2_operation_approve", "emergency_j4_playbook_execute");
+        assertThat(guard.validateApproval(command).getCode()).isZero();
+
+        authenticate("platform_a2_operation_approve");
+        var denied = guard.validateApproval(command);
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).endsWith("emergency_j4_playbook_execute");
+    }
+
+    @Test
+    void j4ApprovalFailsClosedWhenThePlaybookDefinitionChangesAfterProposal() {
+        AuditReplayCommand raw = new AuditReplayCommand("J", "j4_playbook_execute", Map.of(
+                "code", "SOP-MIXED-3", "emergency", true));
+        stubPlaybook("SOP-MIXED-3", "2026-08-01T12:02:00", List.of("J1", "J2"));
+        authenticate("platform_a2_proposal_create", "emergency_j4_playbook_execute",
+                "emergency_j1_gate_kill", "emergency_j2_emergency_block");
+        AuditReplayCommand command = guard.canonicalizeProposalCommand(raw).getData();
+
+        stubPlaybook("SOP-MIXED-3", "2026-08-01T12:03:00", List.of("J1", "J2", "I3"));
+        authenticate("platform_a2_operation_approve", "emergency_j4_playbook_execute");
+        var changed = guard.validateApproval(command);
+
+        assertThat(changed.getCode()).isEqualTo(409);
+        assertThat(changed.getMessage()).isEqualTo("J4_PLAYBOOK_SNAPSHOT_CHANGED");
+    }
+
     private AuditReplayCommand sectionCommand(String sectionKey, String action) {
         return new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
                 "sectionKey", sectionKey, "action", action));
@@ -123,6 +300,20 @@ class AuditReplayBusinessPermissionGuardTest {
     private void authenticate(String... authorities) {
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 "proposer", "n/a", java.util.Arrays.stream(authorities).map(SimpleGrantedAuthority::new).toList()));
+    }
+
+    private void stubPlaybook(String code, String version, List<String> domains) {
+        List<Map<String, Object>> sequence = domains.stream()
+                .map(domain -> Map.<String, Object>of(
+                        "domain", domain,
+                        "action", domain + " action",
+                        "ref", domain.toLowerCase() + "-ref",
+                        "approve", true))
+                .toList();
+        when(emergencyRepository.playbookForUpdate(code)).thenReturn(Optional.of(Map.of(
+                "code", code,
+                "version", version,
+                "sequence", sequence)));
     }
 
     @Test
@@ -167,6 +358,50 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void c3CreateReplayRequiresExactCreateAuthorityForProposalWriterAndApprover() {
+        AuditReplayCommand command = new AuditReplayCommand(
+                "C", "c3_adjust_create", Map.of("userId", 1L, "amount", "5", "asset", "USDT"));
+
+        authenticate("platform_a2_proposal_create");
+        assertBusinessAuthorityDenied(guard.validateProposal(command), "user_c3_adjust_create");
+        authenticate("platform_a2_proposal_create", "user_c3_adjust_create");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+
+        authenticate("platform_a2_write");
+        assertBusinessAuthorityDenied(guard.validateProposal(command), "user_c3_adjust_create");
+        authenticate("platform_a2_write", "user_c3_adjust_create");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+
+        authenticate("platform_a2_operation_approve");
+        assertBusinessAuthorityDenied(guard.validateApproval(command), "user_c3_adjust_create");
+        authenticate("platform_a2_operation_approve", "user_c3_adjust_create");
+        assertThat(guard.validateApproval(command).getCode()).isZero();
+    }
+
+    @Test
+    void c3ReviewReplayRequiresExactApproveAuthorityForProposalAndApprover() {
+        for (String operation : List.of("c3_adjust_approve", "c3_adjust_reject")) {
+            AuditReplayCommand command = new AuditReplayCommand(
+                    "C", operation, Map.of("adjustmentNo", "ADJ-C3-001"));
+
+            authenticate("platform_a2_proposal_create", "user_c3_adjust_create");
+            assertBusinessAuthorityDenied(guard.validateProposal(command), "user_c3_adjust_approve");
+            authenticate("platform_a2_proposal_create", "user_c3_adjust_approve");
+            assertThat(guard.validateProposal(command).getCode()).isZero();
+
+            authenticate("platform_a2_operation_approve", "user_c3_adjust_create");
+            assertBusinessAuthorityDenied(guard.validateApproval(command), "user_c3_adjust_approve");
+            authenticate("platform_a2_operation_approve", "user_c3_adjust_approve");
+            assertThat(guard.validateApproval(command).getCode()).isZero();
+        }
+    }
+
+    private void assertBusinessAuthorityDenied(ApiResult<Void> result, String authority) {
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("A2_BUSINESS_PERMISSION_DENIED:" + authority);
+    }
+
+    @Test
     void delegatedK2FreezeProposalRequiresItsExactBusinessPermission() {
         authenticate("platform_a2_proposal_create", "risk_k2_row_freeze");
 
@@ -193,6 +428,154 @@ class AuditReplayBusinessPermissionGuardTest {
         assertThat(refundDenied.getMessage()).endsWith("device_e4_order_refund");
         assertThat(stateDenied.getCode()).isEqualTo(403);
         assertThat(stateDenied.getMessage()).endsWith("device_e4_write");
+    }
+
+    @Test
+    void delegatedE3ConfigRequiresExactWriteAuthorityAndUsesCanonicalContext() {
+        String frontendKey = "E.device.capacity.subsidyDays";
+        AuditReplayCommand command = new AuditReplayCommand(
+                "E", "e3_config", Map.of("key", frontendKey, "value", "31"));
+
+        authenticate("platform_a2_proposal_create");
+        var denied = guard.validateProposal(command);
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(denied.getMessage()).endsWith("device_e3_write");
+
+        authenticate("platform_a2_proposal_create", "device_e3_write");
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client supplied action",
+                frontendKey,
+                "30",
+                "31",
+                "e3-maker",
+                "custom",
+                "param",
+                false,
+                false,
+                "client gate",
+                "adjust display-only subsidy window",
+                "E3",
+                command,
+                new AuditLockTarget("E", "device_e3_config", "capacitySubsidyDays"),
+                null);
+
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::beforeValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly(
+                        "更新 E3 生命周期配置 · " + frontendKey,
+                        frontendKey,
+                        "以服务器执行时状态为准",
+                        "31",
+                        "E3",
+                        "param",
+                        false);
+        assertThat(canonical.getData().target())
+                .isEqualTo(new AuditLockTarget("E", "device_e3_config", "capacitySubsidyDays"));
+
+        AuditOperationProposalRequest rawTarget = new AuditOperationProposalRequest(
+                request.action(), request.obj(), request.beforeValue(), request.afterValue(),
+                request.operator(), request.operatorRole(), request.type(), request.amplifies(), request.sos(),
+                request.roleGate(), request.reason(), request.sourceDomain(), command,
+                new AuditLockTarget("E", "device_e3_config", frontendKey), null);
+        assertThat(guard.validateProposalContext(rawTarget).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
+    }
+
+    @Test
+    void e3AndE6CheckersApproveWithA2AndExactReadScopeButRemainDirectWriteDenied() {
+        AuditReplayCommand e3 = new AuditReplayCommand(
+                "E", "e3_config", Map.of("key", "E.device.capacity.subsidyDays", "value", "31"));
+        AuditReplayCommand e6 = new AuditReplayCommand(
+                "E", "e6_compute_config", Map.of("paramKey", "E.compute.computeShareEnabled", "value", "on"));
+
+        authenticate("platform_a2_operation_approve", "device_e3_read", "device_e6_read");
+        assertThat(guard.validateApproval(e3).getCode()).isZero();
+        assertThat(guard.validateApproval(e6).getCode()).isZero();
+        assertThat(guard.validateProposal(e3).getCode()).isEqualTo(403);
+        assertThat(guard.validateProposal(e6).getCode()).isEqualTo(403);
+
+        authenticate("platform_a2_operation_approve", "device_e3_read");
+        var e6Denied = guard.validateApproval(e6);
+        assertThat(e6Denied.getCode()).isEqualTo(403);
+        assertThat(e6Denied.getMessage()).endsWith("device_e6_read");
+    }
+
+    @Test
+    void delegatedE3ConfigFailsClosedForUnknownKeyAndDoesNotAuthorizeOtherEOps() {
+        authenticate("platform_a2_proposal_create", "device_e3_write");
+
+        AuditReplayCommand unknownKey = new AuditReplayCommand(
+                "E", "e3_config", Map.of("key", "E.device.capacity.unknown", "value", "31"));
+        AuditOperationProposalRequest unknownContext = new AuditOperationProposalRequest(
+                "client supplied action",
+                "E.device.capacity.unknown",
+                "30",
+                "31",
+                "e3-maker",
+                "custom",
+                "param",
+                false,
+                false,
+                "client gate",
+                "unknown E3 keys must fail closed",
+                "E3",
+                unknownKey,
+                new AuditLockTarget("E", "device_e3_config", "capacityUnknown"),
+                null);
+
+        assertThat(guard.validateProposalContext(unknownContext).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+
+        var unknownOperation = guard.validateProposal(new AuditReplayCommand(
+                "E", "e3_unknown_operation", Map.of()));
+        assertThat(unknownOperation.getCode()).isEqualTo(403);
+        assertThat(unknownOperation.getMessage()).isEqualTo("A2_BUSINESS_PERMISSION_UNMAPPED");
+
+        var e5Operation = guard.validateProposal(new AuditReplayCommand(
+                "E", "e5_device_force_activate", Map.of("deviceId", "42")));
+        assertThat(e5Operation.getCode()).isEqualTo(403);
+        assertThat(e5Operation.getMessage()).endsWith("device_e5_device_force_activate");
+    }
+
+    @Test
+    void delegatedE3FinancialConfigIsConservativelyMarkedAsAmplifying() {
+        authenticate("platform_a2_proposal_create", "device_e3_write");
+        AuditReplayCommand command = new AuditReplayCommand(
+                "E", "e3_config", Map.of("key", "E.tradein.enabled", "value", "true"));
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client supplied action",
+                "E.tradein.enabled",
+                "false",
+                "true",
+                "e3-maker",
+                "custom",
+                "param",
+                false,
+                false,
+                "client gate",
+                "enable trade-in",
+                "E3",
+                command,
+                new AuditLockTarget("E", "device_e3_config", "tradeinEnabled"),
+                null);
+
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData().amplifies()).isTrue();
+        assertThat(canonical.getData().target())
+                .isEqualTo(new AuditLockTarget("E", "device_e3_config", "tradeinEnabled"));
     }
 
     @Test
@@ -453,6 +836,70 @@ class AuditReplayBusinessPermissionGuardTest {
                         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
                         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
                 .containsExactly("解绑设备资产 · 42", "UNBOUND", false);
+    }
+
+    @Test
+    void delegatedH8SettlementBindsThePcProposalToTheCanonicalFundBatchContext() {
+        authenticate("platform_a2_proposal_create", "growth_h8_settle");
+        AuditReplayCommand command = new AuditReplayCommand(
+                "H", "h8_referral_settlement", Map.of(
+                        "limit", 20,
+                        "expectedH8Version", 7L,
+                        "expectedRhythmMonth", 8,
+                        "rewardSnapshotHash", "a".repeat(64)));
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client supplied copy", "待结算邀请批次", "client before", "client after", "h8-maker", "growth",
+                "fund", true, false, "门槛者", "核对 H8 奖励快照后申请结算", "H8", command,
+                new AuditLockTarget("H", "referral_settlement_batch", "pending"), null);
+
+        assertThat(guard.validateProposal(command).getCode()).isZero();
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::action,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::afterValue,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies)
+                .containsExactly("执行邀请奖励真实结算", "待结算邀请批次", "最多结算 20 条", "H8", "fund", true);
+        assertThat(canonical.getData().target())
+                .isEqualTo(new AuditLockTarget("H", "referral_settlement_batch", "pending"));
+    }
+
+    @Test
+    void delegatedH8SettlementFailsClosedForMalformedSnapshotOrContextSpoofing() {
+        authenticate("platform_a2_proposal_create", "growth_h8_settle");
+        AuditReplayCommand malformed = new AuditReplayCommand(
+                "H", "h8_referral_settlement", Map.of(
+                        "limit", 101,
+                        "expectedH8Version", 7L,
+                        "expectedRhythmMonth", 8,
+                        "rewardSnapshotHash", "not-a-sha256"));
+        AuditOperationProposalRequest malformedRequest = new AuditOperationProposalRequest(
+                "client supplied copy", "待结算邀请批次", "client before", "client after", "h8-maker", "growth",
+                "fund", true, false, "门槛者", "malformed snapshot must not enter A2", "H8", malformed,
+                new AuditLockTarget("H", "referral_settlement_batch", "pending"), null);
+
+        assertThat(guard.validateProposal(malformed).getCode()).isZero();
+        assertThat(guard.validateProposalContext(malformedRequest).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+
+        AuditReplayCommand valid = new AuditReplayCommand(
+                "H", "h8_referral_settlement", Map.of(
+                        "limit", 1,
+                        "expectedH8Version", 7L,
+                        "expectedRhythmMonth", 8,
+                        "rewardSnapshotHash", "b".repeat(64)));
+        AuditOperationProposalRequest spoofedTarget = new AuditOperationProposalRequest(
+                "client supplied copy", "待结算邀请批次", "client before", "client after", "h8-maker", "growth",
+                "fund", true, false, "门槛者", "target must remain the pending batch", "H8", valid,
+                new AuditLockTarget("D", "ledger", "all"), null);
+
+        assertThat(guard.validateProposalContext(spoofedTarget).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_MISMATCH");
     }
 
     @Test

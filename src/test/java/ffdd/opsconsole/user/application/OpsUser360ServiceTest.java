@@ -511,6 +511,20 @@ class OpsUser360ServiceTest {
         assertThat(result.getData().get("risk").toString()).doesNotContain("cases");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void controllerAuthorizedCustomC1RoleReceivesLeastPrivilegeProjection() {
+        when(roleResolver.resolveCode()).thenReturn("ACC_C_MK_114336");
+        when(userService.profile(52L)).thenReturn(ApiResult.ok(profile(52L)));
+
+        ApiResult<Map<String, Object>> result = service.detail(52L);
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Object> profile = (Map<String, Object>) result.getData().get("profile");
+        assertThat(profile).containsEntry("userNo", "U00000052").doesNotContainKeys("walletUsdt", "walletNex");
+        assertThat(result.getData()).doesNotContainKeys("security", "sessions", "audit", "deposits", "withdrawals", "ledger");
+    }
+
     private UserAccountView profile(Long id) {
         return new UserAccountView(
                 id, "U00000052", "用户52", "138****0052", "86", "ACTIVE", "APPROVED",

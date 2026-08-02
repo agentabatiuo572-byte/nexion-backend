@@ -1,7 +1,8 @@
 param(
   [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd",
   [int]$Port = 8110,
-  [string]$LogDir = ""
+  [string]$LogDir = "",
+  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,8 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 if (-not (Test-Path $Maven)) {
   throw "Maven executable not found: $Maven"
 }
+
+& (Join-Path $PSScriptRoot "apply_startup_schema_migrations.ps1") -MySql $MySql -Confirm:$false
 
 if ([string]::IsNullOrWhiteSpace($LogDir)) {
   $LogDir = Join-Path $root "logs"

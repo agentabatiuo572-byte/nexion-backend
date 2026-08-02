@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -468,6 +469,48 @@ class OpsTeamServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_UI_CONFIG_CHANGED");
+    }
+
+    /**
+     * F25 exposed a closing gap: an approved A2 replay persisted F2/F3/F4 UI
+     * configuration and audit records, but emitted no correlated A4/outbox fact.
+     * The operation id must be the outbox aggregate id so the approval and its
+     * durable event can be reconciled without heuristics.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void approvedF2ToF4UiConfigReplayPublishesOneOutboxPerOperation() {
+        List<Map<String, String>> changes = List.of(
+                Map.of("operationId", "WO-F2-OUTBOX-001", "key", "F.cooldown", "value", "31"),
+                Map.of("operationId", "WO-F3-OUTBOX-001", "key", "F.binary.spillover", "value", "已关闭"),
+                Map.of("operationId", "WO-F4-OUTBOX-001", "key", "F.leaderboard.minUsd", "value", "101"));
+
+        for (Map<String, String> change : changes) {
+            ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay(change.get("operationId"));
+            try {
+                ApiResult<Map<String, Object>> result = service.updateConfig(
+                        "idem-" + change.get("operationId"),
+                        new TeamCommissionConfigUpdateRequest(
+                                change.get("key"), change.get("value"), "approved A2 config replay", "checker"));
+                assertThat(result.getCode()).isZero();
+            } finally {
+                ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+            }
+        }
+
+        ArgumentCaptor<String> aggregateId = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
+        verify(eventOutboxService, times(3)).publish(
+                org.mockito.ArgumentMatchers.eq("A2_OPERATION"),
+                aggregateId.capture(),
+                org.mockito.ArgumentMatchers.eq("F_TEAM_UI_CONFIG_APPROVED"),
+                payload.capture());
+        assertThat(aggregateId.getAllValues()).containsExactly(
+                "WO-F2-OUTBOX-001", "WO-F3-OUTBOX-001", "WO-F4-OUTBOX-001");
+        assertThat(payload.getAllValues())
+                .allSatisfy(event -> assertThat(event)
+                        .containsEntry("domain", "F")
+                        .containsEntry("operationId", event.get("operationId")));
     }
 
     @Test

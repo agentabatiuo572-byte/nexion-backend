@@ -115,7 +115,9 @@ public class OpsRepurchaseAdminService {
                 "g4TicketsIssued", issued, "g4Ref", g4Ref, "reason", request.reason().trim(),
                 "operator", operator(request.operator()), "idempotencyKey", idempotencyKey.trim());
         String receiptId = outbox.publish("REPURCHASE_CONFIG", key, event, detail);
-        recordAudit(event.toUpperCase(Locale.ROOT).replace('.', '_'), key, request, detail);
+        Map<String, Object> auditDetail = new LinkedHashMap<>(detail);
+        auditDetail.put("sourceDomain", "G7");
+        recordAudit(event.toUpperCase(Locale.ROOT).replace('.', '_'), key, request, auditDetail);
         ApiResult<Map<String, Object>> overviewResult = marketOverview.repurchaseOverview();
         if (overviewResult == null || overviewResult.getCode() != 0 || overviewResult.getData() == null) {
             throw new BizException(500, "G7_CANONICAL_OVERVIEW_UNAVAILABLE");

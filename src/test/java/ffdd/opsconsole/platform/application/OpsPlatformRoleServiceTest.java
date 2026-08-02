@@ -28,12 +28,19 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import org.springframework.aop.framework.ProxyFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
+import org.springframework.transaction.interceptor.TransactionInterceptor;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.SmartTransactionObject;
 
 class OpsPlatformRoleServiceTest {
     private final AdminRoleMapper roleMapper = mock(AdminRoleMapper.class);
@@ -84,6 +91,106 @@ class OpsPlatformRoleServiceTest {
         assertThat(audit.getValue().getActorUsername()).isEqualTo("alice.admin");
         verify(idempotencyService).execute(eq("A6_ROLE_CREATE:CUSTOM_OPS"), eq("idem-create"),
                 anyString(), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void createRoleRestoresOnlyTheSoftDeletedRoleRowAndAuditsTheRestoration() {
+        authenticate("41", "alice.admin");
+        AdminRoleEntity deleted = role(9L, "CUSTOM_OPS", 0);
+        deleted.setIsDeleted(1);
+        deleted.setRoleName("obsolete role");
+        deleted.setRemark("old remark");
+        when(roleMapper.selectByRoleCodeForUpdate("CUSTOM_OPS")).thenReturn(deleted);
+        when(roleMapper.selectById(9L)).thenReturn(deleted);
+        when(roleRelationMapper.selectAdminIdsByRole(9L)).thenReturn(List.of(31L, 32L));
+        when(rolePermissionMapper.selectActivePermissionCodesByRole(9L)).thenReturn(List.of());
+        when(roleMenuMapper.selectActiveMenuIdsByRole(9L)).thenReturn(List.of());
+        when(roleRelationMapper.disableRelationsByRole(9L)).thenReturn(2);
+        when(roleMenuMapper.disableAllRoleMenus(9L)).thenReturn(3);
+        when(rolePermissionMapper.disableAllRolePermissions("CUSTOM_OPS")).thenReturn(4);
+
+        ApiResult<?> result = service.createRole("idem-restore",
+                new PlatformRoleCreateRequest(" custom_ops ", "Restored role", "fresh remark", 1,
+                        "restore deleted role", "mallory"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(deleted.getId()).isEqualTo(9L);
+        assertThat(deleted.getRoleCode()).isEqualTo("CUSTOM_OPS");
+        assertThat(deleted.getRoleName()).isEqualTo("Restored role");
+        assertThat(deleted.getRemark()).isEqualTo("fresh remark");
+        assertThat(deleted.getStatus()).isEqualTo(1);
+        assertThat(deleted.getIsDeleted()).isZero();
+        verify(roleRelationMapper).disableRelationsByRole(9L);
+        verify(roleMenuMapper).disableAllRoleMenus(9L);
+        verify(rolePermissionMapper).disableAllRolePermissions("CUSTOM_OPS");
+        verify(roleMapper).updateById(deleted);
+        verify(roleMapper, never()).insert(any(AdminRoleEntity.class));
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getAction()).isEqualTo("A6_ROLE_RESTORED");
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("alice.admin");
+        assertThat((Map<String, Object>) audit.getValue().getDetail()).containsEntry("clearedRelations", 2)
+                .containsEntry("clearedMenus", 3)
+                .containsEntry("clearedPermissions", 4);
+        verify(permissionCache).evict(31L);
+        verify(permissionCache).evict(32L);
+        verify(idempotencyService).execute(eq("A6_ROLE_CREATE:CUSTOM_OPS"), eq("idem-restore"),
+                anyString(), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void createRoleRejectsAnActiveRoleCodeWithoutMutatingTheExistingRole() {
+        AdminRoleEntity active = role(9L, "CUSTOM_OPS", 1);
+        when(roleMapper.selectByRoleCodeForUpdate("CUSTOM_OPS")).thenReturn(active);
+
+        ApiResult<?> result = service.createRole("idem-duplicate",
+                new PlatformRoleCreateRequest("CUSTOM_OPS", "Another name", "another remark", 1,
+                        "attempt duplicate role", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("ROLE_CODE_DUPLICATE");
+        verify(roleMapper, never()).updateById(any(AdminRoleEntity.class));
+        verify(roleMapper, never()).insert(any(AdminRoleEntity.class));
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    void concurrentSameCodeInsertRaceIsReportedAsDuplicateInsteadOfLeakingAStorageFailure() {
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DuplicateKeyException("uk_admin_role_code"))
+                .when(roleMapper).insert(any(AdminRoleEntity.class));
+
+        ApiResult<?> result = service.createRole("idem-concurrent",
+                new PlatformRoleCreateRequest("CUSTOM_OPS", "Concurrent role", null, 1,
+                        "concurrent role create", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("ROLE_CODE_DUPLICATE");
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    void restorationFailsClosedAndRollsBackWhenRequiredAuditWriteFails() {
+        TrackingTransactionManager transactions = new TrackingTransactionManager();
+        AdminRoleEntity deleted = role(9L, "CUSTOM_OPS", 0);
+        deleted.setIsDeleted(1);
+        when(roleMapper.selectByRoleCodeForUpdate("CUSTOM_OPS")).thenReturn(deleted);
+        when(roleRelationMapper.selectAdminIdsByRole(9L)).thenReturn(List.of(31L));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotencyService).execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable"))
+                .when(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+        ProxyFactory proxyFactory = new ProxyFactory(service);
+        proxyFactory.addAdvice(new TransactionInterceptor(transactions, new AnnotationTransactionAttributeSource()));
+        OpsPlatformRoleService transactionalService = (OpsPlatformRoleService) proxyFactory.getProxy();
+
+        assertThatThrownBy(() -> transactionalService.createRole("idem-audit-down",
+                new PlatformRoleCreateRequest("CUSTOM_OPS", "Restored role", null, 1,
+                        "restore deleted role", "superadmin")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
+
+        assertThat(transactions.rollbacks).isEqualTo(1);
+        assertThat(transactions.commits).isZero();
     }
 
     @Test
@@ -316,5 +423,51 @@ class OpsPlatformRoleServiceTest {
                 new UsernamePasswordAuthenticationToken(adminId, null, List.of());
         authentication.setDetails(Map.of("subjectType", "ADMIN", "username", username));
         SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+
+    private static final class TrackingTransactionManager extends AbstractPlatformTransactionManager {
+        private final TxObject transaction = new TxObject();
+        private int commits;
+        private int rollbacks;
+
+        @Override
+        protected Object doGetTransaction() {
+            return transaction;
+        }
+
+        @Override
+        protected boolean isExistingTransaction(Object transaction) {
+            return ((TxObject) transaction).active;
+        }
+
+        @Override
+        protected void doBegin(Object transaction, TransactionDefinition definition) {
+            ((TxObject) transaction).active = true;
+        }
+
+        @Override
+        protected void doCommit(DefaultTransactionStatus status) {
+            ((TxObject) status.getTransaction()).active = false;
+            commits++;
+        }
+
+        @Override
+        protected void doRollback(DefaultTransactionStatus status) {
+            ((TxObject) status.getTransaction()).active = false;
+            rollbacks++;
+        }
+    }
+
+    private static final class TxObject implements SmartTransactionObject {
+        private boolean active;
+
+        @Override
+        public boolean isRollbackOnly() {
+            return false;
+        }
+
+        @Override
+        public void flush() {
+        }
     }
 }

@@ -13,11 +13,14 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
 import java.security.SecureRandom;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -26,6 +29,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AppUserRegistrationService {
     private static final int OTP_TTL_MINUTES = 5;
     private static final int RESEND_AFTER_SECONDS = 60;
@@ -40,6 +44,7 @@ public class AppUserRegistrationService {
     private final UserOtpDeliveryService otpDeliveryService;
     private final AppUserAuthService authService;
     private final EventOutboxService outboxService;
+    private final AppUserRegistrationTransactionExecutor transactionExecutor;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @PostConstruct
@@ -88,8 +93,20 @@ public class AppUserRegistrationService {
                 maskPhone(phone)));
     }
 
-    @Transactional
     public ApiResult<UserLoginResponse> register(
+            UserRegistrationRequest request,
+            String clientAddress) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress));
+            } catch (PessimisticLockingFailureException exception) {
+                log.warn("Registration lock conflict; rolled back attempt {}/3 before retry", attempt);
+            }
+        }
+        return ApiResult.fail(503, "USER_REGISTRATION_RETRYABLE_CONFLICT");
+    }
+
+    private ApiResult<UserLoginResponse> registerInTransaction(
             UserRegistrationRequest request,
             String clientAddress) {
         if (request == null
@@ -127,13 +144,25 @@ public class AppUserRegistrationService {
 
         UserEntity sponsor = null;
         if (StringUtils.hasText(request.sponsorCode())) {
-            String sponsorCode = request.sponsorCode().trim();
-            if (!sponsorCode.matches("[A-Za-z0-9-]{4,32}")) {
+            String sponsorCode = canonicalReferralCode(request.sponsorCode());
+            if (!sponsorCode.matches("[A-Z0-9]{4,32}")) {
                 return ApiResult.fail(422, "USER_REGISTRATION_SPONSOR_INVALID");
             }
-            sponsor = mapper.findSponsorForUpdate(sponsorCode);
-            if (sponsor == null) {
+            List<UserEntity> candidates = mapper.findActiveSponsorsByCanonicalCode(sponsorCode);
+            if (candidates == null || candidates.isEmpty()) {
                 return ApiResult.fail(422, "USER_REGISTRATION_SPONSOR_NOT_FOUND");
+            }
+            if (candidates.size() != 1) {
+                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_AMBIGUOUS");
+            }
+            String storedSponsorCode = candidates.get(0).getReferralCode();
+            if (!StringUtils.hasText(storedSponsorCode)
+                    || !sponsorCode.equals(canonicalReferralCode(storedSponsorCode))) {
+                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
+            }
+            sponsor = mapper.findSponsorForUpdate(storedSponsorCode);
+            if (sponsor == null) {
+                return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
             }
         }
 
@@ -191,6 +220,16 @@ public class AppUserRegistrationService {
                 .replace("-", "")
                 .substring(0, 12)
                 .toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Public links may visually group a referral code with hyphens, while the
+     * database stores the canonical uppercase unique-key value. Normalize once
+     * before the transaction acquires the sponsor row so the lookup remains a
+     * single unique-index record lock rather than an expression range scan.
+     */
+    private String canonicalReferralCode(String value) {
+        return value == null ? "" : value.trim().replace("-", "").toUpperCase(Locale.ROOT);
     }
 
     private boolean validPassword(String password, String phone) {

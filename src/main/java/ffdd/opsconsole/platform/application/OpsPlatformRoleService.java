@@ -38,6 +38,7 @@ import java.util.HexFormat;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.util.StringUtils;
 
 /** A6 角色管理（核心）。角色 CRUD + 权限/菜单双绑定白名单同步 + 改绑定精准 evict 角色下 admin。 */
@@ -112,19 +113,47 @@ public class OpsPlatformRoleService {
         if (existing != null && !Integer.valueOf(1).equals(existing.getIsDeleted())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ROLE_CODE_DUPLICATE");
         }
+        boolean restoringSoftDeletedRole = existing != null;
+        List<Long> staleAdminIds = List.of();
+        int clearedRelations = 0;
+        int clearedMenus = 0;
+        int clearedPermissions = 0;
+        if (restoringSoftDeletedRole) {
+            // A soft-deleted role must restart as an empty authorization surface.  Do not rely on
+            // the delete path having completed: repair any stale active bindings while the role row
+            // remains locked, then evict every affected principal before returning success.
+            List<Long> selectedAdminIds = roleRelationMapper.selectAdminIdsByRole(existing.getId());
+            staleAdminIds = selectedAdminIds == null ? List.of() : List.copyOf(selectedAdminIds);
+            clearedRelations = roleRelationMapper.disableRelationsByRole(existing.getId());
+            clearedMenus = roleMenuMapper.disableAllRoleMenus(existing.getId());
+            clearedPermissions = rolePermissionMapper.disableAllRolePermissions(roleCode);
+        }
         AdminRoleEntity entity = existing == null ? new AdminRoleEntity() : existing;
         entity.setRoleCode(roleCode);
         entity.setRoleName(request.roleName());
         entity.setRemark(request.remark());
         entity.setStatus(requestedStatus);
         entity.setIsDeleted(0);
-        if (existing == null) {
-            roleMapper.insert(entity);
-        } else {
-            roleMapper.updateById(entity);
+        try {
+            if (existing == null) {
+                roleMapper.insert(entity);
+            } else {
+                roleMapper.updateById(entity);
+            }
+        } catch (DuplicateKeyException ex) {
+            // The unique key remains the final guard when a concurrent transaction races the
+            // locking read (or the database runs at a weaker isolation level).
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ROLE_CODE_DUPLICATE");
         }
-        audit("A6_ROLE_CREATED", entity.getId().toString(), request.reason(), request.operator(), idempotencyKey,
-                Map.of("roleCode", roleCode, "roleName", String.valueOf(entity.getRoleName())), "HIGH");
+        evictAdmins(staleAdminIds);
+        audit(restoringSoftDeletedRole ? "A6_ROLE_RESTORED" : "A6_ROLE_CREATED",
+                entity.getId().toString(), request.reason(), request.operator(), idempotencyKey,
+                Map.of("roleCode", roleCode,
+                        "roleName", String.valueOf(entity.getRoleName()),
+                        "restored", restoringSoftDeletedRole,
+                        "clearedRelations", clearedRelations,
+                        "clearedMenus", clearedMenus,
+                        "clearedPermissions", clearedPermissions), "HIGH");
         return detail(entity.getId());
     }
 

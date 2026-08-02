@@ -3,11 +3,15 @@ package ffdd.opsconsole.content.infrastructure;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.content.mapper.HelpArticleMapper;
 import ffdd.opsconsole.content.mapper.I18nHardcodedFindingMapper;
@@ -19,6 +23,7 @@ import ffdd.opsconsole.content.mapper.LearningCourseVersionMapper;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 
 class MybatisI18nLearningRepositoryDraftCasTest {
 
@@ -38,7 +43,8 @@ class MybatisI18nLearningRepositoryDraftCasTest {
         current.setUpdatedAt(LocalDateTime.parse("2026-07-28T10:00:00"));
         when(versionMapper.selectOne(any())).thenReturn(current);
         when(versionMapper.retireDraftCas(
-                current.getId(),
+                current.getMessageKey(),
+                current.getVersionNo(),
                 LocalDateTime.parse("2026-07-28T10:01:00"))).thenReturn(1);
 
         MybatisI18nLearningRepository repository = new MybatisI18nLearningRepository(
@@ -51,21 +57,20 @@ class MybatisI18nLearningRepositoryDraftCasTest {
                 mock(LearningCourseVersionMapper.class),
                 mock(AppLearningMapper.class));
 
-        var saved = repository.saveMessagePair(
+        var saved = repository.saveMessageDraftCas(
                 current.getMessageKey(),
                 "新中文",
                 "New English",
                 "Tiếng Việt mới",
-                "draft",
+                "v1",
                 LocalDateTime.parse("2026-07-28T10:01:00"));
 
         assertThat(saved.version()).isEqualTo("v2");
         assertThat(saved.status()).isEqualTo("draft");
-        assertThat(current.getIsDeleted()).isEqualTo(1);
         verify(versionMapper).retireDraftCas(
-                current.getId(),
+                current.getMessageKey(),
+                current.getVersionNo(),
                 LocalDateTime.parse("2026-07-28T10:01:00"));
-
         ArgumentCaptor<I18nMessageVersionEntity> inserted =
                 ArgumentCaptor.forClass(I18nMessageVersionEntity.class);
         verify(versionMapper).insert(inserted.capture());
@@ -90,7 +95,8 @@ class MybatisI18nLearningRepositoryDraftCasTest {
         stale.setCreatedAt(LocalDateTime.parse("2026-07-28T10:00:00"));
         stale.setUpdatedAt(LocalDateTime.parse("2026-07-28T10:00:00"));
         when(versionMapper.selectOne(any())).thenReturn(stale);
-        when(versionMapper.retireDraftCas(any(Long.class), any(LocalDateTime.class))).thenReturn(0);
+        when(versionMapper.retireDraftCas(
+                anyString(), anyInt(), any(LocalDateTime.class))).thenReturn(0);
 
         MybatisI18nLearningRepository repository = new MybatisI18nLearningRepository(
                 mock(I18nNamespaceMapper.class),
@@ -102,15 +108,119 @@ class MybatisI18nLearningRepositoryDraftCasTest {
                 mock(LearningCourseVersionMapper.class),
                 mock(AppLearningMapper.class));
 
-        assertThatThrownBy(() -> repository.saveMessagePair(
+        assertThatThrownBy(() -> repository.saveMessageDraftCas(
                 stale.getMessageKey(),
                 "竞争中文",
                 "Concurrent English",
                 "Tiếng Việt đồng thời",
-                "draft",
+                "v1",
                 LocalDateTime.parse("2026-07-28T10:01:00")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("I18N_MESSAGE_VERSION_CONFLICT");
         verify(versionMapper, never()).insert(any(I18nMessageVersionEntity.class));
+        verify(versionMapper).retireDraftCas(
+                stale.getMessageKey(),
+                stale.getVersionNo(),
+                LocalDateTime.parse("2026-07-28T10:01:00"));
+    }
+
+    @Test
+    void unexpectedInsertFailureAfterWinningRetirementEscapesForTransactionRollback() {
+        I18nMessageVersionMapper versionMapper = mock(I18nMessageVersionMapper.class);
+        I18nMessageVersionEntity current = draft(33L, 1);
+        when(versionMapper.selectOne(any())).thenReturn(current);
+        when(versionMapper.retireDraftCas(
+                current.getMessageKey(), current.getVersionNo(), LocalDateTime.parse("2026-07-28T10:01:00")))
+                .thenReturn(1);
+        doThrow(new DuplicateKeyException("unexpected next-version collision"))
+                .when(versionMapper).insert(any(I18nMessageVersionEntity.class));
+        MybatisI18nLearningRepository repository = repository(versionMapper);
+
+        assertThatThrownBy(() -> repository.saveMessageDraftCas(
+                current.getMessageKey(),
+                "新中文",
+                "New English",
+                "Tiếng Việt mới",
+                "v1",
+                LocalDateTime.parse("2026-07-28T10:01:00")))
+                .isInstanceOf(DuplicateKeyException.class)
+                .hasMessageContaining("unexpected next-version collision");
+    }
+
+    @Test
+    void firstDraftDuplicateIsAConflictWithoutAnyRetirement() {
+        I18nMessageVersionMapper versionMapper = mock(I18nMessageVersionMapper.class);
+        doThrow(new DuplicateKeyException("concurrent v1 winner"))
+                .when(versionMapper).insert(any(I18nMessageVersionEntity.class));
+        MybatisI18nLearningRepository repository = repository(versionMapper);
+
+        assertThatThrownBy(() -> repository.saveMessageDraftCas(
+                "acceptance.i6.first",
+                "新中文",
+                "New English",
+                "Tiếng Việt mới",
+                null,
+                LocalDateTime.parse("2026-07-28T10:01:00")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("I18N_MESSAGE_VERSION_CONFLICT")
+                .hasCauseInstanceOf(DuplicateKeyException.class);
+        verify(versionMapper, never()).retireDraftCas(anyString(), anyInt(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void publishedVersionCreatesTheNextDraftWithOneMysqlInsertSelectCas() {
+        I18nMessageVersionMapper versionMapper = mock(I18nMessageVersionMapper.class);
+        I18nMessageVersionEntity published = draft(34L, 7);
+        published.setStatus("PUBLISHED");
+        when(versionMapper.selectOne(any())).thenReturn(published);
+        when(versionMapper.insertDraftCas(
+                published.getMessageKey(),
+                7,
+                8,
+                "新中文",
+                "New English",
+                "Tiếng Việt mới",
+                LocalDateTime.parse("2026-07-28T10:01:00"))).thenReturn(1);
+        MybatisI18nLearningRepository repository = repository(versionMapper);
+
+        I18nMessagePairView saved = repository.saveMessageDraftCas(
+                published.getMessageKey(),
+                "新中文",
+                "New English",
+                "Tiếng Việt mới",
+                "v7",
+                LocalDateTime.parse("2026-07-28T10:01:00"));
+
+        assertThat(saved.version()).isEqualTo("v8");
+        assertThat(saved.status()).isEqualTo("draft");
+        verify(versionMapper, never()).retireDraftCas(anyString(), anyInt(), any(LocalDateTime.class));
+        verify(versionMapper, never()).insert(any(I18nMessageVersionEntity.class));
+    }
+
+    private static I18nMessageVersionEntity draft(Long id, int versionNo) {
+        I18nMessageVersionEntity row = new I18nMessageVersionEntity();
+        row.setId(id);
+        row.setMessageKey("acceptance.i6.concurrent");
+        row.setVersionNo(versionNo);
+        row.setZhValue("旧中文");
+        row.setEnValue("Old English");
+        row.setViValue("Tiếng Việt cũ");
+        row.setStatus("DRAFT");
+        row.setIsDeleted(0);
+        row.setCreatedAt(LocalDateTime.parse("2026-07-28T10:00:00"));
+        row.setUpdatedAt(LocalDateTime.parse("2026-07-28T10:00:00"));
+        return row;
+    }
+
+    private static MybatisI18nLearningRepository repository(I18nMessageVersionMapper versionMapper) {
+        return new MybatisI18nLearningRepository(
+                mock(I18nNamespaceMapper.class),
+                mock(I18nMessageMapper.class),
+                versionMapper,
+                mock(I18nIntegrityIssueMapper.class),
+                mock(I18nHardcodedFindingMapper.class),
+                mock(HelpArticleMapper.class),
+                mock(LearningCourseVersionMapper.class),
+                mock(AppLearningMapper.class));
     }
 }

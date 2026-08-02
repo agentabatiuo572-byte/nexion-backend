@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSupportTicketService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportLoadConfigUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportLoadRebalanceRequest;
 import ffdd.opsconsole.content.dto.SupportTicketAssigneeRequest;
@@ -18,6 +19,7 @@ import ffdd.opsconsole.content.dto.SupportTicketReplyRequest;
 import ffdd.opsconsole.content.dto.SupportTicketStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class OpsSupportTicketControllerTest {
@@ -32,6 +34,20 @@ class OpsSupportTicketControllerTest {
         assertThat(controller.overview().getData()).containsEntry("active", 1);
 
         verify(ticketService).overview();
+    }
+
+    @Test
+    void assigneeCandidatesUseM2ReadAuthorityAndReturnMinimalProjection() throws Exception {
+        List<SupportTicketAssigneeCandidateView> candidates = List.of(
+                new SupportTicketAssigneeCandidateView(7L, "Tomas R."));
+        when(supportAgentService.ticketAssigneeCandidates()).thenReturn(ApiResult.ok(candidates));
+
+        assertThat(controller.assigneeCandidates().getData()).containsExactlyElementsOf(candidates);
+        assertThat(OpsSupportTicketController.class.getMethod("assigneeCandidates")
+                .getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('service_m2_read')");
+
+        verify(supportAgentService).ticketAssigneeCandidates();
     }
 
     @Test

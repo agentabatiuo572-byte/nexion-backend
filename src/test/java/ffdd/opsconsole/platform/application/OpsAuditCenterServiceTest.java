@@ -56,6 +56,7 @@ class OpsAuditCenterServiceTest {
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
     private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard = mock(AuditReplayBusinessPermissionGuard.class);
+    private final A2AccessPolicy accessPolicy = mock(A2AccessPolicy.class);
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
     private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService =
             mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
@@ -70,6 +71,7 @@ class OpsAuditCenterServiceTest {
                     lockMapper,
                     replayBusinessPermissionGuard,
                     replayDispatcher,
+                    accessPolicy,
                     objectMapper,
                     idempotencyService);
     private final Map<String, AuditOperationTicketEntity> ticketRows = new LinkedHashMap<>();
@@ -97,6 +99,13 @@ class OpsAuditCenterServiceTest {
         when(replayBusinessPermissionGuard.validateProposal(
                 org.mockito.ArgumentMatchers.nullable(AuditReplayCommand.class)))
                 .thenReturn(ApiResult.ok());
+        when(replayBusinessPermissionGuard.canonicalizeProposalCommand(
+                org.mockito.ArgumentMatchers.nullable(AuditReplayCommand.class)))
+                .thenAnswer(invocation -> ApiResult.ok(invocation.getArgument(0)));
+        when(replayBusinessPermissionGuard.validateApproval(
+                org.mockito.ArgumentMatchers.nullable(AuditReplayCommand.class)))
+                .thenReturn(ApiResult.ok());
+        when(accessPolicy.canAccessTicket(any(AuditOperationTicketEntity.class))).thenReturn(true);
         when(replayBusinessPermissionGuard.validateProposalContext(any(AuditOperationProposalRequest.class)))
                 .thenReturn(ApiResult.ok(null));
 
@@ -160,6 +169,7 @@ class OpsAuditCenterServiceTest {
         // 批0: approve 回放目标域,dispatch 须返回成功(code=0)否则 NPE/fail
         doReturn(ApiResult.ok()).when(replayDispatcher).dispatch(any(), any());
         doReturn(ApiResult.ok()).when(replayBusinessPermissionGuard).validateProposal(any());
+        doReturn(ApiResult.ok()).when(replayBusinessPermissionGuard).validateApproval(any());
         when(idempotencyService.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
@@ -225,6 +235,38 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void lockedTicketScopeIsRecheckedBeforeRejectOrReplay() {
+        putTicket("WO-SCOPE-RACE", "F3 settlement", "pending", "param", false, false);
+        when(accessPolicy.canAccessTicket(ticketRows.get("WO-SCOPE-RACE"))).thenReturn(false);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.reject(
+                "idem-scope-race",
+                "WO-SCOPE-RACE",
+                new AuditOperationDecisionRequest("locked ticket moved outside scope", "checker.f"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.FORBIDDEN.name());
+        assertThat(ticketRows.get("WO-SCOPE-RACE").getStatus()).isEqualTo("pending");
+        verify(ticketMapper, never()).updateById(ticketRows.get("WO-SCOPE-RACE"));
+        verify(lockMapper, never()).selectActiveByTicketId("WO-SCOPE-RACE");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+
+        putTicket("WO-SCOPE-REPLAY", "F3 settlement", "pending", "param", false, false);
+        when(accessPolicy.canAccessTicket(ticketRows.get("WO-SCOPE-REPLAY"))).thenReturn(false);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> approve = service.approve(
+                "idem-scope-replay",
+                "WO-SCOPE-REPLAY",
+                new AuditOperationDecisionRequest("scope must be checked before replay", "checker.f"));
+
+        assertThat(approve.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
+        assertThat(ticketRows.get("WO-SCOPE-REPLAY").getStatus()).isEqualTo("pending");
+        verify(ticketMapper, never()).updateById(ticketRows.get("WO-SCOPE-REPLAY"));
+        verify(lockMapper, never()).selectActiveByTicketId("WO-SCOPE-REPLAY");
+        verify(replayDispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
     void overviewUsesExactAggregateInsteadOfCappedRecentLogList() {
         when(auditLogService.aggregate(any(AuditLogQueryRequest.class))).thenReturn(List.of(
                 new ffdd.opsconsole.shared.audit.A2AuditAggregate("SUCCESS", "HIGH", "C2_FREEZE", 701L)));
@@ -252,7 +294,7 @@ class OpsAuditCenterServiceTest {
         putTicket("WO-PERMISSION-REVOKED", "J1 恢复提现闸", "pending", "emergency", true, false);
         AuditReplayCommand command = new AuditReplayCommand("D", "d2_withdraw_approve", Map.of());
         doReturn(ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:finance_d2_large_approve"))
-                .when(replayBusinessPermissionGuard).validateProposal(command);
+                .when(replayBusinessPermissionGuard).validateApproval(command);
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
                 "idem-revoked", "WO-PERMISSION-REVOKED",
@@ -328,6 +370,12 @@ class OpsAuditCenterServiceTest {
         ticketRows.get("WO-OTHER").setOperatorName("alice.admin");
         ticketRows.get("WO-OTHER").setRoleGate("TWO_PERSON");
         authenticate("52", "bob.admin");
+        java.util.concurrent.atomic.AtomicReference<String> replayOperationId =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        doAnswer(invocation -> {
+            replayOperationId.set(A2ReplayContext.operationId());
+            return ApiResult.ok();
+        }).when(replayDispatcher).dispatch(any(), any());
 
         ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.approve(
                 "idem-other", "WO-OTHER", new AuditOperationDecisionRequest("independent review", "alice.admin"));
@@ -337,6 +385,8 @@ class OpsAuditCenterServiceTest {
                 ArgumentCaptor.forClass(ffdd.opsconsole.platform.domain.AuditReplayContext.class);
         verify(replayDispatcher).dispatch(any(), context.capture());
         assertThat(context.getValue().operator()).isEqualTo("bob.admin");
+        assertThat(replayOperationId.get()).isEqualTo("WO-OTHER");
+        assertThat(A2ReplayContext.operationId()).isNull();
     }
 
     @Test

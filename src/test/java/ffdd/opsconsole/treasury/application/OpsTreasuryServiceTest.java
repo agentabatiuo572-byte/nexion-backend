@@ -586,6 +586,25 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void d3NetExposureNeverPublishesAnImpossibleNegativeReserveWhenRollingHistoryBackward() {
+        ledgerRepository.reserveUsd = new BigDecimal("10");
+        ledgerRepository.netFlow = new BigDecimal("20");
+
+        Map<String, Object> exposure = service.netExposure("7d").getData();
+        List<Map<String, Object>> series = (List<Map<String, Object>>) exposure.get("series");
+
+        assertThat(series).allSatisfy(row -> {
+            BigDecimal reserve = (BigDecimal) row.get("reserveUsdt");
+            BigDecimal liabilities = (BigDecimal) row.get("liabilitiesUsdt");
+            BigDecimal net = (BigDecimal) row.get("netExposureUsdt");
+            assertThat(reserve).isGreaterThanOrEqualTo(BigDecimal.ZERO);
+            assertThat(net).isEqualByComparingTo(reserve.subtract(liabilities));
+            assertThat(row.get("negative")).isEqualTo(net.signum() < 0);
+        });
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void d3ForecastConfigIsStructuredVersionedAndReasonBounded() {
         TreasuryForecastConfigRequest request = new TreasuryForecastConfigRequest(
                 Map.of("usdt", true, "otherLiquid", false),

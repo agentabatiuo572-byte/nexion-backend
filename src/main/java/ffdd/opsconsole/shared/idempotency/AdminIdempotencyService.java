@@ -18,8 +18,6 @@ public class AdminIdempotencyService {
     private static final Duration DEFAULT_TTL = Duration.ofHours(24);
     /** Must stay aligned with nx_admin_idempotency_record.idempotency_key VARCHAR(128). */
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
-    /** Must stay aligned with nx_admin_idempotency_record.error_message VARCHAR(512). */
-    private static final int MAX_ERROR_MESSAGE_LENGTH = 512;
     private final AdminIdempotencyTransactionExecutor transactionExecutor;
     private final Clock clock;
 
@@ -51,11 +49,10 @@ public class AdminIdempotencyService {
     }
 
     private String errorSummary(RuntimeException ex) {
-        String value = ex.getClass().getSimpleName() + (StringUtils.hasText(ex.getMessage()) ? ": " + ex.getMessage().trim() : "");
-        if (value.length() <= MAX_ERROR_MESSAGE_LENGTH) {
-            return value;
-        }
-        return value.substring(0, MAX_ERROR_MESSAGE_LENGTH - 1) + "…";
+        // Exception text can contain request parameters, SQL fragments or an
+        // upstream response. Durable idempotency metadata must be useful for
+        // state recovery without becoming a second payload/audit store.
+        return ex.getClass().getSimpleName();
     }
 
     private String normalizeScope(String scope) {

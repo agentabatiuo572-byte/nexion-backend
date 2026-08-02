@@ -100,18 +100,50 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Update("""
             UPDATE nx_user_device
-               SET status = 'ACTIVE', activated_at = COALESCE(activated_at, NOW()), updated_at = NOW()
+               SET status = 'ACTIVE', activated_at = COALESCE(activated_at, NOW()), deactivated_at = NULL,
+                   row_version = row_version + 1, updated_at = NOW()
              WHERE id = #{deviceId} AND user_id = #{userId} AND is_deleted = 0
                AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) <> 'ACTIVE'
+               AND row_version = #{expectedVersion}
                AND (SELECT active_count FROM (
                     SELECT COUNT(1) AS active_count
                       FROM nx_user_device
                      WHERE user_id = #{userId} AND is_deleted = 0 AND UPPER(status) = 'ACTIVE'
                ) active_snapshot) < #{slotCap}
             """)
-    int activateOwnedDevice(@Param("userId") Long userId,
-                            @Param("deviceId") Long deviceId,
-                            @Param("slotCap") Integer slotCap);
+    int activateOwnedDeviceCas(@Param("userId") Long userId,
+                               @Param("deviceId") Long deviceId,
+                               @Param("expectedVersion") Long expectedVersion,
+                               @Param("slotCap") Integer slotCap);
+
+    @Select("""
+            SELECT id, user_id AS userId, instance_no AS instanceNo, status,
+                   ownership_status AS ownershipStatus, row_version AS rowVersion
+              FROM nx_user_device
+             WHERE id = #{deviceId} AND is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    UserDeviceCommandRow lockDeviceForUserCommand(@Param("deviceId") Long deviceId);
+
+    @Update("""
+            UPDATE nx_user_device
+               SET status = 'DEACTIVATED', activated_at = NULL, deactivated_at = NOW(),
+                   pending_deactivate = 0, row_version = row_version + 1, updated_at = NOW()
+             WHERE id = #{deviceId} AND user_id = #{userId} AND is_deleted = 0
+               AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) = 'ACTIVE'
+               AND row_version = #{expectedVersion}
+            """)
+    int deactivateOwnedDeviceCas(@Param("userId") Long userId,
+                                 @Param("deviceId") Long deviceId,
+                                 @Param("expectedVersion") Long expectedVersion);
+
+    @Update("""
+            UPDATE nx_user_device_runtime
+               SET online_status = 'OFFLINE', paused_reason = 'USER_DEACTIVATED', updated_at = NOW()
+             WHERE user_device_id = #{deviceId} AND is_deleted = 0
+            """)
+    int markDeviceRuntimeDeactivated(@Param("deviceId") Long deviceId);
 
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
@@ -155,6 +187,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.device_type AS deviceType,
                    d.product_code AS productCode,
                    d.status,
+                   d.row_version AS rowVersion,
                    d.activated_at AS activatedAt,
                    d.purchased_at AS purchasedAt,
                    d.daily_usdt AS dailyUsdt,
@@ -377,6 +410,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     record E3CapacityConfig(String configKey, String configValue) {
     }
 
+    record UserDeviceCommandRow(
+            Long id, Long userId, String instanceNo, String status, String ownershipStatus, Long rowVersion) {
+    }
+
     record OwnedDevice(
             Long id,
             String instanceNo,
@@ -393,7 +430,17 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             BigDecimal basePowerW,
             String location,
             BigDecimal actualPaidUsdt,
-            BigDecimal cumulativeOutputUsdt) {
+            BigDecimal cumulativeOutputUsdt,
+            Long rowVersion) {
+        public OwnedDevice(
+                Long id, String instanceNo, String name, String deviceType, String productCode, String status,
+                LocalDateTime activatedAt, LocalDateTime purchasedAt, BigDecimal dailyUsdt, BigDecimal dailyNex,
+                String gpuModel, Integer vramTotalGb, BigDecimal basePowerW, String location,
+                BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
+            this(id, instanceNo, name, deviceType, productCode, status, activatedAt, purchasedAt,
+                    dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
+                    actualPaidUsdt, cumulativeOutputUsdt, 0L);
+        }
     }
 
     record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock) {

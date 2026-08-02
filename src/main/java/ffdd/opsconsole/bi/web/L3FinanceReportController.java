@@ -17,6 +17,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class L3FinanceReportController {
     private final L3FinanceReportService service;
 
+    @GetMapping("/treasury-snapshot")
+    @PreAuthorize("hasAuthority('bi_l3_read')")
+    public ApiResult<Map<String, Object>> treasurySnapshot() {
+        return service.treasurySnapshot();
+    }
+
     @GetMapping("/revenue")
     @PreAuthorize("hasAuthority('bi_l3_read')")
     public ApiResult<Map<String, Object>> revenue(

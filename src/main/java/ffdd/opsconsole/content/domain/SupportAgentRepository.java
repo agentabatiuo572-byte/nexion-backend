@@ -7,6 +7,9 @@ import java.util.Optional;
 public interface SupportAgentRepository {
     void ensureSchema();
 
+    /** Pure SELECT projection for M2. Must not initialize schemas or materialize account/profile rows. */
+    List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates();
+
     List<SupportAgentProfileRecord> listProfiles(List<Long> adminIds);
 
     Optional<SupportAgentProfileRecord> findProfile(Long adminId);

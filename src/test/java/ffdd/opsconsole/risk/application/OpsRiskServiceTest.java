@@ -71,6 +71,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 import ffdd.opsconsole.shared.api.PageResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -1362,6 +1363,69 @@ class OpsRiskServiceTest {
     }
 
     @Test
+    void k4BatchRecomputeCanonicalizesCrossUserLockAndHashOrder() {
+        authenticateK4Admin(false);
+        List<String> observedHashes = new ArrayList<>();
+        doAnswer(invocation -> {
+            observedHashes.add(invocation.getArgument(2));
+            return ApiResult.ok(Map.of("count", 0, "users", List.of()));
+        }).when(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("K4_SCORE_BATCH_RECOMPUTE"),
+                anyString(), anyString(), any(), any());
+
+        service.recomputeScores("idem-k4-batch-forward",
+                new ffdd.opsconsole.risk.dto.RiskScoreBatchCommandRequest(
+                        List.of("usr_55B2", "usr_55B1"), 1L, "canonical batch lock order", "spoofed"));
+        service.recomputeScores("idem-k4-batch-reverse",
+                new ffdd.opsconsole.risk.dto.RiskScoreBatchCommandRequest(
+                        List.of("usr_55B1", "usr_55B2"), 1L, "canonical batch lock order", "spoofed"));
+
+        assertThat(observedHashes).hasSize(2).allMatch(observedHashes.get(0)::equals);
+    }
+
+    @Test
+    void k4PublishGlobalPathCanonicalizesRepositoryTargetsBeforeTakingUserLocks() throws Exception {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        RiskScoreModelView model = riskRepository.activeScoringModel().orElseThrow();
+        RiskScoreUserView u1 = new RiskScoreUserView(
+                "usr_55B1", 10, 10, false, "低风险", "good", "k4-v1", 1L,
+                "now", "now", List.of());
+        RiskScoreUserView u2 = new RiskScoreUserView(
+                "usr_55B2", 20, 20, false, "低风险", "good", "k4-v1", 1L,
+                "now", "now", List.of());
+        Map<String, RiskScoreUserView> users = Map.of(u1.userNo(), u1, u2.userNo(), u2);
+        when(repository.findScoreUser(anyString())).thenAnswer(
+                invocation -> Optional.ofNullable(users.get(invocation.getArgument(0))));
+        when(repository.scoringInput(anyString())).thenAnswer(invocation -> Optional.of(new RiskScoreRawInput(
+                invocation.getArgument(0), 0, false, 0, false, "PASSED",
+                0, BigDecimal.ZERO, 180, 0, false)));
+        List<String> projectionOrder = new ArrayList<>();
+        when(repository.refreshScoreProjection(anyString(), org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.eq(model), org.mockito.ArgumentMatchers.anyInt(), any()))
+                .thenAnswer(invocation -> {
+                    String userNo = invocation.getArgument(0);
+                    projectionOrder.add(userNo);
+                    return Optional.of(users.get(userNo));
+                });
+        OpsRiskService publishService = new OpsRiskService(
+                repository, userKycStatusFacade, financeWithdrawalKycReviewFacade,
+                marketExchangeKycReviewFacade, configFacade, auditLogService, lockMapper,
+                idempotencyService, superAdminAuthorization, userAccountControlFacade,
+                eventOutboxService, chainAddressReputationGateway,
+                mock(K4KycReviewTriggerService.class));
+        var method = OpsRiskService.class.getDeclaredMethod(
+                "recomputeK4Scores", RiskScoreModelView.class, List.class,
+                String.class, String.class, String.class);
+        method.setAccessible(true);
+
+        method.invoke(publishService, model,
+                java.util.Arrays.asList(" usr_55B2 ", "", null, "usr_55B1", "usr_55B2"),
+                "publish canonical order", "superadmin", "idem-publish-order");
+
+        assertThat(projectionOrder).containsExactly("usr_55B1", "usr_55B2");
+    }
+
+    @Test
     void k4UnexpectedWriteFailureLeavesIndependentFailedAudit() {
         authenticateK4Admin(true);
         when(idempotencyService.execute(
@@ -1377,17 +1441,83 @@ class OpsRiskServiceTest {
     }
 
     @Test
-    void k4WriteMethodsAreTransactional() {
+    void k4WriteMethodsLeaveThePhysicalTransactionToTheIdempotencyExecutor() {
         assertThat(java.util.Arrays.stream(OpsRiskService.class.getDeclaredMethods())
                 .filter(method -> List.of(
-                        "saveScoringModelDraft", "publishScoringModel", "overrideScore", "recomputeScore")
+                        "saveScoringModelDraft", "publishScoringModel", "restoreScoringModelDraft",
+                        "recomputeScores", "overrideScore", "recomputeScore")
                         .contains(method.getName()))
                 .filter(method -> method.isAnnotationPresent(Transactional.class))
                 .map(java.lang.reflect.Method::getName)
                 .distinct()
                 .toList())
-                .containsExactlyInAnyOrder(
-                        "saveScoringModelDraft", "publishScoringModel", "overrideScore", "recomputeScore");
+                .isEmpty();
+    }
+
+    @Test
+    void k4DeadlockRetriesTheSameIdempotentOverrideOnceWithoutIntermediateFailureAudit() {
+        authenticateK4Admin(false);
+        AtomicInteger attempts = new AtomicInteger();
+        List<String> observedScopes = new ArrayList<>();
+        List<String> observedKeys = new ArrayList<>();
+        List<String> observedHashes = new ArrayList<>();
+        doAnswer(invocation -> {
+            observedScopes.add(invocation.getArgument(0));
+            observedKeys.add(invocation.getArgument(1));
+            observedHashes.add(invocation.getArgument(2));
+            if (attempts.incrementAndGet() == 1) {
+                throw new org.springframework.dao.DeadlockLoserDataAccessException("simulated k4 deadlock", null);
+            }
+            return ((java.util.function.Supplier<?>) invocation.getArgument(4)).get();
+        }).when(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("K4_SCORE_OVERRIDE:usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("idem-k4-deadlock-retry"),
+                anyString(), any(), any());
+
+        ApiResult<RiskScoreUserView> result = service.overrideScore(
+                "usr_55B1", "idem-k4-deadlock-retry",
+                new RiskScoreOverrideRequest(35, 0L, "bounded deadlock retry", "spoofed"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(attempts).hasValue(2);
+        assertThat(observedScopes).containsExactly(
+                "K4_SCORE_OVERRIDE:usr_55B1", "K4_SCORE_OVERRIDE:usr_55B1");
+        assertThat(observedKeys).containsExactly(
+                "idem-k4-deadlock-retry", "idem-k4-deadlock-retry");
+        assertThat(observedHashes).hasSize(2).doesNotContainNull().allMatch(observedHashes.get(0)::equals);
+        verify(auditLogService, never()).recordRequiredInNewTransaction(
+                org.mockito.ArgumentMatchers.argThat(audit ->
+                        "K4_RISK_SCORING_WRITE_FAILED".equals(audit.getAction())));
+        verify(eventOutboxService).publish(
+                org.mockito.ArgumentMatchers.eq("RISK_SCORE_USER"),
+                org.mockito.ArgumentMatchers.eq("usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("risk.score_overridden"), any());
+    }
+
+    @Test
+    void k4PersistentDeadlockFailsClosedAfterTwoAttemptsAndAuditsOnce() {
+        authenticateK4Admin(false);
+        when(idempotencyService.execute(
+                org.mockito.ArgumentMatchers.eq("K4_SCORE_RECOMPUTE:usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("idem-k4-deadlock-exhausted"),
+                anyString(), any(), any()))
+                .thenThrow(new org.springframework.dao.DeadlockLoserDataAccessException("first", null))
+                .thenThrow(new org.springframework.dao.DeadlockLoserDataAccessException("second", null));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.recomputeScore(
+                        "usr_55B1", "idem-k4-deadlock-exhausted",
+                        new ffdd.opsconsole.risk.dto.RiskScoreCommandRequest(
+                                0L, "fail closed after bounded retry", "spoofed")))
+                .isInstanceOf(org.springframework.dao.DeadlockLoserDataAccessException.class);
+
+        verify(idempotencyService, times(2)).execute(
+                org.mockito.ArgumentMatchers.eq("K4_SCORE_RECOMPUTE:usr_55B1"),
+                org.mockito.ArgumentMatchers.eq("idem-k4-deadlock-exhausted"),
+                anyString(), any(), any());
+        verify(auditLogService, times(1)).recordRequiredInNewTransaction(
+                org.mockito.ArgumentMatchers.argThat(audit ->
+                        "K4_RISK_SCORING_WRITE_FAILED".equals(audit.getAction())
+                                && Boolean.FALSE.equals(((Map<?, ?>) audit.getDetail()).get("businessDataChanged"))));
     }
 
     private RiskScoringModelDraftRequest canonicalDraft(String reason) {

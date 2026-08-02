@@ -7,6 +7,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.domain.I18nLearningOverview;
+import ffdd.opsconsole.content.domain.I18nLearningStats;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
@@ -16,6 +18,7 @@ import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.core.Authentication;
@@ -99,5 +102,29 @@ class OpsI18nLearningControllerTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.eq(ApiResult.class),
                 org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any());
+    }
+
+    @Test
+    void i6ReadRoleReceivesTheCompleteAuthoritativeOverviewContract() {
+        I18nLearningOverview overview = new I18nLearningOverview(
+                new I18nLearningStats(1, 1, 0, 1, "10 NEX", BigDecimal.valueOf(120), BigDecimal.valueOf(100)),
+                List.of(), List.of(), List.of(), null, List.of(),
+                List.of(new ffdd.opsconsole.content.domain.LearningCourseView(
+                        "course-1", "课程", "基础", "Article", "Beginner", BigDecimal.TEN,
+                        true, "5 min", "v1", "published", "body")),
+                new ffdd.opsconsole.content.domain.TutorialRewardRange(BigDecimal.ONE, BigDecimal.TEN),
+                "course-1", List.of(), List.of("基础"), List.of("Article"),
+                List.of("Beginner"), List.of("published"), List.of("SYSTEM"));
+        when(service.overview()).thenReturn(ApiResult.ok(overview));
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.getAuthorities()).thenAnswer(ignored -> List.of(
+                new SimpleGrantedAuthority("content_i6_read")));
+
+        I18nLearningOverview actual = controller.overview(authentication).getData();
+
+        assertThat(actual).isSameAs(overview);
+        assertThat(actual.courses()).hasSize(1);
+        assertThat(actual.rewardRange()).isNotNull();
+        assertThat(actual.categories()).containsExactly("基础");
     }
 }

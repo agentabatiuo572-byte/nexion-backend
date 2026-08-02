@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.AfterEach;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsAuditControllerTest {
@@ -164,6 +165,23 @@ class OpsAuditControllerTest {
 
         assertThat(controller.approveOperation("idem-1", "WO-8852", request).getData()).isSameAs(ticket);
         assertThat(controller.rejectOperation("idem-2", "WO-8851", request).getData()).isSameAs(ticket);
+    }
+
+    @Test
+    void operationDecisionEndpointsEnforceTheSameA2RowScopeBeforeApproveRejectOrReplay() throws Exception {
+        PreAuthorize approve = OpsAuditController.class
+                .getMethod("approveOperation", String.class, String.class, AuditOperationDecisionRequest.class)
+                .getAnnotation(PreAuthorize.class);
+        PreAuthorize reject = OpsAuditController.class
+                .getMethod("rejectOperation", String.class, String.class, AuditOperationDecisionRequest.class)
+                .getAnnotation(PreAuthorize.class);
+
+        assertThat(approve.value())
+                .contains("platform_a2_operation_approve")
+                .contains("@a2AccessPolicy.canAccessOperation(#operationId)");
+        assertThat(reject.value())
+                .contains("platform_a2_operation_approve")
+                .contains("@a2AccessPolicy.canAccessOperation(#operationId)");
     }
 
     @Test

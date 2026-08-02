@@ -3,6 +3,7 @@ package ffdd.opsconsole.risk.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository.MultiAccountSignalFact;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -99,6 +100,41 @@ class MultiAccountClusterEngineTest {
         var reversed = engine.project(facts, Set.of(), config);
 
         assertThat(reversed).isEqualTo(forward);
+    }
+
+    @Test
+    void projectsJoinedAtAsStableIsoLocalStringWithFullSourcePrecision() throws Exception {
+        LocalDateTime joined = LocalDateTime.of(2026, 7, 26, 18, 22, 54, 123_456_789);
+        List<MultiAccountSignalFact> facts = List.of(
+                fact(21, joined, "device", "iso-device", "设备 ••••ISO"),
+                fact(22, joined.plusSeconds(1), "device", "iso-device", "设备 ••••ISO"));
+
+        var cluster = engine.project(facts, Set.of(),
+                new MultiAccountClusterEngine.Config(1, 0, 0, 0.7, 1, 1, 1)).get(0);
+        String nodesJson = new ObjectMapper().findAndRegisterModules().writeValueAsString(cluster.nodes());
+
+        assertThat(cluster.nodes()).extracting(node -> (Object) node.joinedAt())
+                .containsExactly("2026-07-26T18:22:54.123456789", "2026-07-26T18:22:55.123456789");
+        assertThat(nodesJson)
+                .contains("\"joinedAt\":\"2026-07-26T18:22:54.123456789\"")
+                .doesNotContain("\"joinedAt\":[")
+                .doesNotContain("+08:00", "Z");
+    }
+
+    @Test
+    void excludesNullJoinedAtFactsInsteadOfPublishingContractInvalidNodes() {
+        LocalDateTime joined = LocalDateTime.of(2026, 7, 26, 18, 22, 54);
+        List<MultiAccountSignalFact> facts = List.of(
+                fact(31, joined, "device", "null-safe-device", "设备 ••••NULL"),
+                fact(32, joined.plusSeconds(1), "device", "null-safe-device", "设备 ••••NULL"),
+                fact(33, null, "device", "null-safe-device", "设备 ••••NULL"));
+
+        var cluster = engine.project(facts, Set.of(),
+                new MultiAccountClusterEngine.Config(1, 0, 0, 0.7, 1, 1, 1)).get(0);
+
+        assertThat(cluster.nodes()).extracting(node -> node.userNo())
+                .containsExactly("U00000031", "U00000032");
+        assertThat(cluster.nodes()).allSatisfy(node -> assertThat(node.joinedAt()).isNotNull());
     }
 
     private MultiAccountSignalFact fact(long userId, LocalDateTime joinedAt, String layer, String raw, String masked) {

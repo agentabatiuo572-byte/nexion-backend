@@ -163,6 +163,23 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void transferRejectsTheCurrentOwnerEvenWhenTheAgentIsOtherwiseTransferable() {
+        conversationRepository.conversation = conversation("CV-SELF", "OPEN");
+        when(supportAgentService.transferTargets())
+                .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-1", "targetName", "Agent One")));
+
+        var result = service.transfer(
+                "CV-SELF",
+                "idem-i9-self",
+                new ConversationTransferRequest("agent", "agent-1", "Agent One", "self transfer must fail", "agent-1"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_SELF_FORBIDDEN");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+    }
+
+    @Test
     void acceptTransferMovesConversationBackToOpen() {
         conversationRepository.conversation = transferredConversation("CV-1");
 

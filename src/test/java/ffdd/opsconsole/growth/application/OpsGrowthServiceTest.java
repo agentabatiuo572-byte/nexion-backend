@@ -691,6 +691,7 @@ class OpsGrowthServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("QUEST_CONFIG_STALE");
         verify(questEventMapper, never()).updateMissionRewardByCode(anyString(), anyInt(), anyInt());
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test

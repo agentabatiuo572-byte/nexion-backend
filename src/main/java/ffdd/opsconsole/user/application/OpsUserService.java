@@ -110,10 +110,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> DIRECTIONS = Set.of("CREDIT", "DEBIT");
     private static final Set<String> ADJUSTMENT_STATUSES = Set.of("PENDING", "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED");
     private static final Set<String> REVIEWABLE_ADJUSTMENT_STATUSES = Set.of("PENDING", "PENDING_REVIEW", "SUSPENDED");
-    private static final Set<String> C3_BASE_EXECUTOR_ROLES = Set.of("SUPER_ADMIN", "FINANCE", "SUPPORT");
     private static final Set<String> C3_LARGE_EXECUTOR_ROLES = Set.of("SUPER_ADMIN", "FINANCE_LEAD");
     private static final Set<String> C3_REVIEWER_ROLES = Set.of("SUPER_ADMIN", "FINANCE_LEAD");
-    private static final Set<String> C3_REVERSAL_ROLES = Set.of("SUPER_ADMIN", "FINANCE_LEAD");
     private static final Set<String> C3_REASON_CODES = Set.of(
             "SUPPORT_COMPENSATION", "SYSTEM_CORRECTION", "CAMPAIGN_REISSUE", "DISPUTE_RETURN", "REVERSAL", "OPS_USER_ADJUSTMENT");
     private static final BigDecimal C3_LARGE_THRESHOLD_USD = new BigDecimal("500");
@@ -2374,15 +2372,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     operator(request.operator()), idempotencyKey);
         }
 
-        String role = normalizeRole(roleResolver.resolveCode());
-        Set<String> allowedRoles = reversalFlow
-                ? C3_REVERSAL_ROLES
-                : amountUsd.compareTo(C3_LARGE_THRESHOLD_USD) > 0 ? C3_LARGE_EXECUTOR_ROLES : C3_BASE_EXECUTOR_ROLES;
-        if (!allowedRoles.contains(role)) {
-            String code = amountUsd.compareTo(C3_LARGE_THRESHOLD_USD) > 0
-                    ? "C3_LARGE_ADJUSTMENT_FORBIDDEN"
-                    : "C3_ADJUSTMENT_FORBIDDEN";
-            return c3Reject(403, code, String.valueOf(userId), userId, operator(request.operator()), idempotencyKey);
+        boolean largeAdjustment = amountUsd.compareTo(C3_LARGE_THRESHOLD_USD) > 0;
+        if (largeAdjustment && !reversalFlow) {
+            String role = normalizeRole(roleResolver.resolveCode());
+            if (!C3_LARGE_EXECUTOR_ROLES.contains(role)) {
+                return c3Reject(403, "C3_LARGE_ADJUSTMENT_FORBIDDEN", String.valueOf(userId), userId,
+                        operator(request.operator()), idempotencyKey);
+            }
         }
         BigDecimal projectedCoverage = projectedCoverageRatio(coverage, direction, amountUsd);
         if (!reversalFlow && "CREDIT".equals(direction)
@@ -2401,6 +2397,31 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 evidenceRef, idempotencyKey.trim(), reversalOf, actor);
         UserAssetAdjustmentView pending = userRepository.findAssetAdjustment(adjustmentNo)
                 .orElseThrow(() -> new BizException(409, "C3_ADJUSTMENT_CREATE_STATE_LOST"));
+        if (!reversalFlow) {
+            Map<String, Object> auditDetail = new LinkedHashMap<>();
+            auditDetail.put("asset", asset);
+            auditDetail.put("direction", direction);
+            auditDetail.put("amount", amount);
+            auditDetail.put("amountUsd", amountUsd);
+            auditDetail.put("reasonCode", reasonCode);
+            auditDetail.put("reason", reason);
+            auditDetail.put("evidenceRef", evidenceRef);
+            auditDetail.put("idempotencyKey", idempotencyKey.trim());
+            auditDetail.put("projectedCoverageRatio", projectedCoverage);
+            c3RequiredAudit("C3_ASSET_ADJUSTMENT_CREATED", adjustmentNo, userId, actor, auditDetail);
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("adjustmentNo", adjustmentNo);
+            response.put("userId", userId);
+            response.put("asset", asset);
+            response.put("direction", direction);
+            response.put("amount", amount);
+            response.put("amountUsd", amountUsd);
+            response.put("reasonCode", reasonCode);
+            response.put("status", "PENDING_REVIEW");
+            response.put("projectedCoverageRatio", projectedCoverage);
+            return ApiResult.ok(response);
+        }
         Long ledgerId = userRepository.approveAssetAdjustmentAndPostLedger(pending, actor, reason);
         UserAssetAdjustmentView approved = userRepository.findAssetAdjustment(adjustmentNo)
                 .orElseThrow(() -> new BizException(409, "C3_ADJUSTMENT_RELOAD_FAILED"));
@@ -2524,8 +2545,14 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String adjustmentNo,
             String idempotencyKey,
             UserAssetAdjustmentReviewRequest request) {
-        ApiResult<UserAssetAdjustmentDetail> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         String actor = operator(request == null ? null : request.operator());
+        ApiResult<Map<String, Object>> authorityGuard = requireC3Authority("user_c3_adjust_reverse");
+        if (authorityGuard != null) {
+            c3FailureAudit("C3_ASSET_ADJUSTMENT_REVERSAL_REJECTED", text(adjustmentNo), null, actor,
+                    authorityGuard.getMessage(), idempotencyKey);
+            return authorityGuard;
+        }
+        ApiResult<UserAssetAdjustmentDetail> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_REVERSAL_REJECTED", text(adjustmentNo), null, actor,
                     guard.getMessage(), idempotencyKey);
@@ -2604,6 +2631,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String idempotencyKey,
             UserAssetAdjustmentReviewRequest request) {
         String actor = operator(request == null ? null : request.operator());
+        ApiResult<UserAssetAdjustmentDetail> authorityGuard = requireC3Authority("user_c3_adjust_approve");
+        if (authorityGuard != null) {
+            c3FailureAudit("C3_ASSET_ADJUSTMENT_REVIEW_REJECTED", text(adjustmentNo), null, actor,
+                    authorityGuard.getMessage(), idempotencyKey);
+            return authorityGuard;
+        }
         ApiResult<UserAssetAdjustmentDetail> guard = requireCommand(
                 idempotencyKey,
                 request == null ? null : request.reason());
@@ -2639,7 +2672,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return guard;
         }
         String operator = operator(request.operator());
-        if (!C3_REVIEWER_ROLES.contains(normalizeRole(roleResolver.resolveCode()))) {
+        if (A2ReplayContext.isReplaying()
+                && !C3_REVIEWER_ROLES.contains(normalizeRole(roleResolver.resolveCode()))) {
             return c3Reject(403, "C3_ADJUSTMENT_REVIEW_FORBIDDEN", text(adjustmentNo), null,
                     operator, idempotencyKey);
         }
@@ -2783,6 +2817,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             Long userId,
             String idempotencyKey,
             UserAssetAdjustmentRequest request) {
+        ApiResult<T> authorityGuard = requireC3Authority("user_c3_adjust_create");
+        if (authorityGuard != null) {
+            return authorityGuard;
+        }
         if (userId == null || userId <= 0) {
             return ApiResult.fail(400, "USER_ID_REQUIRED");
         }
@@ -2807,6 +2845,21 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(400, "C3_EVIDENCE_REQUIRED");
         }
         return null;
+    }
+
+    private <T> ApiResult<T> requireC3Authority(String authority) {
+        if (A2ReplayContext.isReplaying()) {
+            return null;
+        }
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        boolean allowed = authentication.getAuthorities().stream()
+                .anyMatch(granted -> authority.equals(granted.getAuthority()));
+        return allowed
+                ? null
+                : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "C3_ACTION_FORBIDDEN:" + authority);
     }
 
     private Map<String, Object> c3Fingerprint(

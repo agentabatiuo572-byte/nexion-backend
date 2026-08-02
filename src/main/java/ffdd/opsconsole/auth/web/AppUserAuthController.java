@@ -4,6 +4,9 @@ import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
@@ -44,6 +47,20 @@ public class AppUserAuthController {
     public ApiResult<UserLoginResponse> login(@RequestBody(required = false) UserLoginRequest request,
                                                HttpServletRequest servletRequest) {
         return authService.login(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/login/otp/send")
+    public ApiResult<UserOtpLoginChallengeResponse> beginOtpLogin(
+            @RequestBody(required = false) UserOtpLoginRequest request,
+            HttpServletRequest servletRequest) {
+        return authService.beginOtpLogin(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/login/otp/verify")
+    public ApiResult<UserLoginResponse> completeOtpLogin(
+            @RequestBody(required = false) UserOtpLoginVerifyRequest request,
+            HttpServletRequest servletRequest) {
+        return authService.completeOtpLogin(request, servletRequest.getRemoteAddr());
     }
 
     @PostMapping("/password-reset/complete")

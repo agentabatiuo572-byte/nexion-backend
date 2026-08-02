@@ -16,4 +16,5 @@ public class AdminEntity extends BaseEntity {
     private String phone;
     private Integer superAdmin;
     private Integer status;
+    private Long version;
 }

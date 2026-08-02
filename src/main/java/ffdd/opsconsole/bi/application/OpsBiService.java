@@ -587,26 +587,36 @@ public class OpsBiService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> createReportOnce(String idempotencyKey, BiReportCreateRequest request) {
         String reportName = trimOrDefault(request.exportType(), "后台导出报表");
+        String reportType = normalizeReportType(reportName);
         String maskingPolicy = normalizeMaskingPolicy(request.maskPolicy());
         if ("DECRYPTED".equals(maskingPolicy)) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "DECRYPTED_PII_EXPORT_BLOCKED");
         }
         boolean containsPii = containsSensitiveFields(request);
+        PreparedReportSnapshot preparedL2Snapshot = "FUNNEL_COHORT".equals(reportType)
+                ? prepareL2ReportSnapshot(request)
+                : null;
+        if (preparedL2Snapshot != null && preparedL2Snapshot.rowCount() == 0L) {
+            return ApiResult.fail(422, "L2_EXPORT_EMPTY");
+        }
         String reportId = "EXP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         BiReportView created = reportRepository.createReport(new BiReportCreateCommand(
                 reportId,
                 reportName,
-                normalizeReportType(reportName),
+                reportType,
                 trimOrDefault(request.timeRange(), "ON_DEMAND"),
-                "REGULATORY".equals(normalizeReportType(reportName)) ? "PDF" : "CSV",
+                "REGULATORY".equals(reportType) ? "PDF" : "CSV",
                 reportScope(request),
                 trimOrDefault(request.fields(), "聚合指标"),
-                estimateRowCount(request),
+                preparedL2Snapshot == null ? estimateRowCount(request) : preparedL2Snapshot.rowCount(),
                 containsPii,
                 containsPii ? maskingPolicy : "NONE",
                 containsPii ? "PENDING_CONFIRM" : "READY",
                 StringUtils.hasText(request.ticket()) ? "工单:" + request.ticket().trim() : "后台创建导出任务"));
-        reportRepository.saveSnapshotCsv(created.reportId(), reportCsv(created, request));
+        PreparedReportSnapshot snapshot = preparedL2Snapshot == null
+                ? prepareReportSnapshot(reportCsv(created, request), created.rowCount())
+                : preparedL2Snapshot;
+        reportRepository.saveSnapshotCsv(created.reportId(), snapshot.csv());
         audit(containsPii ? "L_BI_REPORT_CREATE" : "admin.report_exported", created, currentActorUsername(), linked(
                 "reportId", created.reportId(),
                 "reason", request.reason().trim(),
@@ -620,6 +630,9 @@ public class OpsBiService implements AuditReplayable {
                 "rowCount", created.rowCount(),
                 "format", created.format(),
                 "status", created.status(),
+                "artifactStore", "MINIO",
+                "artifactSha256", snapshot.sha256(),
+                "artifactSizeBytes", snapshot.sizeBytes(),
                 "snapshot", "CREATION_TIME"));
         if (!containsPii) {
             reportRepository.publishReportExported(created.reportId(), linked(
@@ -631,7 +644,10 @@ public class OpsBiService implements AuditReplayable {
                     "maskingPolicy", created.maskingPolicy(),
                     "operator", currentActorUsername(),
                     "reason", request.reason().trim(),
-                    "format", created.format()));
+                    "format", created.format(),
+                    "artifactStore", "MINIO",
+                    "artifactSha256", snapshot.sha256(),
+                    "artifactSizeBytes", snapshot.sizeBytes()));
         }
         Map<String, Object> response = exportOverview().getData();
         response.put("created", created);
@@ -953,7 +969,10 @@ public class OpsBiService implements AuditReplayable {
     }
 
     private String funnelReportCsv(BiReportCreateRequest request) {
-        Map<String, Object> dashboard = l2ExportDashboard(request);
+        return funnelReportCsv(l2ExportDashboard(request));
+    }
+
+    private String funnelReportCsv(Map<String, Object> dashboard) {
         Object funnel = dashboard.get("funnel");
         if (funnel instanceof List<?> rows && !rows.isEmpty()) {
             StringBuilder csv = new StringBuilder(csvRow(List.of(
@@ -1005,11 +1024,42 @@ public class OpsBiService implements AuditReplayable {
     }
 
     private Map<String, Object> l2ExportDashboard(BiReportCreateRequest request) {
-        return reportRepository.l2Dashboard(
-                trimOrDefault(request.cohort(), ""),
-                trimOrDefault(request.phase(), ""),
-                trimOrDefault(request.locale(), ""),
-                trimOrDefault(request.ref(), ""));
+        return hasL2Filters(request)
+                ? reportRepository.l2Dashboard(
+                        trimOrDefault(request.cohort(), ""),
+                        trimOrDefault(request.phase(), ""),
+                        trimOrDefault(request.locale(), ""),
+                        trimOrDefault(request.ref(), ""))
+                : reportRepository.dashboard("L2");
+    }
+
+    private boolean hasL2Filters(BiReportCreateRequest request) {
+        return StringUtils.hasText(request.cohort())
+                || StringUtils.hasText(request.phase())
+                || StringUtils.hasText(request.locale())
+                || StringUtils.hasText(request.ref());
+    }
+
+    private PreparedReportSnapshot prepareL2ReportSnapshot(BiReportCreateRequest request) {
+        Map<String, Object> dashboard = l2ExportDashboard(request);
+        Object funnel = dashboard.get("funnel");
+        long rowCount;
+        if (funnel instanceof List<?> rows && !rows.isEmpty()) {
+            long cohortRows = dashboard.get("cohorts") instanceof List<?> cohorts ? cohorts.size() : 0L;
+            rowCount = rows.size() + cohortRows;
+        } else {
+            rowCount = dashboard.get("stages") instanceof List<?> rows ? rows.size() : 0L;
+        }
+        return prepareReportSnapshot(funnelReportCsv(dashboard), rowCount);
+    }
+
+    private PreparedReportSnapshot prepareReportSnapshot(String csv, Long rowCount) {
+        String value = csv == null ? "" : csv;
+        return new PreparedReportSnapshot(
+                value,
+                rowCount == null ? 0L : rowCount,
+                sha256(value),
+                value.getBytes(StandardCharsets.UTF_8).length);
     }
 
     private String reportScope(BiReportCreateRequest request) {
@@ -1130,6 +1180,13 @@ public class OpsBiService implements AuditReplayable {
         } catch (RuntimeException invalid) {
             return null;
         }
+    }
+
+    private record PreparedReportSnapshot(
+            String csv,
+            long rowCount,
+            String sha256,
+            long sizeBytes) {
     }
 
     private record FinanceDetailSelection(

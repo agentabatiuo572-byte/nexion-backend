@@ -322,7 +322,11 @@ public class OpsTreasuryService {
                 flowAfterDay = flowAfterDay.add(safe(ledgerRepository.sumNetUsdtFlowBetween(
                         laterDay.atStartOfDay(), laterDay.plusDays(1).atStartOfDay())));
             }
-            BigDecimal historicalReserve = reserveTotal.subtract(flowAfterDay);
+            // Reserve is an asset balance.  Rolling the current balance back
+            // across net inflows may expose that the historical ledger is
+            // incomplete, but it must never manufacture a negative asset.
+            // The resulting deficit remains visible in netExposureUsdt.
+            BigDecimal historicalReserve = reserveTotal.subtract(flowAfterDay).max(BigDecimal.ZERO);
             BigDecimal net = historicalReserve.subtract(liabilityTotal);
             series.add(0, section("date", day.toString(), "reserveUsdt", money(historicalReserve),
                     "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0));

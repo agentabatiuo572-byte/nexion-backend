@@ -14,9 +14,10 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.util.Map;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,8 +31,10 @@ import org.springframework.transaction.annotation.Transactional;
 class AdminIdempotencyServiceTest {
     private final AdminIdempotencyRecordMapper recordMapper = org.mockito.Mockito.mock(AdminIdempotencyRecordMapper.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor =
+            org.mockito.Mockito.mock(AdminIdempotencyExpiryTransitionExecutor.class);
     private final AdminIdempotencyTransactionExecutor transactionExecutor =
-            new AdminIdempotencyTransactionExecutor(recordMapper, objectMapper);
+            new AdminIdempotencyTransactionExecutor(recordMapper, objectMapper, expiryTransitionExecutor);
     private final AdminIdempotencyService service = new AdminIdempotencyService(
             transactionExecutor,
             Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC));
@@ -180,7 +183,7 @@ class AdminIdempotencyServiceTest {
     }
 
     @Test
-    void truncatesFailureMetadataWithoutMaskingTheOriginalException() {
+    void persistsOnlyFailureTypeSoIdempotencyMetadataNeverLeaksRequestPayload() {
         when(recordMapper.selectActive("ADMIN_MEDIA_UPLOAD", "idem-long-error")).thenReturn(null);
         when(recordMapper.selectCurrent("ADMIN_MEDIA_UPLOAD", "idem-long-error")).thenReturn(null);
         when(recordMapper.insert(any(AdminIdempotencyRecordEntity.class))).thenAnswer(invocation -> {
@@ -188,7 +191,7 @@ class AdminIdempotencyServiceTest {
             entity.setId(10L);
             return 1;
         });
-        IllegalStateException original = new IllegalStateException("x".repeat(1200));
+        IllegalStateException original = new IllegalStateException("payload=super-secret-authorization-value");
 
         assertThatThrownBy(() -> service.execute(
                 "ADMIN_MEDIA_UPLOAD",
@@ -200,7 +203,8 @@ class AdminIdempotencyServiceTest {
 
         ArgumentCaptor<String> errorCaptor = ArgumentCaptor.forClass(String.class);
         verify(recordMapper).markFailed(eq(10L), errorCaptor.capture());
-        assertThat(errorCaptor.getValue()).hasSize(512).endsWith("…");
+        assertThat(errorCaptor.getValue()).isEqualTo("IllegalStateException");
+        assertThat(errorCaptor.getValue()).doesNotContain("super-secret");
     }
 
     @Test
@@ -268,6 +272,188 @@ class AdminIdempotencyServiceTest {
         assertThat(retried.get("approved")).isEqualTo(true);
         assertThat(actionCalls).hasValue(2);
         assertThat(stored.get().getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void expiredProcessingOutcomeIsTransitionedInAnIndependentBoundaryThenFailsClosed() {
+        AdminIdempotencyRecordEntity unknown = existing("hash-unknown", "PROCESSING", null);
+        unknown.setId(21L);
+        unknown.setIsDeleted(0);
+        unknown.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        when(recordMapper.selectActive("J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-unknown"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-unknown"))
+                .thenReturn(unknown);
+        when(expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
+                21L, "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-unknown"))
+                .thenReturn(1);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        assertThatThrownBy(() -> service.execute(
+                "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-unknown", "hash-unknown", Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of("mustNot", "run");
+                }))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_RESULT_UNKNOWN");
+
+        assertThat(actionCalled).isFalse();
+        verify(expiryTransitionExecutor).markCurrentExpiredProcessingUnknown(
+                21L, "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-unknown");
+        verify(recordMapper, never()).resetExpiredById(any(), any(), any());
+        verify(recordMapper, never()).insert(any(AdminIdempotencyRecordEntity.class));
+    }
+
+    @Test
+    void exactExpiryCasMissReloadsTheActualDatabaseStateInsteadOfAssumingUnknown() {
+        AdminIdempotencyRecordEntity stale = existing("hash-a", "PROCESSING", null);
+        stale.setId(22L);
+        stale.setIsDeleted(0);
+        stale.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        AdminIdempotencyRecordEntity active = existing("hash-a", "PROCESSING", null);
+        active.setId(22L);
+        active.setIsDeleted(0);
+        when(recordMapper.selectActive("J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race"))
+                .thenReturn(null, active);
+        when(recordMapper.selectCurrent("J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race"))
+                .thenReturn(stale);
+        when(expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
+                22L, "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race"))
+                .thenReturn(0);
+        when(expiryTransitionExecutor.loadCurrentCommitted(
+                "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race"))
+                .thenReturn(active);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        assertThatThrownBy(() -> service.execute(
+                "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race", "hash-a", Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of();
+                }))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+
+        assertThat(actionCalled).isFalse();
+        verify(expiryTransitionExecutor).markCurrentExpiredProcessingUnknown(
+                22L, "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-cas-race");
+    }
+
+    @Test
+    void exactExpiryCasMissReplaysAConcurrentKnownSuccessInsteadOfDowngradingIt() {
+        AdminIdempotencyRecordEntity stale = existing("hash-success", "PROCESSING", null);
+        stale.setId(23L);
+        stale.setIsDeleted(0);
+        AdminIdempotencyRecordEntity succeeded = existing("hash-success", "SUCCEEDED", "{\"approved\":true}");
+        succeeded.setId(23L);
+        when(recordMapper.selectActive("A6_ROLE_GRANTS:4214", "idem-cas-success"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("A6_ROLE_GRANTS:4214", "idem-cas-success"))
+                .thenReturn(stale);
+        when(expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
+                23L, "A6_ROLE_GRANTS:4214", "idem-cas-success"))
+                .thenReturn(0);
+        when(expiryTransitionExecutor.loadCurrentCommitted(
+                "A6_ROLE_GRANTS:4214", "idem-cas-success"))
+                .thenReturn(succeeded);
+
+        Map<?, ?> result = service.execute(
+                "A6_ROLE_GRANTS:4214", "idem-cas-success", "hash-success", Map.class, Map::of);
+
+        assertThat(result.get("approved")).isEqualTo(true);
+        verify(recordMapper, never()).resetExpiredById(any(), any(), any());
+    }
+
+    @Test
+    void exactExpiryCasMissKeepsConcurrentKnownFailureRetryableForTheSamePayload() {
+        AdminIdempotencyRecordEntity stale = existing("hash-failed", "PROCESSING", null);
+        stale.setId(24L);
+        stale.setIsDeleted(0);
+        AdminIdempotencyRecordEntity failed = existing("hash-failed", "FAILED", null);
+        failed.setId(24L);
+        when(recordMapper.selectActive("A6_ROLE_GRANTS:4214", "idem-cas-failed"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("A6_ROLE_GRANTS:4214", "idem-cas-failed"))
+                .thenReturn(stale);
+        when(expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
+                24L, "A6_ROLE_GRANTS:4214", "idem-cas-failed"))
+                .thenReturn(0);
+        when(expiryTransitionExecutor.loadCurrentCommitted(
+                "A6_ROLE_GRANTS:4214", "idem-cas-failed"))
+                .thenReturn(failed);
+        when(recordMapper.resetFailedById(eq(24L), eq("hash-failed"), any(LocalDateTime.class)))
+                .thenReturn(1);
+
+        Map<?, ?> result = service.execute(
+                "A6_ROLE_GRANTS:4214", "idem-cas-failed", "hash-failed", Map.class,
+                () -> Map.of("retried", true));
+
+        assertThat(result.get("retried")).isEqualTo(true);
+        verify(recordMapper).resetFailedById(eq(24L), eq("hash-failed"), any(LocalDateTime.class));
+    }
+
+    @Test
+    void convertsOnlyExpiredProcessingRecordsToUnknownForSafeStartupRecovery() {
+        AdminIdempotencyExpiryTransitionExecutor transitionExecutor =
+                new AdminIdempotencyExpiryTransitionExecutor(recordMapper);
+        when(recordMapper.lockExpiredProcessingBatch(200)).thenReturn(List.of(7L, 8L));
+        when(recordMapper.markLockedExpiredProcessingUnknown(List.of(7L, 8L))).thenReturn(2);
+
+        assertThat(transitionExecutor.markExpiredProcessingUnknownBatch(200)).isEqualTo(2);
+
+        verify(recordMapper).lockExpiredProcessingBatch(200);
+        verify(recordMapper).markLockedExpiredProcessingUnknown(List.of(7L, 8L));
+    }
+
+    @Test
+    void unknownOutcomeForOneKeyDoesNotBlockASeparateNewKey() {
+        AdminIdempotencyRecordEntity unknown = existing("hash-old", "UNKNOWN", null);
+        unknown.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        when(recordMapper.selectActive("A6_ROLE_GRANTS:4214", "idem-unknown"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("A6_ROLE_GRANTS:4214", "idem-unknown"))
+                .thenReturn(unknown);
+        when(recordMapper.selectActive("A6_ROLE_GRANTS:4214", "idem-new"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("A6_ROLE_GRANTS:4214", "idem-new"))
+                .thenReturn(null);
+        when(recordMapper.insert(any(AdminIdempotencyRecordEntity.class))).thenAnswer(invocation -> {
+            invocation.<AdminIdempotencyRecordEntity>getArgument(0).setId(31L);
+            return 1;
+        });
+
+        assertThatThrownBy(() -> service.execute(
+                "A6_ROLE_GRANTS:4214", "idem-unknown", "hash-old", Map.class, Map::of))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_RESULT_UNKNOWN");
+
+        Map<?, ?> result = service.execute(
+                "A6_ROLE_GRANTS:4214", "idem-new", "hash-new", Map.class,
+                () -> Map.of("newKey", true));
+
+        assertThat(result.get("newKey")).isEqualTo(true);
+        verify(recordMapper).markSucceeded(eq(31L), org.mockito.ArgumentMatchers.contains("newKey"));
+    }
+
+    @Test
+    void concurrentClaimAgainstAnUnknownOutcomeFailsClosedWithoutExecutingAgain() {
+        AdminIdempotencyRecordEntity unknown = existing("hash-a", "UNKNOWN", null);
+        when(recordMapper.selectActive("J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-race"))
+                .thenReturn(unknown);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        assertThatThrownBy(() -> service.execute(
+                "J4_PLAYBOOK_EXECUTE:SOP-CUSTOM-1", "idem-race", "hash-a", Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of();
+                }))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_RESULT_UNKNOWN");
+
+        assertThat(actionCalled).isFalse();
+        verify(recordMapper, never()).markSucceeded(any(), any());
     }
 
     @Test

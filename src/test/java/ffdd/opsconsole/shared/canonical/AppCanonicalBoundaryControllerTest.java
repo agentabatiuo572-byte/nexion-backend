@@ -52,6 +52,34 @@ class AppCanonicalBoundaryControllerTest {
     }
 
     @Test
+    void userDeviceDeactivateUsesSubjectPathVersionAndIdempotencyKey() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(service.deactivateDevice(42L, 9L, 7L, "device-deactivate-key"))
+                .thenReturn(ApiResult.ok(Map.of("deviceId", 9L, "status", "DEACTIVATED")));
+
+        ApiResult<Map<String, Object>> result = controller.deactivateDevice(
+                9L, new AppCanonicalBoundaryController.DeviceDeactivateRequest(7L),
+                "device-deactivate-key", user);
+
+        assertThat(result.getCode()).isZero();
+        verify(service).deactivateDevice(42L, 9L, 7L, "device-deactivate-key");
+    }
+
+    @Test
+    void userDeviceActivateUsesSubjectCasVersionAndIdempotencyKey() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(service.activateDevice(42L, 9L, 7L, 3, "device-activate-key"))
+                .thenReturn(ApiResult.ok(Map.of("deviceId", 9L, "status", "ACTIVE")));
+
+        ApiResult<Map<String, Object>> result = controller.activateDevice(
+                new AppCanonicalBoundaryController.DeviceActivateRequest(9L, 7L, 3),
+                "device-activate-key", user);
+
+        assertThat(result.getCode()).isZero();
+        verify(service).activateDevice(42L, 9L, 7L, 3, "device-activate-key");
+    }
+
+    @Test
     void trialStateMismatchPublishesTheJ3CanonicalRejection() {
         UsernamePasswordAuthenticationToken user = auth("42", "USER");
         when(trialLifecycleService.state(42L))

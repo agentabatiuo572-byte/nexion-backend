@@ -22,11 +22,25 @@ Legacy distributed service directories, the old `nexion-common` module, and the 
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1
 ```
 
+The startup script applies the idempotent A1 account-version CAS migration and C2
+account-list A4 registry migration before starting the backend. It fails closed if either
+migration cannot run, so sensitive A1 account writes and the C2 block-list action cannot
+be deployed against a database missing their durable contract.
+For a controlled pre-deployment step (including `-WhatIf`), run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\apply_startup_schema_migrations.ps1
+```
+
 Direct Maven run:
 
 ```powershell
 & 'D:\software\apache-maven-3.9.9\bin\mvn.cmd' spring-boot:run
 ```
+
+Before a direct Maven run, execute the controlled migration command above; direct Maven
+does not run deployment migrations automatically. Provide database credentials through
+`SPRING_DATASOURCE_PASSWORD`; never pass a database password in a command line.
 
 Default app entry:
 
@@ -55,7 +69,8 @@ Common placeholders:
 Initialize or refresh local schema and system baseline data with:
 
 ```powershell
-& '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' -e "source D:/workspace/nexion-backend/scripts/schema.sql; source D:/workspace/nexion-backend/scripts/seed.sql;"
+if ([string]::IsNullOrWhiteSpace($env:MYSQL_PWD)) { throw 'Set MYSQL_PWD in the deployment environment before running mysql.' }
+& '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> -e "source D:/workspace/nexion-backend/scripts/schema.sql; source D:/workspace/nexion-backend/scripts/seed.sql;"
 ```
 
 `scripts/seed.sql` is limited to the local system baseline: admin login, RBAC, navigation, and platform configuration. It does not create business records.
@@ -65,7 +80,8 @@ The schema keeps existing business tables and adds the Ops Console tables needed
 For an existing database, run dated migrations in order before deploying the matching application revision. The rhythm-configurable and classic RBAC releases require UTF-8 input:
 
 ```powershell
-& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> '-p<mysql-password>' <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_i1_copy_schema.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
+if ([string]::IsNullOrWhiteSpace($env:MYSQL_PWD)) { throw 'Set MYSQL_PWD in the deployment environment before running mysql.' }
+& '<mysql-bin>\mysql.exe' --default-character-set=utf8mb4 -h 127.0.0.1 -P 3306 -u <mysql-user> <database-name> -e "source D:/workspace/nexion-backend/scripts/migrations/20260711_rhythm_configurable.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_i1_copy_schema.sql; source D:/workspace/nexion-backend/scripts/migrations/20260712_rbac_classic.sql;"
 ```
 
 ## Module Boundaries

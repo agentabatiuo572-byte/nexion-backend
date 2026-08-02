@@ -73,7 +73,18 @@ public class AppCanonicalBoundaryController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : service.activateDevice(userId, request.deviceId(), request.clientMaxDevices(), idempotencyKey);
+                : service.activateDevice(userId, request.deviceId(), request.expectedVersion(), request.clientMaxDevices(), idempotencyKey);
+    }
+
+    @PostMapping("/api/device/{deviceId}/deactivate")
+    public ApiResult<Map<String, Object>> deactivateDevice(
+            @PathVariable Long deviceId,
+            @RequestBody DeviceDeactivateRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : service.deactivateDevice(userId, deviceId, request.expectedVersion(), idempotencyKey);
     }
 
     @GetMapping("/api/devices/earnings")
@@ -157,7 +168,10 @@ public class AppCanonicalBoundaryController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record DeviceActivateRequest(Long deviceId, Integer clientMaxDevices) {
+    public record DeviceActivateRequest(Long deviceId, Long expectedVersion, Integer clientMaxDevices) {
+    }
+
+    public record DeviceDeactivateRequest(Long expectedVersion) {
     }
 
     public record OtpVerifyRequest(String challengeNo, String code, Boolean clientRegexAccepted) {

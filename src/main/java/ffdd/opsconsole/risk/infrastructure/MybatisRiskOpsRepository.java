@@ -4,6 +4,7 @@ package ffdd.opsconsole.risk.infrastructure;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
@@ -36,6 +37,8 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -557,8 +560,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             return updated == 0 ? Optional.empty() : draftScoringModel();
         }
         if (!java.util.Objects.equals(active.get().rowVersion(), expectedVersion)) return Optional.empty();
+        long greatestHistoryVersion = Math.max(
+                active.get().version(), java.util.Optional.ofNullable(mapper.maxScoreModelVersion()).orElse(0L));
         mapper.insertScoreModelDraft(
-                active.get().version() + 1, json(request.weightPercentages()), json(request.inputSources()),
+                Math.addExact(greatestHistoryVersion, 1L), json(request.weightPercentages()), json(request.inputSources()),
                 json(request.scoreMappings()),
                 request.lowMax(), request.highMin(), request.autoEscalateScore(),
                 request.reason().trim(), operator);
@@ -738,6 +743,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Optional<RiskScoreOverrideView> overrideScore(String userNo, int score, String reason, String operator) {
+        mapper.lockScoreUserForUpdate(userNo);
         Optional<RiskScoreUserView> user = findScoreUser(userNo);
         if (user.isEmpty()) {
             return Optional.empty();
@@ -750,6 +756,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public Optional<RiskScoreOverrideView> overrideScore(
             String userNo, long expectedVersion, int score, String reason, String operator) {
+        mapper.lockScoreUserForUpdate(userNo);
         Optional<RiskScoreUserView> user = findScoreUser(userNo);
         if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion) == 0) {
             return Optional.empty();
@@ -767,6 +774,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Optional<RiskScoreUserView> recomputeScore(String userNo) {
+        mapper.lockScoreUserForUpdate(userNo);
         mapper.deactivateScoreOverrides(userNo);
         return findScoreUser(userNo);
     }
@@ -800,6 +808,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private Optional<RiskScoreUserView> updateScoreProjection(
             String userNo, long expectedVersion, RiskScoreModelView model, int modelScore,
             List<RiskScoreContributionView> contributions, boolean clearManualOverride) {
+        mapper.lockScoreUserForUpdate(userNo);
         RiskScoreOverrideView activeOverride = mapper.activeScoreOverride(userNo);
         if (mapper.updateScoreUserModelIfVersion(
                 userNo, expectedVersion, modelScore, "k4-v" + model.version()) == 0) {
@@ -846,10 +855,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public int synchronizeScoringUsers() {
+        mapper.retireOrphanScoreUsers();
+        int synchronizedUsers = mapper.ensureAllActiveUsersHaveScoreRows();
         mapper.deactivateOrphanScoreOverrides();
         mapper.retireOrphanScoreContributions();
-        mapper.retireOrphanScoreUsers();
-        return mapper.ensureAllActiveUsersHaveScoreRows();
+        return synchronizedUsers;
     }
 
     @Override
@@ -893,9 +903,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 .sum();
         long clusterTotal = mapper.countMultiAccountClustersByFilter(normalizedLayer, normalizedStatus);
         List<RiskOpsMapper.MultiAccountClusterRecord> clusters = mapper.pageMultiAccountClustersByFilter(
-                normalizedLayer, normalizedStatus, normalizedSort,
-                (normalizedClusterPageNum - 1) * normalizedClusterPageSize,
-                normalizedClusterPageSize);
+                        normalizedLayer, normalizedStatus, normalizedSort,
+                        (normalizedClusterPageNum - 1) * normalizedClusterPageSize,
+                        normalizedClusterPageSize).stream()
+                .map(this::canonicalizeK1ClusterRecord)
+                .toList();
         long whitelistTotal = mapper.countActiveIpWhitelist();
         List<RiskOpsMapper.IpWhitelistRecord> whitelist = mapper.pageIpWhitelist(
                 (normalizedWhitelistPageNum - 1) * normalizedWhitelistPageSize,
@@ -1054,6 +1066,66 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             return List.copyOf(result);
         } catch (JsonProcessingException ex) {
             return List.of();
+        }
+    }
+
+    private RiskOpsMapper.MultiAccountClusterRecord canonicalizeK1ClusterRecord(
+            RiskOpsMapper.MultiAccountClusterRecord row) {
+        String canonicalNodes = canonicalizeK1NodesJson(row.nodesJson());
+        if (java.util.Objects.equals(canonicalNodes, row.nodesJson())) return row;
+        return new RiskOpsMapper.MultiAccountClusterRecord(
+                row.id(), row.key(), row.layer(), row.layerLabel(), row.n(), row.strength(), row.span(), row.status(),
+                row.note(), row.giftsJson(), canonicalNodes, row.edgesJson(), row.reviewNote(), row.version());
+    }
+
+    /**
+     * Converts the pre-fix Jackson LocalDateTime array shape to the K1 wire contract without accepting it in PC.
+     * Malformed, missing, or null timestamps remain untouched so the client still fails closed.
+     */
+    private String canonicalizeK1NodesJson(String nodesJson) {
+        if (!StringUtils.hasText(nodesJson)) return nodesJson;
+        try {
+            JsonNode root = JSON.readTree(nodesJson);
+            if (!root.isArray()) return nodesJson;
+            boolean changed = false;
+            for (JsonNode node : root) {
+                if (!(node instanceof ObjectNode object)) continue;
+                JsonNode joinedAt = object.get("joinedAt");
+                if (joinedAt == null || joinedAt.isNull()) continue;
+                String canonical = canonicalK1JoinedAt(joinedAt);
+                if (canonical != null && (!joinedAt.isTextual() || !canonical.equals(joinedAt.textValue()))) {
+                    object.put("joinedAt", canonical);
+                    changed = true;
+                }
+            }
+            return changed ? JSON.writeValueAsString(root) : nodesJson;
+        } catch (JsonProcessingException | RuntimeException ex) {
+            return nodesJson;
+        }
+    }
+
+    private String canonicalK1JoinedAt(JsonNode value) {
+        try {
+            LocalDateTime parsed;
+            if (value.isArray()) {
+                if (value.size() < 5 || value.size() > 7) return null;
+                for (JsonNode part : value) {
+                    if (!part.isIntegralNumber() || !part.canConvertToInt()) return null;
+                }
+                parsed = LocalDateTime.of(
+                        value.get(0).intValue(), value.get(1).intValue(), value.get(2).intValue(),
+                        value.get(3).intValue(), value.get(4).intValue(),
+                        value.size() >= 6 ? value.get(5).intValue() : 0,
+                        value.size() == 7 ? value.get(6).intValue() : 0);
+            } else if (value.isTextual() && !value.textValue().isBlank()) {
+                parsed = LocalDateTime.parse(value.textValue().trim().replace(' ', 'T'),
+                        DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+            } else {
+                return null;
+            }
+            return parsed.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        } catch (RuntimeException ex) {
+            return null;
         }
     }
 

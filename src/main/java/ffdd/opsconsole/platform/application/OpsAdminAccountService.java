@@ -279,12 +279,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
-        AdminEntity patch = new AdminEntity();
-        patch.setId(adminId);
-        patch.setUsername(username);
-        patch.setNickname(displayName);
-        patch.setEmail(firstText(email));
-        adminMapper.updateById(patch);
+        if (adminMapper.updateProfileIfVersion(adminId, accountVersionNumber(current.version()), username, displayName, firstText(email)) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         if (usernameChanged) {
             adminSessionRegistry.revokeSessions(adminId);
             accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
@@ -344,10 +341,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
-        AdminEntity patch = new AdminEntity();
-        patch.setId(adminId);
-        patch.setSuperAdmin("super".equals(nextRole) ? 1 : 0);
-        adminMapper.updateById(patch);
+        if (adminMapper.updateRoleIfVersion(adminId, accountVersionNumber(current.version()), "super".equals(nextRole) ? 1 : 0) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         syncPrimaryRoleRelation(adminId, nextRole);
         // 改角色后立即失效该 admin 的 Redis 权限缓存，避免 30min TTL 窗口内仍用旧角色权限
         permissionCache.evict(adminId);
@@ -404,10 +400,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
-        AdminEntity patch = new AdminEntity();
-        patch.setId(adminId);
-        patch.setStatus("enabled".equals(nextStatus) ? 1 : 0);
-        adminMapper.updateById(patch);
+        long expectedVersion = accountVersionNumber(current.version());
+        if (adminMapper.updateStatusIfVersion(adminId, expectedVersion, "enabled".equals(nextStatus) ? 1 : 0) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
 
         if ("disabled".equals(nextStatus)) {
             adminSessionRegistry.revokeSessions(adminId);
@@ -465,10 +461,12 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         Long adminId = parseAccountId(current.id()).orElseThrow();
+        if (adminMapper.incrementVersionIfVersion(adminId, accountVersionNumber(current.version())) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         accountStateMapper.upsertTfaResetAt(adminId, LocalDateTime.now());
         adminSessionRegistry.revokeSessions(adminId);
         accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
-        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_2FA_RESET", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("tfaRequired", true, "sessionsRevoked", true));
         return ApiResult.ok(requireOperator(current.id()));
@@ -502,11 +500,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
-        AdminEntity patch = new AdminEntity();
-        patch.setId(adminId);
         String temporaryPassword = generateTemporaryPassword();
-        patch.setPasswordHash(passwordEncoder.encode(temporaryPassword));
-        adminMapper.updateById(patch);
+        if (adminMapper.updatePasswordIfVersion(adminId, accountVersionNumber(current.version()), passwordEncoder.encode(temporaryPassword)) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         adminSessionRegistry.revokeSessions(adminId);
         accountStateMapper.upsertCredentialStatus(adminId, PASSWORD_CHANGE_REQUIRED);
 
@@ -554,9 +551,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         LocalDateTime revokedAt = LocalDateTime.now();
         String now = revokedAt.format(ISO);
         Long adminId = parseAccountId(current.id()).orElseThrow();
+        if (adminMapper.incrementVersionIfVersion(adminId, accountVersionNumber(current.version())) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         int revoked = adminSessionRegistry.revokeSessions(adminId);
         accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
-        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", current.id(), request.operator(), request.reason(), idempotencyKey,
                 Map.of("killedAt", now, "revokedSessions", revoked));
         return ApiResult.ok(requireOperator(current.id()));
@@ -596,14 +595,21 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (authorization != null) {
             return failLike(authorization);
         }
+        if (target.sessionDetails().stream().noneMatch(session -> sessionId.trim().equals(session.sessionId()))) {
+            return ApiResult.fail(404, "ADMIN_SESSION_NOT_FOUND");
+        }
         Long adminId = parseAccountId(target.id()).orElseThrow();
+        if (adminMapper.incrementVersionIfVersion(adminId, accountVersionNumber(target.version())) != 1) {
+            return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
+        }
         int revoked = adminSessionRegistry.revokeSession(adminId, sessionId.trim());
         if (revoked == 0) {
-            return ApiResult.fail(404, "ADMIN_SESSION_NOT_FOUND");
+            // The version increment is a DB write. A vanished Redis session must roll it back,
+            // otherwise a failed request would still consume the client's CAS token.
+            throw new ffdd.opsconsole.shared.exception.BizException(404, "ADMIN_SESSION_NOT_FOUND");
         }
         LocalDateTime revokedAt = LocalDateTime.now();
         accountStateMapper.upsertSessionsRevokedAt(adminId, revokedAt);
-        adminMapper.touchVersion(adminId);
         audit("A1_OPERATOR_SESSION_REVOKED", "A1_ADMIN_ACCOUNT", target.id(), request.operator(), request.reason(),
                 idempotencyKey, Map.of("sessionId", sessionId.trim(), "revokedSessions", 1));
         return ApiResult.ok(requireOperator(target.id()));
@@ -935,7 +941,15 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private String accountVersion(AdminEntity admin, AdminAccountStateEntity state) {
-        return admin.getUpdatedAt() == null ? "0" : admin.getUpdatedAt().format(ISO);
+        return String.valueOf(admin.getVersion() == null ? 0L : admin.getVersion());
+    }
+
+    private long accountVersionNumber(String version) {
+        try {
+            return Long.parseLong(version);
+        } catch (NumberFormatException ex) {
+            throw new IllegalStateException("ACCOUNT_VERSION_CORRUPT", ex);
+        }
     }
 
     private void lockAccount(String accountId) {

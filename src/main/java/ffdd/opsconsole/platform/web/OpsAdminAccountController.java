@@ -78,6 +78,11 @@ public class OpsAdminAccountController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String accountId,
             @RequestBody(required = false) AdminAccountStatusUpdateRequest request) {
+        // Reject an absent command before claiming an idempotency key.  Otherwise the idempotency
+        // layer can persist/replay an invalid null command instead of returning a stable 4xx.
+        if (request == null) {
+            return ApiResult.fail(400, "REQUEST_BODY_REQUIRED");
+        }
         return idempotent("ACCOUNT_STATUS", idempotencyKey, accountId, request,
                 () -> accountService.updateStatus(idempotencyKey, accountId, request));
     }

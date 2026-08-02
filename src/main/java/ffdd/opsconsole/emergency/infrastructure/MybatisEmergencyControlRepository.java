@@ -464,7 +464,9 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
                 toJson(row.get("steps")),
                 toJson(row.get("notificationDispatch")),
                 toJson(row.get("domainActions")),
-                String.valueOf(row.getOrDefault("rollback", "")));
+                String.valueOf(row.getOrDefault("rollback", "")),
+                String.valueOf(row.getOrDefault("rollbackStatus", "")),
+                String.valueOf(row.getOrDefault("rollbackReason", "")));
     }
 
     @Override

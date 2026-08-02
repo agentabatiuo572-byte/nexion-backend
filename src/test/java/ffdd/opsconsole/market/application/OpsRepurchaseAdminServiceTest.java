@@ -93,6 +93,10 @@ class OpsRepurchaseAdminServiceTest {
         ArgumentCaptor<Map> eventPayload = ArgumentCaptor.forClass(Map.class);
         verify(outbox).publish(eq("REPURCHASE_CONFIG"), eq("apy"),
                 eq("admin.repurchase_config_changed"), eventPayload.capture());
-        assertThat(eventPayload.getValue()).containsEntry("operator", "g-maker");
+        assertThat(eventPayload.getValue())
+                .containsEntry("operator", "g-maker")
+                .doesNotContainKey("sourceDomain");
+        assertThat((Map<String, Object>) auditRequest.getValue().getDetail())
+                .containsEntry("sourceDomain", "G7");
     }
 }

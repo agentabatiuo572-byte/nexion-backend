@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -1120,6 +1121,44 @@ class OpsNexMarketServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(configFacade.values).containsEntry("G.staking.apy.usdt90d", "35");
+    }
+
+    @Test
+    void loweringStakingMinimumBelowCoverageRedlineReturns422WithoutWritingOrAuditing() {
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+        configFacade.values.put("G.staking.min.usdt90d", "500");
+
+        ApiResult<Map<String, Object>> result = service.updateStakingPoolParam(
+                "idem-g1-min-loosen-below-redline",
+                "usdt90d",
+                "min",
+                new NexMarketValueUpdateRequest("400", "lower staking minimum expands exposure", "superadmin"));
+        ApiResult<Map<String, Object>> replayed = service.updateStakingPoolParam(
+                "idem-g1-min-loosen-below-redline",
+                "usdt90d",
+                "min",
+                new NexMarketValueUpdateRequest("400", "lower staking minimum expands exposure", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(replayed.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values).containsEntry("G.staking.min.usdt90d", "500");
+        verify(auditLogService, never()).recordRequired(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void raisingStakingMinimumBelowCoverageRedlineIsTighteningAndWritesNormally() {
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
+        configFacade.values.put("G.staking.min.usdt90d", "500");
+
+        ApiResult<Map<String, Object>> result = service.updateStakingPoolParam(
+                "idem-g1-min-tighten-below-redline",
+                "usdt90d",
+                "min",
+                new NexMarketValueUpdateRequest("600", "raise staking minimum tightens exposure", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.staking.min.usdt90d", "600");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.any());
     }
 
     @Test

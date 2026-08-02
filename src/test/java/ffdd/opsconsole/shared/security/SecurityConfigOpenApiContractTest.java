@@ -31,4 +31,17 @@ class SecurityConfigOpenApiContractTest {
                 ".dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()",
                 ".anyRequest().authenticated()");
     }
+
+    @Test
+    void allUserAuthenticationEntryPointsAreExplicitlyAnonymous() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/shared/security/SecurityConfig.java"));
+
+        assertThat(source).contains(
+                "\"/auth/users/login\"",
+                "\"/auth/users/login/2fa\"",
+                "\"/auth/users/login/otp/send\"",
+                "\"/auth/users/login/otp/verify\"",
+                "\"/auth/users/register/**\"");
+    }
 }

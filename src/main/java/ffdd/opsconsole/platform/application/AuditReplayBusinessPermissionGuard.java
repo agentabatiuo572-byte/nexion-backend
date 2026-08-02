@@ -7,11 +7,17 @@ import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.application.DisclosureContentHash;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -29,9 +35,67 @@ import org.springframework.security.core.context.SecurityContextHolder;
 public class AuditReplayBusinessPermissionGuard {
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
+    private static final Set<String> I3_CAP_TIERS = Set.of("critical", "high", "normal", "low");
+    private static final Map<String, String> E3_CONFIG_TARGET_IDS = Map.ofEntries(
+            Map.entry("E.device.capacity.band1DeltaPct", "capacityBand1DeltaPct"),
+            Map.entry("E.device.capacity.band2DeltaPct", "capacityBand2DeltaPct"),
+            Map.entry("E.device.capacity.band3DeltaPct", "capacityBand3DeltaPct"),
+            Map.entry("E.device.stageEarlyEnd", "stageEarlyEnd"),
+            Map.entry("E.device.stageMidEnd", "stageMidEnd"),
+            Map.entry("E.device.cycleMonths", "cycleMonths"),
+            Map.entry("E.device.capacity.floorPct", "capacityFloorPct"),
+            Map.entry("E.device.capacity.subsidyDays", "capacitySubsidyDays"),
+            Map.entry("E.device.capacity.applyTo.phone", "capacityApplyToPhone"),
+            Map.entry("E.device.capacity.applyTo.cloud-share", "capacityApplyToCloudShare"),
+            Map.entry("E.device.capacity.applyTo.pc-gpu", "capacityApplyToPcGpu"),
+            Map.entry("E.device.capacity.applyTo.stellarbox-s1", "capacityApplyToS1"),
+            Map.entry("E.device.capacity.applyTo.stellarbox-pro", "capacityApplyToPro"),
+            Map.entry("E.device.capacity.applyTo.stellarbox-pro-v2", "capacityApplyToProV2"),
+            Map.entry("E.device.capacity.applyTo.stellarrack-p1", "capacityApplyToRackP1"),
+            Map.entry("E.device.capacity.applyTo.stellarrack-p2", "capacityApplyToRackP2"),
+            Map.entry("E.device.taskLock.s1", "taskLockS1"),
+            Map.entry("E.device.taskLock.pro", "taskLockPro"),
+            Map.entry("E.device.taskLock.rack", "taskLockRack"),
+            Map.entry("E.tradein.enabled", "tradeinEnabled"),
+            Map.entry("E.tradein.ladder.cut1", "tradeinLadderCut1"),
+            Map.entry("E.tradein.ladder.cut2", "tradeinLadderCut2"),
+            Map.entry("E.tradein.ladder.cut3", "tradeinLadderCut3"),
+            Map.entry("E.tradein.ladder.cut4", "tradeinLadderCut4"),
+            Map.entry("E.tradein.ladder.credit1", "tradeinLadderCredit1"),
+            Map.entry("E.tradein.ladder.credit2", "tradeinLadderCredit2"),
+            Map.entry("E.tradein.ladder.credit3", "tradeinLadderCredit3"),
+            Map.entry("E.tradein.ladder.credit4", "tradeinLadderCredit4"),
+            Map.entry("E.tradein.ladder.credit5", "tradeinLadderCredit5"),
+            Map.entry("E.tradein.requireHigherPrice", "tradeinRequireHigherPrice"),
+            Map.entry("E.tradein.maxDevicesPerOrder", "tradeinMaxDevicesPerOrder"),
+            Map.entry("E.tradein.eligibility", "eligibility"),
+            Map.entry("E.tradein.promoMult", "promoMult"),
+            Map.entry("E.tradein.promo.cooldownDays", "promoCooldownDays"),
+            Map.entry("E.tradein.promo.maxPerSession", "promoMaxPerSession"),
+            Map.entry("E.tradein.promo.delaySec", "promoDelaySeconds"),
+            Map.entry("E.tradein.promo.minAgeDays", "promoMinAgeDays"),
+            Map.entry("E.tradein.promo.routes", "promoRoutes"),
+            Map.entry("E.tradein.inventorySoftMax", "inventorySoftMax"),
+            Map.entry("E.release.earlyAccess.enabled", "earlyAccessEnabled"),
+            Map.entry("E.release.earlyAccess.leadDays", "earlyAccessLeadDays"));
+    private static final Set<String> E3_POTENTIALLY_AMPLIFYING_TARGET_IDS = Set.of(
+            "capacityBand1DeltaPct", "capacityBand2DeltaPct", "capacityBand3DeltaPct",
+            "capacityFloorPct",
+            "capacityApplyToPhone", "capacityApplyToCloudShare", "capacityApplyToPcGpu",
+            "capacityApplyToS1", "capacityApplyToPro", "capacityApplyToProV2",
+            "capacityApplyToRackP1", "capacityApplyToRackP2",
+            "stageEarlyEnd", "stageMidEnd",
+            "tradeinEnabled",
+            "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
+            "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3",
+            "tradeinLadderCredit4", "tradeinLadderCredit5",
+            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder", "eligibility",
+            "promoMult", "promoCooldownDays", "promoMaxPerSession", "promoDelaySeconds",
+            "promoMinAgeDays", "promoRoutes");
 
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final AdminOperatorRoleResolver roleResolver;
+    private final EmergencyControlRepository emergencyControlRepository;
 
     public record DelegatedProposalDescriptor(
             String action,
@@ -66,11 +130,190 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
+        if (isJ4Execution(command, operation)) {
+            return validateJ4MakerAuthority(command);
+        }
         if ("I".equalsIgnoreCase(command.domain())
                 && Set.of("i4_disclosure_publish", "i5_disclosure_publish").contains(operation)) {
             return validateDisclosureSnapshot(command.params());
         }
         return ApiResult.ok();
+    }
+
+    /**
+     * Replaces any client-supplied J4 snapshot with the authoritative current definition before an A2 ticket is
+     * serialized.  The snapshot binds the maker's target-domain grants to exactly the playbook that the checker
+     * will later approve; it is intentionally not an input the browser can choose.
+     */
+    public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (command == null || !isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT))) {
+            return ApiResult.ok(command);
+        }
+        J4AuthorizationSnapshot snapshot = currentJ4AuthorizationSnapshot(command);
+        if (snapshot == null) {
+            return ApiResult.fail(404, "J4_PLAYBOOK_NOT_FOUND");
+        }
+        if (snapshot.requiredAuthorities().isEmpty()) {
+            return ApiResult.fail(422, "J4_TARGET_AUTHORITY_UNMAPPED");
+        }
+        Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
+        params.remove("j4AuthorizationSnapshot");
+        params.put("j4AuthorizationSnapshot", snapshot.toMap());
+        return ApiResult.ok(new AuditReplayCommand(command.domain(), command.op(), params));
+    }
+
+    /**
+     * Approval is intentionally not a second direct-write permission check.
+     * A2 already requires {@code platform_a2_operation_approve}; for the two
+     * device configuration commands an E-domain checker only needs read scope
+     * for the exact bounded surface.  Requiring the proposer write grant here
+     * would make the checker a direct writer and collapse maker/checker.
+     * Other commands retain their existing replay-time business guard.
+     */
+    public ApiResult<Void> validateApproval(AuditReplayCommand command) {
+        if (command == null || command.op() == null) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED");
+        }
+        String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if (isJ4Execution(command, operation)) {
+            if (!hasAuthority("platform_a2_operation_approve")
+                    || !hasAuthority("emergency_j4_playbook_execute")) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(),
+                        "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
+            }
+            return validateJ4SnapshotCurrent(command);
+        }
+        String approvalAuthority = approvalAuthority(command, operation);
+        if (approvalAuthority == null) {
+            return validateProposal(command);
+        }
+        if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority(approvalAuthority)) {
+            return ApiResult.fail(
+                    OpsErrorCode.FORBIDDEN.httpStatus(),
+                    "A2_BUSINESS_PERMISSION_DENIED:" + approvalAuthority);
+        }
+        return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateJ4MakerAuthority(AuditReplayCommand command) {
+        ApiResult<Void> snapshotCurrent = validateJ4SnapshotCurrent(command);
+        if (snapshotCurrent.getCode() != 0) {
+            return snapshotCurrent;
+        }
+        J4AuthorizationSnapshot snapshot = snapshotFrom(command);
+        for (String authority : snapshot.requiredAuthorities()) {
+            if (!hasAuthority(authority)) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(),
+                        "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+            }
+        }
+        return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateJ4SnapshotCurrent(AuditReplayCommand command) {
+        J4AuthorizationSnapshot supplied = snapshotFrom(command);
+        if (supplied == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "J4_TARGET_AUTHORIZATION_SNAPSHOT_REQUIRED");
+        }
+        J4AuthorizationSnapshot current = currentJ4AuthorizationSnapshot(command);
+        if (current == null) {
+            return ApiResult.fail(404, "J4_PLAYBOOK_NOT_FOUND");
+        }
+        if (!supplied.equals(current)) {
+            return ApiResult.fail(409, "J4_PLAYBOOK_SNAPSHOT_CHANGED");
+        }
+        return ApiResult.ok();
+    }
+
+    private J4AuthorizationSnapshot currentJ4AuthorizationSnapshot(AuditReplayCommand command) {
+        String code = value(command == null ? null : command.params(), "code").toUpperCase(Locale.ROOT);
+        if (!code.matches("^SOP-[A-Z0-9-]{1,64}$")) {
+            return null;
+        }
+        Map<String, Object> playbook = emergencyControlRepository.playbookForUpdate(code).orElse(null);
+        if (playbook == null) {
+            return null;
+        }
+        List<String> requiredAuthorities = new ArrayList<>();
+        Object rawSequence = playbook.get("sequence");
+        if (!(rawSequence instanceof List<?> sequence) || sequence.isEmpty()) {
+            return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.of(), "");
+        }
+        StringBuilder canonical = new StringBuilder(code).append('|').append(text(playbook.get("version")));
+        for (Object rawStep : sequence) {
+            if (!(rawStep instanceof Map<?, ?> map)) {
+                return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.of(), "");
+            }
+            String domain = text(map.get("domain")).toUpperCase(Locale.ROOT);
+            String action = text(map.get("action"));
+            String ref = text(map.get("ref"));
+            String authority = j4TargetAuthority(domain);
+            if (authority == null) {
+                return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.of(), "");
+            }
+            if (!requiredAuthorities.contains(authority)) {
+                requiredAuthorities.add(authority);
+            }
+            canonical.append('|').append(domain).append('\u001f').append(action)
+                    .append('\u001f').append(ref).append('\u001f').append(Boolean.TRUE.equals(map.get("approve")));
+        }
+        return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.copyOf(requiredAuthorities),
+                sha256(canonical.toString()));
+    }
+
+    private J4AuthorizationSnapshot snapshotFrom(AuditReplayCommand command) {
+        Object rawSnapshot = command == null || command.params() == null
+                ? null : command.params().get("j4AuthorizationSnapshot");
+        if (!(rawSnapshot instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        String code = text(raw.get("code")).toUpperCase(Locale.ROOT);
+        String version = text(raw.get("version"));
+        String hash = text(raw.get("hash"));
+        Object rawAuthorities = raw.get("requiredAuthorities");
+        if (!(rawAuthorities instanceof List<?> values) || code.isBlank() || version.isBlank() || hash.isBlank()) {
+            return null;
+        }
+        List<String> authorities = values.stream().map(this::text).filter(value -> !value.isBlank()).toList();
+        return authorities.isEmpty() ? null : new J4AuthorizationSnapshot(code, version, authorities, hash);
+    }
+
+    private boolean isJ4Execution(AuditReplayCommand command, String operation) {
+        return command != null && "J".equalsIgnoreCase(text(command.domain()))
+                && "j4_playbook_execute".equals(operation);
+    }
+
+    private String j4TargetAuthority(String domain) {
+        return switch (domain) {
+            case "J1" -> "emergency_j1_gate_kill";
+            case "J2" -> "emergency_j2_emergency_block";
+            case "C2" -> "user_c2_account_freeze";
+            case "K1" -> "risk_k1_cluster_freeze";
+            case "I3" -> "content_i3_write";
+            case "I5" -> "content_i5_disclosure_publish";
+            default -> null;
+        };
+    }
+
+    private String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
+    }
+
+    private record J4AuthorizationSnapshot(
+            String code, String version, List<String> requiredAuthorities, String hash) {
+        Map<String, Object> toMap() {
+            return Map.of(
+                    "code", code,
+                    "version", version,
+                    "requiredAuthorities", requiredAuthorities,
+                    "hash", hash);
+        }
     }
 
     private boolean scopedMakerMayPropose(AuditReplayCommand command, String operation) {
@@ -146,7 +389,93 @@ public class AuditReplayBusinessPermissionGuard {
         if ("F".equals(domain)) {
             return delegatedFDescriptor(operation, params);
         }
+        if ("H".equals(domain)) {
+            return delegatedHDescriptor(operation, params);
+        }
+        if ("I".equals(domain)) {
+            return delegatedIDescriptor(operation, params);
+        }
         return null;
+    }
+
+    /**
+     * I3 CAP is replayed by the content service with an expected-cap CAS.  The
+     * browser may choose only the real tier and the next cap; all ticket copy
+     * and the exact notification-cap lock are reconstructed here.
+     */
+    private DelegatedProposalDescriptor delegatedIDescriptor(String operation, Map<String, Object> params) {
+        if (!"i3_cap_adjust".equals(operation)) {
+            return null;
+        }
+        String tier = normalizeI3Tier(value(params, "tier"));
+        String cap = normalizeI3Cap(value(params, "cap"));
+        String expectedCap = value(params, "expectedCap");
+        if (tier == null || cap == null
+                || expectedCap.isBlank() || expectedCap.length() > 160) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                "调整通知优先级 CAP · " + tier,
+                tier,
+                "以服务器执行时状态为准",
+                cap,
+                "I3",
+                "param",
+                false,
+                new AuditLockTarget("I", "notification_cap", tier));
+    }
+
+    // Keep the A2 lock identity byte-for-byte aligned with
+    // OpsNotificationCampaignService.updateCapRule: only known lowercase
+    // tiers are executable and equivalent numeric CAP spellings collapse to
+    // the same canonical "n 条" command.
+    private String normalizeI3Tier(String raw) {
+        String normalized = raw.trim().toLowerCase(Locale.ROOT);
+        return I3_CAP_TIERS.contains(normalized) ? normalized : null;
+    }
+
+    private String normalizeI3Cap(String raw) {
+        String trimmed = raw.trim();
+        if (!trimmed.matches("^[0-9]+(?:\\s*条)?$")) {
+            return null;
+        }
+        String digits = trimmed.replaceAll("\\D", "");
+        try {
+            int count = Integer.parseInt(digits);
+            return count >= 1 && count <= 10000 ? count + " 条" : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * H8 结算会写入钱包、资金台账和 outbox。即使调用方已持有
+     * growth_h8_settle，也只能把 PC 已展示的奖励快照和固定 batch 锁
+     * 提交给 A2；实际快照是否仍有效由回放服务再次用数据库状态校验。
+     */
+    private DelegatedProposalDescriptor delegatedHDescriptor(String operation, Map<String, Object> params) {
+        if (!"h8_referral_settlement".equals(operation)) {
+            return null;
+        }
+        Integer limit = strictInteger(params.get("limit"), 1, 100);
+        Long expectedVersion = strictLong(params.get("expectedH8Version"), 0, Long.MAX_VALUE);
+        Integer expectedRhythmMonth = strictInteger(params.get("expectedRhythmMonth"), 1, 24);
+        String snapshotHash = value(params, "rewardSnapshotHash");
+        if (limit == null
+                || expectedVersion == null
+                || expectedRhythmMonth == null
+                || !snapshotHash.matches("(?i)^[0-9a-f]{64}$")) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                "执行邀请奖励真实结算",
+                "待结算邀请批次",
+                "以服务器执行时状态为准",
+                "最多结算 " + limit + " 条",
+                "H8",
+                "fund",
+                true,
+                new AuditLockTarget("H", "referral_settlement_batch", "pending"));
     }
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
@@ -203,6 +532,7 @@ public class AuditReplayBusinessPermissionGuard {
     private DelegatedProposalDescriptor delegatedEDescriptor(String operation, Map<String, Object> params) {
         String deviceId = positiveIdentifier(params.get("deviceId"));
         return switch (operation) {
+            case "e3_config" -> e3ConfigDescriptor(params);
             case "e5_device_force_activate" -> deviceDescriptor(
                     "强制激活设备", deviceId, "ACTIVATED");
             case "e5_device_unbind" -> deviceDescriptor(
@@ -211,6 +541,24 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
         };
+    }
+
+    private DelegatedProposalDescriptor e3ConfigDescriptor(Map<String, Object> params) {
+        String key = value(params, "key");
+        String targetId = E3_CONFIG_TARGET_IDS.get(key);
+        String nextValue = value(params, "value");
+        if (targetId == null || nextValue.isBlank()) {
+            return null;
+        }
+        return new DelegatedProposalDescriptor(
+                "更新 E3 生命周期配置 · " + key,
+                key,
+                "以服务器执行时状态为准",
+                nextValue,
+                "E3",
+                "param",
+                E3_POTENTIALLY_AMPLIFYING_TARGET_IDS.contains(targetId),
+                new AuditLockTarget("E", "device_e3_config", targetId));
     }
 
     private DelegatedProposalDescriptor computeConfigDescriptor(Map<String, Object> params) {
@@ -395,6 +743,24 @@ public class AuditReplayBusinessPermissionGuard {
         }
     }
 
+    private Integer strictInteger(Object value, int min, int max) {
+        Long parsed = strictLong(value, min, max);
+        return parsed == null ? null : parsed.intValue();
+    }
+
+    private Long strictLong(Object value, long min, long max) {
+        String raw = text(value);
+        if (!raw.matches("(?:0|[1-9]\\d*)")) {
+            return null;
+        }
+        try {
+            long parsed = Long.parseLong(raw);
+            return parsed >= min && parsed <= max ? parsed : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private Integer impersonationTtlMinutes(Object value) {
         String raw = value == null ? "" : String.valueOf(value).trim();
         if (raw.isBlank()) {
@@ -448,6 +814,8 @@ public class AuditReplayBusinessPermissionGuard {
                 case "c2_impersonate_start" -> "user_c2_impersonate_start";
                 case "c2_blocklist_upsert" -> "user_c2_blocklist_add";
                 case "c2_blocklist_remove" -> "user_c2_blocklist_add";
+                case "c3_adjust_create" -> "user_c3_adjust_create";
+                case "c3_adjust_approve", "c3_adjust_reject" -> "user_c3_adjust_approve";
                 case "c5_2fa_disable" -> "user_c5_2fa_disable";
                 case "c5_password_reset" -> "user_c5_password_reset";
                 case "c5_user_unlock" -> c5UnlockAuthority(command.params());
@@ -482,6 +850,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "I" -> switch (operation) {
+                case "i3_cap_adjust" -> "content_i3_cap_adjust";
                 case "i4_trust_section_manage" -> sectionAuthority(command.params());
                 case "i4_disclosure_publish", "i5_disclosure_publish",
                         "i5_matrix_configure", "i5_matrix_archive",
@@ -490,6 +859,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
+                case "e3_config" -> "device_e3_write";
                 case "e4_order_refund" -> "device_e4_order_refund";
                 case "e4_order_cancel", "e4_order_terminal", "e4_order_state" -> "device_e4_write";
                 case "e5_device_force_activate" -> "device_e5_device_force_activate";
@@ -514,6 +884,18 @@ public class AuditReplayBusinessPermissionGuard {
                 case "f4_pool_settle" -> "network_f4_pool_fund";
                 default -> null;
             };
+            default -> null;
+        };
+    }
+
+    private String approvalAuthority(AuditReplayCommand command, String operation) {
+        String domain = command.domain() == null ? "" : command.domain().trim().toUpperCase(Locale.ROOT);
+        if (!"E".equals(domain)) {
+            return null;
+        }
+        return switch (operation) {
+            case "e3_config" -> "device_e3_read";
+            case "e6_compute_config", "e6_compute_config_batch" -> "device_e6_read";
             default -> null;
         };
     }

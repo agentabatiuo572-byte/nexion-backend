@@ -89,9 +89,10 @@ public class OpsUser360Service {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
         String role = text(roleResolver.resolveCode());
-        if (!Set.of("SUPER_ADMIN", "FINANCE", "RISK", "GROWTH", "SUPPORT", "AUDITOR").contains(role)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "C1_ROLE_SCOPE_UNMAPPED");
-        }
+        // The controller is the authorization boundary for C1: it requires user_c1hub_read.
+        // A role code is only used below to choose the least-privilege projection, so a
+        // valid custom role must not be rejected merely because it is not one of the
+        // built-in labels.
         boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
         boolean canFinance = full || Set.of("FINANCE", "SUPPORT").contains(role);
         boolean canGrowth = full || "GROWTH".equals(role);

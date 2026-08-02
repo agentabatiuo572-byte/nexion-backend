@@ -86,6 +86,8 @@ public class SecurityConfig {
                                 "/auth/register",
                                 "/auth/users/login",
                                 "/auth/users/login/2fa",
+                                "/auth/users/login/otp/send",
+                                "/auth/users/login/otp/verify",
                                 "/auth/users/refresh",
                                 "/auth/users/logout",
                                 "/auth/users/password-reset/complete",

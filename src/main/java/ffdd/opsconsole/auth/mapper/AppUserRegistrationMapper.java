@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.mapper;
 
 import ffdd.opsconsole.user.infrastructure.UserEntity;
+import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -161,10 +162,24 @@ public interface AppUserRegistrationMapper {
             """)
     int countRegisteredAccountsByClientIp24h(@Param("clientIp") String clientIp);
 
+    /**
+     * Compatibility resolver for legacy stored codes that contain hyphens or
+     * lowercase letters. It deliberately takes no lock: an expression cannot
+     * use the unique referral index. The caller rejects canonical ambiguity and
+     * then reacquires exactly one stored referral code with the method below.
+     */
+    @Select("""
+            SELECT id,referral_code,status,is_deleted
+              FROM nx_user
+             WHERE UPPER(REPLACE(referral_code,'-',''))=#{canonicalCode}
+               AND status='ACTIVE' AND is_deleted=0
+            """)
+    List<UserEntity> findActiveSponsorsByCanonicalCode(@Param("canonicalCode") String canonicalCode);
+
     @Select("""
             SELECT *
               FROM nx_user
-             WHERE UPPER(REPLACE(referral_code,'-',''))=UPPER(REPLACE(#{sponsorCode},'-',''))
+             WHERE referral_code=#{sponsorCode}
                AND status='ACTIVE' AND is_deleted=0
              LIMIT 1
              FOR UPDATE

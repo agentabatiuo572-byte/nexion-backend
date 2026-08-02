@@ -263,7 +263,8 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/approve")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')")
+    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
+            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> approveOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
@@ -280,7 +281,8 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/reject")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')")
+    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
+            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> rejectOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,

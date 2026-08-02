@@ -229,7 +229,7 @@ public class MultiAccountClusterEngine {
     private MultiAccountNode node(MultiAccountSignalFact fact) {
         return new MultiAccountNode(
                 StringUtils.hasText(fact.userNo()) ? fact.userNo() : userNo(fact.userId()),
-                fact.joinedAt(),
+                fact.joinedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
                 fact.sponsorUserId() == null ? "—" : userNo(fact.sponsorUserId()),
                 fact.gotWelcomeGift(),
                 fact.depositCumulativeUsdt(),

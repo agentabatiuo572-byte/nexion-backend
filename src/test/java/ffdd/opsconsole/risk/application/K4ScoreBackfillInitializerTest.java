@@ -6,6 +6,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doAnswer;
 
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
@@ -19,7 +21,6 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.transaction.annotation.Transactional;
 
 class K4ScoreBackfillInitializerTest {
     @Test
@@ -43,9 +44,10 @@ class K4ScoreBackfillInitializerTest {
                         "2026-07-22 20:00:00", "刚刚", invocation.getArgument(4))));
         EventOutboxService eventOutboxService = mock(EventOutboxService.class);
         K4KycReviewTriggerService triggerService = mock(K4KycReviewTriggerService.class);
+        K4ScoreBackfillTransactionExecutor transactionExecutor = immediateTransactionExecutor();
 
         K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
-                repository, new K4RiskScorer(), eventOutboxService, triggerService);
+                repository, new K4RiskScorer(), eventOutboxService, triggerService, transactionExecutor);
         initializer.backfillCanonicalScores();
 
         @SuppressWarnings("unchecked")
@@ -66,12 +68,11 @@ class K4ScoreBackfillInitializerTest {
                 .containsExactly(
                         "multiAccount", "arbitrage", "kycStatus",
                         "withdrawVelocity", "accountAge", "anomalyBehavior");
-        assertThat(K4ScoreBackfillInitializer.class.getDeclaredMethods())
-                .anySatisfy(method -> {
-                    if (method.getName().equals("backfillCanonicalScores")) {
-                        assertThat(method.isAnnotationPresent(Transactional.class)).isTrue();
-                    }
-                });
+        assertThat(java.util.Arrays.stream(K4ScoreBackfillInitializer.class.getDeclaredMethods())
+                .filter(method -> method.isAnnotationPresent(
+                        org.springframework.transaction.annotation.Transactional.class)))
+                .isEmpty();
+        verify(transactionExecutor, times(2)).execute(any());
         assertThat(java.util.Arrays.stream(K4ScoreBackfillInitializer.class.getDeclaredMethods())
                 .filter(method -> method.getName().equals("synchronizeRuntimeUsers"))
                 .findFirst().orElseThrow()
@@ -99,9 +100,10 @@ class K4ScoreBackfillInitializerTest {
         when(repository.refreshScoreProjection(eq("U00000053"), eq(8L), eq(model), any(Integer.class), any()))
                 .thenReturn(Optional.of(canonical));
         K4KycReviewTriggerService triggerService = mock(K4KycReviewTriggerService.class);
+        K4ScoreBackfillTransactionExecutor transactionExecutor = immediateTransactionExecutor();
 
         K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
-                repository, new K4RiskScorer(), mock(EventOutboxService.class), triggerService);
+                repository, new K4RiskScorer(), mock(EventOutboxService.class), triggerService, transactionExecutor);
         initializer.backfillCanonicalScores();
 
         verify(repository).refreshScoreProjection(eq("U00000053"), eq(8L), eq(model), any(Integer.class), any());
@@ -109,6 +111,49 @@ class K4ScoreBackfillInitializerTest {
                 eq(canonical), eq(canonical), eq(K4KycReviewTriggerService.SOURCE_FACT_REFRESH),
                 eq("K4 source facts or stale projection required recompute"), eq("system"),
                 eq("k4-fact-refresh:1:U00000053:8"));
+    }
+
+    @Test
+    void oneUserDeadlockRollsBackThenRetriesInANewBoundedTransaction() {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        RiskScoreModelView model = model();
+        RiskScoreUserView current = new RiskScoreUserView(
+                "U00000054", 10, 10, false, "低风险", "good", "k4-v1", 2L,
+                "now", "now", List.of());
+        when(repository.activeScoringModel()).thenReturn(Optional.of(model));
+        when(repository.scoreUserNosNeedingProjection(1L, K4ScoreBackfillInitializer.CHUNK_SIZE))
+                .thenReturn(List.of("U00000054"));
+        when(repository.findScoreUser("U00000054")).thenReturn(Optional.of(current));
+        when(repository.scoringInput("U00000054")).thenReturn(Optional.of(new RiskScoreRawInput(
+                "U00000054", 0, false, 0, false, "PASSED", 0, BigDecimal.ZERO, 180, 0, false)));
+        when(repository.refreshScoreProjection(eq("U00000054"), eq(2L), eq(model), any(Integer.class), any()))
+                .thenReturn(Optional.of(current));
+        K4ScoreBackfillTransactionExecutor transactionExecutor = mock(K4ScoreBackfillTransactionExecutor.class);
+        java.util.concurrent.atomic.AtomicInteger executions = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(invocation -> {
+            java.util.function.Supplier<?> attempt = invocation.getArgument(0);
+            int execution = executions.incrementAndGet();
+            if (execution == 2) {
+                throw new org.springframework.dao.DeadlockLoserDataAccessException("retry one user", null);
+            }
+            return attempt.get();
+        }).when(transactionExecutor).execute(any());
+        K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
+                repository, new K4RiskScorer(), mock(EventOutboxService.class),
+                mock(K4KycReviewTriggerService.class), transactionExecutor);
+
+        initializer.backfillCanonicalScores();
+
+        assertThat(executions).hasValue(3);
+        verify(repository, times(1)).refreshScoreProjection(
+                eq("U00000054"), eq(2L), eq(model), any(Integer.class), any());
+    }
+
+    private K4ScoreBackfillTransactionExecutor immediateTransactionExecutor() {
+        K4ScoreBackfillTransactionExecutor executor = mock(K4ScoreBackfillTransactionExecutor.class);
+        doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(0)).get())
+                .when(executor).execute(any());
+        return executor;
     }
 
     private RiskScoreContributionView contribution(String dimension) {

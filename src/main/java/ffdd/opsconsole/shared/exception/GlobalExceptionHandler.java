@@ -16,6 +16,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -69,6 +70,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex) {
         return ApiResult.fail(400, "REQUEST_BODY_INVALID");
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ApiResult<Void> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
+        return ApiResult.fail(415, "UNSUPPORTED_MEDIA_TYPE");
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

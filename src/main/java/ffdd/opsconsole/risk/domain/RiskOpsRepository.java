@@ -399,7 +399,7 @@ public interface RiskOpsRepository {
 
     record MultiAccountNode(
             String userNo,
-            LocalDateTime joinedAt,
+            String joinedAt,
             String sponsorUserNo,
             Boolean gotWelcomeGift,
             BigDecimal depositCumulativeUsdt,

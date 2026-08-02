@@ -65,6 +65,12 @@ class OpsUserControllerTest {
     }
 
     @Test
+    void assetAdjustmentReverseUsesItsExactC3Permission() {
+        assertThat(preAuthorize("reverseAssetAdjustment"))
+                .isEqualTo("hasAuthority('user_c3_adjust_reverse')");
+    }
+
+    @Test
     void securityMutationsUseExistingC5PermissionsInsteadOfLegacyC1HubPermissions() {
         assertThat(preAuthorize("disableTwoFactor"))
                 .isEqualTo("hasAuthority('user_c5_2fa_disable')");
@@ -72,6 +78,12 @@ class OpsUserControllerTest {
                 .isEqualTo("hasAuthority('user_c5_password_reset')");
         assertThat(preAuthorize("unlockSecurity"))
                 .isEqualTo("hasAnyAuthority('user_c5_unlock_short','user_c5_unlock_long')");
+    }
+
+    @Test
+    void user360UsesItsDedicatedC1HubReadAuthority() {
+        assertThat(preAuthorize("profile360"))
+                .isEqualTo("hasAuthority('user_c1hub_read')");
     }
 
     private String preAuthorize(String methodName) {

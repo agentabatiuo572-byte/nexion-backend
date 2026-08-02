@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.treasury.facade.TreasuryL3FinanceFacade;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -24,7 +25,21 @@ import org.mockito.ArgumentCaptor;
 class L3FinanceReportServiceTest {
     private final L3FinanceFactMapper mapper = mock(L3FinanceFactMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-23T00:00:00Z"), ZoneOffset.UTC);
-    private final L3FinanceReportService service = new L3FinanceReportService(mapper, clock);
+    private final TreasuryL3FinanceFacade treasuryFacade = mock(TreasuryL3FinanceFacade.class);
+    private final L3FinanceReportService service = new L3FinanceReportService(mapper, clock, treasuryFacade);
+
+    @Test
+    void returnsTheCompleteServerControlledTreasurySnapshot() {
+        Map<String, Object> snapshot = Map.of(
+                "serverAuthoritative", true,
+                "coverage", Map.of("source", "B1 双账本"),
+                "liabilities", Map.of("hardLiabilityCategoryCount", 9),
+                "maturity7", Map.of("window", "7d"),
+                "maturity30", Map.of("window", "30d"));
+        when(treasuryFacade.currentL3FinanceSnapshot()).thenReturn(snapshot);
+
+        assertThat(service.treasurySnapshot().getData()).isEqualTo(snapshot);
+    }
 
     @Test
     @SuppressWarnings("unchecked")

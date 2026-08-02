@@ -4,16 +4,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
+import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.auth.infrastructure.UserLoginGuardRecord;
+import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
@@ -25,6 +30,7 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.util.List;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
@@ -49,6 +55,8 @@ class AppUserAuthServiceTest {
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(otpDelivery.available()).thenReturn(true);
         when(users.createLoginOtpChallenge(any(), any(), any(), any(Integer.class))).thenReturn(1);
+        when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
+        when(loginGuards.recordOtpSend(any(), any(), any(), any(Integer.class), any(), any(Integer.class))).thenReturn(1);
         service = new AppUserAuthService(
                 users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, otpDelivery, outbox);
     }
@@ -129,7 +137,7 @@ class AppUserAuthServiceTest {
     }
 
     @Test
-    void c2AllowlistLowersLoginFrictionForValidCredentialsWithoutBypassingPassword() {
+    void c2AllowlistNeverBypassesTheAccountAuthenticationLock() {
         UserLoginGuardRecord guard = new UserLoginGuardRecord();
         guard.setFailedCount(5);
         guard.setWindowStartedAt(LocalDateTime.now().minusMinutes(1));
@@ -145,13 +153,11 @@ class AppUserAuthServiceTest {
         when(loginGuards.lock(any())).thenReturn(null, guard);
         when(users.selectOne(any())).thenReturn(user);
         when(blocklistVerifier.isAllowlisted(42L)).thenReturn(true);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
-                .thenReturn("trusted-token");
-
         var result = service.login(new UserLoginRequest("+81", "9012345678", "secret"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().accessToken()).isEqualTo("trusted-token");
+        assertThat(result.getCode()).isEqualTo(429);
+        assertThat(result.getMessage()).isEqualTo("USER_LOGIN_TEMPORARILY_LOCKED");
+        verify(tokens, never()).createToken(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -272,17 +278,167 @@ class AppUserAuthServiceTest {
         UserEntity user = activeUser();
         when(users.selectOne(any())).thenReturn(user);
         when(users.isTwoFactorEnabled(42L)).thenReturn(true);
-        when(users.consumeValidLoginOtp(42L, "OTP-42", "123456")).thenReturn(1);
+        String challengeNo = "OTP-0123456789abcdef0123456789abcdef";
+        when(users.consumeValidLoginOtp(42L, challengeNo, "123456")).thenReturn(1);
         when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
                 .thenReturn("mfa-token");
 
         var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+81", "9012345678", "secret", "OTP-42", "123456"));
+                "+81", "9012345678", "secret", challengeNo, "123456"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("mfa-token");
-        verify(users).consumeValidLoginOtp(42L, "OTP-42", "123456");
+        verify(users).consumeValidLoginOtp(42L, challengeNo, "123456");
         verify(sessions).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void twoFactorLoginRejectsRegistrationAndPasswordlessChallengePurposes() {
+        var loginPurpose = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
+                "+81", "9012345678", "secret", "LOGIN-0123456789abcdef0123456789abcdef", "123456"));
+        var registrationPurpose = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
+                "+81", "9012345678", "secret", "REG-0123456789abcdef0123456789abcdef", "123456"));
+
+        assertThat(loginPurpose.getCode()).isEqualTo(422);
+        assertThat(registrationPurpose.getCode()).isEqualTo(422);
+        verify(users, never()).consumeValidLoginOtp(any(), any(), any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void otpLoginRequiresItsOwnServerChallengeBeforeIssuingToken() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.consumeValidLoginOtp(eq(42L), any(), eq("123456"))).thenReturn(1);
+        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+                .thenReturn("otp-login-token");
+
+        var sent = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"));
+        var verified = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", sent.getData().challengeNo(), "123456"));
+
+        assertThat(sent.getCode()).isZero();
+        assertThat(sent.getData().challengeNo()).startsWith("LOGIN-");
+        assertThat(verified.getCode()).isZero();
+        assertThat(verified.getData().accessToken()).isEqualTo("otp-login-token");
+        verify(users).consumeValidLoginOtp(eq(42L), eq(sent.getData().challengeNo()), eq("123456"));
+    }
+
+    @Test
+    void otpLoginCannotConsumeASecondFactorChallenge() {
+        var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", "OTP-42", "123456"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("USER_OTP_LOGIN_CHALLENGE_INVALID");
+    }
+
+    @Test
+    void otpLoginStartDoesNotRevealWhetherAnAccountCanUseThePath() {
+        var unknown = service.beginOtpLogin(new UserOtpLoginRequest("+81", "8012345678"));
+
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.isTwoFactorEnabled(42L)).thenReturn(true);
+        var twoFactorProtected = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"));
+
+        assertThat(unknown.getCode()).isZero();
+        assertThat(unknown.getData().challengeNo()).matches("LOGIN-[a-f0-9]{32}");
+        assertThat(twoFactorProtected.getCode()).isZero();
+        assertThat(twoFactorProtected.getData().challengeNo()).matches("LOGIN-[a-f0-9]{32}");
+        verify(otpDelivery, never()).deliver(any(), any(), eq(twoFactorProtected.getData().challengeNo()), any(), any(Integer.class));
+    }
+
+    @Test
+    void otpSendThrottleSurvivesIpRotationAndStopsSmsBombing() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        UserOtpSendGuardRecord fresh = freshOtpSendGuard();
+        UserOtpSendGuardRecord cooldown = freshOtpSendGuard();
+        cooldown.setLastSentAt(LocalDateTime.now());
+        when(loginGuards.lockOtpSendGuard(any())).thenReturn(fresh, cooldown);
+
+        var first = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"), "198.51.100.10");
+        var rotatedIp = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"), "203.0.113.20");
+
+        assertThat(first.getCode()).isZero();
+        assertThat(rotatedIp.getCode()).isEqualTo(429);
+        assertThat(rotatedIp.getMessage()).isEqualTo("USER_OTP_SEND_RATE_LIMITED");
+        verify(otpDelivery, times(1)).deliver(eq("+81"), eq("9012345678"), any(), any(), any(Integer.class));
+    }
+
+    @Test
+    void issuingNewLoginOtpInvalidatesEveryOlderOpenLoginChallengeFirst() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+
+        var result = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"), "198.51.100.30");
+
+        assertThat(result.getCode()).isZero();
+        var order = inOrder(users);
+        order.verify(users).invalidateOpenLoginOtpChallenges(42L);
+        order.verify(users).createLoginOtpChallenge(eq(42L), eq(result.getData().challengeNo()), any(), any(Integer.class));
+    }
+
+    @Test
+    void allowlistCannotBypassAccountOtpLockAndFifthErrorCreatesThatLock() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        when(blocklistVerifier.isAllowlisted(42L)).thenReturn(true);
+        UserLoginGuardRecord fourFailures = new UserLoginGuardRecord();
+        fourFailures.setFailedCount(4);
+        fourFailures.setWindowStartedAt(LocalDateTime.now().minusMinutes(1));
+        when(loginGuards.lock(any())).thenReturn(null, fourFailures);
+        String challengeNo = "LOGIN-22222222222222222222222222222222";
+
+        var fifth = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", challengeNo, "999999"), "198.51.100.40");
+
+        assertThat(fifth.getCode()).isEqualTo(422);
+        ArgumentCaptor<LocalDateTime> lockUntil = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(loginGuards, times(2)).recordFailure(any(), any(Integer.class), any(), lockUntil.capture());
+        assertThat(lockUntil.getAllValues().get(1)).isAfter(LocalDateTime.now());
+
+        UserLoginGuardRecord locked = new UserLoginGuardRecord();
+        locked.setLockedUntil(LocalDateTime.now().plusMinutes(10));
+        when(loginGuards.lock(any())).thenReturn(null, locked);
+        var blockedSend = service.beginOtpLogin(
+                new UserOtpLoginRequest("+81", "9012345678"), "203.0.113.40");
+        assertThat(blockedSend.getCode()).isEqualTo(429);
+        assertThat(blockedSend.getMessage()).isEqualTo("USER_LOGIN_TEMPORARILY_LOCKED");
+    }
+
+    @Test
+    void expiredOrReplayedOtpChallengeNeverCreatesASession() {
+        UserEntity user = activeUser();
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.consumeValidLoginOtp(42L, "LOGIN-00000000000000000000000000000000", "123456")).thenReturn(0);
+
+        var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", "LOGIN-00000000000000000000000000000000", "123456"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("USER_OTP_LOGIN_CHALLENGE_INVALID");
+        verify(users).recordInvalidLoginOtpAttempt(
+                42L, "LOGIN-00000000000000000000000000000000");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void allowlistNeverBypassesAtomicOtpChallengeAttemptCounting() {
+        UserEntity user = activeUser();
+        String challengeNo = "LOGIN-11111111111111111111111111111111";
+        when(users.selectOne(any())).thenReturn(user);
+        when(blocklistVerifier.isAllowlisted(42L)).thenReturn(true);
+        when(users.consumeValidLoginOtp(42L, challengeNo, "999999")).thenReturn(0);
+        when(users.recordInvalidLoginOtpAttempt(42L, challengeNo)).thenReturn(1);
+
+        var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", challengeNo, "999999"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        verify(users).recordInvalidLoginOtpAttempt(42L, challengeNo);
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
     @Test
@@ -364,5 +520,14 @@ class AppUserAuthServiceTest {
         user.setIsDeleted(0);
         user.setPasswordHash(passwords.encode("secret"));
         return user;
+    }
+
+    private UserOtpSendGuardRecord freshOtpSendGuard() {
+        UserOtpSendGuardRecord guard = new UserOtpSendGuardRecord();
+        guard.setWindowStartedAt(LocalDateTime.now().minusMinutes(16));
+        guard.setWindowSendCount(0);
+        guard.setDayStartedAt(LocalDate.now());
+        guard.setDaySendCount(0);
+        return guard;
     }
 }

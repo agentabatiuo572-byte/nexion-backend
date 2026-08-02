@@ -4,6 +4,7 @@ import ffdd.opsconsole.bi.mapper.L3FinanceFactMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.treasury.facade.TreasuryL3FinanceFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -26,6 +27,11 @@ public class L3FinanceReportService {
     private static final Set<String> PERIODS = Set.of("day", "week", "month", "quarter", "custom");
     private final L3FinanceFactMapper mapper;
     private final Clock clock;
+    private final TreasuryL3FinanceFacade treasuryL3FinanceFacade;
+
+    public ApiResult<Map<String, Object>> treasurySnapshot() {
+        return ApiResult.ok(treasuryL3FinanceFacade.currentL3FinanceSnapshot());
+    }
 
     public ApiResult<Map<String, Object>> revenue(String period, String from, String to) {
         PeriodWindow window = periodWindow(period, from, to);

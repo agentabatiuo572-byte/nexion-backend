@@ -36,6 +36,7 @@ import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
@@ -217,7 +218,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             I18nMessageVersionEntity previousDraft = latestVersion(key, "DRAFT");
             int nextVersionNo = latest == null ? 1 : value(latest.getVersionNo()) + 1;
             if (previousDraft != null) {
-                if (messageVersionMapper.retireDraftCas(previousDraft.getId(), now) != 1) {
+                if (messageVersionMapper.retireDraftCas(
+                        key, value(previousDraft.getVersionNo()), now) != 1) {
                     throw new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT");
                 }
                 previousDraft.setIsDeleted(1);
@@ -253,6 +255,75 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             upsertMessage(key, "zh-CN", zh, 1, now); upsertMessage(key, "en-US", en, 1, now); upsertMessage(key, "vi-VN", vi, 1, now);
         }
         return toVersionPair(version);
+    }
+
+    @Override
+    public I18nMessagePairView saveMessageDraftCas(
+            String messageKey,
+            String zh,
+            String en,
+            String vi,
+            String expectedVersion,
+            LocalDateTime now) {
+        String key = messageKey.trim();
+        String expected = expectedVersion == null ? "" : expectedVersion.trim().toLowerCase(Locale.ROOT);
+        if (expected.isEmpty()) {
+            I18nMessageVersionEntity initial = new I18nMessageVersionEntity();
+            initial.setMessageKey(key);
+            initial.setVersionNo(1);
+            initial.setZhValue(zh.trim());
+            initial.setEnValue(en.trim());
+            initial.setViValue(vi.trim());
+            initial.setStatus("DRAFT");
+            initial.setCreatedAt(now);
+            initial.setUpdatedAt(now);
+            initial.setIsDeleted(0);
+            try {
+                messageVersionMapper.insert(initial);
+            } catch (DuplicateKeyException ex) {
+                throw versionConflict(ex);
+            }
+            return toVersionPair(initial);
+        }
+        if (!expected.matches("^v[1-9][0-9]{0,8}$")) {
+            throw versionConflict(null);
+        }
+
+        int expectedVersionNo = Integer.parseInt(expected.substring(1));
+        int nextVersionNo = Math.addExact(expectedVersionNo, 1);
+        I18nMessageVersionEntity expectedRow = latestVersion(key, null);
+        if (expectedRow == null || value(expectedRow.getVersionNo()) != expectedVersionNo) {
+            throw versionConflict(null);
+        }
+
+        if ("DRAFT".equalsIgnoreCase(expectedRow.getStatus())) {
+            if (messageVersionMapper.retireDraftCas(key, expectedVersionNo, now) != 1) {
+                throw versionConflict(null);
+            }
+            I18nMessageVersionEntity saved = draftVersion(
+                    key, nextVersionNo, zh, en, vi, now);
+            // Once the current DRAFT row is retired atomically, this transaction is
+            // the sole writer allowed to allocate the next version. An unexpected
+            // insert failure must escape so Spring rolls the retirement back.
+            messageVersionMapper.insert(saved);
+            return toVersionPair(saved);
+        }
+
+        try {
+            if (messageVersionMapper.insertDraftCas(
+                    key,
+                    expectedVersionNo,
+                    nextVersionNo,
+                    zh.trim(),
+                    en.trim(),
+                    vi.trim(),
+                    now) != 1) {
+                throw versionConflict(null);
+            }
+        } catch (DuplicateKeyException ex) {
+            throw versionConflict(ex);
+        }
+        return toVersionPair(draftVersion(key, nextVersionNo, zh, en, vi, now));
     }
 
     @Override
@@ -783,6 +854,32 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 .eq(StringUtils.hasText(status), I18nMessageVersionEntity::getStatus, status)
                 .eq(I18nMessageVersionEntity::getIsDeleted, 0)
                 .orderByDesc(I18nMessageVersionEntity::getVersionNo).last("LIMIT 1"));
+    }
+
+    private IllegalStateException versionConflict(Throwable cause) {
+        return cause == null
+                ? new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT")
+                : new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT", cause);
+    }
+
+    private I18nMessageVersionEntity draftVersion(
+            String messageKey,
+            int versionNo,
+            String zh,
+            String en,
+            String vi,
+            LocalDateTime now) {
+        I18nMessageVersionEntity saved = new I18nMessageVersionEntity();
+        saved.setMessageKey(messageKey);
+        saved.setVersionNo(versionNo);
+        saved.setZhValue(zh.trim());
+        saved.setEnValue(en.trim());
+        saved.setViValue(vi.trim());
+        saved.setStatus("DRAFT");
+        saved.setCreatedAt(now);
+        saved.setUpdatedAt(now);
+        saved.setIsDeleted(0);
+        return saved;
     }
 
     private I18nMessagePairView toPair(String messageKey, List<I18nMessageEntity> rows, String version, String forcedStatus) {

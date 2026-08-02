@@ -514,6 +514,9 @@ public class OpsConversationService {
         if (canonicalTarget == null && !("standby".equals(targetType) && "standby-pool".equals(targetId))) {
             return ApiResult.fail(404, "CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
         }
+        if ("agent".equals(targetType) && targetId.equals(conversation.ownerAgentId())) {
+            return ApiResult.fail(422, "CONVERSATION_TRANSFER_TARGET_SELF_FORBIDDEN");
+        }
         String targetName = canonicalTarget == null
                 ? "备勤池"
                 : String.valueOf(canonicalTarget.getOrDefault("targetName", targetId));

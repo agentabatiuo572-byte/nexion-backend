@@ -112,6 +112,9 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
     private static final Pattern SOP_I5_REF = Pattern.compile(
             "^disclosure-publish:([a-z0-9_-]{2,32}):([a-z0-9._-]{1,32})$");
     private static final Duration J4_EXECUTION_RECOVERY_LEASE = Duration.ofMinutes(2);
+    /** A sandbox drill reached its terminal proof; no production side effect exists to roll back. */
+    private static final String J4_DRILL_ROLLBACK_NOT_REQUIRED = "NOT_REQUIRED";
+    private static final String J4_DRILL_VALIDATION_ONLY_REASON = "VALIDATION_ONLY_NO_PRODUCTION_ACTIONS";
     private static final Set<String> SOP_RECOVERY_MARKERS = Set.of(
             "恢复", "解封", "放行", "开启", "启用", "restore", "release", "enable", "resume");
     private static final Set<String> J1_CANONICAL_GATE_SETTINGS = Set.of(
@@ -1254,7 +1257,11 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         }
         LocalDateTime drillAt = LocalDateTime.now();
         String executionId = seed.code() + "-DRILL-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
-        Map<String, Object> campaign = inspectNotificationCampaign(seed);
+        Map<String, Object> campaign = new LinkedHashMap<>(inspectNotificationCampaign(seed));
+        // Persist the facts relied on by the terminal state. The same evidence is also
+        // appended to audit below, so a NULL rollback state can never stand for a drill.
+        campaign.put("validationOnly", true);
+        campaign.put("productionActionsExecuted", false);
         Map<String, Object> row = execution(
                 drillAt.format(TS), seed.code(), seed.name() + " (演练)", request.reason().trim(), "drill",
                 seed.seq().stream().map(ignored -> "done").toList(), operator, seed.owner());
@@ -1264,12 +1271,16 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         row.put("domainActions", seed.seq().stream().map(step -> map(
                 "domain", step.get("domain"), "action", step.get("action"), "status", "VALIDATED")).toList());
         row.put("rollback", seed.rollback());
+        row.put("rollbackStatus", J4_DRILL_ROLLBACK_NOT_REQUIRED);
+        row.put("rollbackReason", J4_DRILL_VALIDATION_ONLY_REASON);
         emergencyRepository.createExecution(row);
         emergencyRepository.markPlaybookDrilled(seed.code(), drillAt, operator);
         auditRequired("J4_SOP_PLAYBOOK_DRILL_COMPLETED", "SOP_PLAYBOOK_EXECUTION", executionId, operator, "MEDIUM", map(
                 "code", seed.code(),
                 "validationOnly", true,
                 "productionActionsExecuted", false,
+                "rollbackStatus", J4_DRILL_ROLLBACK_NOT_REQUIRED,
+                "rollbackReason", J4_DRILL_VALIDATION_ONLY_REASON,
                 "stepResults", row.get("domainActions"),
                 "notification", campaign,
                 "reason", request.reason().trim(),
@@ -1389,10 +1400,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey,
                     ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PLAYBOOK_NOT_EMERGENCY_TRACK"));
         }
-        ApiResult<Map<String, Object>> authorityError = requireTargetAuthorities(seed);
-        if (authorityError != null) {
-            return rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, authorityError);
-        }
+        // Target-domain direct-write grants are validated for the A2 maker against the authoritative
+        // playbook snapshot before the ticket is persisted.  The checker replays that frozen command
+        // with A2 + J4 authority only; requiring every target grant again here would collapse the
+        // maker/checker separation and incorrectly reject a dedicated J4 checker.
         ApiResult<Map<String, Object>> validation = validateExecutablePlaybook(seed, true);
         if (validation != null) {
             return rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, validation);
@@ -1805,6 +1816,12 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "J4_EXECUTION_NOT_FOUND"));
         }
         Map<String, Object> execution = found.get();
+        if ("drill".equals(stringValue(execution.get("mode"), ""))) {
+            // A drill is a validation-only terminal record. Never funnel it through
+            // the J1 recovery boundary, even if a caller bypasses the hidden UI action.
+            return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
+                    ApiResult.fail(409, "J4_DRILL_ROLLBACK_NOT_APPLICABLE:" + execId));
+        }
         String effectiveCode = StringUtils.hasText(requestedCode)
                 ? requestedCode
                 : stringValue(execution.get("code"), "").toUpperCase(Locale.ROOT);
@@ -2800,32 +2817,6 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "audience", campaign.audience(),
                         "campaignStatus", campaign.status()))
                 .orElseThrow(() -> new IllegalStateException("J4_NOTIFY_CAMPAIGN_NOT_READY"));
-    }
-
-    private ApiResult<Map<String, Object>> requireTargetAuthorities(PlaybookSeed seed) {
-        var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
-        }
-        Set<String> authorities = authentication.getAuthorities().stream()
-                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
-                .collect(Collectors.toSet());
-        for (Map<String, Object> step : seed.seq()) {
-            String domain = stringValue(step.get("domain"), "").toUpperCase(Locale.ROOT);
-            String required = switch (domain) {
-                case "J1" -> "emergency_j1_gate_kill";
-                case "J2" -> "emergency_j2_emergency_block";
-                case "C2" -> "user_c2_account_freeze";
-                case "K1" -> "risk_k1_cluster_freeze";
-                case "I3" -> "content_i3_write";
-                case "I5" -> "content_i5_disclosure_publish";
-                default -> "";
-            };
-            if (StringUtils.hasText(required) && !authorities.contains(required)) {
-                return ApiResult.fail(403, "J4_TARGET_AUTHORITY_REQUIRED:" + domain + ":" + required);
-            }
-        }
-        return null;
     }
 
     private boolean hasAuthenticatedAuthority(String required) {

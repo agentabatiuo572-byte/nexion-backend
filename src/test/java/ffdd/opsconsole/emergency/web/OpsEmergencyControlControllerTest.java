@@ -37,11 +37,15 @@ class OpsEmergencyControlControllerTest {
     }
 
     @Test
-    void sopExecuteDelegatesWithIdempotencyHeader() {
+    void sopExecuteAcceptsTheDedicatedJ4ExecutionAuthorityAndDelegatesWithIdempotencyHeader() throws Exception {
         SopPlaybookRunRequest request = new SopPlaybookRunRequest(true, "incident", "risk-lead");
         when(service.executePlaybook("SOP-03", "idem-j4", request)).thenReturn(ApiResult.ok(Map.of("ok", true)));
 
         assertThat(controller.executePlaybook("SOP-03", "idem-j4", request).getCode()).isZero();
+        Method method = OpsEmergencyControlController.class.getMethod(
+                "executePlaybook", String.class, String.class, SopPlaybookRunRequest.class);
+        assertThat(method.getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('emergency_j4_playbook_execute')");
 
         verify(service).executePlaybook("SOP-03", "idem-j4", request);
     }

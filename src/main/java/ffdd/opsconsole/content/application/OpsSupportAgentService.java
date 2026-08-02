@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.SupportAgentPageView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
+import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
@@ -74,6 +75,14 @@ public class OpsSupportAgentService {
                 POSITIONS,
                 SERVICE_TYPES,
                 List.of("nx_admin", "nx_support_agent_profile", "nx_support_agent_user_assignment")));
+    }
+
+    /**
+     * Returns only the identity fields M2 needs to submit an assignee command.
+     * M1 profile, capacity, service-type and assignment details never cross this boundary.
+     */
+    public ApiResult<List<SupportTicketAssigneeCandidateView>> ticketAssigneeCandidates() {
+        return ApiResult.ok(repository.listTicketAssigneeCandidates());
     }
 
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
@@ -303,10 +312,28 @@ public class OpsSupportAgentService {
             }
         }
 
+        // M1 owns seat assignment only.  Profile fields omitted by a caller must not
+        // be interpreted as a request to reset the M5-owned configuration.
+        SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
         LocalDateTime now = LocalDateTime.now(clock);
-        List<String> serviceTypes = normalizeSeatServiceTypes(seatType, request.serviceTypes());
-        List<String> tags = normalizeTags(request.tags());
-        int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, SEAT_DEDICATED.equals(seatType) ? 30 : 12);
+        List<String> serviceTypes = request.serviceTypes() == null && currentProfile != null
+                ? currentProfile.serviceTypes()
+                : normalizeSeatServiceTypes(seatType, request.serviceTypes());
+        List<String> tags = request.tags() == null && currentProfile != null
+                ? currentProfile.tags()
+                : normalizeTags(request.tags());
+        int maxConcurrent = request.maxConcurrent() == null && currentProfile != null
+                ? currentProfile.maxConcurrent()
+                : boundedInt(request.maxConcurrent(), 0, 40, SEAT_DEDICATED.equals(seatType) ? 30 : 12);
+        boolean enabled = request.enabled() == null && currentProfile != null
+                ? Boolean.TRUE.equals(currentProfile.enabled())
+                : !Boolean.FALSE.equals(request.enabled());
+        boolean transferable = request.transferable() == null && currentProfile != null
+                ? Boolean.TRUE.equals(currentProfile.transferable())
+                : !Boolean.FALSE.equals(request.transferable());
+        boolean busy = request.busy() == null && currentProfile != null
+                ? Boolean.TRUE.equals(currentProfile.busy())
+                : Boolean.TRUE.equals(request.busy());
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
         repository.updateProfile(
                 adminId,
@@ -315,9 +342,9 @@ public class OpsSupportAgentService {
                 serviceTypes,
                 tags,
                 maxConcurrent,
-                !Boolean.FALSE.equals(request.enabled()),
-                !Boolean.FALSE.equals(request.transferable()),
-                Boolean.TRUE.equals(request.busy()),
+                enabled,
+                transferable,
+                busy,
                 now);
         List<Long> boundUserIds = new ArrayList<>();
         if (SEAT_DEDICATED.equals(seatType)) {

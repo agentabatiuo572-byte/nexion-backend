@@ -96,6 +96,7 @@ import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 @ApplicationService
@@ -1366,7 +1367,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "K4_MODEL_DRAFT_REQUIRED", request == null ? null : request.reason(), idempotencyKey);
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> saveScoringModelDraft(
             String idempotencyKey, RiskScoringModelDraftRequest request) {
         String actor = authenticatedK4Operator();
@@ -1397,7 +1397,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }));
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> publishScoringModel(
             String idempotencyKey, RiskScoringModelPublishRequest request) {
         String actor = authenticatedK4Operator();
@@ -1449,7 +1448,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }));
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> restoreScoringModelDraft(
             String idempotencyKey, RiskScoringModelRestoreRequest request) {
         String actor = authenticatedK4Operator();
@@ -1490,7 +1488,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }));
     }
 
-    @Transactional
     public ApiResult<Map<String, Object>> recomputeScores(
             String idempotencyKey, RiskScoreBatchCommandRequest request) {
         String actor = authenticatedK4Operator();
@@ -1504,13 +1501,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return rejectK4Write("batchRecompute", "batch", actor, 422,
                     "K4_MODEL_VERSION_REQUIRED", request.reason(), idempotencyKey);
         }
-        List<String> requested = request.userNos() == null ? List.of() : request.userNos().stream()
-                .map(this::trimmed).filter(StringUtils::hasText).distinct().toList();
+        List<String> requested = canonicalK4ScoreUserOrder(request.userNos());
         if (requested.size() > 1000) {
             return rejectK4Write("batchRecompute", "batch", actor, 422,
                     "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
         }
-        List<String> targets = requested.isEmpty() ? riskRepository.scoreUserNos() : requested;
+        // Every multi-user K4 writer acquires the per-user score roots in the same order.
+        // This prevents inverse client order from creating U1->U2 / U2->U1 deadlocks.
+        List<String> targets = requested.isEmpty()
+                ? canonicalK4ScoreUserOrder(riskRepository.scoreUserNos())
+                : requested;
         if (targets.size() > 1000) {
             return rejectK4Write("batchRecompute", "batch", actor, 422,
                     "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
@@ -1558,7 +1558,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }));
     }
 
-    @Transactional
     public ApiResult<RiskScoreUserView> overrideScore(String userNo, String idempotencyKey, RiskScoreOverrideRequest request) {
         String actor = authenticatedK4Operator();
         String normalized = trimmed(userNo);
@@ -1608,7 +1607,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 }));
     }
 
-    @Transactional
     public ApiResult<RiskScoreUserView> recomputeScore(String userNo, String idempotencyKey, RiskScoreCommandRequest request) {
         String actor = authenticatedK4Operator();
         String normalized = trimmed(userNo);
@@ -2184,7 +2182,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             String reason,
             String operator,
             String idempotencyKey) {
-        for (String userNo : scoreUsers) {
+        for (String userNo : canonicalK4ScoreUserOrder(scoreUsers)) {
             RiskScoreUserView current = riskRepository.findScoreUser(userNo)
                     .orElseThrow(() -> new BizException(409, "K4_SCORE_USER_MISSING_DURING_PUBLISH"));
             RiskScoreRawInput input = riskRepository.scoringInput(userNo)
@@ -2204,6 +2202,18 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     operator,
                     idempotencyKey + ":" + userNo);
         }
+    }
+
+    static List<String> canonicalK4ScoreUserOrder(List<String> scoreUsers) {
+        if (scoreUsers == null || scoreUsers.isEmpty()) {
+            return List.of();
+        }
+        return scoreUsers.stream()
+                .map(value -> value == null ? "" : value.trim())
+                .filter(StringUtils::hasText)
+                .distinct()
+                .sorted()
+                .toList();
     }
 
     private String normalizeK1Param(String key, String rawValue) {
@@ -2994,9 +3004,24 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             String requestReason,
             String idempotencyKey,
             Supplier<ApiResult<T>> command) {
-        try {
-            return command.get();
-        } catch (RuntimeException failure) {
+        RuntimeException failure = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return command.get();
+            } catch (PessimisticLockingFailureException transientLockFailure) {
+                failure = transientLockFailure;
+                if (attempt < 2) {
+                    continue;
+                }
+            } catch (RuntimeException nonRetryableFailure) {
+                failure = nonRetryableFailure;
+            }
+
+            if (failure != null) {
+                break;
+            }
+        }
+        if (failure != null) {
             Map<String, Object> detail = new LinkedHashMap<>();
             detail.put("operation", operation);
             detail.put("failureType", failure.getClass().getSimpleName());
@@ -3024,6 +3049,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             }
             throw failure;
         }
+        throw new IllegalStateException("K4 write ended without a result");
     }
 
     private static Map<String, Object> k4AuditDetail(

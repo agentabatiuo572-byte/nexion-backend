@@ -25,9 +25,11 @@ public class AdminIdempotencyTransactionExecutor {
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_SUCCEEDED = "SUCCEEDED";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String STATUS_UNKNOWN = "UNKNOWN";
 
     private final AdminIdempotencyRecordMapper recordMapper;
     private final ObjectMapper objectMapper;
+    private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public <T> Claim<T> claim(
@@ -35,30 +37,37 @@ public class AdminIdempotencyTransactionExecutor {
             String idempotencyKey,
             String requestHash,
             LocalDateTime expiresAt,
-            Class<T> responseType) {
+        Class<T> responseType) {
         AdminIdempotencyRecordEntity record = null;
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(scope, idempotencyKey);
-        if (existing != null && STATUS_FAILED.equals(existing.getStatus())) {
-            if (!requestHash.equals(existing.getRequestHash())) {
-                return Claim.replayed(replay(existing, requestHash, responseType));
-            }
-            if (recordMapper.resetFailedById(existing.getId(), requestHash, expiresAt) == 1) {
-                record = existing;
-            } else {
-                AdminIdempotencyRecordEntity raced = recordMapper.selectActive(scope, idempotencyKey);
-                if (raced != null) {
-                    return Claim.replayed(replay(raced, requestHash, responseType));
-                }
-                throw conflict("IDEMPOTENCY_RETRY_CONFLICT");
-            }
-        } else if (existing != null) {
-            return Claim.replayed(replay(existing, requestHash, responseType));
+        if (existing != null) {
+            return resolveKnownRecord(existing, requestHash, expiresAt, responseType);
         }
 
         AdminIdempotencyRecordEntity current = record == null
                 ? recordMapper.selectCurrent(scope, idempotencyKey)
                 : null;
-        if (record == null && current != null
+        if (record == null && current != null && STATUS_UNKNOWN.equals(current.getStatus())) {
+            throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+        } else if (record == null && current != null && STATUS_PROCESSING.equals(current.getStatus())
+                && Integer.valueOf(0).equals(current.getIsDeleted())) {
+            // Database NOW() is the sole lease clock. The independent CAS is
+            // deliberately attempted even when this JVM has a different zone.
+            int transitioned = expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
+                    current.getId(), scope, idempotencyKey);
+            if (transitioned == 1) {
+                throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+            }
+            AdminIdempotencyRecordEntity refreshed = expiryTransitionExecutor.loadCurrentCommitted(
+                    scope, idempotencyKey);
+            if (refreshed == null || STATUS_UNKNOWN.equals(refreshed.getStatus())) {
+                throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+            }
+            // A different instance may have reached a known terminal state
+            // while our CAS raced. Preserve that state rather than degrading
+            // it to UNKNOWN; PROCESSING still responds as in-progress.
+            return resolveKnownRecord(refreshed, requestHash, expiresAt, responseType);
+        } else if (record == null && current != null
                 && recordMapper.resetExpiredById(current.getId(), requestHash, expiresAt) == 1) {
             record = current;
         } else if (record == null && current != null) {
@@ -109,6 +118,28 @@ public class AdminIdempotencyTransactionExecutor {
         }
     }
 
+    private <T> Claim<T> resolveKnownRecord(
+            AdminIdempotencyRecordEntity record,
+            String requestHash,
+            LocalDateTime expiresAt,
+            Class<T> responseType) {
+        if (!STATUS_FAILED.equals(record.getStatus())) {
+            return Claim.replayed(replay(record, requestHash, responseType));
+        }
+        if (!requestHash.equals(record.getRequestHash())) {
+            return Claim.replayed(replay(record, requestHash, responseType));
+        }
+        if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
+            return Claim.claimed(record.getId());
+        }
+        AdminIdempotencyRecordEntity raced = recordMapper.selectActive(
+                record.getScope(), record.getIdempotencyKey());
+        if (raced != null) {
+            return Claim.replayed(replay(raced, requestHash, responseType));
+        }
+        throw conflict("IDEMPOTENCY_RETRY_CONFLICT");
+    }
+
     private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType) {
         if (!requestHash.equals(record.getRequestHash())) {
             throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
@@ -118,6 +149,9 @@ public class AdminIdempotencyTransactionExecutor {
         }
         if (STATUS_FAILED.equals(record.getStatus())) {
             throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+        }
+        if (STATUS_UNKNOWN.equals(record.getStatus())) {
+            throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
     }

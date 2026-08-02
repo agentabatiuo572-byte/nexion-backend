@@ -154,12 +154,12 @@ class OpsI18nLearningServiceTest {
                 List.of());
         when(competingRepository.findMessagePairForUpdate("acceptance.i6.concurrent"))
                 .thenReturn(Optional.of(current));
-        when(competingRepository.saveMessagePair(
+        when(competingRepository.saveMessageDraftCas(
                 eq("acceptance.i6.concurrent"),
                 eq("新中文"),
                 eq("New English"),
                 eq("Tiếng Việt mới"),
-                eq("draft"),
+                eq("v1"),
                 any(LocalDateTime.class)))
                 .thenThrow(new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT"));
         OpsI18nLearningService competingService = new OpsI18nLearningService(

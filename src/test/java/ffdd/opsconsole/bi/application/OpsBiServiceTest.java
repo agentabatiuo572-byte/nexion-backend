@@ -34,8 +34,11 @@ import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.facade.TreasuryFinanceAnalyticsFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -735,6 +738,143 @@ class OpsBiServiceTest {
     }
 
     @Test
+    void lifecycleFallbackExportUsesTheSameUnfilteredDashboardSnapshotAsTheUi() {
+        reportRepository.dashboards.put("L2", Map.of("stages", List.of(
+                Map.of("key", "registered", "count", 7L, "source", "nx_event_outbox:auth.register_completed"),
+                Map.of("key", "profileCompleted", "count", 6L, "source", "nx_event_outbox:onboarding.profile_completed"),
+                Map.of("key", "kycSubmitted", "count", 5L, "source", "nx_event_outbox:kyc.express_started"),
+                Map.of("key", "kycApproved", "count", 4L, "source", "nx_event_outbox:kyc.express_verified"),
+                Map.of("key", "ordered", "count", 3L, "source", "nx_event_outbox:checkout.started"),
+                Map.of("key", "walletActivity", "count", 2L, "source", "nx_event_outbox:wallet.topup_confirmed"))));
+        reportRepository.l2SliceDashboard = Map.of();
+
+        ApiResult<Map<String, Object>> created = service.createReport(
+                "idem-create-l2-ui-fallback-snapshot",
+                new BiReportCreateRequest(
+                        "export the visible lifecycle fallback",
+                        "superadmin",
+                        "漏斗生命周期事实",
+                        "当前快照",
+                        "注册/资料/KYC/订单/钱包活动聚合计数",
+                        "NONE",
+                        "NONE",
+                        "BI 管理员",
+                        "L2-FUNNEL"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(reportRepository.report.rowCount()).isEqualTo(6L);
+        String reportId = reportRepository.report.reportId();
+        String csv = reportRepository.snapshots.get(reportId);
+        assertThat(csv)
+                .contains("\"已注册\",\"7\"")
+                .contains("\"钱包活动\",\"2\"");
+        String contentSha256 = sha256(csv);
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getDetail())
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("rowCount", 6L)
+                .containsEntry("artifactSha256", contentSha256)
+                .containsEntry("artifactSizeBytes", (long) csv.getBytes(StandardCharsets.UTF_8).length);
+        assertThat(reportRepository.publishedExports.get(reportId))
+                .containsEntry("rowCount", 6L)
+                .containsEntry("artifactSha256", contentSha256)
+                .containsEntry("artifactSizeBytes", (long) csv.getBytes(StandardCharsets.UTF_8).length);
+    }
+
+    @Test
+    void filteredL2ExportUsesOneSliceForScopeCsvRowCountAuditAndOutbox() {
+        reportRepository.dashboards.put("L2", Map.of("stages", List.of(
+                Map.of("key", "registered", "count", 99L))));
+        reportRepository.l2SliceDashboard = Map.of(
+                "funnel", List.of(
+                        Map.of("stage", "注册", "users", 5L, "cvr", 100, "ev", "auth.register_completed"),
+                        Map.of("stage", "绑卡", "users", 4L, "cvr", 80, "ev", "kyc.express_verified"),
+                        Map.of("stage", "首购", "users", 3L, "cvr", 75, "ev", "checkout.completed"),
+                        Map.of("stage", "复投", "users", 2L, "cvr", 67, "ev", "wallet.reinvest"),
+                        Map.of("stage", "提现", "users", 1L, "cvr", 50, "ev", "withdraw.submitted")),
+                "cohorts", List.of(Map.of(
+                        "cohort", "2026-W30",
+                        "size", 5L,
+                        "d1", 80,
+                        "d7", 60,
+                        "d14", 40,
+                        "d30", 20,
+                        "d60", 0)));
+
+        ApiResult<Map<String, Object>> created = service.createReport(
+                "idem-create-filtered-l2",
+                new BiReportCreateRequest(
+                        "export the current L2 slice",
+                        "superadmin",
+                        "漏斗序列",
+                        "当前 cohort 窗口",
+                        "漏斗去重人数/CVR/cohort 留存率",
+                        "NONE",
+                        "NONE",
+                        "BI 管理员",
+                        "L2-FUNNEL",
+                        "2026-W30",
+                        "P3",
+                        "vi",
+                        "campaign-7"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(reportRepository.report.rowCount()).isEqualTo(6L);
+        assertThat(reportRepository.report.scope())
+                .contains("cohort=2026-W30", "phase=P3", "locale=vi", "ref=campaign-7");
+        String reportId = reportRepository.report.reportId();
+        String csv = reportRepository.snapshots.get(reportId);
+        assertThat(csv)
+                .contains("\"漏斗\",\"注册\",\"5\"")
+                .contains("\"留存\",\"2026-W30\",\"5\"")
+                .doesNotContain("\"已注册\",\"99\"");
+        String contentSha256 = sha256(csv);
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getDetail())
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("rowCount", 6L)
+                .containsEntry("artifactSha256", contentSha256)
+                .containsEntry("filters", Map.of(
+                        "cohort", "2026-W30",
+                        "phase", "P3",
+                        "locale", "vi",
+                        "ref", "campaign-7"));
+        assertThat(reportRepository.publishedExports.get(reportId))
+                .containsEntry("rowCount", 6L)
+                .containsEntry("artifactSha256", contentSha256);
+    }
+
+    @Test
+    void emptyL2ExportFailsClosedBeforeReadyReportSnapshotAuditOrOutbox() {
+        reportRepository.dashboards.put("L2", Map.of("stages", List.of()));
+        reportRepository.l2SliceDashboard = Map.of();
+
+        ApiResult<Map<String, Object>> result = service.createReport(
+                "idem-create-empty-l2",
+                new BiReportCreateRequest(
+                        "export empty lifecycle facts",
+                        "superadmin",
+                        "漏斗生命周期事实",
+                        "当前快照",
+                        "注册/资料/KYC/订单/钱包活动聚合计数",
+                        "NONE",
+                        "NONE",
+                        "BI 管理员",
+                        "L2-FUNNEL"));
+
+        assertThat(result)
+                .extracting(ApiResult::getCode, ApiResult::getMessage)
+                .containsExactly(422, "L2_EXPORT_EMPTY");
+        assertThat(reportRepository.createReportCalls).isZero();
+        assertThat(reportRepository.saveSnapshotCalls).isZero();
+        assertThat(reportRepository.publishedExports).isEmpty();
+        verify(auditLogService, never()).recordRequired(
+                org.mockito.ArgumentMatchers.any(AuditLogWriteRequest.class));
+    }
+
+    @Test
     void financeFactExportUsesTheFiveRealLedgerFactRowsAndAReadableSnapshot() {
         ledgerRepository.counts.put(null, 12L);
         ledgerRepository.counts.put("EARNING", 4L);
@@ -1325,8 +1465,11 @@ class OpsBiServiceTest {
         private final Map<String, String> downloadTokenHashes = new LinkedHashMap<>();
         private final Map<String, LocalDateTime> downloadTokenExpiries = new LinkedHashMap<>();
         private final Map<String, Map<String, Object>> publishedExports = new LinkedHashMap<>();
+        private Map<String, Object> l2SliceDashboard;
         private List<Map<String, Object>> networkTreeRows = List.of();
         private boolean forceActionConflict;
+        private int createReportCalls;
+        private int saveSnapshotCalls;
 
         @Override
         public Map<String, Object> overview() {
@@ -1344,6 +1487,12 @@ class OpsBiServiceTest {
                         "sources", List.of("nx_user")));
             }
             return Map.of();
+        }
+
+        @Override
+        public Map<String, Object> l2Dashboard(
+                String cohort, String phase, String locale, String ref) {
+            return l2SliceDashboard == null ? dashboard("L2") : l2SliceDashboard;
         }
 
         @Override
@@ -1387,6 +1536,7 @@ class OpsBiServiceTest {
 
         @Override
         public BiReportView createReport(BiReportCreateCommand command) {
+            createReportCalls++;
             report = new BiReportView(
                     command.reportId(),
                     command.name(),
@@ -1408,6 +1558,7 @@ class OpsBiServiceTest {
 
         @Override
         public void saveSnapshotCsv(String reportId, String snapshotCsv) {
+            saveSnapshotCalls++;
             snapshots.put(reportId, snapshotCsv);
         }
 
@@ -1443,6 +1594,15 @@ class OpsBiServiceTest {
         public String publishReportExported(String reportId, Map<String, Object> payload) {
             publishedExports.put(reportId, new LinkedHashMap<>(payload));
             return "event-" + reportId;
+        }
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
         }
     }
 }

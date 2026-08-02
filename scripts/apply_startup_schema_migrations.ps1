@@ -1,0 +1,80 @@
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+param(
+  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
+  [string]$JdbcUrl = $env:SPRING_DATASOURCE_URL,
+  [string]$Username = $(if ([string]::IsNullOrWhiteSpace($env:SPRING_DATASOURCE_USERNAME)) { "root" } else { $env:SPRING_DATASOURCE_USERNAME })
+)
+
+$ErrorActionPreference = "Stop"
+$root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$migrations = @(
+  (Join-Path $root "scripts\migrations\20260729_a1_admin_account_status_cas.sql"),
+  (Join-Path $root "scripts\migrations\20260729_c2_account_list_event_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260729_l2_report_export_artifact_event_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260729_h003_registration_otp_client_ip.sql"),
+  (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
+  (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql")
+)
+
+if ([string]::IsNullOrWhiteSpace($JdbcUrl)) {
+  $JdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai"
+}
+if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw "Only jdbc:mysql URLs are supported by this controlled migration runner."
+}
+$databaseUri = [Uri]$JdbcUrl.Substring(5)
+$database = $databaseUri.AbsolutePath.Trim('/')
+if ([string]::IsNullOrWhiteSpace($database)) {
+  throw "The JDBC URL must include a database name."
+}
+$port = if ($databaseUri.IsDefaultPort) { 3306 } else { $databaseUri.Port }
+
+if ($WhatIfPreference) {
+  [pscustomobject]@{
+    Migrations = $migrations
+    Host = $databaseUri.Host
+    Port = $port
+    Database = $database
+    Action = "Would apply the required idempotent startup migrations before backend startup."
+  }
+  return
+}
+
+if (-not (Test-Path -LiteralPath $MySql)) {
+  throw "MySQL executable not found: $MySql"
+}
+$password = $env:SPRING_DATASOURCE_PASSWORD
+if ([string]::IsNullOrWhiteSpace($password)) {
+  throw "SPRING_DATASOURCE_PASSWORD is required to apply startup schema migrations."
+}
+foreach ($migration in $migrations) {
+  if (-not (Test-Path -LiteralPath $migration)) {
+    throw "Required startup migration is missing: $migration"
+  }
+}
+if (-not $PSCmdlet.ShouldProcess("$($databaseUri.Host):$port/$database", "apply required startup schema migrations")) {
+  return
+}
+
+$previousMySqlPassword = $env:MYSQL_PWD
+try {
+  $env:MYSQL_PWD = $password
+  $sources = ($migrations | ForEach-Object { "source $($_.Replace('\', '/'));" }) -join " "
+  & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
+  if ($LASTEXITCODE -ne 0) {
+    throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
+  }
+
+  $databaseSqlLiteral = $database.Replace("'", "''")
+  $requiredIndexCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS indexed_columns FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '$databaseSqlLiteral' AND TABLE_NAME = 'nx_admin_idempotency_record' AND INDEX_NAME IN ('idx_admin_idem_status_expires_deleted', 'idx_admin_idem_expiry_claim') GROUP BY INDEX_NAME) actual WHERE (INDEX_NAME = 'idx_admin_idem_status_expires_deleted' AND indexed_columns = 'status,expires_at,is_deleted') OR (INDEX_NAME = 'idx_admin_idem_expiry_claim' AND indexed_columns = 'status,is_deleted,expires_at,id');"
+  if ($LASTEXITCODE -ne 0 -or $requiredIndexCount.Trim() -ne "2") {
+    throw "Both required idempotency expiry-recovery indexes with their exact column order must exist after migrations. Backend startup has been stopped."
+  }
+} finally {
+  if ($null -eq $previousMySqlPassword) {
+    Remove-Item Env:MYSQL_PWD -ErrorAction SilentlyContinue
+  } else {
+    $env:MYSQL_PWD = $previousMySqlPassword
+  }
+}

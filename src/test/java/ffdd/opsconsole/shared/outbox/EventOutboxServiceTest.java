@@ -235,6 +235,77 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void revision289RejectsTheNewL2ArtifactEvidenceBeforeOutboxInsert() {
+        when(mapper.findActiveSchema("admin.report_exported"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("phase_admin", 289, true));
+        when(mapper.listActiveProperties("admin.report_exported"))
+                .thenReturn(reportExportProperties(false));
+
+        assertThatThrownBy(() -> service.publish(
+                "BI_REPORT", "EXP-L2-289", "admin.report_exported", reportExportPayload(true)))
+                .isInstanceOf(BizException.class)
+                .hasMessage("A4_SCHEMA_PROPERTY_NOT_REGISTERED");
+        verify(mapper, never()).insertEvent(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void revision302AcceptsTheCanonicalL2ArtifactEvidenceAndKeepsLegacyProducerCompatibility()
+            throws Exception {
+        when(mapper.findActiveSchema("admin.report_exported"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("phase_admin", 302, true));
+        when(mapper.listActiveProperties("admin.report_exported"))
+                .thenReturn(reportExportProperties(true));
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+
+        String l2EventId = service.publish(
+                "BI_REPORT", "EXP-L2-302", "admin.report_exported", reportExportPayload(true));
+        String legacyEventId = service.publish(
+                "BI_REPORT", "EXP-LEGACY-302", "admin.report_exported", reportExportPayload(false));
+
+        verify(mapper, org.mockito.Mockito.times(2)).insertEvent(
+                anyString(), eq("BI_REPORT"), anyString(), eq("admin.report_exported"),
+                eq("admin.report_exported"), eq("phase_admin"), eq("SYSTEM"), eq(0), anyString(),
+                eq(true), eq(302), eq(true), eq(true), payloadCaptor.capture());
+        JsonNode l2Envelope = objectMapper.readTree(payloadCaptor.getAllValues().get(0));
+        JsonNode legacyEnvelope = objectMapper.readTree(payloadCaptor.getAllValues().get(1));
+        assertThat(l2Envelope.path("event_id").asText()).isEqualTo(l2EventId);
+        assertThat(l2Envelope.path("artifact_store").asText()).isEqualTo("MINIO");
+        assertThat(l2Envelope.path("artifact_sha256").asText()).hasSize(64);
+        assertThat(l2Envelope.path("artifact_size_bytes").asLong()).isEqualTo(512L);
+        assertThat(l2Envelope.path("schema_revision").asInt()).isEqualTo(302);
+        assertThat(legacyEnvelope.path("event_id").asText()).isEqualTo(legacyEventId);
+        assertThat(legacyEnvelope.has("artifact_store")).isFalse();
+        assertThat(legacyEnvelope.has("artifact_sha256")).isFalse();
+        assertThat(legacyEnvelope.has("artifact_size_bytes")).isFalse();
+    }
+
+    @Test
+    void revision302StillRejectsWrongArtifactTypesAndMissingLegacyRequiredFields() {
+        when(mapper.findActiveSchema("admin.report_exported"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("phase_admin", 302, true));
+        when(mapper.listActiveProperties("admin.report_exported"))
+                .thenReturn(reportExportProperties(true));
+        Map<String, Object> wrongArtifactType = new java.util.LinkedHashMap<>(reportExportPayload(true));
+        wrongArtifactType.put("artifactSizeBytes", "512");
+        Map<String, Object> missingRequired = new java.util.LinkedHashMap<>(reportExportPayload(false));
+        missingRequired.remove("reportId");
+
+        assertThatThrownBy(() -> service.publish(
+                "BI_REPORT", "EXP-L2-BAD-TYPE", "admin.report_exported", wrongArtifactType))
+                .isInstanceOf(BizException.class)
+                .hasMessage("A4_SCHEMA_PROPERTY_TYPE_MISMATCH");
+        assertThatThrownBy(() -> service.publish(
+                "BI_REPORT", "EXP-L2-MISSING", "admin.report_exported", missingRequired))
+                .isInstanceOf(BizException.class)
+                .hasMessage("A4_SCHEMA_REQUIRED_PROPERTY_MISSING");
+        verify(mapper, never()).insertEvent(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
     void unregisteredAnalyticsEventIsRejectedBeforeOutboxInsert() {
         when(mapper.findActiveSchema("admin.killswitch_toggled")).thenReturn(null);
 
@@ -245,6 +316,55 @@ class EventOutboxServiceTest {
         verify(mapper, never()).insertEvent(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
                 anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void unregisteredC2AccountListAddIsRejectedBeforeTheMutationCanCommit() {
+        when(mapper.findActiveSchema("admin.account_list_upserted")).thenReturn(null);
+
+        assertThatThrownBy(() -> service.publish(
+                "USER_ACCOUNT_LIST", "52", "admin.account_list_upserted", Map.of(
+                        "userId", 52L,
+                        "kind", "BLOCK",
+                        "reason", "Confirmed account takeover evidence",
+                        "idempotencyKey", "c2-block-52",
+                        "expiresAt", "2026-07-30T12:00:00",
+                        "sessionsRevoked", true)))
+                .isInstanceOf(BizException.class)
+                .hasMessage("A4_SCHEMA_NOT_REGISTERED");
+        verify(mapper, never()).insertEvent(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void registeredC2AccountListAddUsesTheCanonicalA4PayloadContract() throws Exception {
+        when(mapper.findActiveSchema("admin.account_list_upserted"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("phase_admin", 301, true));
+        when(mapper.listActiveProperties("admin.account_list_upserted")).thenReturn(List.of(
+                required("kind", "enum"),
+                required("reason", "string"),
+                required("idempotency_key", "id"),
+                new EventOutboxMapper.SchemaPropertyGateRow("expires_at", "timestamp", false),
+                required("sessions_revoked", "boolean")));
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+
+        String eventId = service.publish("USER_ACCOUNT_LIST", "52", "admin.account_list_upserted", Map.of(
+                "userId", 52L,
+                "kind", "BLOCK",
+                "reason", "Confirmed account takeover evidence",
+                "idempotencyKey", "c2-block-52",
+                "expiresAt", "2026-07-30T12:00:00",
+                "sessionsRevoked", true));
+
+        verify(mapper).insertEvent(
+                eq(eventId), eq("USER_ACCOUNT_LIST"), eq("52"), eq("admin.account_list_upserted"),
+                eq("admin.account_list_upserted"), eq("phase_admin"), eq("SYSTEM"), eq(0), anyString(),
+                eq(true), eq(301), eq(true), eq(true), payloadCaptor.capture());
+        JsonNode envelope = objectMapper.readTree(payloadCaptor.getValue());
+        assertThat(envelope.path("user_id").asLong()).isEqualTo(52L);
+        assertThat(envelope.path("idempotency_key").asText()).isEqualTo("c2-block-52");
+        assertThat(envelope.path("sessions_revoked").asBoolean()).isTrue();
     }
 
     @Test
@@ -294,5 +414,50 @@ class EventOutboxServiceTest {
 
     private EventOutboxMapper.SchemaPropertyGateRow required(String name, String type) {
         return new EventOutboxMapper.SchemaPropertyGateRow(name, type, true);
+    }
+
+    private List<EventOutboxMapper.SchemaPropertyGateRow> reportExportProperties(
+            boolean includeArtifactEvidence) {
+        List<EventOutboxMapper.SchemaPropertyGateRow> properties = new java.util.ArrayList<>(List.of(
+                required("report_id", "id"),
+                required("export_type", "enum"),
+                required("scope", "string"),
+                required("row_count", "number"),
+                required("contains_pii", "boolean"),
+                required("masking_policy", "enum"),
+                required("operator", "string"),
+                required("reason", "string"),
+                required("format", "enum"),
+                new EventOutboxMapper.SchemaPropertyGateRow("template_code", "enum", false),
+                new EventOutboxMapper.SchemaPropertyGateRow("jurisdiction_code", "string", false),
+                new EventOutboxMapper.SchemaPropertyGateRow("disclosure_version", "string", false)));
+        if (includeArtifactEvidence) {
+            properties.add(new EventOutboxMapper.SchemaPropertyGateRow(
+                    "artifact_store", "string", false));
+            properties.add(new EventOutboxMapper.SchemaPropertyGateRow(
+                    "artifact_sha256", "string", false));
+            properties.add(new EventOutboxMapper.SchemaPropertyGateRow(
+                    "artifact_size_bytes", "number", false));
+        }
+        return properties;
+    }
+
+    private Map<String, Object> reportExportPayload(boolean includeArtifactEvidence) {
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("reportId", "EXP-L2-302");
+        payload.put("exportType", "FUNNEL_COHORT");
+        payload.put("scope", "当前 cohort 窗口；切片=全部");
+        payload.put("rowCount", 6L);
+        payload.put("containsPii", false);
+        payload.put("maskingPolicy", "NONE");
+        payload.put("operator", "admin:1");
+        payload.put("reason", "export the current L2 slice");
+        payload.put("format", "CSV");
+        if (includeArtifactEvidence) {
+            payload.put("artifactStore", "MINIO");
+            payload.put("artifactSha256", "a".repeat(64));
+            payload.put("artifactSizeBytes", 512L);
+        }
+        return payload;
     }
 }

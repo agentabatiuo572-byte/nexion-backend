@@ -71,10 +71,11 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     @Select("""
             SELECT p.property_name AS propertyName, p.property_type AS propertyType,
                    p.required_field AS requiredField
-              FROM nx_event_schema_property p
+             FROM nx_event_schema_property p
               JOIN nx_event_schema_registry s ON s.id=p.schema_id
              WHERE s.event_name=#{eventName} AND s.status='ACTIVE' AND s.is_deleted=0
                AND p.is_deleted=0
+               AND p.registry_revision = s.current_revision
              ORDER BY p.id
             """)
     List<SchemaPropertyGateRow> listActiveProperties(@Param("eventName") String eventName);

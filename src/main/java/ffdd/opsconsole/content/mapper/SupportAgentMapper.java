@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
+import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.infrastructure.SupportAgentProfileEntity;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -11,6 +12,30 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity> {
+    @Select("""
+            SELECT DISTINCT a.id AS adminId,
+                   COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name
+              FROM nx_admin a
+              JOIN nx_admin_role_relation rr
+                ON rr.admin_id = a.id
+               AND rr.is_deleted = 0
+              JOIN nx_admin_role r
+                ON r.id = rr.role_id
+               AND r.role_code = 'SUPPORT'
+               AND r.status = 1
+               AND r.is_deleted = 0
+              JOIN nx_support_agent_profile p
+                ON p.admin_id = a.id
+               AND p.enabled = 1
+               AND p.transferable = 1
+               AND p.is_deleted = 0
+             WHERE a.status = 1
+               AND a.is_deleted = 0
+               AND FIND_IN_SET('support', REPLACE(LOWER(p.service_types), ' ', '')) > 0
+             ORDER BY a.id ASC
+            """)
+    List<SupportTicketAssigneeCandidateView> listTicketAssigneeCandidates();
+
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_support_agent_profile (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,

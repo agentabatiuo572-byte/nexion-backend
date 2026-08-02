@@ -1292,11 +1292,13 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             INSERT INTO nx_emergency_sop_execution (
                 execution_id, playbook_code, playbook_name, trigger_reason, execution_mode,
                 step_status_json, operator, role_gate, idempotency_key, notification_json,
-                domain_action_json, rollback_plan, created_at, updated_at, is_deleted
+                domain_action_json, rollback_plan, rollback_status, rollback_reason,
+                created_at, updated_at, is_deleted
             ) VALUES (
                 #{executionId}, #{code}, #{name}, #{trigger}, #{mode},
                 #{stepsJson}, #{operator}, #{roleGate}, #{idempotencyKey}, #{notificationJson},
-                #{domainActionsJson}, #{rollback}, NOW(), NOW(), 0
+                #{domainActionsJson}, #{rollback}, NULLIF(#{rollbackStatus}, ''), NULLIF(#{rollbackReason}, ''),
+                NOW(), NOW(), 0
             )
             """)
     int insertExecution(@Param("executionId") String executionId,
@@ -1310,7 +1312,9 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                         @Param("stepsJson") String stepsJson,
                         @Param("notificationJson") String notificationJson,
                         @Param("domainActionsJson") String domainActionsJson,
-                         @Param("rollback") String rollback);
+                        @Param("rollback") String rollback,
+                        @Param("rollbackStatus") String rollbackStatus,
+                        @Param("rollbackReason") String rollbackReason);
 
     @Update("""
             UPDATE nx_emergency_sop_execution

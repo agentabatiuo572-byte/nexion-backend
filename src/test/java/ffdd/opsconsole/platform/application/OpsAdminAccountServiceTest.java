@@ -3,10 +3,13 @@ package ffdd.opsconsole.platform.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -253,6 +256,53 @@ class OpsAdminAccountServiceTest {
                     });
             return 1;
         });
+        when(adminMapper.updateStatusIfVersion(anyLong(), anyLong(), anyInt())).thenAnswer(invocation -> {
+            long adminId = invocation.getArgument(0);
+            long candidateVersion = invocation.getArgument(1);
+            int nextStatus = invocation.getArgument(2);
+            AdminEntity target = admins.stream()
+                    .filter(admin -> admin.getId().equals(adminId))
+                    .findFirst()
+                    .orElse(null);
+            if (target == null || !Long.valueOf(candidateVersion).equals(target.getVersion())) return 0;
+            target.setStatus(nextStatus);
+            target.setVersion(target.getVersion() + 1);
+            target.setUpdatedAt(LocalDateTime.now());
+            return 1;
+        });
+        when(adminMapper.updateProfileIfVersion(anyLong(), anyLong(), anyString(), anyString(), anyString())).thenAnswer(invocation -> {
+            AdminEntity target = activeVersionMatch(invocation.getArgument(0), invocation.getArgument(1));
+            if (target == null) return 0;
+            target.setUsername(invocation.getArgument(2));
+            target.setNickname(invocation.getArgument(3));
+            target.setEmail(invocation.getArgument(4));
+            target.setVersion(target.getVersion() + 1);
+            target.setUpdatedAt(LocalDateTime.now());
+            return 1;
+        });
+        when(adminMapper.updateRoleIfVersion(anyLong(), anyLong(), anyInt())).thenAnswer(invocation -> {
+            AdminEntity target = activeVersionMatch(invocation.getArgument(0), invocation.getArgument(1));
+            if (target == null) return 0;
+            target.setSuperAdmin(invocation.getArgument(2));
+            target.setVersion(target.getVersion() + 1);
+            target.setUpdatedAt(LocalDateTime.now());
+            return 1;
+        });
+        when(adminMapper.updatePasswordIfVersion(anyLong(), anyLong(), anyString())).thenAnswer(invocation -> {
+            AdminEntity target = activeVersionMatch(invocation.getArgument(0), invocation.getArgument(1));
+            if (target == null) return 0;
+            target.setPasswordHash(invocation.getArgument(2));
+            target.setVersion(target.getVersion() + 1);
+            target.setUpdatedAt(LocalDateTime.now());
+            return 1;
+        });
+        when(adminMapper.incrementVersionIfVersion(anyLong(), anyLong())).thenAnswer(invocation -> {
+            AdminEntity target = activeVersionMatch(invocation.getArgument(0), invocation.getArgument(1));
+            if (target == null) return 0;
+            target.setVersion(target.getVersion() + 1);
+            target.setUpdatedAt(LocalDateTime.now());
+            return 1;
+        });
     }
 
     @AfterEach
@@ -349,6 +399,103 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.FORBIDDEN.httpStatus());
         assertThat(result.getMessage()).isEqualTo("MIN_EFFECTIVE_SUPER_REQUIRED");
         assertThat(admins.get(0).getStatus()).isEqualTo(1);
+    }
+
+    @Test
+    void statusCasLetsOnlyOneDifferentIdempotencyKeyWinAndRevokesSessionsOnce() {
+        String expectedVersion = versionOf("4");
+        doAnswer(invocation -> {
+            AdminEntity target = admins.stream()
+                    .filter(admin -> admin.getId().equals(4L))
+                    .findFirst()
+                    .orElseThrow();
+            if (!Long.valueOf(expectedVersion).equals(target.getVersion())) return 0;
+            target.setStatus(0);
+            target.setVersion(target.getVersion() + 1);
+            return 1;
+        }).when(adminMapper).updateStatusIfVersion(4L, Long.parseLong(expectedVersion), 0);
+        AdminAccountStatusUpdateRequest request = new AdminAccountStatusUpdateRequest(
+                "disabled", "fixture recovery removes compromised operator", "superadmin", expectedVersion);
+
+        ApiResult<AdminAccountOverview.OperatorRecord> winner =
+                service.updateStatus("status-race-left", "4", request);
+        ApiResult<AdminAccountOverview.OperatorRecord> loser =
+                service.updateStatus("status-race-right", "4", request);
+
+        assertThat(winner.getCode()).isZero();
+        assertThat(loser.getCode()).isEqualTo(409);
+        assertThat(loser.getMessage()).isEqualTo("ACCOUNT_VERSION_STALE");
+        verify(adminSessionRegistry).revokeSessions(4L);
+    }
+
+    @Test
+    void statusCasZeroRowsFailsClosedBeforeAnySessionRevokeOrAudit() {
+        String expectedVersion = versionOf("4");
+        doReturn(0).when(adminMapper).updateStatusIfVersion(4L, Long.parseLong(expectedVersion), 0);
+        AdminAccountStatusUpdateRequest request = new AdminAccountStatusUpdateRequest(
+                "disabled", "concurrent account state changed", "superadmin", expectedVersion);
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.updateStatus("status-race-lost", "4", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ACCOUNT_VERSION_STALE");
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
+        verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void profileRoleAndPasswordCasLosersLeaveTheirDependentSideEffectsUntouched() {
+        String expectedVersion = versionOf("4");
+        doReturn(0).when(adminMapper).updateProfileIfVersion(eq(4L), eq(Long.parseLong(expectedVersion)), anyString(), anyString(), anyString());
+        doReturn(0).when(adminMapper).updateRoleIfVersion(4L, Long.parseLong(expectedVersion), 0);
+        doReturn(0).when(adminMapper).updatePasswordIfVersion(eq(4L), eq(Long.parseLong(expectedVersion)), anyString());
+
+        ApiResult<AdminAccountOverview.OperatorRecord> profile = service.updateProfile("profile-race", "4",
+                new AdminAccountProfileUpdateRequest("risk.shift", "风控值班长", "", "concurrent profile", "superadmin", expectedVersion));
+        ApiResult<AdminAccountOverview.OperatorRecord> role = service.changeRole("role-race", "4",
+                new AdminAccountRoleUpdateRequest("unassigned", "concurrent role", "superadmin", expectedVersion));
+        ApiResult<AdminAccountPasswordResetResponse> password = service.resetPassword("password-race", "4",
+                new AdminAccountActionRequest("concurrent credential reset", "superadmin", expectedVersion));
+
+        assertThat(profile.getCode()).isEqualTo(409);
+        assertThat(role.getCode()).isEqualTo(409);
+        assertThat(password.getCode()).isEqualTo(409);
+        verify(roleRelationMapper, never()).disableAllPrimaryRoles(4L);
+        verify(permissionCache, never()).evict(4L);
+        verify(accountStateMapper, never()).upsertCredentialStatus(4L, "PASSWORD_CHANGE_REQUIRED");
+        verify(adminSessionRegistry, never()).revokeSessions(4L);
+    }
+
+    @Test
+    void refreshedVersionAllowsTheNextSensitiveAccountMutation() {
+        String before = versionOf("4");
+        ApiResult<AdminAccountOverview.OperatorRecord> disabled = service.updateStatus("status-winner", "4",
+                new AdminAccountStatusUpdateRequest("disabled", "first operator wins", "superadmin", before));
+        String refreshed = versionOf("4");
+
+        ApiResult<AdminAccountOverview.OperatorRecord> profile = service.updateProfile("profile-refreshed", "4",
+                new AdminAccountProfileUpdateRequest("risk.shift", "风控值班长", "", "fresh version follows status", "superadmin", refreshed));
+
+        assertThat(disabled.getCode()).isZero();
+        assertThat(refreshed).isNotEqualTo(before);
+        assertThat(profile.getCode()).isZero();
+    }
+
+    @Test
+    void missingSingleSessionFailsBeforeCasAuditOrAccountStateWrites() {
+        String expectedVersion = versionOf("4");
+        AdminAccountActionRequest request = new AdminAccountActionRequest(
+                "target session no longer exists", "superadmin", expectedVersion);
+
+        ApiResult<AdminAccountOverview.OperatorRecord> result =
+                service.revokeSession("single-session-missing", "4", "missing-session", request);
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("ADMIN_SESSION_NOT_FOUND");
+        verify(adminMapper, never()).incrementVersionIfVersion(anyLong(), anyLong());
+        verify(accountStateMapper, never()).upsertSessionsRevokedAt(eq(4L), any(LocalDateTime.class));
+        verify(auditLogService, never()).record(any(AuditLogWriteRequest.class));
     }
 
     @Test
@@ -931,6 +1078,14 @@ class OpsAdminAccountServiceTest {
                 .version();
     }
 
+    private AdminEntity activeVersionMatch(long adminId, long expectedVersion) {
+        return admins.stream()
+                .filter(admin -> admin.getId().equals(adminId))
+                .filter(admin -> Long.valueOf(expectedVersion).equals(admin.getVersion()))
+                .findFirst()
+                .orElse(null);
+    }
+
     private void registerTestAction(String id, String action, String domainGroup, int sort, List<String> grants) {
         putRbacAction(id, action, domainGroup, sort);
         List<String> roles = List.of("super", "config", "finance", "risk", "content", "growth",
@@ -1031,6 +1186,7 @@ class OpsAdminAccountServiceTest {
         entity.setPasswordHash("encoded");
         entity.setSuperAdmin(superAdmin);
         entity.setStatus(status);
+        entity.setVersion(0L);
         entity.setIsDeleted(0);
         entity.setUpdatedAt(LocalDateTime.now());
         return entity;

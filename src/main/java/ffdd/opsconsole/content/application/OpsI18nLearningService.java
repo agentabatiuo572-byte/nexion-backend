@@ -113,12 +113,12 @@ public class OpsI18nLearningService {
         }
         I18nMessagePairView saved;
         try {
-            saved = learningRepository.saveMessagePair(
+            saved = learningRepository.saveMessageDraftCas(
                     messageKey.trim(),
                     request.zh().trim(),
                     request.en().trim(),
                     request.vi().trim(),
-                    "draft",
+                    request.expectedVersion(),
                     now());
         } catch (IllegalStateException ex) {
             if ("I18N_MESSAGE_VERSION_CONFLICT".equals(ex.getMessage())) {

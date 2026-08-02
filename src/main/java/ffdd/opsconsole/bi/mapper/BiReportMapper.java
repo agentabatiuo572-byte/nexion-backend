@@ -334,27 +334,70 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     List<Map<String, Object>> selectL4EventFacts();
 
     @Select("""
+            WITH RECURSIVE tree_edges AS (
+                SELECT m.user_id AS root_user_id,
+                       m.member_user_id,
+                       1 AS tree_depth,
+                       m.v_rank,
+                       m.volume,
+                       m.created_at AS joined_at,
+                       m.id AS edge_id,
+                       CAST(CONCAT(',', CAST(m.user_id AS CHAR), ',', CAST(m.member_user_id AS CHAR), ',') AS CHAR(4096)) AS visited_path
+                 FROM nx_team_member m
+                 WHERE m.is_deleted = 0
+                   AND m.level = 1
+                   AND m.user_id <> m.member_user_id
+                UNION ALL
+                SELECT t.root_user_id,
+                       c.member_user_id,
+                       t.tree_depth + 1,
+                       c.v_rank,
+                       c.volume,
+                       c.created_at,
+                       c.id,
+                       CONCAT(t.visited_path, CAST(c.member_user_id AS CHAR), ',')
+                  FROM tree_edges t
+                  JOIN nx_team_member c
+                    ON c.user_id = t.member_user_id
+                   AND c.level = 1
+                   AND c.is_deleted = 0
+                   AND c.user_id <> c.member_user_id
+                 WHERE t.tree_depth < #{depth}
+                   AND LOCATE(CONCAT(',', CAST(c.member_user_id AS CHAR), ','), t.visited_path) = 0
+            ),
+            ranked_edges AS (
+                SELECT root_user_id,
+                       member_user_id,
+                       tree_depth,
+                       v_rank,
+                       volume,
+                       joined_at,
+                       ROW_NUMBER() OVER (
+                         PARTITION BY root_user_id, member_user_id
+                         ORDER BY tree_depth ASC, joined_at ASC, edge_id ASC
+                       ) AS edge_rank
+                  FROM tree_edges
+            )
             SELECT CASE
                      WHEN LENGTH(CAST(member_user_id AS CHAR)) <= 4 THEN '***'
                      ELSE CONCAT(LEFT(CAST(member_user_id AS CHAR), 2), '***', RIGHT(CAST(member_user_id AS CHAR), 2))
                    END AS memberUserIdPartial,
                    CASE
-                     WHEN LENGTH(CAST(user_id AS CHAR)) <= 4 THEN '***'
-                     ELSE CONCAT(LEFT(CAST(user_id AS CHAR), 2), '***', RIGHT(CAST(user_id AS CHAR), 2))
+                     WHEN LENGTH(CAST(root_user_id AS CHAR)) <= 4 THEN '***'
+                     ELSE CONCAT(LEFT(CAST(root_user_id AS CHAR), 2), '***', RIGHT(CAST(root_user_id AS CHAR), 2))
                    END AS sponsorUserIdPartial,
-                   level AS treeDepth,
+                   tree_depth AS treeDepth,
                    COALESCE(NULLIF(v_rank, ''), 'UNRANKED') AS vRank,
                    COALESCE(volume, 0) AS teamVolumeUsdt,
-                   created_at AS joinedAt
-              FROM nx_team_member
-             WHERE is_deleted = 0
-               AND level BETWEEN 1 AND #{depth}
-               AND created_at >= CASE LOWER(#{period})
+                   joined_at AS joinedAt
+              FROM ranked_edges
+             WHERE edge_rank = 1
+               AND joined_at >= CASE LOWER(#{period})
                  WHEN 'day' THEN DATE_SUB(NOW(), INTERVAL 1 DAY)
                  WHEN 'month' THEN DATE_SUB(NOW(), INTERVAL 30 DAY)
                  ELSE DATE_SUB(NOW(), INTERVAL 7 DAY)
                END
-             ORDER BY created_at DESC, id DESC
+             ORDER BY root_user_id ASC, tree_depth ASC, member_user_id ASC
              LIMIT #{limit}
             """)
     List<Map<String, Object>> selectL4NetworkTreeRows(

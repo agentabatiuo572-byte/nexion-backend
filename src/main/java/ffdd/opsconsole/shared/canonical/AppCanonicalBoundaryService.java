@@ -9,6 +9,8 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -52,6 +54,7 @@ public class AppCanonicalBoundaryService {
     private final EventOutboxService outboxService;
     private final AppGrowthLifecyclePublisher growthLifecyclePublisher;
     private final GrowthRhythmFacade growthRhythmFacade;
+    private final AuditLogService auditLogService;
 
     @PostConstruct
     void ensureOtpChallengeTable() {
@@ -164,15 +167,29 @@ public class AppCanonicalBoundaryService {
 
     @Transactional
     public ApiResult<Map<String, Object>> activateDevice(
-            Long userId, Long deviceId, Integer clientMaxDevices, String idempotencyKey) {
+            Long userId, Long deviceId, Long expectedVersion, Integer clientMaxDevices, String idempotencyKey) {
         if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
         return executeOnce("DEVICE_ACTIVATE", userId, idempotencyKey,
-                linked("deviceId", deviceId, "clientMaxDevices", clientMaxDevices),
-                () -> activateDeviceInternal(userId, deviceId, clientMaxDevices));
+                linked("deviceId", deviceId, "expectedVersion", expectedVersion, "clientMaxDevices", clientMaxDevices),
+                () -> activateDeviceInternal(userId, deviceId, expectedVersion, clientMaxDevices, idempotencyKey));
     }
 
-    private ApiResult<Map<String, Object>> activateDeviceInternal(Long userId, Long deviceId, Integer clientMaxDevices) {
+    private ApiResult<Map<String, Object>> activateDeviceInternal(
+            Long userId, Long deviceId, Long expectedVersion, Integer clientMaxDevices, String idempotencyKey) {
         if (deviceId == null || deviceId <= 0) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
+        if (expectedVersion == null || expectedVersion < 0) return ApiResult.fail(422, "DEVICE_VERSION_REQUIRED");
+        CanonicalStateMapper.UserDeviceCommandRow device = mapper.lockDeviceForUserCommand(deviceId);
+        if (device == null) return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+        if (!userId.equals(device.userId()) || !"OWNED".equals(normalizeState(device.ownershipStatus(), ""))) {
+            return ApiResult.fail(403, "DEVICE_FORBIDDEN");
+        }
+        if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+        String status = normalizeState(device.status(), "");
+        if ("ACTIVE".equals(status)) return ApiResult.ok(linked(
+                "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "ACTIVE",
+                "activeCount", Math.max(0, mapper.activeDeviceCount(userId)),
+                "slotCap", Math.max(1, mapper.deviceSlotCap()), "rowVersion", device.rowVersion(),
+                "alreadyActive", true));
         int cap = Math.max(1, mapper.deviceSlotCap());
         int active = Math.max(0, mapper.activeDeviceCount(userId));
         if ((clientMaxDevices != null && clientMaxDevices > cap) || active >= cap) {
@@ -180,10 +197,86 @@ public class AppCanonicalBoundaryService {
                     "客户端设备槽位上限高于服务器配置或账户已达上限，服务器拒绝激活",
                     "/api/devices/activate", "DEVICE_SLOT_CAP_EXCEEDED");
         }
-        if (mapper.activateOwnedDevice(userId, deviceId, cap) != 1) {
-            return ApiResult.fail(409, "DEVICE_NOT_OWNED_OR_ALREADY_ACTIVE");
+        CanonicalStateMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
+        if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
+            throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
-        return ApiResult.ok(linked("deviceId", deviceId, "activeCount", active + 1, "slotCap", cap));
+        if (mapper.activateOwnedDeviceCas(userId, deviceId, expectedVersion, cap) != 1) {
+            throw new BizException(409, "DEVICE_VERSION_CONFLICT");
+        }
+        long nextVersion = expectedVersion + 1;
+        Map<String, Object> state = linked(
+                "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "ACTIVE",
+                "activeCount", active + 1, "slotCap", cap, "rowVersion", nextVersion, "alreadyActive", false);
+        outboxService.publishUserEvent(
+                "USER_DEVICE", device.instanceNo(), "device.activated", userId,
+                normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(),
+                linked("userId", userId, "deviceId", device.id(), "instanceNo", device.instanceNo(),
+                        "previousStatus", status, "status", "ACTIVE", "rowVersion", nextVersion));
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_DEVICE_ACTIVATED").resourceType("USER_DEVICE")
+                .resourceId(String.valueOf(device.id())).bizNo(device.instanceNo())
+                .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
+                .method("POST").path("/api/devices/activate")
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(linked("idempotencyKey", idempotencyKey == null ? "" : idempotencyKey.trim(), "state", state))
+                .build());
+        return ApiResult.ok(state);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> deactivateDevice(
+            Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
+        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        return executeOnce("DEVICE_DEACTIVATE", userId, idempotencyKey,
+                linked("deviceId", deviceId, "expectedVersion", expectedVersion),
+                () -> deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey));
+    }
+
+    private ApiResult<Map<String, Object>> deactivateDeviceInternal(
+            Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
+        if (deviceId == null || deviceId <= 0) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
+        if (expectedVersion == null || expectedVersion < 0) return ApiResult.fail(422, "DEVICE_VERSION_REQUIRED");
+        CanonicalStateMapper.UserDeviceCommandRow device = mapper.lockDeviceForUserCommand(deviceId);
+        if (device == null) return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+        if (!userId.equals(device.userId()) || !"OWNED".equals(normalizeState(device.ownershipStatus(), ""))) {
+            return ApiResult.fail(403, "DEVICE_FORBIDDEN");
+        }
+        String status = normalizeState(device.status(), "");
+        if ("DEACTIVATED".equals(status)) {
+            return ApiResult.ok(linked(
+                    "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "DEACTIVATED",
+                    "rowVersion", device.rowVersion(), "alreadyDeactivated", true));
+        }
+        if (!"ACTIVE".equals(status)) return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
+        if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+
+        CanonicalStateMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
+        if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
+            throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        if (mapper.deactivateOwnedDeviceCas(userId, deviceId, expectedVersion) != 1) {
+            throw new BizException(409, "DEVICE_VERSION_CONFLICT");
+        }
+        mapper.markDeviceRuntimeDeactivated(deviceId);
+        long nextVersion = expectedVersion + 1;
+        Map<String, Object> state = linked(
+                "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "DEACTIVATED",
+                "rowVersion", nextVersion, "alreadyDeactivated", false);
+        outboxService.publishUserEvent(
+                "USER_DEVICE", device.instanceNo(), "device.deactivated", userId,
+                normalizePhase(attribution.phase()), attribution.accountAgeMonths(), attribution.cohort(),
+                linked("userId", userId, "deviceId", device.id(), "instanceNo", device.instanceNo(),
+                        "previousStatus", status, "status", "DEACTIVATED", "rowVersion", nextVersion));
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_DEVICE_DEACTIVATED").resourceType("USER_DEVICE")
+                .resourceId(String.valueOf(device.id())).bizNo(device.instanceNo())
+                .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
+                .method("POST").path("/api/device/" + device.id() + "/deactivate")
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(linked("idempotencyKey", idempotencyKey == null ? "" : idempotencyKey.trim(), "state", state))
+                .build());
+        return ApiResult.ok(state);
     }
 
     public ApiResult<Map<String, Object>> deviceEarnings(
@@ -225,6 +318,7 @@ public class AppCanonicalBoundaryService {
                 "walletNex", zero(profile.nexAvailable()).setScale(6, RoundingMode.HALF_UP),
                 "userJoinedAt", profile.joinedAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
                 "serverNow", java.time.Instant.now().toEpochMilli(),
+                "slotCap", Math.max(1, mapper.deviceSlotCap()),
                 "devices", devices,
                 "capacitySchedule", capacityConfig,
                 "source", "nx_user_device + nx_compute_e3_config"));
@@ -275,7 +369,8 @@ public class AppCanonicalBoundaryService {
         BigDecimal dailyUsdt = zero(device.dailyUsdt()).multiply(multiplier).setScale(6, RoundingMode.HALF_UP);
         BigDecimal dailyNex = zero(device.dailyNex()).multiply(multiplier).setScale(6, RoundingMode.HALF_UP);
         return linked(
-                "id", device.id(), "instanceNo", device.instanceNo(), "name", device.name(),
+                "id", device.id(), "rowVersion", device.rowVersion(),
+                "instanceNo", device.instanceNo(), "name", device.name(),
                 "deviceType", device.deviceType(), "productCode", device.productCode(), "status", device.status(),
                 "activatedAt", device.activatedAt(), "purchasedAt", device.purchasedAt(),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,

@@ -129,6 +129,7 @@ class OpsUserServiceTest {
 
     @BeforeEach
     void stubLockMapperNoActiveLock() {
+        SecurityContextHolder.clearContext();
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
         when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
         when(tokenProvider.createImpersonationToken(any(), anyString(), anyString(), anyInt()))
@@ -963,7 +964,11 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void c3AdjustmentExecutesImmediatelyAndPostsLedgerInOneCommand() {
+    void c3MakerCheckerLifecycleDefersPostingUntilIndependentExactPermissionCheckerApproves() {
+        when(roleResolver.resolveCode()).thenReturn("CUSTOM_C3_MAKER");
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "c3-maker", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "user_c3_adjust_create"))));
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-c3-immediate",
@@ -971,10 +976,50 @@ class OpsUserServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
-                .containsEntry("status", "APPROVED")
-                .containsEntry("ledgerId", 9001L);
+                .containsEntry("status", "PENDING_REVIEW")
+                .doesNotContainKey("ledgerId");
+        assertThat(userRepository.postedLedgerBills).isEmpty();
+        verifyNoInteractions(outboxService);
+
+        String adjustmentNo = String.valueOf(result.getData().get("adjustmentNo"));
+        when(roleResolver.resolveCode()).thenReturn("CUSTOM_C3_CHECKER");
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "c3-checker", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "user_c3_adjust_approve"))));
+        ApiResult<UserAssetAdjustmentDetail> approved = service.approveAssetAdjustment(
+                adjustmentNo,
+                "idem-c3-independent-review",
+                new UserAssetAdjustmentReviewRequest("independent checker verified ticket evidence", "c3-checker"));
+
+        assertThat(approved.getCode()).isZero();
+        assertThat(approved.getData().adjustment().status()).isEqualTo("APPROVED");
+        assertThat(approved.getData().adjustment().checker()).isEqualTo("admin:c3-checker");
         assertThat(userRepository.postedLedgerBills).singleElement()
-                .satisfies(row -> assertThat(row).containsEntry("bizNo", result.getData().get("adjustmentNo")));
+                .satisfies(row -> assertThat(row).containsEntry("bizNo", adjustmentNo));
+        verify(outboxService).publish(eq("USER_ASSET_ADJUSTMENT"), eq(adjustmentNo), eq("admin.balance_adjusted"), any(Map.class));
+    }
+
+    @Test
+    void c3CustomRoleWithCreateAuthorityCanCreateSmallAdjustmentForIndependentReview() {
+        when(roleResolver.resolveCode()).thenReturn("CUSTOM_C_MAKER");
+        UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "custom-c-maker", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c3_adjust_create")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        try {
+            ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
+                    1L,
+                    "idem-c3-custom-maker",
+                    c3Request("USDT", "DEBIT", "5", "SYSTEM_CORRECTION",
+                            "verified custom maker correction evidence", "ticket:C3-custom-001"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData()).containsEntry("status", "PENDING_REVIEW");
+            assertThat(userRepository.postedLedgerBills).isEmpty();
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     @Test
@@ -1008,21 +1053,102 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void c3AdjustmentRejectsRiskRoleAndAmountsAboveHardLimit() {
-        when(roleResolver.resolveCode()).thenReturn("RISK");
-        ApiResult<Map<String, Object>> forbidden = service.createAssetAdjustment(
-                1L,
-                "idem-c3-risk",
-                c3Request("USDT", "CREDIT", "5", "SUPPORT_COMPENSATION", "verified support compensation evidence", "ticket:C3-003"));
+    void c3AdjustmentRequiresCreateAuthorityAndEnforcesHardLimit() {
+        when(roleResolver.resolveCode()).thenReturn("FINANCE");
+        UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "finance-without-c3-create", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c3_read")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        try {
+            ApiResult<Map<String, Object>> forbidden = service.createAssetAdjustment(
+                    1L,
+                    "idem-c3-missing-authority",
+                    c3Request("USDT", "CREDIT", "5", "SUPPORT_COMPENSATION",
+                            "verified support compensation evidence", "ticket:C3-003"));
+            assertThat(forbidden.getCode()).isEqualTo(403);
+            assertThat(forbidden.getMessage()).isEqualTo("C3_ACTION_FORBIDDEN:user_c3_adjust_create");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+
         when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
         ApiResult<Map<String, Object>> excessive = service.createAssetAdjustment(
                 1L,
                 "idem-c3-limit",
-                c3Request("USDT", "CREDIT", "10001", "SUPPORT_COMPENSATION", "verified support compensation evidence", "ticket:C3-004"));
-
-        assertThat(forbidden.getCode()).isEqualTo(403);
+                c3Request("USDT", "CREDIT", "10001", "SUPPORT_COMPENSATION",
+                        "verified support compensation evidence", "ticket:C3-004"));
         assertThat(excessive.getCode()).isEqualTo(400);
         assertThat(excessive.getMessage()).isEqualTo("C3_AMOUNT_EXCEEDS_LIMIT");
+    }
+
+    @Test
+    void c3A2ReplayContextBypassesDuplicateAuthorityCheckButRetainsLargeAndReviewRoleSeparation() {
+        UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "a2-checker", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("platform_a2_operation_approve")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
+
+        try {
+            when(roleResolver.resolveCode()).thenReturn("CUSTOM_C_MAKER");
+            ApiResult<Map<String, Object>> small = service.createAssetAdjustment(
+                    1L,
+                    "idem-c3-a2-small",
+                    c3Request("USDT", "DEBIT", "5", "SYSTEM_CORRECTION",
+                            "approved A2 replay small correction", "ticket:C3-a2-small"));
+            assertThat(small.getCode()).isZero();
+
+            ApiResult<Map<String, Object>> largeDenied = service.createAssetAdjustment(
+                    1L,
+                    "idem-c3-a2-large-denied",
+                    c3Request("USDT", "CREDIT", "600", "SYSTEM_CORRECTION",
+                            "A2 replay must retain large adjustment role separation", "ticket:C3-a2-large-denied"));
+            assertThat(largeDenied.getCode()).isEqualTo(403);
+            assertThat(largeDenied.getMessage()).isEqualTo("C3_LARGE_ADJUSTMENT_FORBIDDEN");
+
+            String reviewDeniedNo = userRepository.seedPendingAdjustment("USDT", "CREDIT", "600");
+            when(roleResolver.resolveCode()).thenReturn("SUPPORT");
+            ApiResult<UserAssetAdjustmentDetail> reviewDenied = service.approveAssetAdjustment(
+                    reviewDeniedNo,
+                    "idem-c3-a2-review-denied",
+                    new UserAssetAdjustmentReviewRequest(
+                            "A2 replay must retain reviewer role separation", "a2-checker"));
+            assertThat(reviewDenied.getCode()).isEqualTo(403);
+            assertThat(reviewDenied.getMessage()).isEqualTo("C3_ADJUSTMENT_REVIEW_FORBIDDEN");
+
+            String reversalNo = "ADJ-A2-REVERSE-AUTHORIZED";
+            userRepository.adjustments.put(reversalNo, userRepository.adjustment(
+                    reversalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                    "approved adjustment for A2 authority verification", "finance_maker", "APPROVED",
+                    "finance_checker", "original review completed", 8130L));
+            ApiResult<Map<String, Object>> reversal = service.reverseAssetAdjustment(
+                    reversalNo,
+                    "idem-c3-a2-reversal-authorized",
+                    new UserAssetAdjustmentReviewRequest(
+                            "approved A2 replay uses the target authority contract", "a2-checker"));
+            assertThat(reversal.getCode()).isZero();
+
+            when(roleResolver.resolveCode()).thenReturn("FINANCE_LEAD");
+            ApiResult<Map<String, Object>> largeAllowed = service.createAssetAdjustment(
+                    1L,
+                    "idem-c3-a2-large-allowed",
+                    c3Request("USDT", "CREDIT", "600", "SYSTEM_CORRECTION",
+                            "approved finance lead large adjustment replay", "ticket:C3-a2-large-allowed"));
+            assertThat(largeAllowed.getCode()).isZero();
+
+            String reviewAllowedNo = userRepository.seedPendingAdjustment("USDT", "CREDIT", "600");
+            ApiResult<UserAssetAdjustmentDetail> reviewAllowed = service.approveAssetAdjustment(
+                    reviewAllowedNo,
+                    "idem-c3-a2-review-allowed",
+                    new UserAssetAdjustmentReviewRequest(
+                            "finance lead performs approved A2 review replay", "a2-checker"));
+            assertThat(reviewAllowed.getCode()).isZero();
+
+        } finally {
+            ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
+            SecurityContextHolder.clearContext();
+        }
     }
 
     @Test
@@ -1062,7 +1188,7 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void c3FinanceLeadCanExecuteLargeRequestWhileRegularFinanceCannot() {
+    void c3FinanceLeadCanCreateLargeRequestWhileRegularFinanceCannot() {
         when(roleResolver.resolveCode()).thenReturn("FINANCE");
         ApiResult<Map<String, Object>> finance = service.createAssetAdjustment(
                 1L,
@@ -1076,18 +1202,24 @@ class OpsUserServiceTest {
 
         assertThat(finance.getCode()).isEqualTo(403);
         assertThat(lead.getCode()).isZero();
-        assertThat(lead.getData()).containsEntry("status", "APPROVED");
+        assertThat(lead.getData()).containsEntry("status", "PENDING_REVIEW");
     }
 
     @Test
-    void c3SuccessfulAdjustmentRequiresAuditAndEmitsBothCanonicalEvents() {
+    void c3ApprovalRequiresAuditAndEmitsBothCanonicalEvents() {
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
                 "idem-c3-events",
                 c3Request("USDT", "CREDIT", "5", "SUPPORT_COMPENSATION", "verified support compensation evidence", "ticket:C3-005"));
+        String adjustmentNo = String.valueOf(result.getData().get("adjustmentNo"));
+        ApiResult<UserAssetAdjustmentDetail> approved = service.approveAssetAdjustment(
+                adjustmentNo,
+                "idem-c3-events-approve",
+                new UserAssetAdjustmentReviewRequest("independent review verified support compensation evidence", "checker"));
 
         assertThat(result.getCode()).isZero();
-        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+        assertThat(approved.getCode()).isZero();
+        verify(auditLogService, org.mockito.Mockito.atLeast(2)).recordRequired(any(AuditLogWriteRequest.class));
         verify(outboxService).publish(eq("USER_ASSET_ADJUSTMENT"), anyString(), eq("admin.balance_adjusted"), any(Map.class));
         verify(outboxService).publish(eq("WALLET_LEDGER"), anyString(), eq("admin.bill_adjusted"), any(Map.class));
     }
@@ -1113,7 +1245,7 @@ class OpsUserServiceTest {
                 new UserAssetAdjustmentRequest("NEX", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"));
 
         ApiResult<PageResult<UserAssetAdjustmentView>> page = service.assetAdjustments(
-                new UserAssetAdjustmentQueryRequest("APPROVED", "NEX", 1L, null, 1, 20, null));
+                new UserAssetAdjustmentQueryRequest("PENDING_REVIEW", "NEX", 1L, null, 1, 20, null));
         ApiResult<UserAssetAdjustmentDetail> detail = service.assetAdjustmentDetail(String.valueOf(created.getData().get("adjustmentNo")));
 
         assertThat(page.getCode()).isZero();
@@ -1164,6 +1296,10 @@ class OpsUserServiceTest {
                         new UserAssetAdjustmentRequest("NEX", "DEBIT", "2", "approved correction", "superadmin"))
                 .getData()
                 .get("adjustmentNo"));
+        service.approveAssetAdjustment(
+                approvedNo,
+                "idem-c3-terminal-approve",
+                new UserAssetAdjustmentReviewRequest("independent checker approved terminal correction", "checker"));
         ApiResult<PageResult<UserAssetAdjustmentView>> result = service.assetAdjustments(
                 new UserAssetAdjustmentQueryRequest(null, "NEX", null, null, 1, 20, true));
 
@@ -1250,6 +1386,67 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void c3CheckerWithExactReverseAuthorityCanReverseWithoutPrivilegedRoleCode() {
+        String originalNo = "ADJ-CUSTOM-CHECKER-REVERSE";
+        userRepository.adjustments.put(originalNo, userRepository.adjustment(
+                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                "original debit approved by a different maker", "finance_maker", "APPROVED",
+                "finance_checker", "original review completed", 8140L));
+        when(roleResolver.resolveCode()).thenReturn("CUSTOM_C3_CHECKER");
+        UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "custom-c3-checker", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c3_adjust_reverse")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        try {
+            ApiResult<Map<String, Object>> result = service.reverseAssetAdjustment(
+                    originalNo,
+                    "idem-c3-custom-checker-reverse",
+                    new UserAssetAdjustmentReviewRequest(
+                            "reverse approved debit using exact C3 permission", "custom-c3-checker"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData())
+                    .containsEntry("reversalOf", originalNo)
+                    .containsEntry("status", "APPROVED");
+            assertThat(userRepository.postedLedgerBills).hasSize(1);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void c3ReverseRejectsAuthenticatedCallerWithoutExactAuthorityBeforeBusinessEffects() {
+        String originalNo = "ADJ-NO-REVERSE-AUTHORITY";
+        userRepository.adjustments.put(originalNo, userRepository.adjustment(
+                originalNo, 1L, "NEX", "DEBIT", new BigDecimal("0.000001"),
+                "original debit approved by a different maker", "finance_maker", "APPROVED",
+                "finance_checker", "original review completed", 8141L));
+        when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
+        UsernamePasswordAuthenticationToken authentication = UsernamePasswordAuthenticationToken.authenticated(
+                "ordinary-c3-reader", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c3_read")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        try {
+            ApiResult<Map<String, Object>> result = service.reverseAssetAdjustment(
+                    originalNo,
+                    "idem-c3-no-reverse-authority",
+                    new UserAssetAdjustmentReviewRequest(
+                            "caller lacks exact reversal permission", "ordinary-c3-reader"));
+
+            assertThat(result.getCode()).isEqualTo(403);
+            assertThat(result.getMessage()).isEqualTo("C3_ACTION_FORBIDDEN:user_c3_adjust_reverse");
+            assertThat(userRepository.assetAdjustmentHasReversal(originalNo)).isFalse();
+            assertThat(userRepository.postedLedgerBills).isEmpty();
+            verifyNoInteractions(outboxService);
+            verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
     void reversingApprovedAdjustmentReplaysSameIdempotencyKeyAfterStateChanged() {
         String originalNo = "ADJ-REVERSE-REPLAY";
         String idempotencyKey = "idem-c3-reverse-replay";
@@ -1299,20 +1496,27 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void regularFinanceCannotApproveSupportLargeAdjustment() {
+    void c3ReviewRequiresExactApproveAuthorityRatherThanPrivilegedRoleCode() {
         String adjustmentNo = userRepository.seedPendingAdjustment("USDT", "CREDIT", "600");
         when(roleResolver.resolveCode()).thenReturn("FINANCE");
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "finance-without-c3-approve", "n/a", List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("user_c3_read"))));
 
-        ApiResult<UserAssetAdjustmentDetail> result = service.approveAssetAdjustment(
-                adjustmentNo,
-                "idem-c3-finance-approve",
-                new UserAssetAdjustmentReviewRequest("finance cannot approve this large request", "finance"));
+        try {
+            ApiResult<UserAssetAdjustmentDetail> result = service.approveAssetAdjustment(
+                    adjustmentNo,
+                    "idem-c3-finance-approve",
+                    new UserAssetAdjustmentReviewRequest("finance cannot approve this large request", "finance"));
 
-        assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("C3_ADJUSTMENT_REVIEW_FORBIDDEN");
-        assertThat(userRepository.adjustments.get(adjustmentNo).status()).isEqualTo("PENDING_REVIEW");
-        assertThat(userRepository.postedLedgerBills).isEmpty();
-        verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+            assertThat(result.getCode()).isEqualTo(403);
+            assertThat(result.getMessage()).isEqualTo("C3_ACTION_FORBIDDEN:user_c3_adjust_approve");
+            assertThat(userRepository.adjustments.get(adjustmentNo).status()).isEqualTo("PENDING_REVIEW");
+            assertThat(userRepository.postedLedgerBills).isEmpty();
+            verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     @Test
@@ -1323,11 +1527,16 @@ class OpsUserServiceTest {
                 new UserAssetAdjustmentRequest("NEX", "DEBIT", "3.5", "manual correction after support ticket", "superadmin"))
                 .getData()
                 .get("adjustmentNo"));
+        ApiResult<UserAssetAdjustmentDetail> first = service.approveAssetAdjustment(
+                adjustmentNo,
+                "idem-c3-approve-first",
+                new UserAssetAdjustmentReviewRequest("first independent approval is complete", "checker"));
         ApiResult<UserAssetAdjustmentDetail> result = service.approveAssetAdjustment(
                 adjustmentNo,
                 "idem-c3-approve-again",
                 new UserAssetAdjustmentReviewRequest("second approval should be rejected", "checker"));
 
+        assertThat(first.getCode()).isZero();
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
     }
 

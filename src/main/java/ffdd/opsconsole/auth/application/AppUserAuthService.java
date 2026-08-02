@@ -3,10 +3,14 @@ package ffdd.opsconsole.auth.application;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
 import ffdd.opsconsole.auth.infrastructure.UserLoginGuardRecord;
+import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -20,6 +24,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -43,6 +48,10 @@ public class AppUserAuthService {
     private static final int MAX_FAILURES = 5;
     private static final int WINDOW_MINUTES = 15;
     private static final int IP_ATTEMPTS_PER_MINUTE = 60;
+    private static final int OTP_SEND_COOLDOWN_SECONDS = 60;
+    private static final int OTP_SEND_WINDOW_MINUTES = 15;
+    private static final int OTP_SEND_WINDOW_LIMIT = 5;
+    private static final int OTP_SEND_DAY_LIMIT = 10;
     private static final String DUMMY_PASSWORD_HASH =
             "$2a$10$IPabDA.89TrSOBbFNdsPDejK6ip8ywMtoYds8SWtmjhSpN4sK9mFG";
     private final UserOpsMapper userMapper;
@@ -60,6 +69,7 @@ public class AppUserAuthService {
     @PostConstruct
     void ensureLoginGuardSchema() {
         loginGuardMapper.createTable();
+        loginGuardMapper.createOtpSendGuardTable();
         if (loginGuardMapper.countUserIdColumn() == 0) loginGuardMapper.addUserIdColumn();
         if (loginGuardMapper.countUpdatedAtIndex() == 0) loginGuardMapper.addUpdatedAtIndex();
     }
@@ -89,11 +99,10 @@ public class AppUserAuthService {
                 .eq(UserEntity::getPhone, phone)
                 .eq(UserEntity::getIsDeleted, 0)
                 .last("LIMIT 1"));
-        boolean allowlisted = user != null && blocklistVerifier.isAllowlisted(user.getId());
         if (user != null) {
             loginGuardMapper.bindUser(loginKey, user.getId());
         }
-        if (!allowlisted && guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
+        if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
         }
         boolean passwordMatches = safePasswordMatches(request.password(),
@@ -116,6 +125,104 @@ public class AppUserAuthService {
             return issueTwoFactorChallenge(user, countryCode, phone);
         }
 
+        return issueSession(user, countryCode, phone, clientAddress);
+    }
+
+    /**
+     * Starts the passwordless login path without repurposing registration or
+     * second-factor challenges. Ineligible identities receive an indistinguishable
+     * disposable challenge so this public endpoint cannot be used for account
+     * enumeration; only a persisted LOGIN challenge can complete authentication.
+     */
+    @Transactional
+    public ApiResult<UserOtpLoginChallengeResponse> beginOtpLogin(UserOtpLoginRequest request) {
+        return beginOtpLogin(request, "local");
+    }
+
+    @Transactional
+    public ApiResult<UserOtpLoginChallengeResponse> beginOtpLogin(
+            UserOtpLoginRequest request, String clientAddress) {
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())) {
+            return ApiResult.fail(422, "USER_OTP_LOGIN_REQUEST_INVALID");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
+        String countryCode = normalizeCountryCode(request.countryCode());
+        String phone = request.phone().trim();
+        String loginKey = loginKey(countryCode, phone);
+        loginGuardMapper.initialize(loginKey, now);
+        UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
+        UserEntity user = findUser(countryCode, phone);
+        if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
+        if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+        }
+        if (!consumeOtpSendRate(loginKey, now)) {
+            return ApiResult.fail(429, "USER_OTP_SEND_RATE_LIMITED");
+        }
+        boolean eligible = user != null
+                && "ACTIVE".equalsIgnoreCase(user.getStatus())
+                && !blocklistVerifier.isBlocked(user.getId())
+                && !userMapper.isPasswordResetRequired(user.getId())
+                && !userMapper.isTwoFactorEnabled(user.getId())
+                && otpDeliveryService.available();
+        if (!eligible) return ApiResult.ok(disposableOtpLoginChallenge(phone));
+        String challengeNo = "LOGIN-" + UUID.randomUUID().toString().replace("-", "");
+        String code = String.format("%06d", secureRandom.nextInt(1_000_000));
+        int ttlMinutes = configInt("auth.risk.otp_ttl_minutes", 5, 1, 15);
+        userMapper.invalidateOpenLoginOtpChallenges(user.getId());
+        if (userMapper.createLoginOtpChallenge(user.getId(), challengeNo, code, ttlMinutes) != 1) {
+            throw new IllegalStateException("USER_OTP_LOGIN_CHALLENGE_CREATE_FAILED");
+        }
+        try {
+            otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes);
+        } catch (RuntimeException exception) {
+            // Do not expose delivery availability as an account-existence oracle.
+            return ApiResult.ok(disposableOtpLoginChallenge(phone));
+        }
+        return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, 60, maskPhone(phone)));
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeOtpLogin(UserOtpLoginVerifyRequest request) {
+        return completeOtpLogin(request, "local");
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeOtpLogin(
+            UserOtpLoginVerifyRequest request, String clientAddress) {
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
+                || !StringUtils.hasText(request.challengeNo()) || !request.challengeNo().trim().matches("LOGIN-[a-f0-9]{32}")
+                || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
+            return ApiResult.fail(422, "USER_OTP_LOGIN_CHALLENGE_INVALID");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
+        String countryCode = normalizeCountryCode(request.countryCode());
+        String phone = request.phone().trim();
+        String loginKey = loginKey(countryCode, phone);
+        loginGuardMapper.initialize(loginKey, now);
+        UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
+        UserEntity user = findUser(countryCode, phone);
+        if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
+        boolean eligible = user != null
+                && "ACTIVE".equalsIgnoreCase(user.getStatus())
+                && !blocklistVerifier.isBlocked(user.getId())
+                && !userMapper.isPasswordResetRequired(user.getId())
+                && !userMapper.isTwoFactorEnabled(user.getId())
+                && (guard == null || guard.getLockedUntil() == null || !guard.getLockedUntil().isAfter(now));
+        int consumed = eligible
+                ? userMapper.consumeValidLoginOtp(user.getId(), request.challengeNo().trim(), request.code().trim())
+                : 0;
+        if (consumed != 1) {
+            if (user != null) {
+                userMapper.recordInvalidLoginOtpAttempt(user.getId(), request.challengeNo().trim());
+            }
+            recordFailure(loginKey, user == null ? null : user.getId(), guard, now);
+            return ApiResult.fail(422, "USER_OTP_LOGIN_CHALLENGE_INVALID");
+        }
+        loginGuardMapper.clear(loginKey);
+        userMapper.clearLoginFailure(user.getId());
         return issueSession(user, countryCode, phone, clientAddress);
     }
 
@@ -175,6 +282,7 @@ public class AppUserAuthService {
             UserTwoFactorLoginRequest request, String clientAddress) {
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
                 || !StringUtils.hasText(request.password()) || !StringUtils.hasText(request.challengeNo())
+                || !request.challengeNo().trim().matches("OTP-[a-f0-9]{32}")
                 || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
             return ApiResult.fail(422, "USER_TWO_FACTOR_CHALLENGE_INVALID");
         }
@@ -386,6 +494,17 @@ public class AppUserAuthService {
         return ApiResult.fail(401, "USER_CREDENTIAL_INVALID");
     }
 
+    private UserOtpLoginChallengeResponse disposableOtpLoginChallenge(String phone) {
+        return new UserOtpLoginChallengeResponse(
+                "LOGIN-" + UUID.randomUUID().toString().replace("-", ""),
+                60,
+                maskPhone(phone));
+    }
+
+    private String maskPhone(String phone) {
+        return phone.length() <= 4 ? "****" : "****" + phone.substring(phone.length() - 4);
+    }
+
     private boolean validCountryCode(String value) {
         return StringUtils.hasText(value) && normalizeCountryCode(value).matches("\\+[0-9]{1,4}");
     }
@@ -444,6 +563,32 @@ public class AppUserAuthService {
         LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
         LocalDateTime lockedUntil = attempts >= IP_ATTEMPTS_PER_MINUTE ? now.plusMinutes(1) : null;
         loginGuardMapper.recordFailure(key, attempts, windowStartedAt, lockedUntil);
+        return true;
+    }
+
+    private boolean consumeOtpSendRate(String loginKey, LocalDateTime now) {
+        int cooldownSeconds = configInt("auth.risk.otp_send_cooldown_seconds", OTP_SEND_COOLDOWN_SECONDS, 30, 300);
+        int windowMinutes = configInt("auth.risk.otp_send_window_minutes", OTP_SEND_WINDOW_MINUTES, 5, 60);
+        int windowLimit = configInt("auth.risk.otp_send_window_limit", OTP_SEND_WINDOW_LIMIT, 2, 20);
+        int dayLimit = configInt("auth.risk.otp_send_day_limit", OTP_SEND_DAY_LIMIT, 5, 50);
+        loginGuardMapper.initializeOtpSendGuard(loginKey, now);
+        UserOtpSendGuardRecord guard = loginGuardMapper.lockOtpSendGuard(loginKey);
+        if (guard == null) throw new IllegalStateException("USER_OTP_SEND_GUARD_UNAVAILABLE");
+        if (guard.getLastSentAt() != null && guard.getLastSentAt().plusSeconds(cooldownSeconds).isAfter(now)) {
+            return false;
+        }
+        boolean newWindow = guard.getWindowStartedAt() == null
+                || !guard.getWindowStartedAt().plusMinutes(windowMinutes).isAfter(now);
+        boolean newDay = guard.getDayStartedAt() == null || !guard.getDayStartedAt().equals(now.toLocalDate());
+        int windowCount = newWindow ? 1 : guard.getWindowSendCount() + 1;
+        int dayCount = newDay ? 1 : guard.getDaySendCount() + 1;
+        if (windowCount > windowLimit || dayCount > dayLimit) return false;
+        LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
+        LocalDate dayStartedAt = newDay ? now.toLocalDate() : guard.getDayStartedAt();
+        if (loginGuardMapper.recordOtpSend(
+                loginKey, now, windowStartedAt, windowCount, dayStartedAt, dayCount) != 1) {
+            throw new IllegalStateException("USER_OTP_SEND_GUARD_STATE_CHANGED");
+        }
         return true;
     }
 

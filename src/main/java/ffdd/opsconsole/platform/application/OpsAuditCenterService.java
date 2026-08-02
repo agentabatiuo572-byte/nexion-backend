@@ -91,6 +91,7 @@ public class OpsAuditCenterService {
     private final AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard;
     @Lazy
     private final AuditReplayDispatcher replayDispatcher;
+    private final A2AccessPolicy accessPolicy;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final AdminIdempotencyService idempotencyService;
 
@@ -203,6 +204,12 @@ public class OpsAuditCenterService {
         ticket.setIsDeleted(0);
         // 存回放指令(供 approve 时回放执行)
         AuditReplayCommand command = request.command();
+        ApiResult<AuditReplayCommand> canonicalCommand =
+                replayBusinessPermissionGuard.canonicalizeProposalCommand(command);
+        if (canonicalCommand.getCode() != 0) {
+            return ApiResult.fail(canonicalCommand.getCode(), canonicalCommand.getMessage());
+        }
+        command = canonicalCommand.getData();
         ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
         if (businessPermission.getCode() != 0) {
             return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
@@ -516,6 +523,12 @@ public class OpsAuditCenterService {
         if (ticket == null) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
         }
+        // HTTP authorization evaluates the operation ID before entering this service. Recheck the
+        // locked row here so internal callers and a row whose scope changes between those two
+        // points cannot approve, reject, unlock, or replay a cross-domain operation.
+        if (!accessPolicy.canAccessTicket(ticket)) {
+            return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
+        }
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
         }
@@ -529,13 +542,13 @@ public class OpsAuditCenterService {
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
-            ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(cmd);
+            ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateApproval(cmd);
             if (businessPermission.getCode() != 0) {
                 return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
             }
             AuditReplayContext ctx = new AuditReplayContext(
                     authenticatedOperator, request.reason().trim(), idempotencyKey.trim());
-            A2ReplayContext.enterReplay();
+            A2ReplayContext.enterReplay(ticket.getOperationId());
             try {
                 ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
                 if (replayResult.getCode() != 0) {
