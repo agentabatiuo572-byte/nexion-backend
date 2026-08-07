@@ -46,14 +46,6 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('user_c3_adjust_approve',             'C3 资产调整通过(⚡资金放大)',      'API', '/users/assets',       'HIGH',  1, 1, 0),
   ('user_c3_adjust_reverse',             'C3 资产冲正(⚡资金放大)',          'API', '/users/assets',       'HIGH',  1, 1, 0),
 
-  -- ===== C4 KYC 合规台账 /users/kyc (6) =====
-  ('user_c4_read',                       'C4 KYC合规台账-页面读',            'API', '/users/kyc',          'READ',  0, 1, 0),
-  ('user_c4_verify',                     'C4 人工标记实名通过',              'API', '/users/kyc',          'HIGH',  1, 1, 0),
-  ('user_c4_revoke',                     'C4 撤销实名',                      'API', '/users/kyc',          'HIGH',  0, 1, 0),
-  ('user_c4_trigger_review',             'C4 触发K5增强复审',                'API', '/users/kyc',          'HIGH',  0, 1, 0),
-  ('user_c4_export',                     'C4 监管脱敏导出',                  'API', '/users/kyc',          'HIGH',  0, 1, 0),
-  ('user_c4_network_write',              'C4 配对网络白名单',                'API', '/users/kyc',          'HIGH',  0, 1, 0),
-
   -- ===== C5 安全 & 会话 /users/security (8) =====
   ('user_c5_read',                       'C5 安全&会话-页面读',              'API', '/users/security',     'READ',  0, 1, 0),
   ('user_c5_write',                      'C5 安全&会话-常规写',              'API', '/users/security',     'WRITE', 0, 1, 0),

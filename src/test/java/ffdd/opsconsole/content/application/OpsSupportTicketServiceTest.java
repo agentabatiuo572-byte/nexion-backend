@@ -302,7 +302,7 @@ class OpsSupportTicketServiceTest {
                 "TK-1",
                 "idem-m2-assign",
                 new SupportTicketAssigneeRequest(
-                        7L, "Tomas R.", "Marina K.", "kyc specialist", "OPEN", 0L));
+                        7L, "Tomas R.", "Marina K.", "withdrawal specialist", "OPEN", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().ticket().assignedAdminId()).isEqualTo(7L);

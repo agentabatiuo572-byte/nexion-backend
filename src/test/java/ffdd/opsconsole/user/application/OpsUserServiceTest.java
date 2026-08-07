@@ -26,10 +26,6 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.bi.facade.BiKycRegulatoryExportFacade;
-import ffdd.opsconsole.bi.facade.KycRegulatoryExportJob;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -41,10 +37,6 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentDetail;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
-import ffdd.opsconsole.user.domain.UserKycLedgerRow;
-import ffdd.opsconsole.user.domain.UserKycOverview;
-import ffdd.opsconsole.user.domain.UserKycRecord;
-import ffdd.opsconsole.user.domain.UserKycStatusHistoryView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
@@ -64,10 +56,6 @@ import ffdd.opsconsole.user.dto.UserAssetAdjustmentReviewRequest;
 import ffdd.opsconsole.user.dto.UserCredentialParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
-import ffdd.opsconsole.user.dto.UserKycExportRequest;
-import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
-import ffdd.opsconsole.user.dto.UserKycReviewTriggerRequest;
-import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
 import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
@@ -104,8 +92,6 @@ class OpsUserServiceTest {
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
-    private final RiskKycReviewFacade riskKycReviewFacade = mock(RiskKycReviewFacade.class);
-    private final BiKycRegulatoryExportFacade biKycExportFacade = mock(BiKycRegulatoryExportFacade.class);
     private final ffdd.opsconsole.shared.security.JwtTokenProvider tokenProvider =
             mock(ffdd.opsconsole.shared.security.JwtTokenProvider.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
@@ -123,8 +109,6 @@ class OpsUserServiceTest {
             lockMapper,
             outboxService,
             tokenProvider,
-            riskKycReviewFacade,
-            biKycExportFacade,
             Clock.fixed(Instant.parse("2026-07-19T12:00:00Z"), ZoneOffset.UTC));
 
     @BeforeEach
@@ -138,13 +122,6 @@ class OpsUserServiceTest {
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
         when(idempotencyService.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
-        when(biKycExportFacade.recent(anyInt())).thenReturn(List.of());
-        when(biKycExportFacade.create(anyString(), anyString(), anyLong(), anyString(), anyString()))
-                .thenAnswer(invocation -> new KycRegulatoryExportJob(
-                        invocation.getArgument(0), "READY", invocation.getArgument(1),
-                        invocation.getArgument(2), true,
-                        "/api/admin/users/kyc/exports/" + invocation.getArgument(0) + "/download",
-                        LocalDateTime.now()));
     }
 
     @Test
@@ -184,7 +161,7 @@ class OpsUserServiceTest {
     void c2StatusChangeOnlyAllowsActiveToFrozenAndFrozenToActive() {
         userRepository.user = new UserAccountView(
                 1L, "U00000001", "Alice", "138****8000", "+86", "BANNED",
-                "PENDING", "LV1", "V0", false, new BigDecimal("100"), new BigDecimal("50"),
+                "LV1", "V0", false, new BigDecimal("100"), new BigDecimal("50"),
                 88, "HIGH", 2L, 1L, LocalDateTime.now().minusDays(100), LocalDateTime.now());
 
         ApiResult<UserAccountView> result = service.updateStatus(
@@ -276,13 +253,13 @@ class OpsUserServiceTest {
     @Test
     void profilePageReturnsServerCanonicalPagination() {
         ApiResult<PageResult<UserAccountView>> result = service.profilePage(
-                UserQueryRequest.basic("Alice", "FROZEN,BANNED,RESTRICTED", "PENDING", 70, 2, 10, null));
+                UserQueryRequest.basic("Alice", "ACTIVE", 70, 2, 10, null));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getPageNum()).isEqualTo(2);
         assertThat(result.getData().getPageSize()).isEqualTo(10);
         assertThat(result.getData().getRecords()).containsExactly(userRepository.user);
-        assertThat(userRepository.lastProfileRequest.status()).isEqualTo("FROZEN,BANNED,RESTRICTED");
+        assertThat(userRepository.lastProfileRequest.status()).isEqualTo("ACTIVE");
         assertThat(userRepository.lastProfileRequest.riskMin()).isEqualTo(70);
         ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(audit.capture());
@@ -293,7 +270,7 @@ class OpsUserServiceTest {
     @Test
     void profilePageRejectsRawPhoneKeywordBeforeRepositoryAccess() {
         ApiResult<PageResult<UserAccountView>> result = service.profilePage(
-                UserQueryRequest.basic("13800138000", null, null, null, 1, 50, null));
+                UserQueryRequest.basic("13800138000", null, null, 1, 50, null));
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("C1_RAW_PHONE_SEARCH_FORBIDDEN");
@@ -303,9 +280,9 @@ class OpsUserServiceTest {
     @Test
     void profilePageRejectsOutOfRangePaginationBeforeRepositoryAccess() {
         ApiResult<PageResult<UserAccountView>> invalidPage = service.profilePage(
-                UserQueryRequest.basic(null, null, null, null, 0, 20, null));
+                UserQueryRequest.basic(null, null, null, 0, 20, null));
         ApiResult<PageResult<UserAccountView>> invalidPageSize = service.profilePage(
-                UserQueryRequest.basic(null, null, null, null, 1, 201, null));
+                UserQueryRequest.basic(null, null, null, 1, 201, null));
 
         assertThat(invalidPage.getCode()).isEqualTo(422);
         assertThat(invalidPage.getMessage()).isEqualTo("C1_PAGE_NUM_INVALID");
@@ -319,7 +296,7 @@ class OpsUserServiceTest {
         userRepository.loadAccountActionFixtures();
 
         ApiResult<PageResult<UserAccountView>> result = service.profilePage(
-                UserQueryRequest.basic("Marcus", null, null, null, 1, 10, null));
+                UserQueryRequest.basic("Marcus", null, null, 1, 10, null));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().getRecords())
@@ -332,7 +309,7 @@ class OpsUserServiceTest {
     void profileExportUsesServerPaginationAndWritesAudit() {
         UserProfileExportFile file = service.exportProfileExcel(
                 "idem-c1-export",
-                UserProfileExportRequest.basic("Alice", "ACTIVE", null, 30, "C1 masked user export", "superadmin"));
+                UserProfileExportRequest.basic("Alice", "ACTIVE", 30, "C1 masked user export", "superadmin"));
 
         String workbook = new String(file.body(), StandardCharsets.UTF_8);
         assertThat(file.fileName()).startsWith("C1-USER-EXP-").endsWith(".csv");
@@ -356,7 +333,7 @@ class OpsUserServiceTest {
     @Test
     void concurrentProfileExportsReceiveDistinctCorrelationNumbers() {
         UserProfileExportRequest request = UserProfileExportRequest.basic(
-                null, null, null, null, "C1 concurrent export", "superadmin");
+                null, null, null, "C1 concurrent export", "superadmin");
 
         UserProfileExportFile first = service.exportProfileExcel("idem-c1-export-a", request);
         UserProfileExportFile second = service.exportProfileExcel("idem-c1-export-b", request);
@@ -370,7 +347,7 @@ class OpsUserServiceTest {
 
         UserProfileExportFile file = service.exportProfileExcel(
                 "idem-c1-growth-export",
-                UserProfileExportRequest.basic(null, null, null, null, "C1 growth export", "growth-user"));
+                UserProfileExportRequest.basic(null, null, null, "C1 growth export", "growth-user"));
 
         assertThat(new String(file.body(), StandardCharsets.UTF_8))
                 .contains("用户编码", "生命周期", "V-Rank", "手机号(脱敏)")
@@ -687,277 +664,12 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void kycOverviewBuildsRowsFromUserDomainAndConfig() {
-        configFacade.values.put("kyc.network_whitelist", "TRC20 / ERC20");
-
-        ApiResult<UserKycOverview> result = service.kycOverview(null, 1, 10, null);
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().networkWhitelist()).isEqualTo("TRC20 / ERC20");
-        assertThat(result.getData().stats().verified()).isEqualTo(0);
-        assertThat(result.getData().rows()).hasSize(1);
-        assertThat(result.getData().rows().get(0).pairedAddressMasked()).isEqualTo("未绑定");
-        assertThat(result.getData().sources()).contains("KYC authority ledger");
-    }
-
-    @Test
-    void kycOverviewReadsExistingC4BusinessRows() {
-        userRepository.loadKycFixtures();
-
-        ApiResult<UserKycOverview> result = service.kycOverview(null, 1, 10, null);
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().rows())
-                .extracting(UserKycLedgerRow::displayId)
-                .contains("U00007704", "U00003188", "U00005501");
-        assertThat(result.getData().rows())
-                .anySatisfy(row -> {
-                    assertThat(row.displayId()).isEqualTo("U00007704");
-                    assertThat(row.backendStatus()).isEqualTo("PENDING");
-                    assertThat(row.pairedAddressMasked()).isNotEqualTo("未绑定");
-                    assertThat(row.network()).isEqualTo("—");
-                    assertThat(row.triggerSource()).isEqualTo("历史状态迁入");
-                    assertThat(row.info())
-                            .filteredOn(item -> "账户状态".equals(item.key()))
-                            .extracting(item -> item.value())
-                            .containsExactly("正常");
-                })
-                .anySatisfy(row -> {
-                    assertThat(row.displayId()).isEqualTo("U00005501");
-                    assertThat(row.backendStatus()).isEqualTo("NONE");
-                    assertThat(row.pairedAddressMasked()).isEqualTo("未绑定");
-                });
-    }
-
-    @Test
-    void kycStatusChangeRequiresIdempotencyKey() {
-        ApiResult<UserKycLedgerRow> result = service.verifyKyc(
-                1L,
-                null,
-                new UserKycStatusUpdateRequest(
-                        "APPROVED", "PENDING", "MANUAL_VERIFICATION", "offline verification passed",
-                        "ticket:C4-001", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
-    }
-
-    @Test
-    void kycStatusChangeRejectsUnsupportedReasonCodeWith422() {
-        ApiResult<UserKycLedgerRow> result = service.verifyKyc(
-                1L,
-                "idem-c4-kyc",
-                new UserKycStatusUpdateRequest(
-                        "APPROVED", "PENDING", "MANUAL_JSON", "offline verification passed",
-                        "ticket:C4-001", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("C4_REASON_CODE_UNSUPPORTED");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_STATUS_CHANGE_REJECTED");
-        assertThat(captor.getValue().getResult()).isEqualTo("REJECTED");
-        assertThat(captor.getValue().getDetail().toString()).contains("C4_REASON_CODE_UNSUPPORTED");
-    }
-
-    @Test
-    void kycApproveBelowB1RedlineReturns422() {
-        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
-
-        ApiResult<UserKycLedgerRow> result = service.verifyKyc(
-                1L,
-                "idem-c4-kyc",
-                new UserKycStatusUpdateRequest(
-                        "APPROVED", "PENDING", "MANUAL_VERIFICATION", "offline verification passed",
-                        "ticket:C4-001", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getDetail().toString())
-                .contains("COVERAGE_BELOW_REDLINE", "expectedState=PENDING", "currentState=PENDING", "nextState=APPROVED");
-    }
-
-    @Test
-    void kycStaleExpectedStateIsRejectedAuditedWithoutChangingAuthority() {
-        ApiResult<UserKycLedgerRow> result = service.revokeKyc(
-                1L,
-                "idem-c4-stale",
-                new UserKycStatusUpdateRequest(
-                        "NONE", "APPROVED", "COMPLIANCE_CORRECTION", "stale state must not overwrite authority",
-                        "ticket:C4-STALE", "forged-operator"));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("KYC_EXPECTED_STATE_MISMATCH");
-        assertThat(userRepository.user.kycStatus()).isEqualTo("PENDING");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_STATUS_CHANGE_REJECTED");
-        assertThat(captor.getValue().getDetail().toString())
-                .contains("KYC_EXPECTED_STATE_MISMATCH", "expectedState=APPROVED", "currentState=PENDING", "nextState=NONE");
-    }
-
-    @Test
-    void kycStatusChangeUpdatesRepositoryAndWritesAudit() {
-        ApiResult<UserKycLedgerRow> result = service.verifyKyc(
-                1L,
-                "idem-c4-kyc",
-                new UserKycStatusUpdateRequest(
-                        "APPROVED", "PENDING", "MANUAL_VERIFICATION", "offline verification passed",
-                        "ticket:C4-001", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().backendStatus()).isEqualTo("APPROVED");
-        assertThat(userRepository.user.kycStatus()).isEqualTo("APPROVED");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_STATUS_CHANGED");
-        verify(outboxService).publish(eq("USER_KYC"), eq("1"), eq("admin.kyc_status_changed"), any());
-    }
-
-    @Test
-    void kycNetworkWhitelistRejectsRawJsonAndUrl() {
-        ApiResult<Map<String, Object>> rawJson = service.updateKycNetworkWhitelist(
-                "idem-c4-network",
-                new UserKycNetworkUpdateRequest("{\"net\":\"TRC20\"}", "network policy cleanup", "superadmin"));
-        ApiResult<Map<String, Object>> url = service.updateKycNetworkWhitelist(
-                "idem-c4-network-2",
-                new UserKycNetworkUpdateRequest("https://example.com/list", "network policy cleanup", "superadmin"));
-
-        assertThat(rawJson.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(url.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-    }
-
-    @Test
-    void kycNetworkWhitelistPersistsConfigAndAudit() {
-        ApiResult<Map<String, Object>> result = service.updateKycNetworkWhitelist(
-                "idem-c4-network",
-                new UserKycNetworkUpdateRequest("TRC20 / ERC20 / BTC", "network policy cleanup", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("value", "TRC20 / ERC20 / BTC");
-        assertThat(configFacade.values).containsEntry("kyc.network_whitelist", "TRC20 / ERC20 / BTC");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_NETWORK_WHITELIST_UPDATED");
-    }
-
-    @Test
-    void kycNetworkValidationFailureWritesRequiredRejectedAudit() {
-        ApiResult<Map<String, Object>> result = service.updateKycNetworkWhitelist(
-                "idem-c4-network-invalid",
-                new UserKycNetworkUpdateRequest("https://example.com/list", "network policy cleanup", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_NETWORK_WHITELIST_REJECTED");
-        assertThat(captor.getValue().getResult()).isEqualTo("REJECTED");
-    }
-
-    @Test
-    void kycMaskedExportCreatesServerJobAndAudit() {
-        ApiResult<Map<String, Object>> result = service.createKycExport(
-                "idem-c4-export",
-                new UserKycExportRequest("MASKED_LEDGER", "quarterly regulatory package", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("status", "READY").containsEntry("masked", true);
-        assertThat(result.getData().get("downloadPath").toString()).contains("/kyc/exports/");
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_CREATED");
-    }
-
-    @Test
-    void kycExportRejectsUnknownScopeBeforeCreatingAJob() {
-        ApiResult<Map<String, Object>> result = service.createKycExport(
-                "idem-c4-export-invalid-scope",
-                new UserKycExportRequest("UNMASKED_ALL", "quarterly regulatory package", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("C4_EXPORT_SCOPE_INVALID");
-        verifyNoInteractions(biKycExportFacade);
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_REJECTED");
-    }
-
-    @Test
-    void kycExportPersistenceFailureWritesRequiredFailureAudit() {
-        when(biKycExportFacade.create(anyString(), anyString(), anyLong(), anyString(), anyString()))
-                .thenThrow(new IllegalStateException("storage unavailable"));
-
-        assertThatThrownBy(() -> service.createKycExport(
-                "idem-c4-export-failed",
-                new UserKycExportRequest("MASKED_LEDGER", "quarterly regulatory package", "superadmin")))
-                .isInstanceOf(IllegalStateException.class);
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_FAILED");
-        assertThat(captor.getValue().getResult()).isEqualTo("FAILED");
-    }
-
-    @Test
-    void kycReviewTriggerCreatesK5TicketWithoutChangingKycStatus() {
-        when(riskKycReviewFacade.triggerManualReview(anyString(), anyString(), anyString()))
-                .thenReturn(new KycReviewTriggerResult(true, true, "KR-C4-ABC12345", "K5_MANUAL_REVIEW_CREATED"));
-
-        ApiResult<Map<String, Object>> result = service.triggerKycReview(
-                1L,
-                "idem-c4-review",
-                new ffdd.opsconsole.user.dto.UserKycReviewTriggerRequest(
-                        "RISK_ESCALATION", "manual review requested from compliance desk",
-                        "ticket:C4-002", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("ticketId", "KR-C4-ABC12345")
-                .containsEntry("kycStatus", "PENDING");
-        assertThat(userRepository.user.kycStatus()).isEqualTo("PENDING");
-        verify(outboxService).publish(eq("RISK_KYC_REVIEW_TICKET"), eq("KR-C4-ABC12345"),
-                eq("risk.kyc_review_triggered"), any());
-    }
-
-    @Test
-    void kycReviewMergeConflictWritesRequiredFailureAudit() {
-        when(riskKycReviewFacade.triggerManualReview(anyString(), anyString(), anyString()))
-                .thenThrow(new IllegalStateException("K5_REVIEW_MERGE_CONFLICT"));
-
-        assertThatThrownBy(() -> service.triggerKycReview(
-                1L,
-                "idem-c4-review-conflict",
-                new UserKycReviewTriggerRequest(
-                        "RISK_ESCALATION", "manual review requested from compliance desk",
-                        "ticket:C4-CONFLICT", "superadmin")))
-                .isInstanceOf(IllegalStateException.class);
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_K5_REVIEW_TRIGGER_FAILED");
-        assertThat(captor.getValue().getResult()).isEqualTo("FAILED");
-    }
-
-    @Test
-    void missingKycExportDownloadWritesRequiredRejectedAudit() {
-        when(biKycExportFacade.downloadCsv("KYC-EXP-ABCDEF123456")).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> service.downloadKycExport("KYC-EXP-ABCDEF123456"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("C4_EXPORT_JOB_NOT_FOUND");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequiredInNewTransaction(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("C4_KYC_MASKED_EXPORT_DOWNLOAD_REJECTED");
-        assertThat(captor.getValue().getResult()).isEqualTo("REJECTED");
-    }
-
-    @Test
     void creditAssetAdjustmentBelowB1RedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
         ApiResult<Map<String, Object>> result = service.createAssetAdjustment(
                 1L,
-                "idem-c4",
+                "idem-user",
                 new UserAssetAdjustmentRequest("NEX", "CREDIT", "10", "manual compensation", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
@@ -1801,7 +1513,6 @@ class OpsUserServiceTest {
     @Test
     void disablingTwoFactorRequiresIdempotencyAndUpdatesSecurity() {
         userRepository.twoFactorEnabled = true;
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
 
         ApiResult<UserSecurityStatusView> result = service.disableTwoFactor(
                 1L,
@@ -1820,7 +1531,6 @@ class OpsUserServiceTest {
 
     @Test
     void passwordResetMarksResetRequiredAndRevokesActiveSessions() {
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
         userRepository.sessions.put("rt-active", new UserSessionView(
                 1L, "rt-active", "web", "10.0.0.*", "ACTIVE", LocalDateTime.now(), LocalDateTime.now().plusDays(1), null));
 
@@ -1837,7 +1547,6 @@ class OpsUserServiceTest {
 
     @Test
     void unlockClearsLoginFailures() {
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
         userRepository.loginFailCount = 8;
         userRepository.activeLoginLock = true;
 
@@ -1871,66 +1580,8 @@ class OpsUserServiceTest {
     }
 
     @Test
-    void c5HighRiskActionRejectsMissingServerVerifiedKycEvidence() {
-        userRepository.twoFactorEnabled = true;
-
-        ApiResult<UserSecurityStatusView> result = service.disableTwoFactor(
-                1L, "idem-c5-missing-kyc", new UserSecurityActionRequest("verified support ownership", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("KYC_REVERIFY_REQUIRED");
-        assertThat(userRepository.twoFactorEnabled).isTrue();
-        verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
-    }
-
-    @Test
-    void c5HighRiskActionRejectsSyntacticallyValidButUnissuedKycTicket() {
-        userRepository.twoFactorEnabled = true;
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
-        UserSecurityActionRequest forged = new UserSecurityActionRequest(
-                "verified support ownership",
-                "superadmin",
-                "video",
-                "KR-C5-FORGED-0001",
-                LocalDateTime.now().toString(),
-                true,
-                null);
-
-        ApiResult<UserSecurityStatusView> result = service.disableTwoFactor(
-                1L, "idem-c5-forged-ticket", forged);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("KYC_REVERIFY_REQUIRED");
-        assertThat(userRepository.twoFactorEnabled).isTrue();
-        verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
-    }
-
-    @Test
-    void c5KycReverificationRequestCreatesActionBoundK5Ticket() {
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
-        when(riskKycReviewFacade.triggerC5IdentityReview(
-                eq("U00000001"), eq("PASSWORD_RESET"), eq("superadmin"), eq("customer identity recheck")))
-                .thenReturn(new KycReviewTriggerResult(true, true, "KR-C5-ABC12345", "K5_C5_REVIEW_CREATED"));
-
-        ApiResult<Map<String, Object>> result = service.requestC5KycReverification(
-                1L,
-                "idem-c5-review-request",
-                new ffdd.opsconsole.user.dto.UserKycReverificationRequest(
-                        "PASSWORD_RESET", "customer identity recheck", "superadmin"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("ticketId", "KR-C5-ABC12345")
-                .containsEntry("action", "PASSWORD_RESET")
-                .containsEntry("status", "WAITING_K5_REVIEW");
-        verify(riskKycReviewFacade).triggerC5IdentityReview(
-                "U00000001", "PASSWORD_RESET", "superadmin", "customer identity recheck");
-        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
-    }
-
-    @Test
     void c5RepeatedStateTransitionIsRejectedInsteadOfPretendingSuccess() {
         userRepository.twoFactorEnabled = false;
-        userRepository.updateKycStatus(1L, "APPROVED", "test setup");
 
         ApiResult<UserSecurityStatusView> result = service.disableTwoFactor(
                 1L, "idem-c5-state", verifiedC5Request("verified support ownership", null));
@@ -1951,9 +1602,6 @@ class OpsUserServiceTest {
         return new UserSecurityActionRequest(
                 reason,
                 "superadmin",
-                "视频核实",
-                "SEC-20260719-001",
-                LocalDateTime.now().toString(),
                 true,
                 lockKind);
     }
@@ -2188,7 +1836,6 @@ class OpsUserServiceTest {
                 "138****8000",
                 "86",
                 "ACTIVE",
-                "PENDING",
                 "L1",
                 "V1",
                 true,
@@ -2206,7 +1853,6 @@ class OpsUserServiceTest {
         private RuntimeException approvalFailure;
         private final List<UserAccountListEntryView> accountLists = new ArrayList<>();
         private final List<UserImpersonationSessionView> impersonations = new ArrayList<>();
-        private final Map<Long, UserAccountView> kycSeedUsers = new LinkedHashMap<>();
         private final Map<Long, String> walletAddresses = new LinkedHashMap<>();
         private UserAccountView c2SeedUser;
         private final Map<Long, UserAccountView> c5SeedUsers = new LinkedHashMap<>();
@@ -2214,7 +1860,6 @@ class OpsUserServiceTest {
         private boolean c2SeedPresent = true;
         private boolean c5SeedPresent = true;
         private boolean omitC5UsersFromGenericSearch = false;
-        private boolean kycSeedPresent = true;
         private boolean rejectNextStatusTransition = false;
         private boolean rejectNextImpersonationTransition = false;
         private String freezeSource;
@@ -2274,8 +1919,8 @@ class OpsUserServiceTest {
         }
 
         @Override
-        public List<UserAccountView> search(String keyword, String status, String kycStatus, int limit) {
-            return filterUsers(status, kycStatus).stream().limit(limit).toList();
+        public List<UserAccountView> search(String keyword, String status, int limit) {
+            return filterUsers(status).stream().limit(limit).toList();
         }
 
         @Override
@@ -2297,9 +1942,7 @@ class OpsUserServiceTest {
             lastProfileRequest = request;
             int pageNum = request == null || request.pageNum() == null ? 1 : request.pageNum();
             int pageSize = request == null || request.pageSize() == null ? 20 : request.pageSize();
-            List<UserAccountView> rows = filterUsers(
-                    request == null ? null : request.status(),
-                    request == null ? null : request.kycStatus());
+            List<UserAccountView> rows = filterUsers(request == null ? null : request.status());
             int from = Math.min((pageNum - 1) * pageSize, rows.size());
             if (from == rows.size() && !rows.isEmpty()) {
                 from = 0;
@@ -2308,56 +1951,6 @@ class OpsUserServiceTest {
             return new PageResult<>(rows.size(), pageNum, pageSize, rows.subList(from, to));
         }
 
-        @Override
-        public long countByKycStatus(String kycStatus) {
-            return allUsers().stream()
-                    .filter(account -> kycStatus != null && kycStatus.equals(account.kycStatus()))
-                    .count();
-        }
-
-        @Override
-        public PageResult<UserKycRecord> pageKycRecords(String kycStatus, int pageNum, int pageSize) {
-            List<UserKycRecord> all = allUsers().stream()
-                    .filter(account -> kycStatus == null || kycStatus.equals(account.kycStatus()))
-                    .map(this::toKycRecord)
-                    .toList();
-            int from = Math.min(Math.max(0, (pageNum - 1) * pageSize), all.size());
-            int to = Math.min(from + pageSize, all.size());
-            return new PageResult<>(all.size(), pageNum, pageSize, all.subList(from, to));
-        }
-
-        @Override
-        public Optional<UserKycRecord> findKycRecord(Long userId) {
-            return findById(userId).map(this::toKycRecord);
-        }
-
-        @Override
-        public List<UserKycStatusHistoryView> kycStatusHistory(Long userId, int limit) {
-            return List.of(new UserKycStatusHistoryView(
-                    null, findById(userId).map(UserAccountView::kycStatus).orElse("NONE"),
-                    "LEGACY_MIGRATION", "fixture seed", "fixture", "LEGACY_MIGRATION",
-                    "test", null, LocalDateTime.now()));
-        }
-
-        @Override
-        public boolean transitionKycStatus(
-                Long userId, String expectedStatus, long expectedVersion, String nextStatus,
-                String reasonCode, String reason, String evidenceRef, String source,
-                String operator, String idempotencyKey, String ticketId) {
-            UserAccountView current = findById(userId).orElse(null);
-            if (current == null || !expectedStatus.equals(current.kycStatus())) return false;
-            updateKycStatus(userId, nextStatus, reason);
-            return true;
-        }
-
-        private UserKycRecord toKycRecord(UserAccountView account) {
-            return new UserKycRecord(
-                    account.id(), account.userNo(), account.nickname(), account.phoneMasked(), account.countryCode(),
-                    account.status(), account.userLevel(), account.kycStatus(), walletAddresses.get(account.id()),
-                    null, null, "LEGACY_MIGRATION", 0L);
-        }
-
-        @Override
         public Optional<UserAccountView> findById(Long userId) {
             return allUsers().stream()
                     .filter(account -> userId != null && userId.equals(account.id()))
@@ -2376,9 +1969,6 @@ class OpsUserServiceTest {
         public Optional<Long> findUserIdByLookupKey(String lookupKey) {
             if (lookupKey == null) {
                 return Optional.empty();
-            }
-            if ("usr_77D4".equalsIgnoreCase(lookupKey)) {
-                return kycSeedPresent ? Optional.of(7704L) : Optional.empty();
             }
             if ("usr_2231".equalsIgnoreCase(lookupKey) || "U00002231".equalsIgnoreCase(lookupKey)) {
                 return c5SeedPresent ? Optional.of(2231L) : Optional.empty();
@@ -2406,7 +1996,6 @@ class OpsUserServiceTest {
                     "202****8807",
                     "1",
                     "RESTRICTED",
-                    "PENDING",
                     "L3",
                     "V4",
                     true,
@@ -2428,20 +2017,6 @@ class OpsUserServiceTest {
                     "IMP-204", 8807L, "U00008807", "Marcus Ray", "ACTIVE", 30, "cs_amy",
                     "support troubleshooting", LocalDateTime.now().plusMinutes(14), LocalDateTime.now().minusMinutes(16),
                     null, null, null, 14L));
-        }
-
-        private void loadKycFixtures() {
-            kycSeedPresent = true;
-            kycSeedUsers.put(7704L, kycSeedUser(7704L, "U00007704", "Harper Stone", "202****7704", "US", "ACTIVE", "PENDING", 48));
-            kycSeedUsers.put(3188L, kycSeedUser(3188L, "U00003188", "Ava Miller", "202****3188", "US", "ACTIVE", "APPROVED", 24));
-            kycSeedUsers.put(2231L, kycSeedUser(2231L, "U00002231", "Sofia Park", "010****2231", "KR", "ACTIVE", "APPROVED", 35));
-            kycSeedUsers.put(5501L, kycSeedUser(5501L, "U00005501", "Noah White", "071****5501", "UK", "ACTIVE", "NONE", 74));
-            kycSeedUsers.put(9000L, kycSeedUser(9000L, "U00009000", "Mia Costa", "119****9000", "BR", "ACTIVE", "APPROVED", 31));
-            walletAddresses.put(7704L, "TBn8SeedKycAddress000000000000000001p");
-            walletAddresses.put(3188L, "TR7NSeedKycAddress00000000000000000f2");
-            walletAddresses.put(2231L, "bc1qseedkycaddress0000000000000000007e");
-            walletAddresses.remove(5501L);
-            walletAddresses.put(9000L, "TQxmSeedKycAddress000000000000000009c");
         }
 
         private void loadAssetAdjustmentFixtures() {
@@ -2519,19 +2094,6 @@ class OpsUserServiceTest {
                     0));
         }
 
-        @Override
-        public boolean canUseC5KycReverification(
-                Long userId, String ticketId, String action, int rememberDays, String idempotencyKey) {
-            return "SEC-20260719-001".equals(ticketId) && action != null && idempotencyKey != null;
-        }
-
-        @Override
-        public boolean consumeC5KycReverification(
-                Long userId, String ticketId, String action, String idempotencyKey, String operator) {
-            return canUseC5KycReverification(userId, ticketId, action, 7, idempotencyKey);
-        }
-
-        @Override
         public List<UserSecurityUserRow> lockedSecurityUsers(
                 int shortLockThreshold,
                 int longLockThreshold,
@@ -2745,7 +2307,7 @@ class OpsUserServiceTest {
             }
             if (!expectedStatus.equalsIgnoreCase(user.status())) return false;
             user = new UserAccountView(
-                    user.id(), user.userNo(), user.nickname(), user.phoneMasked(), user.countryCode(), status, user.kycStatus(),
+                    user.id(), user.userNo(), user.nickname(), user.phoneMasked(), user.countryCode(), status,
                     user.userLevel(), user.vRank(), user.twoFactorEnabled(), user.walletUsdt(), user.walletNex(),
                     user.riskScore(), user.riskBand(), user.deviceCount(), user.activeDeviceCount(),
                     user.registeredAt(), user.lastLoginAt());
@@ -2778,16 +2340,6 @@ class OpsUserServiceTest {
             return transitionUserStatus(userId, "FROZEN", "ACTIVE", "source release");
         }
 
-        @Override
-        public void updateKycStatus(Long userId, String kycStatus, String reason) {
-            replaceUser(userId, account -> new UserAccountView(
-                    account.id(), account.userNo(), account.nickname(), account.phoneMasked(), account.countryCode(), account.status(), kycStatus,
-                    account.userLevel(), account.vRank(), account.twoFactorEnabled(), account.walletUsdt(), account.walletNex(),
-                    account.riskScore(), account.riskBand(), account.deviceCount(), account.activeDeviceCount(),
-                    account.registeredAt(), account.lastLoginAt()));
-        }
-
-        @Override
         public Optional<UserSessionView> findSession(String refreshTokenId) {
             return Optional.ofNullable(sessions.get(refreshTokenId));
         }
@@ -2980,45 +2532,14 @@ class OpsUserServiceTest {
                 accounts.add(c2SeedUser);
             }
             accounts.addAll(c5SeedUsers.values());
-            accounts.addAll(kycSeedUsers.values());
             return accounts;
         }
 
-        private List<UserAccountView> filterUsers(String status, String kycStatus) {
+        private List<UserAccountView> filterUsers(String status) {
             return allUsers().stream()
                     .filter(account -> !omitC5UsersFromGenericSearch || !c5SeedUsers.containsKey(account.id()))
-                    .filter(account -> kycStatus == null || kycStatus.equals(account.kycStatus()))
+                    .filter(account -> status == null || status.equalsIgnoreCase(account.status()))
                     .toList();
-        }
-
-        private UserAccountView kycSeedUser(
-                Long id,
-                String userNo,
-                String nickname,
-                String phoneMasked,
-                String countryCode,
-                String status,
-                String kycStatus,
-                int riskScore) {
-            return new UserAccountView(
-                    id,
-                    userNo,
-                    nickname,
-                    phoneMasked,
-                    countryCode,
-                    status,
-                    kycStatus,
-                    "L2",
-                    "V3",
-                    true,
-                    new BigDecimal("120.00"),
-                    new BigDecimal("6800.00"),
-                    riskScore,
-                    riskScore >= 70 ? "高风险" : "中风险",
-                    2L,
-                    1L,
-                    LocalDateTime.now().minusDays(20),
-                    LocalDateTime.now().minusMinutes(30));
         }
 
         private UserAccountView c5SeedUser(
@@ -3037,7 +2558,6 @@ class OpsUserServiceTest {
                     phoneMasked,
                     countryCode,
                     status,
-                    "APPROVED",
                     "L3",
                     "V5",
                     twoFactorEnabled,
@@ -3062,10 +2582,6 @@ class OpsUserServiceTest {
             if (c2SeedUser != null && userId.equals(c2SeedUser.id())) {
                 c2SeedUser = mapper.apply(c2SeedUser);
                 return;
-            }
-            UserAccountView seed = kycSeedUsers.get(userId);
-            if (seed != null) {
-                kycSeedUsers.put(userId, mapper.apply(seed));
             }
         }
 

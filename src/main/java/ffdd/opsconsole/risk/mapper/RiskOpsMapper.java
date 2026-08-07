@@ -490,234 +490,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     void createIpWhitelistTable();
 
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_ticket (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              ticket_id VARCHAR(64) NOT NULL,
-              ticket_type VARCHAR(64) NOT NULL,
-              user_no VARCHAR(64) NOT NULL,
-              amount_text VARCHAR(64) NOT NULL,
-              amount_usdt DECIMAL(20,8) DEFAULT NULL,
-              cumulative_text VARCHAR(64) NOT NULL,
-              kyc_text VARCHAR(128) NOT NULL,
-              status VARCHAR(32) NOT NULL,
-              sla_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
-              sla_text VARCHAR(64) NOT NULL,
-              info_json TEXT DEFAULT NULL,
-              history_json TEXT DEFAULT NULL,
-              decision_reason VARCHAR(1000) DEFAULT NULL,
-              reviewed_by VARCHAR(64) DEFAULT NULL,
-              reviewed_at DATETIME DEFAULT NULL,
-              due_at DATETIME DEFAULT NULL,
-              version BIGINT NOT NULL DEFAULT 0,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              is_deleted TINYINT NOT NULL DEFAULT 0,
-              open_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status IN ('triggered','in-review') AND is_deleted=0 THEN user_no ELSE NULL END) STORED,
-              UNIQUE KEY uk_admin_risk_kyc_ticket (ticket_id),
-              UNIQUE KEY uk_admin_risk_kyc_open_user (open_user_key),
-              KEY idx_admin_risk_kyc_status (status,is_deleted),
-              KEY idx_admin_risk_kyc_user (user_no,is_deleted)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createKycReviewTicketTable();
-
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_source (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              ticket_id VARCHAR(64) NOT NULL,
-              source_domain VARCHAR(16) NOT NULL,
-              source_no VARCHAR(128) NOT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              is_deleted TINYINT NOT NULL DEFAULT 0,
-              UNIQUE KEY uk_admin_risk_kyc_review_source (ticket_id,source_domain,source_no),
-              KEY idx_admin_risk_kyc_review_source_time (source_domain,created_at,is_deleted)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createKycReviewSourceTable();
-
-    @Insert("""
-            INSERT IGNORE INTO nx_admin_risk_kyc_review_source(ticket_id,source_domain,source_no,is_deleted)
-            VALUES (#{ticketId},#{sourceDomain},#{sourceNo},0)
-            """)
-    int insertKycReviewSource(@Param("ticketId") String ticketId,
-                              @Param("sourceDomain") String sourceDomain,
-                              @Param("sourceNo") String sourceNo);
-
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_admin_risk_score_kyc_trigger_state (
-              user_no VARCHAR(64) PRIMARY KEY,
-              above_threshold TINYINT NOT NULL DEFAULT 0,
-              last_score INT NOT NULL,
-              last_threshold INT NOT NULL,
-              last_transition_id VARCHAR(160) NOT NULL,
-              trigger_sequence BIGINT NOT NULL DEFAULT 0,
-              version BIGINT NOT NULL DEFAULT 0,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              KEY idx_k4_k5_trigger_threshold (last_threshold,above_threshold,updated_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createK4KycReviewTriggerStateTable();
-
-    @Select("""
-            SELECT user_no AS userNo,above_threshold AS aboveThreshold,last_score AS lastScore,
-                   last_threshold AS lastThreshold,last_transition_id AS lastTransitionId,
-                   trigger_sequence AS triggerSequence,version
-              FROM nx_admin_risk_score_kyc_trigger_state
-             WHERE user_no=#{userNo}
-             FOR UPDATE
-            """)
-    K4KycTriggerStateRecord findK4KycTriggerStateForUpdate(@Param("userNo") String userNo);
-
-    @Insert("""
-            INSERT INTO nx_admin_risk_score_kyc_trigger_state
-              (user_no,above_threshold,last_score,last_threshold,last_transition_id,trigger_sequence,version)
-            VALUES
-              (#{userNo},#{above},#{score},#{threshold},#{transitionId},#{triggerSequence},0)
-            """)
-    int insertK4KycTriggerState(
-            @Param("userNo") String userNo,
-            @Param("above") boolean above,
-            @Param("score") int score,
-            @Param("threshold") int threshold,
-            @Param("transitionId") String transitionId,
-            @Param("triggerSequence") long triggerSequence);
-
-    @Update("""
-            UPDATE nx_admin_risk_score_kyc_trigger_state
-               SET above_threshold=#{above},last_score=#{score},last_threshold=#{threshold},
-                   last_transition_id=#{transitionId},
-                   trigger_sequence=trigger_sequence+#{triggerIncrement},version=version+1,updated_at=NOW()
-             WHERE user_no=#{userNo} AND version=#{expectedVersion}
-            """)
-    int updateK4KycTriggerState(
-            @Param("userNo") String userNo,
-            @Param("above") boolean above,
-            @Param("score") int score,
-            @Param("threshold") int threshold,
-            @Param("transitionId") String transitionId,
-            @Param("triggerIncrement") int triggerIncrement,
-            @Param("expectedVersion") long expectedVersion);
-
-    @Select("""
-            SELECT s.user_no
-              FROM nx_admin_risk_score_user s
-              JOIN nx_admin_risk_score_model m
-                ON m.state='active' AND m.is_deleted=0
-               AND s.model_version=CONCAT('k4-v',m.model_version)
-              LEFT JOIN nx_admin_risk_score_kyc_trigger_state t ON t.user_no=s.user_no
-             WHERE s.is_deleted=0
-               AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
-               AND (t.user_no IS NULL OR t.last_threshold<>#{threshold})
-             ORDER BY s.user_no ASC
-             LIMIT #{limit}
-            """)
-    List<String> scoreUserNosNeedingKycTriggerThresholdSync(
-            @Param("threshold") int threshold, @Param("limit") int limit);
-
-    @Select("""
-            SELECT source_domain AS sourceDomain,source_no AS sourceNo
-              FROM nx_admin_risk_kyc_review_source
-             WHERE ticket_id=#{ticketId} AND is_deleted=0
-             ORDER BY id ASC
-            """)
-    List<KycReviewSourceRecord> kycReviewSources(@Param("ticketId") String ticketId);
-
-    @Insert("""
-            INSERT IGNORE INTO nx_admin_risk_kyc_review_source(ticket_id,source_domain,source_no,is_deleted)
-            SELECT t.ticket_id,
-                   MAX(CASE WHEN j.item_key='sourceDomain' THEN j.item_value END),
-                   MAX(CASE WHEN j.item_key='sourceNo' THEN j.item_value END),0
-              FROM nx_admin_risk_kyc_review_ticket t
-              JOIN JSON_TABLE(
-                    CASE WHEN JSON_VALID(t.info_json) THEN t.info_json ELSE JSON_ARRAY() END,
-                    '$[*]' COLUMNS(item_key VARCHAR(64) PATH '$[0]',item_value VARCHAR(128) PATH '$[1]')
-                   ) j
-             WHERE t.is_deleted=0
-             GROUP BY t.ticket_id
-            HAVING MAX(CASE WHEN j.item_key='sourceDomain' THEN j.item_value END) IN ('D2','G2')
-               AND MAX(CASE WHEN j.item_key='sourceNo' THEN j.item_value END) IS NOT NULL
-            """)
-    int backfillKycReviewSources();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket ADD COLUMN amount_usdt DECIMAL(20,8) DEFAULT NULL AFTER amount_text")
-    void addKycTicketAmountColumn();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket ADD COLUMN due_at DATETIME DEFAULT NULL AFTER reviewed_at")
-    void addKycTicketDueAtColumn();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER due_at")
-    void addKycTicketVersionColumn();
-
-    @Update("UPDATE nx_admin_risk_kyc_review_ticket SET status='in-review' WHERE status='triggered' AND is_deleted=0")
-    int promoteTriggeredKycTickets();
-
-    @Update("""
-            UPDATE nx_admin_risk_kyc_review_ticket t
-            JOIN nx_admin_risk_kyc_review_ticket newer
-              ON newer.user_no=t.user_no AND newer.id>t.id
-             AND newer.status IN ('triggered','in-review') AND newer.is_deleted=0
-               SET t.status='rejected',t.is_deleted=1,t.decision_reason='MIGRATION_MERGED_DUPLICATE',t.updated_at=NOW()
-             WHERE t.status IN ('triggered','in-review') AND t.is_deleted=0
-            """)
-    int mergeDuplicateOpenKycTickets();
-
-    @Select("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_risk_kyc_review_ticket' AND COLUMN_NAME='open_user_key'")
-    int countKycTicketOpenUserKeyColumn();
-
-    @Select("SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_risk_kyc_review_ticket' AND COLUMN_NAME='open_user_key' LIMIT 1")
-    String kycTicketOpenUserKeyExpression();
-
-    @Select("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_risk_kyc_review_ticket' AND INDEX_NAME='uk_admin_risk_kyc_open_user'")
-    int countKycTicketOpenUserUniqueKey();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket DROP INDEX uk_admin_risk_kyc_open_user")
-    void dropKycTicketOpenUserUniqueKey();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket DROP COLUMN open_user_key")
-    void dropKycTicketOpenUserKeyColumn();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket ADD COLUMN open_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status IN ('triggered','in-review') AND is_deleted=0 THEN user_no ELSE NULL END) STORED")
-    void addKycTicketOpenUserKeyColumn();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_review_ticket ADD UNIQUE KEY uk_admin_risk_kyc_open_user (open_user_key)")
-    void addKycTicketOpenUserUniqueKey();
-
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              event_key VARCHAR(128) DEFAULT NULL,
-              tone VARCHAR(32) NOT NULL,
-              title VARCHAR(128) NOT NULL,
-              body VARCHAR(1000) NOT NULL,
-              time_text VARCHAR(64) NOT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              is_deleted TINYINT NOT NULL DEFAULT 0,
-              UNIQUE KEY uk_admin_risk_kyc_alert_event (event_key),
-              KEY idx_admin_risk_kyc_alert_tone (tone,is_deleted)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createKycAlertTable();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_alert ADD COLUMN event_key VARCHAR(128) DEFAULT NULL AFTER id")
-    void addKycAlertEventKeyColumn();
-
-    @Update("ALTER TABLE nx_admin_risk_kyc_alert ADD UNIQUE KEY uk_admin_risk_kyc_alert_event (event_key)")
-    void addKycAlertEventUniqueKey();
-
-    @Update("""
-            CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert_subscription (
-              operator_name VARCHAR(64) PRIMARY KEY,
-              alert_types_json TEXT NOT NULL,
-              channels_json TEXT NOT NULL,
-              version BIGINT NOT NULL DEFAULT 0,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-    void createKycAlertSubscriptionTable();
-
     @Select("SELECT COUNT(*) FROM nx_risk_decision WHERE is_deleted = 0")
     long countRiskCases();
 
@@ -958,7 +730,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                 decision_no, user_id, biz_type, biz_no, user_level, decision, reason, risk_score, rule_codes, rule_snapshot,
                 created_at, updated_at, is_deleted
             ) VALUES (
-                #{caseNo}, #{userId}, #{bizType}, #{bizNo}, 'KYC', 'REVIEW', #{reason}, #{riskScore}, #{ruleCodes}, #{ruleSnapshot},
+                #{caseNo}, #{userId}, #{bizType}, #{bizNo}, 'STANDARD', 'REVIEW', #{reason}, #{riskScore}, #{ruleCodes}, #{ruleSnapshot},
                 NOW(), NOW(), 0
             )
             """)
@@ -1029,13 +801,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     CONCAT_WS(' ',
                        COALESCE(rd.rule_codes, ''),
                        COALESCE(rd.reason, ''),
-                       COALESCE(u.status, ''),
-                       COALESCE(kyc.status, '')
+                       COALESCE(u.status, '')
                    ) AS existingSignals
               FROM nx_withdrawal_order w
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
              WHERE w.is_deleted = 0
                AND w.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
                AND w.status IN ('PENDING','REVIEWING','FROZEN','REJECTED','PENDING_CHAIN')
@@ -2055,7 +1825,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
-                           SUM(CASE WHEN dim_key IN ('multiAccount','arbitrage','kycStatus',
+                           SUM(CASE WHEN dim_key IN ('multiAccount','arbitrage',
                                'withdrawVelocity','accountAge','anomalyBehavior') THEN 1 ELSE 0 END) AS canonical_count,
                            COALESCE(SUM(points),0) AS point_total
                       FROM nx_admin_risk_score_contribution
@@ -2077,9 +1847,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
                                       LIKE CONCAT('%',s.user_no,'%'))
-                    OR EXISTS (SELECT 1 FROM nx_kyc_profile c4
-                                WHERE c4.user_id=u.id
-                                  AND c4.updated_at > COALESCE(s.as_of,'1970-01-01'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2102,7 +1869,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
-                           SUM(CASE WHEN dim_key IN ('multiAccount','arbitrage','kycStatus',
+                           SUM(CASE WHEN dim_key IN ('multiAccount','arbitrage',
                                'withdrawVelocity','accountAge','anomalyBehavior') THEN 1 ELSE 0 END) AS canonical_count,
                            COALESCE(SUM(points),0) AS point_total
                       FROM nx_admin_risk_score_contribution
@@ -2124,9 +1891,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
                                       LIKE CONCAT('%',s.user_no,'%'))
-                    OR EXISTS (SELECT 1 FROM nx_kyc_profile c4
-                                WHERE c4.user_id=u.id
-                                  AND c4.updated_at > COALESCE(s.as_of,'1970-01-01'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2157,7 +1921,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            WHERE a.is_deleted=0 AND a.disposition IN ('cluster_frozen','gift_blocked','account_flagged')
                              AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
                                LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS severeArbitrage,
-                   COALESCE(kyc.status,'PENDING') AS kycStatus,
                    (SELECT COUNT(*) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.is_deleted=0 AND w.created_at>=NOW()-INTERVAL 24 HOUR)
                      AS withdrawalCount24h,
@@ -2189,7 +1952,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            WHERE s.user_id=u.id AND s.is_deleted=0 AND s.signal_type='TAMPER_DETECTED'
                              AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
               FROM nx_user u
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
              WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo} AND u.is_deleted=0
              LIMIT 1
             """)
@@ -2317,8 +2079,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                FROM nx_admin_risk_arbitrage_row k2
                               WHERE CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
                                     LIKE CONCAT('%',s.user_no,'%')),'1970-01-01'),
-                   COALESCE((SELECT MAX(c4.updated_at) FROM nx_kyc_profile c4
-                              WHERE c4.user_id=u.id),'1970-01-01'),
                    COALESCE((SELECT MAX(withdraw_fact.updated_at) FROM nx_withdrawal_order withdraw_fact
                               WHERE withdraw_fact.user_id=u.id),'1970-01-01'),
                    COALESCE((SELECT MAX(j3.updated_at) FROM nx_risk_signal j3
@@ -2416,51 +2176,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              WHERE section_key = #{section} AND param_key = #{key} AND is_deleted = 0
             """)
     int updateRiskParam(@Param("section") String section, @Param("key") String key, @Param("value") String value);
-
-    @Update("""
-            UPDATE nx_admin_risk_param
-               SET value_text = #{value}, version = version + 1, updated_at = NOW()
-             WHERE section_key = 'k5' AND param_key = #{key} AND version = #{expectedVersion} AND is_deleted = 0
-            """)
-    int updateK5RiskParam(@Param("key") String key, @Param("value") String value,
-                          @Param("expectedVersion") long expectedVersion);
-
-    @Update("""
-            WITH RECURSIVE business_calendar AS (
-              SELECT id,created_at,created_at AS candidate,0 AS working_days
-                FROM nx_admin_risk_kyc_review_ticket
-               WHERE status IN ('triggered','in-review') AND is_deleted=0
-              UNION ALL
-              SELECT id,created_at,DATE_ADD(candidate,INTERVAL 1 DAY),
-                     working_days + CASE WHEN WEEKDAY(DATE_ADD(candidate,INTERVAL 1 DAY)) < 5 THEN 1 ELSE 0 END
-                FROM business_calendar
-               WHERE working_days < #{workingDays}
-            )
-            UPDATE nx_admin_risk_kyc_review_ticket t
-            JOIN (SELECT id,MIN(candidate) AS due_at FROM business_calendar
-                   WHERE working_days=#{workingDays} AND WEEKDAY(candidate) < 5 GROUP BY id) d ON d.id=t.id
-               SET t.due_at=d.due_at,t.version=t.version+1,t.updated_at=NOW()
-             WHERE t.status IN ('triggered','in-review') AND t.is_deleted=0
-            """)
-    int recomputeOpenKycDueAt(@Param("workingDays") int workingDays);
-
-    @Insert("""
-            INSERT INTO nx_admin_risk_param
-              (section_key,param_key,name,value_text,unit_text,sub_text,note_text,sort_order,version,is_deleted)
-            VALUES ('k5',#{key},#{name},#{value},#{unit},#{sub},#{note},#{sortOrder},0,0)
-            ON DUPLICATE KEY UPDATE name=VALUES(name),unit_text=VALUES(unit_text),sub_text=VALUES(sub_text),
-              note_text=VALUES(note_text),sort_order=VALUES(sort_order),is_deleted=0,updated_at=NOW()
-            """)
-    int upsertK5RiskParam(@Param("key") String key, @Param("name") String name,
-                          @Param("value") String value, @Param("unit") String unit,
-                          @Param("sub") String sub, @Param("note") String note,
-                          @Param("sortOrder") int sortOrder);
-
-    @Update("""
-            UPDATE nx_admin_risk_param SET is_deleted=1,updated_at=NOW()
-             WHERE section_key='k5' AND param_key='largeExchangeReviewUsdt'
-            """)
-    int deactivateLegacyK5RiskParam();
 
     @Insert("""
             INSERT INTO nx_admin_risk_param (section_key,param_key,name,value_text,unit_text,sub_text,note_text,sort_order,is_deleted)
@@ -2779,258 +2494,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     int disableIpWhitelist(@Param("cidr") String cidr, @Param("operator") String operator);
 
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_review_ticket WHERE is_deleted = 0")
-    long countKycTickets();
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_admin_risk_kyc_review_ticket
-             WHERE is_deleted = 0
-               AND status = 'in-review'
-            """)
-    long countKycOpenTickets();
-
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_review_ticket WHERE is_deleted=0 AND status='in-review' AND due_at IS NOT NULL AND due_at < NOW()")
-    long countOverdueKycTickets();
-
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_review_ticket WHERE is_deleted=0 AND status IN ('passed','rejected') AND reviewed_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")
-    long countKycDecidedThisMonth();
-
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_review_ticket WHERE is_deleted=0 AND status='passed' AND reviewed_at >= DATE_FORMAT(NOW(),'%Y-%m-01')")
-    long countKycPassedThisMonth();
-
-    @Select("SELECT COALESCE(SUM(amount),0) FROM nx_withdrawal_order WHERE is_deleted=0 AND status='FROZEN' AND failure_reason LIKE 'K5_REVIEW:%'")
-    java.math.BigDecimal sumFrozenWithdrawalUsdt();
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_admin_risk_kyc_review_ticket
-             WHERE user_no = #{userNo}
-               AND is_deleted = 0
-               AND status = 'in-review'
-            """)
-    long countOpenKycTicketsByUser(@Param("userNo") String userNo);
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_admin_risk_kyc_review_ticket
-             WHERE is_deleted = 0
-               AND status = #{status}
-            """)
-    long countKycTicketsByStatus(@Param("status") String status);
-
-    @Select("""
-            <script>
-            SELECT COUNT(*)
-              FROM nx_admin_risk_kyc_review_ticket
-             WHERE is_deleted = 0
-             <if test='filter != null and filter != ""'>
-               <choose>
-                 <when test='filter == "overdue"'>AND status = 'in-review' AND due_at IS NOT NULL AND due_at &lt; NOW()</when>
-                 <otherwise>AND ticket_type = #{filter}</otherwise>
-               </choose>
-             </if>
-            </script>
-            """)
-    long countKycTicketsByFilter(@Param("filter") String filter);
-
-    @Select("""
-            <script>
-            SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
-                   CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
-                   CASE WHEN t.status='in-review' AND t.due_at IS NOT NULL AND t.due_at &lt; NOW() THEN 'overdue' ELSE t.status END AS st,
-                   CASE WHEN t.due_at IS NULL THEN 0 ELSE LEAST(1,GREATEST(0,TIMESTAMPDIFF(SECOND,t.created_at,NOW())/NULLIF(TIMESTAMPDIFF(SECOND,t.created_at,t.due_at),0))) END AS slaPct,
-                   CASE WHEN t.status IN ('passed','rejected') THEN '已完成'
-                        WHEN t.due_at IS NULL THEN '未设置'
-                        WHEN t.due_at &lt; NOW() THEN CONCAT('逾期 ',TIMESTAMPDIFF(DAY,t.due_at,NOW()),' 天')
-                        ELSE CONCAT('剩 ',GREATEST(0,TIMESTAMPDIFF(DAY,NOW(),t.due_at)),' 天') END AS slaTxt,
-                   t.info_json AS infoJson,t.history_json AS histJson,t.version
-              FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
-             WHERE t.is_deleted = 0
-             <if test='filter != null and filter != ""'>
-               <choose>
-                 <when test='filter == "overdue"'>AND t.status = 'in-review' AND t.due_at IS NOT NULL AND t.due_at &lt; NOW()</when>
-                 <otherwise>AND t.ticket_type = #{filter}</otherwise>
-               </choose>
-             </if>
-             ORDER BY CASE WHEN t.status='in-review' AND t.due_at IS NOT NULL AND t.due_at &lt; NOW() THEN 0
-                           WHEN t.status='in-review' THEN 1 WHEN t.status='passed' THEN 2 ELSE 3 END, t.id ASC
-             LIMIT #{offset}, #{pageSize}
-            </script>
-            """)
-    List<KycReviewTicketRecord> pageKycReviewTickets(@Param("filter") String filter, @Param("offset") int offset,
-                                                     @Param("pageSize") int pageSize);
-
-    @Select("""
-            SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
-                   CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
-                   t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
-                   t.info_json AS infoJson,t.history_json AS histJson,t.version
-              FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
-             WHERE t.ticket_id = #{ticketId} AND t.is_deleted = 0
-             LIMIT 1
-            """)
-    KycReviewTicketRecord findKycReviewTicket(@Param("ticketId") String ticketId);
-
-    @Select("""
-            SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
-                   CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
-                   t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
-                   t.info_json AS infoJson,t.history_json AS histJson,t.version
-              FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
-             WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
-             ORDER BY t.id DESC LIMIT 1
-            """)
-    KycReviewTicketRecord findOpenKycReviewTicketByUser(@Param("userNo") String userNo);
-
-    @Select("""
-            SELECT t.ticket_id AS id,t.ticket_type AS type,t.user_no AS user,t.amount_text AS amt,t.cumulative_text AS cum,
-                   CASE WHEN u.id IS NULL THEN 'USER_UNAVAILABLE'
-                        ELSE COALESCE(kyc.status,'PENDING') END AS kyc,
-                   t.status AS st,t.sla_pct AS slaPct,t.sla_text AS slaTxt,
-                   t.info_json AS infoJson,t.history_json AS histJson,t.version
-              FROM nx_admin_risk_kyc_review_ticket t
-              LEFT JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=t.user_no AND u.is_deleted=0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=u.id AND kyc.is_deleted=0
-             WHERE t.user_no=#{userNo} AND t.status='in-review' AND t.is_deleted=0
-             ORDER BY t.id DESC LIMIT 1 FOR UPDATE
-            """)
-    KycReviewTicketRecord findOpenKycReviewTicketByUserForUpdate(@Param("userNo") String userNo);
-
-    @Insert("""
-            INSERT INTO nx_admin_risk_kyc_review_ticket (
-                ticket_id,ticket_type,user_no,amount_text,amount_usdt,cumulative_text,kyc_text,status,sla_pct,sla_text,
-                info_json,history_json,due_at,version,is_deleted
-            ) VALUES (
-                #{id},#{type},#{user},#{amt},#{amountUsdt},#{cum},#{kyc},#{st},#{slaPct},#{slaTxt},#{infoJson},#{histJson},
-                #{dueAt},0,0
-            )
-            """)
-    int insertKycReviewTicket(@Param("id") String id, @Param("type") String type, @Param("user") String user,
-                              @Param("amt") String amt, @Param("amountUsdt") java.math.BigDecimal amountUsdt,
-                              @Param("cum") String cum, @Param("kyc") String kyc,
-                              @Param("st") String st, @Param("slaPct") double slaPct, @Param("slaTxt") String slaTxt,
-                              @Param("infoJson") String infoJson, @Param("histJson") String histJson,
-                              @Param("dueAt") java.time.LocalDateTime dueAt);
-
-    @Update("""
-            UPDATE nx_admin_risk_kyc_review_ticket
-               SET status = #{status},
-                   history_json = JSON_ARRAY_APPEND(COALESCE(history_json,JSON_ARRAY()), '$',
-                     JSON_ARRAY(DATE_FORMAT(NOW(),'%Y-%m-%d %H:%i:%s'),
-                       CONCAT(CASE WHEN #{status}='passed' THEN '复审通过' ELSE '复审驳回' END,
-                         '·',#{reasonCode},'·',#{reason},'·操作人:',#{operator}),
-                       CASE WHEN #{status}='passed' THEN '' ELSE 'bad' END)),
-                   decision_reason = CONCAT(#{reasonCode},':',#{reason}), reviewed_by = #{operator},
-                   reviewed_at = NOW(), version = version + 1, updated_at = NOW()
-             WHERE ticket_id = #{ticketId} AND status='in-review' AND version=#{expectedVersion} AND is_deleted = 0
-            """)
-    int updateKycReviewTicketStatus(@Param("ticketId") String ticketId, @Param("status") String status,
-                                    @Param("expectedVersion") long expectedVersion,
-                                    @Param("reasonCode") String reasonCode,
-                                    @Param("reason") String reason, @Param("operator") String operator);
-
-    @Update("""
-            UPDATE nx_admin_risk_kyc_review_ticket
-               SET history_json = JSON_ARRAY_APPEND(COALESCE(history_json,JSON_ARRAY()), '$',
-                   JSON_ARRAY(DATE_FORMAT(NOW(),'%Y-%m-%d %H:%i:%s'),
-                     CONCAT('并入重复信号·',#{reason},'·操作人:',#{operator}),'warn')),
-                   info_json = JSON_ARRAY_APPEND(COALESCE(info_json,JSON_ARRAY()), '$',
-                     JSON_ARRAY('触发原因',#{reason})),
-                   version=version+1,updated_at=NOW()
-             WHERE ticket_id=#{ticketId} AND status='in-review' AND version=#{expectedVersion} AND is_deleted=0
-            """)
-    int mergeOpenKycReviewTicket(@Param("ticketId") String ticketId, @Param("expectedVersion") long expectedVersion,
-                                 @Param("reason") String reason, @Param("operator") String operator);
-
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_kyc_alert WHERE is_deleted = 0")
-    long countKycAlerts();
-
-    @Select("""
-            <script>
-            SELECT event_key AS eventKey,tone,title,body,DATE_FORMAT(created_at,'%Y-%m-%d %H:%i') AS timeText
-              FROM nx_admin_risk_kyc_alert
-             WHERE is_deleted = 0
-             <choose>
-               <when test='types != null and types.size() > 0'>
-                 AND (<foreach collection='types' item='type' separator=' OR '>event_key LIKE CONCAT(#{type},':%')</foreach>)
-               </when>
-               <otherwise>AND 1=0</otherwise>
-             </choose>
-             ORDER BY created_at DESC,id DESC
-             LIMIT 100
-            </script>
-            """)
-    List<KycAlertRecord> kycAlerts(@Param("types") List<String> types);
-
-    @Insert("INSERT IGNORE INTO nx_admin_risk_kyc_alert (event_key,tone,title,body,time_text,is_deleted) VALUES (#{eventKey},#{tone},#{title},#{body},#{timeText},0)")
-    int insertKycAlert(@Param("eventKey") String eventKey, @Param("tone") String tone,
-                       @Param("title") String title, @Param("body") String body,
-                       @Param("timeText") String timeText);
-
-    @Insert("""
-            INSERT IGNORE INTO nx_admin_risk_kyc_alert(event_key,tone,title,body,time_text,is_deleted)
-            SELECT CONCAT('sla-breach:',ticket_id),'bad',CONCAT('KYC 复审 SLA 逾期 · ',ticket_id),
-                   CONCAT(user_no,' · ',ticket_type,' · 截止 ',DATE_FORMAT(due_at,'%Y-%m-%d %H:%i')),
-                   DATE_FORMAT(NOW(),'%Y-%m-%d %H:%i'),0
-              FROM nx_admin_risk_kyc_review_ticket
-             WHERE status='in-review' AND due_at IS NOT NULL AND due_at<NOW() AND is_deleted=0
-            """)
-    int insertOverdueKycAlerts();
-
-    @Insert("""
-            INSERT IGNORE INTO nx_admin_risk_kyc_alert(event_key,tone,title,body,time_text,is_deleted)
-            SELECT CONCAT('large-withdraw-burst:',DATE_FORMAT(NOW(),'%Y%m%d%H%i')),'bad',
-                   '大额提现集中触发 KYC 复审',
-                   CONCAT('最近 1 小时共有 ',COUNT(*),' 笔大额提现进入 K5 复审'),
-                   DATE_FORMAT(NOW(),'%Y-%m-%d %H:%i'),0
-              FROM nx_admin_risk_kyc_review_source s
-             WHERE s.source_domain='D2' AND s.is_deleted=0
-               AND s.created_at>=DATE_SUB(NOW(),INTERVAL 1 HOUR)
-               AND NOT EXISTS (
-                   SELECT 1 FROM nx_admin_risk_kyc_alert a
-                    WHERE a.is_deleted=0
-                      AND a.event_key LIKE 'large-withdraw-burst:%'
-                      AND a.created_at>=DATE_SUB(NOW(),INTERVAL 1 HOUR)
-               )
-            HAVING COUNT(*) >= 5
-            """)
-    int insertLargeWithdrawalBurstKycAlert();
-
-    @Insert("""
-            INSERT INTO nx_admin_risk_kyc_alert_subscription(operator_name,alert_types_json,channels_json,version)
-            VALUES (#{operator},'[\"sla-breach\"]','[\"in-app\"]',0)
-            ON DUPLICATE KEY UPDATE operator_name=operator_name
-            """)
-    int ensureKycAlertSubscription(@Param("operator") String operator);
-
-    @Insert("INSERT INTO nx_admin_risk_kyc_alert_subscription(operator_name,alert_types_json,channels_json,version) VALUES (#{operator},#{alertTypesJson},#{channelsJson},1)")
-    int insertKycAlertSubscription(@Param("operator") String operator,
-                                   @Param("alertTypesJson") String alertTypesJson,
-                                   @Param("channelsJson") String channelsJson);
-
-    @Select("SELECT operator_name AS operatorName,alert_types_json AS alertTypesJson,channels_json AS channelsJson,version FROM nx_admin_risk_kyc_alert_subscription WHERE operator_name=#{operator}")
-    KycAlertSubscriptionRecord findKycAlertSubscription(@Param("operator") String operator);
-
-    @Update("""
-            UPDATE nx_admin_risk_kyc_alert_subscription
-               SET alert_types_json=#{alertTypesJson},channels_json=#{channelsJson},version=version+1,updated_at=NOW()
-             WHERE operator_name=#{operator} AND version=#{expectedVersion}
-            """)
-    int updateKycAlertSubscription(@Param("operator") String operator,
-                                   @Param("alertTypesJson") String alertTypesJson,
-                                   @Param("channelsJson") String channelsJson,
-                                   @Param("expectedVersion") long expectedVersion);
-
     record RiskArbitrageRowRecord(
             String rowId,
             String viewKey,
@@ -3070,11 +2533,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText) {
     }
 
-    record K4KycTriggerStateRecord(
-            String userNo, Boolean aboveThreshold, Integer lastScore, Integer lastThreshold,
-            String lastTransitionId, Long triggerSequence, Long version) {
-    }
-
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,
                                  String nickname, String phoneMasked, String referralCode) {
     }
@@ -3091,7 +2549,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     record ScoreRawInputRecord(
             String userNo, Integer multiAccountClusterSize, Boolean multiAccountFraud,
-            Integer arbitrageSignals, Boolean severeArbitrage, String kycStatus,
+            Integer arbitrageSignals, Boolean severeArbitrage,
             Integer withdrawalCount24h, java.math.BigDecimal withdrawalAmount24h,
             Integer withdrawalCount7d, java.math.BigDecimal withdrawalAmount7d,
             java.math.BigDecimal withdrawalBaselineDailyCount,
@@ -3125,9 +2583,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     record TrialCycleDetectionRecord(String rowId, Long userId, String clusterId, Integer cycleCount) {
     }
 
-    record KycAlertSubscriptionRecord(String operatorName, String alertTypesJson, String channelsJson, Long version) {
-    }
-
     record MultiAccountClusterStateRecord(
             String id,
             String status,
@@ -3145,28 +2600,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                         String accountStatus,String layer,String rawKey,String maskedKey) {}
 
     record IpWhitelistRecord(String cidr, String note, String operator, String expireText, Boolean active) {
-    }
-
-    record KycReviewTicketRecord(
-            String id,
-            String type,
-            String user,
-            String amt,
-            String cum,
-            String kyc,
-            String st,
-            Double slaPct,
-            String slaTxt,
-            String infoJson,
-            String histJson,
-            Long version
-    ) {
-    }
-
-    record KycAlertRecord(String eventKey, String tone, String title, String body, String timeText) {
-    }
-
-    record KycReviewSourceRecord(String sourceDomain, String sourceNo) {
     }
 
     record TamperRadarRecord(Long signalCount, Long accountCount, String latestAt) {

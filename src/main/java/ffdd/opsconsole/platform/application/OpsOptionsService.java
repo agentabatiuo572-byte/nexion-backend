@@ -37,8 +37,6 @@ public class OpsOptionsService {
             case "roles", "role" -> ApiResult.ok(roleOptions());
             case "permissions", "permission" -> ApiResult.ok(permissionOptions());
             case "user-status" -> ApiResult.ok(options("正常", "ACTIVE", "冻结", "FROZEN", "注销", "CLOSED"));
-            case "kyc-status" -> ApiResult.ok(options("未认证", "NONE", "待审核", "PENDING", "已通过", "APPROVED", "已拒绝", "REJECTED"));
-            case "kyc-network", "kyc-networks" -> ApiResult.ok(options("TRC20", "TRC20", "ERC20", "ERC20", "BTC", "BTC", "ETH", "ETH", "BSC", "BSC", "SOL", "SOL", "Polygon", "POLYGON"));
             case "asset-adjustment-asset", "asset-adjustment-assets" -> ApiResult.ok(options("USDT", "USDT", "NEX", "NEX"));
             case "asset-adjustment-direction", "asset-adjustment-directions" -> ApiResult.ok(options("增加", "CREDIT", "扣减", "DEBIT"));
             case "asset-adjustment-reason", "asset-adjustment-reasons" -> ApiResult.ok(options("客服补偿", "CUSTOMER_COMPENSATION", "系统纠错", "SYSTEM_CORRECTION", "活动补发", "CAMPAIGN_REISSUE", "争议退回", "DISPUTE_REVERSAL"));
@@ -53,7 +51,7 @@ public class OpsOptionsService {
             case "media-usage" -> ApiResult.ok(options("商品主图", "sku-image", "商品视频", "sku-video", "内容封面", "content-cover", "公告附件", "notice-attachment"));
             case "exchange-queue-mode", "exchange-queue-modes" -> ApiResult.ok(options("排队", "QUEUE", "拒绝", "REJECT"));
             case "exchange-param", "exchange-params" -> ApiResult.ok(options("单用户日额度", "userDailyCap", "平台日额度", "platformDailyCap", "兑换手续费率", "fee", "最低手续费", "feeMin", "超 cap 处置策略", "queueMode"));
-            case "exchange-gate", "exchange-gates" -> ApiResult.ok(options("需实名", "kyc", "单用户超限", "user", "平台超限", "platform", "地域封锁", "geo"));
+            case "exchange-gate", "exchange-gates" -> ApiResult.ok(options("单用户超限", "user", "平台超限", "platform", "地域封锁", "geo"));
             case "device-status" -> ApiResult.ok(options("空闲", "OFFLINE", "运行中", "ACTIVE", "暂停", "SUSPENDED", "回收站", "RECYCLED"));
             case "datacenters", "datacenter" -> ApiResult.ok(datacenterOptions());
             case "sku-tier", "sku-tiers" -> ApiResult.ok(options("Entry", "Entry", "Pro", "Pro", "Flagship", "Flagship", "Share", "Share"));
@@ -67,10 +65,10 @@ public class OpsOptionsService {
             case "review-status", "review-statuses" -> ApiResult.ok(options("展示", "published", "隐藏", "hidden"));
             case "transfer-targets" -> ApiResult.ok(optionRows(optionsMapper::transferTargets));
             case "support-agents" -> ApiResult.ok(optionRows(optionsMapper::supportAgents));
-            case "support-ticket-category", "support-ticket-categories" -> ApiResult.ok(options("账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "KYC 认证", "kyc", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
+            case "support-ticket-category", "support-ticket-categories" -> ApiResult.ok(options("账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
             case "support-ticket-status", "support-ticket-statuses" -> ApiResult.ok(options("待处理", "OPEN", "处理中", "IN_PROGRESS", "待用户回复", "PENDING_USER", "已解决", "RESOLVED", "已关闭", "CLOSED"));
             case "support-ticket-priority", "support-ticket-priorities" -> ApiResult.ok(options("低", "LOW", "普通", "NORMAL", "高", "HIGH", "紧急", "URGENT"));
-            case "support-faq-category", "support-faq-categories" -> ApiResult.ok(options("通用", "general", "账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "KYC 认证", "kyc", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
+            case "support-faq-category", "support-faq-categories" -> ApiResult.ok(options("通用", "general", "账号问题", "account", "提现问题", "withdrawal", "充值问题", "deposit", "硬件设备", "hardware", "收益问题", "earnings", "Genesis 权益", "genesis", "技术问题", "technical", "其他", "other"));
             case "support-faq-surface", "support-faq-surfaces" -> ApiResult.ok(options("帮助中心", "Help Center", "创建工单页", "Ticket Create", "Nova AI", "Nova"));
             case "support-faq-status", "support-faq-statuses" -> ApiResult.ok(options("已发布", "PUBLISHED", "草稿", "DRAFT"));
             case "support-sla-queue", "support-sla-queues" -> ApiResult.ok(optionRows(optionsMapper::supportSlaQueues));

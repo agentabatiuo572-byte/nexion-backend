@@ -245,13 +245,12 @@ class AppRiskDisclosureServiceTest {
     }
 
     @Test
-    void jurisdictionResolutionPrefersVerifiedKycAndRejectsOverlappingMappings() {
-        when(ackMapper.findVerifiedKycCountry(42L)).thenReturn("Việt Nam");
+    void jurisdictionResolutionUsesTrustedCountryAndRejectsOverlappingMappings() {
         when(repository.listJurisdictions()).thenReturn(List.of(
                 new DisclosureJurisdictionView("SBV", "越南国家银行", List.of("VN"), "v13", "published", "2026-07-12", 100, 0, 0),
                 new DisclosureJurisdictionView("CN-RISK", "中国法域", List.of("CN"), "v8", "published", "2026-07-12", 100, 0, 0)));
 
-        var result = service.currentWithTrustedIpCountry(42L, "86");
+        var result = service.currentWithTrustedIpCountry(42L, "VN");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().jurisdiction()).isEqualTo("SBV");

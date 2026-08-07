@@ -6,9 +6,6 @@ import ffdd.opsconsole.user.domain.UserAccountControlFactView;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserAccountView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
-import ffdd.opsconsole.user.domain.UserKycRecord;
-import ffdd.opsconsole.user.domain.UserKycStatusHistoryView;
-import ffdd.opsconsole.user.domain.UserKycReverificationView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserReadonlyDeviceView;
 import ffdd.opsconsole.user.domain.UserSecurityStatusView;
@@ -103,9 +100,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND COALESCE(status, 'ACTIVE') = 'ACTIVE'")
     long countActiveUsers();
-
-    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0 AND UPPER(status) = 'PENDING'")
-    long countKycPending();
 
     @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND COALESCE(status, 'ACTIVE') = 'FROZEN'")
     long countFrozenUsers();
@@ -243,7 +237,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
-              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -279,7 +272,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND UPPER(COALESCE(u.status, 'ACTIVE')) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
-             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(k.status, 'NONE')) = UPPER(#{query.kycStatus})</if>
              <if test='query.riskMin != null'>AND COALESCE(rso.override_score, rs.model_score) &gt;= #{query.riskMin}</if>
              <if test='query.riskBand != null and query.riskBand == "HIGH"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_high_min</if>
              <if test='query.riskBand != null and query.riskBand == "MEDIUM"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_low_max AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_high_min</if>
@@ -312,7 +304,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    END AS phoneMasked,
                    u.country_code AS countryCode,
                    COALESCE(u.status, 'ACTIVE') AS status,
-                   COALESCE(k.status, 'NONE') AS kycStatus,
                    u.user_level AS userLevel,
                    u.v_rank AS vRank,
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
@@ -332,7 +323,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
-              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -368,7 +358,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND UPPER(COALESCE(u.status, 'ACTIVE')) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>#{status}</foreach>
              </if>
-             <if test='query.kycStatus != null and query.kycStatus != ""'>AND UPPER(COALESCE(k.status, 'NONE')) = UPPER(#{query.kycStatus})</if>
              <if test='query.riskMin != null'>AND COALESCE(rso.override_score, rs.model_score) &gt;= #{query.riskMin}</if>
              <if test='query.riskBand != null and query.riskBand == "HIGH"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_high_min</if>
              <if test='query.riskBand != null and query.riskBand == "MEDIUM"'>AND COALESCE(rso.override_score, rs.model_score) &gt;= rsm.band_low_max AND COALESCE(rso.override_score, rs.model_score) &lt; rsm.band_high_min</if>
@@ -392,92 +381,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                                     @Param("offset") int offset, @Param("pageSize") int pageSize);
 
     @Select("""
-            SELECT COUNT(*)
-              FROM nx_kyc_profile
-             WHERE is_deleted = 0
-               AND UPPER(status) = UPPER(#{kycStatus})
-            """)
-    long countByKycStatus(@Param("kycStatus") String kycStatus);
-
-    @Select("""
-            <script>
-            SELECT COUNT(*)
-              FROM nx_kyc_profile k
-              JOIN nx_user u ON u.id=k.user_id AND u.is_deleted=0
-             WHERE k.is_deleted=0
-             <if test='kycStatus != null and kycStatus != ""'>
-               AND UPPER(k.status)=UPPER(#{kycStatus})
-             </if>
-            </script>
-            """)
-    long countKycRecords(@Param("kycStatus") String kycStatus);
-
-    @Select("""
-            <script>
-            SELECT k.user_id AS userId,
-                   CONCAT('U', LPAD(k.user_id, GREATEST(8, LENGTH(CAST(k.user_id AS CHAR))), '0')) AS userNo,
-                   u.nickname,
-                   CASE WHEN u.phone REGEXP '^[0-9]{7,15}$'
-                        THEN CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3))
-                        ELSE NULL END AS phoneMasked,
-                   COALESCE(k.country,u.country_code) AS countryCode,
-                   COALESCE(u.status,'ACTIVE') AS accountStatus,
-                   u.user_level AS userLevel,
-                   k.status,
-                   k.paired_address AS pairedAddress,
-                   k.network,
-                   k.paired_at AS pairedAt,
-                   k.trigger_source AS triggerSource,
-                   k.version
-              FROM nx_kyc_profile k
-              JOIN nx_user u ON u.id=k.user_id AND u.is_deleted=0
-             WHERE k.is_deleted=0
-             <if test='kycStatus != null and kycStatus != ""'>
-               AND UPPER(k.status)=UPPER(#{kycStatus})
-             </if>
-             ORDER BY k.updated_at DESC,k.id DESC
-             LIMIT #{pageSize} OFFSET #{offset}
-            </script>
-            """)
-    List<UserKycRecord> pageKycRecords(
-            @Param("kycStatus") String kycStatus,
-            @Param("offset") int offset,
-            @Param("pageSize") int pageSize);
-
-    @Select("""
-            SELECT k.user_id AS userId,
-                   CONCAT('U', LPAD(k.user_id, GREATEST(8, LENGTH(CAST(k.user_id AS CHAR))), '0')) AS userNo,
-                   u.nickname,
-                   CASE WHEN u.phone REGEXP '^[0-9]{7,15}$'
-                        THEN CONCAT(SUBSTRING(u.phone,1,3),'****',SUBSTRING(u.phone,LENGTH(u.phone)-3))
-                        ELSE NULL END AS phoneMasked,
-                   COALESCE(k.country,u.country_code) AS countryCode,
-                   COALESCE(u.status,'ACTIVE') AS accountStatus,
-                   u.user_level AS userLevel,
-                   k.status,
-                   k.paired_address AS pairedAddress,
-                   k.network,
-                   k.paired_at AS pairedAt,
-                   k.trigger_source AS triggerSource,
-                   k.version
-              FROM nx_kyc_profile k
-              JOIN nx_user u ON u.id=k.user_id AND u.is_deleted=0
-             WHERE k.user_id=#{userId} AND k.is_deleted=0
-             LIMIT 1
-            """)
-    UserKycRecord findKycRecord(@Param("userId") Long userId);
-
-    @Select("""
-            SELECT before_status AS beforeStatus,after_status AS afterStatus,
-                   reason_code AS reasonCode,reason,evidence_ref AS evidenceRef,
-                   source,operator,ticket_id AS ticketId,created_at AS createdAt
-              FROM nx_kyc_status_history
-             WHERE user_id=#{userId}
-             ORDER BY id DESC LIMIT #{limit}
-            """)
-    List<UserKycStatusHistoryView> kycStatusHistory(@Param("userId") Long userId, @Param("limit") int limit);
-
-    @Select("""
             <script>
             SELECT u.id,
                    CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
@@ -489,7 +392,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    END AS phoneMasked,
                    u.country_code AS countryCode,
                    COALESCE(u.status, 'ACTIVE') AS status,
-                   COALESCE(k.status, 'NONE') AS kycStatus,
                    u.user_level AS userLevel,
                    u.v_rank AS vRank,
                    COALESCE(s.two_factor_enabled, 0) AS twoFactorEnabled,
@@ -509,7 +411,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
-              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
               LEFT JOIN (
                     SELECT model_version, band_low_max, band_high_min, auto_escalate_score
                       FROM nx_admin_risk_score_model
@@ -599,68 +500,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              LIMIT 1
             """)
     UserSecurityStatusView securityStatus(@Param("userId") Long userId);
-
-    @Select("""
-            SELECT SUBSTRING_INDEX(src.source_no, ':', -1) AS action,
-                   t.ticket_id AS ticketId,
-                   'VERIFIED' AS status,
-                   t.reviewed_by AS verifiedBy,
-                   t.reviewed_at AS verifiedAt,
-                   DATE_ADD(t.reviewed_at, INTERVAL #{rememberDays} DAY) AS expiresAt
-              FROM nx_admin_risk_kyc_review_ticket t
-              JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
-               AND CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))=t.user_no
-              JOIN nx_admin_risk_kyc_review_source src
-                ON src.ticket_id=t.ticket_id AND src.source_domain='C5' AND src.is_deleted=0
-              LEFT JOIN nx_c5_kyc_reverification_consumption c
-                ON c.ticket_id=t.ticket_id AND c.is_deleted=0
-             WHERE t.status='passed' AND t.reviewed_at IS NOT NULL
-               AND t.reviewed_at >= DATE_SUB(NOW(), INTERVAL #{rememberDays} DAY)
-               AND t.is_deleted=0 AND c.id IS NULL
-             ORDER BY t.reviewed_at DESC, t.id DESC
-            """)
-    List<UserKycReverificationView> availableC5KycReverifications(
-            @Param("userId") Long userId,
-            @Param("rememberDays") int rememberDays);
-
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_admin_risk_kyc_review_ticket t
-              JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
-               AND CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))=t.user_no
-              JOIN nx_admin_risk_kyc_review_source src
-                ON src.ticket_id=t.ticket_id AND src.source_domain='C5'
-               AND src.source_no=CONCAT(
-                   'U',
-                   LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'),
-                   ':',
-                   #{action}
-               ) AND src.is_deleted=0
-              LEFT JOIN nx_c5_kyc_reverification_consumption c
-                ON c.ticket_id=t.ticket_id AND c.is_deleted=0
-             WHERE t.ticket_id=#{ticketId} AND t.status='passed' AND t.reviewed_at IS NOT NULL
-               AND t.reviewed_at >= DATE_SUB(NOW(), INTERVAL #{rememberDays} DAY)
-               AND t.is_deleted=0
-               AND (c.id IS NULL OR c.idempotency_key=#{idempotencyKey})
-            """)
-    int countUsableC5KycReverification(
-            @Param("userId") Long userId,
-            @Param("ticketId") String ticketId,
-            @Param("action") String action,
-            @Param("rememberDays") int rememberDays,
-            @Param("idempotencyKey") String idempotencyKey);
-
-    @Insert("""
-            INSERT INTO nx_c5_kyc_reverification_consumption(
-                ticket_id,user_id,action_code,idempotency_key,consumed_by,consumed_at,is_deleted)
-            VALUES(#{ticketId},#{userId},#{action},#{idempotencyKey},#{operator},NOW(),0)
-            """)
-    int consumeC5KycReverification(
-            @Param("userId") Long userId,
-            @Param("ticketId") String ticketId,
-            @Param("action") String action,
-            @Param("idempotencyKey") String idempotencyKey,
-            @Param("operator") String operator);
 
     @Select("SELECT COUNT(*) FROM nx_user_security WHERE is_deleted=0 AND two_factor_enabled=1")
     long countTwoFactorEnabledUsers();
@@ -1251,45 +1090,6 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("userId") Long userId,
             @Param("source") String source,
             @Param("sourceRef") String sourceRef);
-
-    @Update("""
-            UPDATE nx_user
-               SET kyc_status = #{kycStatus}, updated_at = NOW()
-             WHERE id = #{userId} AND is_deleted = 0
-            """)
-    int updateKycStatus(@Param("userId") Long userId, @Param("kycStatus") String kycStatus);
-
-    @Update("""
-            UPDATE nx_kyc_profile
-               SET status=#{nextStatus}, reviewed_by=#{operator}, reviewed_at=NOW(),
-                   trigger_source=#{source}, version=version+1, updated_at=NOW()
-             WHERE user_id=#{userId} AND status=#{expectedStatus} AND version=#{expectedVersion} AND is_deleted=0
-            """)
-    int transitionKycProfile(
-            @Param("userId") Long userId,
-            @Param("expectedStatus") String expectedStatus,
-            @Param("expectedVersion") long expectedVersion,
-            @Param("nextStatus") String nextStatus,
-            @Param("source") String source,
-            @Param("operator") String operator);
-
-    @Insert("""
-            INSERT INTO nx_kyc_status_history
-              (user_id,before_status,after_status,reason_code,reason,evidence_ref,source,operator,idempotency_key,ticket_id)
-            VALUES
-              (#{userId},#{beforeStatus},#{afterStatus},#{reasonCode},#{reason},#{evidenceRef},#{source},#{operator},#{idempotencyKey},#{ticketId})
-            """)
-    int insertKycStatusHistory(
-            @Param("userId") Long userId,
-            @Param("beforeStatus") String beforeStatus,
-            @Param("afterStatus") String afterStatus,
-            @Param("reasonCode") String reasonCode,
-            @Param("reason") String reason,
-            @Param("evidenceRef") String evidenceRef,
-            @Param("source") String source,
-            @Param("operator") String operator,
-            @Param("idempotencyKey") String idempotencyKey,
-            @Param("ticketId") String ticketId);
 
     @Select("""
             <script>

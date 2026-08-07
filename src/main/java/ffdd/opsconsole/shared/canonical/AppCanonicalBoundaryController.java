@@ -36,19 +36,6 @@ public class AppCanonicalBoundaryController {
         return result;
     }
 
-    @GetMapping("/api/kyc/status")
-    public ApiResult<Map<String, Object>> kycStatus(
-            @RequestParam(required = false) Boolean clientWalletPaired, Authentication authentication) {
-        Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.kycStatus(userId, clientWalletPaired);
-    }
-
-    @GetMapping("/api/kyc/status/{userId}")
-    @PreAuthorize("hasAuthority('user_c4_read')")
-    public ApiResult<Map<String, Object>> adminKycStatus(@PathVariable Long userId) {
-        return service.kycStatus(userId, null);
-    }
-
     @GetMapping("/api/security/state")
     public ApiResult<Map<String, Object>> securityState(
             @RequestParam(required = false) Boolean clientTwoFactorEnabled, Authentication authentication) {

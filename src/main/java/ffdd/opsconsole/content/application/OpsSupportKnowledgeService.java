@@ -32,7 +32,7 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsSupportKnowledgeService {
-    private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
+    private static final Set<String> FAQ_CATEGORIES = Set.of("general", "account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
     private static final Set<String> SLA_CATEGORIES = SupportSlaBaseline.CATEGORIES;
     private static final Set<String> SURFACES = Set.of("Help Center", "Ticket Create", "Nova");
     private static final Set<String> STATUSES = Set.of("PUBLISHED", "DRAFT");

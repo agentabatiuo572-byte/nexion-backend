@@ -51,11 +51,10 @@ public interface AppGenesisMapper {
     Long lockActiveUser(@Param("userId") Long userId);
 
     @Select("""
-            SELECT u.id AS userId,UPPER(COALESCE(k.status,u.kyc_status,'PENDING')) AS kycStatus,
+            SELECT u.id AS userId,
                    UPPER(COALESCE(
-                     CASE WHEN TRIM(k.country) REGEXP '^[A-Za-z]{2}$' THEN TRIM(k.country) END,
                      CASE WHEN TRIM(u.region) REGEXP '^[A-Za-z]{2}$' THEN TRIM(u.region) END,
-                     CASE REPLACE(COALESCE(NULLIF(k.country,''),u.country_code),'+','')
+                     CASE REPLACE(COALESCE(u.country_code,''),'+','')
                        WHEN '1' THEN 'US' WHEN '7' THEN 'RU' WHEN '44' THEN 'GB'
                        WHEN '49' THEN 'DE' WHEN '33' THEN 'FR' WHEN '34' THEN 'ES'
                        WHEN '55' THEN 'BR' WHEN '62' THEN 'ID' WHEN '63' THEN 'PH'
@@ -69,7 +68,6 @@ public interface AppGenesisMapper {
                    GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) AS accountAgeMonths,
                    DATE_FORMAT(u.created_at,'%x-W%v') AS cohort
               FROM nx_user u
-              LEFT JOIN nx_kyc_profile k ON k.user_id=u.id AND k.is_deleted=0
              WHERE u.id=#{userId} AND UPPER(u.status)='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     UserPolicyRow userPolicy(@Param("userId") Long userId);
@@ -265,7 +263,7 @@ public interface AppGenesisMapper {
 
     record SeriesRow(Long id,String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt,
                      Integer royaltyBps,BigDecimal dailyEmissionRatePct,String status) {}
-    record UserPolicyRow(Long userId,String kycStatus,String countryCode,String phase,Integer accountAgeDays,
+    record UserPolicyRow(Long userId,String countryCode,String phase,Integer accountAgeDays,
                          Integer accountAgeMonths,String cohort) {}
     record OrderWrite(String orderNo,String clientRequestNo,Long userId,String seriesCode,Integer quantity,
                       BigDecimal unitPriceUsdt,BigDecimal amountUsdt,String orderType,Long sellerUserId,

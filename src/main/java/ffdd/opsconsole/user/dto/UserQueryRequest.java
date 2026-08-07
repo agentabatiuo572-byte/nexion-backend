@@ -5,7 +5,6 @@ import java.math.BigDecimal;
 public record UserQueryRequest(
         String keyword,
         String status,
-        String kycStatus,
         Integer riskMin,
         Integer pageNum,
         Integer pageSize,
@@ -29,12 +28,11 @@ public record UserQueryRequest(
     public static UserQueryRequest basic(
             String keyword,
             String status,
-            String kycStatus,
             Integer riskMin,
             Integer pageNum,
             Integer pageSize,
             Integer limit) {
-        return new UserQueryRequest(keyword, status, kycStatus, riskMin, pageNum, pageSize, limit,
+        return new UserQueryRequest(keyword, status, riskMin, pageNum, pageSize, limit,
                 null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null);
     }

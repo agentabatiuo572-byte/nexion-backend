@@ -68,14 +68,6 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
     UserAttribution userAttribution(@Param("userId") Long userId);
 
     @Select("""
-            SELECT country FROM nx_kyc_profile
-             WHERE user_id = #{userId} AND is_deleted = 0
-               AND UPPER(status) IN ('APPROVED', 'VERIFIED', 'PASSED')
-             LIMIT 1
-            """)
-    String findVerifiedKycCountry(@Param("userId") Long userId);
-
-    @Select("""
             SELECT user_id AS userId, jurisdiction_code AS jurisdictionCode,
                    required_version AS requiredVersion, acknowledged_version AS acknowledgedVersion,
                    ack_status AS ackStatus, acknowledged_at AS acknowledgedAt

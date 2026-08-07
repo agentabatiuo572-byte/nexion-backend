@@ -15,7 +15,6 @@ public final class SupportSlaBaseline {
             new Rule("account", 30, 24, "账户台", "C5 security"),
             new Rule("withdrawal", 15, 12, "支付台", "D2 withdrawal review"),
             new Rule("deposit", 15, 12, "支付台", "D1 deposit reconciliation"),
-            new Rule("kyc", 30, 24, "合规台", "C4 KYC ledger"),
             new Rule("hardware", 45, 48, "设备运维台", "E5 device ops"),
             new Rule("earnings", 30, 24, "收益台", "F3/E6 earnings ledger"),
             new Rule("genesis", 20, 18, "创世节点台", "G4 Genesis economy"),

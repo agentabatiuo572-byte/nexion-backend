@@ -14,7 +14,6 @@ public record UserProfileListView(
         String phoneMasked,
         String countryCode,
         String status,
-        String kycStatus,
         String userLevel,
         String vRank,
         Boolean twoFactorEnabled,
@@ -35,7 +34,7 @@ public record UserProfileListView(
         boolean canSeeDevices = full || "SUPPORT".equals(role);
         return new UserProfileListView(
                 value.userNo(), value.nickname(), value.phoneMasked(), value.countryCode(),
-                value.status(), value.kycStatus(), value.userLevel(), value.vRank(),
+                value.status(), value.userLevel(), value.vRank(),
                 full ? value.twoFactorEnabled() : null,
                 canFinance ? value.walletUsdt() : null,
                 canFinance ? value.walletNex() : null,

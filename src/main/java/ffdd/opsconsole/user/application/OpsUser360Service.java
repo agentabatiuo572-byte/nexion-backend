@@ -312,7 +312,6 @@ public class OpsUser360Service {
                 "phoneMasked", profile.phoneMasked(),
                 "countryCode", profile.countryCode(),
                 "status", profile.status(),
-                "kycStatus", profile.kycStatus(),
                 "userLevel", profile.userLevel(),
                 "vRank", profile.vRank(),
                 "registeredAt", profile.registeredAt(),
@@ -338,7 +337,6 @@ public class OpsUser360Service {
             response.remove("audit");
             response.put("account", section(
                     "status", profile.status(),
-                    "kycStatus", profile.kycStatus(),
                     "riskBand", "SUPPORT".equals(role) ? profile.riskBand() : null,
                     "sourceStatus", "READY"));
             if ("SUPPORT".equals(role)) {
@@ -437,7 +435,6 @@ public class OpsUser360Service {
                 "userId", profile.id(),
                 "userNo", profile.userNo(),
                 "status", profile.status(),
-                "kycStatus", profile.kycStatus(),
                 "walletUsdt", money(profile.walletUsdt()),
                 "walletNex", money(profile.walletNex()),
                 "twoFactorEnabled", security != null && security.twoFactorEnabled(),
@@ -564,7 +561,6 @@ public class OpsUser360Service {
                 "directCount", teamSection.get("directCount"),
                 "teamVolumeUsd", teamSection.get("teamVolumeUsd"),
                 "promotionSignals", section(
-                        "kycStatus", profile.kycStatus(),
                         "accountStatus", profile.status(),
                         "teamSize", teamSection.get("teamSize"),
                         "directCount", teamSection.get("directCount"),
@@ -638,7 +634,6 @@ public class OpsUser360Service {
                 "security", security,
                 "sessions", sessions,
                 "compliance", section(
-                        "kycStatus", profile.kycStatus(),
                         "riskScore", risk.get("effectiveScore"),
                         "riskBand", risk.get("bandLabel"),
                         "flags", risk.get("flags")),
@@ -651,9 +646,6 @@ public class OpsUser360Service {
         List<String> flags = new ArrayList<>();
         if (!"ACTIVE".equalsIgnoreCase(profile.status())) {
             flags.add(profile.status());
-        }
-        if (!List.of("VERIFIED", "APPROVED", "PASSED").contains(text(profile.kycStatus()))) {
-            flags.add("KYC_" + text(profile.kycStatus()));
         }
         long openCases = cases.stream().filter(riskCase -> !"FINALIZED".equalsIgnoreCase(riskCase.status())).count();
         if (openCases > 0) {

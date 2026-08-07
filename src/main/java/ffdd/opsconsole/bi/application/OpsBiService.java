@@ -62,9 +62,9 @@ public class OpsBiService implements AuditReplayable {
     private static final Set<String> AGGREGATE_EXPORT_TYPES = Set.of(
             "KPI_SERIES", "FUNNEL_COHORT", "FINANCE_AGG", "OPERATIONS_AGG");
     private static final Set<String> DOWNLOADABLE_REPORT_TYPES = Set.of(
-            "KPI_SERIES", "FUNNEL_COHORT", "FINANCE_AGG", "OPERATIONS_AGG", "NETWORK_TREE", "KYC_REGULATORY", "REGULATORY");
+            "KPI_SERIES", "FUNNEL_COHORT", "FINANCE_AGG", "OPERATIONS_AGG", "NETWORK_TREE", "REGULATORY");
     private static final Set<String> L2_STAGES = Set.of(
-            "auth.register_completed", "kyc.express_verified", "checkout.completed",
+            "auth.register_completed", "checkout.completed",
             "wallet.reinvest", "withdraw.submitted");
     private static final Set<String> L2_WINDOWS = Set.of("Day1", "Day7", "Day14", "Day30", "Day60");
     private static final Set<String> L2_DIMENSIONS = Set.of("phase", "locale", "ref");
@@ -1462,8 +1462,6 @@ public class OpsBiService implements AuditReplayable {
         return switch (key) {
             case "registered" -> "已注册";
             case "profileCompleted" -> "已完善资料";
-            case "kycSubmitted" -> "已提交 KYC";
-            case "kycApproved" -> "KYC 已通过";
             case "ordered" -> "订单记录";
             case "walletActivity" -> "钱包活动";
             default -> StringUtils.hasText(key) ? key : "其他阶段";
@@ -1474,7 +1472,6 @@ public class OpsBiService implements AuditReplayable {
         return switch (source) {
             case "nx_user" -> "用户主数据";
             case "nx_user_profile" -> "用户资料";
-            case "nx_kyc_profile" -> "身份认证记录";
             case "nx_order", "nx_order/nx_admin_device_order" -> "订单主数据";
             case "nx_wallet_ledger/nx_wallet_bill" -> "钱包活动记录";
             default -> "业务统计";
@@ -1633,7 +1630,7 @@ public class OpsBiService implements AuditReplayable {
     private String phaseFocus(String code) {
         return switch (normalizeText(code)) {
             case "P1" -> "重心:获客、注册和首笔收益体验";
-            case "P2" -> "重心:激活、KYC 和首购转化";
+            case "P2" -> "重心:激活和首购转化";
             case "P3" -> "重心:拉新 + 首购转化,放宽试用,谨慎放大资金流出";
             case "P4" -> "重心:复投、留存和任务节奏稳定";
             case "P5" -> "重心:收紧奖励、控制提现和佣金流出";
@@ -1810,7 +1807,6 @@ public class OpsBiService implements AuditReplayable {
             case "FUNNEL_COHORT" -> "bi_l2_write";
             case "FINANCE_AGG" -> containsPii ? "bi_l3_export_detail" : "bi_l3_write";
             case "OPERATIONS_AGG" -> "bi_l4_write";
-            case "KYC_REGULATORY" -> "user_c4_export";
             case "REGULATORY" -> "bi_l5_regulatory_generate";
             case "NETWORK_TREE" -> "bi_l4_export_tree";
             default -> "bi_l5_write";

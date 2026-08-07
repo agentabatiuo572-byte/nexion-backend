@@ -1,6 +1,5 @@
 package ffdd.opsconsole.market.application;
 
-import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueBatchRequest;
@@ -75,17 +74,6 @@ public class G2G3AdminCommandService {
         return once("G2:CANCEL:" + exchangeNo,key,request,() -> {
             ApiResult<Map<String,Object>> result = success(market.cancelExchangeQueueOrder(key,exchangeNo,request));
             outbox.publish("EXCHANGE_ORDER",exchangeNo,"admin.exchange_queue_cancelled",linked(
-                    "exchangeNo",exchangeNo,"reason",request.reason().trim(),"operator",actor(request.operator())));
-            return result;
-        });
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String,Object>> kycReview(String key,String exchangeNo,ExchangeKycReviewRequest request) {
-        requireReason(request == null ? null : request.reason());
-        return once("G2:KYC:" + exchangeNo,key,request,() -> {
-            ApiResult<Map<String,Object>> result = success(market.triggerExchangeKycReview(key,exchangeNo,request));
-            outbox.publish("EXCHANGE_ORDER",exchangeNo,"admin.exchange_kyc_review_requested",linked(
                     "exchangeNo",exchangeNo,"reason",request.reason().trim(),"operator",actor(request.operator())));
             return result;
         });

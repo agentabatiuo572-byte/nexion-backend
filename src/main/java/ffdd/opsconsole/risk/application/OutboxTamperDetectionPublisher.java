@@ -17,7 +17,7 @@ import org.springframework.util.StringUtils;
 public class OutboxTamperDetectionPublisher implements TamperDetectionPublisher {
     static final String EVENT_TYPE = "RISK_TAMPER_DETECTED";
     private static final Set<String> PATHS = Set.of(
-            "free_trial_state", "wallet_pairing", "risk_disclosure_ack", "two_factor_state",
+            "free_trial_state", "risk_disclosure_ack", "two_factor_state",
             "product_phase_override", "device_slot_cap", "dev_seed_state", "otp_verification",
             "bill_client_push", "client_minted_id", "charge_fail_rate");
 

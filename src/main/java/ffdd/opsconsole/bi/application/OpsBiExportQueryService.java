@@ -106,7 +106,6 @@ public class OpsBiExportQueryService {
             case "FINANCE_AGG" -> "财务聚合";
             case "OPERATIONS_AGG" -> "运营聚合";
             case "BILL_CSV" -> "七类账单明细";
-            case "KYC_REGULATORY" -> "KYC 监管台账";
             case "REGULATORY" -> "监管报告";
             default -> "导出任务";
         };

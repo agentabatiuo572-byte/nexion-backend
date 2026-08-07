@@ -213,8 +213,6 @@ public class MybatisBiReportRepository implements BiReportRepository {
             dashboard.put("stages", List.of(
                         stage("registered", mapper.countA4DistinctActors("auth.register_completed"), "nx_event_outbox:auth.register_completed"),
                         stage("profileCompleted", mapper.countA4DistinctActors("onboarding.profile_completed"), "nx_event_outbox:onboarding.profile_completed"),
-                        stage("kycSubmitted", mapper.countA4DistinctActors("kyc.express_started"), "nx_event_outbox:kyc.express_started"),
-                        stage("kycApproved", mapper.countA4DistinctActors("kyc.express_verified"), "nx_event_outbox:kyc.express_verified"),
                         stage("ordered", mapper.countA4DistinctActors("checkout.started"), "nx_event_outbox:checkout.started"),
                         stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")));
         }

@@ -51,7 +51,7 @@ import org.springframework.transaction.annotation.Transactional;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsSupportTicketService {
-    private static final Set<String> CATEGORIES = Set.of("account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
+    private static final Set<String> CATEGORIES = Set.of("account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
     private static final Set<String> PRIORITIES = Set.of("LOW", "NORMAL", "HIGH", "URGENT");
     private static final Set<String> STATUSES = Set.of("OPEN", "IN_PROGRESS", "PENDING_USER", "RESOLVED", "CLOSED");
     private static final Set<String> TERMINAL_STATUSES = Set.of("RESOLVED", "CLOSED");

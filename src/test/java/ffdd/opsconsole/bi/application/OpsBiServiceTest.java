@@ -713,8 +713,6 @@ class OpsBiServiceTest {
         reportRepository.dashboards.put("L2", Map.of("stages", List.of(
                 Map.of("key", "registered", "count", 1L),
                 Map.of("key", "profileCompleted", "count", 1L),
-                Map.of("key", "kycSubmitted", "count", 0L),
-                Map.of("key", "kycApproved", "count", 0L),
                 Map.of("key", "ordered", "count", 2L),
                 Map.of("key", "walletActivity", "count", 1L))));
 
@@ -725,7 +723,7 @@ class OpsBiServiceTest {
                         "superadmin",
                         "漏斗生命周期事实",
                         "当前快照",
-                        "注册/资料/KYC/订单/钱包活动聚合计数",
+                        "注册/资料/订单/钱包活动聚合计数",
                         "NONE",
                         "NONE",
                         "BI 管理员",
@@ -742,8 +740,6 @@ class OpsBiServiceTest {
         reportRepository.dashboards.put("L2", Map.of("stages", List.of(
                 Map.of("key", "registered", "count", 7L, "source", "nx_event_outbox:auth.register_completed"),
                 Map.of("key", "profileCompleted", "count", 6L, "source", "nx_event_outbox:onboarding.profile_completed"),
-                Map.of("key", "kycSubmitted", "count", 5L, "source", "nx_event_outbox:kyc.express_started"),
-                Map.of("key", "kycApproved", "count", 4L, "source", "nx_event_outbox:kyc.express_verified"),
                 Map.of("key", "ordered", "count", 3L, "source", "nx_event_outbox:checkout.started"),
                 Map.of("key", "walletActivity", "count", 2L, "source", "nx_event_outbox:wallet.topup_confirmed"))));
         reportRepository.l2SliceDashboard = Map.of();
@@ -755,14 +751,14 @@ class OpsBiServiceTest {
                         "superadmin",
                         "漏斗生命周期事实",
                         "当前快照",
-                        "注册/资料/KYC/订单/钱包活动聚合计数",
+                        "注册/资料/订单/钱包活动聚合计数",
                         "NONE",
                         "NONE",
                         "BI 管理员",
                         "L2-FUNNEL"));
 
         assertThat(created.getCode()).isZero();
-        assertThat(reportRepository.report.rowCount()).isEqualTo(6L);
+        assertThat(reportRepository.report.rowCount()).isEqualTo(4L);
         String reportId = reportRepository.report.reportId();
         String csv = reportRepository.snapshots.get(reportId);
         assertThat(csv)
@@ -789,7 +785,6 @@ class OpsBiServiceTest {
         reportRepository.l2SliceDashboard = Map.of(
                 "funnel", List.of(
                         Map.of("stage", "注册", "users", 5L, "cvr", 100, "ev", "auth.register_completed"),
-                        Map.of("stage", "绑卡", "users", 4L, "cvr", 80, "ev", "kyc.express_verified"),
                         Map.of("stage", "首购", "users", 3L, "cvr", 75, "ev", "checkout.completed"),
                         Map.of("stage", "复投", "users", 2L, "cvr", 67, "ev", "wallet.reinvest"),
                         Map.of("stage", "提现", "users", 1L, "cvr", 50, "ev", "withdraw.submitted")),
@@ -858,7 +853,7 @@ class OpsBiServiceTest {
                         "superadmin",
                         "漏斗生命周期事实",
                         "当前快照",
-                        "注册/资料/KYC/订单/钱包活动聚合计数",
+                        "注册/资料/订单/钱包活动聚合计数",
                         "NONE",
                         "NONE",
                         "BI 管理员",

@@ -74,8 +74,8 @@ class NotificationCampaignDispatchExecutorTest {
         when(repository.dispatchCampaignNotification("CMP-1", "biz-1", "P3", "立即下发中", "operator", now))
                 .thenReturn(2);
         when(repository.listNotificationEventFactsByBizNo("biz-1", "P3", now)).thenReturn(List.of(
-                new NotificationEventFact(91L, 7L, "system", "high", "/pages/me/kyc", false, "P3", 4, "2026-W10"),
-                new NotificationEventFact(92L, 8L, "system", "high", "/pages/me/kyc", false, "P3", 2, "2026-W20")));
+                new NotificationEventFact(91L, 7L, "system", "high", "/pages/me/security", false, "P3", 4, "2026-W10"),
+                new NotificationEventFact(92L, 8L, "system", "high", "/pages/me/security", false, "P3", 2, "2026-W20")));
 
         int delivered = executor.dispatchImmediate(
                 "CMP-1", "biz-1", "P3", "operator", "idem-1", "立即发送系统维护通知", 0L, now);

@@ -11,11 +11,10 @@ import org.junit.jupiter.api.Test;
 class B3FunnelAnalyticsTest {
 
     @Test
-    void buildsFiveStrictSameActorStagesAndCanonicalAuxMetrics() {
+    void buildsFourStrictSameActorStagesAndCanonicalAuxMetrics() {
         LocalDateTime mature = LocalDateTime.now().minusDays(14);
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("auth.register_completed", "kept", mature, "P3", "partner-a"),
-                event("kyc.express_verified", "kept", mature.plusHours(1), "P3", "partner-a"),
                 event("store.viewed", "kept", mature.plusMinutes(90), "P3", "partner-a"),
                 event("checkout.completed", "kept", mature.plusHours(2), "P3", "partner-a"),
                 event("wallet.reinvest", "kept", mature.plusHours(3), "P3", "partner-a"),
@@ -59,12 +58,11 @@ class B3FunnelAnalyticsTest {
         LocalDateTime at = LocalDateTime.now().minusDays(20);
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("auth.register_completed", "repeat", at, "P1", "direct"),
-                event("kyc.express_verified", "repeat", at.plusHours(1), "P1", "direct"),
                 event("checkout.completed", "repeat", at.plusHours(2), "P1", "direct"),
                 event("checkout.completed", "repeat", at.plusHours(3), "P1", "direct")),
                 null, "P1", "direct");
 
-        assertThat(rows(result.get("stages")).get(3).get("distinctUsers")).isEqualTo(1);
+        assertThat(rows(result.get("stages")).get(2).get("distinctUsers")).isEqualTo(1);
     }
 
     @Test

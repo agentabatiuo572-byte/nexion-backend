@@ -11,12 +11,11 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
-/** Deterministic six-dimension scorer shared by individual and batch recomputation. */
+/** Deterministic five-dimension scorer shared by individual and batch recomputation. */
 @Component
 public class K4RiskScorer {
     private static final List<String> DIMENSIONS = List.of(
-            "multiAccount", "arbitrage", "kycStatus",
-            "withdrawVelocity", "accountAge", "anomalyBehavior");
+            "multiAccount", "arbitrage", "withdrawVelocity", "accountAge", "anomalyBehavior");
 
     /** Versioned default sub-score mapping. Persisted into every K4 model snapshot. */
     public static final Map<String, Integer> DEFAULT_MAPPINGS;
@@ -32,10 +31,6 @@ public class K4RiskScorer {
         values.put("arbitrage.repeatMin", 2);
         values.put("arbitrage.repeatScore", 70);
         values.put("arbitrage.severeScore", 100);
-        values.put("kyc.reviewScore", 40);
-        values.put("kyc.pendingScore", 60);
-        values.put("kyc.rejectedScore", 90);
-        values.put("kyc.sanctionedScore", 100);
         values.put("withdraw.baselineMultiplierPct", 200);
         values.put("withdraw.baselineScore", 50);
         values.put("withdraw.highFrequency24h", 5);
@@ -60,9 +55,6 @@ public class K4RiskScorer {
                 "arbitrage", "套利与刷量", arbitrageScore(input, model),
                 "套利信号 " + value(input.arbitrageSignals()) + " 条"
                         + (Boolean.TRUE.equals(input.severeArbitrage()) ? "，含高危处置" : ""), model));
-        contributions.add(contribution(
-                "kycStatus", "KYC 状态", kycScore(input.kycStatus(), model),
-                "KYC 状态 " + text(input.kycStatus(), "UNKNOWN"), model));
         contributions.add(contribution(
                 "withdrawVelocity", "提现速度", withdrawalScore(input, model),
                 "24 小时 " + value(input.withdrawalCount24h()) + " 笔 / $"
@@ -109,17 +101,6 @@ public class K4RiskScorer {
         int signals = value(input.arbitrageSignals());
         if (signals >= mapping(model, "arbitrage.repeatMin")) return mapping(model, "arbitrage.repeatScore");
         return signals == 1 ? mapping(model, "arbitrage.singleScore") : 0;
-    }
-
-    private int kycScore(String status, RiskScoreModelView model) {
-        return switch (text(status, "PENDING").toUpperCase(java.util.Locale.ROOT)) {
-            case "VERIFIED", "APPROVED", "PASSED" -> 0;
-            case "REVIEW", "REVIEWING" -> mapping(model, "kyc.reviewScore");
-            case "PENDING" -> mapping(model, "kyc.pendingScore");
-            case "REJECTED", "FAILED" -> mapping(model, "kyc.rejectedScore");
-            case "SANCTIONED", "BLOCKED" -> mapping(model, "kyc.sanctionedScore");
-            default -> mapping(model, "kyc.pendingScore");
-        };
     }
 
     private int withdrawalScore(RiskScoreRawInput input, RiskScoreModelView model) {

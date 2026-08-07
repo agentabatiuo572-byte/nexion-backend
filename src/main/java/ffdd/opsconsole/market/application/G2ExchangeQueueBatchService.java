@@ -44,9 +44,6 @@ public class G2ExchangeQueueBatchService {
             AppExchangeMapper.WalletGateRow wallet = mapper.lockWalletGate(row.userId());
             if (wallet == null || platformUsed.add(gross).compareTo(platformCap) > 0
                     || nz(mapper.userTodayUsdt(row.userId())).add(gross).compareTo(number("wallet.exchange.user_daily_cap_usdt","50")) > 0
-                    || (!List.of("VERIFIED","APPROVED","PASSED").contains(wallet.kycStatus())
-                        && nz(mapper.userLifetimeUsdt(row.userId())).add(gross)
-                            .compareTo(number("wallet.exchange.kyc_threshold_usdt","100")) >= 0)
                     || mapper.geoBlocked(wallet.countryCode()) > 0) {
                 skipped.add(row.exchangeNo()); continue;
             }

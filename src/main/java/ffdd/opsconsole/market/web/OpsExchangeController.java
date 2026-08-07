@@ -3,7 +3,6 @@ package ffdd.opsconsole.market.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.market.application.G2G3AdminCommandService;
-import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueBatchRequest;
@@ -67,16 +66,6 @@ public class OpsExchangeController {
             @RequestBody ExchangeQueueCancelRequest request) {
         return commandService == null ? marketService.cancelExchangeQueueOrder(idempotencyKey, exchangeNo, request)
                 : commandService.cancelExchange(idempotencyKey, exchangeNo, request);
-    }
-
-    @PostMapping("/queue/{exchangeNo}/kyc-review")
-    @PreAuthorize("hasAuthority('finprod_g2_write')")
-    public ApiResult<Map<String, Object>> triggerKycReview(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String exchangeNo,
-            @RequestBody ExchangeKycReviewRequest request) {
-        return commandService == null ? marketService.triggerExchangeKycReview(idempotencyKey, exchangeNo, request)
-                : commandService.kycReview(idempotencyKey, exchangeNo, request);
     }
 
     @PostMapping("/queue/process")

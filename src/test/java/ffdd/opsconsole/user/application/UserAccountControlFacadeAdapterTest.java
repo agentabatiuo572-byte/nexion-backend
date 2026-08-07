@@ -59,7 +59,7 @@ class UserAccountControlFacadeAdapterTest {
 
     private UserAccountView account(String status) {
         return new UserAccountView(
-                1L, "U00000001", "Alice", "138****8000", "86", status, "APPROVED", "L1", "V1", true,
+                1L, "U00000001", "Alice", "138****8000", "86", status, "L1", "V1", true,
                 BigDecimal.TEN, BigDecimal.ONE, 20, "低风险", 1L, 1L,
                 LocalDateTime.now().minusDays(1), LocalDateTime.now());
     }

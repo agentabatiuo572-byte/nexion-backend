@@ -12,13 +12,10 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
-import ffdd.opsconsole.finance.facade.FinanceWithdrawalKycReviewFacade;
-import ffdd.opsconsole.market.facade.MarketExchangeKycReviewFacade;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -46,11 +43,6 @@ import ffdd.opsconsole.risk.dto.RiskClusterStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskClusterReviewRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
 import ffdd.opsconsole.risk.dto.RiskIpWhitelistRequest;
-import ffdd.opsconsole.risk.dto.RiskKycManualReviewRequest;
-import ffdd.opsconsole.risk.dto.RiskKycAlertSubscriptionRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewDecisionRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewOverviewQueryRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
@@ -70,7 +62,6 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
-import ffdd.opsconsole.user.facade.UserKycStatusFacade;
 import ffdd.opsconsole.user.facade.UserAccountControlFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -134,24 +125,14 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             "frozen", "risk_k1_cluster_freeze",
             "released", "risk_k1_cluster_release",
             "cleared", "risk_k1_cluster_cleared");
-    private static final Set<String> KYC_REVIEW_DECISIONS = Set.of("passed", "rejected");
-    private static final Set<String> KYC_REJECT_REASON_CODES = Set.of(
-            "KYC_MATERIAL_INVALID", "IDENTITY_MISMATCH", "SANCTIONS_LIST_MATCH", "OTHER");
     private static final List<String> K4_DIMENSION_KEYS = List.of(
-            "multiAccount", "arbitrage", "kycStatus",
-            "withdrawVelocity", "accountAge", "anomalyBehavior");
+            "multiAccount", "arbitrage", "withdrawVelocity", "accountAge", "anomalyBehavior");
     private static final Pattern K2_TRIAL_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*次\\s*/\\s*(\\d+)\\s*天$");
     private static final Pattern K2_WELCOME_GIFT_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*笔\\s*/\\s*(实体|账户簇|手机号|设备)$");
     private static final Pattern K2_LEADERBOARD_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*x\\s*(基线|上周期|7日均值|同层级均值)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern K3_AMOUNT_RULE = Pattern.compile("^单笔\\s*(>=|>)\\s*\\$?([\\d,]+)$");
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern K3_NEW_ACCOUNT_RULE = Pattern.compile("^注册\\s*(<|<=)\\s*(\\d+)\\s*天$");
-    private static final Pattern K5_AMOUNT_LINE = Pattern.compile("^(>=|>)\\s*\\$?([\\d,]+)$");
-    private static final Pattern K5_CUMULATIVE_LINE = Pattern.compile("^\\$?([\\d,]+)$");
-    private static final Pattern K5_SLA_DAYS = Pattern.compile("^(\\d+)$");
-    private static final Pattern K5_SCORE_LINE = Pattern.compile("^(>=|>)\\s*(\\d+)$");
-    private static final Set<String> K5_TICKET_FILTERS = Set.of(
-            "all", "大额提现", "大额兑换", "累计过线", "手动触发", "风险分触发", "overdue");
     private static final Map<String, String> OTP_CANONICAL_CONFIG_KEYS = Map.of(
             "otpGate.resendSeconds", "auth.risk.otp_cooldown_seconds",
             "otpGate.captchaAfterSends", "auth.risk.otp_max_24h",
@@ -193,9 +174,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             Map.entry("地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)));
 
     private final RiskOpsRepository riskRepository;
-    private final UserKycStatusFacade userKycStatusFacade;
-    private final FinanceWithdrawalKycReviewFacade financeWithdrawalKycReviewFacade;
-    private final MarketExchangeKycReviewFacade marketExchangeKycReviewFacade;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
@@ -204,8 +182,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final UserAccountControlFacade userAccountControlFacade;
     private final EventOutboxService eventOutboxService;
     private final ChainAddressReputationGateway chainAddressReputationGateway;
-    /** Single K4-to-K5 closure used by every score mutation path. */
-    private final K4KycReviewTriggerService k4KycReviewTriggerService;
     private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
     private final K3WithdrawalRuleEvaluator k3WithdrawalRuleEvaluator = new K3WithdrawalRuleEvaluator();
 
@@ -275,38 +251,17 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String signalNo = "SIG-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
         String evidence = sanitizeEvidence(request.evidence());
         riskRepository.recordSignal(signalNo, request.userId(), signalType, severity, evidence, operator(request.operator()));
-        RiskCaseView manualCase = null;
-        if (isKycReviewSignal(signalType)) {
-            String caseNo = nextRiskCaseNo("KYC");
-            manualCase = riskRepository.createManualReviewCase(
-                    caseNo,
-                    request.userId(),
-                    "KYC_REVIEW",
-                    "USER-" + request.userId(),
-                    request.reason().trim(),
-                    riskScore(severity),
-                    signalType,
-                    evidence,
-                    operator(request.operator()));
-        }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("signalNo", signalNo);
         response.put("userId", request.userId());
         response.put("signalType", signalType);
         response.put("severity", severity);
-        response.put("status", manualCase == null ? "RECORDED" : "REVIEW_CREATED");
-        if (manualCase != null) {
-            response.put("caseNo", manualCase.caseNo());
-            response.put("riskScore", manualCase.riskScore());
-        }
+        response.put("status", "RECORDED");
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("signalType", signalType);
         auditDetail.put("severity", severity);
         auditDetail.put("reason", request.reason().trim());
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
-        if (manualCase != null) {
-            auditDetail.put("manualReviewCaseNo", manualCase.caseNo());
-        }
         audit("K_RISK_SIGNAL_RECORDED", "RISK_SIGNAL", signalNo, request.userId(), operator(request.operator()), auditDetail);
         return ApiResult.ok(response);
     }
@@ -1539,13 +1494,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 userNo, current.rowVersion(), model, score.score(), score.contributions()).orElse(null);
                         if (updated == null) throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE:" + userNo);
                         K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
-                        k4KycReviewTriggerService.triggerIfThresholdReached(
-                                current,
-                                updated,
-                                K4KycReviewTriggerService.SOURCE_BATCH_RECOMPUTE,
-                                request.reason().trim(),
-                                actor,
-                                idempotencyKey.trim() + ":" + userNo);
                         results.add(Map.of("userNo", userNo, "before", current.effectiveScore(),
                                 "after", updated.effectiveScore(), "modelVersion", model.version()));
                     }
@@ -1596,13 +1544,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             k4AuditDetail(before, scoreUser, request.reason(), idempotencyKey), "MEDIUM");
                     K4ScoreEventPublisher.publishScoreOverridden(
                             eventOutboxService, scoreUser, request.reason().trim(), actor);
-                    k4KycReviewTriggerService.triggerIfThresholdReached(
-                            before,
-                            scoreUser,
-                            K4KycReviewTriggerService.SOURCE_SCORE_OVERRIDE,
-                            request.reason().trim(),
-                            actor,
-                            idempotencyKey.trim());
                     return ApiResult.ok(scoreUser);
                 }));
     }
@@ -1648,351 +1589,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     auditRequired("K4_SCORE_RECOMPUTED", "RISK_SCORE_USER", normalized, actor,
                             k4AuditDetail(before, updated, request.reason(), idempotencyKey));
                     K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, before, updated);
-                    k4KycReviewTriggerService.triggerIfThresholdReached(
-                            before,
-                            updated,
-                            K4KycReviewTriggerService.SOURCE_SCORE_RECOMPUTE,
-                            request.reason().trim(),
-                            actor,
-                            idempotencyKey.trim());
                     return ApiResult.ok(updated);
                 }));
-    }
-
-    public ApiResult<Map<String, Object>> kycReviewOverview() {
-        return kycReviewOverview(null);
-    }
-
-    public ApiResult<Map<String, Object>> kycReviewOverview(RiskKycReviewOverviewQueryRequest request) {
-        int ticketPageNum = normalizePageNum(request == null ? null : request.ticketPageNum());
-        int ticketPageSize = normalizeLimit(request == null ? null : request.ticketPageSize(), 5, 50);
-        String ticketFilter = normalizeKycTicketFilter(request == null ? null : request.ticketFilter());
-        Map<String, Object> overview = new LinkedHashMap<>(riskRepository.kycReviewOverview(ticketPageNum, ticketPageSize, ticketFilter));
-        Map<String, Object> subscription = riskRepository.kycAlertSubscription(authenticatedOperator());
-        overview.put("subscription", subscription);
-        overview.put("alerts", riskRepository.kycAlerts(stringList(subscription.get("alertTypes"))));
-        return ApiResult.ok(overview);
-    }
-
-    public ApiResult<List<Map<String, Object>>> kycReviewUsers(String keyword, Integer limit) {
-        int normalizedLimit = normalizeLimit(limit, 20, 50);
-        return ApiResult.ok(userKycStatusFacade.reviewCandidates(keyword, normalizedLimit));
-    }
-
-    @Transactional
-    public ApiResult<Map<String, Object>> updateKycReviewParam(
-            String key, String idempotencyKey, RiskKycReviewParamUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
-        if (reasonGuard != null) return reasonGuard;
-        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_write");
-        if (permission != null) return permission;
-        String normalizedKey = trimmed(key);
-        String value = trimmed(request.value());
-        if (!StringUtils.hasText(normalizedKey) || !StringUtils.hasText(value) || request.expectedVersion() == null
-                || request.expectedVersion() < 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_PARAM_VALUE_REQUIRED");
-        }
-        value = normalizeK5Param(normalizedKey, value);
-        if (!StringUtils.hasText(value)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_PARAM_VALUE_INVALID");
-        }
-        String actor = authenticatedOperator();
-        String normalizedValue = value;
-        return idempotentCommand("K5_PARAM:" + normalizedKey, idempotencyKey,
-                requestHash(normalizedKey, normalizedValue, String.valueOf(request.expectedVersion()), request.reason()), () -> {
-                    Map<String, Object> updated = riskRepository
-                            .updateKycReviewParam(normalizedKey, normalizedValue, request.expectedVersion()).orElse(null);
-                    if (updated == null) return ApiResult.fail(409, "K5_PARAM_VERSION_CONFLICT");
-                    int scoreTriggeredTickets = "reviewTriggerScore".equals(normalizedKey)
-                            ? synchronizeK4KycReviewTriggerThreshold(
-                                    request.reason().trim(), actor, idempotencyKey.trim())
-                            : 0;
-                    updated.put("subscription", riskRepository.kycAlertSubscription(actor));
-                    updated.put("scoreTriggeredTickets", scoreTriggeredTickets);
-                    Map<String, Object> detail = new LinkedHashMap<>();
-                    detail.put("key", normalizedKey);
-                    detail.put("value", normalizedValue);
-                    detail.put("expectedVersion", request.expectedVersion());
-                    detail.put("reason", request.reason().trim());
-                    detail.put("idempotencyKey", idempotencyKey.trim());
-                    detail.put("slaRecomputedTickets", updated.getOrDefault("slaRecomputedTickets", 0));
-                    detail.put("scoreTriggeredTickets", scoreTriggeredTickets);
-                    auditRequired("K5_KYC_REVIEW_PARAM_CHANGED", "RISK_KYC_REVIEW_PARAM", normalizedKey, actor, detail);
-                    return ApiResult.ok(updated);
-                });
-    }
-
-    private int synchronizeK4KycReviewTriggerThreshold(
-            String reason, String operator, String idempotencyKey) {
-        int threshold = riskRepository.kycReviewTriggerScore();
-        int triggered = 0;
-        while (true) {
-            List<String> userNos = riskRepository.scoreUserNosNeedingKycTriggerThresholdSync(
-                    threshold, K4ScoreBackfillInitializer.CHUNK_SIZE);
-            if (userNos.isEmpty()) {
-                return triggered;
-            }
-            for (String userNo : userNos) {
-                RiskScoreUserView current = riskRepository.findCurrentScoreUser(userNo)
-                        .orElseThrow(() -> new BizException(409, "K4_CURRENT_SCORE_REQUIRED_FOR_K5_THRESHOLD_SYNC"));
-                if (k4KycReviewTriggerService.triggerIfThresholdReached(
-                        null,
-                        current,
-                        K4KycReviewTriggerService.SOURCE_REVIEW_THRESHOLD_CHANGE,
-                        reason,
-                        operator,
-                        idempotencyKey + ":threshold:" + userNo)) {
-                    triggered++;
-                }
-            }
-        }
-    }
-
-    @Transactional
-    public ApiResult<Map<String, Object>> decideKycReviewTicket(String ticketId, String idempotencyKey, RiskKycReviewDecisionRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
-        if (reasonGuard != null) return reasonGuard;
-        String normalizedTicket = trimmed(ticketId);
-        String decision = trimmed(request.decision()).toLowerCase(Locale.ROOT);
-        if (!StringUtils.hasText(normalizedTicket) || !KYC_REVIEW_DECISIONS.contains(decision)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_DECISION_INVALID");
-        }
-        if ("rejected".equals(decision)
-                && (!StringUtils.hasText(request.reasonCode())
-                || !KYC_REJECT_REASON_CODES.contains(request.reasonCode().trim()))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_REJECT_REASON_CODE_INVALID");
-        }
-        String actor = authenticatedOperator();
-        ApiResult<Map<String, Object>> permission = requireK5Authority(
-                "passed".equals(decision) ? "risk_k5_ticket_pass" : "risk_k5_ticket_reject");
-        if (permission != null) {
-            return rejectK5Decision(normalizedTicket, actor, permission.getCode(), permission.getMessage(),
-                    request.reason(), idempotencyKey);
-        }
-        Long requestedVersion = request.expectedVersion();
-        String reasonCode = StringUtils.hasText(request.reasonCode())
-                ? request.reasonCode().trim() : "KYC_REVIEW_PASSED";
-        String hash = requestHash(normalizedTicket, decision, String.valueOf(requestedVersion), reasonCode, request.reason());
-        return executeK5Decision(normalizedTicket, actor, request.reason(), idempotencyKey, () ->
-                idempotentCommand("K5_DECISION:" + normalizedTicket, idempotencyKey, hash, () -> {
-                    KycReviewTicketContext ticket = riskRepository.findKycReviewTicket(normalizedTicket).orElse(null);
-                    if (ticket == null) {
-                        return rejectK5Decision(normalizedTicket, actor, 404, "K5_REVIEW_TICKET_NOT_FOUND",
-                                request.reason(), idempotencyKey);
-                    }
-                    if (!A2ReplayContext.isReplaying()
-                            && lockMapper.countActiveByTarget("K", "ticket", normalizedTicket) > 0) {
-                        return rejectK5Decision(normalizedTicket, actor, 409, "OBJECT_LOCKED_BY_A2",
-                                request.reason(), idempotencyKey);
-                    }
-                    if (!"in-review".equals(ticket.status())) {
-                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_NOT_REVIEWABLE",
-                                request.reason(), idempotencyKey);
-                    }
-                    Long expectedVersion = requestedVersion;
-                    if (expectedVersion == null && A2ReplayContext.isReplaying()) expectedVersion = ticket.version();
-                    if (expectedVersion == null || expectedVersion < 0 || ticket.version() != expectedVersion) {
-                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_VERSION_CONFLICT",
-                                request.reason(), idempotencyKey);
-                    }
-                    if (!userKycStatusFacade.userExists(ticket.userNo())) {
-                        return rejectK5Decision(normalizedTicket, actor, 404, "K5_REVIEW_USER_NOT_FOUND",
-                                request.reason(), idempotencyKey);
-                    }
-                    long version = expectedVersion;
-                    if (!riskRepository.updateKycReviewTicketStatus(normalizedTicket, decision, version,
-                            reasonCode, request.reason().trim(), actor)) {
-                        return rejectK5Decision(normalizedTicket, actor, 409, "K5_REVIEW_TICKET_VERSION_CONFLICT",
-                                request.reason(), idempotencyKey);
-                    }
-                    Map<String, Object> downstream = applyKycReviewDecision(ticket, decision, request.reason().trim(), actor);
-                    Map<String, Object> detail = new LinkedHashMap<>();
-                    detail.put("ticketId", normalizedTicket);
-                    detail.put("userNo", ticket.userNo());
-                    detail.put("decision", decision);
-                    detail.put("reasonCode", reasonCode);
-                    detail.put("expectedVersion", version);
-                    detail.put("reason", request.reason().trim());
-                    detail.put("idempotencyKey", idempotencyKey.trim());
-                    detail.put("downstream", downstream);
-                    auditRequired("K5_KYC_REVIEW_DECIDED", "RISK_KYC_REVIEW_TICKET", normalizedTicket, actor, detail);
-                    return kycReviewOverview();
-                }));
-    }
-
-    @Transactional
-    public ApiResult<Map<String, Object>> createManualKycReviewTicket(String idempotencyKey, RiskKycManualReviewRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
-        if (reasonGuard != null) return reasonGuard;
-        String userNo = trimmed(request.userNo());
-        if (!StringUtils.hasText(userNo)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REVIEW_USER_REQUIRED");
-        }
-        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_ticket_manual");
-        if (permission != null) return permission;
-        if (!userKycStatusFacade.userExists(userNo)) {
-            return ApiResult.fail(404, "K5_REVIEW_USER_NOT_FOUND");
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("K", "user", userNo) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        String actor = authenticatedOperator();
-        return idempotentCommand("K5_MANUAL:" + userNo, idempotencyKey,
-                requestHash(userNo, request.reason()), () -> {
-                    KycReviewTicketContext open = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
-                    String ticketId;
-                    String action;
-                    boolean merged;
-                    if (open != null) {
-                        if (!riskRepository.mergeOpenKycReviewTicket(open.ticketId(), open.version(), request.reason().trim(), actor)) {
-                            return ApiResult.fail(409, "K5_REVIEW_TICKET_VERSION_CONFLICT");
-                        }
-                        ticketId = open.ticketId();
-                        action = "K5_KYC_REVIEW_MANUAL_MERGED";
-                        merged = true;
-                    } else {
-                        ticketId = "KR-M-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase(Locale.ROOT);
-                        try {
-                            riskRepository.createManualKycReviewTicket(ticketId, userNo, request.reason().trim(), actor);
-                            action = "K5_KYC_REVIEW_MANUAL_CREATED";
-                            merged = false;
-                        } catch (DuplicateKeyException race) {
-                            KycReviewTicketContext winner = riskRepository.findOpenKycReviewTicketByUserForUpdate(userNo).orElse(null);
-                            if (winner == null || !riskRepository.mergeOpenKycReviewTicket(
-                                    winner.ticketId(), winner.version(), request.reason().trim(), actor)) {
-                                return ApiResult.fail(409, "K5_REVIEW_TICKET_CONCURRENT_TRIGGER");
-                            }
-                            ticketId = winner.ticketId();
-                            action = "K5_KYC_REVIEW_MANUAL_MERGED";
-                            merged = true;
-                        }
-                    }
-                    auditRequired(action, "RISK_KYC_REVIEW_TICKET", ticketId, actor, Map.of(
-                            "ticketId", ticketId, "userNo", userNo, "reason", request.reason().trim(),
-                            "idempotencyKey", idempotencyKey.trim()));
-                    ApiResult<Map<String, Object>> result = kycReviewOverview();
-                    result.getData().put("manualResult", Map.of(
-                            "ticketId", ticketId,
-                            "userNo", userNo,
-                            "merged", merged));
-                    return result;
-                });
-    }
-
-    @Transactional
-    public ApiResult<Map<String, Object>> updateKycAlertSubscription(
-            String idempotencyKey, RiskKycAlertSubscriptionRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) return guard;
-        ApiResult<Map<String, Object>> reasonGuard = requireK5Reason(request.reason());
-        if (reasonGuard != null) return reasonGuard;
-        ApiResult<Map<String, Object>> permission = requireK5Authority("risk_k5_write");
-        if (permission != null) return permission;
-        if (request.expectedVersion() == null || request.expectedVersion() < 0
-                || request.alertTypes() == null || request.channels() == null
-                || request.alertTypes().isEmpty() || request.channels().isEmpty()
-                || !Set.of("sla-breach", "threshold-hit", "large-withdraw-burst").containsAll(request.alertTypes())
-                || !Set.of("in-app").containsAll(request.channels())) {
-            return ApiResult.fail(422, "K5_ALERT_SUBSCRIPTION_INVALID");
-        }
-        List<String> alertTypes = request.alertTypes().stream().distinct().sorted().toList();
-        List<String> channels = request.channels().stream().distinct().sorted().toList();
-        String actor = authenticatedOperator();
-        return idempotentCommand("K5_ALERT_SUBSCRIPTION:" + actor, idempotencyKey,
-                requestHash(String.join(",", alertTypes), String.join(",", channels),
-                        String.valueOf(request.expectedVersion()), request.reason()), () -> {
-                    Map<String, Object> subscription = riskRepository.updateKycAlertSubscription(
-                            actor, alertTypes, channels, request.expectedVersion()).orElse(null);
-                    if (subscription == null) return ApiResult.fail(409, "K5_ALERT_SUBSCRIPTION_VERSION_CONFLICT");
-                    auditRequired("K5_ALERT_SUBSCRIPTION_CHANGED", "RISK_KYC_ALERT_SUBSCRIPTION", actor, actor, Map.of(
-                            "alertTypes", alertTypes, "channels", channels, "expectedVersion", request.expectedVersion(),
-                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
-                    return kycReviewOverview();
-                });
-    }
-
-    private Map<String, Object> applyKycReviewDecision(KycReviewTicketContext ticket, String decision, String reason, String operator) {
-        Map<String, Object> downstream = new LinkedHashMap<>();
-        String kycStatus = "passed".equals(decision) ? "APPROVED" : "REJECTED";
-        boolean c4Updated = userKycStatusFacade.updateKycStatusByUserNo(
-                ticket.userNo(), kycStatus, reason, operator, ticket.ticketId());
-        if (!c4Updated) {
-            throw new IllegalStateException("K5_C4_KYC_UPDATE_FAILED");
-        }
-        downstream.put("c4KycUpdated", true);
-        Map<String, RiskOpsRepository.KycReviewSource> uniqueSources = new LinkedHashMap<>();
-        for (RiskOpsRepository.KycReviewSource source : riskRepository.kycReviewSources(ticket.ticketId())) {
-            addKycReviewSource(uniqueSources, source.sourceDomain(), source.sourceNo());
-        }
-        // Backward compatibility for tickets created before the normalized source table existed.
-        addKycReviewSource(uniqueSources,
-                ticketInfoValue(ticket.infoJson(), "sourceDomain"),
-                ticketInfoValue(ticket.infoJson(), "sourceNo"));
-
-        List<Map<String, Object>> sourceUpdates = new ArrayList<>();
-        for (RiskOpsRepository.KycReviewSource source : uniqueSources.values()) {
-            String sourceDomain = source.sourceDomain();
-            String sourceNo = source.sourceNo();
-            boolean sourceUpdated = false;
-            if ("D2".equalsIgnoreCase(sourceDomain)) {
-                sourceUpdated = "passed".equals(decision)
-                        ? financeWithdrawalKycReviewFacade.releaseWithdrawalReview(
-                                sourceNo, ticket.ticketId(), reason, operator)
-                        : financeWithdrawalKycReviewFacade.rejectWithdrawalReview(
-                                sourceNo, ticket.ticketId(), reason, operator);
-            } else if ("G2".equalsIgnoreCase(sourceDomain)) {
-                sourceUpdated = "passed".equals(decision)
-                        ? marketExchangeKycReviewFacade.releaseExchangeReview(sourceNo, reason, operator)
-                        : marketExchangeKycReviewFacade.rejectExchangeReview(sourceNo, reason, operator);
-            }
-            if (("D2".equalsIgnoreCase(sourceDomain) || "G2".equalsIgnoreCase(sourceDomain)) && !sourceUpdated) {
-                throw new IllegalStateException("K5_SOURCE_STATE_UPDATE_FAILED");
-            }
-            sourceUpdates.add(Map.of(
-                    "sourceDomain", sourceDomain,
-                    "sourceNo", sourceNo,
-                    "updated", sourceUpdated));
-        }
-        downstream.put("sourceUpdates", sourceUpdates);
-        downstream.put("sourceUpdatedCount", sourceUpdates.stream()
-                .filter(update -> Boolean.TRUE.equals(update.get("updated"))).count());
-        downstream.put("sourceUpdated", sourceUpdates.stream()
-                .anyMatch(update -> Boolean.TRUE.equals(update.get("updated"))));
-        if (sourceUpdates.size() == 1) {
-            downstream.put("sourceDomain", sourceUpdates.get(0).get("sourceDomain"));
-            downstream.put("sourceNo", sourceUpdates.get(0).get("sourceNo"));
-        }
-        return downstream;
-    }
-
-    private void addKycReviewSource(
-            Map<String, RiskOpsRepository.KycReviewSource> sources, String sourceDomain, String sourceNo) {
-        if (!StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) return;
-        String domain = sourceDomain.trim().toUpperCase(Locale.ROOT);
-        String number = sourceNo.trim();
-        sources.putIfAbsent(domain + ":" + number, new RiskOpsRepository.KycReviewSource(domain, number));
-    }
-
-    private String ticketInfoValue(String infoJson, String key) {
-        if (!StringUtils.hasText(infoJson) || !StringUtils.hasText(key)) {
-            return null;
-        }
-        Pattern pattern = Pattern.compile("\\[\\s*\"" + Pattern.quote(key) + "\"\\s*,\\s*\"([^\"]*)\"");
-        Matcher matcher = pattern.matcher(infoJson);
-        return matcher.find() ? matcher.group(1) : null;
     }
 
     private <T> ApiResult<T> requireCommand(String idempotencyKey, String reason) {
@@ -2126,7 +1724,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 && mappings.get("account.newDays") < mappings.get("account.matureDays")
                 && nonDecreasing(mappings, "multiAccount.mediumScore", "multiAccount.highScore", "multiAccount.fraudScore")
                 && nonDecreasing(mappings, "arbitrage.singleScore", "arbitrage.repeatScore", "arbitrage.severeScore")
-                && nonDecreasing(mappings, "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore")
                 && nonDecreasing(mappings, "withdraw.baselineScore", "withdraw.highScore")
                 && nonDecreasing(mappings, "account.middleScore", "account.newLargeScore")
                 && nonDecreasing(mappings, "anomaly.lowScore", "anomaly.tamperScore");
@@ -2194,13 +1791,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE_DURING_PUBLISH");
             }
             K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
-            k4KycReviewTriggerService.triggerIfThresholdReached(
-                    current,
-                    updated,
-                    K4KycReviewTriggerService.SOURCE_MODEL_PUBLISH,
-                    reason,
-                    operator,
-                    idempotencyKey + ":" + userNo);
         }
     }
 
@@ -2456,11 +2046,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return CLUSTER_LAYERS.contains(normalized) ? normalized : null;
     }
 
-    private String normalizeKycTicketFilter(String filter) {
-        String normalized = trimmed(filter);
-        return K5_TICKET_FILTERS.contains(normalized) && !"all".equals(normalized) ? normalized : null;
-    }
-
     private String normalizeLinkWeight(String value) {
         Double device = parseNamedWeight(value, "设备");
         Double payment = parseNamedWeight(value, "支付");
@@ -2634,64 +2219,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .orElse("");
     }
 
-    private String normalizeK5Param(String key, String value) {
-        return switch (key) {
-            case "largeWithdrawReviewUsdt" -> normalizeK5AmountLine(value, 100, 50_000);
-            case "cumulativeKycThresholdUsdt" -> normalizeK5CumulativeLine(value);
-            case "reviewSlaDays" -> normalizeK5SlaDays(value);
-            case "reviewTriggerScore" -> normalizeK5ScoreLine(value);
-            default -> "";
-        };
-    }
-
-    private String normalizeK5AmountLine(String value, int min, int max) {
-        Matcher matcher = K5_AMOUNT_LINE.matcher(trimmed(value));
-        if (!matcher.matches()) {
-            return "";
-        }
-        int amount = parseMoney(matcher.group(2), -1);
-        if (amount < min || amount > max) {
-            return "";
-        }
-        return matcher.group(1) + " $" + formatMoney(amount);
-    }
-
-    private String normalizeK5CumulativeLine(String value) {
-        Matcher matcher = K5_CUMULATIVE_LINE.matcher(trimmed(value));
-        if (!matcher.matches()) {
-            return "";
-        }
-        int amount = parseMoney(matcher.group(1), -1);
-        if (amount < 50 || amount > 1_000) {
-            return "";
-        }
-        return "$" + formatMoney(amount);
-    }
-
-    private String normalizeK5SlaDays(String value) {
-        Matcher matcher = K5_SLA_DAYS.matcher(trimmed(value));
-        if (!matcher.matches()) {
-            return "";
-        }
-        int days = parseInt(matcher.group(1), -1);
-        if (days < 1 || days > 15) {
-            return "";
-        }
-        return String.valueOf(days);
-    }
-
-    private String normalizeK5ScoreLine(String value) {
-        Matcher matcher = K5_SCORE_LINE.matcher(trimmed(value));
-        if (!matcher.matches()) {
-            return "";
-        }
-        int score = parseInt(matcher.group(2), -1);
-        if (score < 70 || score > 100) {
-            return "";
-        }
-        return matcher.group(1) + " " + score;
-    }
-
     private String normalizeTrialCycleThreshold(String value) {
         Matcher matcher = K2_TRIAL_THRESHOLD.matcher(value);
         if (!matcher.matches()) {
@@ -2747,10 +2274,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private String formatMoney(int value) {
         return String.format(Locale.US, "%,d", value);
-    }
-
-    private boolean isKycReviewSignal(String signalType) {
-        return "KYC_REVIEW_MANUAL".equals(signalType) || signalType.startsWith("KYC_REVIEW_");
     }
 
     private String nextRiskCaseNo(String prefix) {
@@ -2934,67 +2457,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .detail(detail)
                 .build());
         return ApiResult.fail(status, reasonCode);
-    }
-
-    private <T> ApiResult<T> rejectK5Decision(
-            String ticketId,
-            String actor,
-            int status,
-            String reasonCode,
-            String requestReason,
-            String idempotencyKey) {
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("operation", "decideTicket");
-        detail.put("reasonCode", reasonCode);
-        detail.put("requestReason", trimmed(requestReason));
-        detail.put("idempotencyKey", trimmed(idempotencyKey));
-        detail.put("businessDataChanged", false);
-        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
-                .action("K5_KYC_REVIEW_DECISION_REJECTED")
-                .resourceType("RISK_KYC_REVIEW_TICKET")
-                .resourceId(ticketId)
-                .bizNo(ticketId)
-                .actorType("ADMIN")
-                .actorUsername(actor)
-                .result("REJECTED")
-                .riskLevel("HIGH")
-                .detail(detail)
-                .build());
-        return ApiResult.fail(status, reasonCode);
-    }
-
-    private <T> ApiResult<T> executeK5Decision(
-            String ticketId,
-            String actor,
-            String requestReason,
-            String idempotencyKey,
-            Supplier<ApiResult<T>> command) {
-        try {
-            return command.get();
-        } catch (RuntimeException failure) {
-            Map<String, Object> detail = new LinkedHashMap<>();
-            detail.put("operation", "decideTicket");
-            detail.put("failureType", failure.getClass().getSimpleName());
-            detail.put("requestReason", trimmed(requestReason));
-            detail.put("idempotencyKey", trimmed(idempotencyKey));
-            detail.put("businessDataChanged", false);
-            try {
-                auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
-                        .action("K5_KYC_REVIEW_DECISION_FAILED")
-                        .resourceType("RISK_KYC_REVIEW_TICKET")
-                        .resourceId(ticketId)
-                        .bizNo(ticketId)
-                        .actorType("ADMIN")
-                        .actorUsername(actor)
-                        .result("FAILED")
-                        .riskLevel("HIGH")
-                        .detail(detail)
-                        .build());
-            } catch (RuntimeException auditFailure) {
-                failure.addSuppressed(auditFailure);
-            }
-            throw failure;
-        }
     }
 
     private <T> ApiResult<T> executeK4Write(
@@ -3235,15 +2697,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "k4_user_recompute" -> {
                 RiskScoreCommandRequest req = new RiskScoreCommandRequest(reason, operator);
                 return recomputeScore(str(p, "userNo"), idem, req);
-            }
-            case "k5_ticket_pass", "k5_ticket_reject" -> {
-                String decision = "k5_ticket_pass".equals(cmd.op()) ? "passed" : "rejected";
-                RiskKycReviewDecisionRequest req = new RiskKycReviewDecisionRequest(decision, reason, operator);
-                return decideKycReviewTicket(str(p, "ticketId"), idem, req);
-            }
-            case "k5_ticket_manual" -> {
-                RiskKycManualReviewRequest req = new RiskKycManualReviewRequest(str(p, "userNo"), reason, operator);
-                return createManualKycReviewTicket(idem, req);
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());

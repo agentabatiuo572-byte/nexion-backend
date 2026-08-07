@@ -77,10 +77,6 @@ public interface WithdrawalOrderRepository {
         return false;
     }
 
-    boolean transitionK5FrozenStatus(String withdrawalNo, String ticketId, String status, String failureReason);
-
-    boolean freezeForK5Review(String withdrawalNo, String expectedStatus, String ticketId);
-
     int freezePendingByUserId(Long userId, String reason);
 
     int restoreFrozenByUserStatus(Long userId);

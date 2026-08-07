@@ -20,7 +20,6 @@ import ffdd.opsconsole.market.domain.NexMarketRepository;
 import ffdd.opsconsole.market.domain.RepurchaseAmountBucketView;
 import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
-import ffdd.opsconsole.market.dto.ExchangeKycReviewRequest;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -34,8 +33,6 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
@@ -71,7 +68,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String EXCHANGE_FEE_PCT_KEY = "wallet.exchange.fee_pct";
     private static final String EXCHANGE_FEE_MIN_KEY = "wallet.exchange.fee_min_usdt";
     private static final String EXCHANGE_QUEUE_MODE_KEY = "wallet.exchange.queue_mode";
-    private static final String EXCHANGE_KYC_THRESHOLD_KEY = "wallet.exchange.kyc_threshold_usdt";
     private static final String EXCHANGE_KILLSWITCH_KEY = "killswitch.exchange";
     private static final String EXCHANGE_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.exchange";
     private static final String DISCLOSURE_GATE_PREFIX = "disclosure.gate.";
@@ -104,7 +100,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final int REPURCHASE_LOCK_DAYS = 90;
     private static final List<String> CONTROL_KEYS = List.of("schedule", "pin", "loop");
     private static final List<String> EXCHANGE_QUEUE_STATUSES = List.of("QUEUED");
-    private static final List<String> EXCHANGE_KYC_REVIEWABLE_STATUSES = EXCHANGE_QUEUE_STATUSES;
     private static final List<String> OVERRIDE_KEYS = List.of(
             "currentPrice", "volatilityPct", "oracle", "deviationPct", "costBasis", "paused");
     /** updateExchangeParam paramKey→精确权限码(service 层二次校验,path variable 多态)。
@@ -114,7 +109,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("platformDailyCap", "finprod_g2_cap_platform_write"),
             Map.entry("fee", "finprod_g2_fee_rate_write"),
             Map.entry("feeMin", "finprod_g2_fee_rate_write"),
-            Map.entry("kycThreshold", "finprod_g2_write"),
             Map.entry("queueMode", "finprod_g2_write"));
     /** updateStakingPoolParam paramKey→精确权限码。对照 OpsStakingController updatePoolParam。 */
     private static final Map<String, String> STAKING_PARAM_PERMISSION = Map.ofEntries(
@@ -154,7 +148,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final EmergencyControlRepository emergencyRepository;
     private final OpsKillSwitchService killSwitchService;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
-    private final RiskKycReviewFacade riskKycReviewFacade;
     private final AuditLogService auditLogService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -165,7 +158,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     public ApiResult<Map<String, Object>> exchangeOverview() {
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
         BigDecimal todayUsd = marketRepository.todayExchangeCompletedUsdt();
-        long gateKyc = marketRepository.todayExchangeCountByStatus("KYC_REQUIRED");
         long gateUser = marketRepository.todayExchangeCountByStatus("USER_CAP");
         long gatePlatform = marketRepository.todayExchangeCountByStatus("PLATFORM_CAP");
         long gateGeo = marketRepository.todayExchangeCountByStatus("GEO_BLOCKED");
@@ -181,14 +173,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "todayUsd", todayUsd,
                 "poolPct", percent(todayUsd, platformCap),
                 "queueDepth", marketRepository.queuedExchangeCount(),
-                "gateKyc", gateKyc,
                 "gateUser", gateUser,
                 "gatePlatform", gatePlatform,
                 "gateGeo", gateGeo));
         response.put("caps", exchangeCaps(todayUsd, platformCap));
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
         response.put("gateDetails", map(
-                "kyc", gate("kyc", "需实名(kyc-required)", "累计兑换过线、还没完成实名的拦截。过实名(C4)后自动放行。", List.of("KYC_REQUIRED")),
                 "user", gate("user", "单用户超限(user-cap)", "超过单用户日额度的拦截。进次日队列或拒绝。", List.of("USER_CAP")),
                 "platform", gate("platform", "平台超限(platform-cap)", "全平台日总池见底的拦截。全部转次日队列。", List.of("PLATFORM_CAP")),
                 "geo", gate("geo", "地域封锁(geo-blocked)", "命中 J2 地域封锁的兑换单会取消或拒绝。", List.of("GEO_BLOCKED"))));
@@ -330,73 +320,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
-    @Transactional
-    public ApiResult<Map<String, Object>> triggerExchangeKycReview(
-            String idempotencyKey,
-            String exchangeNo,
-            ExchangeKycReviewRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("G", "exchange_order", exchangeNo) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
-        if (!StringUtils.hasText(exchangeNo)) {
-            return validation("EXCHANGE_NO_REQUIRED");
-        }
-        Optional<ExchangeOrderView> before = marketRepository.findExchangeOrder(exchangeNo.trim());
-        if (before.isEmpty()) {
-            return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
-        }
-        ExchangeOrderView order = before.get();
-        if (!EXCHANGE_KYC_REVIEWABLE_STATUSES.contains(order.status())) {
-            return ApiResult.fail(
-                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if (disclosureGateActive("exchange")) {
-            return validation("G2_DISCLOSURE_GATE_REACK_REQUIRED");
-        }
-        if (exchangeGeoBlocked(order)) {
-            return validation("G2_GEO_BLOCKED");
-        }
-        String authenticatedActor = AdminActorResolver.resolve(request.operator());
-        KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeExchangeReview(
-                order.userNo(),
-                order.amountUsdt(),
-                exchangeKycStatus(order),
-                order.exchangeNo(),
-                authenticatedActor,
-                request.reason().trim());
-        if (!k5Review.requiresReview()) {
-            return validation("EXCHANGE_K5_REVIEW_NOT_REQUIRED");
-        }
-        if (!StringUtils.hasText(k5Review.ticketId())) {
-            return validation("EXCHANGE_K5_REVIEW_ALREADY_OPEN");
-        }
-        boolean updated = marketRepository.updateExchangeStatusIfCurrent(
-                order.exchangeNo(),
-                "KYC_REQUIRED",
-                EXCHANGE_KYC_REVIEWABLE_STATUSES);
-        if (!updated) {
-            throw new BizException(
-                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        auditExchangeK5ReviewRequired(order, updated, idempotencyKey, request, k5Review, authenticatedActor);
-        Map<String, Object> response = exchangeOverview().getData();
-        response.put("updated", map(
-                "exchangeNo", order.exchangeNo(),
-                "before", order.status(),
-                "after", "KYC_REQUIRED",
-                "ticketId", k5Review.ticketId(),
-                "reviewReason", k5Review.reason(),
-                "updated", updated));
-        return ApiResult.ok(response);
-    }
-
     public ApiResult<Map<String, Object>> exchangeOrderDetail(String exchangeNo) {
         Optional<ExchangeOrderView> order = marketRepository.findExchangeOrder(exchangeNo);
         if (order.isEmpty()) {
@@ -409,8 +332,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "platformDailyCapUsdt", readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000")),
                 "feePct", readDecimal(EXCHANGE_FEE_PCT_KEY, BigDecimal.ZERO),
                 "feeMinUsdt", readDecimal(EXCHANGE_FEE_MIN_KEY, new BigDecimal("0.50")),
-                "queueMode", readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"),
-                "kycThresholdUsdt", readDecimal(EXCHANGE_KYC_THRESHOLD_KEY, new BigDecimal("100"))));
+                "queueMode", readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE")));
         response.put("coverage", exchangeCoverage());
         response.put("swap", map("enabled", exchangeSwapEnabled(), "linkedDomain", "J1"));
         response.put("sources", List.of("nx_exchange_order:" + exchangeNo, "nx_user:" + order.get().userId()));
@@ -2783,7 +2705,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         BigDecimal userCap = readDecimal(EXCHANGE_USER_DAILY_CAP_KEY, new BigDecimal("50"));
         BigDecimal feePct = readDecimal(EXCHANGE_FEE_PCT_KEY, BigDecimal.ZERO);
         BigDecimal feeMin = readDecimal(EXCHANGE_FEE_MIN_KEY, new BigDecimal("0.50"));
-        BigDecimal kycThreshold = readDecimal(EXCHANGE_KYC_THRESHOLD_KEY, new BigDecimal("100"));
         String queueMode = normalizeQueueMode(readText(EXCHANGE_QUEUE_MODE_KEY, "QUEUE"));
         return List.of(
                 cap("userDailyCap", "单用户日额度", "每人每天最多换出多少 USDT", userCap, displayUsd(userCap),
@@ -2794,8 +2715,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "范围 0%-10% · 降费=放大流出过红线", true, null),
                 cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
                         "范围 $0-5 · 随费率启用生效", true, null),
-                cap("kycThreshold", "累计实名触发线", "终身累计兑换达到该线由服务端触发 K5 复审", kycThreshold, displayUsd(kycThreshold),
-                        "范围 $1-1,000,000 · G2 权威 / K5 消费", false, null),
                 cap("queueMode", "超 cap 处置策略", "用户超 cap 时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
                         "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null));
     }
@@ -2853,8 +2772,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     key, EXCHANGE_FEE_PCT_KEY, "NUMBER", "0", "G2 exchange fee percent", ExchangeParamKind.PERCENT);
             case "feeMin" -> new ExchangeParamDef(
                     key, EXCHANGE_FEE_MIN_KEY, "NUMBER", "0.50", "G2 minimum exchange fee", ExchangeParamKind.DECIMAL);
-            case "kycThreshold" -> new ExchangeParamDef(
-                    key, EXCHANGE_KYC_THRESHOLD_KEY, "NUMBER", "100", "G2 lifetime KYC exchange threshold", ExchangeParamKind.DECIMAL);
             case "queueMode" -> new ExchangeParamDef(
                     key, EXCHANGE_QUEUE_MODE_KEY, "STRING", "QUEUE", "G2 over-cap queue strategy", ExchangeParamKind.QUEUE_MODE);
             default -> null;
@@ -2879,10 +2796,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return null;
         }
         if ("feeMin".equals(def.key()) && value.compareTo(new BigDecimal("5")) > 0) {
-            return null;
-        }
-        if ("kycThreshold".equals(def.key())
-                && (value.compareTo(BigDecimal.ONE) < 0 || value.compareTo(new BigDecimal("1000000")) > 0)) {
             return null;
         }
         return value.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
@@ -3124,41 +3037,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .build());
     }
 
-    private void auditExchangeK5ReviewRequired(
-            ExchangeOrderView order,
-            boolean updated,
-            String idempotencyKey,
-            ExchangeKycReviewRequest request,
-            KycReviewTriggerResult k5Review,
-            String authenticatedActor) {
-        auditLogService.record(AuditLogWriteRequest.builder()
-                .action("G2_EXCHANGE_K5_REVIEW_REQUIRED")
-                .resourceType("EXCHANGE_ORDER")
-                .resourceId(order.exchangeNo())
-                .bizNo(order.exchangeNo())
-                .actorType("ADMIN")
-                .actorUsername(operator(authenticatedActor))
-                .result(updated ? "BLOCKED" : "SKIPPED")
-                .riskLevel("HIGH")
-                .detail(map(
-                        "exchangeNo", order.exchangeNo(),
-                        "userNo", order.userNo(),
-                        "amountUsdt", order.amountUsdt(),
-                        "fromStatus", order.status(),
-                        "toStatus", "KYC_REQUIRED",
-                        "ticketId", k5Review.ticketId(),
-                        "reviewReason", k5Review.reason(),
-                        "reason", request.reason().trim(),
-                        "idempotencyKey", idempotencyKey.trim()))
-                .build());
-    }
-
-    private String exchangeKycStatus(ExchangeOrderView order) {
-        return StringUtils.hasText(order.gateType()) && "kyc".equalsIgnoreCase(order.gateType())
-                ? "PENDING_REVIEW"
-                : "UNKNOWN";
-    }
-
     private void auditOverride(
             String overrideKey,
             String configKey,
@@ -3304,15 +3182,6 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "g2_exchange_cancel_queue" -> {
                 ExchangeQueueCancelRequest req = new ExchangeQueueCancelRequest(reason, operator);
                 return cancelExchangeQueueOrder(idem, str(p, "exchangeNo"), req);
-            }
-            case "g2_exchange_trigger_kyc_review" -> {
-                // @Transactional 自调用陷阱:replay 本身不带 @Transactional(与 J 域 replay 一致),
-                // 此处 this.triggerExchangeKycReview(...) 是直接自调用,Spring 代理被绕过,@Transactional 不生效。
-                // 原子性回退由两条兜底:(1) triggerExchangeKycReview 内部 riskKycReviewFacade 自管事务;
-                // (2) 外层 OpsAuditCenterService.decide() 的 @Transactional 事务边界兜底。
-                // 若审查者要求严格事务,可改为注入 ApplicationContext 经 getBean() 调用代理(本批不采用)。
-                ExchangeKycReviewRequest req = new ExchangeKycReviewRequest(reason, operator);
-                return triggerExchangeKycReview(idem, str(p, "exchangeNo"), req);
             }
             case "g3_curve_update" -> {
                 // frames 是 7 帧 List<Map>,逐帧重建 NexMarketCurveFrame(dayIndex,targetPrice,pumpProbability,volatilityPct)

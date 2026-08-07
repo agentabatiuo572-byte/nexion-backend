@@ -35,16 +35,16 @@ class L2FunnelAnalyticsTest {
                 "auth.register_completed", "other", registeredAt, "2026-W20", "P2", "zh", "campaign-b");
         Map<String, Object> result = L2FunnelAnalytics.calculate(List.of(
                 selected,
-                event("kyc.express_verified", "selected", registeredAt.plusHours(1), "2026-W20", "P3", "vi", "campaign-a"),
-                event("checkout.completed", "selected", registeredAt.plusHours(2), "2026-W20", "P3", "vi", "campaign-a"),
+                event("checkout.completed", "selected", registeredAt.plusHours(1), "2026-W20", "P3", "vi", "campaign-a"),
+                event("wallet.reinvest", "selected", registeredAt.plusHours(2), "2026-W20", "P3", "vi", "campaign-a"),
                 other,
-                event("kyc.express_verified", "other", registeredAt.plusHours(1), "2026-W20", "P2", "zh", "campaign-b")),
+                event("checkout.completed", "other", registeredAt.plusHours(1), "2026-W20", "P2", "zh", "campaign-b")),
                 "2026-W20", "P3", "vi", "campaign-a");
 
         assertThat(result).containsEntry("available", true);
         assertThat(rows(result.get("funnel")))
                 .extracting(row -> row.get("users"))
-                .containsExactly(1, 1, 1, 0, 0);
+                .containsExactly(1, 1, 1, 0);
         assertThat(map(result.get("filters")))
                 .containsEntry("cohort", "2026-W20")
                 .containsEntry("phase", "P3")
@@ -62,8 +62,8 @@ class L2FunnelAnalyticsTest {
             String ref = "channel-" + index;
             facts.add(event("auth.register_completed", actor, registeredAt, "2026-W20", "P3", locale, ref));
             facts.add(event("auth.register_completed", actor, registeredAt.plusSeconds(1), "2026-W20", "P3", locale, ref));
-            facts.add(event("kyc.express_verified", actor, registeredAt.plusHours(1), "2026-W20", "P3", locale, ref));
-            facts.add(event("checkout.completed", actor, registeredAt.plusHours(2), "2026-W20", "P3", locale, ref));
+            facts.add(event("checkout.completed", actor, registeredAt.plusHours(1), "2026-W20", "P3", locale, ref));
+            facts.add(event("wallet.reinvest", actor, registeredAt.plusHours(2), "2026-W20", "P3", locale, ref));
         }
 
         Map<String, Object> result = L2FunnelAnalytics.calculate(facts);

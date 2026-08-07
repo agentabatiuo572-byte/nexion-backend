@@ -27,10 +27,9 @@ public class EventOutboxDispatchScheduler {
             "LEARNING_COURSE_COMPLETED",
             "admin.device_activated",
             "COMMISSION_UNLOCKED");
-    /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/kyc/register → evaluate,analytics 已发 outbox)。 */
+    /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/register → evaluate,analytics 已发 outbox)。 */
     static final List<String> F1_PASSIVE_EVAL_EVENT_TYPES = List.of(
             "checkout.completed",
-            "kyc.express_verified",
             "auth.register_completed");
     static final List<String> C2_HIGH_RISK_EVENT_TYPES = List.of(
             "admin.user_frozen",

@@ -106,7 +106,7 @@ FROM nx_admin_role lead_role
 JOIN nx_admin_role finance_role ON finance_role.role_code='FINANCE' AND finance_role.is_deleted=0
 JOIN nx_admin_role_permission rp ON rp.role_id=finance_role.id AND rp.is_deleted=0
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
--- C1 跨职能最小授权：财务看资金/KYC，增长看分层并可导出脱敏名单，审计可导出脱敏取证名单。
+-- C1 跨职能最小授权：财务看资金状态，增长看分层并可导出脱敏名单，审计可导出脱敏取证名单。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='FINANCE'

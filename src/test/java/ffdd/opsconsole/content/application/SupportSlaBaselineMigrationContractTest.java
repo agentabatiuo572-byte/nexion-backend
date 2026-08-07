@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class SupportSlaBaselineMigrationContractTest {
     private static final String[] CATEGORIES = {
-            "account", "withdrawal", "deposit", "kyc", "hardware",
+            "account", "withdrawal", "deposit", "hardware",
             "earnings", "genesis", "technical", "other"
     };
 

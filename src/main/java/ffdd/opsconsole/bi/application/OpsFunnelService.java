@@ -33,7 +33,7 @@ public class OpsFunnelService {
     private static final Pattern COHORT = Pattern.compile("\\d{4}-W(?:0[1-9]|[1-4]\\d|5[0-3])");
     private static final Pattern PHASE = Pattern.compile("P[1-6]");
     private static final Pattern REF = Pattern.compile("[\\p{L}\\p{N}._:-]{1,64}");
-    private static final Set<String> STAGES = Set.of("register", "kyc", "purchase", "repurchase", "withdraw");
+    private static final Set<String> STAGES = Set.of("register", "purchase", "repurchase", "withdraw");
     private static final Set<String> GRANULARITIES = Set.of("WEEK", "MONTH");
     private static final Set<String> COMPARISONS = Set.of("PREVIOUS", "YEAR_OVER_YEAR", "CUSTOM");
     private static final String VIEW_IDEMPOTENCY_SCOPE = "B3_FUNNEL_VIEW";

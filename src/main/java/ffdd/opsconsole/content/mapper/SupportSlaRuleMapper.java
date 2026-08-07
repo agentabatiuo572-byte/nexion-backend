@@ -22,7 +22,7 @@ public interface SupportSlaRuleMapper extends BaseMapper<SupportSlaRuleEntity> {
               updated_at AS updatedAt
             FROM nx_support_sla_rule
             WHERE is_deleted=0 AND status=1
-            ORDER BY FIELD(category,'withdrawal','deposit','kyc','hardware','account','earnings','genesis','technical','other'), category
+            ORDER BY FIELD(category,'withdrawal','deposit','hardware','account','earnings','genesis','technical','other'), category
             """)
     List<SupportSlaView> listActive();
 

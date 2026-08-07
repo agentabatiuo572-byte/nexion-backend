@@ -61,12 +61,11 @@ public class OpsNotificationCampaignService {
             new NotificationAudienceOption("/pages/team/team", "赚取 · 团队"),
             new NotificationAudienceOption("/pages/staking/staking", "赚取 · 质押"),
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
-            new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"),
-            new NotificationAudienceOption("/pages/me/kyc", "我的 · 身份认证"));
+            new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
             new NotificationSwipeRouteView("/reinvest", "commission", "佣金到账 -> 复投"),
             new NotificationSwipeRouteView("/me/bills", "refund", "退款到账 -> 账单"),
-            new NotificationSwipeRouteView("-", "system", "维护公告 / KYC 提醒 / 监管通告 / 运营公告 - system kind 无转化跳转"));
+            new NotificationSwipeRouteView("-", "system", "维护公告 / 监管通告 / 运营公告 - system kind 无转化跳转"));
     private static final DateTimeFormatter CAMPAIGN_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter SCHEDULE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");

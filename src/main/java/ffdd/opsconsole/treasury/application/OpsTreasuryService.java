@@ -87,7 +87,6 @@ public class OpsTreasuryService {
     private static final String B_SCOPE_IDEMPOTENCY_SCOPE = "TREASURY_B_SCOPE_UPDATE";
     private static final String B_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_THRESHOLD_UPDATE";
     private static final String B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_BANKRUN_THRESHOLD";
-    private static final int B5_K5_RECENT_ALERT_LIMIT = 5;
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现闸"),
             new GateSeed("exchange", "兑换闸"),
@@ -1272,7 +1271,6 @@ public class OpsTreasuryService {
                     "m", "陈旧模型分未计入 B5 异常账户与风险分布",
                     "href", "/risk/scoring"));
         }
-        feed.addAll(k5RecentAlertFeed(since));
         RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(since);
         if (tamperRadar.signalCount() > 0) {
             feed.add(section(
@@ -1318,40 +1316,7 @@ public class OpsTreasuryService {
                         "nx_admin_risk_score_user:fresh-current-model",
                         "nx_admin_risk_score_model:active-thresholds",
                         "nx_admin_risk_score_override:active",
-                        "nx_admin_risk_kyc_alert:active-recent",
                         "nx_risk_signal:TAMPER_DETECTED"));
-    }
-
-    private List<Map<String, Object>> k5RecentAlertFeed(LocalDateTime since) {
-        return ledgerRepository.recentK5KycAlerts(since, B5_K5_RECENT_ALERT_LIMIT).stream()
-                .filter(row -> decimal(row.get("isDeleted")).signum() == 0)
-                .filter(row -> isK5FeedAlert(String.valueOf(row.getOrDefault("eventKey", ""))))
-                .filter(row -> StringUtils.hasText(String.valueOf(row.getOrDefault("title", ""))))
-                .limit(B5_K5_RECENT_ALERT_LIMIT)
-                .map(row -> {
-                    String tone = String.valueOf(row.getOrDefault("tone", "")).trim().toLowerCase(Locale.ROOT);
-                    String severity = "bad".equals(tone) ? "p1" : "warn".equals(tone) ? "p2" : "p3";
-                    String severityLabel = "p1".equals(severity) ? "高风险" : "p2".equals(severity) ? "中风险" : "提示";
-                    String body = String.valueOf(row.getOrDefault("body", "")).trim();
-                    String timeText = String.valueOf(row.getOrDefault("timeText", "")).trim();
-                    return section(
-                            "sev", severity,
-                            "severityLabel", severityLabel,
-                            "t", String.valueOf(row.get("title")).trim(),
-                            "m", String.join(" · ", java.util.stream.Stream.of("K5", severityLabel, body, timeText)
-                                    .filter(StringUtils::hasText).toList()),
-                            "domain", "K5",
-                            "eventKey", String.valueOf(row.get("eventKey")),
-                            "route", "/risk/kyc-review",
-                            "href", "/risk/kyc-review");
-                })
-                .toList();
-    }
-
-    private boolean isK5FeedAlert(String eventKey) {
-        return eventKey.startsWith("threshold-hit:")
-                || eventKey.startsWith("sla-breach:")
-                || eventKey.startsWith("large-withdraw-burst:");
     }
 
     private List<Map<String, Object>> riskGates() {

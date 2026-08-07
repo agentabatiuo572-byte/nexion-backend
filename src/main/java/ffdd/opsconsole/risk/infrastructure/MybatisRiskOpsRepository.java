@@ -7,8 +7,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import lombok.RequiredArgsConstructor;
-import ffdd.opsconsole.risk.domain.KycReviewTicketContext;
-import ffdd.opsconsole.risk.domain.KycBusinessDayDeadline;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageStatView;
@@ -56,13 +54,12 @@ import org.springframework.util.StringUtils;
 public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
     private static final List<String> K4_DIMENSION_KEYS = List.of(
-            "multiAccount", "arbitrage", "kycStatus",
-            "withdrawVelocity", "accountAge", "anomalyBehavior");
+            "multiAccount", "arbitrage", "withdrawVelocity", "accountAge", "anomalyBehavior");
     private static final Map<String, Integer> K4_DEFAULT_WEIGHTS = Map.of(
-            "multiAccount", 25, "arbitrage", 20, "kycStatus", 20,
-            "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10);
+            "multiAccount", 30, "arbitrage", 25,
+            "withdrawVelocity", 20, "accountAge", 10, "anomalyBehavior", 15);
     private static final Map<String, Boolean> K4_DEFAULT_SOURCES = Map.of(
-            "multiAccount", true, "arbitrage", true, "kycStatus", true,
+            "multiAccount", true, "arbitrage", true,
             "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true);
     private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
@@ -95,50 +92,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         ensureMultiAccountClusterColumns();
         mapper.createIpWhitelistTable();
         ensureK1Params();
-        mapper.createKycReviewTicketTable();
-        mapper.createKycReviewSourceTable();
-        mapper.createK4KycReviewTriggerStateTable();
-        tryAlter(mapper::addKycTicketAmountColumn);
-        tryAlter(mapper::addKycTicketDueAtColumn);
-        tryAlter(mapper::addKycTicketVersionColumn);
-        mapper.mergeDuplicateOpenKycTickets();
-        ensureKycOpenTicketBoundary();
-        mapper.promoteTriggeredKycTickets();
-        mapper.backfillKycReviewSources();
-        mapper.createKycAlertTable();
-        tryAlter(mapper::addKycAlertEventKeyColumn);
-        tryAlter(mapper::addKycAlertEventUniqueKey);
-        mapper.createKycAlertSubscriptionTable();
-        ensureK5Params();
-    }
-
-    private void ensureKycOpenTicketBoundary() {
-        int columnCount = mapper.countKycTicketOpenUserKeyColumn();
-        String expression = columnCount == 0 ? null : mapper.kycTicketOpenUserKeyExpression();
-        boolean coversBothOpenStates = expression != null
-                && expression.toLowerCase(Locale.ROOT).contains("triggered")
-                && expression.toLowerCase(Locale.ROOT).contains("in-review");
-        if (columnCount > 0 && !coversBothOpenStates) {
-            if (mapper.countKycTicketOpenUserUniqueKey() > 0) {
-                mapper.dropKycTicketOpenUserUniqueKey();
-            }
-            mapper.dropKycTicketOpenUserKeyColumn();
-            columnCount = 0;
-        }
-        if (columnCount == 0) {
-            mapper.addKycTicketOpenUserKeyColumn();
-        }
-        if (mapper.countKycTicketOpenUserUniqueKey() == 0) {
-            mapper.addKycTicketOpenUserUniqueKey();
-        }
-        String verifiedExpression = mapper.kycTicketOpenUserKeyExpression();
-        if (mapper.countKycTicketOpenUserKeyColumn() != 1
-                || verifiedExpression == null
-                || !verifiedExpression.toLowerCase(Locale.ROOT).contains("triggered")
-                || !verifiedExpression.toLowerCase(Locale.ROOT).contains("in-review")
-                || mapper.countKycTicketOpenUserUniqueKey() != 1) {
-            throw new IllegalStateException("K5_OPEN_TICKET_UNIQUE_BOUNDARY_MISSING");
-        }
     }
 
     private void ensureK4Schema() {
@@ -376,6 +329,21 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public Optional<RiskRuleView> findWithdrawRule(String ruleId) {
         return Optional.ofNullable(mapper.findWithdrawRule(ruleId));
+    }
+
+    @Override
+    public void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule) {
+        if (!StringUtils.hasText(withdrawalNo) || rule == null || !StringUtils.hasText(rule.ruleId())) {
+            return;
+        }
+        mapper.insertWithdrawHit(
+                withdrawalNo.trim(),
+                StringUtils.hasText(userNo) ? userNo.trim() : "",
+                money(amount),
+                rule.ruleId(),
+                StringUtils.hasText(rule.dimension()) ? rule.dimension() : "提现规则",
+                StringUtils.hasText(rule.action()) ? rule.action() : "manual",
+                "刚刚");
     }
 
     @Override
@@ -783,7 +751,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     public Optional<RiskScoreRawInput> scoringInput(String userNo) {
         return Optional.ofNullable(mapper.scoreRawInput(userNo)).map(row -> new RiskScoreRawInput(
                 row.userNo(), row.multiAccountClusterSize(), row.multiAccountFraud(),
-                row.arbitrageSignals(), row.severeArbitrage(), row.kycStatus(),
+                row.arbitrageSignals(), row.severeArbitrage(),
                 row.withdrawalCount24h(), row.withdrawalAmount24h(),
                 row.withdrawalCount7d(), row.withdrawalAmount7d(),
                 row.withdrawalBaselineDailyCount(), row.withdrawalBaselineDailyAmount(), row.maxWithdrawal24h(),
@@ -1145,366 +1113,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         }
     }
 
-    @Override
-    public Map<String, Object> kycReviewOverview(Integer ticketPageNum, Integer ticketPageSize, String ticketFilter) {
-        int pageNum = normalizePageNum(ticketPageNum);
-        int pageSize = normalizePageSize(ticketPageSize, 5, 50);
-        int offset = (pageNum - 1) * pageSize;
-        long ticketTotal = mapper.countKycTicketsByFilter(ticketFilter);
-        List<RiskOpsMapper.KycReviewTicketRecord> tickets = mapper.pageKycReviewTickets(ticketFilter, offset, pageSize);
-        long openTickets = mapper.countKycOpenTickets();
-        long overdue = mapper.countOverdueKycTickets();
-        Map<String, Object> stats = new LinkedHashMap<>();
-        stats.put("reviewOpenBase", openTickets);
-        stats.put("openTickets", openTickets);
-        stats.put("reviewOverdue", overdue);
-        stats.put("reviewDecidedMonth", mapper.countKycDecidedThisMonth());
-        stats.put("reviewDecidedPass", mapper.countKycPassedThisMonth());
-        stats.put("reviewFrozenUsd", mapper.sumFrozenWithdrawalUsdt());
-
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("stats", stats);
-        response.put("params", mapper.riskParams("k5"));
-        response.put("tickets", new PageResult<>(ticketTotal, pageNum, pageSize, tickets));
-        response.put("alerts", List.of());
-        response.put("sources", List.of("nx_admin_risk_kyc_review_ticket", "nx_admin_risk_kyc_alert", "nx_admin_risk_param:k5"));
-        return response;
-    }
-
-    @Override
-    public Optional<Map<String, Object>> updateKycReviewParam(String key, String value, long expectedVersion) {
-        if (mapper.updateK5RiskParam(key, value, expectedVersion) == 0) return Optional.empty();
-        int recomputedTickets = 0;
-        if ("reviewSlaDays".equals(key)) {
-            recomputedTickets = mapper.recomputeOpenKycDueAt(Integer.parseInt(value));
-        }
-        Map<String, Object> overview = new LinkedHashMap<>(kycReviewOverview());
-        overview.put("slaRecomputedTickets", recomputedTickets);
-        return Optional.of(overview);
-    }
-
-    @Override
-    public boolean updateKycReviewTicketStatus(String ticketId, String status, long expectedVersion,
-                                               String reasonCode, String reason, String operator) {
-        return mapper.updateKycReviewTicketStatus(ticketId, status, expectedVersion, reasonCode, reason, operator) > 0;
-    }
-
-    @Override
-    public Optional<KycReviewTicketContext> findKycReviewTicket(String ticketId) {
-        return Optional.ofNullable(mapper.findKycReviewTicket(ticketId))
-                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
-    }
-
-    @Override
-    public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUser(String userNo) {
-        return Optional.ofNullable(mapper.findOpenKycReviewTicketByUser(userNo))
-                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
-    }
-
-    @Override
-    public Optional<KycReviewTicketContext> findOpenKycReviewTicketByUserForUpdate(String userNo) {
-        return Optional.ofNullable(mapper.findOpenKycReviewTicketByUserForUpdate(userNo))
-                .map(row -> new KycReviewTicketContext(row.id(), row.type(), row.user(), row.st(), row.infoJson(), row.version()));
-    }
-
-    @Override
-    public boolean mergeOpenKycReviewTicket(String ticketId, long expectedVersion, String reason, String operator) {
-        boolean merged = mapper.mergeOpenKycReviewTicket(ticketId, expectedVersion, reason, operator) > 0;
-        if (merged) {
-            mapper.insertKycAlert("threshold-hit:" + ticketId + ":" + (expectedVersion + 1), "warn",
-                    "KYC 复审追加触发 · " + ticketId, reason, "刚刚");
-        }
-        return merged;
-    }
-
-    @Override
-    public void linkKycReviewSource(String ticketId, String sourceDomain, String sourceNo) {
-        if (!StringUtils.hasText(ticketId) || !StringUtils.hasText(sourceDomain) || !StringUtils.hasText(sourceNo)) {
-            throw new IllegalArgumentException("K5_REVIEW_SOURCE_REQUIRED");
-        }
-        mapper.insertKycReviewSource(ticketId.trim(), sourceDomain.trim().toUpperCase(Locale.ROOT), sourceNo.trim());
-    }
-
-    @Override
-    public List<RiskOpsRepository.KycReviewSource> kycReviewSources(String ticketId) {
-        if (!StringUtils.hasText(ticketId)) return List.of();
-        return mapper.kycReviewSources(ticketId.trim()).stream()
-                .map(row -> new RiskOpsRepository.KycReviewSource(row.sourceDomain(), row.sourceNo()))
-                .toList();
-    }
-
-    @Override
-    public Map<String, Object> kycAlertSubscription(String operator) {
-        RiskOpsMapper.KycAlertSubscriptionRecord row = mapper.findKycAlertSubscription(operator);
-        return row == null ? defaultSubscription(operator) : subscription(row);
-    }
-
-    @Override
-    public List<Map<String, Object>> kycAlerts(List<String> alertTypes) {
-        return mapper.kycAlerts(alertTypes).stream().map(row -> {
-            Map<String, Object> alert = new LinkedHashMap<>();
-            alert.put("eventKey", row.eventKey());
-            alert.put("tone", row.tone());
-            alert.put("title", row.title());
-            alert.put("body", row.body());
-            alert.put("timeText", row.timeText());
-            return alert;
-        }).toList();
-    }
-
-    @Override
-    public Optional<Map<String, Object>> updateKycAlertSubscription(
-            String operator, List<String> alertTypes, List<String> channels, long expectedVersion) {
-        String alertTypesJson = json(alertTypes);
-        String channelsJson = json(channels);
-        RiskOpsMapper.KycAlertSubscriptionRecord current = mapper.findKycAlertSubscription(operator);
-        if (current == null) {
-            if (expectedVersion != 0) return Optional.empty();
-            try {
-                mapper.insertKycAlertSubscription(operator, alertTypesJson, channelsJson);
-                RiskOpsMapper.KycAlertSubscriptionRecord created = mapper.findKycAlertSubscription(operator);
-                if (created == null) throw new IllegalStateException("K5_ALERT_SUBSCRIPTION_WRITE_NOT_VISIBLE");
-                return Optional.of(subscription(created));
-            } catch (org.springframework.dao.DuplicateKeyException race) {
-                return Optional.empty();
-            }
-        }
-        if (mapper.updateKycAlertSubscription(operator, alertTypesJson, channelsJson, expectedVersion) == 0) {
-            return Optional.empty();
-        }
-        RiskOpsMapper.KycAlertSubscriptionRecord updated = mapper.findKycAlertSubscription(operator);
-        if (updated == null) throw new IllegalStateException("K5_ALERT_SUBSCRIPTION_WRITE_NOT_VISIBLE");
-        return Optional.of(subscription(updated));
-    }
-
-    @Override
-    public int generateOverdueKycAlerts() {
-        return mapper.insertOverdueKycAlerts();
-    }
-
-    @Override
-    public int generateLargeWithdrawalBurstKycAlerts() {
-        return mapper.insertLargeWithdrawalBurstKycAlert();
-    }
-
-    @Override
-    public void createManualKycReviewTicket(String ticketId, String userNo, String reason, String operator) {
-        mapper.insertKycReviewTicket(
-                ticketId,
-                "手动触发",
-                userNo,
-                "—",
-                null,
-                "—",
-                "待确认(手动补触发)",
-                "in-review",
-                0.02,
-                "剩 7 天",
-                "[[\"触发原因\",\"手动补触发:" + escapeJson(reason) + "\"],[\"触发方式\",\"风控人工 · 后续裁决仍需操作确认\"],[\"实名材料\",\"待调取\"]]",
-                "[[\"刚刚\",\"手动补触发 · 进入队列\",\"\"]]",
-                kycDueAt());
-        thresholdAlert(ticketId, userNo, "手动触发");
-    }
-
-    @Override
-    public int kycReviewTriggerScore() {
-        return kycParamInt("reviewTriggerScore", 85);
-    }
-
-    @Override
-    public int kycLargeWithdrawReviewUsdt() {
-        return kycParamInt("largeWithdrawReviewUsdt", 1_000);
-    }
-
-    @Override
-    public int kycLargeExchangeReviewUsdt() {
-        return kycLargeWithdrawReviewUsdt();
-    }
-
-    @Override
-    public int kycReviewSlaDays() {
-        return kycParamInt("reviewSlaDays", 7);
-    }
-
-    @Override
-    public void recordWithdrawRuleHit(String withdrawalNo, String userNo, BigDecimal amount, RiskRuleView rule) {
-        if (!StringUtils.hasText(withdrawalNo) || rule == null || !StringUtils.hasText(rule.ruleId())) {
-            return;
-        }
-        mapper.insertWithdrawHit(
-                withdrawalNo.trim(),
-                StringUtils.hasText(userNo) ? userNo.trim() : "",
-                money(amount),
-                rule.ruleId(),
-                StringUtils.hasText(rule.dimension()) ? rule.dimension() : "提现规则",
-                StringUtils.hasText(rule.action()) ? rule.action() : "manual",
-                "刚刚");
-    }
-
-    @Override
-    public void recordWithdrawRuleDecision(
-            ffdd.opsconsole.risk.facade.WithdrawalRiskContext context,
-            ffdd.opsconsole.risk.facade.WithdrawalRiskDecision decision) {
-        if (context == null || decision == null || !decision.held()) return;
-        String ruleCodes = decision.matchedRules().stream()
-                .map(RiskRuleView::ruleId)
-                .filter(StringUtils::hasText)
-                .collect(java.util.stream.Collectors.joining(","));
-        int riskScore = switch (decision.action()) {
-            case "freeze" -> 90;
-            case "manual" -> 70;
-            default -> 40;
-        };
-        mapper.upsertWithdrawRuleDecision(
-                "K3-" + context.withdrawalNo(), context.userId(), context.withdrawalNo(),
-                decision.action().toUpperCase(java.util.Locale.ROOT),
-                "K3 " + decision.action() + " by " + decision.primaryRuleId(),
-                riskScore, ruleCodes,
-                "{\"action\":\"" + escapeJson(decision.action()) + "\",\"primaryRuleId\":\""
-                        + escapeJson(decision.primaryRuleId()) + "\"}");
-    }
-
-    @Override
-    public boolean hasOpenKycReviewTicket(String userNo) {
-        return mapper.countOpenKycTicketsByUser(userNo) > 0;
-    }
-
-    @Override
-    public void createScoreTriggeredKycReviewTicket(String ticketId, String userNo, int score, int threshold, String reason, String operator) {
-        createScoreTriggeredKycReviewTicket(
-                ticketId, userNo, score, threshold, "K4_SCORE_OVERRIDE", reason, operator);
-    }
-
-    @Override
-    public void createScoreTriggeredKycReviewTicket(
-            String ticketId, String userNo, int score, int threshold,
-            String source, String reason, String operator) {
-        mapper.insertKycReviewTicket(
-                ticketId,
-                "风险分触发",
-                userNo,
-                "—",
-                null,
-                "—",
-                "待确认(风险分过线)",
-                "in-review",
-                0.02,
-                "剩 7 天",
-                "[[\"触发原因\",\"K4有效风险分 " + score + " >= " + threshold + "\"],[\"触发方式\",\"" + escapeJson(source) + "\"],[\"触发说明\",\"" + escapeJson(reason) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"]]",
-                "[[\"刚刚\",\"" + escapeJson(source) + " · 自动进入复审队列\",\"\"]]",
-                kycDueAt());
-        thresholdAlert(ticketId, userNo, "K4 风险分过线");
-    }
-
-    @Override
-    public boolean transitionK4KycReviewTriggerState(
-            String userNo, int effectiveScore, int threshold, String transitionId) {
-        boolean above = effectiveScore >= threshold;
-        RiskOpsMapper.K4KycTriggerStateRecord state = mapper.findK4KycTriggerStateForUpdate(userNo);
-        if (state == null) {
-            try {
-                mapper.insertK4KycTriggerState(
-                        userNo, above, effectiveScore, threshold, transitionId, above ? 1L : 0L);
-                return above;
-            } catch (org.springframework.dao.DuplicateKeyException race) {
-                state = mapper.findK4KycTriggerStateForUpdate(userNo);
-                if (state == null) throw race;
-            }
-        }
-        boolean crossed = !Boolean.TRUE.equals(state.aboveThreshold()) && above;
-        int updated = mapper.updateK4KycTriggerState(
-                userNo, above, effectiveScore, threshold, transitionId, crossed ? 1 : 0, state.version());
-        if (updated != 1) {
-            throw new IllegalStateException("K4_K5_TRIGGER_STATE_CONCURRENT_UPDATE");
-        }
-        return crossed;
-    }
-
-    @Override
-    public List<String> scoreUserNosNeedingKycTriggerThresholdSync(int threshold, int limit) {
-        return mapper.scoreUserNosNeedingKycTriggerThresholdSync(
-                threshold, Math.max(1, Math.min(limit, K4ScoreBackfillInitializer.CHUNK_SIZE)));
-    }
-
-    @Override
-    public void createLargeWithdrawalKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String withdrawalNo,
-                                                     String kycStatus, String reason, String operator) {
-        int threshold = kycLargeWithdrawReviewUsdt();
-        mapper.insertKycReviewTicket(
-                ticketId,
-                "大额提现",
-                userNo,
-                money(amountUsdt),
-                amountUsdt,
-                "—",
-                kycText(kycStatus),
-                "in-review",
-                0.02,
-                "剩 7 天",
-                "[[\"触发原因\",\"单笔提现 " + money(amountUsdt) + " >= $" + threshold + "\"],"
-                        + "[\"提现单\",\"" + escapeJson(withdrawalNo) + " · K5 复审 hold\"],"
-                        + "[\"sourceDomain\",\"D2\"],[\"sourceNo\",\"" + escapeJson(withdrawalNo) + "\"],"
-                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
-                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
-                "[[\"刚刚\",\"D2 大额提现触发 K5 复审\",\"warn\"]]",
-                kycDueAt());
-        linkKycReviewSource(ticketId, "D2", withdrawalNo);
-        thresholdAlert(ticketId, userNo, "D2 大额提现");
-    }
-
-    @Override
-    public void createLargeExchangeKycReviewTicket(String ticketId, String userNo, BigDecimal amountUsdt, String exchangeNo,
-                                                   String kycStatus, String reason, String operator) {
-        int threshold = kycLargeExchangeReviewUsdt();
-        mapper.insertKycReviewTicket(
-                ticketId,
-                "大额兑换",
-                userNo,
-                money(amountUsdt),
-                amountUsdt,
-                "—",
-                kycText(kycStatus),
-                "in-review",
-                0.02,
-                "剩 7 天",
-                "[[\"触发原因\",\"单笔兑换 " + money(amountUsdt) + " >= $" + threshold + "\"],"
-                        + "[\"兑换单\",\"" + escapeJson(exchangeNo) + " · K5 复审 hold\"],"
-                        + "[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + escapeJson(exchangeNo) + "\"],"
-                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
-                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
-                "[[\"刚刚\",\"G2 大额兑换触发 K5 复审\",\"warn\"]]",
-                kycDueAt());
-        linkKycReviewSource(ticketId, "G2", exchangeNo);
-        thresholdAlert(ticketId, userNo, "G2 大额兑换");
-    }
-
-    @Override
-    public void createCumulativeExchangeKycReviewTicket(
-            String ticketId, String userNo, BigDecimal amountUsdt, BigDecimal cumulativeUsdt,
-            BigDecimal thresholdUsdt, String exchangeNo, String kycStatus, String reason, String operator) {
-        mapper.insertKycReviewTicket(
-                ticketId,
-                "累计过线",
-                userNo,
-                money(amountUsdt),
-                amountUsdt,
-                "$" + money(cumulativeUsdt),
-                kycText(kycStatus),
-                "in-review",
-                0.02,
-                "剩 7 天",
-                "[[\"触发原因\",\"G2 终身累计兑换 $" + money(cumulativeUsdt) + " >= $" + money(thresholdUsdt) + "\"],"
-                        + "[\"本次兑换\",\"$" + money(amountUsdt) + "\"],"
-                        + "[\"兑换单\",\"" + escapeJson(exchangeNo) + " · K5 复审 hold\"],"
-                        + "[\"sourceDomain\",\"G2\"],[\"sourceNo\",\"" + escapeJson(exchangeNo) + "\"],"
-                        + "[\"实名状态\",\"" + escapeJson(kycStatus) + "\"],[\"操作人\",\"" + escapeJson(operator) + "\"],"
-                        + "[\"触发说明\",\"" + escapeJson(reason) + "\"]]",
-                "[[\"刚刚\",\"G2 累计兑换达线触发 K5 复审\",\"warn\"]]",
-                kycDueAt());
-        linkKycReviewSource(ticketId, "G2", exchangeNo);
-        thresholdAlert(ticketId, userNo, "G2 累计兑换");
-    }
-
     private int normalizePageNum(Integer pageNum) {
         return pageNum == null || pageNum < 1 ? 1 : pageNum;
     }
@@ -1561,7 +1169,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         List<String[]> metadata = List.of(
                 new String[]{"multiAccount", "多账户", "K1 多账户簇"},
                 new String[]{"arbitrage", "套利与刷量", "K2 套利信号"},
-                new String[]{"kycStatus", "KYC 状态", "C4 KYC 权威状态"},
                 new String[]{"withdrawVelocity", "提现速度", "24 小时提现事实"},
                 new String[]{"accountAge", "账户年龄", "用户注册时间"},
                 new String[]{"anomalyBehavior", "异常行为", "行为与篡改事件"});
@@ -1614,74 +1221,13 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     private int intValue(String value, int fallback) {
         if (!StringUtils.hasText(value)) {
-            return intFallback(fallback);
+            return fallback;
         }
         try {
             return Integer.parseInt(value.trim());
         } catch (NumberFormatException ex) {
-            return intFallback(fallback);
+            return fallback;
         }
-    }
-
-    private int scoreLineValue(String value, int fallback) {
-        if (!StringUtils.hasText(value)) {
-            return intFallback(fallback);
-        }
-        String digits = value.replaceAll("[^0-9]", "");
-        return intValue(digits, fallback);
-    }
-
-    private int kycParamInt(String key, int fallback) {
-        return mapper.riskParams("k5").stream()
-                .filter(param -> key.equals(param.key()))
-                .findFirst()
-                .map(param -> scoreLineValue(param.value(), fallback))
-                .orElseGet(() -> intFallback(fallback));
-    }
-
-    private int intFallback(int fallback) {
-        return fallback;
-    }
-
-    private java.time.LocalDateTime kycDueAt() {
-        return KycBusinessDayDeadline.addWorkingDays(java.time.LocalDateTime.now(), kycReviewSlaDays());
-    }
-
-    private void thresholdAlert(String ticketId, String userNo, String source) {
-        mapper.insertKycAlert("threshold-hit:" + ticketId, "warn", "KYC 复审已触发 · " + ticketId,
-                userNo + " · " + source, "刚刚");
-    }
-
-    private void ensureK5Params() {
-        mapper.upsertK5RiskParam("reviewTriggerScore", "风险分复审线", ">= 85", "分",
-                "K4 有效风险分达到该值时进入 KYC 复审", "可调范围 70-100", 0);
-        mapper.upsertK5RiskParam("largeWithdrawReviewUsdt", "大额提现复审线", ">= $1,000", "USDT",
-                "单笔提现达到该值时生成复审工单", "可调范围 100-50000", 1);
-        mapper.upsertK5RiskParam("cumulativeKycThresholdUsdt", "累计交易 KYC 线", "$100", "USDT",
-                "累计交易达到该值时检查 KYC", "可调范围 50-1000", 2);
-        mapper.upsertK5RiskParam("reviewSlaDays", "复审 SLA", "7", "天",
-                "复审工单截止时间", "可调范围 1-15 个工作日", 3);
-        mapper.deactivateLegacyK5RiskParam();
-    }
-
-    private Map<String, Object> subscription(RiskOpsMapper.KycAlertSubscriptionRecord row) {
-        if (row == null) {
-            return Map.of("alertTypes", List.of(), "channels", List.of(), "version", 0L);
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("alertTypes", parseMap(row.alertTypesJson(), new TypeReference<List<String>>() {}, List.of()));
-        result.put("channels", parseMap(row.channelsJson(), new TypeReference<List<String>>() {}, List.of()));
-        result.put("version", row.version() == null ? 0L : row.version());
-        return result;
-    }
-
-    private Map<String, Object> defaultSubscription(String operator) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("operator", operator);
-        result.put("alertTypes", List.of("sla-breach"));
-        result.put("channels", List.of("in-app"));
-        result.put("version", 0L);
-        return result;
     }
 
     private String money(BigDecimal amount) {
@@ -1689,12 +1235,6 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             return "$0";
         }
         return "$" + amount.stripTrailingZeros().toPlainString();
-    }
-
-    private String kycText(String kycStatus) {
-        return StringUtils.hasText(kycStatus)
-                ? escapeJson(kycStatus.trim() + "(待复审)")
-                : "待确认(待复审)";
     }
 
     private String escapeJson(String value) {

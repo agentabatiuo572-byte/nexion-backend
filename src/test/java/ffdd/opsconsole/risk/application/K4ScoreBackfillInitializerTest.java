@@ -36,38 +36,28 @@ class K4ScoreBackfillInitializerTest {
                 .thenReturn(List.of("U00000052"));
         when(repository.findScoreUser("U00000052")).thenReturn(Optional.of(legacy));
         when(repository.scoringInput("U00000052")).thenReturn(Optional.of(new RiskScoreRawInput(
-                "U00000052", 4, false, 3, false, "REJECTED",
+                "U00000052", 4, false, 3, false,
                 5, new BigDecimal("12000"), 3, 2, true)));
-        when(repository.refreshScoreProjection(eq("U00000052"), eq(4L), eq(model), eq(83), any()))
+        when(repository.refreshScoreProjection(eq("U00000052"), eq(4L), eq(model), eq(82), any()))
                 .thenAnswer(invocation -> Optional.of(new RiskScoreUserView(
-                        "U00000052", 83, 83, false, "高风险", "bad", "k4-v1", 5L,
+                        "U00000052", 82, 82, false, "高风险", "bad", "k4-v1", 5L,
                         "2026-07-22 20:00:00", "刚刚", invocation.getArgument(4))));
         EventOutboxService eventOutboxService = mock(EventOutboxService.class);
-        K4KycReviewTriggerService triggerService = mock(K4KycReviewTriggerService.class);
         K4ScoreBackfillTransactionExecutor transactionExecutor = immediateTransactionExecutor();
 
         K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
-                repository, new K4RiskScorer(), eventOutboxService, triggerService, transactionExecutor);
+                repository, new K4RiskScorer(), eventOutboxService, transactionExecutor);
         initializer.backfillCanonicalScores();
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<RiskScoreContributionView>> captor = ArgumentCaptor.forClass(List.class);
-        verify(repository).refreshScoreProjection(eq("U00000052"), eq(4L), eq(model), eq(83), captor.capture());
+        verify(repository).refreshScoreProjection(eq("U00000052"), eq(4L), eq(model), eq(82), captor.capture());
         verify(eventOutboxService).publish(
                 eq("RISK_SCORE_USER"), eq("U00000052"), eq("risk.score_updated"), any());
-        verify(triggerService).triggerIfThresholdReached(
-                eq(legacy),
-                org.mockito.ArgumentMatchers.argThat(user -> "U00000052".equals(user.userNo())
-                        && user.effectiveScore() == 83),
-                eq(K4KycReviewTriggerService.SOURCE_FACT_REFRESH),
-                eq("K4 source facts or stale projection required recompute"),
-                eq("system"),
-                eq("k4-fact-refresh:1:U00000052:5"));
         verify(repository).synchronizeScoringUsers();
         assertThat(captor.getValue()).extracting(RiskScoreContributionView::dimKey)
                 .containsExactly(
-                        "multiAccount", "arbitrage", "kycStatus",
-                        "withdrawVelocity", "accountAge", "anomalyBehavior");
+                        "multiAccount", "arbitrage", "withdrawVelocity", "accountAge", "anomalyBehavior");
         assertThat(java.util.Arrays.stream(K4ScoreBackfillInitializer.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(
                         org.springframework.transaction.annotation.Transactional.class)))
@@ -84,7 +74,7 @@ class K4ScoreBackfillInitializerTest {
         RiskOpsRepository repository = mock(RiskOpsRepository.class);
         RiskScoreModelView model = model();
         List<RiskScoreContributionView> canonicalRows = List.of(
-                contribution("multiAccount"), contribution("arbitrage"), contribution("kycStatus"),
+                contribution("multiAccount"), contribution("arbitrage"),
                 contribution("withdrawVelocity"), contribution("accountAge"), contribution("anomalyBehavior"));
         RiskScoreUserView canonical = new RiskScoreUserView(
                 "U00000053", 0, 0, false, "低风险", "good", "k4-v1", 8L,
@@ -95,22 +85,17 @@ class K4ScoreBackfillInitializerTest {
                 .thenReturn(List.of("U00000053"));
         when(repository.findScoreUser("U00000053")).thenReturn(Optional.of(canonical));
         when(repository.scoringInput("U00000053")).thenReturn(Optional.of(new RiskScoreRawInput(
-                "U00000053", 0, false, 0, false, "PASSED",
+                "U00000053", 0, false, 0, false,
                 0, BigDecimal.ZERO, 180, 0, false)));
         when(repository.refreshScoreProjection(eq("U00000053"), eq(8L), eq(model), any(Integer.class), any()))
                 .thenReturn(Optional.of(canonical));
-        K4KycReviewTriggerService triggerService = mock(K4KycReviewTriggerService.class);
         K4ScoreBackfillTransactionExecutor transactionExecutor = immediateTransactionExecutor();
 
         K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
-                repository, new K4RiskScorer(), mock(EventOutboxService.class), triggerService, transactionExecutor);
+                repository, new K4RiskScorer(), mock(EventOutboxService.class), transactionExecutor);
         initializer.backfillCanonicalScores();
 
         verify(repository).refreshScoreProjection(eq("U00000053"), eq(8L), eq(model), any(Integer.class), any());
-        verify(triggerService).triggerIfThresholdReached(
-                eq(canonical), eq(canonical), eq(K4KycReviewTriggerService.SOURCE_FACT_REFRESH),
-                eq("K4 source facts or stale projection required recompute"), eq("system"),
-                eq("k4-fact-refresh:1:U00000053:8"));
     }
 
     @Test
@@ -125,7 +110,7 @@ class K4ScoreBackfillInitializerTest {
                 .thenReturn(List.of("U00000054"));
         when(repository.findScoreUser("U00000054")).thenReturn(Optional.of(current));
         when(repository.scoringInput("U00000054")).thenReturn(Optional.of(new RiskScoreRawInput(
-                "U00000054", 0, false, 0, false, "PASSED", 0, BigDecimal.ZERO, 180, 0, false)));
+                "U00000054", 0, false, 0, false, 0, BigDecimal.ZERO, 180, 0, false)));
         when(repository.refreshScoreProjection(eq("U00000054"), eq(2L), eq(model), any(Integer.class), any()))
                 .thenReturn(Optional.of(current));
         K4ScoreBackfillTransactionExecutor transactionExecutor = mock(K4ScoreBackfillTransactionExecutor.class);
@@ -139,8 +124,7 @@ class K4ScoreBackfillInitializerTest {
             return attempt.get();
         }).when(transactionExecutor).execute(any());
         K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
-                repository, new K4RiskScorer(), mock(EventOutboxService.class),
-                mock(K4KycReviewTriggerService.class), transactionExecutor);
+                repository, new K4RiskScorer(), mock(EventOutboxService.class), transactionExecutor);
 
         initializer.backfillCanonicalScores();
 
@@ -164,10 +148,10 @@ class K4ScoreBackfillInitializerTest {
         return new RiskScoreModelView(
                 1L, 0L, "active",
                 Map.of(
-                        "multiAccount", 25, "arbitrage", 20, "kycStatus", 20,
-                        "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10),
+                        "multiAccount", 30, "arbitrage", 25,
+                        "withdrawVelocity", 20, "accountAge", 10, "anomalyBehavior", 15),
                 Map.of(
-                        "multiAccount", true, "arbitrage", true, "kycStatus", true,
+                        "multiAccount", true, "arbitrage", true,
                         "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true),
                 40, 70, 85, "initial", "system", "system", "now", "now");
     }

@@ -22,7 +22,7 @@ public class UserSearchFacadeAdapter implements UserSearchFacade {
         if (!StringUtils.hasText(q)) {
             return List.of();
         }
-        ApiResult<List<UserAccountView>> result = userService.profiles(UserQueryRequest.basic(q, null, null, null, null, null, limit));
+        ApiResult<List<UserAccountView>> result = userService.profiles(UserQueryRequest.basic(q, null, null, null, null, limit));
         if (result == null || result.getCode() != 0 || result.getData() == null) {
             return List.of();
         }
@@ -47,8 +47,7 @@ public class UserSearchFacadeAdapter implements UserSearchFacade {
         return join(
                 "用户ID " + user.id(),
                 user.phoneMasked(),
-                user.status(),
-                "KYC " + user.kycStatus());
+                user.status());
     }
 
     private String join(String... values) {

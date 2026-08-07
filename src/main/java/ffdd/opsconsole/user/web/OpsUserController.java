@@ -17,8 +17,6 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentDetail;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
-import ffdd.opsconsole.user.domain.UserKycLedgerRow;
-import ffdd.opsconsole.user.domain.UserKycOverview;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserProfileListView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
@@ -34,11 +32,6 @@ import ffdd.opsconsole.user.dto.UserAssetAdjustmentReviewRequest;
 import ffdd.opsconsole.user.dto.UserCredentialParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
-import ffdd.opsconsole.user.dto.UserKycExportRequest;
-import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
-import ffdd.opsconsole.user.dto.UserKycReviewTriggerRequest;
-import ffdd.opsconsole.user.dto.UserKycReverificationRequest;
-import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
 import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
@@ -126,95 +119,6 @@ public class OpsUserController {
 
     ApiResult<PageResult<UserProfileListView>> profiles(UserQueryRequest request) {
         return profiles(request, SecurityContextHolder.getContext().getAuthentication());
-    }
-
-    @GetMapping("/kyc/overview")
-    @PreAuthorize("hasAuthority('user_c4_read')")
-    public ApiResult<UserKycOverview> kycOverview(
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) Integer pageNum,
-            @RequestParam(required = false) Integer pageSize,
-            @RequestParam(required = false) Integer limit) {
-        return userService.kycOverview(status, pageNum, pageSize, limit);
-    }
-
-    @GetMapping("/kyc/users/{userId}")
-    @PreAuthorize("hasAuthority('user_c4_read')")
-    public ApiResult<UserKycLedgerRow> kycDetail(@PathVariable Long userId) {
-        return userService.kycDetail(userId);
-    }
-
-    @PostMapping("/kyc/users/{userId}/verify")
-    @PreAuthorize("hasAuthority('user_c4_verify')")
-    public ApiResult<UserKycLedgerRow> verifyKyc(
-            @PathVariable Long userId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycStatusUpdateRequest request) {
-        return userService.verifyKyc(userId, idempotencyKey, request);
-    }
-
-    @PostMapping("/kyc/users/{userId}/revoke")
-    @PreAuthorize("hasAuthority('user_c4_revoke')")
-    public ApiResult<UserKycLedgerRow> revokeKyc(
-            @PathVariable Long userId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycStatusUpdateRequest request) {
-        return userService.revokeKyc(userId, idempotencyKey, request);
-    }
-
-    /** Compatibility shim for direct unit callers; no HTTP route is exposed. */
-    @Deprecated
-    public ApiResult<UserKycLedgerRow> updateKycStatus(
-            Long userId, String idempotencyKey, UserKycStatusUpdateRequest request) {
-        return userService.updateKycStatus(userId, idempotencyKey, request);
-    }
-
-    @PostMapping("/kyc/users/{userId}/trigger-review")
-    @PreAuthorize("hasAuthority('user_c4_trigger_review')")
-    public ApiResult<Map<String, Object>> triggerKycReview(
-            @PathVariable Long userId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycReviewTriggerRequest request) {
-        return userService.triggerKycReview(userId, idempotencyKey, request);
-    }
-
-    @PatchMapping("/kyc/network-whitelist")
-    @PreAuthorize("hasAuthority('user_c4_network_write')")
-    public ApiResult<Map<String, Object>> updateKycNetworkWhitelist(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycNetworkUpdateRequest request) {
-        return userService.updateKycNetworkWhitelist(idempotencyKey, request);
-    }
-
-    @PostMapping("/kyc/exports")
-    @PreAuthorize("hasAuthority('user_c4_export')")
-    public ApiResult<Map<String, Object>> createKycExport(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycExportRequest request) {
-        return userService.createKycExport(idempotencyKey, request);
-    }
-
-    @GetMapping("/kyc/exports")
-    @PreAuthorize("hasAuthority('user_c4_export')")
-    public ApiResult<List<Map<String, Object>>> kycExports(@RequestParam(required = false) Integer limit) {
-        return userService.kycExports(limit);
-    }
-
-    @GetMapping("/kyc/exports/{jobNo}/download")
-    @PreAuthorize("hasAuthority('user_c4_export')")
-    public ResponseEntity<?> downloadKycExport(@PathVariable String jobNo) {
-        try {
-            byte[] body = userService.downloadKycExport(jobNo);
-            return ResponseEntity.ok()
-                    .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
-                    .contentLength(body.length)
-                    .header(HttpHeaders.CONTENT_DISPOSITION,
-                            ContentDisposition.attachment().filename(jobNo + ".csv", StandardCharsets.UTF_8).build().toString())
-                    .body(body);
-        } catch (IllegalArgumentException ex) {
-            return ResponseEntity.status(404).contentType(MediaType.APPLICATION_JSON)
-                    .body(ApiResult.fail(404, ex.getMessage()));
-        }
     }
 
     @PostMapping("/profiles/export")
@@ -434,15 +338,6 @@ public class OpsUserController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody UserSecurityActionRequest request) {
         return userService.unlockSecurity(userId, idempotencyKey, request);
-    }
-
-    @PostMapping("/profiles/{userId}/security/kyc-reverification")
-    @PreAuthorize("hasAnyAuthority('user_c5_2fa_disable','user_c5_password_reset','user_c5_unlock_short','user_c5_unlock_long')")
-    public ApiResult<Map<String, Object>> requestC5KycReverification(
-            @PathVariable Long userId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody UserKycReverificationRequest request) {
-        return userService.requestC5KycReverification(userId, idempotencyKey, request);
     }
 
     @PostMapping("/profiles/{userId}/security/sessions/revoke-all")

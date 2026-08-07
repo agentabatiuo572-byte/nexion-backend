@@ -41,13 +41,13 @@ class AppNotificationControllerSecurityTest {
         when(authentication.getDetails()).thenReturn(Map.of("subjectType", "USER"));
         when(service.recordAction(7L, 99L, "cta", "idem-action-101"))
                 .thenReturn(ApiResult.ok(new NotificationActionResult(
-                        99L, "cta", "/pages/me/kyc", true)));
+                        99L, "cta", "/pages/me/security", true)));
 
         var result = controller.recordAction(
                 99L, "idem-action-101", new NotificationActionRequest("cta"), authentication);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().route()).isEqualTo("/pages/me/kyc");
+        assertThat(result.getData().route()).isEqualTo("/pages/me/security");
         verify(service).recordAction(7L, 99L, "cta", "idem-action-101");
     }
 }

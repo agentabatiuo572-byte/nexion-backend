@@ -33,9 +33,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class OpsRegulatoryReportService {
     private static final Set<String> TEMPLATE_CODES = Set.of(
-            "KYC_COMPLIANCE", "PAYOUT_REPORT", "AML_REPORT", "JURISDICTION_SPECIAL");
+            "PAYOUT_REPORT", "AML_REPORT", "JURISDICTION_SPECIAL");
     private static final Map<String, String> TEMPLATE_LABELS = Map.of(
-            "KYC_COMPLIANCE", "KYC 合规报告",
             "PAYOUT_REPORT", "提现发放报告",
             "AML_REPORT", "反洗钱监测报告",
             "JURISDICTION_SPECIAL", "法域专项报告");
@@ -60,7 +59,7 @@ public class OpsRegulatoryReportService {
                 "containsPii", false,
                 "decryptedPiiBlocked", true,
                 "sources", List.of(
-                        "I5 disclosure lifecycle", "C4 KYC events", "L3 finance snapshot",
+                        "I5 disclosure lifecycle", "L3 finance snapshot",
                         "L4 operations snapshot", "D4 canonical ledger", "A2 audit ledger",
                         "J4 admin.emergency_playbook_executed")));
     }
@@ -94,7 +93,7 @@ public class OpsRegulatoryReportService {
         String period = request.period().trim();
         String scope = period + " · " + disclosure.jurisdictionName() + "(" + disclosure.jurisdictionCode()
                 + ") · 披露 " + disclosure.disclosureVersion();
-        String fields = "法域、披露版本、七章完整性、确认进度、拦截数、C4/L3/L4/D4 聚合指标、A2/J4 追溯";
+        String fields = "法域、披露版本、七章完整性、确认进度、拦截数、L3/L4/D4 聚合指标、A2/J4 追溯";
         String note = TEMPLATE_LABELS.get(templateCode) + " · " + disclosure.jurisdictionCode()
                 + "/" + disclosure.disclosureVersion() + " · 工单:" + request.ticket().trim();
         BiReportView created = reportRepository.createReport(new BiReportCreateCommand(
@@ -186,52 +185,16 @@ public class OpsRegulatoryReportService {
         rows.add(List.of("J4", "emergency_playbook_executed",
                 reportRepository.countRegisteredServerEvent("admin.emergency_playbook_executed"),
                 "A4 registered server-authoritative J4 event"));
-        if ("KYC_COMPLIANCE".equals(templateCode)) {
-            appendKycEvidence(rows);
-        } else if ("PAYOUT_REPORT".equals(templateCode)) {
+        if ("PAYOUT_REPORT".equals(templateCode)) {
             appendFinanceEvidence(rows);
             rows.add(List.of("D4", "ledger_rows", ledgerRepository.countLedgerBills(null, null, null), "D4 canonical ledger"));
         } else if ("AML_REPORT".equals(templateCode)) {
-            appendKycEvidence(rows);
             appendFinanceEvidence(rows);
             rows.add(List.of("D4", "ledger_rows", ledgerRepository.countLedgerBills(null, null, null), "D4 canonical ledger"));
         } else if ("JURISDICTION_SPECIAL".equals(templateCode)) {
-            appendKycEvidence(rows);
             appendOperationsEvidence(rows);
         }
         return rows;
-    }
-
-    private Object stageCount(String key) {
-        Map<String, Object> dashboard = reportRepository.dashboard("L2");
-        Object stages = dashboard == null ? null : dashboard.get("stages");
-        if (!(stages instanceof List<?> rows)) return "UNAVAILABLE";
-        for (Object item : rows) {
-            if (!(item instanceof Map<?, ?> row) || !key.equals(String.valueOf(row.get("key")))) continue;
-            Object value = row.get("count");
-            if (value instanceof Number number) return number.longValue();
-            try {
-                return Long.parseLong(String.valueOf(value));
-            } catch (NumberFormatException ignored) {
-                return "UNAVAILABLE";
-            }
-        }
-        return "UNAVAILABLE";
-    }
-
-    private void appendKycEvidence(List<List<Object>> rows) {
-        appendKycMetric(rows, "kyc_submitted_users", stageCount("kycSubmitted"),
-                "A4 registered server-authoritative kyc.express_started actors");
-        appendKycMetric(rows, "kyc_verified_users", stageCount("kycApproved"),
-                "A4 registered server-authoritative kyc.express_verified actors");
-    }
-
-    private void appendKycMetric(List<List<Object>> rows, String key, Object value, String evidence) {
-        rows.add(List.of(
-                "C4",
-                key,
-                value,
-                value instanceof Number ? evidence : evidence + " (source field unavailable; no value inferred)"));
     }
 
     private void appendFinanceEvidence(List<List<Object>> rows) {

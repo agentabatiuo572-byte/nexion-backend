@@ -15,7 +15,6 @@ CREATE TABLE IF NOT EXISTS nx_user (
   referral_code VARCHAR(32) NOT NULL,
   sponsor_user_id BIGINT NULL,
   sponsor_code VARCHAR(32) NULL,
-  kyc_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   user_level VARCHAR(16) NOT NULL DEFAULT 'L1',
   v_rank VARCHAR(16) NOT NULL DEFAULT 'V0',
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
@@ -571,7 +570,7 @@ INSERT INTO nx_admin_role (role_code, role_name, remark, status, is_deleted) VAL
 ('SUPER_ADMIN', '超级管理员', '平台全域管理员', 1, 0),
 ('CONFIG_ADMIN', '配置运营', '平台配置与系统参数管理员', 1, 0),
 ('FINANCE', '财务', '资金、账务与提现审核', 1, 0),
-('RISK', '风控', '风控、KYC 与紧急处置', 1, 0),
+('RISK', '风控', '风控与紧急处置', 1, 0),
 ('CONTENT', '内容运营', '内容、公告与披露管理', 1, 0),
 ('GROWTH', '增长运营', '增长、设备与网络运营', 1, 0),
 ('SUPPORT', '客服', '客服中心全局后台角色', 1, 0),
@@ -3828,122 +3827,31 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SC
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE TABLE IF NOT EXISTS nx_kyc_profile (
+CREATE TABLE IF NOT EXISTS nx_user_payout_address (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
-  kyc_no VARCHAR(96) NOT NULL,
-  status VARCHAR(32) NOT NULL,
-  country VARCHAR(64) NULL,
-  applicant_name VARCHAR(128) NULL,
-  document_type VARCHAR(64) NULL,
-  document_last4 VARCHAR(16) NULL,
-  document_object_key VARCHAR(255) NULL,
-  submitted_at DATETIME NULL,
-  reviewed_by VARCHAR(64) NULL,
-  reviewed_at DATETIME NULL,
-  reject_reason VARCHAR(255) NULL,
-  expires_at DATETIME NULL,
-  risk_notes VARCHAR(512) NULL,
-  paired_address VARCHAR(255) NULL,
-  network VARCHAR(32) NULL,
-  paired_at DATETIME NULL,
-  trigger_source VARCHAR(64) NOT NULL DEFAULT 'LEGACY_MIGRATION',
+  network VARCHAR(32) NOT NULL,
+  address VARCHAR(255) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  effective_at DATETIME NOT NULL,
+  next_change_allowed_at DATETIME NOT NULL,
   version BIGINT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_kyc_user (user_id),
-  UNIQUE KEY uk_kyc_no (kyc_no),
-  KEY idx_kyc_status (status, created_at),
-  KEY idx_kyc_expiry (status, expires_at, id)
+  UNIQUE KEY uk_user_payout_address_network (user_id, network),
+  KEY idx_user_payout_address_effective (user_id, effective_at, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'applicant_name') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN applicant_name VARCHAR(128) NULL AFTER country',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'document_type') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN document_type VARCHAR(64) NULL AFTER applicant_name',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'document_last4') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN document_last4 VARCHAR(16) NULL AFTER document_type',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'submitted_at') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN submitted_at DATETIME NULL AFTER document_object_key',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'reviewed_by') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN reviewed_by VARCHAR(64) NULL AFTER submitted_at',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'reject_reason') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN reject_reason VARCHAR(255) NULL AFTER reviewed_at',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'expires_at') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN expires_at DATETIME NULL AFTER reject_reason',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'risk_notes') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN risk_notes VARCHAR(512) NULL AFTER expires_at',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'paired_address') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN paired_address VARCHAR(255) NULL AFTER risk_notes',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'network') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN network VARCHAR(32) NULL AFTER paired_address',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'paired_at') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN paired_at DATETIME NULL AFTER network',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'trigger_source') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN trigger_source VARCHAR(64) NOT NULL DEFAULT ''LEGACY_MIGRATION'' AFTER paired_at',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND COLUMN_NAME = 'version') = 0,
-  'ALTER TABLE nx_kyc_profile ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER trigger_source',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_kyc_profile' AND INDEX_NAME = 'idx_kyc_expiry') = 0,
-  'ALTER TABLE nx_kyc_profile ADD INDEX idx_kyc_expiry (status, expires_at, id)',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-CREATE TABLE IF NOT EXISTS nx_kyc_status_history (
+CREATE TABLE IF NOT EXISTS nx_user_payout_address_history (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
-  before_status VARCHAR(32) NULL,
-  after_status VARCHAR(32) NOT NULL,
-  reason_code VARCHAR(64) NOT NULL,
-  reason VARCHAR(200) NOT NULL,
-  evidence_ref VARCHAR(255) NOT NULL,
-  source VARCHAR(64) NOT NULL,
-  operator VARCHAR(64) NOT NULL,
-  idempotency_key VARCHAR(128) NOT NULL,
-  ticket_id VARCHAR(64) NULL,
+  network VARCHAR(32) NOT NULL,
+  previous_address VARCHAR(255) NULL,
+  new_address VARCHAR(255) NOT NULL,
+  change_type VARCHAR(16) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_kyc_history_idempotency (idempotency_key),
-  KEY idx_kyc_history_user_time (user_id, created_at),
-  KEY idx_kyc_history_ticket (ticket_id)
+  KEY idx_user_payout_address_history (user_id, network, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
@@ -3954,16 +3862,6 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
 UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
-
-DROP TRIGGER IF EXISTS trg_nx_user_kyc_profile;
-CREATE TRIGGER trg_nx_user_kyc_profile
-AFTER INSERT ON nx_user
-FOR EACH ROW
-INSERT INTO nx_kyc_profile
-  (user_id,kyc_no,status,country,trigger_source,version,is_deleted)
-VALUES
-  (NEW.id,CONCAT('KYC-',IF(NEW.id < 100000000,LPAD(NEW.id,8,'0'),CAST(NEW.id AS CHAR))),UPPER(COALESCE(NULLIF(NEW.kyc_status,''),'NONE')),
-   NEW.country_code,'REGISTRATION',0,0);
 
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -4593,7 +4491,6 @@ VALUES
   ('account',    30, 24, '账户台',     'C5 security',                1, 1, NOW(), NOW(), 0),
   ('withdrawal', 15, 12, '支付台',     'D2 withdrawal review',      1, 1, NOW(), NOW(), 0),
   ('deposit',    15, 12, '支付台',     'D1 deposit reconciliation', 1, 1, NOW(), NOW(), 0),
-  ('kyc',        30, 24, '合规台',     'C4 KYC ledger',             1, 1, NOW(), NOW(), 0),
   ('hardware',   45, 48, '设备运维台', 'E5 device ops',             1, 1, NOW(), NOW(), 0),
   ('earnings',   30, 24, '收益台',     'F3/E6 earnings ledger',     1, 1, NOW(), NOW(), 0),
   ('genesis',    20, 18, '创世节点台', 'G4 Genesis economy',        1, 1, NOW(), NOW(), 0),
@@ -5120,20 +5017,6 @@ CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
   UNIQUE KEY uk_user_registration_otp_no (challenge_no),
   KEY idx_user_registration_otp_phone (country_code,phone,expires_at,consumed_at),
   KEY idx_user_registration_otp_ip (client_ip,created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_c5_kyc_reverification_consumption (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  ticket_id VARCHAR(64) NOT NULL,
-  user_id BIGINT NOT NULL,
-  action_code VARCHAR(48) NOT NULL,
-  idempotency_key VARCHAR(128) NOT NULL,
-  consumed_by VARCHAR(64) NOT NULL,
-  consumed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_c5_kyc_reverification_ticket (ticket_id),
-  UNIQUE KEY uk_c5_kyc_reverification_idempotency (action_code,user_id,idempotency_key),
-  KEY idx_c5_kyc_reverification_user (user_id,action_code,consumed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_emergency_tamper_report (
@@ -5894,7 +5777,6 @@ CREATE TABLE IF NOT EXISTS nx_audit_object_lock (
   UNIQUE KEY uk_target (target_domain, target_type, target_id),
   KEY idx_lock_ticket (ticket_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
--- K5 KYC review workflow tables (authoritative shape; migration: 20260717_k5_kyc_review_closure.sql).
 CREATE TABLE IF NOT EXISTS nx_admin_risk_param (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   section_key VARCHAR(32) NOT NULL,
@@ -5911,66 +5793,4 @@ CREATE TABLE IF NOT EXISTS nx_admin_risk_param (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_admin_risk_param (section_key,param_key),
   KEY idx_admin_risk_param_section (section_key,is_deleted)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_ticket (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  ticket_id VARCHAR(64) NOT NULL,
-  ticket_type VARCHAR(64) NOT NULL,
-  user_no VARCHAR(64) NOT NULL,
-  amount_text VARCHAR(64) NOT NULL,
-  amount_usdt DECIMAL(20,8) DEFAULT NULL,
-  cumulative_text VARCHAR(64) NOT NULL,
-  kyc_text VARCHAR(128) NOT NULL,
-  status VARCHAR(32) NOT NULL,
-  sla_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
-  sla_text VARCHAR(64) NOT NULL,
-  info_json TEXT DEFAULT NULL,
-  history_json TEXT DEFAULT NULL,
-  decision_reason VARCHAR(1000) DEFAULT NULL,
-  reviewed_by VARCHAR(64) DEFAULT NULL,
-  reviewed_at DATETIME DEFAULT NULL,
-  due_at DATETIME DEFAULT NULL,
-  version BIGINT NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  open_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status IN ('triggered','in-review') AND is_deleted=0 THEN user_no ELSE NULL END) STORED,
-  UNIQUE KEY uk_admin_risk_kyc_ticket (ticket_id),
-  UNIQUE KEY uk_admin_risk_kyc_open_user (open_user_key),
-  KEY idx_admin_risk_kyc_status (status,is_deleted),
-  KEY idx_admin_risk_kyc_user (user_no,is_deleted)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_review_source (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  ticket_id VARCHAR(64) NOT NULL,
-  source_domain VARCHAR(16) NOT NULL,
-  source_no VARCHAR(128) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_admin_risk_kyc_review_source (ticket_id,source_domain,source_no),
-  KEY idx_admin_risk_kyc_review_source_time (source_domain,created_at,is_deleted)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert (
-  id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  event_key VARCHAR(128) DEFAULT NULL,
-  tone VARCHAR(32) NOT NULL,
-  title VARCHAR(128) NOT NULL,
-  body VARCHAR(1000) NOT NULL,
-  time_text VARCHAR(64) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_admin_risk_kyc_alert_event (event_key),
-  KEY idx_admin_risk_kyc_alert_tone (tone,is_deleted)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_admin_risk_kyc_alert_subscription (
-  operator_name VARCHAR(64) PRIMARY KEY,
-  alert_types_json TEXT NOT NULL,
-  channels_json TEXT NOT NULL,
-  version BIGINT NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

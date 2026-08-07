@@ -22,9 +22,6 @@ import ffdd.opsconsole.user.dto.UserAccountListUpsertRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentQueryRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentReviewRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
-import ffdd.opsconsole.user.dto.UserKycExportRequest;
-import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
-import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
 import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.dto.UserRegistrationRiskParamUpdateRequest;
@@ -119,7 +116,7 @@ class OpsUserControllerTest {
     @Test
     void profilesReturnPageResultAndDelegateQuery() {
         when(roleResolver.resolveCode()).thenReturn("SUPER_ADMIN");
-        UserQueryRequest request = UserQueryRequest.basic("Alice", "ACTIVE", "PENDING", null, 1, 20, null);
+        UserQueryRequest request = UserQueryRequest.basic("Alice", "ACTIVE", null, 1, 20, null);
         when(userService.profilePage(request)).thenReturn(ApiResult.ok(new PageResult<UserAccountView>(0, 1, 20, List.of())));
 
         ApiResult<PageResult<UserProfileListView>> result = controller.profiles(request);
@@ -132,9 +129,9 @@ class OpsUserControllerTest {
     @Test
     void supportProfileListHidesExactSecurityAndRiskFields() {
         when(roleResolver.resolveCode()).thenReturn("SUPPORT");
-        UserQueryRequest request = UserQueryRequest.basic(null, null, null, null, 1, 50, null);
+        UserQueryRequest request = UserQueryRequest.basic(null, null, null, 1, 50, null);
         UserAccountView account = new UserAccountView(
-                52L, "U00000052", "Test User", "155****9999", "86", "ACTIVE", "APPROVED",
+                52L, "U00000052", "Test User", "155****9999", "86", "ACTIVE",
                 "L1", "V0", true, new BigDecimal("1000"), new BigDecimal("500"), 13, "低风险",
                 2L, 1L, LocalDateTime.of(2026, 7, 3, 15, 34), null);
         when(userService.profilePage(request)).thenReturn(ApiResult.ok(new PageResult<>(1, 1, 50, List.of(account))));
@@ -164,7 +161,6 @@ class OpsUserControllerTest {
                 null,
                 null,
                 null,
-                null,
                 "C1 masked user export",
                 "superadmin");
 
@@ -177,7 +173,6 @@ class OpsUserControllerTest {
         UserProfileExportRequest request = UserProfileExportRequest.basic(
                 "Alice",
                 "ACTIVE",
-                null,
                 null,
                 "C1 masked user export",
                 "superadmin");
@@ -200,49 +195,6 @@ class OpsUserControllerTest {
         verify(userService).updateStatus(eq(1L), eq("idem-c1"), any(UserStatusUpdateRequest.class));
         assertThat(OpsAdminApi.ADMIN_PREFIX + "/users/profiles/{userId}/status")
                 .startsWith("/api/admin/users");
-    }
-
-    @Test
-    void kycStatusEndpointPassesIdempotencyKey() {
-        UserKycStatusUpdateRequest request = new UserKycStatusUpdateRequest(
-                "APPROVED",
-                "offline verification passed",
-                "superadmin");
-
-        controller.updateKycStatus(1L, "idem-c4-status", request);
-
-        verify(userService).updateKycStatus(eq(1L), eq("idem-c4-status"), any(UserKycStatusUpdateRequest.class));
-    }
-
-    @Test
-    void kycOverviewEndpointDelegatesPageQuery() {
-        controller.kycOverview("PENDING", 2, 10, null);
-
-        verify(userService).kycOverview(eq("PENDING"), eq(2), eq(10), eq(null));
-    }
-
-    @Test
-    void kycNetworkEndpointPassesIdempotencyKey() {
-        UserKycNetworkUpdateRequest request = new UserKycNetworkUpdateRequest(
-                "TRC20 / ERC20",
-                "network policy cleanup",
-                "superadmin");
-
-        controller.updateKycNetworkWhitelist("idem-c4-network", request);
-
-        verify(userService).updateKycNetworkWhitelist(eq("idem-c4-network"), any(UserKycNetworkUpdateRequest.class));
-    }
-
-    @Test
-    void kycExportEndpointPassesIdempotencyKey() {
-        UserKycExportRequest request = new UserKycExportRequest(
-                "MASKED_LEDGER",
-                "quarterly regulatory package",
-                "superadmin");
-
-        controller.createKycExport("idem-c4-export", request);
-
-        verify(userService).createKycExport(eq("idem-c4-export"), any(UserKycExportRequest.class));
     }
 
     @Test

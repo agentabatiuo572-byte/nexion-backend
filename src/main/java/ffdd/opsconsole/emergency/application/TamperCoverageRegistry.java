@@ -9,7 +9,7 @@ import java.util.Map;
  */
 final class TamperCoverageRegistry {
     private static final List<String> REGISTERED = List.of(
-            "free_trial_state", "wallet_pairing", "risk_disclosure_ack", "two_factor_state",
+            "free_trial_state", "risk_disclosure_ack", "two_factor_state",
             "product_phase_override", "device_slot_cap", "dev_seed_state", "otp_verification",
             "bill_client_push", "client_minted_id", "charge_fail_rate");
     private static final List<String> ACTIVE = REGISTERED;

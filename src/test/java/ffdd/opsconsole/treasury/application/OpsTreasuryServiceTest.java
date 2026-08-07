@@ -898,64 +898,6 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void b5RiskRadarProjectsRecentK5ThresholdSlaAndBurstAlertsInStableOrderAndLimit() {
-        ledgerRepository.k5KycAlerts = List.of(
-                k5Alert("threshold-hit:T-6", "warn", "KYC 复审追加触发 · T-6", "阈值再次命中", "2026-06-17 08:06", 0),
-                k5Alert("sla-breach:T-5", "bad", "KYC 复审 SLA 逾期 · T-5", "已超过处理期限", "2026-06-17 08:05", 0),
-                k5Alert("large-withdraw-burst:202606170804", "bad", "大额提现集中触发 KYC 复审", "最近一小时达到集中阈值", "2026-06-17 08:04", 0),
-                k5Alert("threshold-hit:T-3", "warn", "KYC 复审已触发 · T-3", "评分阈值命中", "2026-06-17 08:03", 0),
-                k5Alert("sla-breach:T-2", "bad", "KYC 复审 SLA 逾期 · T-2", "已超过处理期限", "2026-06-17 08:02", 0),
-                k5Alert("threshold-hit:T-1", "warn", "KYC 复审已触发 · T-1", "评分阈值命中", "2026-06-17 08:01", 0));
-
-        Map<String, Object> riskRadar =
-                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
-        List<Map<String, Object>> k5Feed = ((List<Map<String, Object>>) riskRadar.get("feed")).stream()
-                .filter(row -> "K5".equals(row.get("domain")))
-                .toList();
-
-        assertThat(k5Feed).hasSize(5);
-        assertThat(k5Feed).extracting(row -> row.get("eventKey"))
-                .containsExactly("threshold-hit:T-6", "sla-breach:T-5", "large-withdraw-burst:202606170804",
-                        "threshold-hit:T-3", "sla-breach:T-2");
-        assertThat(k5Feed).allSatisfy(row -> assertThat(row)
-                .containsEntry("domain", "K5")
-                .containsEntry("href", "/risk/kyc-review")
-                .containsEntry("route", "/risk/kyc-review")
-                .containsKeys("sev", "severityLabel", "t", "m"));
-        assertThat(k5Feed.get(0)).containsEntry("sev", "p2").containsEntry("severityLabel", "中风险");
-        assertThat(k5Feed.get(1)).containsEntry("sev", "p1").containsEntry("severityLabel", "高风险");
-        assertThat((List<String>) riskRadar.get("sources")).contains("nx_admin_risk_kyc_alert:active-recent");
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void b5RiskRadarKeepsK5ProjectionEmptyWhenNoActiveRecentAlertExists() {
-        ledgerRepository.k5KycAlerts = List.of();
-
-        Map<String, Object> riskRadar =
-                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
-
-        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
-                .noneSatisfy(row -> assertThat(row).containsEntry("domain", "K5"));
-        assertThat((List<String>) riskRadar.get("sources")).contains("nx_admin_risk_kyc_alert:active-recent");
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    void b5RiskRadarNeverProjectsDeletedOrUnsupportedK5Alerts() {
-        ledgerRepository.k5KycAlerts = List.of(
-                k5Alert("threshold-hit:T-DELETED", "warn", "已删除告警", "不应展示", "2026-06-17 08:00", 1),
-                k5Alert("manual-note:T-OTHER", "bad", "非三类告警", "不应展示", "2026-06-17 07:59", 0));
-
-        Map<String, Object> riskRadar =
-                (Map<String, Object>) service.bDomainDashboard().getData().get("riskRadar");
-
-        assertThat((List<Map<String, Object>>) riskRadar.get("feed"))
-                .noneSatisfy(row -> assertThat(row).containsEntry("domain", "K5"));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
     void b5RiskRadarFallsBackToTheSameSafeBandsAsJ1WhenStoredValuesAreAbnormal() {
         configFacade.values.put("risk.bankrun-yellow-pct", "50");
         configFacade.values.put("risk.bankrun-red-pct", "45");
@@ -1351,7 +1293,6 @@ class OpsTreasuryServiceTest {
         private String lastBillKeyword;
         private Map<String, Object> k4RiskScoreSnapshot = Map.of();
         private List<Map<String, Object>> riskSeverityRows = List.of();
-        private List<Map<String, Object>> k5KycAlerts = List.of();
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -1476,11 +1417,6 @@ class OpsTreasuryServiceTest {
         @Override
         public Map<String, Object> currentK4RiskScoreSnapshot() {
             return k4RiskScoreSnapshot;
-        }
-
-        @Override
-        public List<Map<String, Object>> recentK5KycAlerts(LocalDateTime since, int limit) {
-            return k5KycAlerts.stream().limit(limit).toList();
         }
 
         @Override

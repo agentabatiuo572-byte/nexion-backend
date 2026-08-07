@@ -13,8 +13,6 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import ffdd.opsconsole.common.api.OpsErrorCode;
-import ffdd.opsconsole.bi.facade.BiKycRegulatoryExportFacade;
-import ffdd.opsconsole.bi.facade.KycRegulatoryExportJob;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.facade.FinanceWithdrawalControlFacade;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -22,8 +20,6 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.facade.RiskUserStateFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -35,13 +31,6 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentDetail;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
-import ffdd.opsconsole.user.domain.UserKycKeyValue;
-import ffdd.opsconsole.user.domain.UserKycLedgerRow;
-import ffdd.opsconsole.user.domain.UserKycOverview;
-import ffdd.opsconsole.user.domain.UserKycRecord;
-import ffdd.opsconsole.user.domain.UserKycStatusHistoryView;
-import ffdd.opsconsole.user.domain.UserKycReverificationView;
-import ffdd.opsconsole.user.domain.UserKycStats;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskK1GuardView;
@@ -61,11 +50,6 @@ import ffdd.opsconsole.user.dto.UserAssetAdjustmentQueryRequest;
 import ffdd.opsconsole.user.dto.UserAssetAdjustmentReviewRequest;
 import ffdd.opsconsole.user.dto.UserCredentialParamUpdateRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationTerminateRequest;
-import ffdd.opsconsole.user.dto.UserKycExportRequest;
-import ffdd.opsconsole.user.dto.UserKycNetworkUpdateRequest;
-import ffdd.opsconsole.user.dto.UserKycReviewTriggerRequest;
-import ffdd.opsconsole.user.dto.UserKycReverificationRequest;
-import ffdd.opsconsole.user.dto.UserKycStatusUpdateRequest;
 import ffdd.opsconsole.user.dto.UserImpersonationRequest;
 import ffdd.opsconsole.user.dto.UserProfileExportRequest;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
@@ -117,18 +101,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final BigDecimal C3_LARGE_THRESHOLD_USD = new BigDecimal("500");
     private static final BigDecimal C3_MAX_AMOUNT_USD = new BigDecimal("10000");
     private static final String C3_NEX_PRICE_KEY = "wallet.exchange.nex_usdt_price";
-    private static final Set<String> KYC_STATUSES = Set.of("APPROVED", "PENDING", "NONE", "REJECTED");
     private static final Set<String> ACCOUNT_LIST_KINDS = Set.of("ALLOW", "BLOCK");
     private static final Set<String> C2_FREEZE_REASON_CODES = Set.of(
             "RISK_HIT", "AML_REVIEW", "USER_APPEAL", "JUDICIAL_ASSISTANCE", "OTHER");
     private static final Set<String> C2_IMPERSONATION_REASON_CODES = Set.of(
             "USER_ISSUE_REPRO", "DISPLAY_ANOMALY", "OTHER");
     private static final Set<Integer> C2_IMPERSONATION_TTLS = Set.of(5, 10, 15, 30);
-    private static final Set<String> ALLOWED_KYC_NETWORKS = Set.of("TRC20", "ERC20", "BTC", "ETH", "BSC", "SOL", "POLYGON");
     private static final String AUTH_CONFIG_GROUP = "auth";
-    private static final String KYC_CONFIG_GROUP = "kyc";
-    private static final String KYC_NETWORK_WHITELIST_KEY = "kyc.network_whitelist";
-    private static final String DEFAULT_KYC_NETWORK_WHITELIST = "TRC20 / ERC20 / BTC / ETH";
     private static final String CAPTCHA_OFF_WINDOW_KEY = RegistrationRiskCaptchaWindow.CONFIG_KEY;
     private static final String C6_CONFIG_VERSION_KEY = RegistrationRiskCaptchaWindow.VERSION_KEY;
     private static final String C5_CONFIG_VERSION_KEY = "auth.security.c5_config_version";
@@ -136,10 +115,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final String K1_PATH = "/risk/multi-account";
     private static final String DEFAULT_SECURITY_LOOKUP_KEY = "usr_2231";
     private static final String RESET_REQUIRED_PREFIX = "RESET_REQUIRED$";
-    private static final Set<String> C5_KYC_ACTIONS = Set.of(
-            "DISABLE_2FA", "PASSWORD_RESET", "UNLOCK_SHORT", "UNLOCK_LONG");
     private static final Pattern NUMBER_PATTERN = Pattern.compile("\\d+");
-    private static final DateTimeFormatter KYC_PAIRED_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final Set<String> K1_REGISTRATION_RISK_PARAM_KEYS = Set.of(
             "maxSignupPerIp24h",
             "maxAccountsPerDevice",
@@ -280,14 +256,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final EventOutboxService outboxService;
     private final JwtTokenProvider tokenProvider;
-    private final RiskKycReviewFacade riskKycReviewFacade;
-    private final BiKycRegulatoryExportFacade biKycExportFacade;
     private final Clock clock;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(userRepository.overview());
         response.put("domain", "C");
-        response.put("capabilities", List.of("UserProfile", "KycReview", "AccountSecurity", "ManualAssetAdjustment"));
+        response.put("capabilities", List.of("UserProfile", "AccountSecurity", "ManualAssetAdjustment"));
         response.put("sunsetCompatibility", List.of("Premium history is read-only", "NEX v2 maturity is historical", "Points adjustments are rejected"));
         response.put("sources", List.of("nx_user", "nx_user_session", "nx_wallet_asset_adjustment"));
         return ApiResult.ok(response);
@@ -298,7 +272,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(userRepository.search(
                 request == null ? null : request.keyword(),
                 request == null ? null : request.status(),
-                request == null ? null : request.kycStatus(),
                 limit));
     }
 
@@ -386,7 +359,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
         if (!full) {
             csv.append('\ufeff')
-                    .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,KYC,状态,注册时间,最近登录\r\n");
+                    .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,注册时间,最近登录\r\n");
             for (UserAccountView row : rows) {
                 csv.append(csvCell(row.userNo())).append(',')
                         .append(csvCell(row.nickname())).append(',')
@@ -394,7 +367,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         .append(csvCell(row.countryCode())).append(',')
                         .append(csvCell(row.userLevel())).append(',')
                         .append(csvCell(row.vRank())).append(',')
-                        .append(csvCell(row.kycStatus())).append(',')
                         .append(csvCell(row.status())).append(',')
                         .append(csvCell(dateText(row.registeredAt()))).append(',')
                         .append(csvCell(dateText(row.lastLoginAt()))).append("\r\n");
@@ -402,7 +374,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return csv.toString().getBytes(StandardCharsets.UTF_8);
         }
         csv.append('\ufeff')
-                .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,KYC,状态,风险分,风险等级,设备数,活跃设备数,USDT余额,NEX余额,注册时间,最近登录\r\n");
+                .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,风险分,风险等级,设备数,活跃设备数,USDT余额,NEX余额,注册时间,最近登录\r\n");
         for (UserAccountView row : rows) {
             csv.append(csvCell(row.userNo())).append(',')
                     .append(csvCell(row.nickname())).append(',')
@@ -410,7 +382,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     .append(csvCell(row.countryCode())).append(',')
                     .append(csvCell(row.userLevel())).append(',')
                     .append(csvCell(row.vRank())).append(',')
-                    .append(csvCell(row.kycStatus())).append(',')
                     .append(csvCell(row.status())).append(',')
                     .append(csvCell(row.riskScore())).append(',')
                     .append(csvCell(row.riskBand())).append(',')
@@ -440,7 +411,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return new UserQueryRequest(
                 request == null ? null : request.keyword(),
                 request == null ? null : request.status(),
-                request == null ? null : request.kycStatus(),
                 request == null ? null : request.riskMin(),
                 pageNum,
                 pageSize,
@@ -536,357 +506,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
     }
 
-    public ApiResult<UserKycOverview> kycOverview(String status, Integer limit) {
-        return kycOverview(status, 1, limit, limit);
-    }
-
-    public ApiResult<UserKycOverview> kycOverview(String status, Integer pageNum, Integer pageSize, Integer limit) {
-        String normalizedStatus;
-        try {
-            normalizedStatus = normalizeOptionalKycStatus(status);
-        } catch (IllegalArgumentException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        int normalizedPageNum = normalizePageNum(pageNum);
-        int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 20, 100) : normalizeLimit(pageSize, 20, 100);
-        PageResult<UserKycRecord> recordPage = userRepository.pageKycRecords(normalizedStatus, normalizedPageNum, normalizedPageSize);
-        long total = userRepository.pageKycRecords(null, 1, 1).getTotal();
-        long verified = userRepository.pageKycRecords("APPROVED", 1, 1).getTotal();
-        long unverified = userRepository.pageKycRecords("NONE", 1, 1).getTotal();
-        long inReview = userRepository.pageKycRecords("PENDING", 1, 1).getTotal();
-        long rejected = userRepository.pageKycRecords("REJECTED", 1, 1).getTotal();
-        String pct = total == 0 ? "0.0" : BigDecimal.valueOf(verified)
-                .multiply(BigDecimal.valueOf(100))
-                .divide(BigDecimal.valueOf(total), 1, java.math.RoundingMode.HALF_UP)
-                .toPlainString();
-        UserKycOverview overview = new UserKycOverview(
-                new UserKycStats(total, verified, unverified, inReview, rejected, pct, 1),
-                kycNetworkWhitelist(),
-                recordPage.getRecords().stream().map(record -> kycLedgerRow(record, List.of())).toList(),
-                List.of("KYC authority ledger", "wallet pairing authority", "governed network allow-list", "required audit trail"),
-                List.of("APPROVED opens withdrawal/exchange gates and is blocked when B1 coverage is below redline",
-                        "K5 review creation never rewrites the current KYC status"));
-        return ApiResult.ok(overview);
-    }
-
-    public ApiResult<UserKycLedgerRow> kycDetail(Long userId) {
-        if (userId == null || userId <= 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
-        }
-        return userRepository.findKycRecord(userId)
-                .map(record -> ApiResult.ok(kycLedgerRow(record, userRepository.kycStatusHistory(userId, 50))))
-                .orElseGet(() -> ApiResult.fail(404, "KYC_PROFILE_NOT_FOUND"));
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<UserKycLedgerRow> verifyKyc(Long userId, String idempotencyKey, UserKycStatusUpdateRequest request) {
-        return changeKycStatus(userId, idempotencyKey, request, "APPROVED", "C4_MANUAL_VERIFY");
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<UserKycLedgerRow> revokeKyc(Long userId, String idempotencyKey, UserKycStatusUpdateRequest request) {
-        return changeKycStatus(userId, idempotencyKey, request, "NONE", "C4_MANUAL_REVOKE");
-    }
-
-    /** Retained only for binary compatibility; the ambiguous status mutation route is retired. */
-    @Deprecated
-    public ApiResult<UserKycLedgerRow> updateKycStatus(Long userId, String idempotencyKey, UserKycStatusUpdateRequest request) {
-        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "C4_LEGACY_STATUS_ROUTE_RETIRED");
-    }
-
-    private ApiResult<UserKycLedgerRow> changeKycStatus(
-            Long userId, String idempotencyKey, UserKycStatusUpdateRequest request,
-            String nextStatus, String source) {
-        ApiResult<UserKycLedgerRow> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            c4RejectedAudit(userId, idempotencyKey, request, null, nextStatus, guard.getMessage());
-            return guard;
-        }
-        String expectedState;
-        String reasonCode;
-        String evidenceRef;
-        try {
-            expectedState = normalizeKycStatus(request.expectedState());
-            reasonCode = requireKycReasonCode(request.reasonCode());
-            evidenceRef = requireKycEvidence(request.evidenceRef());
-            requireKycReason(request.reason());
-        } catch (IllegalArgumentException ex) {
-            c4RejectedAudit(userId, idempotencyKey, request, null, nextStatus, ex.getMessage());
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        Map<String, Object> fingerprint = new LinkedHashMap<>();
-        fingerprint.put("userId", userId);
-        fingerprint.put("expectedState", expectedState);
-        fingerprint.put("nextStatus", nextStatus);
-        fingerprint.put("reasonCode", reasonCode);
-        fingerprint.put("reason", request.reason().trim());
-        fingerprint.put("evidenceRef", evidenceRef);
-        try {
-            return idempotentC2("C4_KYC_STATUS:" + userId, idempotencyKey, fingerprint,
-                    () -> doChangeKycStatus(userId, idempotencyKey.trim(), request, expectedState,
-                            nextStatus, reasonCode, evidenceRef, source));
-        } catch (RuntimeException ex) {
-            c4RejectedAudit(userId, idempotencyKey, request, null, nextStatus,
-                    "C4_PERSISTENCE_FAILED:" + ex.getClass().getSimpleName());
-            throw ex;
-        }
-    }
-
-    private ApiResult<UserKycLedgerRow> doChangeKycStatus(
-            Long userId, String idempotencyKey, UserKycStatusUpdateRequest request,
-            String expectedState, String nextStatus, String reasonCode, String evidenceRef, String source) {
-        UserKycRecord before = userRepository.findKycRecord(userId).orElse(null);
-        if (before == null) {
-            c4RejectedAudit(userId, idempotencyKey, request, null, nextStatus, "KYC_PROFILE_NOT_FOUND");
-            return ApiResult.fail(404, "KYC_PROFILE_NOT_FOUND");
-        }
-        String currentStatus = normalizeKycStatus(before.status());
-        if (!currentStatus.equals(expectedState)) {
-            c4RejectedAudit(userId, idempotencyKey, request, currentStatus, nextStatus, "KYC_EXPECTED_STATE_MISMATCH");
-            return ApiResult.fail(409, "KYC_EXPECTED_STATE_MISMATCH");
-        }
-        if (currentStatus.equals(nextStatus)) {
-            c4RejectedAudit(userId, idempotencyKey, request, currentStatus, nextStatus,
-                    OpsErrorCode.INVALID_STATE_TRANSITION.name());
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
-        }
-        if ("APPROVED".equals(nextStatus) && coverageBelowRedline()) {
-            c4RejectedAudit(userId, idempotencyKey, request, currentStatus, nextStatus,
-                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
-        String actor = operator(request.operator());
-        if (!userRepository.transitionKycStatus(userId, currentStatus, before.version(), nextStatus,
-                reasonCode, request.reason().trim(), evidenceRef, source, actor, idempotencyKey, null)) {
-            c4RejectedAudit(userId, idempotencyKey, request, currentStatus, nextStatus, "KYC_CONCURRENTLY_CHANGED");
-            return ApiResult.fail(409, "KYC_CONCURRENTLY_CHANGED");
-        }
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("fromStatus", currentStatus);
-        detail.put("toStatus", nextStatus);
-        detail.put("reasonCode", reasonCode);
-        detail.put("reason", request.reason().trim());
-        detail.put("evidenceRef", evidenceRef);
-        detail.put("idempotencyKey", idempotencyKey);
-        detail.put("source", source);
-        c2RequiredAudit("C4_KYC_STATUS_CHANGED", "USER_KYC", String.valueOf(userId), userId, actor, detail);
-        outboxService.publish("USER_KYC", String.valueOf(userId), "admin.kyc_status_changed", Map.of(
-                "targetUserId", userId,
-                "fromStatus", currentStatus,
-                "toStatus", nextStatus,
-                "reasonCode", reasonCode,
-                "evidenceRef", evidenceRef,
-                "operator", actor,
-                "source", source,
-                "occurredAt", Instant.now().toString()));
-        UserKycRecord updated = userRepository.findKycRecord(userId).orElseThrow();
-        return ApiResult.ok(kycLedgerRow(updated, userRepository.kycStatusHistory(userId, 50)));
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> updateKycNetworkWhitelist(
-            String idempotencyKey,
-            UserKycNetworkUpdateRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            c4CommandFailureAudit("C4_KYC_NETWORK_WHITELIST_REJECTED", "USER_KYC_CONFIG",
-                    KYC_NETWORK_WHITELIST_KEY, null, request == null ? null : request.operator(),
-                    idempotencyKey, null, null, request == null ? null : request.reason(), guard.getMessage(), "REJECTED");
-            return guard;
-        }
-        try {
-            requireKycReason(request.reason());
-        } catch (IllegalArgumentException ex) {
-            c4CommandFailureAudit("C4_KYC_NETWORK_WHITELIST_REJECTED", "USER_KYC_CONFIG",
-                    KYC_NETWORK_WHITELIST_KEY, null, request.operator(), idempotencyKey,
-                    null, null, request.reason(), ex.getMessage(), "REJECTED");
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        String value;
-        try {
-            value = normalizeKycNetworkWhitelist(request.value());
-        } catch (IllegalArgumentException ex) {
-            c4CommandFailureAudit("C4_KYC_NETWORK_WHITELIST_REJECTED", "USER_KYC_CONFIG",
-                    KYC_NETWORK_WHITELIST_KEY, null, request.operator(), idempotencyKey,
-                    null, null, request.reason(), ex.getMessage(), "REJECTED");
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        String normalizedValue = value;
-        try {
-            return idempotentC2("C4_NETWORK_WHITELIST", idempotencyKey,
-                    normalizedValue + "|" + request.reason().trim(), () -> {
-                        configFacade.upsertAdminValue(KYC_NETWORK_WHITELIST_KEY, normalizedValue, "STRING", KYC_CONFIG_GROUP, request.reason().trim());
-                        c2RequiredAudit("C4_KYC_NETWORK_WHITELIST_UPDATED", "USER_KYC_CONFIG", KYC_NETWORK_WHITELIST_KEY,
-                                null, request.operator(), Map.of("value", normalizedValue, "reason", request.reason().trim(),
-                                        "idempotencyKey", idempotencyKey.trim()));
-                        return ApiResult.ok(Map.of("key", KYC_NETWORK_WHITELIST_KEY, "value", normalizedValue));
-                    });
-        } catch (RuntimeException ex) {
-            c4CommandFailureAudit("C4_KYC_NETWORK_WHITELIST_FAILED", "USER_KYC_CONFIG",
-                    KYC_NETWORK_WHITELIST_KEY, null, request.operator(), idempotencyKey,
-                    null, null, request.reason(), "C4_PERSISTENCE_FAILED:" + ex.getClass().getSimpleName(), "FAILED");
-            throw ex;
-        }
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> triggerKycReview(
-            Long userId, String idempotencyKey, UserKycReviewTriggerRequest request) {
-        ApiResult<Map<String, Object>> guard = requireUserCommand(userId, idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            c4CommandFailureAudit("C4_K5_REVIEW_TRIGGER_REJECTED", "RISK_KYC_REVIEW_TICKET",
-                    userId == null ? "UNKNOWN" : String.valueOf(userId), userId,
-                    request == null ? null : request.operator(), idempotencyKey,
-                    request == null ? null : request.reasonCode(), request == null ? null : request.evidenceRef(),
-                    request == null ? null : request.reason(), guard.getMessage(), "REJECTED");
-            return guard;
-        }
-        String reasonCode;
-        String evidenceRef;
-        try {
-            reasonCode = requireKycReasonCode(request.reasonCode());
-            evidenceRef = requireKycEvidence(request.evidenceRef());
-            requireKycReason(request.reason());
-        } catch (IllegalArgumentException ex) {
-            c4CommandFailureAudit("C4_K5_REVIEW_TRIGGER_REJECTED", "RISK_KYC_REVIEW_TICKET",
-                    String.valueOf(userId), userId, request.operator(), idempotencyKey,
-                    request.reasonCode(), request.evidenceRef(), request.reason(), ex.getMessage(), "REJECTED");
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        try {
-            return idempotentC2("C4_K5_TRIGGER:" + userId, idempotencyKey,
-                    userId + "|" + reasonCode + "|" + request.reason().trim() + "|" + evidenceRef,
-                    () -> doTriggerKycReview(userId, idempotencyKey.trim(), request, reasonCode, evidenceRef));
-        } catch (RuntimeException ex) {
-            c4CommandFailureAudit("C4_K5_REVIEW_TRIGGER_FAILED", "RISK_KYC_REVIEW_TICKET",
-                    String.valueOf(userId), userId, request.operator(), idempotencyKey,
-                    reasonCode, evidenceRef, request.reason(), "C4_PERSISTENCE_FAILED:" + ex.getClass().getSimpleName(), "FAILED");
-            throw ex;
-        }
-    }
-
-    private ApiResult<Map<String, Object>> doTriggerKycReview(
-            Long userId, String idempotencyKey, UserKycReviewTriggerRequest request,
-            String reasonCode, String evidenceRef) {
-        UserKycRecord record = userRepository.findKycRecord(userId).orElse(null);
-        if (record == null) {
-            c4CommandFailureAudit("C4_K5_REVIEW_TRIGGER_REJECTED", "RISK_KYC_REVIEW_TICKET",
-                    String.valueOf(userId), userId, request.operator(), idempotencyKey,
-                    reasonCode, evidenceRef, request.reason(), "KYC_PROFILE_NOT_FOUND", "REJECTED");
-            return ApiResult.fail(404, "KYC_PROFILE_NOT_FOUND");
-        }
-        String actor = operator(request.operator());
-        KycReviewTriggerResult result = riskKycReviewFacade.triggerManualReview(record.userNo(), actor, request.reason().trim());
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("ticketId", result.ticketId());
-        response.put("created", result.created());
-        response.put("status", result.created() ? "CREATED" : "MERGED");
-        response.put("kycStatus", record.status());
-        response.put("message", result.reason());
-        Map<String, Object> detail = new LinkedHashMap<>(response);
-        detail.put("reasonCode", reasonCode);
-        detail.put("reason", request.reason().trim());
-        detail.put("evidenceRef", evidenceRef);
-        detail.put("idempotencyKey", idempotencyKey);
-        c2RequiredAudit("C4_K5_REVIEW_TRIGGERED", "RISK_KYC_REVIEW_TICKET", result.ticketId(), userId, actor, detail);
-        outboxService.publish("RISK_KYC_REVIEW_TICKET", result.ticketId(), "risk.kyc_review_triggered", Map.of(
-                "targetUserId", userId,
-                "ticketId", result.ticketId(),
-                "created", result.created(),
-                "operator", actor,
-                "source", "C4",
-                "occurredAt", Instant.now().toString()));
-        return ApiResult.ok(response);
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> createKycExport(
-            String idempotencyKey,
-            UserKycExportRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_REJECTED", "USER_KYC_EXPORT", "PENDING",
-                    null, request == null ? null : request.operator(), idempotencyKey, null, null,
-                    request == null ? null : request.reason(), guard.getMessage(), "REJECTED");
-            return guard;
-        }
-        try {
-            requireKycReason(request.reason());
-        } catch (IllegalArgumentException ex) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_REJECTED", "USER_KYC_EXPORT", "PENDING",
-                    null, request.operator(), idempotencyKey, null, null, request.reason(), ex.getMessage(), "REJECTED");
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
-        }
-        String scope = StringUtils.hasText(request.scope()) ? request.scope().trim().toUpperCase(Locale.ROOT) : "MASKED_LEDGER";
-        if (!"MASKED_LEDGER".equals(scope)) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_REJECTED", "USER_KYC_EXPORT", "PENDING",
-                    null, request.operator(), idempotencyKey, null, null, request.reason(), "C4_EXPORT_SCOPE_INVALID", "REJECTED");
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C4_EXPORT_SCOPE_INVALID");
-        }
-        try {
-            return idempotentC2("C4_KYC_EXPORT", idempotencyKey,
-                    scope + "|" + request.reason().trim(), () -> doCreateKycExport(idempotencyKey.trim(), request, scope));
-        } catch (RuntimeException ex) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_FAILED", "USER_KYC_EXPORT", "PENDING",
-                    null, request.operator(), idempotencyKey, null, null, request.reason(),
-                    "C4_PERSISTENCE_FAILED:" + ex.getClass().getSimpleName(), "FAILED");
-            throw ex;
-        }
-    }
-
-    private ApiResult<Map<String, Object>> doCreateKycExport(
-            String idempotencyKey, UserKycExportRequest request, String scope) {
-        String jobNo = "KYC-EXP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
-        List<UserKycRecord> records = allKycRecords();
-        KycRegulatoryExportJob job = biKycExportFacade.create(jobNo, scope, records.size(), kycCsv(records), request.reason().trim());
-        String actor = operator(request.operator());
-        Map<String, Object> response = kycExportMap(job);
-        c2RequiredAudit("C4_KYC_MASKED_EXPORT_CREATED", "USER_KYC_EXPORT", jobNo, null, actor, Map.of(
-                "scope", scope, "masked", true, "rowCount", records.size(),
-                "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
-        outboxService.publish("USER_KYC_EXPORT", jobNo, "admin.kyc_export_created", Map.of(
-                "jobNo", jobNo,
-                "scope", scope,
-                "rowCount", records.size(),
-                "masked", true,
-                "operator", actor,
-                "source", "C4",
-                "occurredAt", Instant.now().toString()));
-        return ApiResult.ok(response);
-    }
-
-    public ApiResult<List<Map<String, Object>>> kycExports(Integer limit) {
-        return ApiResult.ok(biKycExportFacade.recent(normalizeLimit(limit, 10, 50)).stream()
-                .map(this::kycExportMap).toList());
-    }
-
-    public byte[] downloadKycExport(String jobNo) {
-        if (!StringUtils.hasText(jobNo) || !jobNo.matches("KYC-EXP-[A-Z0-9]{12}")) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_DOWNLOAD_REJECTED", "USER_KYC_EXPORT",
-                    StringUtils.hasText(jobNo) ? jobNo : "UNKNOWN", null, null, null,
-                    null, null, null, "C4_EXPORT_JOB_INVALID", "REJECTED");
-            throw new IllegalArgumentException("C4_EXPORT_JOB_INVALID");
-        }
-        String csv;
-        try {
-            csv = biKycExportFacade.downloadCsv(jobNo.trim()).orElse(null);
-        } catch (RuntimeException ex) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_DOWNLOAD_FAILED", "USER_KYC_EXPORT",
-                    jobNo.trim(), null, null, null, null, null, null,
-                    "C4_EXPORT_DOWNLOAD_FAILED:" + ex.getClass().getSimpleName(), "FAILED");
-            throw ex;
-        }
-        if (csv == null) {
-            c4CommandFailureAudit("C4_KYC_MASKED_EXPORT_DOWNLOAD_REJECTED", "USER_KYC_EXPORT",
-                    jobNo.trim(), null, null, null, null, null, null,
-                    "C4_EXPORT_JOB_NOT_FOUND", "REJECTED");
-            throw new IllegalArgumentException("C4_EXPORT_JOB_NOT_FOUND");
-        }
-        c2RequiredAudit("C4_KYC_MASKED_EXPORT_DOWNLOADED", "USER_KYC_EXPORT", jobNo.trim(), null,
-                operator(null), Map.of("jobNo", jobNo.trim(), "masked", true));
-        return ("\uFEFF" + csv).getBytes(StandardCharsets.UTF_8);
-    }
-
     public ApiResult<UserAccountView> profile(Long userId) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
@@ -943,12 +562,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         int normalizedPageSize = pageSize == null ? normalizeLimit(limit, 10, 100) : normalizeLimit(pageSize, 10, 100);
         List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
         return new UserSecurityOverview(
-                securityStats(userRepository.search(null, null, null, 200), lockedUsers),
+                securityStats(userRepository.search(null, null, 200), lockedUsers),
                 CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
                 null,
                 new PageResult<>(0L, normalizedPageNum, normalizedPageSize, List.of()),
                 0L,
-                List.of(),
                 lockedUsers,
                 List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
                 List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
@@ -962,23 +580,21 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         int idleDays = sessionIdleDays();
         PageResult<UserSessionView> sessionPage = userRepository.pageSessions(
                 selectedUserId, normalizedPageNum, normalizedPageSize, idleDays);
-        List<UserAccountView> accounts = userRepository.search(null, null, null, 200);
+        List<UserAccountView> accounts = userRepository.search(null, null, 200);
         UserSecurityUserRow selectedUser = userRepository.findById(selectedUserId)
                 .map(this::securityUserRow)
                 .orElse(null);
         List<UserSecurityUserRow> lockedUsers = lockedSecurityUsers();
-        int rememberDays = boundedConfigInt("auth.session.step_up_days", 7, 1, 30);
         return new UserSecurityOverview(
                 securityStats(accounts, lockedUsers),
                 CREDENTIAL_PARAM_DEFINITIONS.stream().map(this::credentialParamView).toList(),
                 selectedUser,
                 sessionPage,
                 userRepository.countActiveSessions(selectedUserId, idleDays),
-                userRepository.availableC5KycReverifications(selectedUserId, rememberDays),
                 lockedUsers,
                 List.of("nx_user", "nx_user_security", "nx_user_session", "nx_config_item:auth.session.*"),
                 List.of("C5 writes require Idempotency-Key and Confirm-with-Reason",
-                        "2FA disable and password reset require secondary identity verification",
+                        "2FA disable and password reset require permission checks and explicit operator confirmation",
                         "Passwords are never visible to operators; reset only invalidates the old hash"));
     }
 
@@ -1134,7 +750,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         user.put("userNo", account.userNo());
         user.put("nickname", account.nickname());
         user.put("status", account.status());
-        user.put("kycStatus", account.kycStatus());
         response.put("user", user);
         response.put("screen", screen);
         Map<String, Object> detail = Map.of(
@@ -1165,7 +780,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 screen.put("title", "首页");
                 screen.put("greeting", "你好，" + account.nickname());
                 screen.put("accountBanner", Map.of(
-                        "status", account.status(), "kycStatus", account.kycStatus(),
+                        "status", account.status(),
                         "accountList", accountList == null ? "NONE" : accountList.kind()));
                 screen.put("assetSummary", List.of(
                         Map.of("symbol", "USDT", "available", account.walletUsdt()),
@@ -1199,7 +814,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 screen.put("userNo", account.userNo());
                 screen.put("nickname", account.nickname());
                 screen.put("accountStatus", account.status());
-                screen.put("kycStatus", account.kycStatus());
                 screen.put("userLevel", account.userLevel());
                 screen.put("vRank", account.vRank());
                 screen.put("twoFactorEnabled", account.twoFactorEnabled());
@@ -1213,7 +827,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     private UserAccountActionOverview loadAccountActionOverview() {
         Map<String, Object> baseOverview = userRepository.overview();
-        List<UserAccountView> accounts = userRepository.search(null, null, null, 50);
+        List<UserAccountView> accounts = userRepository.search(null, null, 50);
         List<UserAccountListEntryView> accountLists = userRepository.accountLists(null, 100);
         List<UserSessionView> sessions = userRepository.sessions(null, 200, sessionIdleDays());
         List<UserImpersonationSessionView> impersonations = userRepository.impersonations(50);
@@ -1742,50 +1356,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> requestC5KycReverification(
-            Long userId, String idempotencyKey, UserKycReverificationRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(
-                idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) return guard;
-        if (userId == null || userId <= 0 || request == null || !StringUtils.hasText(request.action())) {
-            return ApiResult.fail(422, "C5_KYC_REVERIFICATION_INPUT_REQUIRED");
-        }
-        String action = request.action().trim().toUpperCase(Locale.ROOT);
-        if (!C5_KYC_ACTIONS.contains(action)) {
-            return ApiResult.fail(422, "C5_KYC_REVERIFICATION_ACTION_INVALID");
-        }
-        String requiredAuthority = switch (action) {
-            case "DISABLE_2FA" -> "user_c5_2fa_disable";
-            case "PASSWORD_RESET" -> "user_c5_password_reset";
-            case "UNLOCK_LONG" -> "user_c5_unlock_long";
-            default -> "user_c5_unlock_short";
-        };
-        ApiResult<Map<String, Object>> authority = requireC5Authority(requiredAuthority);
-        if (authority != null) return authority;
-        UserKycRecord record = userRepository.findKycRecord(userId).orElse(null);
-        if (record == null || !"APPROVED".equalsIgnoreCase(record.status())) {
-            return ApiResult.fail(422, "KYC_REVERIFY_REQUIRED");
-        }
-        return idempotentC2("C5_KYC_REVERIFY_REQUEST:" + userId + ":" + action,
-                idempotencyKey, userId + "|" + action + "|" + request.reason().trim(), () -> {
-                    String actor = operator(request.operator());
-                    KycReviewTriggerResult result = riskKycReviewFacade.triggerC5IdentityReview(
-                            record.userNo(), action, actor, request.reason().trim());
-                    Map<String, Object> response = new LinkedHashMap<>();
-                    response.put("ticketId", result.ticketId());
-                    response.put("action", action);
-                    response.put("status", result.created() ? "WAITING_K5_REVIEW" : "MERGED_WITH_K5_REVIEW");
-                    response.put("created", result.created());
-                    c5RequiredAudit("C5_KYC_REVERIFICATION_REQUESTED", "RISK_KYC_REVIEW_TICKET",
-                            result.ticketId(), userId, actor, Map.of(
-                                    "action", action,
-                                    "reason", request.reason().trim(),
-                                    "idempotencyKey", idempotencyKey.trim()));
-                    return ApiResult.ok(response);
-                });
-    }
-
-    @Transactional(rollbackFor = Exception.class)
     public ApiResult<UserSecurityStatusView> disableTwoFactor(
             Long userId, String idempotencyKey, UserSecurityActionRequest request) {
         ApiResult<UserSecurityStatusView> guard = requireC5HighRiskCommand(
@@ -1810,9 +1380,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c5Rejected(userId, idempotencyKey, request, "C5_TWO_FACTOR_DISABLE_REJECTED", 409,
                     "C5_ACTION_STATE_CHANGED");
         }
-        if (!consumeC5KycReverification(userId, "DISABLE_2FA", idempotencyKey, request)
-                || !userRepository.disableTwoFactor(userId)) {
-            throw new IllegalStateException("C5_KYC_REVERIFICATION_CONSUME_OR_STATE_FAILED");
+        if (!userRepository.disableTwoFactor(userId)) {
+            throw new IllegalStateException("C5_SECURITY_STATE_CHANGED");
         }
         UserSecurityStatusView updated = loadSecurityStatus(userId);
         String actor = operator(request.operator());
@@ -1849,9 +1418,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c5Rejected(userId, idempotencyKey, request, "C5_PASSWORD_RESET_REJECTED", 409,
                     "C5_ACTION_STATE_CHANGED");
         }
-        if (!consumeC5KycReverification(userId, "PASSWORD_RESET", idempotencyKey, request)
-                || !userRepository.markPasswordResetRequired(userId, RESET_REQUIRED_PREFIX + idempotencyKey)) {
-            throw new IllegalStateException("C5_KYC_REVERIFICATION_CONSUME_OR_STATE_FAILED");
+        if (!userRepository.markPasswordResetRequired(userId, RESET_REQUIRED_PREFIX + idempotencyKey)) {
+            throw new IllegalStateException("C5_SECURITY_STATE_CHANGED");
         }
         userRepository.revokeUserSessions(userId, request.reason().trim());
         UserSecurityStatusView updated = loadSecurityStatus(userId);
@@ -1904,9 +1472,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c5Rejected(userId, idempotencyKey, request, "C5_USER_UNLOCK_REJECTED",
                     authorityGuard.getCode(), authorityGuard.getMessage());
         }
-        if (!consumeC5KycReverification(userId, "UNLOCK_" + serverLockKind, idempotencyKey, request)
-                || !userRepository.resetLoginFailures(userId)) {
-            throw new IllegalStateException("C5_KYC_REVERIFICATION_CONSUME_OR_STATE_FAILED");
+        if (!userRepository.resetLoginFailures(userId)) {
+            throw new IllegalStateException("C5_SECURITY_STATE_CHANGED");
         }
         UserSecurityStatusView updated = loadSecurityStatus(userId);
         String actor = operator(request.operator());
@@ -2009,7 +1576,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         UserAccountView updated = userRepository.findById(userId)
                 .orElse(new UserAccountView(
                         before.id(), before.userNo(), before.nickname(), before.phoneMasked(), before.countryCode(), nextStatus,
-                        before.kycStatus(), before.userLevel(), before.vRank(), before.twoFactorEnabled(), before.walletUsdt(),
+                        before.userLevel(), before.vRank(), before.twoFactorEnabled(), before.walletUsdt(),
                         before.walletNex(), before.riskScore(), before.riskBand(), before.deviceCount(), before.activeDeviceCount(),
                         before.registeredAt(), before.lastLoginAt()));
         Map<String, Object> detail = new LinkedHashMap<>();
@@ -3092,44 +2659,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (user == null) {
             return c5Rejected(userId, idempotencyKey, request, "C5_HIGH_RISK_ACTION_REJECTED", 404, "USER_NOT_FOUND");
         }
-        String evidenceError = c5KycEvidenceError(user, request, userId, action, idempotencyKey);
-        if (evidenceError != null) {
+        if (request == null || !Boolean.TRUE.equals(request.operatorConfirmed())) {
             return c5Rejected(userId, idempotencyKey, request, "C5_HIGH_RISK_ACTION_REJECTED",
-                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), evidenceError);
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C5_OPERATOR_CONFIRMATION_REQUIRED");
         }
         return null;
-    }
-
-    private String c5KycEvidenceError(
-            UserAccountView user, UserSecurityActionRequest request, Long userId,
-            String action, String idempotencyKey) {
-        if (!"APPROVED".equalsIgnoreCase(user.kycStatus()) || request == null
-                || !Boolean.TRUE.equals(request.identityConfirmed())) {
-            return "KYC_REVERIFY_REQUIRED";
-        }
-        String ticket = request.kycVerificationTicket();
-        if (!StringUtils.hasText(ticket) || ticket.trim().length() < 3 || ticket.trim().length() > 96
-                || containsRawJsonOrUrl(ticket)
-                || !ticket.trim().matches("[A-Za-z0-9._:/-]+")) {
-            return "KYC_REVERIFY_REQUIRED";
-        }
-        int rememberDays = boundedConfigInt("auth.session.step_up_days", 7, 1, 30);
-        if (!C5_KYC_ACTIONS.contains(action)
-                || !userRepository.canUseC5KycReverification(
-                        userId, ticket.trim(), action, rememberDays, idempotencyKey.trim())) {
-            return "KYC_REVERIFY_REQUIRED";
-        }
-        return null;
-    }
-
-    private boolean consumeC5KycReverification(
-            Long userId, String action, String idempotencyKey, UserSecurityActionRequest request) {
-        return userRepository.consumeC5KycReverification(
-                userId,
-                request.kycVerificationTicket().trim(),
-                action,
-                idempotencyKey.trim(),
-                operator(request.operator()));
     }
 
     private <T> ApiResult<T> requireC5UnlockAuthority(String lockKind) {
@@ -3166,8 +2700,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> fingerprint = new LinkedHashMap<>();
         fingerprint.put("userId", userId);
         fingerprint.put("reason", request.reason().trim());
-        fingerprint.put("kycVerificationTicket", request.kycVerificationTicket().trim());
-        fingerprint.put("identityConfirmed", request.identityConfirmed());
+        fingerprint.put("operatorConfirmed", request.operatorConfirmed());
         fingerprint.put("lockKind", request.lockKind());
         return fingerprint;
     }
@@ -3176,10 +2709,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("operator", operator(request.operator()));
         detail.put("role", normalizeRole(roleResolver.resolveCode()));
-        detail.put("kycVerificationChannel", "K5_INDEPENDENT_REVIEW");
-        detail.put("kycVerificationTicket", request.kycVerificationTicket().trim());
-        detail.put("kycVerifiedAt", "SERVER_VERIFIED");
-        detail.put("kycVerificationResult", "PASSED");
+        detail.put("operatorConfirmed", request.operatorConfirmed());
+        detail.put("control", "RBAC_IDEMPOTENCY_REASON_AUDIT_CAS");
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         return detail;
@@ -3208,9 +2739,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("operator", operator(request == null ? null : request.operator()));
         detail.put("role", normalizeRole(roleResolver.resolveCode()));
-        detail.put("kycVerificationChannel", request == null ? null : request.kycVerificationChannel());
-        detail.put("kycVerificationTicket", request == null ? null : request.kycVerificationTicket());
-        detail.put("kycVerifiedAt", request == null ? null : request.kycVerifiedAt());
         detail.put("lockKind", request == null ? null : request.lockKind());
         detail.put("reason", request == null ? null : request.reason());
         detail.put("idempotencyKey", idempotencyKey);
@@ -3237,9 +2765,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         payload.put("operator", actor);
         payload.put("role", normalizeRole(roleResolver.resolveCode()));
         payload.put("reason", reason);
-        if (auditDetail.containsKey("kycVerificationResult")) {
-            payload.put("kycVerificationResult", auditDetail.get("kycVerificationResult"));
-        }
         if (auditDetail.containsKey("lockKind")) {
             payload.put("lockKind", auditDetail.get("lockKind"));
         }
@@ -3439,244 +2964,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 reviewTrail,
                 redlines,
                 List.of("wallet asset adjustments", "user accounts", "required audit", "treasury coverage"));
-    }
-
-    private UserKycLedgerRow kycLedgerRow(UserKycRecord record, List<UserKycStatusHistoryView> historyRows) {
-        String backendStatus = normalizeKycStatus(record.status());
-        String displayStatus = displayKycStatus(backendStatus);
-        String walletAddress = record.pairedAddress();
-        boolean walletPaired = StringUtils.hasText(walletAddress);
-        String pairedAddress = walletPaired ? maskWalletAddress(walletAddress) : "未绑定";
-        String network = StringUtils.hasText(record.network()) ? record.network() : "—";
-        String pairedAt = walletPaired ? formatKycPairedAt(record.pairedAt()) : "—";
-        String triggerSource = displayKycSource(record.triggerSource());
-        List<UserKycKeyValue> info = List.of(
-                new UserKycKeyValue("当前状态", labelKycStatus(backendStatus)),
-                new UserKycKeyValue("账户状态", labelKycAccountStatus(record.accountStatus())),
-                new UserKycKeyValue("国家/地区", text(record.countryCode())),
-                new UserKycKeyValue("用户等级", text(record.userLevel())),
-                new UserKycKeyValue("钱包已配对", walletPaired ? "是" : "否"),
-                new UserKycKeyValue("配对地址", pairedAddress),
-                new UserKycKeyValue("网络", network),
-                new UserKycKeyValue("台账来源", "KYC 权威台账"));
-        List<String> history = historyRows == null ? List.of() : historyRows.stream()
-                .map(this::displayKycHistory)
-                .toList();
-        return new UserKycLedgerRow(
-                record.userId(),
-                record.userNo(),
-                record.nickname(),
-                record.phoneMasked(),
-                record.countryCode(),
-                displayStatus,
-                backendStatus,
-                labelKycStatus(backendStatus),
-                toneKycStatus(backendStatus),
-                pairedAddress,
-                network,
-                pairedAt,
-                triggerSource,
-                info,
-                history);
-    }
-
-    private String maskWalletAddress(String walletAddress) {
-        String trimmed = walletAddress == null ? "" : walletAddress.trim();
-        if (trimmed.length() <= 8) {
-            return "****";
-        }
-        return trimmed.substring(0, 4) + "****" + trimmed.substring(trimmed.length() - 2);
-    }
-
-    private String formatKycPairedAt(LocalDateTime pairedAt) {
-        return pairedAt == null ? "—" : pairedAt.format(KYC_PAIRED_DATE_FORMATTER);
-    }
-
-    private String displayKycSource(String source) {
-        if (!StringUtils.hasText(source)) return "—";
-        return switch (source.trim().toUpperCase(Locale.ROOT)) {
-            case "C4_MANUAL_VERIFY" -> "C4 人工核验";
-            case "C4_MANUAL_REVOKE" -> "C4 人工撤销";
-            case "K5_REVIEW_DECISION" -> "K5 复审裁决";
-            case "USER_SUBMITTED" -> "用户主动验证";
-            case "D2_FIRST_WITHDRAWAL" -> "D2 首次提现";
-            case "G2_EXCHANGE_THRESHOLD" -> "G2 累计兑换过线";
-            case "LEGACY_MIGRATION" -> "历史状态迁入";
-            default -> source.trim();
-        };
-    }
-
-    private String labelKycAccountStatus(String status) {
-        if (!StringUtils.hasText(status)) return "状态待核对";
-        return switch (status.trim().toUpperCase(Locale.ROOT)) {
-            case "ACTIVE" -> "正常";
-            case "FROZEN" -> "已冻结";
-            case "BANNED" -> "已封禁";
-            case "RESTRICTED" -> "受限";
-            default -> "状态待核对";
-        };
-    }
-
-    private String displayKycHistory(UserKycStatusHistoryView row) {
-        String at = row.createdAt() == null ? "时间未知" : row.createdAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-        String transition = StringUtils.hasText(row.beforeStatus())
-                ? labelKycStatus(normalizeKycStatus(row.beforeStatus())) + " → " + labelKycStatus(normalizeKycStatus(row.afterStatus()))
-                : "初始状态 · " + labelKycStatus(normalizeKycStatus(row.afterStatus()));
-        String ticket = StringUtils.hasText(row.ticketId()) ? " · 工单 " + row.ticketId() : "";
-        String reasonCode = switch (text(row.reasonCode()).toUpperCase(Locale.ROOT)) {
-            case "LEGACY_MIGRATION" -> "历史状态迁入";
-            case "MANUAL_VERIFICATION" -> "人工核验";
-            case "COMPLIANCE_CORRECTION" -> "合规纠正";
-            case "USER_APPEAL" -> "用户申诉";
-            case "RISK_ESCALATION" -> "风险升级";
-            case "K5_DECISION" -> "K5 复审裁决";
-            case "OTHER" -> "其他原因";
-            default -> "已记录原因";
-        };
-        String reason = "LEGACY_MIGRATION".equalsIgnoreCase(text(row.reasonCode()))
-                ? "历史状态迁入，仅保留可核对的原始状态，不补造审核事实"
-                : text(row.reason());
-        return at + " · " + transition + " · " + displayKycSource(row.source())
-                + " · " + reasonCode + " · " + reason + ticket;
-    }
-
-    private String requireKycReasonCode(String value) {
-        if (!StringUtils.hasText(value)) throw new IllegalArgumentException("C4_REASON_CODE_REQUIRED");
-        String normalized = value.trim().toUpperCase(Locale.ROOT);
-        if (!Set.of("MANUAL_VERIFICATION", "COMPLIANCE_CORRECTION", "USER_APPEAL", "RISK_ESCALATION", "K5_DECISION", "OTHER").contains(normalized)) {
-            throw new IllegalArgumentException("C4_REASON_CODE_UNSUPPORTED");
-        }
-        return normalized;
-    }
-
-    private String requireKycEvidence(String value) {
-        if (!StringUtils.hasText(value)) throw new IllegalArgumentException("C4_EVIDENCE_REQUIRED");
-        String normalized = value.trim();
-        if (normalized.length() < 3 || normalized.length() > 255 || containsRawJsonOrUrl(normalized)) {
-            throw new IllegalArgumentException("C4_EVIDENCE_INVALID");
-        }
-        return normalized;
-    }
-
-    private void requireKycReason(String value) {
-        int length = StringUtils.hasText(value) ? value.trim().length() : 0;
-        if (length < 8 || length > 200) throw new IllegalArgumentException("C4_REASON_LENGTH_INVALID");
-        if (containsRawJsonOrUrl(value)) throw new IllegalArgumentException("C4_REASON_INVALID");
-    }
-
-    private List<UserKycRecord> allKycRecords() {
-        List<UserKycRecord> records = new ArrayList<>();
-        int page = 1;
-        while (true) {
-            PageResult<UserKycRecord> slice = userRepository.pageKycRecords(null, page, 200);
-            records.addAll(slice.getRecords());
-            if (records.size() >= slice.getTotal() || slice.getRecords().isEmpty()) break;
-            page++;
-        }
-        return records;
-    }
-
-    private String kycCsv(List<UserKycRecord> records) {
-        StringBuilder csv = new StringBuilder("user_no,status,network,paired_at,trigger_source\n");
-        for (UserKycRecord row : records) {
-            csv.append(kycCsvCell(row.userNo())).append(',')
-                    .append(kycCsvCell(row.status())).append(',')
-                    .append(kycCsvCell(row.network())).append(',')
-                    .append(kycCsvCell(row.pairedAt())).append(',')
-                    .append(kycCsvCell(row.triggerSource())).append('\n');
-        }
-        return csv.toString();
-    }
-
-    private String kycCsvCell(Object value) {
-        String raw = value == null ? "" : String.valueOf(value);
-        if (raw.startsWith("=") || raw.startsWith("+") || raw.startsWith("-") || raw.startsWith("@")) raw = "'" + raw;
-        return '"' + raw.replace("\"", "\"\"") + '"';
-    }
-
-    private Map<String, Object> kycExportMap(KycRegulatoryExportJob job) {
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("jobNo", job.jobNo());
-        value.put("status", job.status());
-        value.put("scope", job.scope());
-        value.put("rowCount", job.rowCount());
-        value.put("masked", job.masked());
-        value.put("downloadPath", job.downloadPath());
-        value.put("createdAt", job.createdAt());
-        return value;
-    }
-
-    private String normalizeOptionalKycStatus(String status) {
-        return StringUtils.hasText(status) ? normalizeKycStatus(status) : null;
-    }
-
-    private String normalizeKycStatus(String status) {
-        String normalized = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "PENDING";
-        normalized = switch (normalized) {
-            case "VERIFIED", "APPROVE", "APPROVED", "PASSED", "PASS" -> "APPROVED";
-            case "REVIEW", "IN_REVIEW", "PENDING", "WAITING" -> "PENDING";
-            case "NONE", "UNVERIFIED", "NOT_VERIFIED", "NO" -> "NONE";
-            case "REJECT", "REJECTED", "DENIED" -> "REJECTED";
-            default -> normalized;
-        };
-        if (!KYC_STATUSES.contains(normalized)) {
-            throw new IllegalArgumentException("KYC_STATUS_UNSUPPORTED");
-        }
-        return normalized;
-    }
-
-    private String displayKycStatus(String backendStatus) {
-        return switch (backendStatus) {
-            case "APPROVED" -> "verified";
-            case "PENDING" -> "review";
-            case "REJECTED" -> "rejected";
-            default -> "none";
-        };
-    }
-
-    private String labelKycStatus(String backendStatus) {
-        return switch (backendStatus) {
-            case "APPROVED" -> "已验证";
-            case "PENDING" -> "复审中";
-            case "REJECTED" -> "已拒绝";
-            default -> "未验证";
-        };
-    }
-
-    private String toneKycStatus(String backendStatus) {
-        return switch (backendStatus) {
-            case "APPROVED" -> "ok";
-            case "PENDING" -> "warn";
-            case "REJECTED" -> "bad";
-            default -> "dim";
-        };
-    }
-
-    private String kycNetworkWhitelist() {
-        return configFacade.activeValue(KYC_NETWORK_WHITELIST_KEY)
-                .filter(StringUtils::hasText)
-                .orElse(DEFAULT_KYC_NETWORK_WHITELIST);
-    }
-
-    private String normalizeKycNetworkWhitelist(String value) {
-        String raw = requireText(value, "KYC_NETWORK_WHITELIST_REQUIRED");
-        if (containsRawJsonOrUrl(raw)) {
-            throw new IllegalArgumentException("KYC_NETWORK_WHITELIST_REJECTED");
-        }
-        List<String> networks = Pattern.compile("[,/\\s]+")
-                .splitAsStream(raw.replace("|", " "))
-                .map(String::trim)
-                .filter(StringUtils::hasText)
-                .map(token -> token.toUpperCase(Locale.ROOT))
-                .distinct()
-                .toList();
-        if (networks.isEmpty()) {
-            throw new IllegalArgumentException("KYC_NETWORK_WHITELIST_REQUIRED");
-        }
-        if (!ALLOWED_KYC_NETWORKS.containsAll(networks)) {
-            throw new IllegalArgumentException("KYC_NETWORK_UNSUPPORTED");
-        }
-        return String.join(" / ", networks);
     }
 
     private boolean containsRawJsonOrUrl(String raw) {
@@ -4080,74 +3367,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .build());
     }
 
-    private void c4RejectedAudit(
-            Long userId,
-            String idempotencyKey,
-            UserKycStatusUpdateRequest request,
-            String currentState,
-            String nextState,
-            String failureReason) {
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("userId", userId);
-        detail.put("expectedState", request == null ? null : request.expectedState());
-        detail.put("currentState", currentState);
-        detail.put("nextState", nextState);
-        detail.put("reasonCode", request == null ? null : request.reasonCode());
-        detail.put("evidenceRef", request == null ? null : request.evidenceRef());
-        detail.put("idempotencyKey", idempotencyKey);
-        detail.put("failureReason", failureReason);
-        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
-                .action("C4_KYC_STATUS_CHANGE_REJECTED")
-                .resourceType("USER_KYC")
-                .resourceId(userId == null ? "UNKNOWN" : String.valueOf(userId))
-                .bizNo(userId == null ? null : String.valueOf(userId))
-                .userId(userId)
-                .actorType("ADMIN")
-                .actorUsername(operator(request == null ? null : request.operator()))
-                .result("REJECTED")
-                .riskLevel("HIGH")
-                .detail(detail)
-                .build());
-    }
-
-    private void c4CommandFailureAudit(
-            String action,
-            String resourceType,
-            String resourceId,
-            Long userId,
-            String actor,
-            String idempotencyKey,
-            String reasonCode,
-            String evidenceRef,
-            String reason,
-            String failureReason,
-            String result) {
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("userId", userId);
-        detail.put("reasonCode", reasonCode);
-        detail.put("evidenceRef", evidenceRef);
-        detail.put("reason", reason);
-        detail.put("idempotencyKey", idempotencyKey);
-        detail.put("failureReason", failureReason);
-        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
-                .action(action)
-                .resourceType(resourceType)
-                .resourceId(StringUtils.hasText(resourceId) ? resourceId : "UNKNOWN")
-                .bizNo(StringUtils.hasText(resourceId) ? resourceId : null)
-                .userId(userId)
-                .actorType("ADMIN")
-                .actorUsername(operator(actor))
-                .result("FAILED".equals(result) ? "FAILED" : "REJECTED")
-                .riskLevel("HIGH")
-                .detail(detail)
-                .build());
-    }
-
-    /**
-     * Impersonation page requests run under the target user's read-only JWT. The originating
-     * administrator is therefore taken from the already-validated server-side session row,
-     * rather than resolving the current target-user security context again.
-     */
     private void c2TrustedSessionActorAudit(
             String action,
             String resourceType,
@@ -4215,10 +3434,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
-            case "c4_kyc_status_change" -> {
-                UserKycStatusUpdateRequest req = new UserKycStatusUpdateRequest(str(p, "status"), reason, operator);
-                return updateKycStatus(longVal(p, "userId"), idem, req);
-            }
             case "c5_2fa_disable" -> {
                 UserSecurityActionRequest req = new UserSecurityActionRequest(reason, operator);
                 return disableTwoFactor(longVal(p, "userId"), idem, req);

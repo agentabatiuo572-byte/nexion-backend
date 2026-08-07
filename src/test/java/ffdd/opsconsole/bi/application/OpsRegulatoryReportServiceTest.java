@@ -74,9 +74,6 @@ class OpsRegulatoryReportServiceTest {
                 "VN", "越南", List.of("VN"), "v1", "published", "hash-1", 7,
                 "2026-07-01", 100L, 75.5D, 4L);
         when(disclosureFacade.resolveCurrent("VN", "v1")).thenReturn(Optional.of(disclosure));
-        when(reportRepository.dashboard("L2")).thenReturn(Map.of("stages", List.of(
-                Map.of("key", "kycSubmitted", "count", 12L),
-                Map.of("key", "kycApproved", "count", 9L))));
         when(financeFacade.currentFinanceSnapshot()).thenReturn(Map.of("snapshot", Map.of(
                 "reserveUsd", 1000, "liabilitiesUsd", 800, "coverageRatio", 125,
                 "netFlow24hUsd", 25, "queueBacklogCount", 2, "queueBacklogUsd", 40)));
@@ -90,7 +87,7 @@ class OpsRegulatoryReportServiceTest {
         ArgumentCaptor<String> csv = ArgumentCaptor.forClass(String.class);
         verify(reportRepository).saveSnapshotCsv(anyString(), csv.capture());
         assertThat(csv.getValue())
-                .contains("disclosure_version", "aggregate_only_no_user_rows", "C4", "L3", "D4", "A2", "J4")
+                .contains("disclosure_version", "aggregate_only_no_user_rows", "L3", "D4", "A2", "J4")
                 .doesNotContain("user_id", "phone", "passport");
         ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(audit.capture());
@@ -102,29 +99,6 @@ class OpsRegulatoryReportServiceTest {
                 .containsEntry("jurisdictionCode", "VN")
                 .containsEntry("disclosureVersion", "v1")
                 .containsEntry("chapterCount", 7);
-    }
-
-    @Test
-    void missingC4AggregateIsExplicitlyUnavailableInsteadOfInventingZero() {
-        RegulatoryDisclosureSnapshot disclosure = new RegulatoryDisclosureSnapshot(
-                "VN", "越南", List.of("VN"), "v1", "published", "hash-1", 7,
-                "2026-07-01", 100L, 75.5D, 4L);
-        when(disclosureFacade.resolveCurrent("VN", "v1")).thenReturn(Optional.of(disclosure));
-        when(reportRepository.dashboard("L2")).thenReturn(Map.of());
-        when(reportRepository.createReport(any())).thenAnswer(invocation -> view(invocation.getArgument(0)));
-        RegulatoryReportRequest kyc = new RegulatoryReportRequest(
-                "KYC_COMPLIANCE", "2026-07", "VN", "v1", "合规团队", "99105-L5-REG",
-                "99105监管报告缺失源验收", "ignored");
-
-        ApiResult<Map<String, Object>> result = service.create("idem-missing-c4", kyc);
-
-        assertThat(result.getCode()).isZero();
-        ArgumentCaptor<String> csv = ArgumentCaptor.forClass(String.class);
-        verify(reportRepository).saveSnapshotCsv(anyString(), csv.capture());
-        assertThat(csv.getValue())
-                .contains("kyc_submitted_users","kyc_verified_users", "UNAVAILABLE", "no value inferred")
-                .doesNotContain("\"kyc_submitted_users\",\"0\"")
-                .doesNotContain("\"kyc_verified_users\",\"0\"");
     }
 
     private RegulatoryReportRequest request(String reason) {

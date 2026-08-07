@@ -150,7 +150,7 @@ class OpsSupportTicketControllerTest {
 
     @Test
     void assignDelegatesWithIdempotencyHeader() {
-        SupportTicketAssigneeRequest request = new SupportTicketAssigneeRequest(7L, "Tomas R.", "Marina K.", "kyc specialist");
+        SupportTicketAssigneeRequest request = new SupportTicketAssigneeRequest(7L, "Tomas R.", "Marina K.", "withdrawal specialist");
         when(ticketService.assign("TK-1", "idem-m2-assign", request)).thenReturn(ApiResult.ok(null));
 
         assertThat(controller.assign("TK-1", "idem-m2-assign", request).getCode()).isZero();

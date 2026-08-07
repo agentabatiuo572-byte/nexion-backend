@@ -12,15 +12,13 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.Attribution;
-import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.KycWalletRow;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -45,18 +43,17 @@ class AppWithdrawalServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
-    private final RiskKycReviewFacade k5 = mock(RiskKycReviewFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, k5, ledger);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.findActiveUser(7L)).thenReturn(7L);
-        when(mapper.lockKycWallet(7L)).thenReturn(new KycWalletRow(
-                "APPROVED", "TR7NHqExampleAddress", "TRC20"));
+        when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
         when(mapper.countLast24Hours(7L)).thenReturn(0);
         when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
@@ -80,8 +77,6 @@ class AppWithdrawalServiceTest {
         when(mapper.insertWithdrawal(any())).thenReturn(1);
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 1, "2026-W30"));
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, java.util.List.of()));
-        when(k5.triggerLargeWithdrawalReview(anyString(), any(), anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(KycReviewTriggerResult.notRequired());
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }
@@ -186,12 +181,10 @@ class AppWithdrawalServiceTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_KILL_SWITCH_DISABLED");
-        verify(mapper, never()).lockKycWallet(any());
+        verify(mapper, never()).lockPayoutAddress(any(), anyString());
         verify(mapper, never()).reserveFunds(any(), any(), any(), any());
         verify(mapper, never()).insertWithdrawal(any());
         verify(k3, never()).evaluate(any());
-        verify(k5, never()).triggerLargeWithdrawalReview(
-                anyString(), any(), anyString(), anyString(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), any(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox, never()).publishUserEvent(
@@ -212,14 +205,42 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
-    void rejectsClientAddressThatDoesNotMatchServerPairedWalletWithoutMutation() {
+    void rejectsClientAddressThatDoesNotMatchServerPayoutAddressWithoutMutation() {
         ApiResult<java.util.Map<String, Object>> result = service.submit(
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqDifferent", "wd-2");
 
         assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAIRED_WALLET_MISMATCH");
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_MISMATCH");
         verify(mapper, never()).reserveFunds(any(), any(), any(), any());
         verify(mapper, never()).insertWithdrawal(any());
+    }
+
+    @Test
+    void smallAmountNeverBypassesTheNewAddressDelay() {
+        when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().plusHours(12),
+                LocalDateTime.now().plusDays(7)));
+
+        ApiResult<java.util.Map<String, Object>> result = service.submit(
+                7L, new BigDecimal("50"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-small-bypass");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
+        verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+    }
+
+    @Test
+    void amountAboveSmallThresholdAlsoHonorsTheNewAddressDelay() {
+        when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().plusHours(12),
+                LocalDateTime.now().plusDays(7)));
+
+        ApiResult<java.util.Map<String, Object>> result = service.submit(
+                7L, new BigDecimal("50.000001"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-small-boundary");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
+        verify(mapper, never()).reserveFunds(any(), any(), any(), any());
     }
 
     @Test

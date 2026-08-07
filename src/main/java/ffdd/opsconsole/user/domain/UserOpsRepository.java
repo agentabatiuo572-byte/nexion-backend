@@ -12,26 +12,13 @@ import ffdd.opsconsole.user.dto.UserQueryRequest;
 public interface UserOpsRepository {
     Map<String, Object> overview();
 
-    List<UserAccountView> search(String keyword, String status, String kycStatus, int limit);
+    List<UserAccountView> search(String keyword, String status, int limit);
 
     List<UserAccountControlFactView> accountControlFacts(int limit);
 
     Optional<UserAccountControlFactView> findAccountControlFact(Long userId);
 
     PageResult<UserAccountView> pageProfiles(UserQueryRequest request);
-
-    long countByKycStatus(String kycStatus);
-
-    PageResult<UserKycRecord> pageKycRecords(String kycStatus, int pageNum, int pageSize);
-
-    Optional<UserKycRecord> findKycRecord(Long userId);
-
-    List<UserKycStatusHistoryView> kycStatusHistory(Long userId, int limit);
-
-    boolean transitionKycStatus(
-            Long userId, String expectedStatus, long expectedVersion, String nextStatus,
-            String reasonCode, String reason, String evidenceRef, String source,
-            String operator, String idempotencyKey, String ticketId);
 
     Optional<UserAccountView> findById(Long userId);
 
@@ -42,20 +29,6 @@ public interface UserOpsRepository {
     Optional<String> findWalletAddressByUserId(Long userId);
 
     Optional<UserSecurityStatusView> securityStatus(Long userId);
-
-    default List<UserKycReverificationView> availableC5KycReverifications(Long userId, int rememberDays) {
-        return List.of();
-    }
-
-    default boolean canUseC5KycReverification(
-            Long userId, String ticketId, String action, int rememberDays, String idempotencyKey) {
-        return false;
-    }
-
-    default boolean consumeC5KycReverification(
-            Long userId, String ticketId, String action, String idempotencyKey, String operator) {
-        return false;
-    }
 
     List<UserSecurityUserRow> lockedSecurityUsers(
             int shortLockThreshold,
@@ -146,8 +119,6 @@ public interface UserOpsRepository {
     boolean isFrozenBySource(Long userId, String source);
 
     boolean restoreUserStatusByFreezeSource(Long userId, String source, String sourceRef);
-
-    void updateKycStatus(Long userId, String kycStatus, String reason);
 
     Optional<UserSessionView> findSession(String refreshTokenId);
 

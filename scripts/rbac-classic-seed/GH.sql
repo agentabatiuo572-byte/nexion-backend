@@ -15,7 +15,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
 
   -- G2 兑换风控 /finance-products/exchange（8 点）
   ('finprod_g2_read',                'G2 兑换风控页面读',            'API', '/finance-products/exchange',   'READ',  0, 1, 0),
-  ('finprod_g2_write',               'G2 兑换常规写(最低费/队列策略/KYC复审)', 'API', '/finance-products/exchange',   'WRITE', 0, 1, 0),
+  ('finprod_g2_write',               'G2 兑换常规写(最低费/队列策略)', 'API', '/finance-products/exchange',   'WRITE', 0, 1, 0),
   ('finprod_g2_cap_user_write',      'G2 单用户日额度(放宽放大流出·过B1)', 'API', '/finance-products/exchange',   'HIGH',  1, 1, 0),
   ('finprod_g2_cap_platform_write',  'G2 平台日额度(放宽放大流出·过B1)', 'API', '/finance-products/exchange',   'HIGH',  1, 1, 0),
   ('finprod_g2_cap_per_tx_write',    'G2 单笔额度(放宽放大流出·过B1)', 'API', '/finance-products/exchange',   'HIGH',  1, 1, 0),
