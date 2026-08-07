@@ -13,7 +13,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.Attribution;
-import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.KycWalletRow;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
@@ -21,8 +21,6 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
@@ -51,17 +49,16 @@ class AppWithdrawalK3RoutingServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
-    private final RiskKycReviewFacade k5 = mock(RiskKycReviewFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, k5, ledger);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
-        when(mapper.lockKycWallet(7L)).thenReturn(new KycWalletRow(
-                "APPROVED", "TR7NHqExampleAddress", "TRC20"));
+        when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
         when(mapper.countLast24Hours(7L)).thenReturn(3);
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("5000.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
@@ -85,8 +82,6 @@ class AppWithdrawalK3RoutingServiceTest {
         when(mapper.insertWithdrawal(any())).thenReturn(1);
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 1, "2026-W30"));
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, List.of()));
-        when(k5.triggerLargeWithdrawalReview(anyString(), any(), anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(KycReviewTriggerResult.notRequired());
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }
@@ -115,30 +110,6 @@ class AppWithdrawalK3RoutingServiceTest {
         verify(mapper).insertWithdrawal(write.capture());
         assertThat(write.getValue().status()).isEqualTo("FROZEN");
         assertThat(write.getValue().failureReason()).startsWith("K3_ROUTE:freeze:WR-ADDRESS");
-        verify(outbox).publishUserEvent(eq("WITHDRAWAL"), anyString(), eq("risk.withdraw_held"), eq(7L),
-                eq("P2"), eq(1), eq("2026-W30"), any());
-    }
-
-    @Test
-    void layersK5OnTheSameK3ConclusionWithoutReplacingTheK3Event() {
-        RiskRuleView rule = rule("WR-AMOUNT", "金额", "单笔 >= $1,000", "manual", 90);
-        when(k3.evaluate(any())).thenReturn(
-                new WithdrawalRiskDecision("manual", rule.ruleId(), rule.dimension(), List.of(rule)));
-        when(k5.triggerLargeWithdrawalReview(anyString(), any(), anyString(), anyString(), anyString(), anyString()))
-                .thenReturn(new KycReviewTriggerResult(true, true, "KR-D2-ONE", "K5_LARGE_WITHDRAWAL_REVIEW_REQUIRED"));
-
-        ApiResult<Map<String, Object>> result = service.submit(
-                7L, new BigDecimal("1000"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-k3-k5");
-
-        assertThat(result.getData()).containsEntry("status", "FROZEN")
-                .containsEntry("riskRoute", "freeze")
-                .containsEntry("k3RiskRoute", "manual")
-                .containsEntry("k5TicketId", "KR-D2-ONE");
-        ArgumentCaptor<WithdrawalWrite> write = ArgumentCaptor.forClass(WithdrawalWrite.class);
-        verify(mapper).insertWithdrawal(write.capture());
-        assertThat(write.getValue().failureReason())
-                .contains("K5_REVIEW:KR-D2-ONE", "K3_ROUTE:manual:WR-AMOUNT", "K4_HIGH_PRIORITY:78");
-        verify(k3).recordDecision(any(), any());
         verify(outbox).publishUserEvent(eq("WITHDRAWAL"), anyString(), eq("risk.withdraw_held"), eq(7L),
                 eq("P2"), eq(1), eq("2026-W30"), any());
     }
@@ -193,7 +164,7 @@ class AppWithdrawalK3RoutingServiceTest {
                 "tr7nhqexampleaddress", "wd-k3-tron-case-change");
 
         assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAIRED_WALLET_MISMATCH");
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_MISMATCH");
         verify(k3, never()).evaluate(any());
         verify(mapper, never()).reserveFunds(any(), any(), any(), any());
         verify(mapper, never()).insertWithdrawal(any());

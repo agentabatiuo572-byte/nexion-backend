@@ -5,11 +5,11 @@ SET SQL_SAFE_UPDATES = 0;
 -- Run after scripts/schema.sql. The script is idempotent and intentionally
 -- preserves the real superadmin account.
 SET @cleanup_regex =
-  '(e2e|mock|demo|SOP-DRAFT|PROOF-SEED|IMP-SEED|TASK-SEED|TASK-20260522|POC-20260522|EARN-20260522|KYC-10001|UD-10001|smoke|fixture|Seed User|Nexion Demo|seed:|20260701_173441|173441|175043|RISK[0-9]_20260701173441|SUPPORT[0-9]_20260701173441|WD-FIN2R4-LARGE-173441|super1[-_]|super2[-_]|cross_permission|agent_a|Agent-GROWTH|Growth Share Test|GROWTH-DEV)';
+  '(e2e|mock|demo|SOP-DRAFT|PROOF-SEED|IMP-SEED|TASK-SEED|TASK-20260522|POC-20260522|EARN-20260522|UD-10001|smoke|fixture|Seed User|Nexion Demo|seed:|20260701_173441|173441|175043|RISK[0-9]_20260701173441|SUPPORT[0-9]_20260701173441|WD-FIN2R4-LARGE-173441|super1[-_]|super2[-_]|cross_permission|agent_a|Agent-GROWTH|Growth Share Test|GROWTH-DEV)';
 SET @config_cleanup_regex =
   '(^|[._:-])(e2e|sop-draft|seed)([._:-]|$)|SOP-DRAFT|PROOF-SEED|smoke|fixture|seeded|seed config|20260701_173441|173441|175043|RISK[0-9]_20260701173441|SUPPORT[0-9]_20260701173441|WD-FIN2R4-LARGE-173441|super1[-_]|super2[-_]|cross_permission|agent_a|Agent-GROWTH|Growth Share Test|GROWTH-DEV';
 SET @device_cleanup_regex =
-  '(e2e|mock|demo|SOP-DRAFT|PROOF-SEED|IMP-SEED|TASK-SEED|TASK-20260522|POC-20260522|EARN-20260522|KYC-10001|UD-10001|smoke|fixture|Seed User|Nexion Demo|seed:|20260701_173441|173441|175043|RISK[0-9]_20260701173441|SUPPORT[0-9]_20260701173441|WD-FIN2R4-LARGE-173441|super1[-_]|super2[-_]|cross_permission|agent_a|Agent-GROWTH|Growth Share Test|GROWTH-DEV|(^|[^[:alnum:]])TEST([-_]|[^[:alnum:]]|$))';
+  '(e2e|mock|demo|SOP-DRAFT|PROOF-SEED|IMP-SEED|TASK-SEED|TASK-20260522|POC-20260522|EARN-20260522|UD-10001|smoke|fixture|Seed User|Nexion Demo|seed:|20260701_173441|173441|175043|RISK[0-9]_20260701173441|SUPPORT[0-9]_20260701173441|WD-FIN2R4-LARGE-173441|super1[-_]|super2[-_]|cross_permission|agent_a|Agent-GROWTH|Growth Share Test|GROWTH-DEV|(^|[^[:alnum:]])TEST([-_]|[^[:alnum:]]|$))';
 
 DROP TEMPORARY TABLE IF EXISTS tmp_ops_mock_admin;
 DROP TEMPORARY TABLE IF EXISTS tmp_ops_mock_role;
@@ -364,12 +364,6 @@ SET @sql = IF(
 );
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-UPDATE nx_kyc_profile k
-   SET k.is_deleted = 1,
-       k.updated_at = NOW()
- WHERE k.user_id IN (SELECT user_id FROM tmp_ops_mock_user)
-    OR REGEXP_LIKE(CONCAT_WS(' ', k.kyc_no, k.status, COALESCE(k.country, ''), COALESCE(k.applicant_name, ''), COALESCE(k.document_type, ''), COALESCE(k.document_last4, ''), COALESCE(k.document_object_key, ''), COALESCE(k.reviewed_by, ''), COALESCE(k.reject_reason, ''), COALESCE(k.risk_notes, '')), @cleanup_regex, 'i');
-
 UPDATE nx_proof_asset p
    SET p.is_deleted = 1,
        p.updated_at = NOW()
@@ -437,12 +431,6 @@ UPDATE nx_admin_risk_arbitrage_row r
    SET r.is_deleted = 1,
        r.updated_at = NOW()
  WHERE REGEXP_LIKE(CONCAT_WS(' ', r.row_id, r.view_key, r.cluster_id, r.cell1, r.cell2, r.cell3, r.cell4, r.cell5, r.cell6, r.level_value, r.actions_csv, r.disposition), @cleanup_regex, 'i');
-
-UPDATE nx_admin_risk_kyc_review_ticket t
-   SET t.status = 'closed',
-       t.is_deleted = 1,
-       t.updated_at = NOW()
- WHERE REGEXP_LIKE(CONCAT_WS(' ', t.ticket_id, t.ticket_type, t.user_no, t.amount_text, t.kyc_text, t.status, COALESCE(t.info_json, ''), COALESCE(t.history_json, ''), COALESCE(t.decision_reason, ''), COALESCE(t.reviewed_by, '')), @cleanup_regex, 'i');
 
 UPDATE nx_growth_voucher v
    SET v.status = 'archived',

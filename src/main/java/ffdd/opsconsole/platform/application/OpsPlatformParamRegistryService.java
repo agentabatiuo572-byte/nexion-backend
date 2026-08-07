@@ -227,8 +227,8 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("g.genesis.")) {
             return new Owner("G", "G4", "G4 Genesis 经济", "/finance-products/genesis");
         }
-        if (key.startsWith("kyc.")) {
-            return new Owner("C", "C4", "C4 KYC 审核", "/users/kyc");
+        if (key.startsWith("payout.")) {
+            return new Owner("D", "D5", "D5 提现参数", "/finance/params");
         }
         if (key.startsWith("treasury.d3.")) {
             return new Owner("D", "D3", "D3 资金池与负债", "/finance/pool");

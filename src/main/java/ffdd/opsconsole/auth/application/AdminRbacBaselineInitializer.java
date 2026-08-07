@@ -15,7 +15,7 @@ public class AdminRbacBaselineInitializer {
             new RoleDef("SUPER_ADMIN", "超级管理员", "平台全域管理员"),
             new RoleDef("CONFIG_ADMIN", "配置运营", "平台配置与系统参数管理员"),
             new RoleDef("FINANCE", "财务", "资金、账务与提现审核"),
-            new RoleDef("RISK", "风控", "风控、KYC 与紧急处置"),
+            new RoleDef("RISK", "风控", "风控与紧急处置"),
             new RoleDef("CONTENT", "内容运营", "内容、公告与披露管理"),
             new RoleDef("GROWTH", "增长运营", "增长、设备与网络运营"),
             new RoleDef("SUPPORT", "客服", "客服中心全局后台角色;主管、专属、通用在 M1 坐席业务表内配置"),

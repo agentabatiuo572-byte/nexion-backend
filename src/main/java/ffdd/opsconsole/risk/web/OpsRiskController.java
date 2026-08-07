@@ -20,11 +20,6 @@ import ffdd.opsconsole.risk.dto.RiskClusterStatusRequest;
 import ffdd.opsconsole.risk.dto.RiskClusterReviewRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
 import ffdd.opsconsole.risk.dto.RiskIpWhitelistRequest;
-import ffdd.opsconsole.risk.dto.RiskKycManualReviewRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewDecisionRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewParamUpdateRequest;
-import ffdd.opsconsole.risk.dto.RiskKycAlertSubscriptionRequest;
-import ffdd.opsconsole.risk.dto.RiskKycReviewOverviewQueryRequest;
 import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
@@ -334,51 +329,4 @@ public class OpsRiskController {
         return riskService.recomputeScores(idempotencyKey, request);
     }
 
-    @GetMapping("/kyc-review/overview")
-    @PreAuthorize("hasAuthority('risk_k5_read')")
-    public ApiResult<Map<String, Object>> kycReviewOverview(@ModelAttribute RiskKycReviewOverviewQueryRequest request) {
-        return riskService.kycReviewOverview(request);
-    }
-
-    @GetMapping("/kyc-review/users")
-    @PreAuthorize("hasAuthority('risk_k5_read')")
-    public ApiResult<java.util.List<Map<String, Object>>> kycReviewUsers(
-            @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) Integer limit) {
-        return riskService.kycReviewUsers(keyword, limit);
-    }
-
-    @PatchMapping("/kyc-review/params/{key}")
-    @PreAuthorize("hasAuthority('risk_k5_write')")
-    public ApiResult<Map<String, Object>> updateKycReviewParam(
-            @PathVariable String key,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody RiskKycReviewParamUpdateRequest request) {
-        return riskService.updateKycReviewParam(key, idempotencyKey, request);
-    }
-
-    @PatchMapping("/kyc-review/subscription")
-    @PreAuthorize("hasAuthority('risk_k5_write')")
-    public ApiResult<Map<String, Object>> updateKycAlertSubscription(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody RiskKycAlertSubscriptionRequest request) {
-        return riskService.updateKycAlertSubscription(idempotencyKey, request);
-    }
-
-    @PostMapping("/kyc-review/tickets/manual")
-    @PreAuthorize("hasAuthority('risk_k5_ticket_manual')")
-    public ApiResult<Map<String, Object>> createManualKycReviewTicket(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody RiskKycManualReviewRequest request) {
-        return riskService.createManualKycReviewTicket(idempotencyKey, request);
-    }
-
-    @PostMapping("/kyc-review/tickets/{ticketId}/decision")
-    @PreAuthorize("hasAnyAuthority('risk_k5_ticket_pass','risk_k5_ticket_reject')")
-    public ApiResult<Map<String, Object>> decideKycReviewTicket(
-            @PathVariable String ticketId,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody RiskKycReviewDecisionRequest request) {
-        return riskService.decideKycReviewTicket(ticketId, idempotencyKey, request);
-    }
 }

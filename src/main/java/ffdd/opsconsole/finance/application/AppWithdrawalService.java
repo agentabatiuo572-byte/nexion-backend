@@ -2,15 +2,13 @@ package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.Attribution;
-import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.KycWalletRow;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
@@ -57,7 +55,6 @@ public class AppWithdrawalService {
     private final AuditLogService audit;
     private final EventOutboxService outbox;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
-    private final RiskKycReviewFacade riskKycReviewFacade;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
@@ -121,14 +118,15 @@ public class AppWithdrawalService {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
-        KycWalletRow kyc = mapper.lockKycWallet(userId);
-        if (kyc == null || !"APPROVED".equalsIgnoreCase(kyc.status())
-                || !StringUtils.hasText(kyc.pairedAddress()) || !StringUtils.hasText(kyc.network())) {
-            return ApiResult.fail(409, "WITHDRAWAL_KYC_WALLET_REQUIRED");
+        PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
+        if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
+            return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_REQUIRED");
         }
-        if (!pairedAddressMatches(chain, address, kyc.pairedAddress())
-                || !chain.equals(normalizeStoredChain(kyc.network()))) {
-            return ApiResult.fail(409, "WITHDRAWAL_PAIRED_WALLET_MISMATCH");
+        if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(LocalDateTime.now())) {
+            return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
+        }
+        if (!payoutAddressMatches(chain, address, payoutAddress.address())) {
+            return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_MISMATCH");
         }
         if (!networkEnabled(chain)) return ApiResult.fail(409, "WITHDRAWAL_NETWORK_DISABLED");
 
@@ -224,23 +222,18 @@ public class AppWithdrawalService {
         if (riskDecision == null || !Set.of("pass", "delay", "manual", "freeze").contains(riskDecision.action())) {
             throw new BizException(503, "K3_WITHDRAWAL_DECISION_UNAVAILABLE");
         }
-        KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeWithdrawalReview(
-                riskFacts.userNo(), amount, kyc.status(), withdrawalNo, "system",
-                "D2 queue entry server-canonical KYC review");
-        if (k5Review == null || (k5Review.requiresReview() && !StringUtils.hasText(k5Review.ticketId()))) {
-            throw new BizException(503, "K5_WITHDRAWAL_REVIEW_UNAVAILABLE");
-        }
+
         int k4Score = riskFacts.k4RiskScore();
         String k4Priority = k4Priority(k4Score, riskFacts);
-        boolean frozen = "freeze".equals(riskDecision.action()) || k5Review.requiresReview();
-        boolean delayed = "delay".equals(riskDecision.action()) && !k5Review.requiresReview();
+        boolean frozen = "freeze".equals(riskDecision.action());
+        boolean delayed = "delay".equals(riskDecision.action());
         boolean fastTrack = k4Score < riskFacts.k4BandLowMax()
-                && "pass".equals(riskDecision.action()) && !k5Review.requiresReview();
+                && "pass".equals(riskDecision.action());
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
         String status = frozen ? "FROZEN" : (fastTrack || delayed) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
-        String riskRoute = finalRiskRoute(k4Score, riskFacts, riskDecision, k5Review);
+        String riskRoute = finalRiskRoute(k4Score, riskFacts, riskDecision);
         String failureReason = fastTrack ? "H1_COOLDOWN_FAST_TRACK"
-                : riskRouteEvidence(k4Score, riskFacts, riskDecision, k5Review);
+                : riskRouteEvidence(k4Score, riskFacts, riskDecision);
         if (mapper.reserveFunds(userId, amount, nexBurned, wallet.version()) != 1) {
             throw new BizException(409, "WITHDRAWAL_WALLET_CONFLICT");
         }
@@ -249,7 +242,7 @@ public class AppWithdrawalService {
                 networkFeeRate, networkFeeMin, networkFeeMax, networkFee,
                 penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
-                frozen ? (k5Review.requiresReview() ? "K5_REVIEW" : "K3_RULE_FREEZE")
+                frozen ? "K3_RULE_FREEZE"
                         : delayed ? "K3_RULE_DELAY" : fastTrack ? "H1_PHASE_COOLDOWN" : null,
                 "H1:M" + rhythm.currentMonth() + ":" + rhythm.currentPhase(),
                 k4Priority, riskDecision.action(), k4Score, riskFacts.k4ModelVersion(), riskFacts.k4AsOf(),
@@ -282,8 +275,7 @@ public class AppWithdrawalService {
                 "risk_route", riskRoute, "k3_risk_route", riskDecision.action(),
                 "risk_rule_id", riskDecision.primaryRuleId(), "k4_priority", k4Priority,
                 "k4_risk_score", riskFacts.k4RiskScore(), "k4_model_version", riskFacts.k4ModelVersion(),
-                "k4_as_of", riskFacts.k4AsOf(),
-                "k5_ticket_id", k5Review.ticketId());
+                "k4_as_of", riskFacts.k4AsOf());
         audit.recordRequired(AuditLogWriteRequest.builder().action("D2_WITHDRAWAL_SUBMITTED")
                 .resourceType("WITHDRAWAL").resourceId(withdrawalNo).bizNo(withdrawalNo)
                 .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
@@ -320,7 +312,7 @@ public class AppWithdrawalService {
                 "actualFee", actualFee,
                 "netReceive", netReceive, "riskRoute", riskRoute, "k3RiskRoute", riskDecision.action(),
                 "k4Priority", k4Priority,
-                "riskRuleId", riskDecision.primaryRuleId(), "k5TicketId", k5Review.ticketId(),
+                "riskRuleId", riskDecision.primaryRuleId(),
                 "idSource", "server"));
     }
 
@@ -343,8 +335,8 @@ public class AppWithdrawalService {
 
     private String finalRiskRoute(
             int k4Score, WithdrawalRiskFacts facts,
-            WithdrawalRiskDecision k3Decision, KycReviewTriggerResult k5Review) {
-        if (k5Review.requiresReview() || "freeze".equals(k3Decision.action())) return "freeze";
+            WithdrawalRiskDecision k3Decision) {
+        if ("freeze".equals(k3Decision.action())) return "freeze";
         if (k4Score >= facts.k4AutoEscalateScore()) return "escalated-manual";
         if (k4Score >= facts.k4BandHighMin()) return "high-manual";
         if (k3Decision.held()) return k3Decision.action();
@@ -354,14 +346,13 @@ public class AppWithdrawalService {
 
     private String riskRouteEvidence(
             int k4Score, WithdrawalRiskFacts facts,
-            WithdrawalRiskDecision k3Decision, KycReviewTriggerResult k5Review) {
-        String k5 = k5Review.requiresReview() ? "K5_REVIEW:" + k5Review.ticketId() : null;
+            WithdrawalRiskDecision k3Decision) {
         String k3 = k3Decision.held()
                 ? "K3_ROUTE:" + k3Decision.action() + ":" + k3Decision.primaryRuleId() : null;
         String k4 = k4Score >= facts.k4AutoEscalateScore() ? "K4_ESCALATED:" + k4Score
                 : k4Score >= facts.k4BandHighMin() ? "K4_HIGH_PRIORITY:" + k4Score
                 : k4Score >= facts.k4BandLowMax() ? "K4_MANUAL:" + k4Score : null;
-        return java.util.stream.Stream.of(k5, k3, k4)
+        return java.util.stream.Stream.of(k3, k4)
                 .filter(StringUtils::hasText)
                 .collect(java.util.stream.Collectors.collectingAndThen(
                         java.util.stream.Collectors.joining(";"), value -> value.isEmpty() ? null : value));
@@ -450,20 +441,11 @@ public class AppWithdrawalService {
         return result;
     }
 
-    private String normalizeStoredChain(String value) {
-        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-        return switch (normalized) {
-            case "TRC20", "USDT-TRC20" -> "USDT-TRC20";
-            case "ERC20", "USDT-ERC20" -> "USDT-ERC20";
-            default -> normalized;
-        };
-    }
-
-    private boolean pairedAddressMatches(String chain, String submitted, String paired) {
-        if (!StringUtils.hasText(submitted) || !StringUtils.hasText(paired)) return false;
-        String expected = paired.trim();
+    private boolean payoutAddressMatches(String chain, String submitted, String configured) {
+        if (!StringUtils.hasText(submitted) || !StringUtils.hasText(configured)) return false;
+        String expected = configured.trim();
         // TRON Base58 is case-sensitive. Only EVM hexadecimal addresses may be
-        // compared case-insensitively after their format was validated at pairing.
+        // compared case-insensitively after their format was validated when saved.
         return "USDT-ERC20".equals(chain)
                 && submitted.matches("^0x[0-9a-fA-F]{40}$")
                 && expected.matches("^0x[0-9a-fA-F]{40}$")

@@ -24,7 +24,7 @@ import org.springframework.util.StringUtils;
 public class TamperDetectedEventProjector {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private static final Set<String> PATHS = Set.of(
-            "free_trial_state", "wallet_pairing", "risk_disclosure_ack", "two_factor_state",
+            "free_trial_state", "risk_disclosure_ack", "two_factor_state",
             "product_phase_override", "device_slot_cap", "dev_seed_state", "otp_verification",
             "bill_client_push", "client_minted_id", "charge_fail_rate");
 
@@ -83,7 +83,6 @@ public class TamperDetectedEventProjector {
     private String pathName(String path) {
         return switch (path) {
             case "free_trial_state" -> "试用状态篡改";
-            case "wallet_pairing" -> "钱包配对状态篡改";
             case "risk_disclosure_ack" -> "风险披露确认篡改";
             case "two_factor_state" -> "两步验证状态篡改";
             case "product_phase_override" -> "产品阶段覆盖";

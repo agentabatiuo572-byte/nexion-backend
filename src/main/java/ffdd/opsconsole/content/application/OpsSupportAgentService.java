@@ -51,7 +51,7 @@ public class OpsSupportAgentService {
     private static final String SEAT_GENERAL = "GENERAL";
     private static final List<String> POSITIONS = List.of(POSITION_MANAGER, POSITION_DEDICATED, POSITION_GENERAL);
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
-    private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "KYC");
+    private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "设备");
     private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
 
     private final SupportAgentRepository repository;

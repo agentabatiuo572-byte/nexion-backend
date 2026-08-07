@@ -11,7 +11,7 @@ public final class OpsDomainCatalog {
     private static final List<OpsDomainDescriptor> ACTIVE_DOMAINS = List.of(
             descriptor(DomainCode.A, "Admin", "RBAC", "Audit", "SystemConfig", "Idempotency"),
             descriptor(DomainCode.B, "TreasuryLedger", "CoverageRedline", "ReserveCockpit", "RiskRadar"),
-            descriptor(DomainCode.C, "UserProfile", "KycReview", "AccountSecurity", "ManualAssetAdjustment"),
+            descriptor(DomainCode.C, "UserProfile", "PayoutAddress", "AccountSecurity", "ManualAssetAdjustment"),
             descriptor(DomainCode.D, "Wallet", "Withdrawal", "Deposit", "TreasuryReserve", "Bill"),
             descriptor(DomainCode.E, "Device", "TradeIn", "Order", "DeviceRestore", "ProductCatalog"),
             descriptor(DomainCode.F, "TeamCommission", "PartnerRank", "PayoutPool", "Quota"),

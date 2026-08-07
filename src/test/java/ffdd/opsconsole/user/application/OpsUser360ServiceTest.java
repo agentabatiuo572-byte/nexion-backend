@@ -102,7 +102,6 @@ class OpsUser360ServiceTest {
                 "415****8821",
                 "+1",
                 "ACTIVE",
-                "VERIFIED",
                 "L4",
                 "V3",
                 true,
@@ -147,7 +146,7 @@ class OpsUser360ServiceTest {
         LocalDateTime now = LocalDateTime.of(2026, 7, 22, 21, 0);
         UserAccountView profile = new UserAccountView(
                 88421L, "U00088421", "Marcus Lee", "415****8821", "+1",
-                "RESTRICTED", "PENDING", "L4", "V3", true,
+                "RESTRICTED", "L4", "V3", true,
                 new BigDecimal("8420.00"), new BigDecimal("12400.00"),
                 88, "高风险", 2L, 2L, now.minusDays(104), now.minusMinutes(15));
         when(userService.profile(88421L)).thenReturn(ApiResult.ok(profile));
@@ -181,7 +180,6 @@ class OpsUser360ServiceTest {
                 "138****2231",
                 "86",
                 "ACTIVE",
-                "VERIFIED",
                 "L3",
                 "V2",
                 true,
@@ -527,7 +525,7 @@ class OpsUser360ServiceTest {
 
     private UserAccountView profile(Long id) {
         return new UserAccountView(
-                id, "U00000052", "用户52", "138****0052", "86", "ACTIVE", "APPROVED",
+                id, "U00000052", "用户52", "138****0052", "86", "ACTIVE",
                 "L2", "V1", true, new BigDecimal("100"), new BigDecimal("50"), 65,
                 "中风险", 0L, 0L, LocalDateTime.now().minusDays(30), LocalDateTime.now());
     }

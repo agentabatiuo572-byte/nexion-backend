@@ -23,26 +23,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     String findTrialState(@Param("userId") Long userId);
 
     @Select("""
-            SELECT COUNT(1) > 0
-              FROM nx_kyc_profile k
-             WHERE k.user_id = #{userId} AND k.is_deleted = 0
-               AND UPPER(k.status) = 'APPROVED'
-               AND k.paired_address IS NOT NULL AND TRIM(k.paired_address) <> ''
-            """)
-    boolean walletPaired(@Param("userId") Long userId);
-
-    @Select("SELECT status FROM nx_kyc_profile WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
-    String kycStatus(@Param("userId") Long userId);
-
-    @Select("""
-            SELECT status, paired_address pairedAddress, network
-              FROM nx_kyc_profile
-             WHERE user_id=#{userId} AND is_deleted=0
-             LIMIT 1
-            """)
-    KycWallet kycWallet(@Param("userId") Long userId);
-
-    @Select("""
             SELECT COALESCE((
                 SELECT two_factor_enabled
                   FROM nx_user_security
@@ -399,9 +379,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int markTrialChargeAttempt(@Param("claimId") Long claimId, @Param("outcome") String outcome);
 
     record DeviceEarnings(BigDecimal dailyUsdt, BigDecimal dailyNex) {
-    }
-
-    record KycWallet(String status, String pairedAddress, String network) {
     }
 
     record UserCanonicalProfile(BigDecimal usdtAvailable, BigDecimal nexAvailable, LocalDateTime joinedAt) {

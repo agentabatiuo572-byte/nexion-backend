@@ -578,7 +578,7 @@ class OpsNotificationCampaignServiceTest {
 
         private FakeNotificationCampaignRepository() {
             campaigns.put("CMP-2618", campaign("CMP-2618", "6/15 钱包维护窗口公告", "high", "scheduled", "06-15 02:00 排期", "-", "-", null));
-            campaigns.put("CMP-2615", campaign("CMP-2615", "KYC 二级认证引导", "high", "sent", "06-08 已发", "12.4K", "9.1K", null));
+            campaigns.put("CMP-2615", campaign("CMP-2615", "账户安全引导", "high", "sent", "06-08 已发", "12.4K", "9.1K", null));
             campaigns.put("CMP-2619", campaign("CMP-2619", "7 月费率说明公告(草稿)", "normal", "draft", "-", "-", "-", null));
             caps.put("critical", new NotificationCapRuleView("critical", "∞ 永不淘汰", "合规硬约束", true));
             caps.put("high", new NotificationCapRuleView("high", "50 条", "高优运营事件", false));

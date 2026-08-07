@@ -17,7 +17,6 @@ public class UserEntity extends BaseEntity {
     private String referralCode;
     private Long sponsorUserId;
     private String sponsorCode;
-    private String kycStatus;
     private String userLevel;
     private String vRank;
     private String status;

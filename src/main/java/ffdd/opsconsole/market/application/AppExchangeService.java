@@ -6,8 +6,6 @@ import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.mapper.AppExchangeMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -42,7 +40,6 @@ public class AppExchangeService {
     private static final String FEE_PCT = "wallet.exchange.fee_pct";
     private static final String FEE_MIN = "wallet.exchange.fee_min_usdt";
     private static final String QUEUE_MODE = "wallet.exchange.queue_mode";
-    private static final String KYC_THRESHOLD = "wallet.exchange.kyc_threshold_usdt";
     private static final String CURVE = "wallet.nex_market.weekly_curve";
     private static final String COST_BASIS = "wallet.nex_market.cost_basis";
     private static final String EXCHANGE_KILL = "killswitch.exchange";
@@ -53,7 +50,6 @@ public class AppExchangeService {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
-    private final RiskKycReviewFacade riskKycReviewFacade;
     private final G2ExchangeFeeAllocationService feeAllocationService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -66,7 +62,6 @@ public class AppExchangeService {
                 "platformDailyCapUsdt", number(PLATFORM_CAP, "20000"),
                 "feePct", number(FEE_PCT, "0"), "feeMinUsdt", number(FEE_MIN, "0.50"),
                 "queueMode", text(QUEUE_MODE, "QUEUE"),
-                "kycLifetimeThresholdUsdt", number(KYC_THRESHOLD, "100"),
                 "swapEnabled", swapEnabled(), "serverCanonical", true,
                 "source", "G2/G3 server configuration"));
     }
@@ -113,11 +108,9 @@ public class AppExchangeService {
         BigDecimal grossUsdt = "USDT".equals(request.fromAsset())
                 ? request.fromAmount() : request.fromAmount().multiply(price);
         grossUsdt = money(grossUsdt);
-        BigDecimal lifetimeUsdt = nz(mapper.userLifetimeUsdt(userId));
-        BigDecimal kycThresholdUsdt = number(KYC_THRESHOLD, "100");
-        String gate = gate(userId, wallet, grossUsdt, lifetimeUsdt, kycThresholdUsdt);
+        String gate = gate(userId, wallet, grossUsdt);
         if (gate != null) return gatedOrder(userId, userNo, idempotencyKey, request, price, grossUsdt,
-                lifetimeUsdt.add(grossUsdt), kycThresholdUsdt, wallet.kycStatus(), gate);
+                gate);
 
         BigDecimal feeRate = number(FEE_PCT, "0");
         BigDecimal fee = feeRate.compareTo(BigDecimal.ZERO) == 0 ? BigDecimal.ZERO : money(grossUsdt.multiply(feeRate)
@@ -185,8 +178,7 @@ public class AppExchangeService {
 
     private ApiResult<Map<String, Object>> gatedOrder(
             Long userId, String userNo, String idempotencyKey, NormalizedSwap request,
-            BigDecimal price, BigDecimal grossUsdt, BigDecimal cumulativeUsdt,
-            BigDecimal kycThresholdUsdt, String kycStatus, String gate) {
+            BigDecimal price, BigDecimal grossUsdt, String gate) {
         boolean queueable = ("USER_CAP".equals(gate) || "PLATFORM_CAP".equals(gate))
                 && "QUEUE".equalsIgnoreCase(text(QUEUE_MODE, "QUEUE")) && request.queueIfCapped();
         String status = queueable ? "QUEUED" : gate;
@@ -197,29 +189,6 @@ public class AppExchangeService {
                 request.fromAsset(), "USDT".equals(request.fromAsset()) ? "NEX" : "USDT",
                 request.fromAmount(), toAmount, price, status);
         if (mapper.insertOrder(write) != 1) throw new BizException(409, "EXCHANGE_ORDER_CONFLICT");
-        KycReviewTriggerResult k5Review = null;
-        if ("KYC_REQUIRED".equals(gate)) {
-            k5Review = riskKycReviewFacade.triggerCumulativeExchangeReview(
-                    userNo, grossUsdt, cumulativeUsdt, kycThresholdUsdt, kycStatus, exchangeNo,
-                    "system:g2", "G2 cumulative exchange threshold reached");
-            if (!k5Review.requiresReview() || !StringUtils.hasText(k5Review.ticketId())) {
-                throw new IllegalStateException("K5_G2_CUMULATIVE_TRIGGER_FAILED");
-            }
-            outbox.publish("RISK_KYC_REVIEW_TICKET", k5Review.ticketId(), "risk.kyc_review_triggered", linked(
-                    "triggerType", "cumulative",
-                    "userId", userId,
-                    "userNo", userNo,
-                    "amountUsdt", grossUsdt,
-                    "cumulativeUsdt", cumulativeUsdt,
-                    "thresholdUsdt", kycThresholdUsdt,
-                    "exchangeNo", exchangeNo,
-                    "ticketId", k5Review.ticketId(),
-                    "created", k5Review.created(),
-                    "operator", "system:g2",
-                    "source", "G2",
-                    "occurredAt", Instant.now(clock).toString(),
-                    "ts", Instant.now(clock).toString()));
-        }
         Map<String, Object> event = linked("exchangeNo", exchangeNo, "gate", gate, "status", status,
                 "grossUsdt", grossUsdt);
         String receiptId = outbox.publish("EXCHANGE_ORDER", exchangeNo, "exchange.gated", event);
@@ -228,16 +197,12 @@ public class AppExchangeService {
         result.put("order", orderMap(write));
         result.put("gate", gate);
         result.put("receiptId", receiptId);
-        if (k5Review != null) result.put("kycReviewTicketId", k5Review.ticketId());
         return ApiResult.ok(result);
     }
 
     private String gate(
-            Long userId, AppExchangeMapper.WalletGateRow wallet, BigDecimal grossUsdt,
-            BigDecimal lifetimeUsdt, BigDecimal kycThresholdUsdt) {
+            Long userId, AppExchangeMapper.WalletGateRow wallet, BigDecimal grossUsdt) {
         if (mapper.geoBlocked(wallet.countryCode()) > 0) return "GEO_BLOCKED";
-        if (!List.of("VERIFIED", "APPROVED", "PASSED").contains(wallet.kycStatus())
-                && lifetimeUsdt.add(grossUsdt).compareTo(kycThresholdUsdt) >= 0) return "KYC_REQUIRED";
         if (nz(mapper.userTodayUsdt(userId)).add(grossUsdt).compareTo(number(USER_CAP, "50")) > 0) return "USER_CAP";
         if (nz(mapper.platformTodayUsdt()).add(grossUsdt).compareTo(number(PLATFORM_CAP, "20000")) > 0) return "PLATFORM_CAP";
         return null;
@@ -249,7 +214,7 @@ public class AppExchangeService {
                 "todayUserUsedUsdt", money(mapper.userTodayUsdt(userId)),
                 "todayPlatformUsedUsdt", money(mapper.platformTodayUsdt()),
                 "lifetimeExchangedUsdt", money(mapper.userLifetimeUsdt(userId)),
-                "kycStatus", wallet.kycStatus(), "orders", mapper.userOrders(userId), "serverCanonical", true);
+                "orders", mapper.userOrders(userId), "serverCanonical", true);
     }
 
     private Map<String, Object> orderMap(AppExchangeMapper.ExchangeWrite row) {

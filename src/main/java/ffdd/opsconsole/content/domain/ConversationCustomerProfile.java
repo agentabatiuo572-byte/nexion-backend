@@ -11,11 +11,11 @@ import java.util.List;
  * 绝不阻断会话详情返回。</p>
  *
  * <p>字段与前端 {@code CustomerProfile} 类型对齐(见 m-tabs/data.ts):
- * uid / nickname / phone / vlevel / kyc / systemTags / customTags / risk / riskNote /
+ * uid / nickname / phone / vlevel / systemTags / customTags / risk / riskNote /
  * recharge / withdraw / balance / tickets / device / hashrate / idle /
  * region / joined / lastActive / ledger / notes。</p>
  *
- * <p>标签拆分:{@code systemTags} 为派生只读(会话类型 / V等级 / KYC / 风控 / 账户状态,每次刷新重算);
+ * <p>标签拆分:{@code systemTags} 为派生只读(会话类型 / V等级 / 风控 / 账户状态,每次刷新重算);
  * {@code customTags} 为坐席手动添加的持久化标签(存于 nx_customer_tag,按 user_id 聚合,跨会话共享)。</p>
  */
 public record ConversationCustomerProfile(
@@ -23,7 +23,6 @@ public record ConversationCustomerProfile(
         String nickname,
         String phone,
         String vlevel,
-        String kyc,
         List<String> systemTags,
         List<String> customTags,
         String risk,

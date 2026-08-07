@@ -35,8 +35,6 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -110,7 +108,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final TreasuryCoverageFacade coverageFacade;
     private final WithdrawalOrderRepository withdrawalRepository;
     private final DepositOpsRepository depositOpsRepository;
-    private final RiskKycReviewFacade riskKycReviewFacade;
     private final RiskOpsRepository riskOpsRepository;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
@@ -950,22 +947,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     order.userId(), "withdraw", order.withdrawalNo());
             if (disclosureGate.getCode() != 0) {
                 return ApiResult.fail(disclosureGate.getCode(), disclosureGate.getMessage());
-            }
-            KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeWithdrawalReview(
-                    order.userNo(),
-                    order.amount(),
-                    order.kycStatus(),
-                    order.withdrawalNo(),
-                    authenticatedOperator,
-                    request.reason().trim());
-            if (k5Review.requiresReview()) {
-                if (!StringUtils.hasText(k5Review.ticketId()) || !withdrawalRepository.freezeForK5Review(
-                        order.withdrawalNo(), order.status(), k5Review.ticketId())) {
-                    throw new IllegalStateException("D2_K5_HOLD_CONCURRENT_UPDATE");
-                }
-                auditWithdrawalReviewBlockedByK5(
-                        order, dailyLimitCount, idempotencyKey, request, k5Review, authenticatedOperator);
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_K5_REVIEW_REQUIRED");
             }
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
             if (blockedReason != null) {
@@ -1831,17 +1812,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "K3_ROUTE:manual", "withdraw.review_due", null);
         }
-        KycReviewTriggerResult k5Review = riskKycReviewFacade.triggerLargeWithdrawalReview(
-                order.userNo(), order.amount(), order.kycStatus(), order.withdrawalNo(),
-                "system:d2-scheduler", "H1 cooldown expiry server-canonical re-evaluation");
-        if (k5Review == null) {
-            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                    "K5_WITHDRAWAL_REVIEW_UNAVAILABLE", "withdraw.review_due", null);
-        }
-        if (k5Review.requiresReview()) {
-            return new D2ExpiryDecision(D2WithdrawalStateMachine.FROZEN,
-                    "K5_REVIEW:" + trimToEmpty(k5Review.ticketId()), "withdraw.frozen", null);
-        }
         if (order.riskScore() == null || order.k4BandLowMax() == null
                 || order.k4BandHighMin() == null || order.k4AutoEscalateScore() == null
                 || order.k4BandLowMax() < 0
@@ -1947,9 +1917,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (exceedsDailyLimit(order, dailyLimitCount)) {
             return "WITHDRAWAL_DAILY_LIMIT_EXCEEDED";
         }
-        if (!isApprovedKyc(order.kycStatus())) {
-            return "WITHDRAWAL_KYC_NOT_APPROVED";
-        }
         if (!"ACTIVE".equalsIgnoreCase(trimToEmpty(order.userStatus()))) {
             return "WITHDRAWAL_USER_STATUS_BLOCKED";
         }
@@ -2041,23 +2008,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         };
     }
 
-    private void auditWithdrawalReviewBlockedByK5(
-            WithdrawalOrderView order,
-            int dailyLimitCount,
-            String idempotencyKey,
-            WithdrawalReviewRequest request,
-            KycReviewTriggerResult review,
-            String authenticatedOperator) {
-        Map<String, Object> detail = withdrawalReviewAuditDetail(
-                order, "FROZEN", dailyLimitCount, request.reason().trim(), idempotencyKey.trim());
-        detail.put("requestedAction", "APPROVE");
-        detail.put("blockedReason", "WITHDRAWAL_K5_REVIEW_REQUIRED");
-        detail.put("k5TicketId", review.ticketId());
-        detail.put("k5Created", review.created());
-        detail.put("k5Reason", review.reason());
-        audit("D2_WITHDRAWAL_K5_REVIEW_REQUIRED", "WITHDRAWAL", order.withdrawalNo(), authenticatedOperator, "BLOCKED", detail);
-    }
-
     private Map<String, Object> withdrawalReviewAuditDetail(
             WithdrawalOrderView order,
             String toStatus,
@@ -2070,7 +2020,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("asset", order.asset());
         detail.put("amount", order.amount());
         detail.put("fee", order.fee());
-        detail.put("kycStatus", order.kycStatus());
         detail.put("userStatus", order.userStatus());
         detail.put("riskScore", order.riskScore());
         detail.put("hitRules", order.hitRules());
@@ -2080,11 +2029,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("reason", reason);
         detail.put("idempotencyKey", idempotencyKey);
         return detail;
-    }
-
-    private boolean isApprovedKyc(String status) {
-        String normalized = trimToEmpty(status).toUpperCase(Locale.ROOT);
-        return "VERIFIED".equals(normalized) || "APPROVED".equals(normalized);
     }
 
     private Map<String, Object> withdrawalLimitsData() {

@@ -410,25 +410,6 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     Map<String, Object> currentK4RiskScoreSnapshot();
 
     @Select("""
-            SELECT event_key AS eventKey,
-                   tone,
-                   title,
-                   body,
-                   DATE_FORMAT(created_at,'%Y-%m-%d %H:%i') AS timeText,
-                   is_deleted AS isDeleted
-              FROM nx_admin_risk_kyc_alert
-             WHERE is_deleted=0
-               AND created_at>=#{since}
-               AND (event_key LIKE 'threshold-hit:%'
-                    OR event_key LIKE 'sla-breach:%'
-                    OR event_key LIKE 'large-withdraw-burst:%')
-             ORDER BY created_at DESC,id DESC
-             LIMIT #{limit}
-            """)
-    List<Map<String, Object>> recentK5KycAlerts(
-            @Param("since") LocalDateTime since, @Param("limit") int limit);
-
-    @Select("""
             SELECT COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount_usd ELSE -amount_usd END), 0)
               FROM nx_treasury_reserve_ledger
              WHERE is_deleted = 0

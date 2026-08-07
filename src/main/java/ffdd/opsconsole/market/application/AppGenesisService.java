@@ -270,10 +270,7 @@ public class AppGenesisService {
                                      int acquiringQuantity) {
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppGenesisMapper.UserPolicyRow policy = requirePolicy(userId);
-        if (salePolicy.eligibilityEnabled() && salePolicy.kycRequired()
-                && !"APPROVED".equals(policy.kycStatus())) {
-            throw new BizException(403, "GENESIS_KYC_REQUIRED");
-        }
+
         int ageDays = policy.accountAgeDays() == null ? 0 : Math.max(0, policy.accountAgeDays());
         if (salePolicy.eligibilityEnabled() && ageDays < salePolicy.minAccountAgeDays()) {
             throw new BizException(403, "GENESIS_ACCOUNT_AGE_REQUIRED");
@@ -295,9 +292,7 @@ public class AppGenesisService {
         AppGenesisMapper.UserPolicyRow user = requirePolicy(userId);
         long owned = mapper.userHoldingCount(userId, series.seriesCode());
         List<String> reasons = new java.util.ArrayList<>();
-        if (policy.eligibilityEnabled() && policy.kycRequired() && !"APPROVED".equals(user.kycStatus())) {
-            reasons.add("KYC_REQUIRED");
-        }
+
         int ageDays = user.accountAgeDays() == null ? 0 : Math.max(0, user.accountAgeDays());
         if (policy.eligibilityEnabled() && ageDays < policy.minAccountAgeDays()) reasons.add("ACCOUNT_AGE_REQUIRED");
         if (user.countryCode() == null || user.countryCode().length() != 2) reasons.add("COUNTRY_REQUIRED");
@@ -308,7 +303,6 @@ public class AppGenesisService {
         return linked("eligible", reasons.isEmpty(), "reasons", reasons,
                 "ownedCount", owned, "maxPerUser", max,
                 "remainingCap", Math.max(0L, (long) max - owned),
-                "kycRequired", policy.eligibilityEnabled() && policy.kycRequired(),
                 "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
                 "accountAgeDays", ageDays, "serverCanonical", true);
     }
@@ -316,7 +310,6 @@ public class AppGenesisService {
     private SalePolicy salePolicy(AppGenesisMapper.SeriesRow series) {
         try {
             boolean eligibilityEnabled = configBoolean("eligibility.enabled", true);
-            boolean kycRequired = configBoolean("eligibility.kycRequired", true);
             int eligibilityMax = configInteger("eligibility.maxPerUser", 5);
             int minAccountAgeDays = configInteger("eligibility.minAccountAgeDays", 0);
             boolean presaleEnabled = configBoolean("presale.enabled", false);
@@ -331,7 +324,7 @@ public class AppGenesisService {
             if (presaleEnabled && (startAt == null || endAt == null || !startAt.isBefore(endAt))) {
                 throw new IllegalArgumentException();
             }
-            return new SalePolicy(eligibilityEnabled, kycRequired, eligibilityMax, minAccountAgeDays,
+            return new SalePolicy(eligibilityEnabled, eligibilityMax, minAccountAgeDays,
                     presaleEnabled, showCountdown, money(presalePrice), presaleMax, startAt, endAt);
         } catch (RuntimeException ex) {
             if (ex instanceof BizException bizException) throw bizException;
@@ -466,7 +459,7 @@ public class AppGenesisService {
         return result;
     }
 
-    private record SalePolicy(boolean eligibilityEnabled, boolean kycRequired, int eligibilityMaxPerUser,
+    private record SalePolicy(boolean eligibilityEnabled, int eligibilityMaxPerUser,
                               int minAccountAgeDays, boolean presaleEnabled, boolean showCountdown,
                               BigDecimal presaleUnitPrice, int presaleMaxPerUser,
                               Instant presaleStartAt, Instant presaleEndAt) {
@@ -492,7 +485,6 @@ public class AppGenesisService {
         Map<String, Object> publicView(Instant now) {
             Map<String, Object> view = new LinkedHashMap<>();
             view.put("eligibilityEnabled", eligibilityEnabled);
-            view.put("kycRequired", eligibilityEnabled && kycRequired);
             view.put("maxPerUser", effectiveMaxPerUser());
             view.put("minAccountAgeDays", eligibilityEnabled ? minAccountAgeDays : 0);
             view.put("presaleEnabled", presaleEnabled);

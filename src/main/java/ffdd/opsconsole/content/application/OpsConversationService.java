@@ -69,7 +69,7 @@ public class OpsConversationService {
     private static final Set<String> TRANSFER_TARGET_TYPES = Set.of("agent", "queue", "standby");
     private static final Set<String> CONVERSATION_TYPES = Set.of("advisor", "support");
     private static final Set<String> DIRECT_STATUS_TARGETS = Set.of("OPEN", "RESOLVED", "CLOSED");
-    private static final Set<String> TICKET_CATEGORIES = Set.of("account", "withdrawal", "deposit", "kyc", "hardware", "earnings", "genesis", "technical", "other");
+    private static final Set<String> TICKET_CATEGORIES = Set.of("account", "withdrawal", "deposit", "hardware", "earnings", "genesis", "technical", "other");
     private static final Set<String> TICKET_PRIORITIES = Set.of("LOW", "NORMAL", "HIGH", "URGENT");
     private static final DateTimeFormatter CONVERSATION_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final DateTimeFormatter TICKET_NO_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
@@ -181,7 +181,7 @@ public class OpsConversationService {
             return null;
         }
 
-        // 1. user 域:基础资料 / KYC / 账龄 / 地区
+        // 1. user 域:基础资料 / 账龄 / 地区
         UserAccountView profile = null;
         try {
             ApiResult<UserAccountView> profileResult = userService.profile(userId);
@@ -199,7 +199,6 @@ public class OpsConversationService {
         String nickname = StringUtils.hasText(profile.nickname()) ? profile.nickname().trim() : ("用户 " + uid);
         String phone = StringUtils.hasText(profile.phoneMasked()) ? profile.phoneMasked().trim() : "未绑定";
         String vlevel = firstNonBlank(profile.vRank(), profile.userLevel());
-        String kyc = kycLabel(profile.kycStatus());
         String region = StringUtils.hasText(profile.countryCode()) ? profile.countryCode().trim() : "未知";
         String joined = formatDate(profile.registeredAt());
         String lastActive = formatDateTime(profile.lastLoginAt());
@@ -335,7 +334,7 @@ public class OpsConversationService {
         }
 
         return new ConversationCustomerProfile(
-                uid, nickname, phone, vlevel, kyc, systemTags, customTags, risk, riskNote,
+                uid, nickname, phone, vlevel, systemTags, customTags, risk, riskNote,
                 money(recharge) + " USDT", money(withdraw) + " USDT", money(balance) + " USDT",
                 tickets, device, hashrate, idle, region, joined, lastActive,
                 ledger, notes);
@@ -347,7 +346,7 @@ public class OpsConversationService {
         List<String> tags = new ArrayList<>();
         tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
         return new ConversationCustomerProfile(
-                uid, "用户 " + uid, "未绑定", "—", "未认证",
+                uid, "用户 " + uid, "未绑定", "—",
                 tags, List.of(), "中", "未取到客户档案,按客服流程核对",
                 "—", "—", "—", 0, "无设备", "—", null,
                 "未知", "—", "—", List.of(), List.of());
@@ -364,17 +363,6 @@ public class OpsConversationService {
             }
         }
         return "—";
-    }
-
-    private String kycLabel(String kycStatus) {
-        String normalized = statusText(kycStatus);
-        if (List.of("VERIFIED", "APPROVED", "PASSED").contains(normalized)) {
-            return "已认证";
-        }
-        if (normalized.isEmpty()) {
-            return "未认证";
-        }
-        return "认证中";
     }
 
     private String riskLevel(int effectiveScore, UserAccountView profile, long openCases) {
@@ -397,9 +385,8 @@ public class OpsConversationService {
             case "FROZEN" -> 76;
             default -> 20;
         };
-        int kycScore = List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus())) ? 0 : 25;
         int caseScore = openCases > 0 ? 35 : 0;
-        return Math.min(100, statusScore + kycScore + caseScore);
+        return Math.min(100, statusScore + caseScore);
     }
 
     private List<String> buildTags(UserAccountView profile, String conversationType, long openCases) {
@@ -407,9 +394,6 @@ public class OpsConversationService {
         tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
         if (StringUtils.hasText(profile.vRank())) {
             tags.add("V:" + profile.vRank().trim());
-        }
-        if (List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus()))) {
-            tags.add("已实名");
         }
         if (openCases > 0) {
             tags.add("风控介入");
@@ -428,9 +412,6 @@ public class OpsConversationService {
         }
         if (openCases > 0) {
             parts.add("未结风控案件 " + openCases + " 件");
-        }
-        if (!List.of("VERIFIED", "APPROVED", "PASSED").contains(statusText(profile.kycStatus()))) {
-            parts.add("KYC 未通过");
         }
         String accountStatus = statusText(profile.status());
         if (!"ACTIVE".equals(accountStatus) && !accountStatus.isEmpty()) {

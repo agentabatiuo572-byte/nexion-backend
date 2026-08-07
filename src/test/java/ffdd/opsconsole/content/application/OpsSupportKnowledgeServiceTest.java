@@ -83,20 +83,20 @@ class OpsSupportKnowledgeServiceTest {
     @Test
     void updateFaqChangesContent() {
         var result = service.updateFaq("FAQ-001", "idem-m4-faq-update", new SupportFaqUpsertRequest(
-                "kyc",
+                "account",
                 "Ticket Create",
-                "KYC retry window?",
-                "Upload a clear document and keep every corner visible.",
+                "Account security retry window?",
+                "Retry after the security cooldown and keep your contact method available.",
                 "DRAFT",
                 "en-US",
                 20,
                 "PUBLISHED",
                 1,
                 "Marina K.",
-                "更新 KYC FAQ 文案"));
+                "更新账户安全 FAQ 文案"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().category()).isEqualTo("kyc");
+        assertThat(result.getData().category()).isEqualTo("account");
         assertThat(result.getData().status()).isEqualTo("DRAFT");
     }
 

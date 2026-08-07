@@ -34,8 +34,6 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
-import ffdd.opsconsole.risk.facade.KycReviewTriggerResult;
-import ffdd.opsconsole.risk.facade.RiskKycReviewFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -64,7 +62,6 @@ class OpsFinanceServiceTest {
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeWithdrawalOrderRepository withdrawalRepository = new FakeWithdrawalOrderRepository();
     private final FakeDepositOpsRepository depositOpsRepository = new FakeDepositOpsRepository();
-    private final FakeRiskKycReviewFacade riskKycReviewFacade = new FakeRiskKycReviewFacade();
     private final RiskOpsRepository riskOpsRepository = mock(RiskOpsRepository.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
@@ -82,7 +79,6 @@ class OpsFinanceServiceTest {
                     coverageFacade,
                     withdrawalRepository,
                     depositOpsRepository,
-                    riskKycReviewFacade,
                     riskOpsRepository,
                     auditLogService,
                     idempotencyService,
@@ -119,7 +115,6 @@ class OpsFinanceServiceTest {
                 coverageFacade,
                 withdrawalRepository,
                 depositOpsRepository,
-                riskKycReviewFacade,
                 riskOpsRepository,
                 auditLogService,
                 idempotencyService,
@@ -474,7 +469,7 @@ class OpsFinanceServiceTest {
     @Test
     void reviewWithdrawalFailsClosedWhenK4ScoreIsUnavailable() {
         withdrawalRepository.order = withdrawal(
-                "WD-K4-MISSING", "REVIEWING", "VERIFIED", "ACTIVE", null, "", 1);
+                "WD-K4-MISSING", "REVIEWING", "ACTIVE", null, "", 1);
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
                 "WD-K4-MISSING", "idem-k4-missing",
@@ -492,7 +487,7 @@ class OpsFinanceServiceTest {
     @Test
     void delayWithdrawalPublishesExplicitUnavailableRiskStatusWhenK4ScoreIsMissing() {
         withdrawalRepository.order = withdrawal(
-                "WD-DELAY-K4-MISSING", "REVIEW_PENDING", "VERIFIED", "ACTIVE", null, "", 1);
+                "WD-DELAY-K4-MISSING", "REVIEW_PENDING", "ACTIVE", null, "", 1);
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
                 "WD-DELAY-K4-MISSING",
@@ -541,73 +536,6 @@ class OpsFinanceServiceTest {
         assertThat(result.getMessage()).isEqualTo("RISK_DISCLOSURE_ACK_REQUIRED");
         assertThat(withdrawalRepository.lastStatus).isNull();
         verify(disclosureGateFacade).checkUserGate(1001L, "withdraw", "WD-I5-1");
-    }
-
-    @Test
-    void reviewWithdrawalTriggersK5AndFreezesLargeWithdrawalBeforeApprove() {
-        var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
-                "authenticated-finance-admin", "n/a", java.util.List.of());
-        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
-        withdrawalRepository.order = withdrawal("WD-LARGE-1", "REVIEWING", new BigDecimal("8200.00"));
-        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "forged-admin", "large withdrawal review");
-
-        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-LARGE-1", "idem-review", request);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_K5_REVIEW_REQUIRED");
-        assertThat(withdrawalRepository.lastStatus).isEqualTo("FROZEN");
-        assertThat(withdrawalRepository.lastFailureReason).isEqualTo("K5_REVIEW:KR-D2-TEST");
-        assertThat(riskKycReviewFacade.lastWithdrawalNo).isEqualTo("WD-LARGE-1");
-        assertThat(riskKycReviewFacade.lastAmountUsdt).isEqualByComparingTo("8200.00");
-        assertThat(riskKycReviewFacade.lastOperator).isEqualTo("admin:authenticated-finance-admin");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("D2_WITHDRAWAL_K5_REVIEW_REQUIRED");
-        assertThat(captor.getValue().getActorUsername()).isEqualTo("admin:authenticated-finance-admin");
-        assertThat(captor.getValue().getResult()).isEqualTo("BLOCKED");
-        assertThat(detailMap(captor.getValue().getDetail()))
-                .containsEntry("toStatus", "FROZEN")
-                .containsEntry("blockedReason", "WITHDRAWAL_K5_REVIEW_REQUIRED")
-                .containsEntry("k5TicketId", "KR-D2-TEST")
-                .containsEntry("k5Created", true);
-    }
-
-    @Test
-    void concurrentD2StateChangePreventsK5HoldFromOverwritingTheWinner() {
-        withdrawalRepository.order = withdrawal("WD-K5-RACE", "REVIEWING", new BigDecimal("8200.00"));
-        withdrawalRepository.failK5Freeze = true;
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.reviewWithdrawal(
-                "WD-K5-RACE", "idem-k5-freeze-race",
-                new WithdrawalReviewRequest("APPROVE", "superadmin", "concurrent terminal transition wins")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("D2_K5_HOLD_CONCURRENT_UPDATE");
-        assertThat(withdrawalRepository.lastStatus).isNull();
-        verify(auditLogService, org.mockito.Mockito.never()).record(
-                org.mockito.ArgumentMatchers.argThat(audit ->
-                        "D2_WITHDRAWAL_K5_REVIEW_REQUIRED".equals(audit.getAction())));
-    }
-
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"APPROVE", "UNFREEZE", "REJECT"})
-    void ordinaryD2ReviewCannotBypassK5TicketHold(String action) {
-        WithdrawalOrderView held = withdrawal("WD-K5-HELD", "FROZEN");
-        withdrawalRepository.order = new WithdrawalOrderView(
-                held.id(), held.userId(), held.withdrawalNo(), held.asset(), held.chain(), held.amount(), held.fee(),
-                held.targetAddress(), held.riskDecisionId(), held.chainTxHash(), held.status(), held.chainSubmittedAt(),
-                held.completedAt(), held.failedAt(), "K5_REVIEW:KR-D2-HELD", held.chainBroadcastAttempts(),
-                held.nextBroadcastAt(), held.lastBroadcastError(), held.broadcastDeadAt(), held.createdAt(), held.updatedAt(),
-                held.userNo(), held.nickname(), held.phoneMasked(), held.kycStatus(), held.userStatus(), held.riskScore(),
-                held.hitRules(), held.riskReason(), held.withdrawalCount24h(), held.statusHistory(), held.auditTrail());
-
-        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
-                "WD-K5-HELD", "idem-k5-held-" + action,
-                new WithdrawalReviewRequest(action, "superadmin", "ordinary D2 review must not bypass K5"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_K5_REVIEW_REQUIRED");
-        assertThat(withdrawalRepository.lastStatus).isNull();
     }
 
     @Test
@@ -838,20 +766,8 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void reviewWithdrawalRejectsApproveWhenKycIsNotApproved() {
-        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "PENDING", "ACTIVE", 42, "", 1);
-        WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
-
-        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_KYC_NOT_APPROVED");
-        assertThat(withdrawalRepository.lastStatus).isNull();
-    }
-
-    @Test
     void reviewWithdrawalRejectsApproveWhenUserStatusIsNotActive() {
-        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "VERIFIED", "FROZEN", 42, "", 1);
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "FROZEN", 42, "", 1);
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
@@ -863,7 +779,7 @@ class OpsFinanceServiceTest {
 
     @Test
     void reviewWithdrawalAllowsConfirmedManualRouteDespiteHistoricalHitText() {
-        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "VERIFIED", "ACTIVE", 69, "velocity:FREEZE", 1);
+        withdrawalRepository.order = withdrawal("WD-1", "REVIEWING", "ACTIVE", 69, "velocity:FREEZE", 1);
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal("WD-1", "idem-review", request);
@@ -877,7 +793,6 @@ class OpsFinanceServiceTest {
         withdrawalRepository.order = withdrawal(
                 "WD-1",
                 "REVIEWING",
-                "VERIFIED",
                 "ACTIVE",
                 42,
                 "",
@@ -1458,26 +1373,6 @@ class OpsFinanceServiceTest {
         assertThat(withdrawalRepository.lastStatus).isNull();
     }
 
-    @Test
-    void expiredH1FastTrackFreezesWhenK5ReviewAppearsDuringCooldown() {
-        LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
-        withdrawalRepository.order = withLifecycle(
-                withdrawal("WD-H1-K5-1", "EXTENDED_HOLD", new BigDecimal("1500.00")),
-                dueAt, "H1_PHASE_COOLDOWN", "H1:M3:P2");
-        withdrawalRepository.expiredLifecycleNos = List.of("WD-H1-K5-1");
-
-        int released = service.releaseExpiredD2Lifecycles(LocalDateTime.now());
-
-        assertThat(released).isEqualTo(1);
-        assertThat(withdrawalRepository.lastStatus).isEqualTo("FROZEN");
-        assertThat(withdrawalRepository.lastFailureReason).isEqualTo("K5_REVIEW:KR-D2-TEST");
-        verify(eventOutboxService).publish(
-                org.mockito.ArgumentMatchers.eq("WITHDRAWAL"),
-                org.mockito.ArgumentMatchers.eq("WD-H1-K5-1"),
-                org.mockito.ArgumentMatchers.eq("withdraw.frozen"),
-                org.mockito.ArgumentMatchers.any());
-    }
-
     @SuppressWarnings("unchecked")
     private static Map<String, Object> detailMap(Object detail) {
         return (Map<String, Object>) detail;
@@ -1535,40 +1430,37 @@ class OpsFinanceServiceTest {
     }
 
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, Integer withdrawalCount24h) {
-        return withdrawal(withdrawalNo, status, "VERIFIED", "ACTIVE", 42, "", withdrawalCount24h);
+        return withdrawal(withdrawalNo, status, "ACTIVE", 42, "", withdrawalCount24h);
     }
 
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, BigDecimal amount) {
-        return withdrawal(withdrawalNo, status, "VERIFIED", "ACTIVE", 42, "", "", 1, amount);
+        return withdrawal(withdrawalNo, status, "ACTIVE", 42, "", "", 1, amount);
     }
 
     private static WithdrawalOrderView withdrawal(
             String withdrawalNo,
             String status,
-            String kycStatus,
             String userStatus,
             Integer riskScore,
             String hitRules,
             Integer withdrawalCount24h) {
-        return withdrawal(withdrawalNo, status, kycStatus, userStatus, riskScore, hitRules, "", withdrawalCount24h);
+        return withdrawal(withdrawalNo, status, userStatus, riskScore, hitRules, "", withdrawalCount24h);
     }
 
     private static WithdrawalOrderView withdrawal(
             String withdrawalNo,
             String status,
-            String kycStatus,
             String userStatus,
             Integer riskScore,
             String hitRules,
             String riskReason,
             Integer withdrawalCount24h) {
-        return withdrawal(withdrawalNo, status, kycStatus, userStatus, riskScore, hitRules, riskReason, withdrawalCount24h, new BigDecimal("100.00"));
+        return withdrawal(withdrawalNo, status, userStatus, riskScore, hitRules, riskReason, withdrawalCount24h, new BigDecimal("100.00"));
     }
 
     private static WithdrawalOrderView withdrawal(
             String withdrawalNo,
             String status,
-            String kycStatus,
             String userStatus,
             Integer riskScore,
             String hitRules,
@@ -1600,7 +1492,6 @@ class OpsFinanceServiceTest {
                 "U00001001",
                 "测试用户",
                 "138****0001",
-                kycStatus,
                 userStatus,
                 riskScore,
                 hitRules,
@@ -1620,7 +1511,7 @@ class OpsFinanceServiceTest {
                 order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), order.status(), order.chainSubmittedAt(),
                 order.completedAt(), order.failedAt(), order.failureReason(), order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                 order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
-                order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
+                order.nickname(), order.phoneMasked(), order.userStatus(), order.riskScore(), order.hitRules(),
                 order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail(),
                 null, null, null, null, null,
                 new BigDecimal("0.01"), new BigDecimal("1.00"), new BigDecimal("0.40"), new BigDecimal("0.40"),
@@ -1810,7 +1701,6 @@ class OpsFinanceServiceTest {
         private BigDecimal lastMaxAmountFilter;
         private Integer lastMinRiskScoreFilter;
         private String lastFailureReason;
-        private boolean failK5Freeze;
         private List<String> expiredLifecycleNos = List.of();
 
         @Override
@@ -1847,7 +1737,7 @@ class OpsFinanceServiceTest {
                     order.targetAddress(), order.riskDecisionId(), order.chainTxHash(), status, order.chainSubmittedAt(),
                     order.completedAt(), order.failedAt(), failureReason, order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                     order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
-                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
+                    order.nickname(), order.phoneMasked(), order.userStatus(), order.riskScore(), order.hitRules(),
                     order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
         }
 
@@ -1877,29 +1767,8 @@ class OpsFinanceServiceTest {
                     order.targetAddress(), order.riskDecisionId(), chainTxHash, order.status(), order.chainSubmittedAt(),
                     completedAt, order.failedAt(), order.failureReason(), order.chainBroadcastAttempts(), order.nextBroadcastAt(),
                     order.lastBroadcastError(), order.broadcastDeadAt(), order.createdAt(), order.updatedAt(), order.userNo(),
-                    order.nickname(), order.phoneMasked(), order.kycStatus(), order.userStatus(), order.riskScore(), order.hitRules(),
+                    order.nickname(), order.phoneMasked(), order.userStatus(), order.riskScore(), order.hitRules(),
                     order.riskReason(), order.withdrawalCount24h(), order.statusHistory(), order.auditTrail());
-            return true;
-        }
-
-        @Override
-        public boolean transitionK5FrozenStatus(
-                String withdrawalNo, String ticketId, String status, String failureReason) {
-            if (order == null || !withdrawalNo.equals(order.withdrawalNo()) || !"FROZEN".equals(order.status())
-                    || !("K5_REVIEW:" + ticketId).equals(order.failureReason())) {
-                return false;
-            }
-            updateStatus(withdrawalNo, status, failureReason);
-            return true;
-        }
-
-        @Override
-        public boolean freezeForK5Review(String withdrawalNo, String expectedStatus, String ticketId) {
-            if (failK5Freeze) return false;
-            if (order == null || !withdrawalNo.equals(order.withdrawalNo()) || !expectedStatus.equals(order.status())) {
-                return false;
-            }
-            updateStatus(withdrawalNo, "FROZEN", "K5_REVIEW:" + ticketId);
             return true;
         }
 
@@ -1945,40 +1814,6 @@ class OpsFinanceServiceTest {
         private boolean isActionableStatus(String status) {
             return List.of("REVIEWING", "DELAYED", "FROZEN", "PENDING_CHAIN", "CHAIN_SUBMITTED", "DEAD")
                     .contains(status);
-        }
-    }
-
-    private static final class FakeRiskKycReviewFacade implements RiskKycReviewFacade {
-        private String lastWithdrawalNo;
-        private BigDecimal lastAmountUsdt;
-        private String lastOperator;
-
-        @Override
-        public KycReviewTriggerResult triggerLargeWithdrawalReview(
-                String userNo,
-                BigDecimal amountUsdt,
-                String kycStatus,
-                String withdrawalNo,
-                String operator,
-                String reason) {
-            lastWithdrawalNo = withdrawalNo;
-            lastAmountUsdt = amountUsdt;
-            lastOperator = operator;
-            if (amountUsdt != null && amountUsdt.compareTo(new BigDecimal("1000")) >= 0) {
-                return new KycReviewTriggerResult(true, true, "KR-D2-TEST", "K5_LARGE_WITHDRAWAL_REVIEW_REQUIRED");
-            }
-            return KycReviewTriggerResult.notRequired();
-        }
-
-        @Override
-        public KycReviewTriggerResult triggerLargeExchangeReview(
-                String userNo,
-                BigDecimal amountUsdt,
-                String kycStatus,
-                String exchangeNo,
-                String operator,
-                String reason) {
-            return KycReviewTriggerResult.notRequired();
         }
     }
 

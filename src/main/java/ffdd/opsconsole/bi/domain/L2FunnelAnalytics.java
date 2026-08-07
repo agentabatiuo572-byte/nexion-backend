@@ -29,7 +29,6 @@ public final class L2FunnelAnalytics {
     private static final ZoneOffset BUSINESS_TIME_OFFSET = ZoneOffset.ofHours(8);
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
-            "kyc.express_verified",
             "checkout.completed",
             "wallet.reinvest",
             "withdraw.submitted");
@@ -87,21 +86,19 @@ public final class L2FunnelAnalytics {
         Map<String, List<EventFact>> byActor = selectedEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> registered = firstByActor(registrations);
-        Map<String, EventFact> verified = nextStage(byActor, registered, "kyc.express_verified");
-        Map<String, EventFact> firstPurchase = nextStage(byActor, verified, "checkout.completed");
+        Map<String, EventFact> firstPurchase = nextStage(byActor, registered, "checkout.completed");
         Map<String, EventFact> repurchased = repurchaseStage(byActor, firstPurchase);
         Map<String, EventFact> withdrew = nextStage(byActor, repurchased, "withdraw.submitted");
 
-        List<Map<String, EventFact>> stages = List.of(registered, verified, firstPurchase, repurchased, withdrew);
-        List<String> stageNames = List.of("注册", "绑卡", "首购", "复投", "提现");
+        List<Map<String, EventFact>> stages = List.of(registered, firstPurchase, repurchased, withdrew);
+        List<String> stageNames = List.of("注册", "首购", "复投", "提现");
         List<String> stageEvents = List.of(
                 "auth.register_completed",
-                "kyc.express_verified",
                 "checkout.completed",
                 "wallet.reinvest / 二次 checkout.completed",
                 "withdraw.submitted");
-        List<String> lifecycle = List.of("L2", "L3", "L4", "L5", "L5+");
-        List<String> colors = List.of("var(--cyan)", "#8b7cf6", "#a78bfa", "#c084fc", "#e879f9");
+        List<String> lifecycle = List.of("L2", "L4", "L5", "L5+");
+        List<String> colors = List.of("var(--cyan)", "#a78bfa", "#c084fc", "#e879f9");
 
         List<Map<String, Object>> funnel = new ArrayList<>();
         List<Map<String, Object>> funnelExt = new ArrayList<>();
@@ -125,8 +122,8 @@ public final class L2FunnelAnalytics {
                     "lost", index == 0 ? "—" : Math.max(0, previous.size() - current.size()) + " 人未进入下一阶段",
                     "dwell", index == 0 ? List.of() : dwellDistribution(previous, current),
                     "note", stageNote(index),
-                    "trial", index == 2,
-                    "v1", index == 3));
+                    "trial", index == 1,
+                    "v1", index == 2));
         }
 
         List<Map<String, Object>> cohorts = cohortRows(selectedEvents, registered, false);
@@ -134,7 +131,7 @@ public final class L2FunnelAnalytics {
         List<Map<String, Object>> monthlyCohorts = cohortRows(selectedEvents, registered, true);
         Map<String, Object> monthlyCurves = cohortCurves(selectedEvents, registered, monthlyCohorts, true);
         List<Map<String, Object>> trial = trialRows(selectedEvents);
-        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, verified, firstPurchase);
+        Map<String, Object> cross = crossAnalysis(selectedEvents, registered, firstPurchase);
         Map<String, Object> latestMature = cohorts.stream()
                 .filter(row -> row.get("d7") instanceof Number)
                 .reduce((left, right) -> right)
@@ -310,7 +307,6 @@ public final class L2FunnelAnalytics {
     private static Map<String, Object> crossAnalysis(
             List<EventFact> events,
             Map<String, EventFact> registered,
-            Map<String, EventFact> verified,
             Map<String, EventFact> purchased) {
         List<String> locales = registered.values().stream()
                 .map(EventFact::locale)
@@ -331,8 +327,8 @@ public final class L2FunnelAnalytics {
                 .toList();
         List<String> safeGroups = groups.isEmpty() ? List.of("direct · unknown") : groups;
         return linked(
-                "cvr", crossMetric(safeGroups, locales, registered, verified, purchased,
-                        "同用户首购 ÷ 已绑卡；分母不足显示为空"),
+                "cvr", crossMetric(safeGroups, locales, registered, registered, purchased,
+                        "同用户首购 ÷ 注册；分母不足显示为空"),
                 "ret", retentionCrossMetric(safeGroups, locales, events, registered),
                 "trial", crossMetric(safeGroups, locales, registered, startedTrial, redeemedTrial,
                         "trial 兑换 ÷ trial 启动；与主漏斗独立计量"));
@@ -464,8 +460,7 @@ public final class L2FunnelAnalytics {
     private static String stagePlain(int index) {
         return List.of(
                 "服务器权威注册完成",
-                "同一注册用户完成 KYC 绑卡验证",
-                "同一已绑卡用户完成首笔购买",
+                "同一注册用户完成首笔购买",
                 "首购后 wallet.reinvest 或第二笔购买",
                 "复投后发起提现").get(index);
     }
@@ -473,8 +468,7 @@ public final class L2FunnelAnalytics {
     private static String stageNote(int index) {
         return List.of(
                 "注册是 cohort 与后续全部阶段的同用户分母。",
-                "仅统计注册之后发生的 KYC 通过事件。",
-                "仅统计已绑卡同一用户后续的第一笔 checkout.completed。trial 子路径独立展示。",
+                "仅统计注册后同一用户的第一笔 checkout.completed。trial 子路径独立展示。",
                 "优先使用 wallet.reinvest；同时兼容首购后的第二笔 checkout.completed。",
                 "仅统计完成复投后同一用户的 withdraw.submitted。").get(index);
     }

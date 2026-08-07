@@ -71,7 +71,6 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             course("genesis-nodes", "Genesis 节点", "Genesis nodes", "Wealth", "Article", "Advanced", "11 min", "40", false, 100),
             course("nex-tokenomics", "NEX 经济模型", "NEX tokenomics", "Wealth", "Video", "Intermediate", "10 min", "28", false, 110),
             course("reinvest-strategy", "复投策略", "Reinvest strategy", "Wealth", "Hands-on", "Intermediate", "9 min", "35", false, 120),
-            course("kyc-express", "KYC Express", "KYC Express", "Security", "Article", "Beginner", "5 min", "12", false, 130),
             course("2fa-setup", "设置 2FA", "Set up 2FA", "Security", "Hands-on", "Beginner", "4 min", "10", false, 140),
             course("proof-of-compute", "算力证明", "Proof of compute", "Security", "Video", "Advanced", "13 min", "32", false, 150));
 

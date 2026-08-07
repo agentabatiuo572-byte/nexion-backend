@@ -52,7 +52,7 @@ class AppNotificationServiceTest {
 
     @Test
     void markReadPublishesOneServerCanonicalEventInsideTheMutationBoundary() {
-        when(repository.lockNotificationEventFact(7L, 99L)).thenReturn(Optional.of(fact(false, "system", "/pages/me/kyc")));
+        when(repository.lockNotificationEventFact(7L, 99L)).thenReturn(Optional.of(fact(false, "system", "/pages/me/security")));
         when(repository.markNotificationRead(7L, 99L)).thenReturn(true);
 
         var result = service.markRead(7L, 99L);
@@ -68,7 +68,7 @@ class AppNotificationServiceTest {
 
     @Test
     void repeatedMarkReadIsIdempotentAndDoesNotDoubleCount() {
-        when(repository.lockNotificationEventFact(7L, 99L)).thenReturn(Optional.of(fact(true, "system", "/pages/me/kyc")));
+        when(repository.lockNotificationEventFact(7L, 99L)).thenReturn(Optional.of(fact(true, "system", "/pages/me/security")));
 
         var result = service.markRead(7L, 99L);
 
@@ -84,7 +84,7 @@ class AppNotificationServiceTest {
     @Test
     void unreadFactMustNotReturnSuccessWhenTheAtomicReadUpdateMisses() {
         when(repository.lockNotificationEventFact(7L, 99L))
-                .thenReturn(Optional.of(fact(false, "system", "/pages/me/kyc")));
+                .thenReturn(Optional.of(fact(false, "system", "/pages/me/security")));
         when(repository.markNotificationRead(7L, 99L)).thenReturn(false);
 
         assertThatThrownBy(() -> service.markRead(7L, 99L))

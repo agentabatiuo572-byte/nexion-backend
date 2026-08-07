@@ -101,14 +101,14 @@ class OpsPlatformParamRegistryServiceTest {
                 item("growth.withdraw_nex_gate.hold_days", "7", "growth"),
                 item("K.rewards.referral.version", "3", "GROWTH_REFERRAL"),
                 item("G.genesis.lottery.monthlyCapacity", "100000", "market"),
-                item("kyc.network_whitelist", "TRC20", "kyc"),
+                item("payout.network_whitelist", "TRC20", "finance"),
                 item("treasury.d3.forecast-config.version", "4", "treasury")));
         when(emergency.currentKillSwitches()).thenReturn(List.of());
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
         assertThat(overview.rows()).extracting(row -> row.ownerCode())
-                .containsExactlyInAnyOrder("E2", "H3", "H1", "H8", "G4", "C4", "D3");
+                .containsExactlyInAnyOrder("E2", "H3", "H1", "H8", "G4", "D5", "D3");
     }
 
     @Test

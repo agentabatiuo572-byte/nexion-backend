@@ -29,22 +29,20 @@ import java.util.stream.Collectors;
 public final class B3FunnelAnalytics {
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
-            "kyc.express_verified",
             "store.viewed",
             "checkout.completed",
             "wallet.reinvest",
             "withdraw.submitted");
-    private static final List<String> STAGE_NAMES = List.of("注册", "绑卡", "首购", "复投", "提现");
-    private static final List<String> STAGE_KEYS = List.of("register", "kyc", "purchase", "repurchase", "withdraw");
+    private static final List<String> STAGE_NAMES = List.of("注册", "首购", "复投", "提现");
+    private static final List<String> STAGE_KEYS = List.of("register", "purchase", "repurchase", "withdraw");
     private static final List<String> STAGE_EVENTS = List.of(
             "auth.register_completed",
-            "kyc.express_verified",
             "checkout.completed",
             "wallet.reinvest / 二次 checkout.completed",
             "withdraw.submitted");
-    private static final List<String> LIFECYCLES = List.of("L1", "L2", "L3→L4", "L5", "L5");
+    private static final List<String> LIFECYCLES = List.of("L1", "L3→L4", "L5", "L5");
     private static final List<String> COLORS = List.of(
-            "var(--brand)", "var(--cyan)", "var(--success)", "var(--warning)", "var(--danger)");
+            "var(--brand)", "var(--success)", "var(--warning)", "var(--danger)");
 
     private B3FunnelAnalytics() {
     }
@@ -87,11 +85,10 @@ public final class B3FunnelAnalytics {
         Map<String, List<EventFact>> byActor = allEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
         Map<String, EventFact> registered = firstByActor(selectedRegistrations);
-        Map<String, EventFact> verified = nextStage(byActor, registered, "kyc.express_verified");
-        Map<String, EventFact> purchased = nextStage(byActor, verified, "checkout.completed");
+        Map<String, EventFact> purchased = nextStage(byActor, registered, "checkout.completed");
         Map<String, EventFact> repurchased = repurchaseStage(byActor, purchased);
         Map<String, EventFact> withdrew = nextStage(byActor, repurchased, "withdraw.submitted");
-        List<Map<String, EventFact>> stageFacts = List.of(registered, verified, purchased, repurchased, withdrew);
+        List<Map<String, EventFact>> stageFacts = List.of(registered, purchased, repurchased, withdrew);
 
         List<Map<String, Object>> stages = new ArrayList<>();
         for (int index = 0; index < stageFacts.size(); index++) {
@@ -159,11 +156,10 @@ public final class B3FunnelAnalytics {
 
     private static List<Map<String, EventFact>> orderedStages(
             Map<String, List<EventFact>> byActor, Map<String, EventFact> registered) {
-        Map<String, EventFact> verified = nextStage(byActor, registered, "kyc.express_verified");
-        Map<String, EventFact> purchased = nextStage(byActor, verified, "checkout.completed");
+        Map<String, EventFact> purchased = nextStage(byActor, registered, "checkout.completed");
         Map<String, EventFact> repurchased = repurchaseStage(byActor, purchased);
         Map<String, EventFact> withdrew = nextStage(byActor, repurchased, "withdraw.submitted");
-        return List.of(registered, verified, purchased, repurchased, withdrew);
+        return List.of(registered, purchased, repurchased, withdrew);
     }
 
     private static Map<String, Object> auxMetrics(
@@ -325,7 +321,6 @@ public final class B3FunnelAnalytics {
         if (STAGE_KEYS.contains(normalized)) return normalized;
         return switch (normalized) {
             case "auth.register_completed" -> "register";
-            case "kyc.express_verified" -> "kyc";
             case "checkout.completed" -> "purchase";
             case "wallet.reinvest" -> "repurchase";
             case "withdraw.submitted" -> "withdraw";

@@ -14,7 +14,7 @@ import org.apache.ibatis.annotations.Select;
  * <ol>
  *   <li>{@link #selfBuyUSD} — 用户自己已付订单的 SUM(subtotal_usdt)</li>
  *   <li>{@link #teamVolumeUSD} — L1-L7 递归 CTE 子树所有成员 selfBuy 之和(限深 7,不含自己)</li>
- *   <li>{@link #directRefsCount} — L1 直接成员中 selfBuy ≥ V1 门槛 AND KYC APPROVED 的 COUNT DISTINCT</li>
+ *   <li>{@link #directRefsCount} — L1 直接成员中 selfBuy ≥ V1 门槛的 COUNT DISTINCT</li>
  *   <li>{@link #legCountsByLevel} — L1 直接成员按 v_rank 阶数字分组的成员数</li>
  * </ol>
  *
@@ -69,7 +69,7 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
     BigDecimal teamVolumeUSD(@Param("userId") Long userId);
 
     /**
-     * L1 直接成员中 selfBuy ≥ v1SelfBuyThreshold AND KYC APPROVED 的 COUNT DISTINCT。
+     * L1 直接成员中 selfBuy ≥ v1SelfBuyThreshold 的 COUNT DISTINCT。
      *
      * @param v1SelfBuyThreshold V1 阶 self_buy_usd 门槛(来自 nx_v_rank_config)
      */
@@ -77,10 +77,6 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
             SELECT COUNT(*) FROM (
                 SELECT m.member_user_id
                   FROM nx_team_member m
-                  INNER JOIN nx_kyc_profile k
-                    ON k.user_id = m.member_user_id
-                   AND k.is_deleted = 0
-                   AND UPPER(k.status) = 'APPROVED'
                   LEFT JOIN nx_order o
                     ON o.user_id = m.member_user_id
                    AND o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')

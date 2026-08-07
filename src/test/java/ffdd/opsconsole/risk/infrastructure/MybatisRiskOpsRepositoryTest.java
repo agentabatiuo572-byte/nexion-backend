@@ -42,46 +42,6 @@ class MybatisRiskOpsRepositoryTest {
     }
 
     @Test
-    void firstHighK4ScoreClaimsOneDurableK5Crossing() {
-        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(null);
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 91, 85, "score:9");
-
-        assertThat(claimed).isTrue();
-        verify(mapper).insertK4KycTriggerState("U1", true, 91, 85, "score:9", 1L);
-    }
-
-    @Test
-    void sustainedHighK4ScoreUpdatesStateWithoutClaimingOrIncrementingAgain() {
-        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(
-                new RiskOpsMapper.K4KycTriggerStateRecord("U1", true, 90, 85, "score:8", 1L, 3L));
-        when(mapper.updateK4KycTriggerState("U1", true, 91, 85, "score:9", 0, 3L)).thenReturn(1);
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 91, 85, "score:9");
-
-        assertThat(claimed).isFalse();
-        verify(mapper).updateK4KycTriggerState("U1", true, 91, 85, "score:9", 0, 3L);
-    }
-
-    @Test
-    void persistedBelowToAboveK4TransitionClaimsAndIncrementsExactlyOnce() {
-        when(mapper.findK4KycTriggerStateForUpdate("U1")).thenReturn(
-                new RiskOpsMapper.K4KycTriggerStateRecord("U1", false, 80, 85, "score:8", 1L, 4L));
-        when(mapper.updateK4KycTriggerState("U1", true, 86, 85, "score:9", 1, 4L)).thenReturn(1);
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        boolean claimed = repository.transitionK4KycReviewTriggerState("U1", 86, 85, "score:9");
-
-        assertThat(claimed).isTrue();
-        verify(mapper).updateK4KycTriggerState("U1", true, 86, 85, "score:9", 1, 4L);
-    }
-
-    @Test
     void k3DryRunCandidateQueryUsesTheDeclaredThirtyDayWindow() throws Exception {
         var select = RiskOpsMapper.class.getMethod("withdrawRuleCandidates", int.class)
                 .getAnnotation(org.apache.ibatis.annotations.Select.class);
@@ -137,9 +97,9 @@ class MybatisRiskOpsRepositoryTest {
                 mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         var model = new ffdd.opsconsole.risk.domain.RiskScoreModelView(
                 45L, 1L, "active",
-                Map.of("multiAccount", 25, "arbitrage", 20, "kycStatus", 20,
-                        "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10),
-                Map.of("multiAccount", true, "arbitrage", true, "kycStatus", true,
+                Map.of("multiAccount", 30, "arbitrage", 25,
+                        "withdrawVelocity", 20, "accountAge", 10, "anomalyBehavior", 15),
+                Map.of("multiAccount", true, "arbitrage", true,
                         "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true),
                 40, 70, 85, "{}", "publish", "superadmin", "now", "now");
         var override = new ffdd.opsconsole.risk.domain.RiskScoreOverrideView(
@@ -242,10 +202,6 @@ class MybatisRiskOpsRepositoryTest {
 
     @Test
     void ensureRiskSchemaDoesNotSeedDataWhenReadTimeSeedsAreDisabled() {
-        when(mapper.countKycTicketOpenUserKeyColumn()).thenReturn(1);
-        when(mapper.kycTicketOpenUserKeyExpression())
-                .thenReturn("CASE WHEN status IN ('triggered','in-review') AND is_deleted=0 THEN user_no ELSE NULL END");
-        when(mapper.countKycTicketOpenUserUniqueKey()).thenReturn(1);
         MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
                 mapper,
                 OpsReadTimeSeedPolicy.disabledForDirectConstruction());
@@ -262,9 +218,6 @@ class MybatisRiskOpsRepositoryTest {
         verify(mapper).ensureAllActiveUsersHaveScoreRows();
         verify(mapper).createScoreHistoryTable();
         verify(mapper).backfillScoreModelMappings(org.mockito.ArgumentMatchers.anyString());
-        verify(mapper).createKycAlertTable();
-        verify(mapper).createKycReviewSourceTable();
-        verify(mapper).backfillKycReviewSources();
         verify(mapper, never()).countRiskCases();
         verify(mapper, never()).insertWithdrawRule(
                 org.mockito.ArgumentMatchers.anyString(),
@@ -275,10 +228,6 @@ class MybatisRiskOpsRepositoryTest {
                 org.mockito.ArgumentMatchers.anyBoolean(),
                 org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyString());
-        var boundaryOrder = inOrder(mapper);
-        boundaryOrder.verify(mapper).mergeDuplicateOpenKycTickets();
-        boundaryOrder.verify(mapper, org.mockito.Mockito.atLeastOnce()).countKycTicketOpenUserKeyColumn();
-        boundaryOrder.verify(mapper).promoteTriggeredKycTickets();
     }
 
     @Test
@@ -345,107 +294,6 @@ class MybatisRiskOpsRepositoryTest {
         verify(mapper, never()).insertTamperScoreContribution(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyInt());
-    }
-
-    @Test
-    void k5SubscriptionReadIsPureAndReturnsVersionZeroDefaults() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        when(mapper.findKycAlertSubscription("risk-admin")).thenReturn(null);
-
-        Map<String, Object> subscription = repository.kycAlertSubscription("risk-admin");
-
-        assertThat(subscription).containsEntry("version", 0L);
-        assertThat(subscription.get("alertTypes")).isEqualTo(java.util.List.of("sla-breach"));
-        verify(mapper, never()).ensureKycAlertSubscription(org.mockito.ArgumentMatchers.anyString());
-        verify(mapper, never()).insertKycAlertSubscription(
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString());
-    }
-
-    @Test
-    void k5SubscriptionFirstWriteCreatesVersionOneAndDoesNotRunVersionZeroUpdate() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        RiskOpsMapper.KycAlertSubscriptionRecord created = new RiskOpsMapper.KycAlertSubscriptionRecord(
-                "risk-admin", "[\"sla-breach\"]", "[\"in-app\"]", 1L);
-        when(mapper.findKycAlertSubscription("risk-admin")).thenReturn(null, created);
-        when(mapper.insertKycAlertSubscription(
-                "risk-admin", "[\"sla-breach\"]", "[\"in-app\"]")).thenReturn(1);
-
-        var result = repository.updateKycAlertSubscription(
-                "risk-admin", java.util.List.of("sla-breach"), java.util.List.of("in-app"), 0L);
-
-        assertThat(result).isPresent();
-        assertThat(result.orElseThrow()).containsEntry("version", 1L);
-        verify(mapper, never()).updateKycAlertSubscription(
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong());
-    }
-
-    @Test
-    void k5SubscriptionConcurrentFirstWriteDoesNotOverwriteWinner() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        when(mapper.findKycAlertSubscription("risk-admin")).thenReturn(null);
-        when(mapper.insertKycAlertSubscription(
-                "risk-admin", "[\"sla-breach\"]", "[\"in-app\"]"))
-                .thenThrow(new org.springframework.dao.DuplicateKeyException("winner committed"));
-
-        assertThat(repository.updateKycAlertSubscription(
-                "risk-admin", java.util.List.of("sla-breach"), java.util.List.of("in-app"), 0L)).isEmpty();
-        verify(mapper, never()).updateKycAlertSubscription(
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong());
-    }
-
-    @Test
-    void largeWithdrawalTicketPersistsItsAuthoritativeD2SourceLink() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-
-        repository.createLargeWithdrawalKycReviewTicket(
-                "KR-D2-1", "U00000001", new java.math.BigDecimal("1200"), "WD-1",
-                "PENDING", "large withdrawal source", "risk-admin");
-
-        verify(mapper).insertKycReviewSource("KR-D2-1", "D2", "WD-1");
-    }
-
-    @Test
-    void normalizedTicketSourcesAreReturnedInMapperOrder() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        when(mapper.kycReviewSources("KR-MULTI")).thenReturn(java.util.List.of(
-                new RiskOpsMapper.KycReviewSourceRecord("D2", "WD-1"),
-                new RiskOpsMapper.KycReviewSourceRecord("D2", "WD-2")));
-
-        assertThat(repository.kycReviewSources("KR-MULTI")).containsExactly(
-                new ffdd.opsconsole.risk.domain.RiskOpsRepository.KycReviewSource("D2", "WD-1"),
-                new ffdd.opsconsole.risk.domain.RiskOpsRepository.KycReviewSource("D2", "WD-2"));
-    }
-
-    @Test
-    void k5OverviewReadsBackHistoryAsTimeEventToneTriples() {
-        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
-                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
-        String history = "[[\"2026-07-17 10:00:00\",\"复审通过·操作人:risk-admin\",\"\"],"
-                + "[\"2026-07-17 10:01:00\",\"并入重复信号·操作人:risk-admin\",\"warn\"]]";
-        when(mapper.countKycTicketsByFilter(null)).thenReturn(1L);
-        String info = "[[\"触发原因\",\"initial\"],[\"触发原因\",\"merge-one\"],"
-                + "[\"触发原因\",\"merge-two\"]]";
-        when(mapper.pageKycReviewTickets(null, 0, 5)).thenReturn(java.util.List.of(
-                new RiskOpsMapper.KycReviewTicketRecord(
-                        "KR-1", "手动触发", "U00000001", "—", "—", "PENDING", "in-review",
-                        0.1, "剩 7 天", info, history, 2L)));
-        when(mapper.riskParams("k5")).thenReturn(java.util.List.of());
-
-        Map<String, Object> overview = repository.kycReviewOverview(1, 5, null);
-        var tickets = (ffdd.opsconsole.shared.api.PageResult<?>) overview.get("tickets");
-        var row = (RiskOpsMapper.KycReviewTicketRecord) tickets.getRecords().get(0);
-
-        assertThat(row.histJson()).isEqualTo(history);
-        assertThat(row.histJson()).doesNotContain("\",\"risk-admin\"]");
-        assertThat(row.infoJson()).contains("initial", "merge-one", "merge-two");
     }
 
     @Test

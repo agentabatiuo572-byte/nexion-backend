@@ -174,7 +174,6 @@ public class AppUserRegistrationService {
         user.setReferralCode(nextReferralCode());
         user.setSponsorUserId(sponsor == null ? null : sponsor.getId());
         user.setSponsorCode(sponsor == null ? null : sponsor.getReferralCode());
-        user.setKycStatus("PENDING");
         user.setUserLevel("L1");
         user.setVRank("V0");
         user.setStatus("ACTIVE");

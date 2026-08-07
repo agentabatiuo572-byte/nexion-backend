@@ -58,7 +58,7 @@ public class OpsEventCenterService {
     private static final Set<String> PROPERTY_TYPES = Set.of("string", "number", "boolean", "enum", "timestamp", "id", "json");
 
     private static final List<String> REGISTERED_DOMAINS = List.of(
-            "app", "auth", "referral", "kyc", "onboarding", "store", "checkout", "device",
+            "app", "auth", "referral", "onboarding", "store", "checkout", "device",
             "earnings", "wallet", "withdraw", "commission", "staking", "exchange", "genesis",
             "trial", "quest", "daily", "nova", "phase", "risk", "admin", "event", "milestone",
             "nex", "repurchase", "disclosure");
@@ -67,12 +67,11 @@ public class OpsEventCenterService {
 
     private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
             familyDef("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
-                    "app.session_started · auth.register_completed · kyc.express_verified · device.first_yield_received",
+                    "app.session_started · auth.register_completed · device.first_yield_received",
                     "部分(注册/验证类服务器发)",
-                    List.of("APP_", "AUTH_", "KYC_", "C1_", "C4_", "DEVICE_FIRST"),
+                    List.of("APP_", "AUTH_", "C1_", "DEVICE_FIRST"),
                     row("app.session_started", "匿名设备首次会话"),
                     row("auth.register_started / completed", "注册链路开始与完成"),
-                    row("kyc.express_verified", "KYC 快速验证通过"),
                     row("device.first_yield_received", "首笔设备收益到账")),
             familyDef("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
                     "store.viewed · checkout.completed · trial.started · referral.invite_sent",
@@ -102,13 +101,12 @@ public class OpsEventCenterService {
             familyDef("risk", "⑤ 风控", "风险信号(服务器检测产出)",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
                     "全部服务器发",
-                    List.of("K1_", "K2_", "K3_", "K4_", "K5_", "C5_", "C6_", "J2_", "J3_", "RISK_", "AUTH_LOGIN"),
+                    List.of("K1_", "K2_", "K3_", "K4_", "C5_", "C6_", "J2_", "J3_", "RISK_", "AUTH_LOGIN"),
                     row("risk.multi_account_flagged", "多账户关联命中"),
                     row("risk.arbitrage_suspected", "套利嫌疑"),
                     row("risk.trial_cycle_detected", "循环养号"),
                     row("risk.withdraw_held", "提现拦截"),
                     row("risk.score_updated", "风险分更新"),
-                    row("risk.kyc_review_triggered", "大额复审触发"),
                     row("auth.login_locked", "登录锁定")),
             familyDef("phase_admin", "⑥ 节奏 / admin", "阶段切换 + 全部后台治理审计",
                     "phase.transitioned · phase.dial_changed · admin.*",

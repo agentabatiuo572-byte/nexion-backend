@@ -24,7 +24,6 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
     private final RiskOpsRepository riskRepository;
     private final K4RiskScorer scorer;
     private final EventOutboxService eventOutboxService;
-    private final K4KycReviewTriggerService kycReviewTriggerService;
     private final K4ScoreBackfillTransactionExecutor transactionExecutor;
 
     @Override
@@ -74,13 +73,6 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
             throw new BizException(409, "K4_SCORE_CONCURRENT_UPDATE_DURING_BACKFILL");
         }
         K4ScoreEventPublisher.publishScoreUpdated(eventOutboxService, current, updated);
-        kycReviewTriggerService.triggerIfThresholdReached(
-                current,
-                updated,
-                K4KycReviewTriggerService.SOURCE_FACT_REFRESH,
-                "K4 source facts or stale projection required recompute",
-                "system",
-                "k4-fact-refresh:" + model.version() + ":" + userNo + ":" + updated.rowVersion());
     }
 
     /** Keeps newly registered and retired users aligned without requiring a service restart. */

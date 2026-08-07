@@ -65,7 +65,7 @@ class G4AdminCommandServiceTest {
         when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.markEmissionPaid(eq(100L), any())).thenReturn(1);
         when(mapper.userPolicy(42L)).thenReturn(
-                new AppGenesisMapper.UserPolicyRow(42L, "APPROVED", "VN", "P1", 120, 4, "2026-W30"));
+                new AppGenesisMapper.UserPolicyRow(42L, "VN", "P1", 120, 4, "2026-W30"));
         when(market.genesisOverview()).thenReturn(ApiResult.ok(new LinkedHashMap<>(Map.of("domain", "G4"))));
 
         var result = service.rerunEmission("g4-batch-1", "20260722", request("rerun daily emission", "FIN-20260722"));

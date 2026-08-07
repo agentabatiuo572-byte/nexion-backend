@@ -168,11 +168,6 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
-    public List<Map<String, Object>> recentK5KycAlerts(LocalDateTime since, int limit) {
-        return Optional.ofNullable(mapper.recentK5KycAlerts(since, limit)).orElseGet(List::of);
-    }
-
-    @Override
     public BigDecimal currentReserveUsd() {
         return nz(mapper.currentReserveUsd());
     }

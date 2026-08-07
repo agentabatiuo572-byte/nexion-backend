@@ -18,7 +18,7 @@ class ObjectStorageServiceTest {
 
     @Test
     void rejectsUnsafeObjectKeyBeforeCallingStorage() {
-        assertThatThrownBy(() -> service.presignGet("../kyc/passport.jpg", Duration.ofMinutes(5)))
+        assertThatThrownBy(() -> service.presignGet("../documents/passport.jpg", Duration.ofMinutes(5)))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("Object key must be a storage object key");
     }
@@ -26,10 +26,10 @@ class ObjectStorageServiceTest {
     @Test
     void createsPresignedGetUrl() throws Exception {
         properties.setBucket("nexion-private");
-        when(minioClient.getPresignedObjectUrl(any())).thenReturn("http://minio.local/nexion-private/kyc/doc.jpg");
+        when(minioClient.getPresignedObjectUrl(any())).thenReturn("http://minio.local/nexion-private/documents/doc.jpg");
 
-        String url = service.presignGet("kyc/10001/doc.jpg", Duration.ofMinutes(10));
+        String url = service.presignGet("documents/10001/doc.jpg", Duration.ofMinutes(10));
 
-        assertThat(url).isEqualTo("http://minio.local/nexion-private/kyc/doc.jpg");
+        assertThat(url).isEqualTo("http://minio.local/nexion-private/documents/doc.jpg");
     }
 }

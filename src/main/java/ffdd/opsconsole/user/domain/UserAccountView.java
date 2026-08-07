@@ -11,7 +11,6 @@ public record UserAccountView(
         String phoneMasked,
         String countryCode,
         String status,
-        String kycStatus,
         String userLevel,
         String vRank,
         Boolean twoFactorEnabled,

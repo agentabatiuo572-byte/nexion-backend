@@ -7,9 +7,6 @@ import ffdd.opsconsole.user.domain.UserAccountControlFactView;
 import ffdd.opsconsole.user.domain.UserAccountView;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
-import ffdd.opsconsole.user.domain.UserKycRecord;
-import ffdd.opsconsole.user.domain.UserKycStatusHistoryView;
-import ffdd.opsconsole.user.domain.UserKycReverificationView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.domain.UserReadonlyDeviceView;
@@ -42,7 +39,6 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
         Map<String, Object> overview = new LinkedHashMap<>();
         overview.put("totalUsers", mapper.countUsers());
         overview.put("activeUsers", mapper.countActiveUsers());
-        overview.put("kycPending", mapper.countKycPending());
         overview.put("frozenUsers", mapper.countFrozenUsers());
         boolean riskAuthorityAvailable = mapper.countActiveRiskModels() == 1 && mapper.countFreshRiskScores() > 0;
         overview.put("riskAuthorityAvailable", riskAuthorityAvailable);
@@ -63,9 +59,9 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
-    public List<UserAccountView> search(String keyword, String status, String kycStatus, int limit) {
+    public List<UserAccountView> search(String keyword, String status, int limit) {
         UserQueryRequest query = UserQueryRequest.basic(
-                trim(keyword), status, normalize(kycStatus), null, 1, cappedLimit(limit), null);
+                trim(keyword), status, null, 1, cappedLimit(limit), null);
         return mapper.pageUsers(query, statusList(status), 0, cappedLimit(limit));
     }
 
@@ -94,47 +90,6 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
-    public long countByKycStatus(String kycStatus) {
-        return mapper.countByKycStatus(kycStatus);
-    }
-
-    @Override
-    public PageResult<UserKycRecord> pageKycRecords(String kycStatus, int pageNum, int pageSize) {
-        int normalizedPage = page(pageNum);
-        int normalizedSize = pageSize(pageSize);
-        String normalizedStatus = normalize(kycStatus);
-        long total = mapper.countKycRecords(normalizedStatus);
-        List<UserKycRecord> records = total == 0
-                ? List.of()
-                : mapper.pageKycRecords(normalizedStatus, (normalizedPage - 1) * normalizedSize, normalizedSize);
-        return new PageResult<>(total, normalizedPage, normalizedSize, records);
-    }
-
-    @Override
-    public Optional<UserKycRecord> findKycRecord(Long userId) {
-        return Optional.ofNullable(mapper.findKycRecord(userId));
-    }
-
-    @Override
-    public List<UserKycStatusHistoryView> kycStatusHistory(Long userId, int limit) {
-        return mapper.kycStatusHistory(userId, Math.max(1, Math.min(limit, 100)));
-    }
-
-    @Override
-    public boolean transitionKycStatus(
-            Long userId, String expectedStatus, long expectedVersion, String nextStatus,
-            String reasonCode, String reason, String evidenceRef, String source,
-            String operator, String idempotencyKey, String ticketId) {
-        if (mapper.transitionKycProfile(userId, expectedStatus, expectedVersion, nextStatus, source, operator) == 0) {
-            return false;
-        }
-        mapper.updateKycStatus(userId, nextStatus);
-        mapper.insertKycStatusHistory(userId, expectedStatus, nextStatus, reasonCode, reason,
-                evidenceRef, source, operator, idempotencyKey, ticketId);
-        return true;
-    }
-
-    @Override
     public Optional<UserAccountView> findById(Long userId) {
         return Optional.ofNullable(mapper.findById(userId));
     }
@@ -157,28 +112,6 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     @Override
     public Optional<UserSecurityStatusView> securityStatus(Long userId) {
         return Optional.ofNullable(mapper.securityStatus(userId));
-    }
-
-    @Override
-    public List<UserKycReverificationView> availableC5KycReverifications(Long userId, int rememberDays) {
-        return mapper.availableC5KycReverifications(userId, Math.max(1, Math.min(rememberDays, 30)));
-    }
-
-    @Override
-    public boolean canUseC5KycReverification(
-            Long userId, String ticketId, String action, int rememberDays, String idempotencyKey) {
-        return mapper.countUsableC5KycReverification(
-                userId, ticketId, action, Math.max(1, Math.min(rememberDays, 30)), idempotencyKey) == 1;
-    }
-
-    @Override
-    public boolean consumeC5KycReverification(
-            Long userId, String ticketId, String action, String idempotencyKey, String operator) {
-        try {
-            return mapper.consumeC5KycReverification(userId, ticketId, action, idempotencyKey, operator) == 1;
-        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
-            return canUseC5KycReverification(userId, ticketId, action, 30, idempotencyKey);
-        }
     }
 
     @Override
@@ -398,11 +331,6 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
-    public void updateKycStatus(Long userId, String kycStatus, String reason) {
-        mapper.updateKycStatus(userId, kycStatus);
-    }
-
-    @Override
     public Optional<UserSessionView> findSession(String refreshTokenId) {
         return Optional.ofNullable(mapper.findSession(refreshTokenId));
     }
@@ -586,7 +514,6 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
         return new UserQueryRequest(
                 trim(request == null ? null : request.keyword()),
                 normalize(request == null ? null : request.status()),
-                normalize(request == null ? null : request.kycStatus()),
                 normalizeRiskMin(request == null ? null : request.riskMin()),
                 pageNum,
                 pageSize,

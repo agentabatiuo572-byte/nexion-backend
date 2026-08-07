@@ -63,7 +63,6 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
                      WHEN 'QUEUED' THEN '次日队列'
-                     WHEN 'KYC_REQUIRED' THEN '需实名'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -74,7 +73,6 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    END AS statusLabel,
                    CASE UPPER(eo.status)
                      WHEN 'QUEUED' THEN 'warn'
-                     WHEN 'KYC_REQUIRED' THEN 'warn'
                      WHEN 'USER_CAP' THEN 'warn'
                      WHEN 'PLATFORM_CAP' THEN 'danger'
                      WHEN 'GEO_BLOCKED' THEN 'danger'
@@ -90,14 +88,12 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      ELSE 0
                    END AS amountUsdt,
                    CASE UPPER(eo.status)
-                     WHEN 'KYC_REQUIRED' THEN 'kyc'
                      WHEN 'USER_CAP' THEN 'user'
                      WHEN 'PLATFORM_CAP' THEN 'platform'
                      WHEN 'GEO_BLOCKED' THEN 'geo'
                      ELSE NULL
                    END AS gateType,
                    CASE UPPER(eo.status)
-                     WHEN 'KYC_REQUIRED' THEN '累计兑换达到实名触发线'
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
@@ -138,7 +134,6 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
                      WHEN 'QUEUED' THEN '次日队列'
-                     WHEN 'KYC_REQUIRED' THEN '需实名'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -149,7 +144,6 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    END AS statusLabel,
                    CASE UPPER(eo.status)
                      WHEN 'QUEUED' THEN 'warn'
-                     WHEN 'KYC_REQUIRED' THEN 'warn'
                      WHEN 'USER_CAP' THEN 'warn'
                      WHEN 'PLATFORM_CAP' THEN 'danger'
                      WHEN 'GEO_BLOCKED' THEN 'danger'
@@ -165,14 +159,12 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      ELSE 0
                    END AS amountUsdt,
                    CASE UPPER(eo.status)
-                     WHEN 'KYC_REQUIRED' THEN 'kyc'
                      WHEN 'USER_CAP' THEN 'user'
                      WHEN 'PLATFORM_CAP' THEN 'platform'
                      WHEN 'GEO_BLOCKED' THEN 'geo'
                      ELSE NULL
                    END AS gateType,
                    CASE UPPER(eo.status)
-                     WHEN 'KYC_REQUIRED' THEN '累计兑换达到实名触发线'
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'

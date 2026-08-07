@@ -16,7 +16,7 @@ import java.util.Map;
  *       AND order_status NOT IN ('REFUNDED','CHARGEBACK')。</li>
  *   <li>{@link #teamVolumeUSD} — unilevel L1-L7 子树所有成员 selfBuyUSD 之和(递归 CTE,限深 7),
  *       不含用户自己。</li>
- *   <li>{@link #directRefs} — L1 直接成员中 selfBuyUSD ≥ V1 门槛 AND nx_kyc_profile.status='APPROVED' 的 COUNT DISTINCT。</li>
+ *   <li>{@link #directRefs} — L1 直接成员中 selfBuyUSD ≥ V1 门槛的 COUNT DISTINCT。</li>
  *   <li>{@link #legCounts} — L1 直接成员按 v_rank 分组计数,key=V 阶数字(V0=0,V1=1,...,V12=12),
  *       value=该阶及以上视为符合 required_downline_rank 的成员数;
  *       引擎消费时按 targetV 累加 ≥ targetV 的成员数。</li>

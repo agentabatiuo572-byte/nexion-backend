@@ -49,11 +49,9 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
-    void rejectsClientTamperAtAllTenPreviouslyMissingBusinessBoundaries() {
+    void rejectsClientTamperAtAllRemainingBusinessBoundaries() {
         when(mapper.lockUser(42L)).thenReturn(42L);
         when(mapper.findTrialState(42L)).thenReturn("CLAIMED");
-        when(mapper.kycWallet(42L)).thenReturn(
-                new CanonicalStateMapper.KycWallet("APPROVED", "TR7NHqExampleAddress", "TRC20"));
         when(mapper.twoFactorEnabled(42L)).thenReturn(true);
         when(mapper.activeDeviceCount(42L)).thenReturn(3);
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -62,7 +60,6 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.consumeValidOtp(42L, "challenge-1", "123456")).thenReturn(0);
 
         assertRejected(service.trialEligibility(42L, "ELIGIBLE"), "TRIAL_STATE_CONFLICT");
-        assertRejected(service.kycStatus(42L, false), "WALLET_PAIRING_CONFLICT");
         assertRejected(service.securityState(42L, false), "TWO_FACTOR_STATE_CONFLICT");
         assertRejected(service.productPhase(42L, "P6", true), "PRODUCT_PHASE_OVERRIDE_REJECTED");
         assertRejected(service.activateDevice(42L, 9L, 0L, 99, "device-key"), "DEVICE_SLOT_CAP_EXCEEDED");
@@ -74,7 +71,6 @@ class AppCanonicalBoundaryServiceTest {
         assertRejected(service.chargeTrial(42L, true, new BigDecimal("0.01"), "trial-key"), "CLIENT_CHARGE_OUTCOME_REJECTED");
 
         verify(publisher).publish(eq(42L), eq("free_trial_state"), anyString(), eq("/api/trial/eligibility"));
-        verify(publisher).publish(eq(42L), eq("wallet_pairing"), anyString(), eq("/api/kyc/status"));
         verify(publisher).publish(eq(42L), eq("two_factor_state"), anyString(), eq("/api/security/state"));
         verify(publisher).publish(eq(42L), eq("product_phase_override"), anyString(), eq("/api/product/phase"));
         verify(publisher).publish(eq(42L), eq("device_slot_cap"), anyString(), eq("/api/devices/activate"));
@@ -89,7 +85,6 @@ class AppCanonicalBoundaryServiceTest {
     void canonicalRequestsUseServerStateAndNeverTrustClientOwnedValues() {
         when(mapper.lockUser(42L)).thenReturn(42L);
         when(mapper.findTrialState(42L)).thenReturn(null);
-        when(mapper.kycWallet(42L)).thenReturn(null);
         when(mapper.twoFactorEnabled(42L)).thenReturn(false);
         when(mapper.activeDeviceCount(42L)).thenReturn(1);
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -121,7 +116,6 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.markTrialChargeAttempt(eq(7L), anyString())).thenReturn(1);
 
         assertThat(service.trialEligibility(42L, null).getCode()).isZero();
-        assertThat(service.kycStatus(42L, null).getCode()).isZero();
         assertThat(service.securityState(42L, null).getCode()).isZero();
         var productPhase = service.productPhase(42L, null, false);
         assertThat(productPhase.getCode()).isZero();

@@ -7,7 +7,6 @@ public record RiskScoreRawInput(
         Boolean multiAccountFraud,
         Integer arbitrageSignals,
         Boolean severeArbitrage,
-        String kycStatus,
         Integer withdrawalCount24h,
         java.math.BigDecimal withdrawalAmount24h,
         Integer withdrawalCount7d,
@@ -21,10 +20,10 @@ public record RiskScoreRawInput(
 ) {
     public RiskScoreRawInput(
             String userNo, Integer multiAccountClusterSize, Boolean multiAccountFraud,
-            Integer arbitrageSignals, Boolean severeArbitrage, String kycStatus,
+            Integer arbitrageSignals, Boolean severeArbitrage,
             Integer withdrawalCount24h, java.math.BigDecimal withdrawalAmount24h,
             Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected) {
-        this(userNo, multiAccountClusterSize, multiAccountFraud, arbitrageSignals, severeArbitrage, kycStatus,
+        this(userNo, multiAccountClusterSize, multiAccountFraud, arbitrageSignals, severeArbitrage,
                 withdrawalCount24h, withdrawalAmount24h,
                 withdrawalCount24h, withdrawalAmount24h,
                 java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO, withdrawalAmount24h,

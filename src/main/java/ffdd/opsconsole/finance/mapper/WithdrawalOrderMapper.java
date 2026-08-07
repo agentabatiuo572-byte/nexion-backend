@@ -128,7 +128,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                       WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
-                   COALESCE(kyc.status, 'PENDING') AS kycStatus,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
                    COALESCE(k4o.override_score, k4.model_score) AS riskScore,
                    COALESCE(
@@ -216,7 +215,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.d2_network_fee AS networkFee
               FROM nx_withdrawal_order w
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4
                 ON k4.user_no = CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0'))
@@ -343,7 +341,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                      WHEN u.phone IS NULL OR LENGTH(u.phone) &lt; 7 THEN u.phone
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
-                   COALESCE(kyc.status, 'PENDING') AS kycStatus,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
                    COALESCE(k4o.override_score, k4.model_score) AS riskScore,
                    COALESCE(
@@ -431,7 +428,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.d2_network_fee AS networkFee
               FROM nx_withdrawal_order w
               LEFT JOIN nx_user u ON u.id = w.user_id AND u.is_deleted = 0
-              LEFT JOIN nx_kyc_profile kyc ON kyc.user_id=w.user_id AND kyc.is_deleted=0
               LEFT JOIN nx_risk_decision rd ON rd.id = w.risk_decision_id AND rd.is_deleted = 0
               LEFT JOIN nx_admin_risk_score_user k4
                 ON k4.user_no = CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0'))
@@ -612,35 +608,6 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             @Param("newStatus") String newStatus,
             @Param("failureReason") String failureReason,
             @Param("now") LocalDateTime now);
-
-    @Update("""
-            UPDATE nx_withdrawal_order
-               SET status = #{status},
-                   failure_reason = #{failureReason},
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE withdrawal_no = #{withdrawalNo}
-               AND status = 'FROZEN'
-               AND failure_reason = CONCAT('K5_REVIEW:', #{ticketId})
-               AND is_deleted = 0
-            """)
-    int transitionK5FrozenStatus(
-            @Param("withdrawalNo") String withdrawalNo,
-            @Param("ticketId") String ticketId,
-            @Param("status") String status,
-            @Param("failureReason") String failureReason);
-
-    @Update("""
-            UPDATE nx_withdrawal_order
-               SET status = 'FROZEN',
-                   failure_reason = CONCAT('K5_REVIEW:', #{ticketId}),
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE withdrawal_no = #{withdrawalNo}
-               AND status = #{expectedStatus}
-               AND is_deleted = 0
-            """)
-    int freezeForK5Review(@Param("withdrawalNo") String withdrawalNo,
-                          @Param("expectedStatus") String expectedStatus,
-                          @Param("ticketId") String ticketId);
 
     @Update("""
             UPDATE nx_withdrawal_order

@@ -74,9 +74,9 @@ public class OpsAuditCenterService {
             new AuditConfirmCategory("资金/资产调整", "余额增减(C3)· 手工账单(D4)· 储备注入(B1/D3)· 对账核销(D1)", "财务 / 超管"),
             new AuditConfirmCategory("大额资金放行", "提现放行/冻结/退款(D2)· 渠道退款(D1)", "财务 / 超管"),
             new AuditConfirmCategory("参数批改", "红黄线(B1)· 提现参数(D5)· OTP/锁定(C6)· Phase dial(H1)· 试用敏感参数(H2)", "对应域角色 / 超管(dial 放大方向需风控或超管)"),
-            new AuditConfirmCategory("风险模型/KYC 裁决", "K4 权重分档(执行门槛升超管)· K5 大额复审", "超管 / 风控"),
+            new AuditConfirmCategory("风险模型裁决", "K4 权重分档(执行门槛升超管)", "超管 / 风控"),
             new AuditConfirmCategory("熔断闸", "6 功能闸 + 地区屏蔽(J1/J2 管理面)", "超管"),
-            new AuditConfirmCategory("账户高敏处置", "冻结/解冻 · impersonate(C2)· KYC 人工标记(C4)· 2FA/密码(C5)", "风控 / 超管"),
+            new AuditConfirmCategory("账户高敏处置", "冻结/解冻 · impersonate(C2)· 2FA/密码(C5)", "风控 / 超管"),
             new AuditConfirmCategory("批量簇冻结", "关联账户簇批量冻结(K1)", "风控 / 超管"),
             new AuditConfirmCategory("后台账号治理", "建/停/启/改角色/重置双因子(A1)", "超管"),
             new AuditConfirmCategory("平台配置", "feature flag · 系统参数(A3)· 内容发布(I 域)", "超管 / 内容"));
@@ -1066,7 +1066,7 @@ public class OpsAuditCenterService {
         if (source.contains("C2") || source.contains("C3") || source.contains("账户") || source.contains("余额")) {
             return "C";
         }
-        if (source.contains("KYC") || source.contains("风险") || source.contains("仲裁")) {
+        if (source.contains("风险") || source.contains("仲裁")) {
             return "K";
         }
         if (source.contains("H1") || source.contains("PHASE")) {

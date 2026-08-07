@@ -50,9 +50,6 @@ class C6RegistrationRiskClosureMigrationContractTest {
 
     @Test
     void c6RiskEventsUseTheA4RiskFamilyAndRepairLegacyFacts() throws Exception {
-        String c4Migration = Files.readString(
-                Path.of("scripts/migrations/20260719_c4_kyc_closure.sql"),
-                StandardCharsets.UTF_8);
         String c5Migration = Files.readString(
                 Path.of("scripts/migrations/20260719_c5_security_closure.sql"),
                 StandardCharsets.UTF_8);
@@ -60,9 +57,6 @@ class C6RegistrationRiskClosureMigrationContractTest {
                 Path.of("scripts/migrations/20260720_c6_a4_risk_family_repair.sql"),
                 StandardCharsets.UTF_8).replaceAll("\\s+", " ");
 
-        assertThat(c4Migration)
-                .contains("'risk.kyc_review_triggered','risk','risk'")
-                .doesNotContain("phase_risk");
         assertThat(c5Migration)
                 .contains("'auth.login_locked','auth','risk'")
                 .contains("'auth.refresh_token_reuse_detected','auth','risk'")

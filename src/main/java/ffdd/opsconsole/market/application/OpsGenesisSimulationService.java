@@ -32,13 +32,13 @@ import org.springframework.util.StringUtils;
 public class OpsGenesisSimulationService {
     private static final String PREFIX = "market.genesis.ops.";
     private static final Set<String> BOOLEAN_KEYS = Set.of(
-            "eligibility.enabled", "eligibility.kycRequired", "presale.enabled", "presale.showCountdown");
+            "eligibility.enabled", "presale.enabled", "presale.showCountdown");
     private static final Set<String> DECIMAL_KEYS = Set.of("presale.unitPrice");
     private static final Set<String> INTEGER_KEYS = Set.of(
             "eligibility.maxPerUser", "eligibility.minAccountAgeDays", "presale.maxPerUser");
     private static final Set<String> INSTANT_KEYS = Set.of("presale.startAt", "presale.endAt");
     private static final Set<String> ALLOWED_KEYS = Set.of(
-            "eligibility.enabled", "eligibility.kycRequired", "eligibility.maxPerUser", "eligibility.minAccountAgeDays",
+            "eligibility.enabled", "eligibility.maxPerUser", "eligibility.minAccountAgeDays",
             "presale.enabled", "presale.showCountdown", "presale.unitPrice", "presale.maxPerUser",
             "presale.startAt", "presale.endAt");
 

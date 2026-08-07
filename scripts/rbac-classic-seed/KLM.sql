@@ -38,13 +38,6 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('risk_k4_user_override',        '单用户人工覆盖评分(非高敏·强制理由·影响提现路由)',    'API', '/risk/scoring',           'WRITE', 0, 1, 0),
   ('risk_k4_user_recompute',       '重算回模型分(直接留痕·丢弃覆盖值·还原模型)',           'API', '/risk/scoring',           'WRITE', 0, 1, 0),
 
-  -- K5 大额 KYC 复审 & 告警（5 点）
-  ('risk_k5_read',                 '大额KYC复审-读(队列/触发线/工单详情/告警)',           'API', '/risk/kyc-review',        'READ',  0, 1, 0),
-  ('risk_k5_write',                '大额KYC复审-常规写(4触发线/告警订阅)',                'API', '/risk/kyc-review',        'WRITE', 0, 1, 0),
-  ('risk_k5_ticket_pass',          '通过KYC复审(高敏·amplifies·回写实名+冻结单据)',       'API', '/risk/kyc-review',        'HIGH',  1, 1, 0),
-  ('risk_k5_ticket_reject',        '驳回KYC复审(高敏·影响提现放行·维持冻结)',             'API', '/risk/kyc-review',        'HIGH',  1, 1, 0),
-  ('risk_k5_ticket_manual',        '手动补触发复审(高敏·强制触发工单·阻断提现)',           'API', '/risk/kyc-review',        'HIGH',  1, 1, 0),
-
   -- K6 Janus C2 控制台（2 点）
   ('risk_k6_read',  'Janus C2控制台-读(规则编排/命中日志/设备指纹簇)',                'API', '/risk/janus-c2', 'READ',  0, 1, 0),
   ('risk_k6_write', 'Janus C2-写(策略下发/规则热更新·高敏·amplifies·影响实时拦截)', 'API', '/risk/janus-c2', 'HIGH', 1, 1, 0),
@@ -75,7 +68,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('bi_l5_write',                  '导出-常规写(发起/重试/下载/5安全参数/排程/新建模板)',  'API', '/analytics/export',       'WRITE', 0, 1, 0),
   ('bi_l5_task_approve',           '操作确认放行/执行门槛(高敏·不可逆·数据出境·超限拆分)', 'API', '/analytics/export',       'HIGH',  1, 1, 0),
   ('bi_l5_decrypt_export',         '解密导出(高敏·最高敏感档·强操作确认+强制事由·PII明文)','API', '/analytics/export',       'HIGH',  1, 1, 0),
-  ('bi_l5_regulatory_generate',    '生成监管报告(高敏·合并4模板KYC/资金兑付/AML/辖区·风控→超管)', 'API', '/analytics/export',  'HIGH',  1, 1, 0),
+  ('bi_l5_regulatory_generate',    '生成监管报告(高敏·资金兑付/AML/辖区·风控→超管)', 'API', '/analytics/export',  'HIGH',  1, 1, 0),
 
   -- L6 用户行为热力图（1 点）
   ('bi_l6_read',                   '用户行为热力图-读(纯只读看板)',                       'API', '/analytics/behavior-heatmap', 'READ', 0, 1, 0),

@@ -18,10 +18,9 @@ public interface AppExchangeMapper {
 
     @Select("""
             SELECT w.usdt_available AS usdtAvailable,w.nex_available AS nexAvailable,
-                   UPPER(COALESCE(k.status,'NONE')) AS kycStatus,UPPER(COALESCE(k.country,u.country_code,'')) AS countryCode
+                   UPPER(COALESCE(u.country_code,'')) AS countryCode
               FROM nx_user u
               JOIN nx_user_wallet w ON w.user_id=u.id AND w.is_deleted=0
-              LEFT JOIN nx_kyc_profile k ON k.user_id=u.id AND k.is_deleted=0
              WHERE u.id=#{userId} AND u.is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     WalletGateRow lockWalletGate(@Param("userId") Long userId);
@@ -199,7 +198,7 @@ public interface AppExchangeMapper {
             """)
     UserAttribution userAttribution(@Param("userId") Long userId);
 
-    record WalletGateRow(BigDecimal usdtAvailable,BigDecimal nexAvailable,String kycStatus,String countryCode) {}
+    record WalletGateRow(BigDecimal usdtAvailable,BigDecimal nexAvailable,String countryCode) {}
     record ExchangeWrite(Long userId,String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
                          BigDecimal toAmount,BigDecimal rate,String status) {}
     record LedgerWrite(Long userId,String bizNo,String asset,String direction,BigDecimal amount,

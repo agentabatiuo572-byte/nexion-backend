@@ -132,7 +132,7 @@ class OpsSupportAgentServiceTest {
         SupportAgentProfileUpdateRequest request = new SupportAgentProfileUpdateRequest(
                 "通用客服",
                 List.of("support"),
-                List.of("高价值用户", "KYC"),
+                List.of("高价值用户", "账户安全"),
                 16,
                 true,
                 true,
@@ -285,7 +285,7 @@ class OpsSupportAgentServiceTest {
                 "GENERAL",
                 "通用客服",
                 List.of("support"),
-                List.of("KYC", "提现", "账户"),
+                List.of("账户安全", "提现", "账户"),
                 17,
                 false,
                 false,
@@ -311,7 +311,7 @@ class OpsSupportAgentServiceTest {
         SupportAgentProfileRecord profile = fake.findProfile(2L).orElseThrow();
         assertThat(profile.position()).isEqualTo("客服主管");
         assertThat(profile.serviceTypes()).containsExactly("support");
-        assertThat(profile.tags()).containsExactly("KYC", "提现", "账户");
+        assertThat(profile.tags()).containsExactly("账户安全", "提现", "账户");
         assertThat(profile.maxConcurrent()).isEqualTo(17);
         assertThat(profile.enabled()).isFalse();
         assertThat(profile.transferable()).isFalse();
@@ -326,7 +326,7 @@ class OpsSupportAgentServiceTest {
                 "GENERAL",
                 "通用客服",
                 List.of("support"),
-                List.of("KYC", "提现", "账户"),
+                List.of("账户安全", "提现", "账户"),
                 17,
                 true,
                 true,

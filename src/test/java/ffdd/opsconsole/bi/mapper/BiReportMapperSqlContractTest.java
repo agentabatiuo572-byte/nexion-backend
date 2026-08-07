@@ -15,7 +15,7 @@ class BiReportMapperSqlContractTest {
         assertThat(sql)
                 .contains("STATUS = 'READY'")
                 .contains("SNAPSHOT_CSV IS NOT NULL")
-                .contains("REPORT_TYPE IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'KYC_REGULATORY', 'REGULATORY')");
+                .contains("REPORT_TYPE IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')");
     }
 
     @Test

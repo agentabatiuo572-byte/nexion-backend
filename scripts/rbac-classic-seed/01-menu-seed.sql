@@ -54,7 +54,6 @@ FROM nx_admin_menu p JOIN (SELECT 'C' d) x ON p.menu_code='C'
 JOIN (SELECT 'C1' code,'检索 & 画像' name,'/users/search' path,1 sort UNION ALL
       SELECT 'C2','账户操作','/users/actions',2 UNION ALL
       SELECT 'C3','余额 & 资产调整','/users/assets',3 UNION ALL
-      SELECT 'C4','KYC 合规台账','/users/kyc',4 UNION ALL
       SELECT 'C5','安全 & 会话','/users/security',5 UNION ALL
       SELECT 'C6','注册/登录风控','/users/reg-risk',6) v
 ON 1=1
@@ -161,7 +160,6 @@ JOIN (SELECT 'K1' code,'反多账户引擎' name,'/risk/multi-account' path,1 so
       SELECT 'K2','套利 & 刷量检测','/risk/abuse',2 UNION ALL
       SELECT 'K3','提现风控规则引擎','/risk/withdrawal-rules',3 UNION ALL
       SELECT 'K4','风险评分模型','/risk/scoring',4 UNION ALL
-      SELECT 'K5','大额 KYC 复审 & 告警','/risk/kyc-review',5 UNION ALL
       SELECT 'K6','Janus C2 控制台','/risk/janus-c2',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
@@ -242,9 +240,6 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 
 -- K: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'K%' WHERE r.role_code='RISK';
--- K5: support read-only visibility (K parent + K5 only; no other K menus)
-INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('K','K5') WHERE r.role_code='SUPPORT';
 -- RISK: 可追踪自己发起的 C2/K1 待确认工单，只开放 A 父级和 A2。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('A','A2') WHERE r.role_code='RISK';

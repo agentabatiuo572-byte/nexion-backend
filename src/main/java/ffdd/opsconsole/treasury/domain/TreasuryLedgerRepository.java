@@ -83,11 +83,6 @@ public interface TreasuryLedgerRepository {
         return Map.of();
     }
 
-    /** B5 read-only projection of K5's persisted active alerts; newest rows must be returned first. */
-    default List<Map<String, Object>> recentK5KycAlerts(LocalDateTime since, int limit) {
-        return List.of();
-    }
-
     BigDecimal currentReserveUsd();
 
     default BigDecimal injectedCumulativeUsd() {

@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>晋升事件发布失败(engine.publishPromotionCompleted catch 了不阻断晋升,事件丢失);</li>
  *   <li>Consumer 级联失败(outbox retry 后仍 DEAD);</li>
- *   <li>跨域触发点(checkout/kyc/register,PRD §5.7)未接入时的评估缺口。</li>
+ *   <li>跨域触发点(checkout/register,PRD §5.7)未接入时的评估缺口。</li>
  * </ul>
  *
  * <p>evaluate 幂等:稳态用户 v_rank 不变 → return(不写流水/不发事件),安全批量扫描。

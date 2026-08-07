@@ -40,12 +40,12 @@ public interface AppWithdrawalMapper {
     WalletRow lockWallet(@Param("userId") Long userId);
 
     @Select("""
-            SELECT status,paired_address pairedAddress,network
-              FROM nx_kyc_profile
-             WHERE user_id=#{userId} AND is_deleted=0
+            SELECT network,address,effective_at effectiveAt,next_change_allowed_at nextChangeAllowedAt
+              FROM nx_user_payout_address
+             WHERE user_id=#{userId} AND network=#{network} AND status='ACTIVE' AND is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
-    KycWalletRow lockKycWallet(@Param("userId") Long userId);
+    PayoutAddressRow lockPayoutAddress(@Param("userId") Long userId, @Param("network") String network);
 
     @Select("""
             SELECT COUNT(1) FROM nx_withdrawal_order
@@ -160,7 +160,8 @@ public interface AppWithdrawalMapper {
     record WalletRow(Long userId, BigDecimal usdtAvailable, BigDecimal nexAvailable,
                      BigDecimal pendingWithdraw, Long version) { }
 
-    record KycWalletRow(String status, String pairedAddress, String network) { }
+    record PayoutAddressRow(String network, String address, LocalDateTime effectiveAt,
+                            LocalDateTime nextChangeAllowedAt) { }
 
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,

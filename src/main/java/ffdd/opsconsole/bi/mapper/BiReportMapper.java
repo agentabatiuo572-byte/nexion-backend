@@ -118,7 +118,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             SELECT COUNT(*) FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5' AND status = 'READY'
                AND snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0
-               AND report_type IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'KYC_REGULATORY', 'REGULATORY')
+               AND report_type IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
                AND is_deleted = 0
             """)
     long countReadyReports();
@@ -218,7 +218,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND schema_registered = 1
                AND event_ts >= DATE_SUB(CURRENT_DATE, INTERVAL 400 DAY)
                AND event_name IN (
-                 'auth.register_completed', 'kyc.express_verified', 'checkout.completed',
+                 'auth.register_completed', 'checkout.completed',
                  'wallet.reinvest', 'withdraw.submitted', 'app.dau',
                  'trial.claim_sheet_shown', 'trial.started', 'trial.redeemed'
                )
@@ -247,7 +247,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND analytics_event = 1
                AND schema_registered = 1
                AND event_name IN (
-                 'auth.register_completed', 'kyc.express_verified', 'checkout.completed',
+                 'auth.register_completed', 'checkout.completed',
                  'wallet.reinvest', 'withdraw.submitted', 'device.first_yield_received',
                  'app.dau', 'store.viewed'
                )
@@ -414,12 +414,6 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
 
     @Select("SELECT COUNT(*) FROM nx_user_profile WHERE is_deleted = 0")
     long countUserProfiles();
-
-    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0")
-    long countKycProfiles();
-
-    @Select("SELECT COUNT(*) FROM nx_kyc_profile WHERE is_deleted = 0 AND status = #{status}")
-    long countKycProfilesByStatus(@Param("status") String status);
 
     @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0")
     long countOrders();

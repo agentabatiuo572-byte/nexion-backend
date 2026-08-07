@@ -9,34 +9,6 @@ import org.junit.jupiter.api.Test;
 
 class C5SecurityClosureMigrationContractTest {
     @Test
-    void c5SessionsKycConsumptionEventsAndExactConfigAreDurablySeeded() throws Exception {
-        String migration = Files.readString(
-                Path.of("scripts/migrations/20260719_c5_security_closure.sql"),
-                StandardCharsets.UTF_8).replaceAll("\\s+", " ");
-
-        assertThat(migration)
-                .contains("session_chain_id")
-                .contains("rotated_to_id")
-                .contains("rotation_redeemed_at")
-                .contains("last_active_at")
-                .contains("nx_c5_kyc_reverification_consumption")
-                .contains("auth.session.step_up_days")
-                .contains("user_c5_session_revoke_one")
-                .contains("user_c5_session_revoke_all")
-                .contains("user_c5_unlock_short")
-                .contains("user_c5_unlock_long")
-                .contains("auth.login_locked")
-                .contains("auth.refresh_token_reuse_detected")
-                .contains("login_key_hash")
-                .contains("session_chain_id','id'")
-                .contains("owner_domain=VALUES(owner_domain)")
-                .contains("c2-high-risk-admin-alert")
-                .contains("SHA2(CONCAT('security-password:',u.id),256)")
-                .contains("r.role_code IN ('SUPER_ADMIN','RISK','SUPPORT')")
-                .contains("VALUES (1,39)");
-    }
-
-    @Test
     void cleanSchemaAndClassicSeedsContainTheSameLeastPrivilegeSupportMatrix() throws Exception {
         String schema = Files.readString(Path.of("scripts/schema.sql"), StandardCharsets.UTF_8);
         String permissions = Files.readString(

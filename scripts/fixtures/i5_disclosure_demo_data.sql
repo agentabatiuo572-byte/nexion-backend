@@ -76,10 +76,10 @@ JOIN (
          '推荐激励取决于真实有效的活动和当期规则，不保证固定或持续收益。',
          'Phần thưởng giới thiệu phụ thuộc vào hoạt động hợp lệ và quy tắc hiện hành, không bảo đảm thu nhập cố định hoặc liên tục.',
          'Referral incentives depend on valid activity and current rules and do not guarantee fixed or continuing income.', 6
-  UNION ALL SELECT '07', '托管、KYC 与监管管辖', 'Lưu ký, KYC và thẩm quyền quản lý', 'Custody, KYC, and regulatory jurisdiction',
-         '账户可能适用托管、KYC、制裁筛查及所在地监管要求。',
-         'Tài khoản có thể chịu yêu cầu về lưu ký, KYC, sàng lọc cấm vận và quy định tại khu vực áp dụng.',
-         'Accounts may be subject to custody, KYC, sanctions screening, and applicable local regulation.', 7
+  UNION ALL SELECT '07', '托管、制裁筛查与监管管辖', 'Lưu ký, sàng lọc cấm vận và thẩm quyền quản lý', 'Custody, sanctions screening, and regulatory jurisdiction',
+         '账户可能适用托管、制裁筛查及所在地监管要求。',
+         'Tài khoản có thể chịu yêu cầu về lưu ký, sàng lọc cấm vận và quy định tại khu vực áp dụng.',
+         'Accounts may be subject to custody, sanctions screening, and applicable local regulation.', 7
 ) chapter
 WHERE j.is_deleted = 0
   AND EXISTS (

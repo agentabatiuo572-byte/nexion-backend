@@ -35,12 +35,8 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    '/pages/me/risk-disclosure',
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
               FROM nx_user u
-              LEFT JOIN nx_kyc_profile k ON k.user_id = u.id AND k.is_deleted = 0
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND UPPER(TRIM(CASE
-                     WHEN UPPER(COALESCE(k.status, '')) IN ('APPROVED', 'VERIFIED', 'PASSED')
-                          AND COALESCE(k.country, '') &lt;&gt; '' THEN k.country
-                     ELSE u.country_code END)) IN
+               AND UPPER(TRIM(u.country_code)) IN
                <foreach item="country" collection="countryAliases" open="(" separator="," close=")">
                  UPPER(#{country})
                </foreach>

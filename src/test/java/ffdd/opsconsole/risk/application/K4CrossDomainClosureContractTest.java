@@ -29,7 +29,6 @@ class K4CrossDomainClosureContractTest {
         assertThat(mapper).contains(
                 "nx_admin_risk_multi_account_cluster",
                 "nx_admin_risk_arbitrage_row",
-                "nx_kyc_profile",
                 "nx_withdrawal_order",
                 "nx_risk_signal",
                 "updated_at > COALESCE(s.as_of",
@@ -39,7 +38,6 @@ class K4CrossDomainClosureContractTest {
         assertThat(mapper).doesNotContain(
                 "WHERE k1.is_deleted=0 AND k1.updated_at > COALESCE(s.as_of",
                 "WHERE k2.is_deleted=0 AND k2.updated_at > COALESCE(s.as_of",
-                "WHERE c4.user_id=u.id AND c4.is_deleted=0\n                                  AND c4.updated_at > COALESCE(s.as_of",
                 "WHERE withdraw_fact.user_id=u.id AND withdraw_fact.is_deleted=0\n                                  AND withdraw_fact.updated_at > COALESCE(s.as_of",
                 "WHERE j3.user_id=u.id AND j3.is_deleted=0\n                                  AND j3.updated_at > COALESCE(s.as_of");
         assertThat(mapper).doesNotContain(

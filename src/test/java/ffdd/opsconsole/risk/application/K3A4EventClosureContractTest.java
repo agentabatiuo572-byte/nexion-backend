@@ -20,8 +20,7 @@ class K3A4EventClosureContractTest {
 
         assertThat(service)
                 .contains("risk.withdraw_held")
-                .contains("withdrawalRiskRuleFacade.evaluate")
-                .contains("riskKycReviewFacade.triggerLargeWithdrawalReview");
+                .contains("withdrawalRiskRuleFacade.evaluate");
         assertThat(migration)
                 .contains("INSERT INTO nx_event_schema_registry")
                 .contains("INSERT INTO nx_event_schema_property")

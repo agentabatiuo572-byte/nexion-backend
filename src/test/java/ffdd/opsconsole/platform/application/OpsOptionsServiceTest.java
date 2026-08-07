@@ -114,7 +114,7 @@ class OpsOptionsServiceTest {
         OpsOptionsService databaseBackedService = new OpsOptionsService(mapper, mock(AdminRolePermissionMapper.class));
         when(mapper.supportAgents()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice", "101")));
         when(mapper.transferTargets()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("alice · support", "101")));
-        when(mapper.sessionReplyTemplates()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("KYC · tpl-1", "reply body")));
+        when(mapper.sessionReplyTemplates()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("账户安全 · tpl-1", "reply body")));
         when(mapper.supportSlaQueues()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("支付台", "支付台")));
         when(mapper.supportSlaEscalations()).thenReturn(List.of(new OpsOptionsMapper.OptionRow("D2 withdrawal review", "D2 withdrawal review")));
 
@@ -171,10 +171,10 @@ class OpsOptionsServiceTest {
     }
 
     @Test
-    void riskScoringSourcesComeFromBackendOptionsEndpoint() {
+    void riskScoringSourcesExcludeIdentityReview() {
         assertThat(service.options("risk", "scoring-sources").getData())
                 .extracting(AdminOption::value)
-                .containsExactly("全部启用", "停用 C4 实名维度", "停用 K2 套利维度", "停用异常行为维度");
+                .containsExactly("全部启用", "停用 K2 套利维度", "停用提现速度维度", "停用异常行为维度");
     }
 
     @Test

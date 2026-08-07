@@ -55,7 +55,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
 
     /**
      * Reserved for a trusted edge integration. Controllers must not pass a client-provided country header here.
-     * Verified KYC remains authoritative; trusted IP is only a fallback when KYC has no approved country.
+     * A trusted edge country may override the user's saved profile country for this request.
      */
     @Transactional
     ApiResult<AppRiskDisclosureView> currentWithTrustedIpCountry(Long userId, String trustedIpCountry) {
@@ -175,11 +175,9 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     }
 
     private JurisdictionResolution resolveJurisdiction(Long userId, String trustedIpCountry) {
-        String kycCountry = CountryCodeNormalizer.normalize(ackMapper.findVerifiedKycCountry(userId));
         String ipCountry = CountryCodeNormalizer.normalize(trustedIpCountry);
         String profileCountry = CountryCodeNormalizer.normalize(ackMapper.findUserCountryCode(userId));
-        String country = StringUtils.hasText(kycCountry) ? kycCountry
-                : StringUtils.hasText(ipCountry) ? ipCountry : profileCountry;
+        String country = StringUtils.hasText(ipCountry) ? ipCountry : profileCountry;
         if (!StringUtils.hasText(country)) {
             return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
         }

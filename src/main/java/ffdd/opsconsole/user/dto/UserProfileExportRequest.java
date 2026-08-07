@@ -5,7 +5,6 @@ import java.math.BigDecimal;
 public record UserProfileExportRequest(
         String keyword,
         String status,
-        String kycStatus,
         Integer riskMin,
         String reason,
         String operator,
@@ -28,11 +27,10 @@ public record UserProfileExportRequest(
     public static UserProfileExportRequest basic(
             String keyword,
             String status,
-            String kycStatus,
             Integer riskMin,
             String reason,
             String operator) {
-        return new UserProfileExportRequest(keyword, status, kycStatus, riskMin, reason, operator,
+        return new UserProfileExportRequest(keyword, status, riskMin, reason, operator,
                 null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null);
     }

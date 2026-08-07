@@ -1393,7 +1393,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             case "super" -> "平台 Owner，保留所有危急操作。";
             case "config" -> "运营配置、平台参数与跨域配置变更。";
             case "finance" -> "资金、账务、提现与覆盖率。";
-            case "risk" -> "风控模型、KYC、账户限制与熔断。";
+            case "risk" -> "风控模型、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
             case "growth" -> "活动、节奏、权益与触达。";
             case "support" -> "客服中心后台角色，主管、专属、通用坐席在 M1 配置。";
