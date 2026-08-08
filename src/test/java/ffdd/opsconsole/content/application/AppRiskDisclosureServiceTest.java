@@ -258,7 +258,7 @@ class AppRiskDisclosureServiceTest {
         when(repository.listJurisdictions()).thenReturn(List.of(
                 new DisclosureJurisdictionView("SBV", "越南国家银行", List.of("VN"), "v13", "published", "2026-07-12", 100, 0, 0),
                 new DisclosureJurisdictionView("VN-ALT", "越南替代法域", List.of("VN"), "v9", "published", "2026-07-12", 100, 0, 0)));
-        var ambiguous = service.currentWithTrustedIpCountry(42L, "CN");
+        var ambiguous = service.currentWithTrustedIpCountry(42L, "VN");
         assertThat(ambiguous.getCode()).isEqualTo(409);
         assertThat(ambiguous.getMessage()).isEqualTo("RISK_DISCLOSURE_JURISDICTION_AMBIGUOUS");
     }

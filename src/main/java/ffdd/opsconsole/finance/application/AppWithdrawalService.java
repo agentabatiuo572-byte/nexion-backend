@@ -43,7 +43,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppWithdrawalService {
-    private static final Set<String> CHAINS = Set.of("USDT-TRC20", "USDT-ERC20");
+    private static final Set<String> CHAINS = Set.of("USDT-TRC20", "USDT-BEP20", "USDT-ERC20");
     private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
@@ -397,8 +397,19 @@ public class AppWithdrawalService {
     }
 
     private boolean networkEnabled(String chain) {
-        String key = "USDT-TRC20".equals(chain) ? "withdrawal.trc20.enabled" : "withdrawal.erc20.enabled";
-        return config.activeValue(key).map(String::trim).map(String::toLowerCase)
+        String key = switch (chain) {
+            case "USDT-TRC20" -> "withdrawal.trc20.enabled";
+            case "USDT-BEP20" -> "withdrawal.bep20.enabled";
+            case "USDT-ERC20" -> "withdrawal.erc20.enabled";
+            default -> throw new BizException(422, "WITHDRAWAL_CHAIN_INVALID");
+        };
+        Optional<String> configured = config.activeValue(key);
+        if ("USDT-BEP20".equals(chain) && configured.isEmpty()) {
+            // Existing deployments historically used the EVM switch for both
+            // ERC20 and BEP20. Honor it until the dedicated key is configured.
+            configured = config.activeValue("withdrawal.erc20.enabled");
+        }
+        return configured.map(String::trim).map(String::toLowerCase)
                 .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
                 .map(Set.of("true", "1", "on")::contains)
                 .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
@@ -446,7 +457,7 @@ public class AppWithdrawalService {
         String expected = configured.trim();
         // TRON Base58 is case-sensitive. Only EVM hexadecimal addresses may be
         // compared case-insensitively after their format was validated when saved.
-        return "USDT-ERC20".equals(chain)
+        return Set.of("USDT-BEP20", "USDT-ERC20").contains(chain)
                 && submitted.matches("^0x[0-9a-fA-F]{40}$")
                 && expected.matches("^0x[0-9a-fA-F]{40}$")
                 ? submitted.equalsIgnoreCase(expected)

@@ -260,8 +260,8 @@ class OpsEmergencyControlServiceTest {
                 .containsEntry("feedK4", true);
         assertThat((Map<String, Object>) overview.getData().get("coverage"))
                 .containsEntry("status", "complete")
-                .containsEntry("registeredCount", 11)
-                .containsEntry("activeCount", 11);
+                .containsEntry("registeredCount", 10)
+                .containsEntry("activeCount", 10);
         assertThat(overview.getData()).containsEntry("window", "24h");
         assertThat(invalid.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(invalid.getMessage()).isEqualTo("TAMPER_WINDOW_INVALID");

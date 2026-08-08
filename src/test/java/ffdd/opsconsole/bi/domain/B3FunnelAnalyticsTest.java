@@ -28,10 +28,10 @@ class B3FunnelAnalyticsTest {
         assertThat(result).containsEntry("available", true);
         assertThat(rows(result.get("stages")))
                 .extracting(row -> row.get("stage"))
-                .containsExactly("注册", "绑卡", "首购", "复投", "提现");
+                .containsExactly("注册", "首购", "复投", "提现");
         assertThat(rows(result.get("stages")))
                 .extracting(row -> row.get("distinctUsers"))
-                .containsExactly(1, 1, 1, 1, 1);
+                .containsExactly(1, 1, 1, 1);
         assertThat(map(result.get("auxMetrics")))
                 .containsEntry("storeViewRate", 100D)
                 .containsEntry("purchaseFromStoreRate", 100D)

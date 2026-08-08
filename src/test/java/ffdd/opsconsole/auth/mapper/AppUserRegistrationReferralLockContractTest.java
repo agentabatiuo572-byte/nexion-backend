@@ -43,7 +43,9 @@ class AppUserRegistrationReferralLockContractTest {
         String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
 
         int table = schema.indexOf("CREATE TABLE IF NOT EXISTS nx_user_registration_otp");
-        String registrationOtp = schema.substring(table, schema.indexOf("CREATE TABLE IF NOT EXISTS nx_c5", table));
+        assertThat(table).isGreaterThanOrEqualTo(0);
+        int nextTable = schema.indexOf("CREATE TABLE IF NOT EXISTS", table + 1);
+        String registrationOtp = schema.substring(table, nextTable < 0 ? schema.length() : nextTable);
         assertThat(registrationOtp).contains("client_ip VARCHAR(64) NOT NULL");
         assertThat(migration).contains("ADD COLUMN client_ip VARCHAR(64) NOT NULL DEFAULT ''unknown''");
         assertThat(migration).contains("idx_user_registration_otp_ip");

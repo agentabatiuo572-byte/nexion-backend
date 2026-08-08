@@ -188,7 +188,7 @@ class K2CrossDomainClosureContractTest {
 
     private static String read(String file) {
         try {
-            return Files.readString(Path.of(file));
+            return Files.readString(Path.of(file)).replace("\r\n", "\n");
         } catch (Exception ex) {
             throw new IllegalStateException(ex);
         }

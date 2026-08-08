@@ -244,6 +244,27 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
+    void acceptsEffectiveBep20PayoutAddressAfterDelayWithCaseInsensitiveEvmMatch() {
+        String configuredAddress = "0x55d398326f99059fF775485246999027B3197955";
+        String submittedAddress = configuredAddress.toUpperCase(java.util.Locale.ROOT).replace("0X", "0x");
+        when(config.activeValue("withdrawal.bep20.enabled")).thenReturn(Optional.of("true"));
+        when(mapper.lockPayoutAddress(7L, "USDT-BEP20")).thenReturn(new PayoutAddressRow(
+                "USDT-BEP20", configuredAddress, LocalDateTime.now().minusSeconds(1),
+                LocalDateTime.now().plusDays(7)));
+        when(mapper.withdrawalRiskFacts(7L, submittedAddress)).thenReturn(
+                new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
+                        45, "k4-v13", LocalDateTime.now(), 41, 73, 91));
+
+        ApiResult<java.util.Map<String, Object>> result = service.submit(
+                7L, new BigDecimal("100"), "USDT-BEP20", submittedAddress, "wd-bep20-effective");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "REVIEW_PENDING");
+        verify(mapper).reserveFunds(7L, new BigDecimal("100.000000"), new BigDecimal("50.000000"), 3L);
+        verify(mapper).insertWithdrawal(any());
+    }
+
+    @Test
     void enforcesServerDailyLimitBeforeFundsMove() {
         when(mapper.countLast24Hours(7L)).thenReturn(2);
 

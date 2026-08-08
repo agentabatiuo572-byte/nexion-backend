@@ -34,7 +34,7 @@ class SupportSlaBaselineInitializerTest {
         assertThat(repository.sla)
                 .extracting(SupportSlaView::category)
                 .containsExactlyInAnyOrderElementsOf(SupportSlaBaseline.CATEGORIES);
-        assertThat(repository.sla).hasSize(9);
+        assertThat(repository.sla).hasSize(SupportSlaBaseline.CATEGORIES.size());
         assertThat(repository.sla.stream()
                 .filter(row -> row.category().equals("withdrawal"))
                 .findFirst()

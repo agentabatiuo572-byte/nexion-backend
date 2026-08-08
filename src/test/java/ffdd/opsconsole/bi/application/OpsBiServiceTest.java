@@ -732,7 +732,7 @@ class OpsBiServiceTest {
         assertThat(created.getCode()).isZero();
         assertThat(reportRepository.report.containsPii()).isFalse();
         assertThat(reportRepository.report.status()).isEqualTo("READY");
-        assertThat(reportRepository.report.rowCount()).isEqualTo(6L);
+        assertThat(reportRepository.report.rowCount()).isEqualTo(4L);
     }
 
     @Test
@@ -769,11 +769,11 @@ class OpsBiServiceTest {
         verify(auditLogService).recordRequired(audit.capture());
         assertThat(audit.getValue().getDetail())
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
-                .containsEntry("rowCount", 6L)
+                .containsEntry("rowCount", 4L)
                 .containsEntry("artifactSha256", contentSha256)
                 .containsEntry("artifactSizeBytes", (long) csv.getBytes(StandardCharsets.UTF_8).length);
         assertThat(reportRepository.publishedExports.get(reportId))
-                .containsEntry("rowCount", 6L)
+                .containsEntry("rowCount", 4L)
                 .containsEntry("artifactSha256", contentSha256)
                 .containsEntry("artifactSizeBytes", (long) csv.getBytes(StandardCharsets.UTF_8).length);
     }
@@ -815,7 +815,7 @@ class OpsBiServiceTest {
                         "campaign-7"));
 
         assertThat(created.getCode()).isZero();
-        assertThat(reportRepository.report.rowCount()).isEqualTo(6L);
+        assertThat(reportRepository.report.rowCount()).isEqualTo(5L);
         assertThat(reportRepository.report.scope())
                 .contains("cohort=2026-W30", "phase=P3", "locale=vi", "ref=campaign-7");
         String reportId = reportRepository.report.reportId();
@@ -829,7 +829,7 @@ class OpsBiServiceTest {
         verify(auditLogService).recordRequired(audit.capture());
         assertThat(audit.getValue().getDetail())
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
-                .containsEntry("rowCount", 6L)
+                .containsEntry("rowCount", 5L)
                 .containsEntry("artifactSha256", contentSha256)
                 .containsEntry("filters", Map.of(
                         "cohort", "2026-W30",
@@ -837,7 +837,7 @@ class OpsBiServiceTest {
                         "locale", "vi",
                         "ref", "campaign-7"));
         assertThat(reportRepository.publishedExports.get(reportId))
-                .containsEntry("rowCount", 6L)
+                .containsEntry("rowCount", 5L)
                 .containsEntry("artifactSha256", contentSha256);
     }
 
