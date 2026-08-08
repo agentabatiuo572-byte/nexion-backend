@@ -19,6 +19,8 @@ class Bep20WithdrawalToggleContractTest {
                 .contains("'wallet.withdrawal.bep20.enabled'")
                 .contains("withdrawal.erc20.enabled")
                 .contains("COALESCE")
+                .contains("), 'false');")
+                .doesNotContain("), 'true');")
                 .contains("ON DUPLICATE KEY UPDATE")
                 .doesNotContain("config_value=VALUES(config_value)");
         assertThat(runner).contains("20260809_bep20_withdrawal_toggle.sql");
