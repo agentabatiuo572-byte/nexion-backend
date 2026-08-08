@@ -2,12 +2,15 @@ param(
   [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd",
   [int]$Port = 8110,
   [string]$LogDir = "",
-  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe"
+  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
+  [bool]$TemporarySuperadminMfaBypass = $false
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$mfaBypassValue = & (Join-Path $PSScriptRoot "resolve_ops_console_mfa_bypass.ps1") `
+  -Enabled $TemporarySuperadminMfaBypass
 
 if (-not (Test-Path $Maven)) {
   throw "Maven executable not found: $Maven"
@@ -28,6 +31,7 @@ $commands = @(
   ('cd /d "{0}"' -f $root.Path),
   ('set "SERVER_PORT={0}"' -f $Port),
   'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
+  ('set "NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS={0}"' -f $mfaBypassValue),
   ('call "{0}" spring-boot:run' -f $Maven)
 )
 
