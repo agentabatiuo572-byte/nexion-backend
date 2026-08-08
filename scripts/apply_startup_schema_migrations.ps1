@@ -15,7 +15,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql"),
-  (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql")
+  (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql"),
+  (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql")
 )
 
 if ([string]::IsNullOrWhiteSpace($JdbcUrl)) {

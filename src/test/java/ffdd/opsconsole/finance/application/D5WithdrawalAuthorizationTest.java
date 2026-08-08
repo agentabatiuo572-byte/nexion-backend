@@ -37,6 +37,19 @@ class D5WithdrawalAuthorizationTest {
     }
 
     @Test
+    void canonicalBep20ToggleRequiresFeeWritePermission() {
+        WithdrawalLimitsUpdateRequest request = new WithdrawalLimitsUpdateRequest();
+        request.setBep20Enabled(false);
+        var feeWriter = new UsernamePasswordAuthenticationToken(
+                "finance", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_fee_write")));
+        var reader = new UsernamePasswordAuthenticationToken(
+                "auditor", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_read")));
+
+        assertThat(authorization.canUpdateLimits(feeWriter, request)).isTrue();
+        assertThat(authorization.canUpdateLimits(reader, request)).isFalse();
+    }
+
+    @Test
     void phaseFieldReachesReadOnly422ForD5ReadersOnly() {
         WithdrawalLimitsUpdateRequest request = new WithdrawalLimitsUpdateRequest();
         request.setComplianceHoldEnabled(null);

@@ -16,6 +16,7 @@ public class WithdrawalLimitsUpdateRequest {
     private BigDecimal networkFeeMin;
     private BigDecimal networkFeeMax;
     private BigDecimal nexFeeOffsetRate;
+    private Boolean bep20Enabled;
     private Integer cooldownDays;
     private BigDecimal penaltyFeeRate;
     private Boolean complianceHoldEnabled;
@@ -36,6 +37,8 @@ public class WithdrawalLimitsUpdateRequest {
     @JsonSetter public void setNetworkFeeMax(BigDecimal value) { networkFeeMax = value; presentFields.add("networkFeeMax"); }
     public BigDecimal getNexFeeOffsetRate() { return nexFeeOffsetRate; }
     @JsonSetter public void setNexFeeOffsetRate(BigDecimal value) { nexFeeOffsetRate = value; presentFields.add("nexFeeOffsetRate"); }
+    public Boolean getBep20Enabled() { return bep20Enabled; }
+    @JsonSetter public void setBep20Enabled(Boolean value) { bep20Enabled = value; presentFields.add("bep20Enabled"); }
     public Integer getCooldownDays() { return cooldownDays; }
     @JsonSetter public void setCooldownDays(Integer value) { cooldownDays = value; presentFields.add("cooldownDays"); }
     public BigDecimal getPenaltyFeeRate() { return penaltyFeeRate; }
@@ -63,7 +66,7 @@ public class WithdrawalLimitsUpdateRequest {
         Set<String> fields = new LinkedHashSet<>(presentFields);
         fields.retainAll(Set.of(
                 "dailyLimitCount", "balanceMaxRatio", "networkFeeRatio",
-                "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate"));
+                "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "bep20Enabled"));
         return fields;
     }
 }

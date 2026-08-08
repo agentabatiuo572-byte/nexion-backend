@@ -458,6 +458,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("nexFeeOffsetRate", nexFeeOffsetRate);
         response.put("minUsdt", configDecimal("withdrawal.min_usdt", BigDecimal.ZERO));
         response.put("trc20Enabled", optionalConfigBoolean("withdrawal.trc20.enabled"));
+        response.put("bep20Enabled", optionalConfigBoolean("withdrawal.bep20.enabled"));
         response.put("erc20Enabled", optionalConfigBoolean("withdrawal.erc20.enabled"));
         response.put("h1Rhythm", rhythm.summary());
         response.put("h1WithdrawRules", Map.of(
@@ -515,6 +516,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 String.valueOf(request.getNetworkFeeMin()),
                 String.valueOf(request.getNetworkFeeMax()),
                 String.valueOf(request.getNexFeeOffsetRate()),
+                String.valueOf(request.getBep20Enabled()),
                 request.getReason().trim(), trimToEmpty(actor)));
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
@@ -549,6 +551,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         } catch (IllegalStateException ex) {
             return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
         }
+        boolean beforeBep20;
+        try {
+            beforeBep20 = requiredConfigBoolean("withdrawal.bep20.enabled");
+        } catch (IllegalStateException ex) {
+            return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
+        }
         BigDecimal nextFeeMin = changedFields.contains("networkFeeMin")
                 ? request.getNetworkFeeMin() : before.get("networkFeeMin");
         BigDecimal nextFeeMax = changedFields.contains("networkFeeMax")
@@ -557,7 +565,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return ApiResult.fail(400, "NETWORK_FEE_RANGE_INVALID");
         }
         boolean amplifies = changedFields.stream().anyMatch(field ->
-                loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request)));
+                "bep20Enabled".equals(field)
+                        ? !beforeBep20 && Boolean.TRUE.equals(request.getBep20Enabled())
+                        : loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request)));
         if (amplifies) {
             TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
             if (!coverage.reliable()) {
@@ -573,15 +583,31 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String reason = request.getReason().trim();
         String role = operatorRoleResolver.resolve();
         for (String field : changedFields.stream().sorted().toList()) {
-            BigDecimal nextValue = requestedWithdrawalLimitValue(field, request);
-            String configKey = canonicalD5ConfigKey(field);
-            configFacade.upsertAdminValue(configKey, nextValue.toPlainString(), "NUMBER", "wallet",
-                    "D5 canonical withdrawal limit");
-            configFacade.upsertAdminValue(walletD5ConfigKey(field), nextValue.toPlainString(), "NUMBER", "wallet",
-                    "D5 withdrawal limit mirror");
+            Object beforeValue;
+            Object nextValue;
+            String configKey;
+            if ("bep20Enabled".equals(field)) {
+                beforeValue = beforeBep20;
+                nextValue = request.getBep20Enabled();
+                configKey = "withdrawal.bep20.enabled";
+                configFacade.upsertAdminValue(configKey, String.valueOf(nextValue), "BOOLEAN", "wallet",
+                        "D5 canonical BEP20 withdrawal switch");
+                configFacade.upsertAdminValue("wallet.withdrawal.bep20.enabled", String.valueOf(nextValue),
+                        "BOOLEAN", "wallet", "D5 BEP20 withdrawal switch mirror");
+            } else {
+                BigDecimal numericBefore = before.get(field);
+                BigDecimal numericNext = requestedWithdrawalLimitValue(field, request);
+                beforeValue = numericBefore;
+                nextValue = numericNext;
+                configKey = canonicalD5ConfigKey(field);
+                configFacade.upsertAdminValue(configKey, numericNext.toPlainString(), "NUMBER", "wallet",
+                        "D5 canonical withdrawal limit");
+                configFacade.upsertAdminValue(walletD5ConfigKey(field), numericNext.toPlainString(), "NUMBER", "wallet",
+                        "D5 withdrawal limit mirror");
+            }
             Map<String, Object> detail = new LinkedHashMap<>();
             detail.put("field", field);
-            detail.put("before", before.get(field));
+            detail.put("before", beforeValue);
             detail.put("after", nextValue);
             detail.put("operator", trimToEmpty(actor));
             detail.put("role", role);
@@ -592,7 +618,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", configKey, actor, detail);
             eventOutboxService.publish("WITHDRAWAL_PARAM", configKey, "admin.withdraw_limit_changed", Map.of(
                     "field", field,
-                    "before", before.get(field),
+                    "before", beforeValue,
                     "after", nextValue,
                     "operator", trimToEmpty(actor),
                     "reason", reason));
@@ -1302,6 +1328,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         configFacade.upsertAdminValue("wallet.withdrawal.trc20.enabled",
                 String.valueOf(requiredConfigBoolean("withdrawal.trc20.enabled")),
                 "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.bep20.enabled",
+                String.valueOf(requiredConfigBoolean("withdrawal.bep20.enabled")),
+                "BOOLEAN", "wallet", "D5 BEP20 withdrawal enabled mirror");
         configFacade.upsertAdminValue("wallet.withdrawal.erc20.enabled",
                 String.valueOf(requiredConfigBoolean("withdrawal.erc20.enabled")),
                 "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled mirror");
@@ -2043,6 +2072,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("networkFeeMin", owned.get("networkFeeMin"));
         response.put("networkFeeMax", owned.get("networkFeeMax"));
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
+        response.put("bep20Enabled", requiredConfigBoolean("withdrawal.bep20.enabled"));
         response.put("cooldownDays", rhythm.withdrawCooldownDays());
         response.put("penaltyFeeRate", rhythm.withdrawPenaltyFeeRate().movePointLeft(2));
         response.put("complianceHoldEnabled", rhythm.complianceHoldEnabled());
@@ -2058,6 +2088,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("networkFeeMin", "d5"),
                 Map.entry("networkFeeMax", "d5"),
                 Map.entry("nexFeeOffsetRate", "d5"),
+                Map.entry("bep20Enabled", "d5"),
                 Map.entry("cooldownDays", "phase-h1"),
                 Map.entry("penaltyFeeRate", "phase-h1"),
                 Map.entry("complianceHoldEnabled", "phase-h1")));
@@ -2115,6 +2146,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && !inRange(request.getNexFeeOffsetRate(), new BigDecimal("0.000001"),
                 new BigDecimal("999999999999.999999"))) {
             return ApiResult.fail(400, "NEX_FEE_OFFSET_RATE_INVALID");
+        }
+        if (changedFields.contains("bep20Enabled") && request.getBep20Enabled() == null) {
+            return ApiResult.fail(400, "BEP20_ENABLED_INVALID");
         }
         return null;
     }
