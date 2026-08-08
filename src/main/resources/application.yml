@@ -53,6 +53,17 @@ nexion:
     # Required by the payment gateway / provider-statement adapter. At least 32 bytes;
     # empty or short secrets fail closed at the OpenAPI boundary.
     provider-ingestion-secret: ${NEXION_PAYMENT_INGESTION_SECRET:}
+    cregis:
+      # Safe default: no provider traffic and no real-fund side effects.
+      # LOCAL_SANDBOX runs the in-process contract simulator only.
+      mode: ${NEXION_CREGIS_MODE:DISABLED}
+      base-url: ${NEXION_CREGIS_BASE_URL:}
+      callback-base-url: ${NEXION_CREGIS_CALLBACK_BASE_URL:}
+      project-id: ${NEXION_CREGIS_PROJECT_ID:0}
+      # Server-side credential only. Never place it in UniApp, Janus or PC environment files.
+      api-key: ${NEXION_CREGIS_API_KEY:}
+      connect-timeout-ms: ${NEXION_CREGIS_CONNECT_TIMEOUT_MS:1000}
+      read-timeout-ms: ${NEXION_CREGIS_READ_TIMEOUT_MS:2000}
   gateway:
     # Header-based subject impersonation is opt-in for trusted internal gateways only.
     # Production must inject a unique secret and enumerate the exact ingress peers.
