@@ -55,7 +55,7 @@ class OpsJanusServiceTest {
             mock(JanusRemoteTargetNetworkGuard.class);
     private final OpsJanusService service = new OpsJanusService(
             repository, remoteTargetRepository, remoteTargetProperties, remoteTargetNetworkGuard,
-            new JanusRuleEvaluator(), objectMapper, audit, outbox);
+            new JanusRuleEvaluator(), objectMapper, audit, outbox, null, null);
 
     @BeforeEach
     void commandDoesNotExist() {

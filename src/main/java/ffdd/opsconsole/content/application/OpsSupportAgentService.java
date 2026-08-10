@@ -125,6 +125,24 @@ public class OpsSupportAgentService {
                 || ("support".equals(actorRole) && supportSeatSupervisor(actor));
     }
 
+    /**
+     * M5 content is separate from M1 seat administration.  A CONTENT operator
+     * with the endpoint's service_m5_write authority may manage scripts and
+     * reply templates; SUPPORT retains its supervisor second gate.  Every
+     * other role deliberately fails closed.
+     */
+    public boolean canManageM5Content() {
+        AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
+        if (actor == null) {
+            return false;
+        }
+        String actorRole = normalizedRole(actor.role());
+        return "super".equals(actorRole)
+                || "superadmin".equals(actorRole)
+                || "content".equals(actorRole)
+                || ("support".equals(actorRole) && supportSeatSupervisor(actor));
+    }
+
     public Optional<SupportAgentProfileView> assignableSupportAgent(String agentId) {
         if (!StringUtils.hasText(agentId)) {
             return Optional.empty();

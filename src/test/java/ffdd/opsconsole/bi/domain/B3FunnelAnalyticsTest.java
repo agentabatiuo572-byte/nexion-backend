@@ -66,6 +66,30 @@ class B3FunnelAnalyticsTest {
     }
 
     @Test
+    void restoresEightDailyFirstPurchasePointsTargetAndChannelAttribution() {
+        LocalDateTime today = LocalDateTime.now().withHour(8).withMinute(0).withSecond(0).withNano(0);
+        Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
+                event("auth.register_completed", "buyer", today, "P3", "partner-a"),
+                event("checkout.completed", "buyer", today.plusHours(1), "P3", "partner-a"),
+                event("auth.register_completed", "visitor", today.plusMinutes(5), "P3", "direct")),
+                null, "P3", null);
+
+        List<Map<String, Object>> daily = rows(result.get("dailyFirstPurchase"));
+        List<Map<String, Object>> channels = rows(result.get("purchaseChannels"));
+
+        assertThat(result).containsEntry("dailyFirstPurchaseTargetPct", 18);
+        assertThat(daily).hasSize(8);
+        assertThat(daily.get(7))
+                .containsEntry("registeredUsers", 2)
+                .containsEntry("firstPurchaseUsers", 1L)
+                .containsEntry("conversionPct", 50D);
+        assertThat(channels).singleElement().satisfies(channel -> assertThat(channel)
+                .containsEntry("channel", "partner-a")
+                .containsEntry("firstPurchaseUsers", 1L)
+                .containsEntry("sharePct", 100D));
+    }
+
+    @Test
     void emptyRegistrationDenominatorReturnsACompleteFailClosedShape() {
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("withdraw.submitted", "orphan", LocalDateTime.now().minusHours(1), "P2", "direct")),

@@ -23,6 +23,35 @@ public interface F5CommissionMapper {
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
                    e.status AS rawStatus,
+                   e.version AS version,
+                   e.frozen_from_status AS frozenFromStatus,
+                   (
+                     SELECT l.biz_no
+                       FROM nx_wallet_ledger l
+                      WHERE l.is_deleted = 0
+                        AND l.user_id = e.user_id
+                        AND l.biz_type = 'TEAM_COMMISSION'
+                        AND (
+                          (LOWER(e.commission_type) = 'network' AND
+                            (l.biz_no = CONCAT('F2-NETWORK-', e.id)
+                              OR l.biz_no = CONCAT('F2-NETWORK-NEX-', e.id)))
+                          OR (LOWER(e.commission_type) = 'binary' AND l.biz_no = CONCAT(
+                            'F3-BINARY-', e.user_id, '-',
+                            (SELECT DATE_FORMAT(s.settlement_date, '%Y%m%d')
+                               FROM nx_binary_commission_settlement s
+                              WHERE s.commission_event_id = e.id AND s.is_deleted = 0
+                              LIMIT 1)))
+                          OR (LOWER(e.commission_type) = 'leadership'
+                            AND l.biz_no LIKE CONCAT('F4-POOL-%-', e.id))
+                          OR (LOWER(e.commission_type) = 'cultivation'
+                            AND l.biz_no = CONCAT('F1-VRANKREWARD-', e.id))
+                          OR l.biz_no = CONCAT('F5-REISSUE-', e.id)
+                          OR l.remark LIKE CONCAT('%commissionId=CM-', e.id, '%')
+                          OR l.remark LIKE CONCAT('%eventId=', e.id, '%')
+                        )
+                      ORDER BY l.id DESC
+                      LIMIT 1
+                   ) AS ledgerBizNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
                      WHEN LOWER(e.commission_type) IN ('network', 'binary')
@@ -32,10 +61,12 @@ public interface F5CommissionMapper {
                    CASE
                      WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
                      WHEN UPPER(e.status) = 'FROZEN' THEN 'frozen'
-                     WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
-                     WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
-                     WHEN LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
-                     ELSE 'cooling'
+                      WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
+                      WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
+                      WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
+                        AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                      WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
+                      ELSE 'unknown'
                    END AS status,
                    DATE_FORMAT(u.created_at, '%Y-%m') AS cohort
               FROM nx_commission_event e
@@ -133,6 +164,63 @@ public interface F5CommissionMapper {
             @Param("cohort") String cohort);
 
     @Select("""
+            SELECT LOWER(e.commission_type) AS kind,
+                   UPPER(e.currency) AS currency,
+                   COALESCE(SUM(CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END), 0) AS amount,
+                   COUNT(1) AS count
+              FROM nx_commission_event e
+             WHERE e.is_deleted=0
+               AND LOWER(e.commission_type) IN
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+             GROUP BY LOWER(e.commission_type), UPPER(e.currency)
+             ORDER BY FIELD(kind,
+                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis'),
+                      currency
+            """)
+    List<Map<String, Object>> aggregateCommissionKinds();
+
+    @Select("""
+            SELECT normalized.status,
+                   normalized.currency,
+                   COALESCE(SUM(normalized.amount), 0) AS amount,
+                   COUNT(1) AS count
+              FROM (
+                    SELECT CASE
+                             WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
+                             WHEN UPPER(e.status)='FROZEN' THEN 'frozen'
+                              WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
+                              WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
+                              WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
+                                AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                              WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
+                              ELSE 'unknown'
+                           END AS status,
+                           UPPER(e.currency) AS currency,
+                           CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount
+                      FROM nx_commission_event e
+                     WHERE e.is_deleted=0
+                       AND LOWER(e.commission_type) IN
+                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+              ) normalized
+             GROUP BY normalized.status, normalized.currency
+             ORDER BY FIELD(normalized.status, 'unlocked', 'cooling', 'withdrawn', 'reversed', 'frozen'),
+                      normalized.currency
+            """)
+    List<Map<String, Object>> aggregateCommissionStatuses();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_commission_event
+             WHERE is_deleted=0
+               AND (commission_type IS NULL OR LOWER(commission_type) NOT IN
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis',
+                    'vrank_reward'))
+            """)
+    // vrank_reward is the authoritative F1 self-reward event, not one of F5's six commission classes.
+    // It is intentionally excluded from F5 totals but is known, so it must not trip the unknown-kind fuse.
+    long unknownCommissionKindCount();
+
+    @Select("""
             SELECT CONCAT('CM-', e.id) AS commissionId,
                    e.id AS eventId,
                    e.user_id AS userId,
@@ -142,7 +230,9 @@ public interface F5CommissionMapper {
                    e.source_user_id AS sourceUserId,
                    e.layer_no AS layer,
                    e.order_no AS orderNo,
-                   e.status AS rawStatus
+                   e.status AS rawStatus,
+                   e.version AS version,
+                   e.frozen_from_status AS frozenFromStatus
               FROM nx_commission_event e
              WHERE e.id = #{eventId}
                AND e.is_deleted = 0
@@ -318,12 +408,35 @@ public interface F5CommissionMapper {
     @Update("""
             UPDATE nx_commission_event
                SET status = 'UNLOCKED',
+                   version = version + 1,
                    updated_at = NOW()
              WHERE id = #{eventId}
+               AND version = #{expectedVersion}
                AND UPPER(status) = 'COOLING'
                AND unlock_at IS NOT NULL
                AND unlock_at <= NOW()
                AND is_deleted = 0
             """)
-    int unlockCoolingEventCas(@Param("eventId") Long eventId);
+    int unlockCoolingEventCas(@Param("eventId") Long eventId,
+                              @Param("expectedVersion") Long expectedVersion);
+
+    @Insert("""
+            INSERT INTO nx_commission_operation
+              (operation_no, operation_type, source_commission_id, result_commission_id,
+               user_id, kinds, amount, currency, evidence_ref, reason, operator,
+               idempotency_key, expected_version, status, created_at)
+            SELECT CONCAT('F5-AUTO-UNLOCK-', e.id), 'AUTO_UNLOCK', e.id, NULL,
+                   e.user_id, LOWER(e.commission_type),
+                   CASE WHEN UPPER(e.currency)='NEX' THEN e.amount_nex ELSE e.amount_usdt END,
+                   UPPER(e.currency), CONCAT('unlock_at:', DATE_FORMAT(e.unlock_at,'%Y-%m-%dT%H:%i:%s')),
+                   'cooling period elapsed', 'system', CONCAT('F5-AUTO-UNLOCK-', e.id),
+                   #{expectedVersion}, 'SUCCESS', NOW()
+              FROM nx_commission_event e
+             WHERE e.id=#{eventId}
+               AND e.version=#{expectedVersion}+1
+               AND UPPER(e.status)='UNLOCKED'
+               AND e.is_deleted=0
+            """)
+    int insertAutoUnlockOperation(@Param("eventId") Long eventId,
+                                  @Param("expectedVersion") Long expectedVersion);
 }

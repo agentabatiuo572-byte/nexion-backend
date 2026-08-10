@@ -37,16 +37,17 @@ class D5WithdrawalAuthorizationTest {
     }
 
     @Test
-    void canonicalBep20ToggleRequiresFeeWritePermission() {
-        WithdrawalLimitsUpdateRequest request = new WithdrawalLimitsUpdateRequest();
-        request.setBep20Enabled(false);
+    void wd01ControlsRequireTheDailyLimitWritePermissionUsedByTheirVisibleControls() {
+        var dailyWriter = new UsernamePasswordAuthenticationToken(
+                "daily", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_daily_limit_write")));
         var feeWriter = new UsernamePasswordAuthenticationToken(
-                "finance", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_fee_write")));
-        var reader = new UsernamePasswordAuthenticationToken(
-                "auditor", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_read")));
+                "fee", "n/a", List.of(new SimpleGrantedAuthority("finance_d5_fee_write")));
+        WithdrawalLimitsUpdateRequest request = new WithdrawalLimitsUpdateRequest();
+        request.setSmallAmountThresholdUsd(new java.math.BigDecimal("50"));
+        request.setPayoutSlaHours(24);
 
-        assertThat(authorization.canUpdateLimits(feeWriter, request)).isTrue();
-        assertThat(authorization.canUpdateLimits(reader, request)).isFalse();
+        assertThat(authorization.canUpdateLimits(dailyWriter, request)).isTrue();
+        assertThat(authorization.canUpdateLimits(feeWriter, request)).isFalse();
     }
 
     @Test

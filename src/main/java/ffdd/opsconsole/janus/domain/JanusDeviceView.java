@@ -1,6 +1,7 @@
 package ffdd.opsconsole.janus.domain;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.Map;
 
 public record JanusDeviceView(
         String sid,
@@ -40,7 +41,25 @@ public record JanusDeviceView(
         String lastOperationReason,
         String activationKind,
         JsonNode tags,
-        long version) {
+        long version,
+        Map<String, Object> takeover) {
+    public JanusDeviceView(
+            String sid, String deviceId, Long firstSeenAt, Long lastSeenAt, Long installAt, Integer installDays,
+            String inviteCode, String channel, String cohortId, String status, String desiredStatus,
+            String commandState, String statusSource, boolean activated, String remoteUrlKey,
+            Integer remoteTargetVersion, Long remoteTargetCatalogVersion, Integer maturityScore,
+            Integer recommendationScore, Integer environmentRiskScore, Integer priorityScore, String ua,
+            String platform, String model, String osName, String browser, JsonNode maturity, JsonNode environment,
+            String hitStrategy, Integer hitStrategyVersion, JsonNode latestDecision, JsonNode latestSession,
+            JsonNode manualOverride, String lastOperatorId, String lastOperationReason, String activationKind,
+            JsonNode tags, long version) {
+        this(sid, deviceId, firstSeenAt, lastSeenAt, installAt, installDays, inviteCode, channel, cohortId,
+                status, desiredStatus, commandState, statusSource, activated, remoteUrlKey, remoteTargetVersion,
+                remoteTargetCatalogVersion, maturityScore, recommendationScore, environmentRiskScore,
+                priorityScore, ua, platform, model, osName, browser, maturity, environment, hitStrategy,
+                hitStrategyVersion, latestDecision, latestSession, manualOverride, lastOperatorId,
+                lastOperationReason, activationKind, tags, version, null);
+    }
     public JanusDeviceView(
             String sid,
             String deviceId,
@@ -83,6 +102,6 @@ public record JanusDeviceView(
                 remoteUrlKey, null, null, maturityScore, recommendationScore, environmentRiskScore,
                 priorityScore, ua, platform, model, osName, browser, maturity, environment,
                 hitStrategy, hitStrategyVersion, latestDecision, latestSession, manualOverride,
-                lastOperatorId, lastOperationReason, activationKind, tags, version);
+                lastOperatorId, lastOperationReason, activationKind, tags, version, null);
     }
 }

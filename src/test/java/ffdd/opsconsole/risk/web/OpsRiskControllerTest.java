@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 
 class OpsRiskControllerTest {
     private final OpsRiskService riskService = mock(OpsRiskService.class);
-    private final OpsRiskController controller = new OpsRiskController(riskService);
+    private final OpsRiskController controller = new OpsRiskController(riskService, null);
 
     @Test
     void k1ClusterEndpointKeepsItsBusinessActionPermissions() {
@@ -34,6 +34,16 @@ class OpsRiskControllerTest {
                 org.springframework.security.access.prepost.PreAuthorize.class).value();
 
         assertThat(expression).contains("risk_k1_cluster_freeze", "risk_k1_cluster_release");
+    }
+
+    @Test
+    void k1ReleaseParametersUseTheMoneyReleaseAuthority() {
+        var method = java.util.Arrays.stream(OpsRiskController.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("updateReleaseParam"))
+                .findFirst().orElseThrow();
+        assertThat(method.getAnnotation(org.springframework.security.access.prepost.PreAuthorize.class).value())
+                .contains("risk_k1_cluster_release")
+                .doesNotContain("risk_k1_write");
     }
 
     @Test

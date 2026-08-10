@@ -1,6 +1,7 @@
 package ffdd.opsconsole.risk.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
@@ -72,6 +73,20 @@ class K4RiskScorerTest {
         assertThat(contribution(baseline, "withdrawVelocity").subScore()).isEqualTo(55);
         assertThat(contribution(high, "withdrawVelocity").subScore()).isEqualTo(88);
         assertThat(contribution(high, "accountAge").subScore()).isEqualTo(70);
+    }
+
+    @Test
+    void malformedActiveModelCannotSilentlyProduceZeroOrDefaultScores() {
+        RiskScoreModelView malformed = new RiskScoreModelView(
+                2L, 0L, "active", Map.of(), Map.of(), Map.of(),
+                40, 70, 85, "malformed", "system", "system", "now", "now");
+
+        assertThatThrownBy(() -> scorer.score(
+                new RiskScoreRawInput(
+                        "U00000052", 4, false, 3, false,
+                        5, new BigDecimal("12000"), 3, 2, true),
+                malformed))
+                .hasMessage("K4_MODEL_SNAPSHOT_INVALID");
     }
 
     private RiskScoreModelView model(Map<String, Boolean> sources) {

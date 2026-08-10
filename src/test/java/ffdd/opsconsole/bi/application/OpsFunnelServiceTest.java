@@ -10,11 +10,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.bi.dto.B3FunnelViewRequest;
+import ffdd.opsconsole.bi.domain.B3FunnelAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -97,6 +99,27 @@ class OpsFunnelServiceTest {
                 .hasMessage("B3_VIEW_NAME_CONFLICT");
         verify(mapper, never()).insertB3View(
                 anyLong(), anyString(), anyString(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void overviewKeepsOnlyTheLatestThirteenRegistrationCohorts() {
+        List<Map<String, Object>> facts = new ArrayList<>();
+        LocalDateTime first = LocalDateTime.now().minusWeeks(13);
+        for (int index = 0; index < 14; index++) {
+            LocalDateTime at = first.plusWeeks(index);
+            facts.add(event("auth.register_completed", "u" + index, at));
+            facts.add(event("checkout.completed", "u" + index, at.plusHours(1)));
+        }
+        when(mapper.selectB3EventFacts()).thenReturn(facts);
+
+        List<Map<String, Object>> all = (List<Map<String, Object>>) B3FunnelAnalytics
+                .calculate(facts, null, null, null).get("trend");
+        List<Map<String, Object>> actual = (List<Map<String, Object>>) service
+                .overview(null, null, null).getData().get("trend");
+
+        assertThat(all).hasSize(14);
+        assertThat(actual).containsExactlyElementsOf(all.subList(1, 14));
     }
 
     private static Map<String, Object> event(String name, String actor, LocalDateTime at) {

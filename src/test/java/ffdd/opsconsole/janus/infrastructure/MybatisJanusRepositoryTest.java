@@ -93,7 +93,7 @@ class MybatisJanusRepositoryTest {
         OpsJanusService service = new OpsJanusService(repository,
                 mock(ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository.class),
                 new JanusRemoteTargetProperties(), mock(JanusRemoteTargetNetworkGuard.class),
-                new JanusRuleEvaluator(), new ObjectMapper(), audit, mock(EventOutboxService.class));
+                new JanusRuleEvaluator(), new ObjectMapper(), audit, mock(EventOutboxService.class), null, null);
 
         Map<String, Object> summary = castMap(service.dashboard().getData().get("summary"));
 

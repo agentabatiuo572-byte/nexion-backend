@@ -8,13 +8,25 @@ public record TreasuryCoverageSnapshot(
         boolean reliable,
         BigDecimal reserveUsd,
         BigDecimal liabilitiesUsd,
-        BigDecimal nexUsdRate) {
+        BigDecimal nexUsdRate,
+        BigDecimal ratioReserveUsd,
+        BigDecimal ratioLiabilitiesUsd) {
+
+    public TreasuryCoverageSnapshot(
+            BigDecimal coverageRatio,
+            BigDecimal redlinePct,
+            boolean reliable,
+            BigDecimal reserveUsd,
+            BigDecimal liabilitiesUsd,
+            BigDecimal nexUsdRate) {
+        this(coverageRatio, redlinePct, reliable, reserveUsd, liabilitiesUsd, nexUsdRate, reserveUsd, liabilitiesUsd);
+    }
 
     public TreasuryCoverageSnapshot(BigDecimal coverageRatio, BigDecimal redlinePct) {
-        this(coverageRatio, redlinePct, true, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        this(coverageRatio, redlinePct, true, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
     }
 
     public TreasuryCoverageSnapshot(BigDecimal coverageRatio, BigDecimal redlinePct, boolean reliable) {
-        this(coverageRatio, redlinePct, reliable, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        this(coverageRatio, redlinePct, reliable, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
     }
 }

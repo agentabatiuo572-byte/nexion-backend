@@ -125,6 +125,16 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public List<Map<String, Object>> liquidityFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+        return Optional.ofNullable(mapper.liquidityFlowWindows(startAt, endAt)).orElseGet(List::of);
+    }
+
+    @Override
+    public List<Map<String, Object>> monthlyGrowthFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+        return Optional.ofNullable(mapper.monthlyGrowthFlowWindows(startAt, endAt)).orElseGet(List::of);
+    }
+
+    @Override
     public List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt) {
         return mapper.maturityBuckets(startAt, endAt, 30, "LINEAR");
     }

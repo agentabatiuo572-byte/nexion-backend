@@ -161,6 +161,16 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
         return mapper.updateCommissionStatus(eventId, normalizeStatus(status)) > 0;
     }
 
+    @Override
+    public boolean updateCommissionStatusCas(String eventId,String expectedStatus,String status,long expectedVersion){
+        return mapper.updateCommissionStatusCas(eventId,normalizeStatus(expectedStatus),normalizeStatus(status),expectedVersion)>0;
+    }
+
+    @Override
+    public boolean recordCommissionOperation(String eventId,String operationType,String idempotencyKey,long expectedVersion,String operator,String reason){
+        return mapper.insertCommissionOperation(eventId,operationType,idempotencyKey,expectedVersion,operator,reason)>0;
+    }
+
     // F4 · 修复2:V-Rank 票权写业务表。votes 由 service 校验非负后传入。
     @Override
     public boolean updateVRankLeadershipVotes(String rankCode, int votes) {

@@ -614,6 +614,128 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void delegatedF5CommissionDispositionBindsExactEventVersionAndRiskDirection() {
+        AuditReplayCommand freeze = new AuditReplayCommand(
+                "F", "f_commission_status", Map.of(
+                        "key", "F.commission.CM-71.status",
+                        "value", "frozen",
+                        "expectedVersion", 6));
+        authenticate("platform_a2_proposal_create", "network_f5_commission_dispose");
+
+        assertThat(guard.validateProposal(freeze).getCode()).isZero();
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "client copy", "F.commission.CM-71.status", "cooling", "frozen",
+                "maker", "operator", "fund", true, false, "client gate",
+                "freeze isolated commission", "F5", freeze,
+                new AuditLockTarget("F", "commission_event", "CM-71"), null);
+
+        var canonical = guard.validateProposalContext(request);
+
+        assertThat(canonical.getCode()).isZero();
+        assertThat(canonical.getData())
+                .extracting(
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::objectId,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::sourceDomain,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::operationType,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::amplifies,
+                        AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor::target)
+                .containsExactly(
+                        "F.commission.CM-71.status", "F5", "param", false,
+                        new AuditLockTarget("F", "commission_event", "CM-71"));
+
+        AuditReplayCommand unlock = new AuditReplayCommand(
+                "F", "f_commission_status", Map.of(
+                        "key", "F.commission.CM-71.status",
+                        "value", "unlocked",
+                        "expectedVersion", 6));
+        var unlockCanonical = guard.validateProposalContext(new AuditOperationProposalRequest(
+                "client copy", "F.commission.CM-71.status", "cooling", "unlocked",
+                "maker", "operator", "fund", true, false, "client gate",
+                "unlock isolated commission", "F5", unlock,
+                new AuditLockTarget("F", "commission_event", "CM-71"), null));
+        assertThat(unlockCanonical.getCode()).isZero();
+        assertThat(unlockCanonical.getData().amplifies()).isTrue();
+        assertThat(unlockCanonical.getData().operationType()).isEqualTo("fund");
+
+        AuditReplayCommand nonCanonicalNumericKey = new AuditReplayCommand(
+                "F", "f_commission_status", Map.of(
+                        "key", "F.commission.71.status", "value", "frozen", "expectedVersion", 6));
+        assertThat(guard.validateProposalContext(new AuditOperationProposalRequest(
+                "copy", "F.commission.71.status", "cooling", "frozen",
+                "maker", "operator", "param", false, false, "gate", "reason", "F5",
+                nonCanonicalNumericKey, new AuditLockTarget("F", "commission_event", "71"), null))
+                .getMessage()).isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+
+        AuditReplayCommand missingVersion = new AuditReplayCommand(
+                "F", "f_commission_status", Map.of(
+                        "key", "F.commission.CM-71.status", "value", "frozen"));
+        assertThat(guard.validateProposalContext(new AuditOperationProposalRequest(
+                "copy", "F.commission.CM-71.status", "cooling", "frozen",
+                "maker", "operator", "param", false, false, "gate", "reason", "F5",
+                missingVersion, new AuditLockTarget("F", "commission_event", "CM-71"), null))
+                .getMessage()).isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+    }
+
+    @Test
+    void f5DirectDispositionProposalsRequireExactOperationPermissionAndLocks() {
+        record Scenario(
+                AuditReplayCommand command,
+                String permission,
+                String objectId,
+                AuditLockTarget target,
+                List<AuditLockTarget> targets) {
+        }
+        List<Scenario> scenarios = List.of(
+                new Scenario(
+                        new AuditReplayCommand("F", "f5_commission_reverse", Map.of(
+                                "commissionId", "CM-41", "refundRef", "refund-41")),
+                        "network_f5_commission_reject", "CM-41",
+                        new AuditLockTarget("F", "commission_event", "CM-41"), null),
+                new Scenario(
+                        new AuditReplayCommand("F", "f5_commission_reissue", Map.of(
+                                "commissionIds", List.of("CM-41", "CM-42"))),
+                        "network_f5_commission_dispose", "CM-41,CM-42", null,
+                        List.of(
+                                new AuditLockTarget("F", "commission_event", "CM-41"),
+                                new AuditLockTarget("F", "commission_event", "CM-42"))),
+                new Scenario(
+                        new AuditReplayCommand("F", "f5_commission_suspension", Map.of(
+                                "userId", 41, "kinds", List.of("binary", "network"), "suspended", true)),
+                        "network_f5_commission_reject", "41:binary,network",
+                        new AuditLockTarget("F", "commission_user_kind", "41:binary,network"), null));
+
+        for (Scenario scenario : scenarios) {
+            authenticate("platform_a2_proposal_create");
+            assertThat(guard.validateProposal(scenario.command()).getMessage()).endsWith(scenario.permission());
+
+            authenticate("platform_a2_proposal_create", scenario.permission());
+            AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                    "client copy", scenario.objectId(), "before", "after", "maker", "operator",
+                    "fund", true, false, "client gate", "review F5 disposition", "F5",
+                    scenario.command(), scenario.target(), scenario.targets());
+            assertThat(guard.validateProposalContext(request).getCode()).isZero();
+
+            AuditOperationProposalRequest missingOrWrongLock = new AuditOperationProposalRequest(
+                    request.action(), request.obj(), request.beforeValue(), request.afterValue(),
+                    request.operator(), request.operatorRole(), request.type(), request.amplifies(), request.sos(),
+                    request.roleGate(), request.reason(), request.sourceDomain(), scenario.command(),
+                    scenario.target() == null ? null : new AuditLockTarget("F", "commission_event", "CM-99"),
+                    scenario.targets() == null ? null : List.of());
+            assertThat(guard.validateProposalContext(missingOrWrongLock).getCode()).isEqualTo(403);
+        }
+
+        authenticate("platform_a2_proposal_create", "network_f5_commission_reject");
+        AuditReplayCommand crossCall = new AuditReplayCommand("F", "f5_commission_reverse", Map.of(
+                "commissionIds", List.of("CM-41")));
+        assertThat(guard.validateProposal(crossCall).getCode()).isZero();
+        assertThat(guard.validateProposalContext(new AuditOperationProposalRequest(
+                "reverse", "CM-41", "before", "after", "maker", "operator", "fund", false,
+                false, "gate", "attempt cross-call", "F5", crossCall,
+                new AuditLockTarget("F", "commission_event", "CM-41"), null)).getMessage())
+                .isEqualTo("A2_BUSINESS_CONTEXT_UNMAPPED");
+    }
+
+    @Test
     void allFConfigReplayFamiliesMapPermissionSourceDomainAndLockFailClosed() {
         record Scenario(
                 AuditReplayCommand command,

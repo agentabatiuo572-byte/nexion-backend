@@ -32,6 +32,7 @@ class CommissionEventUnlockSchedulerTest {
         Map<String, Object> m = new HashMap<>();
         m.put("id", id);
         m.put("userId", userId);
+        m.put("version", 0L);
         m.put("amount", new BigDecimal(amount));
         m.put("currency", currency);
         return m;

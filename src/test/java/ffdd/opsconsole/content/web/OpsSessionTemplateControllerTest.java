@@ -43,6 +43,7 @@ class OpsSessionTemplateControllerTest {
     @BeforeEach
     void setUp() {
         when(supportAgentService.canManageSupportSeats()).thenReturn(true);
+        when(supportAgentService.canManageM5Content()).thenReturn(true);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
                 .execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
@@ -155,6 +156,35 @@ class OpsSessionTemplateControllerTest {
         assertThat(result.getMessage()).isEqualTo("M5_CONFIGURATION_MANAGEMENT_FORBIDDEN");
         verify(templateService, never()).updateCategory(anyString(), anyString(), any());
         verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void contentOperatorCanMutateM5ContentButNotSupportOperations() {
+        when(supportAgentService.canManageSupportSeats()).thenReturn(false);
+        when(supportAgentService.canManageM5Content()).thenReturn(true);
+        SessionScriptCreateRequest script = new SessionScriptCreateRequest(
+                "升级", "升级话术", "/store", "全量", "draft", "Content", "维护话术");
+        SessionCategoryToggleRequest category = new SessionCategoryToggleRequest(false, "Content", "尝试调整运营策略");
+        when(templateService.createScript("idem-content-script", script)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.createScript("idem-content-script", script).getCode()).isZero();
+        assertThat(controller.updateCategory("advisor", "idem-content-category", category).getCode()).isEqualTo(403);
+
+        verify(templateService).createScript("idem-content-script", script);
+        verify(templateService, never()).updateCategory(anyString(), anyString(), any());
+    }
+
+    @Test
+    void unknownRoleFailsClosedForM5Content() {
+        when(supportAgentService.canManageM5Content()).thenReturn(false);
+        SessionReplyTemplateCreateRequest request = new SessionReplyTemplateCreateRequest(
+                "support", "收到,我先核对。", "draft", "Unknown", "尝试创建模板");
+
+        var result = controller.createReplyTemplate("idem-unknown-content", request);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("M5_CONTENT_MANAGEMENT_FORBIDDEN");
+        verify(templateService, never()).createReplyTemplate(anyString(), any());
     }
 
     @Test

@@ -50,7 +50,7 @@ class AppGrowthEngagementServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AppGrowthEngagementService service =
-            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox);
+            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null);
 
     @BeforeEach
     void setUp() {

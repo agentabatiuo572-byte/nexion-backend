@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -324,10 +325,33 @@ class OpsUserServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("ADMIN.USER_LIST_EXPORTED");
-        assertThat(captor.getValue().getDetail().toString()).contains("filterHash").doesNotContain("Alice");
+        assertThat(captor.getValue().getDetail().toString())
+                .contains("filterHash", "reason", "C1 masked user export")
+                .doesNotContain("Alice");
         verify(idempotencyService).execute(
-                eq("C1_USER_LIST_EXPORT"), eq("idem-c1-export"), anyString(), eq(UserProfileExportFile.class), any());
-        verify(outboxService).publish(eq("USER_PROFILE_EXPORT"), anyString(), eq("ADMIN_USER_LIST_EXPORTED"), any());
+                eq("C1_USER_LIST_EXPORT"), eq("idem-c1-export"),
+                argThat(hash -> hash != null && hash.matches("[0-9a-f]{64}")),
+                eq(UserProfileExportFile.class), any());
+        ArgumentCaptor<Object> outboxPayload = ArgumentCaptor.forClass(Object.class);
+        verify(outboxService).publish(eq("USER_PROFILE_EXPORT"), anyString(), eq("ADMIN_USER_LIST_EXPORTED"), outboxPayload.capture());
+        assertThat(outboxPayload.getValue().toString())
+                .contains("filter_hash", "row_count", "exporter_operator", "exporter_role", "occurred_at")
+                .doesNotContain("reason");
+    }
+
+    @Test
+    void profileExportRejectsMissingOrMalformedReasonBeforeReadingRows() {
+        assertThatThrownBy(() -> service.exportProfileExcel(
+                "idem-c1-export-no-reason",
+                UserProfileExportRequest.basic(null, null, null, " ", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("C1_EXPORT_REASON_INVALID");
+        assertThatThrownBy(() -> service.exportProfileExcel(
+                "idem-c1-export-url-reason",
+                UserProfileExportRequest.basic(null, null, null, "see https://example.invalid/export", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("C1_EXPORT_REASON_INVALID");
+        assertThat(userRepository.lastProfileRequest).isNull();
     }
 
     @Test

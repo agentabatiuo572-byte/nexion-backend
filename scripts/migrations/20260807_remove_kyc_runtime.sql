@@ -60,6 +60,7 @@ UPDATE nx_admin_permission SET status=0,is_deleted=1,updated_at=NOW()
 UPDATE nx_config_item SET status=0,is_deleted=1,updated_at=NOW()
  WHERE config_key='wallet.exchange.kyc_threshold_usdt'
     OR config_key='genesis.sale.eligibility.kycRequired'
+    OR config_key='kyc.network_whitelist'
     OR config_key LIKE 'risk.kyc.%';
 
 -- Stop generating identity rows and remove the denormalized user gate after the

@@ -1834,9 +1834,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               ) c ON c.user_no=s.user_no
              WHERE s.is_deleted=0
                AND (COALESCE(s.model_version,'')<>CONCAT('k4-v',#{modelVersion})
-                    OR COALESCE(c.contribution_count,0)<>6
-                    OR COALESCE(c.dimension_count,0)<>6
-                    OR COALESCE(c.canonical_count,0)<>6
+                    OR COALESCE(c.contribution_count,0)<>5
+                    OR COALESCE(c.dimension_count,0)<>5
+                    OR COALESCE(c.canonical_count,0)<>5
                     OR s.model_score<>COALESCE(c.point_total,0)
                     OR u.updated_at > COALESCE(s.as_of,'1970-01-01')
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_multi_account_cluster k1
@@ -1878,9 +1878,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               ) c ON c.user_no=s.user_no
              WHERE s.is_deleted=0
                AND (COALESCE(s.model_version,'')<>CONCAT('k4-v',#{modelVersion})
-                    OR COALESCE(c.contribution_count,0)<>6
-                    OR COALESCE(c.dimension_count,0)<>6
-                    OR COALESCE(c.canonical_count,0)<>6
+                    OR COALESCE(c.contribution_count,0)<>5
+                    OR COALESCE(c.dimension_count,0)<>5
+                    OR COALESCE(c.canonical_count,0)<>5
                     OR s.model_score<>COALESCE(c.point_total,0)
                     OR u.updated_at > COALESCE(s.as_of,'1970-01-01')
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_multi_account_cluster k1

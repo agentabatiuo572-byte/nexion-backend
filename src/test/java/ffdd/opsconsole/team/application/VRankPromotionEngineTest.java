@@ -674,6 +674,17 @@ class VRankPromotionEngineTest {
         }
 
         @Override
+        public boolean updateCommissionStatusCas(String eventId, String expectedStatus, String status, long expectedVersion) {
+            return updateCommissionStatus(eventId, status);
+        }
+
+        @Override
+        public boolean recordCommissionOperation(String eventId, String operationType, String idempotencyKey,
+                                                 long expectedVersion, String operator, String reason) {
+            return true;
+        }
+
+        @Override
         public boolean updateVRankLeadershipVotes(String rankCode, int votes) {
             return false;
         }

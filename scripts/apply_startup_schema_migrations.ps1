@@ -15,7 +15,11 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql"),
+  (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
+  (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
   (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql"),
+  (Join-Path $root "scripts\migrations\20260808_d7_payout_vnd_config.sql"),
+  (Join-Path $root "scripts\migrations\20260809_m5_content_rbac_closure.sql"),
   (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql")
 )
 

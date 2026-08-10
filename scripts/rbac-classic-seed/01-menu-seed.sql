@@ -243,9 +243,16 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 
 -- RISK: 可追踪自己发起的 C2/K1 待确认工单，只开放 A 父级和 A2。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('A','A2') WHERE r.role_code='RISK';
--- M: support+risk
+-- M: support+risk. CONTENT is limited to the M5 content-management surface;
+-- it must not inherit M1-M4 operational menus.
+DELETE rm FROM nx_admin_role_menu rm
+JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='CONTENT'
+JOIN nx_admin_menu m ON m.id=rm.menu_id
+WHERE m.menu_code LIKE 'M%';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code IN ('SUPPORT','RISK');
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
 -- B: 全角色态势概览。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','SUPPORT','CONFIG_ADMIN');

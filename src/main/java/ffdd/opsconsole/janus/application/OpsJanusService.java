@@ -19,6 +19,7 @@ import ffdd.opsconsole.janus.dto.JanusDeviceQueryRequest;
 import ffdd.opsconsole.janus.dto.JanusDeviceReportRequest;
 import ffdd.opsconsole.janus.dto.JanusCommandAckRequest;
 import ffdd.opsconsole.janus.dto.JanusStatusChangeRequest;
+import ffdd.opsconsole.janus.dto.JanusTakeoverProgressRequest;
 import ffdd.opsconsole.janus.dto.JanusStrategyActionRequest;
 import ffdd.opsconsole.janus.dto.JanusStrategyUpsertRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -98,6 +99,8 @@ public class OpsJanusService {
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
     private final JanusTransitionPolicy transitionPolicy = new JanusTransitionPolicy();
+    private final JanusTakeoverService takeoverService;
+    private final ffdd.opsconsole.finance.application.EarningsReleaseService earningsReleaseService;
 
     public ApiResult<Map<String, Object>> metadata() {
         List<Map<String, Object>> remoteTargets = remoteTargetRepository.list().stream()
@@ -120,12 +123,14 @@ public class OpsJanusService {
     }
 
     public ApiResult<PageResult<JanusDeviceView>> devices(JanusDeviceQueryRequest request) {
-        return ApiResult.ok(repository.pageDevices(request));
+        PageResult<JanusDeviceView> page=repository.pageDevices(request);
+        page.setRecords(page.getRecords().stream().map(this::withTakeover).toList());
+        return ApiResult.ok(page);
     }
 
     public ApiResult<JanusDeviceView> device(String sid) {
         if (!StringUtils.hasText(sid)) return ApiResult.fail(422, "SID_REQUIRED");
-        return repository.findDevice(sid.trim()).map(ApiResult::ok)
+        return repository.findDevice(sid.trim()).map(this::withTakeover).map(ApiResult::ok)
                 .orElseGet(() -> ApiResult.fail(404, "JANUS_DEVICE_NOT_FOUND"));
     }
 
@@ -167,6 +172,9 @@ public class OpsJanusService {
                     repository.findEvaluationRequestHash(sid, authoritative.reportId()));
         }
         repository.upsertDeviceReport(userId, sid, authoritative);
+        // A user-authenticated telemetry report is not a trusted earnings proof.
+        // K1 release attestation is fed only by an authenticated device/Janus carrier;
+        // accepting this ordinary app boundary would let a user mint online seconds.
         JanusDeviceView persisted = repository.findDevice(sid).orElse(null);
         if (persisted == null) throw new IllegalStateException("JANUS_REPORT_NOT_PERSISTED");
         boolean recovery = prior != null && "strategy".equals(prior.statusSource())
@@ -190,6 +198,11 @@ public class OpsJanusService {
                     evaluation.remoteUrlKey(), evaluation.remoteTargetVersion(),
                     evaluation.remoteTargetCatalogVersion(), command.toString());
             if (published) {
+                if (takeoverService != null && evaluation.remoteUrlKey() != null) {
+                    takeoverService.activate(sid, "strategy-" + authoritative.reportId(), evaluation.remoteUrlKey(),
+                            evaluation.remoteTargetVersion(), evaluation.remoteTargetCatalogVersion(), null,
+                            authoritative.reportId());
+                }
                 outboxService.publish("JANUS_DEVICE", sid, "JANUS_STRATEGY_COMMAND_PUBLISHED", command);
                 persisted = repository.findDevice(sid).orElse(persisted);
             } else if (evaluation.quotaReserved() && COMMAND_ACTIONS.contains(evaluation.action())) {
@@ -212,6 +225,10 @@ public class OpsJanusService {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (!validText(deviceId, 128)) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
         String sid = deviceSid(userId, deviceId);
+        if (takeoverService != null) {
+            ApiResult<Map<String,Object>> takeover = takeoverService.pending(userId, sid, deviceId.trim());
+            if (takeover.getCode() != 0 || Boolean.TRUE.equals(takeover.getData().get("hasCommand"))) return takeover;
+        }
         repository.expireDeviceOverride(userId, sid, System.currentTimeMillis());
         Optional<Map<String, Object>> command = repository.findPendingDeviceCommand(userId, sid);
         if (command.isEmpty()) return ApiResult.ok(Map.of("hasCommand", false));
@@ -364,6 +381,11 @@ public class OpsJanusService {
             return ApiResult.fail(409, "VERSION_CONFLICT");
         }
         JanusDeviceView after = repository.findDevice(sid).orElseThrow();
+        if (remoteTarget != null && takeoverService != null) {
+            takeoverService.activate(sid, idempotencyKey.trim(), remoteTarget.remoteTargetKey(),
+                    remoteTarget.remoteTargetVersion(), remoteTarget.catalogVersion(), idempotencyKey.trim(), null);
+            after = withTakeover(after);
+        }
         if (remoteTarget != null) {
             repository.bindCommandRemoteTarget(idempotencyKey.trim(), remoteTarget.remoteTargetKey(),
                     remoteTarget.remoteTargetVersion(), remoteTarget.catalogVersion());
@@ -373,6 +395,37 @@ public class OpsJanusService {
         requiredAudit("K6_DEVICE_STATUS_REQUESTED", "JANUS_DEVICE", sid, request.reasonText(),
                 Map.of("before", before, "after", after, "reasonCategory", request.reasonCategory(), "idempotencyKey", idempotencyKey));
         return ApiResult.ok(after);
+    }
+
+    public ApiResult<Map<String,Object>> reportTakeoverProgress(Long userId, JanusTakeoverProgressRequest request) {
+        if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        if (takeoverService == null || request == null || !validText(request.deviceId(),128)) {
+            return ApiResult.fail(503,"K6_TAKEOVER_SERVICE_UNAVAILABLE");
+        }
+        return takeoverService.progress(userId,deviceSid(userId,request.deviceId().trim()),request);
+    }
+
+    private JanusDeviceView withTakeover(JanusDeviceView d) {
+        if (d == null || takeoverService == null) return d;
+        Map<String,Object> takeover=takeoverService.view(d.sid());
+        String commandState=takeover==null?d.commandState():takeoverCommandState(String.valueOf(takeover.get("phase")),d.commandState());
+        return new JanusDeviceView(d.sid(),d.deviceId(),d.firstSeenAt(),d.lastSeenAt(),d.installAt(),d.installDays(),
+                d.inviteCode(),d.channel(),d.cohortId(),d.status(),d.desiredStatus(),commandState,d.statusSource(),
+                d.activated(),d.remoteUrlKey(),d.remoteTargetVersion(),d.remoteTargetCatalogVersion(),d.maturityScore(),
+                d.recommendationScore(),d.environmentRiskScore(),d.priorityScore(),d.ua(),d.platform(),d.model(),
+                d.osName(),d.browser(),d.maturity(),d.environment(),d.hitStrategy(),d.hitStrategyVersion(),
+                d.latestDecision(),d.latestSession(),d.manualOverride(),d.lastOperatorId(),d.lastOperationReason(),
+                d.activationKind(),d.tags(),d.version(),takeover);
+    }
+
+    private String takeoverCommandState(String phase,String fallback) {
+        return switch (phase) {
+            case "COMMAND_PENDING_ACK","RECEIVED","WAITING_SESSION_EDGE","LOADING","HANDOFF_FETCHING","HANDOFF_MERGING","HANDOFF_ACKED","REVOKE_PENDING_ACK" -> "PUBLISHED";
+            case "SUCCEEDED","REVOKED" -> "ACKED";
+            case "FAILED","REVOKE_FAILED" -> "FAILED";
+            case "CANCELLED" -> "CANCELLED";
+            default -> fallback;
+        };
     }
 
     public ApiResult<List<JanusStrategyView>> strategies() {

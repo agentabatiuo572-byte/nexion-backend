@@ -14,6 +14,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
@@ -23,6 +25,9 @@ import ffdd.opsconsole.team.domain.VRankConfigRow;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
+import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
+import ffdd.opsconsole.team.dto.F5CommissionReverseRequest;
+import ffdd.opsconsole.team.dto.F5CommissionSuspensionRequest;
 import ffdd.opsconsole.team.dto.VRankOverrideRequest;
 import ffdd.opsconsole.team.dto.VRankPromotionLogQuery;
 import ffdd.opsconsole.team.dto.VRankRewardPayoutActionRequest;
@@ -68,6 +73,7 @@ class OpsTeamServiceTest {
             vRankRewardDispatcher,
             mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class));
     private final LeadershipPoolService leadershipPoolService = mock(LeadershipPoolService.class);
+    private final F5CommissionService f5CommissionService = mock(F5CommissionService.class);
     private final OpsTeamService service = new OpsTeamService(
             configFacade,
             coverageFacade,
@@ -82,6 +88,7 @@ class OpsTeamServiceTest {
             vRankRewardDispatcher,
             eventOutboxService,
             leadershipPoolService,
+            f5CommissionService,
             idempotencyService);
 
     @BeforeEach
@@ -97,6 +104,42 @@ class OpsTeamServiceTest {
                 "network_f4_ambassador_approve", "network_f4_leaderboard_control",
                 "network_f5_read", "network_f5_write", "network_f5_commission_dispose", "network_f5_commission_reject",
                 "network_f1_write", "network_f1_permanent_protection"));
+    }
+
+    @Test
+    void a2ReplayDispatchesEachF5OperationToOnlyItsMatchingCommissionServiceMethod() {
+        F5CommissionReverseRequest reverseRequest =
+                new F5CommissionReverseRequest("refund-21", "verified refund", "checker");
+        F5CommissionReissueRequest reissueRequest =
+                new F5CommissionReissueRequest(List.of("CM-21", "CM-22"), "approved reissue", "checker");
+        F5CommissionSuspensionRequest suspensionRequest =
+                new F5CommissionSuspensionRequest(List.of("binary", "network"), true, "confirmed abuse", "checker");
+        when(f5CommissionService.reverse("CM-21", "idem-reverse", reverseRequest))
+                .thenReturn(ApiResult.ok(Map.of("operation", "reverse")));
+        when(f5CommissionService.reissue("idem-reissue", reissueRequest))
+                .thenReturn(ApiResult.ok(Map.of("operation", "reissue")));
+        when(f5CommissionService.suspend(21L, "idem-suspension", suspensionRequest))
+                .thenReturn(ApiResult.ok(Map.of("operation", "suspension")));
+
+        ApiResult<?> reverse = service.replay(new AuditReplayCommand("F", "f5_commission_reverse", Map.of(
+                "commissionId", "CM-21", "refundRef", "refund-21")),
+                new AuditReplayContext("checker", "verified refund", "idem-reverse"));
+        ApiResult<?> reissue = service.replay(new AuditReplayCommand("F", "f5_commission_reissue", Map.of(
+                "commissionIds", List.of("CM-21", "CM-22"))),
+                new AuditReplayContext("checker", "approved reissue", "idem-reissue"));
+        ApiResult<?> suspension = service.replay(new AuditReplayCommand("F", "f5_commission_suspension", Map.of(
+                "userId", 21L, "kinds", List.of("binary", "network"), "suspended", true)),
+                new AuditReplayContext("checker", "confirmed abuse", "idem-suspension"));
+
+        assertThat(reverse.getCode()).isZero();
+        assertThat(reissue.getCode()).isZero();
+        assertThat(suspension.getCode()).isZero();
+        verify(f5CommissionService).reverse("CM-21", "idem-reverse", reverseRequest);
+        verify(f5CommissionService).reissue("idem-reissue", reissueRequest);
+        verify(f5CommissionService).suspend(21L, "idem-suspension", suspensionRequest);
+        verify(f5CommissionService, never()).reverse("CM-21", "idem-reissue", reverseRequest);
+        verify(f5CommissionService, never()).reissue("idem-reverse", reissueRequest);
+        verify(f5CommissionService, never()).suspend(21L, "idem-reverse", suspensionRequest);
     }
 
     @Test
@@ -198,6 +241,7 @@ class OpsTeamServiceTest {
                 soloDispatcher,
                 mock(EventOutboxService.class),
                 mock(LeadershipPoolService.class),
+                mock(F5CommissionService.class),
                 idempotencyService);
 
         ApiResult<Map<String, Object>> rates = realOnlyService.rates();
@@ -681,7 +725,8 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 60,
                 "cooldownLabel", "冷却 18d",
-                "state", "unlocked")));
+                "state", "unlocked",
+                "version", 0L)));
         commissionRepository.kindSummary.add(new LinkedHashMap<>(Map.of(
                 "key", "network",
                 "code", "NETWORK",
@@ -697,7 +742,7 @@ class OpsTeamServiceTest {
 
         service.updateConfig(
                 "idem-f-commission-status",
-                new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "rejected", "reverse abnormal commission", "risk-ops"));
+                new TeamCommissionConfigUpdateRequest("F.commission.CM-7781.status", "rejected", "reverse abnormal commission", "risk-ops", 0L));
 
         assertThat(ledgerPostingFacade.entries).hasSize(1);
         assertThat(ledgerPostingFacade.entries.get(0))
@@ -724,7 +769,9 @@ class OpsTeamServiceTest {
         assertThat(events)
                 .filteredOn(event -> "CM-7781".equals(event.get("id")))
                 .singleElement()
-                .satisfies(event -> assertThat(event).containsEntry("state", "rejected"));
+                .satisfies(event -> assertThat(event)
+                        .containsEntry("state", "rejected")
+                        .containsEntry("status", "rejected"));
     }
 
     @Test
@@ -738,11 +785,12 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 0,
                 "cooldownLabel", "已驳回",
-                "state", "rejected")));
+                "state", "rejected",
+                "version", 0L)));
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f-commission-revive",
-                new TeamCommissionConfigUpdateRequest("F.commission.CM-9001.status", "unlocked", "revive reversed commission", "risk-ops"));
+                new TeamCommissionConfigUpdateRequest("F.commission.CM-9001.status", "unlocked", "revive reversed commission", "risk-ops", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.name());
@@ -751,7 +799,7 @@ class OpsTeamServiceTest {
 
     @Test
     void frozenCommissionEventDoesNotPostLedger() {
-        // A1 批1a 修复1b:frozen 不动余额,不应 post OUT 台账(防账实不符);UNLOCKED→FROZEN 为合法转换。
+        // F5:冻结只允许 COOLING→FROZEN，且冻结不动余额、不写 OUT 台账。
         commissionRepository.commissionEvents.add(new LinkedHashMap<>(Map.of(
                 "id", "CM-9002",
                 "kind", "binary",
@@ -759,12 +807,13 @@ class OpsTeamServiceTest {
                 "amount", new BigDecimal("88"),
                 "currency", "USDT",
                 "cooldownPercent", 100,
-                "cooldownLabel", "已解锁(运营)",
-                "state", "unlocked")));
+                "cooldownLabel", "冷却中",
+                "state", "cooling",
+                "version", 0L)));
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f-commission-freeze",
-                new TeamCommissionConfigUpdateRequest("F.commission.CM-9002.status", "frozen", "freeze for investigation", "risk-ops"));
+                new TeamCommissionConfigUpdateRequest("F.commission.CM-9002.status", "frozen", "freeze for investigation", "risk-ops", 0L));
 
         assertThat(result.getCode()).isZero();
         assertThat(ledgerPostingFacade.entries).isEmpty();
@@ -785,12 +834,13 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 80,
                 "cooldownLabel", "冷却 1d",
-                "state", "cooling")));
+                "state", "cooling",
+                "version", 0L)));
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f-commission-unlock",
                 new TeamCommissionConfigUpdateRequest(
-                        "F.commission.CM-4201.status", "unlocked", "cooldown completed", "risk-ops"));
+                        "F.commission.CM-4201.status", "unlocked", "cooldown completed", "risk-ops", 0L));
 
         assertThat(result.getCode()).isZero();
         verify(eventOutboxService).publish(
@@ -810,12 +860,13 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 100,
                 "cooldownLabel", "已解锁",
-                "state", "unlocked")));
+                "state", "unlocked",
+                "version", 0L)));
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f-commission-unlock-replay",
                 new TeamCommissionConfigUpdateRequest(
-                        "F.commission.CM-4202.status", "unlocked", "duplicate request", "risk-ops"));
+                        "F.commission.CM-4202.status", "unlocked", "duplicate request", "risk-ops", 0L));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         verify(eventOutboxService, never()).publish(
@@ -835,7 +886,8 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 90,
                 "cooldownLabel", "冷却 1h",
-                "state", "cooling")));
+                "state", "cooling",
+                "version", 0L)));
         org.mockito.Mockito.when(eventOutboxService.publish(
                         "COMMISSION",
                         "CM-4203",
@@ -846,7 +898,7 @@ class OpsTeamServiceTest {
         assertThatThrownBy(() -> service.updateConfig(
                 "idem-f-commission-unlock-outbox-failure",
                 new TeamCommissionConfigUpdateRequest(
-                        "F.commission.CM-4203.status", "unlocked", "cooldown completed", "risk-ops")))
+                        "F.commission.CM-4203.status", "unlocked", "cooldown completed", "risk-ops", 0L)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("outbox unavailable");
         verify(idempotencyService).execute(
@@ -871,12 +923,13 @@ class OpsTeamServiceTest {
                 "currency", "USDT",
                 "cooldownPercent", 95,
                 "cooldownLabel", "冷却 5m",
-                "state", "cooling")));
+                "state", "cooling",
+                "version", 0L)));
 
         assertThatThrownBy(() -> service.updateConfig(
                 "idem-f-commission-unlock-invalid-user",
                 new TeamCommissionConfigUpdateRequest(
-                        "F.commission.CM-4204.status", "unlocked", "cooldown completed", "risk-ops")))
+                        "F.commission.CM-4204.status", "unlocked", "cooldown completed", "risk-ops", 0L)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("COMMISSION_EVENT_USER_ID_INVALID");
         verify(eventOutboxService, never()).publish(
@@ -1228,6 +1281,7 @@ class OpsTeamServiceTest {
         private final List<Map<String, Object>> commissionEvents = new ArrayList<>();
         private final List<Map<String, Object>> kindSummary = new ArrayList<>();
         private final List<Map<String, Object>> auditFeed = new ArrayList<>();
+        private final java.util.Set<String> commissionOperationKeys = new java.util.HashSet<>();
         // A1 批2b:F4 业务表写路径 fake 记录字段
         private String lastUpdatedVotesRank;
         private int lastUpdatedVotesValue;
@@ -1526,6 +1580,40 @@ class OpsTeamServiceTest {
         }
 
         @Override
+        public boolean updateCommissionStatusCas(String eventId, String expectedStatus, String status, long expectedVersion) {
+            for (Map<String, Object> event : commissionEvents) {
+                if (!eventId.equals(event.get("id"))) continue;
+                String currentStatus = canonicalCommissionTestState(String.valueOf(event.get("state")));
+                long currentVersion = ((Number) event.getOrDefault("version", -1L)).longValue();
+                if (!expectedStatus.equals(currentStatus) || currentVersion != expectedVersion) return false;
+                if ("FROZEN".equals(status)) event.put("frozenFromStatus", expectedStatus);
+                if ("FROZEN".equals(expectedStatus)) event.put("frozenFromStatus", "");
+                event.put("state", status.toLowerCase(java.util.Locale.ROOT));
+                event.put("version", currentVersion + 1);
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public boolean recordCommissionOperation(String eventId, String operationType, String idempotencyKey,
+                                                 long expectedVersion, String operator, String reason) {
+            return commissionOperationKeys.add(eventId + "|" + operationType + "|" + idempotencyKey);
+        }
+
+        private static String canonicalCommissionTestState(String value) {
+            return switch (value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT)) {
+                case "计提", "cooling" -> "COOLING";
+                case "可提", "可提现", "unlocked" -> "UNLOCKED";
+                case "冻结", "frozen" -> "FROZEN";
+                case "异常回退", "rejected", "reversed", "驳回", "红冲" -> "REJECTED";
+                case "settled", "已结算" -> "SETTLED";
+                case "withdrawn", "paid", "已提现", "已支付" -> "PAID";
+                default -> value == null ? "" : value.trim().toUpperCase(java.util.Locale.ROOT);
+            };
+        }
+
+        @Override
         public int countNetworkCommissionByOrder(Long userId, String orderNo) {
             return 0;
         }
@@ -1813,6 +1901,7 @@ class OpsTeamServiceTest {
                 vRankRewardDispatcher,
                 eventOutboxService,
                 leadershipPoolService,
+                f5CommissionService,
                 idempotencyService);
         commissionRepository.memberVRanks.put(7106L, "V1");
 

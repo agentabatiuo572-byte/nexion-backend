@@ -21,7 +21,9 @@ class OpsRiskRadarContractTest {
                 "\"submitted\"", "\"review-passed\"", "\"processing\"",
                 "\"withdraw\"", "\"staking\"", "\"genesis\"", "\"exchange\"", "\"trial\"");
         assertThat(service).doesNotContain("\"geo-block\"");
-        assertThat(mapper).contains("nx_withdrawal_order", "nx_risk_signal", "INTERVAL 48 HOUR");
+        assertThat(mapper).contains("nx_withdrawal_order", "nx_risk_signal", "INTERVAL 48 HOUR", "'REFUNDED'");
+        assertThat(mapper).contains("WHEN COALESCE(buckets.grossInflow, 0)=0 THEN NULL");
+        assertThat(mapper).doesNotContain("THEN CASE WHEN COALESCE(buckets.payoutCommission, 0)=0 THEN 0 ELSE 1 END");
     }
 
     @Test

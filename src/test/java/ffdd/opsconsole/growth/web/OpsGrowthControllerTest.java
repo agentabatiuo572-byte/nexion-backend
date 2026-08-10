@@ -21,7 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 class OpsGrowthControllerTest {
     private final OpsGrowthService growthService = mock(OpsGrowthService.class);
     private final OpsGrowthCommandBoundary commandBoundary = mock(OpsGrowthCommandBoundary.class);
-    private final OpsGrowthController controller = new OpsGrowthController(growthService, commandBoundary);
+    private final OpsGrowthController controller = new OpsGrowthController(growthService, commandBoundary, null);
 
     @BeforeEach
     @SuppressWarnings("unchecked")

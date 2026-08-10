@@ -135,6 +135,27 @@ class OpsDeviceServiceTest {
                 lockMapper);
     }
 
+    private OpsDeviceService serviceWithDownloadPublicationResult(String result) {
+        return new OpsDeviceService(
+                deviceRepository,
+                catalogRepository,
+                configFacade,
+                ledgerPostingFacade,
+                refundSettlementFacade,
+                coverageFacade,
+                auditLogService,
+                idempotencyService,
+                outboxService,
+                clock,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                lockMapper) {
+            @Override
+            protected String verifyComputeDownloadPublication(String paramKey, String value) {
+                return result;
+            }
+        };
+    }
+
     @BeforeEach
     void stubLocksNoActive() {
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,replay 与常规写方法直通
@@ -2027,6 +2048,26 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void computeConfigReadRevalidatesDownloadAndHidesStaleOrRedirectedPublication() {
+        String allowedTarget = "https://downloads.nexion.example/releases/";
+        String downloadUrl = allowedTarget + "nexion-client.msi";
+        configFacade.values.clear();
+        configFacade.values.put("platform.compute.download.allowedTargets", allowedTarget);
+        configFacade.values.put(ComputeConfigRegistry.downloadKey("url"), downloadUrl);
+
+        assertThat(serviceWithDownloadPublicationResult(null).computeConfig().getData().download().url())
+                .isEqualTo(downloadUrl);
+        configFacade.values.remove("platform.compute.download.allowedTargets");
+        assertThat(serviceWithDownloadPublicationResult(null).computeConfig().getData().download().url())
+                .isEmpty();
+        configFacade.values.put("platform.compute.download.allowedTargets", allowedTarget);
+        assertThat(serviceWithDownloadPublicationResult("COMPUTE_URL_REDIRECT_FORBIDDEN").computeConfig().getData().download().url())
+                .isEmpty();
+        assertThat(serviceWithDownloadPublicationResult("COMPUTE_URL_UNREACHABLE").computeConfig().getData().download().url())
+                .isEmpty();
+    }
+
+    @Test
     void updateComputeConfigParamRejectsMissingReason() {
         ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "   ", "superadmin");
 
@@ -2748,6 +2789,7 @@ class OpsDeviceServiceTest {
                 "usr_1",
                 "stellarbox-test",
                 "NexionBox Test",
+                "ORDER_ITEM",
                 new BigDecimal("1299"),
                 state,
                 "",

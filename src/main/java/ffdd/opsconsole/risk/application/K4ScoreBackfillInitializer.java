@@ -36,6 +36,9 @@ public class K4ScoreBackfillInitializer implements ApplicationRunner {
             riskRepository.synchronizeScoringUsers();
             RiskScoreModelView model = riskRepository.activeScoringModel()
                     .orElseThrow(() -> new BizException(500, "K4_ACTIVE_MODEL_REQUIRED"));
+            if (!K4RiskScorer.isCurrentModelSnapshot(model)) {
+                return new BackfillBatch(model, java.util.List.of());
+            }
             return new BackfillBatch(
                     model,
                     riskRepository.scoreUserNosNeedingProjection(model.version(), CHUNK_SIZE));

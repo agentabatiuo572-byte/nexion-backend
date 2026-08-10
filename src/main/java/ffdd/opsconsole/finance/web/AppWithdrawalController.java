@@ -38,7 +38,8 @@ public class AppWithdrawalController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : service.submit(userId, request.amount(), request.chain(), request.address(), idempotencyKey);
+                : service.submit(userId, request.amount(), request.chain(), request.address(), request.policyVersion(),
+                        Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey);
     }
 
     private Long userId(Authentication authentication) {
@@ -57,5 +58,10 @@ public class AppWithdrawalController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record WithdrawalRequest(BigDecimal amount, String chain, String address) { }
+    public record WithdrawalRequest(
+            BigDecimal amount,
+            String chain,
+            String address,
+            String policyVersion,
+            Boolean useNexFeeOffset) { }
 }

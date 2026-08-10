@@ -128,6 +128,41 @@ class OpsPlatformParamRegistryServiceTest {
     }
 
     @Test
+    void registryRoutesLegacyDeviceYieldKeysToE6WithoutOpeningUnknownDeviceKeys() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("dailyUsdtPerBaseline", "0.06", "legacy_device_yield"),
+                item("nexPerUsdt", "20", "legacy_device_yield")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).hasSize(2).allSatisfy(row -> {
+            assertThat(row.domain()).isEqualTo("E");
+            assertThat(row.ownerCode()).isEqualTo("E6");
+            assertThat(row.ownerRoute()).isEqualTo("/devices/compute-config");
+        });
+    }
+
+    @Test
+    void registryRoutesCurrentD7K1AndH9ConfigFamiliesToTheirVisibleOwners() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("finance.payout_vnd.version", "1", "finance"),
+                item("risk.k1.release.version", "1", "risk"),
+                item("growth.public_stats.version", "1", "growth")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).extracting(row -> row.ownerCode())
+                .containsExactlyInAnyOrder("D7", "K1", "H9");
+        assertThat(overview.rows()).extracting(row -> row.ownerRoute())
+                .containsExactlyInAnyOrder("/finance/payout-vnd", "/risk/multi-account", "/growth/public-stats");
+        assertThat(overview.rows()).filteredOn(row -> row.ownerCode().equals("K1"))
+                .singleElement()
+                .satisfies(row -> assertThat(row.domainLabel()).isEqualTo("风控与反作弊"));
+    }
+
+    @Test
     void registryRoutesCommissionCoolingDaysToF2AsItsCurrentAuthoritativeWriteOwner() {
         when(source.findAllActive()).thenReturn(List.of(
                 item("commission/cooling-days", "30", "team")));

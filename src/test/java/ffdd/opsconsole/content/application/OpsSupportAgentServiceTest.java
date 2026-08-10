@@ -69,6 +69,21 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void m5ContentGateAllowsOnlyContentOrSupportSupervisorBesidesSuperAdmin() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "MANAGER", "客服主管", List.of("support"), List.of(), 12, true, true, false, now());
+
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("5", "Content", "content", "enabled")));
+        assertThat(service.canManageM5Content()).isTrue();
+
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
+        assertThat(service.canManageM5Content()).isTrue();
+
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("4", "Finance Agent", "finance", "enabled")));
+        assertThat(service.canManageM5Content()).isFalse();
+    }
+
+    @Test
     void overviewReadsExistingSupportProfilesOnly() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());

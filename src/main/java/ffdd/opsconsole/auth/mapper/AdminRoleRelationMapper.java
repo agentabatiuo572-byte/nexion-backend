@@ -150,6 +150,19 @@ public interface AdminRoleRelationMapper extends BaseMapper<AdminRoleRelationEnt
             """)
     List<Long> selectAdminIdsByRole(@Param("roleId") Long roleId);
 
+    /** Returns only active administrators whose effective RBAC relation includes the named role. */
+    @Select("""
+            SELECT DISTINCT rr.admin_id
+              FROM nx_admin_role_relation rr
+              JOIN nx_admin_role r
+                ON r.id = rr.role_id
+               AND r.role_code = #{roleCode}
+               AND r.status = 1
+               AND r.is_deleted = 0
+             WHERE rr.is_deleted = 0
+            """)
+    List<Long> selectAdminIdsByRoleCode(@Param("roleCode") String roleCode);
+
     /** 删除角色时级联软删该角色下所有 admin↔role 关联。 */
     @Update("""
             UPDATE nx_admin_role_relation

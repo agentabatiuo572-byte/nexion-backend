@@ -4,6 +4,7 @@ import ffdd.opsconsole.janus.application.OpsJanusService;
 import ffdd.opsconsole.janus.domain.JanusDeviceView;
 import ffdd.opsconsole.janus.dto.JanusCommandAckRequest;
 import ffdd.opsconsole.janus.dto.JanusDeviceReportRequest;
+import ffdd.opsconsole.janus.dto.JanusTakeoverProgressRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +41,9 @@ public class AppJanusController {
         Long userId = authenticatedUserId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : janusService.acknowledgeCommand(userId, request);
     }
+
+    @PostMapping("/takeover/progress")
+    public ApiResult<Map<String,Object>> takeoverProgress(@RequestBody JanusTakeoverProgressRequest request,Authentication authentication){Long userId=authenticatedUserId(authentication);return userId==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):janusService.reportTakeoverProgress(userId,request);}
 
     private Long authenticatedUserId(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated() || authentication.getPrincipal() == null

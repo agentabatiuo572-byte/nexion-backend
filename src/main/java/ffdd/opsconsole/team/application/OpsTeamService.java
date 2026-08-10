@@ -26,6 +26,9 @@ import ffdd.opsconsole.team.domain.VRankConfigRow;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPromotionContext;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
+import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
+import ffdd.opsconsole.team.dto.F5CommissionReverseRequest;
+import ffdd.opsconsole.team.dto.F5CommissionSuspensionRequest;
 import ffdd.opsconsole.team.dto.VRankOverrideRequest;
 import ffdd.opsconsole.team.dto.VRankPromotionLogQuery;
 import ffdd.opsconsole.team.dto.VRankRewardPayoutActionRequest;
@@ -239,6 +242,7 @@ public class OpsTeamService implements AuditReplayable {
     private final VRankRewardDispatcher vRankRewardDispatcher;
     private final EventOutboxService eventOutboxService;
     private final LeadershipPoolService leadershipPoolService;
+    private final F5CommissionService f5CommissionService;
     private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -922,6 +926,12 @@ public class OpsTeamService implements AuditReplayable {
         // A1 批1a 修复1:F5 佣金事件状态机校验(原接受任意 status,REJECTED→UNLOCKED 静默复活=资金漏洞)。
         String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("state")));
         String toCanonical = canonicalCommissionState(value);
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return ApiResult.fail(400,"F5_EXPECTED_VERSION_REQUIRED");
+        }
+        Long parsedVersion = parseLongFromMap(oldEvent.get("version"));
+        long currentVersion = parsedVersion == null ? -1L : parsedVersion;
+        if(currentVersion!=request.expectedVersion()) return ApiResult.fail(409,"F5_COMMISSION_VERSION_CONFLICT");
         if (!isLegalCommissionStateTransition(fromCanonical, toCanonical)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
@@ -939,8 +949,11 @@ public class OpsTeamService implements AuditReplayable {
                 return ApiResult.fail(403, "PERMISSION_DENIED");
             }
         }
-        if (!commissionRepository.updateCommissionStatus(eventId, value)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_UPDATE_FAILED");
+        if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
+            return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
+        }
+        if(!commissionRepository.recordCommissionOperation(eventId,fromCanonical+"_TO_"+toCanonical,idempotencyKey.trim(),request.expectedVersion(),request.operator(),request.reason().trim())){
+            throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
         }
         publishCommissionUnlockedIfEligible(fromCanonical, toCanonical, eventId, oldEvent);
         postCommissionLedgerIfStatusChanged(key, value);
@@ -1002,16 +1015,15 @@ public class OpsTeamService implements AuditReplayable {
     /**
      * F5 状态转换图(任务 A1 保守版):
      *   COOLING → {UNLOCKED, FROZEN, REJECTED}  冷却到期解锁 / 运营冻结 / 撤销
-     *   UNLOCKED → {FROZEN, REJECTED, SETTLED, PAID}  运营冻结 / 红冲 / 结算 / 支付
-     *   FROZEN → {UNLOCKED, REJECTED}  解冻 / 撤销(冻结不可直接 SETTLED/PAID,须先解冻)
+     *   FROZEN → {COOLING, REJECTED}  解冻必须恢复冻结前的冷却态,不得绕过冷却期
      *   SETTLED → PAID  结算→支付
      *   REJECTED 终态(红冲不可复活,核心资金安全约束)
      *   PAID 终态(已支付不可逆)
      */
     private static final Map<String, Set<String>> COMMISSION_STATE_TRANSITIONS = Map.of(
             "COOLING", Set.of("UNLOCKED", "FROZEN", "REJECTED"),
-            "UNLOCKED", Set.of("FROZEN", "REJECTED", "SETTLED", "PAID"),
-            "FROZEN", Set.of("UNLOCKED", "REJECTED"),
+            "UNLOCKED", Set.of("REJECTED", "SETTLED", "PAID"),
+            "FROZEN", Set.of("COOLING", "REJECTED"),
             "SETTLED", Set.of("PAID"));
 
     private boolean isLegalCommissionStateTransition(String fromCanonical, String toCanonical) {
@@ -1780,7 +1792,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private Map<String, Object> normalizeCommissionEvent(Map<String, Object> raw) {
-        return commissionEvent(
+        Map<String,Object> event=commissionEvent(
                 textValue(raw, "id", ""),
                 textValue(raw, "kind", "network"),
                 textValue(raw, "user", "usr_unknown"),
@@ -1789,6 +1801,12 @@ public class OpsTeamService implements AuditReplayable {
                 intValue(raw.get("cooldownPercent"), 0),
                 textValue(raw, "cooldownLabel", "冷却中"),
                 textValue(raw, "state", "计提"));
+        Long parsedVersion = parseLongFromMap(raw.get("version"));
+        event.put("version", parsedVersion == null ? 0L : parsedVersion);
+        event.put("frozenFromStatus",textValue(raw,"frozenFromStatus",""));
+        String rawStatus = textValue(raw, "rawStatus", textValue(raw, "state", "COOLING"));
+        event.put("status", canonicalCommissionState(rawStatus).toLowerCase(Locale.ROOT));
+        return event;
     }
 
     private Map<String, Object> normalizeCommissionAuditFeedItem(Map<String, Object> raw) {
@@ -3265,9 +3283,25 @@ public class OpsTeamService implements AuditReplayable {
             // amplifies true(解锁放大可提余额)。A2ReplayContext 跳锁后执行完整 postLedgerEntry 资金路径,无 @T(自调用代理被绕过,靠 decide() 外层兜底)。
             case "f_commission_status" -> {
                 String key = str(p, "key");
-                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(
+                        key, str(p, "value"), reason, operator, parseLongFromMap(p.get("expectedVersion")));
                 String eventId = commissionStatusEventId(key).orElse("");
                 return updateCommissionEventStatus(idem, req, key, eventId);
+            }
+            case "f5_commission_reverse" -> {
+                return f5CommissionService.reverse(
+                        str(p, "commissionId"), idem,
+                        new F5CommissionReverseRequest(str(p, "refundRef"), reason, operator));
+            }
+            case "f5_commission_reissue" -> {
+                return f5CommissionService.reissue(
+                        idem, new F5CommissionReissueRequest(strList(p.get("commissionIds")), reason, operator));
+            }
+            case "f5_commission_suspension" -> {
+                Long userId = parseLongFromMap(p.get("userId"));
+                Boolean suspended = boolVal(p, "suspended");
+                return f5CommissionService.suspend(userId, idem,
+                        new F5CommissionSuspensionRequest(strList(p.get("kinds")), suspended, reason, operator));
             }
             case "f_vrank_override" -> {
                 Long userId = parseLongFromMap(p.get("userId"));
@@ -3303,6 +3337,11 @@ public class OpsTeamService implements AuditReplayable {
     private static String str(Map<String, Object> params, String key) {
         Object v = params.get(key);
         return v == null ? null : String.valueOf(v).trim();
+    }
+
+    private static List<String> strList(Object raw) {
+        if (!(raw instanceof List<?> values)) return List.of();
+        return values.stream().map(value -> value == null ? "" : String.valueOf(value).trim()).toList();
     }
 
     /** 从 replay params 取 Boolean,null 安全。 */

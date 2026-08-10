@@ -14,6 +14,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakPowerUp;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -58,6 +59,7 @@ public class AppGrowthEngagementService {
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+    private final EarningsReleaseService earningsReleaseService;
 
     public ApiResult<Map<String, Object>> questState(Long userId) {
         requireReadableUser(userId);
@@ -470,7 +472,12 @@ public class AppGrowthEngagementService {
         requireHealthyCoverage();
         BigDecimal before = mapper.lockWalletNex(userId);
         if (before == null) throw conflict("USER_WALLET_NOT_FOUND");
-        if (mapper.creditWalletNex(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
+        if (earningsReleaseService == null) {
+            if (mapper.creditWalletNex(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
+        } else {
+            earningsReleaseService.creditReward(userId, bizType, bizNo, "NEX", amount,
+                    "GROWTH:" + bizNo + ":NEX");
+        }
         if (mapper.insertNexLedger(userId, bizNo, bizType, amount, before.add(amount), remark) != 1) {
             throw conflict("REWARD_LEDGER_CONFLICT");
         }
@@ -481,7 +488,12 @@ public class AppGrowthEngagementService {
         requireHealthyCoverage();
         BigDecimal before = mapper.lockWalletUsdt(userId);
         if (before == null) throw conflict("USER_WALLET_NOT_FOUND");
-        if (mapper.creditWalletUsdt(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
+        if (earningsReleaseService == null) {
+            if (mapper.creditWalletUsdt(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
+        } else {
+            earningsReleaseService.creditReward(userId, bizType, bizNo, "USDT", amount,
+                    "GROWTH:" + bizNo + ":USDT");
+        }
         if (mapper.insertUsdtLedger(userId, bizNo, bizType, amount, before.add(amount), remark) != 1) {
             throw conflict("REWARD_LEDGER_CONFLICT");
         }

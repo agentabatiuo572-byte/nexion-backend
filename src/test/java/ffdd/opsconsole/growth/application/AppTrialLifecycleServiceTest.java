@@ -19,6 +19,7 @@ import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.WalletRow;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -36,8 +37,9 @@ class AppTrialLifecycleServiceTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final AppTrialLifecycleService service = new AppTrialLifecycleService(
-            mapper, idempotency, coverage, audit, outbox);
+            mapper, earningsRelease, idempotency, coverage, audit, outbox);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})

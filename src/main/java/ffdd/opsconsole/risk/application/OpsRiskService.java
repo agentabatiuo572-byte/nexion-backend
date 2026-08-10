@@ -1603,14 +1603,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return null;
     }
 
-    private <T> ApiResult<T> requireK5Reason(String reason) {
-        int length = reason == null ? 0 : reason.trim().length();
-        if (length < 8 || length > 200) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K5_REASON_LENGTH_INVALID");
-        }
-        return null;
-    }
-
     private <T> ApiResult<T> requireK1Command(String idempotencyKey, String reason) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
@@ -1730,20 +1722,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private boolean validK4ModelSnapshot(RiskScoreModelView model) {
-        return model != null
-                && model.weights() != null
-                && model.weights().keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
-                && model.weights().values().stream().noneMatch(java.util.Objects::isNull)
-                && model.weights().values().stream().allMatch(value -> value >= 0 && value <= 100)
-                && model.weights().values().stream().mapToInt(Integer::intValue).sum() == 100
-                && model.inputSources() != null
-                && model.inputSources().keySet().equals(Set.copyOf(K4_DIMENSION_KEYS))
-                && model.inputSources().values().stream().noneMatch(java.util.Objects::isNull)
-                && validK4Mappings(model.scoreMappings())
-                && model.bandLowMax() != null && model.bandHighMin() != null
-                && model.bandLowMax() >= 0 && model.bandHighMin() <= 100
-                && model.bandLowMax() < model.bandHighMin()
-                && validK4EscalationThreshold(model.bandHighMin(), model.autoEscalateScore());
+        return K4RiskScorer.isCurrentModelSnapshot(model);
     }
 
     private boolean validK4EscalationThreshold(Integer bandHighMin, Integer autoEscalateScore) {
@@ -1867,10 +1846,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         return authentication.getAuthorities().stream().anyMatch(authority -> required.equals(authority.getAuthority()))
                 ? null : ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
-    }
-
-    private <T> ApiResult<T> requireK5Authority(String required) {
-        return A2ReplayContext.isReplaying() ? null : requireK2ActionAuthority(required);
     }
 
     private <T> ApiResult<T> requireK3Authority(String required) {

@@ -61,6 +61,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private static final Map<String, Boolean> K4_DEFAULT_SOURCES = Map.of(
             "multiAccount", true, "arbitrage", true,
             "withdrawVelocity", true, "accountAge", true, "anomalyBehavior", true);
+    private static final String LEGACY_K4_DIMENSION_KEY = "kycStatus";
+    private static final Map<String, Integer> LEGACY_K4_DEFAULT_WEIGHTS = Map.of(
+            "multiAccount", 25, "arbitrage", 20, LEGACY_K4_DIMENSION_KEY, 20,
+            "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10);
+    private static final Set<String> LEGACY_K4_MAPPING_KEYS = Set.of(
+            "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore");
     private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
             new RiskArbitrageParamView("otpGate.captchaAfterSends", "滑块验证触发次数", "2", "24h 发送达到阈值后要求滑块", "单位:次/24h"),
@@ -1149,11 +1155,82 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private RiskScoreModelView toScoreModel(RiskOpsMapper.ScoreModelRecord row) {
         return new RiskScoreModelView(
                 row.modelVersion(), row.rowVersion(), row.state(),
-                parseMap(row.weightsJson(), new TypeReference<Map<String, Integer>>() {}, K4_DEFAULT_WEIGHTS),
-                parseMap(row.inputSourcesJson(), new TypeReference<Map<String, Boolean>>() {}, K4_DEFAULT_SOURCES),
-                parseMap(row.scoreMappingJson(), new TypeReference<Map<String, Integer>>() {}, K4RiskScorer.DEFAULT_MAPPINGS),
+                canonicalK4Weights(row.weightsJson()),
+                canonicalK4Sources(row.inputSourcesJson()),
+                canonicalK4Mappings(row.scoreMappingJson()),
                 row.bandLowMax(), row.bandHighMin(), row.autoEscalateScore(), row.reason(),
                 row.createdBy(), row.publishedBy(), row.createdAt(), row.publishedAt());
+    }
+
+    private Map<String, Integer> canonicalK4Weights(String value) {
+        Map<String, Integer> parsed = parseStrictMap(
+                value, new TypeReference<Map<String, Integer>>() {}, Map.of());
+        Set<String> legacyKeys = new java.util.HashSet<>(K4_DIMENSION_KEYS);
+        legacyKeys.add(LEGACY_K4_DIMENSION_KEY);
+        if (!parsed.keySet().equals(legacyKeys)
+                || parsed.values().stream().anyMatch(java.util.Objects::isNull)
+                || parsed.values().stream().anyMatch(weight -> weight < 0 || weight > 100)
+                || parsed.values().stream().mapToInt(Integer::intValue).sum() != 100) {
+            return parsed;
+        }
+        if (parsed.equals(LEGACY_K4_DEFAULT_WEIGHTS)) return K4_DEFAULT_WEIGHTS;
+
+        int retainedTotal = K4_DIMENSION_KEYS.stream().mapToInt(parsed::get).sum();
+        if (retainedTotal <= 0) return parsed;
+        Map<String, Integer> normalized = new LinkedHashMap<>();
+        Map<String, Integer> remainders = new LinkedHashMap<>();
+        int allocated = 0;
+        for (String key : K4_DIMENSION_KEYS) {
+            int scaled = Math.multiplyExact(parsed.get(key), 100);
+            int weight = scaled / retainedTotal;
+            normalized.put(key, weight);
+            remainders.put(key, scaled % retainedTotal);
+            allocated += weight;
+        }
+        int missing = 100 - allocated;
+        List<String> remainderOrder = new ArrayList<>(K4_DIMENSION_KEYS);
+        remainderOrder.sort((left, right) -> Integer.compare(remainders.get(right), remainders.get(left)));
+        for (int index = 0; index < missing; index++) {
+            String key = remainderOrder.get(index);
+            normalized.put(key, normalized.get(key) + 1);
+        }
+        return Map.copyOf(normalized);
+    }
+
+    private Map<String, Boolean> canonicalK4Sources(String value) {
+        Map<String, Boolean> parsed = parseStrictMap(
+                value, new TypeReference<Map<String, Boolean>>() {}, Map.of());
+        Set<String> legacyKeys = new java.util.HashSet<>(K4_DIMENSION_KEYS);
+        legacyKeys.add(LEGACY_K4_DIMENSION_KEY);
+        if (!parsed.keySet().equals(legacyKeys)
+                || parsed.values().stream().anyMatch(java.util.Objects::isNull)) {
+            return parsed;
+        }
+        return K4_DIMENSION_KEYS.stream().collect(Collectors.toUnmodifiableMap(key -> key, parsed::get));
+    }
+
+    private Map<String, Integer> canonicalK4Mappings(String value) {
+        Map<String, Integer> parsed = parseStrictMap(
+                value, new TypeReference<Map<String, Integer>>() {}, Map.of());
+        Set<String> currentKeys = K4RiskScorer.DEFAULT_MAPPINGS.keySet();
+        Set<String> recognizedLegacyKeys = new java.util.HashSet<>(currentKeys);
+        recognizedLegacyKeys.addAll(LEGACY_K4_MAPPING_KEYS);
+        if (!parsed.keySet().equals(recognizedLegacyKeys)
+                || currentKeys.stream().anyMatch(key -> parsed.get(key) == null)
+                || LEGACY_K4_MAPPING_KEYS.stream().anyMatch(key -> parsed.get(key) == null)) {
+            return parsed;
+        }
+        return currentKeys.stream().collect(Collectors.toUnmodifiableMap(key -> key, parsed::get));
+    }
+
+    private <T> T parseStrictMap(String value, TypeReference<T> type, T invalid) {
+        if (!StringUtils.hasText(value)) return invalid;
+        try {
+            T parsed = JSON.readValue(value, type);
+            return parsed == null ? invalid : parsed;
+        } catch (JsonProcessingException ex) {
+            return invalid;
+        }
     }
 
     private <T> T parseMap(String value, TypeReference<T> type, T fallback) {
@@ -1166,6 +1243,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     private void projectActiveModel(RiskScoreModelView model) {
+        if (!K4RiskScorer.isCurrentModelSnapshot(model)) return;
         List<String[]> metadata = List.of(
                 new String[]{"multiAccount", "多账户", "K1 多账户簇"},
                 new String[]{"arbitrage", "套利与刷量", "K2 套利信号"},

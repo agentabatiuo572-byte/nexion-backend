@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>updateCommissionStatus(COOLING→UNLOCKED),复用 OpsTeamService 状态机(COOLING→UNLOCKED 合法转换);</li>
  *   <li>发 COMMISSION_UNLOCKED 事件(H3 canonical quest trigger + 审计);</li>
- *   <li>D4 台账 IN/PENDING(用户可提应付入账,对齐 OpsTeamService postCommissionLedgerIfStatusChanged)。</li>
+ *   <li>不重复追加 D4 入账；佣金生成时的唯一 IN/PENDING 分录保持不变，事件状态是释放真值。</li>
  * </ul>
  *
  * <p>coolingDays 默认 30(F2/F3 insert 时 unlock_at = NOW()+30d);PRD 落地规格 line231 coolingDays(30,域独立)。

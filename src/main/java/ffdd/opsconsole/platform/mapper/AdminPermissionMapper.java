@@ -22,7 +22,13 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
                   OR p.permission_name LIKE CONCAT('%', #{keyword}, '%'))
               </if>
               <if test="permType != null and permType != ''">
-                AND p.perm_type = #{permType}
+                AND CASE
+                      WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
+                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN UPPER(TRIM(p.perm_type))
+                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
+                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
+                      ELSE 'HIGH'
+                    END = #{permType}
               </if>
               <if test="domain != null and domain != '' and domain != 'ALL' and domain != 'UNMAPPED'">
                 AND domain.menu_code = #{domain}
@@ -58,7 +64,13 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
                   OR p.permission_name LIKE CONCAT('%', #{keyword}, '%'))
               </if>
               <if test="permType != null and permType != ''">
-                AND p.perm_type = #{permType}
+                AND CASE
+                      WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
+                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN UPPER(TRIM(p.perm_type))
+                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
+                      WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
+                      ELSE 'HIGH'
+                    END = #{permType}
               </if>
               <if test="domain != null and domain != '' and domain != 'ALL' and domain != 'UNMAPPED'">
                 AND domain.menu_code = #{domain}

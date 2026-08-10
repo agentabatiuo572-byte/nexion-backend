@@ -81,13 +81,26 @@ public class OpsSessionTemplateController {
         }
     }
 
-    private <T> ApiResult<T> executeManagedCommand(
+    private <T> ApiResult<T> executeSupportOperationCommand(
             String scope,
             String idempotencyKey,
             Object request,
             Supplier<ApiResult<T>> action) {
         if (!supportAgentService.canManageSupportSeats()) {
             ApiResult<T> rejected = ApiResult.fail(403, "M5_CONFIGURATION_MANAGEMENT_FORBIDDEN");
+            auditRejected(scope, rejected.getCode(), rejected.getMessage(), request);
+            return rejected;
+        }
+        return executeCommand(scope, idempotencyKey, request, action);
+    }
+
+    private <T> ApiResult<T> executeContentCommand(
+            String scope,
+            String idempotencyKey,
+            Object request,
+            Supplier<ApiResult<T>> action) {
+        if (!supportAgentService.canManageM5Content()) {
+            ApiResult<T> rejected = ApiResult.fail(403, "M5_CONTENT_MANAGEMENT_FORBIDDEN");
             auditRejected(scope, rejected.getCode(), rejected.getMessage(), request);
             return rejected;
         }
@@ -152,7 +165,7 @@ public class OpsSessionTemplateController {
             @PathVariable String type,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionCategoryToggleRequest request) {
-        return executeManagedCommand("M5_CATEGORY_UPDATE:" + type, idempotencyKey, request,
+        return executeSupportOperationCommand("M5_CATEGORY_UPDATE:" + type, idempotencyKey, request,
                 () -> templateService.updateCategory(type, idempotencyKey, request));
     }
 
@@ -163,7 +176,7 @@ public class OpsSessionTemplateController {
             @PathVariable String field,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionAdvisorPolicyUpdateRequest request) {
-        return executeManagedCommand("M5_ADVISOR_POLICY_UPDATE:" + field, idempotencyKey, request,
+        return executeSupportOperationCommand("M5_ADVISOR_POLICY_UPDATE:" + field, idempotencyKey, request,
                 () -> templateService.updateAdvisorPolicy(field, idempotencyKey, request));
     }
 
@@ -184,7 +197,7 @@ public class OpsSessionTemplateController {
     public ApiResult<SessionScriptView> createScript(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptCreateRequest request) {
-        return executeManagedCommand("M5_SCRIPT_CREATE", idempotencyKey, request,
+        return executeContentCommand("M5_SCRIPT_CREATE", idempotencyKey, request,
                 () -> templateService.createScript(idempotencyKey, request));
     }
 
@@ -195,7 +208,7 @@ public class OpsSessionTemplateController {
             @PathVariable String scriptId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptStatusRequest request) {
-        return executeManagedCommand("M5_SCRIPT_STATUS:" + scriptId, idempotencyKey, request,
+        return executeContentCommand("M5_SCRIPT_STATUS:" + scriptId, idempotencyKey, request,
                 () -> templateService.updateScriptStatus(scriptId, idempotencyKey, request));
     }
 
@@ -206,7 +219,7 @@ public class OpsSessionTemplateController {
             @PathVariable String scriptId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionScriptAudienceRequest request) {
-        return executeManagedCommand("M5_SCRIPT_AUDIENCE:" + scriptId, idempotencyKey, request,
+        return executeContentCommand("M5_SCRIPT_AUDIENCE:" + scriptId, idempotencyKey, request,
                 () -> templateService.updateScriptAudience(scriptId, idempotencyKey, request));
     }
 
@@ -216,7 +229,7 @@ public class OpsSessionTemplateController {
     public ApiResult<SessionReplyTemplateView> createReplyTemplate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionReplyTemplateCreateRequest request) {
-        return executeManagedCommand("M5_REPLY_TEMPLATE_CREATE", idempotencyKey, request,
+        return executeContentCommand("M5_REPLY_TEMPLATE_CREATE", idempotencyKey, request,
                 () -> templateService.createReplyTemplate(idempotencyKey, request));
     }
 
@@ -227,7 +240,7 @@ public class OpsSessionTemplateController {
             @PathVariable String templateId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SessionReplyTemplateStatusRequest request) {
-        return executeManagedCommand("M5_REPLY_TEMPLATE_STATUS:" + templateId, idempotencyKey, request,
+        return executeContentCommand("M5_REPLY_TEMPLATE_STATUS:" + templateId, idempotencyKey, request,
                 () -> templateService.updateReplyTemplateStatus(templateId, idempotencyKey, request));
     }
 }

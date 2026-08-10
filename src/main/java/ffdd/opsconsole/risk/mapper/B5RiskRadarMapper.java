@@ -2,7 +2,9 @@ package ffdd.opsconsole.risk.mapper;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 @Mapper
@@ -37,6 +39,143 @@ public interface B5RiskRadarMapper {
                   AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)) AS grossInflowUsdt
             """)
     Map<String, Object> moneySnapshot();
+
+    @Select("""
+            WITH RECURSIVE days AS (
+              SELECT 0 AS seq, DATE(#{startAt}) AS pressureDay
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(pressureDay, INTERVAL 1 DAY)
+                FROM days
+               WHERE seq < 7
+            ), buckets AS (
+              SELECT DATE(created_at) AS pressureDay,
+                     COALESCE(SUM(CASE
+                       WHEN direction='OUT' AND (
+                         UPPER(biz_type) LIKE '%WITHDRAW%'
+                         OR UPPER(biz_type) LIKE '%PAYOUT%'
+                         OR UPPER(biz_type) LIKE '%COMMISSION%'
+                       ) THEN amount ELSE 0 END), 0) AS payoutCommission,
+                     COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE 0 END), 0) AS grossInflow
+                FROM nx_wallet_ledger
+               WHERE is_deleted=0
+                 AND asset='USDT'
+                 AND status='SUCCESS'
+                 AND created_at >= #{startAt}
+                 AND created_at < #{endAt}
+               GROUP BY DATE(created_at)
+            )
+            SELECT DATE_FORMAT(days.pressureDay, '%m-%d') AS label,
+                   CASE
+                     WHEN COALESCE(buckets.grossInflow, 0)=0 THEN NULL
+                     ELSE ROUND(COALESCE(buckets.payoutCommission, 0) / buckets.grossInflow, 4)
+                   END AS ratio
+              FROM days
+              LEFT JOIN buckets ON buckets.pressureDay=days.pressureDay
+             ORDER BY days.pressureDay ASC
+            """)
+    List<Map<String, Object>> pressureWindows(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT levels.level,
+                   COALESCE(buckets.count, 0) AS count
+              FROM (
+                    SELECT 'P0' AS level, 0 AS sortOrder
+                    UNION ALL SELECT 'P1', 1
+                    UNION ALL SELECT 'P2', 2
+                    UNION ALL SELECT 'P3', 3
+              ) levels
+              LEFT JOIN (
+                    SELECT CASE UPPER(severity)
+                             WHEN 'CRITICAL' THEN 'P0'
+                             WHEN 'HIGH' THEN 'P1'
+                             WHEN 'MEDIUM' THEN 'P2'
+                             ELSE 'P3'
+                           END AS level,
+                           COUNT(1) AS count
+                      FROM nx_risk_signal
+                     WHERE is_deleted=0
+                       AND created_at >= #{startAt}
+                       AND created_at < #{endAt}
+                     GROUP BY level
+              ) buckets ON buckets.level=levels.level
+             ORDER BY levels.sortOrder
+            """)
+    List<Map<String, Object>> alertSeverity(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            WITH RECURSIVE days AS (
+              SELECT 0 AS seq, DATE(#{startAt}) AS alertDay
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(alertDay, INTERVAL 1 DAY)
+                FROM days
+               WHERE seq < 6
+            ), buckets AS (
+              SELECT DATE(created_at) AS alertDay, COUNT(1) AS count
+                FROM nx_risk_signal
+               WHERE is_deleted=0
+                 AND created_at >= #{startAt}
+                 AND created_at < #{endAt}
+               GROUP BY DATE(created_at)
+            )
+            SELECT DATE_FORMAT(days.alertDay, '%m-%d') AS label,
+                   COALESCE(buckets.count, 0) AS count
+              FROM days
+              LEFT JOIN buckets ON buckets.alertDay=days.alertDay
+             ORDER BY days.alertDay ASC
+            """)
+    List<Map<String, Object>> alertVolume(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT signal_no AS signalNo,
+                   CASE UPPER(severity)
+                     WHEN 'CRITICAL' THEN 'P0'
+                     WHEN 'HIGH' THEN 'P1'
+                     WHEN 'MEDIUM' THEN 'P2'
+                     ELSE 'P3'
+                   END AS level,
+                   signal_type AS signalType,
+                   user_id AS userId,
+                   DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s') AS createdAt
+              FROM nx_risk_signal
+             WHERE is_deleted=0
+               AND created_at >= #{startAt}
+               AND created_at < #{endAt}
+             ORDER BY created_at DESC, id DESC
+             LIMIT 20
+            """)
+    List<Map<String, Object>> recentSignals(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_risk_signal
+             WHERE is_deleted=0
+               AND created_at >= #{startAt}
+               AND created_at < #{endAt}
+               AND (severity IS NULL OR UPPER(severity) NOT IN ('CRITICAL','HIGH','MEDIUM','LOW','INFO'))
+            """)
+    long unknownSeverityCount(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_withdrawal_order
+             WHERE is_deleted=0
+               AND (status IS NULL OR UPPER(status) NOT IN (
+                    'PENDING','SUBMITTED','REVIEWING','REVIEW_PENDING','DELAYED','EXTENDED_HOLD','FROZEN',
+                    'PENDING_CHAIN','REVIEW_PASSED','PROCESSING','CHAIN_SUBMITTED','SENT','DEAD','TX_ORPHANED',
+                    'REVIEW_REJECTED','REJECTED','ADDRESS_INVALID','TX_FAILED','FAILED','COMPLETED','SUCCESS',
+                    'CANCELLED','CANCELED','CONFIRMED','REFUNDED'))
+            """)
+    long unknownWithdrawalStatusCount();
 
     @Select("""
             SELECT states.state,

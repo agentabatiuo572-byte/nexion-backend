@@ -106,7 +106,7 @@ FROM nx_admin_role lead_role
 JOIN nx_admin_role finance_role ON finance_role.role_code='FINANCE' AND finance_role.is_deleted=0
 JOIN nx_admin_role_permission rp ON rp.role_id=finance_role.id AND rp.is_deleted=0
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
--- C1 跨职能最小授权：财务看资金状态，增长看分层并可导出脱敏名单，审计可导出脱敏取证名单。
+-- C1 跨职能最小授权：财务看资金，增长看分层并可导出脱敏名单，审计可导出脱敏取证名单。
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code='FINANCE'
@@ -239,6 +239,24 @@ INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
 SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
 WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK') AND p.permission_code='growth_h1_read'
   AND p.status=1 AND p.is_deleted=0;
+-- D7：参数读取覆盖财务/风控/审计；参数写仅财务主管；通道与倒挂强制仅超管。
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE p.permission_code LIKE 'finance_d7_%';
+INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR')
+  AND p.permission_code='finance_d7_read' AND p.status=1 AND p.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code IN ('SUPER_ADMIN','FINANCE_LEAD')
+  AND p.permission_code='finance_d7_manage' AND p.status=1 AND p.is_deleted=0;
+INSERT IGNORE INTO nx_admin_role_permission(role_id,permission_id)
+SELECT r.id,p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='SUPER_ADMIN'
+  AND p.permission_code IN ('finance_d7_channel_toggle','finance_d7_force_inverted')
+  AND p.status=1 AND p.is_deleted=0;
 -- E 域(device_)：增长
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'device_%'
@@ -302,10 +320,6 @@ SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permissio
 WHERE r.role_code='RISK'
   AND p.permission_code NOT IN ('risk_k4_write','risk_k4_user_override','risk_k6_target_manage')
   AND p.status=1 AND p.is_deleted=0;
--- SUPPORT 仅可查看 K5 工单、统计与告警，不授予任何 K5 写权限。
-INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
-SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code='risk_k5_read'
-WHERE r.role_code='SUPPORT' AND p.status=1 AND p.is_deleted=0;
 DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='RISK'
 JOIN nx_admin_permission p ON p.id=rp.permission_id
@@ -345,7 +359,7 @@ WHERE r.role_code='AUDITOR'
   AND p.permission_code IN ('bi_l1_read','bi_l1_write','bi_l2_read','bi_l2_write','bi_l3_read','bi_l3_write',
                             'bi_l4_read','bi_l4_write','bi_l4_export_tree','bi_l5_read','bi_l6_read')
   AND p.status=1 AND p.is_deleted=0;
--- M 域(service_)：客服+风控。M5 配置写仅授客服角色，并由服务层按客服主管二次校验；风控只读。
+-- M 域(service_)：客服+风控。风控只读；CONTENT only receives the exact M5 read/write pair.
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
 SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p ON p.permission_code LIKE 'service_%'
 WHERE r.role_code IN ('SUPPORT','RISK')
@@ -356,6 +370,18 @@ DELETE rp FROM nx_admin_role_permission rp
 JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='RISK'
 JOIN nx_admin_permission p ON p.id=rp.permission_id
 WHERE p.permission_code='service_m5_write';
+
+-- Current RBAC matrix: CONTENT can read and maintain M5 scripts/templates, but none of M1-M4.
+-- Remove every historical M-domain grant first: a prior seed may have left M1-M4 rows behind.
+DELETE rp FROM nx_admin_role_permission rp
+JOIN nx_admin_role r ON r.id=rp.role_id AND r.role_code='CONTENT'
+JOIN nx_admin_permission p ON p.id=rp.permission_id
+WHERE p.permission_code LIKE 'service_m%';
+INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)
+SELECT r.id, p.id FROM nx_admin_role r JOIN nx_admin_permission p
+WHERE r.role_code='CONTENT'
+  AND p.permission_code IN ('service_m5_read','service_m5_write')
+  AND p.status=1 AND p.is_deleted=0;
 
 -- SUPPORT 补充：C/E/I 域只读（客服查用户画像/设备状态/内容，辅助工单；不授予 write/high）
 INSERT IGNORE INTO nx_admin_role_permission (role_id, permission_id)

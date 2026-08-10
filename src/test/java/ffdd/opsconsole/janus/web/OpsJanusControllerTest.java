@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 
 class OpsJanusControllerTest {
     private final OpsJanusService service = mock(OpsJanusService.class);
-    private final OpsJanusController controller = new OpsJanusController(service);
+    private final OpsJanusController controller = new OpsJanusController(service, null);
 
     @Test
     void deviceQueueDelegatesServerPaginationAndFilters() {

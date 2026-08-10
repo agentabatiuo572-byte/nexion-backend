@@ -79,8 +79,11 @@ public class OpsRiskRadarService {
         BigDecimal payout = decimal(money.get("payoutUsdt"));
         BigDecimal commission = decimal(money.get("commissionUsdt"));
         BigDecimal grossInflow = decimal(money.get("grossInflowUsdt"));
-        BigDecimal bankRunRatio = ratio(withdrawal24h, reserve);
-        BigDecimal pressureRatio = ratio(payout.add(commission), grossInflow);
+        boolean bankRunCalculable = reserve.signum() > 0;
+        BigDecimal bankRunRatio = bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
+        BigDecimal pressureNumerator = payout.add(commission);
+        boolean pressureCalculable = grossInflow.signum() > 0;
+        BigDecimal pressureRatio = pressureCalculable ? ratio(pressureNumerator, grossInflow) : null;
         BankRunThresholdPolicy.Bands bands = BankRunThresholdPolicy.resolve(configFacade);
         long version = configVersion(THRESHOLD_VERSION_KEY, false);
 
@@ -92,29 +95,53 @@ public class OpsRiskRadarService {
         List<Map<String, Object>> backlog = canonicalBacklog(mapper.withdrawalBacklog());
         List<Map<String, Object>> abnormal = canonicalAbnormal(mapper.abnormalAccountCategories());
         long abnormalCount = mapper.abnormalAccountCount();
+        if (abnormalCount < 0) {
+            throw new BizException(500, "B5_SOURCE_COUNT_INVALID");
+        }
         long backlogCount = backlog.stream().mapToLong(row -> whole(row.get("count"))).sum();
         BigDecimal backlogAmount = backlog.stream()
                 .map(row -> decimal(row.get("amountUsdt")))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         long overdue = backlog.stream().mapToLong(row -> whole(row.get("overSlaCount"))).sum();
+        LocalDateTime dayStart = LocalDateTime.now(clock).toLocalDate().minusDays(7).atStartOfDay();
+        LocalDateTime dayEnd = dayStart.plusDays(8);
+        LocalDateTime alertStart = dayEnd.minusDays(7);
+        if (mapper.unknownSeverityCount(alertStart, dayEnd) > 0) {
+            throw new BizException(500, "B5_UNKNOWN_SEVERITY");
+        }
+        if (mapper.unknownWithdrawalStatusCount() > 0) {
+            throw new BizException(500, "B5_UNKNOWN_WITHDRAWAL_STATUS");
+        }
 
         Map<String, Object> bankrun = section(
                 "ratio24h", bankRunRatio,
-                "light", thresholdLight(bankRunRatio, bands.yellowPct(), bands.redlinePct()),
+                "ratioCalculable", bankRunCalculable,
+                "light", bankRunCalculable
+                        ? thresholdLight(bankRunRatio, bands.yellowPct(), bands.redlinePct())
+                        : withdrawal24h.signum() > 0 ? "red" : "unavailable",
                 "withdraw24hUsdt", money(withdrawal24h),
                 "reserveUsdt", money(reserve),
+                "ratioWithdraw24hUsdt", withdrawal24h,
+                "ratioReserveUsdt", reserve,
                 "pressureRatio", pressureRatio,
+                "pressureCalculable", pressureCalculable,
                 "pressureRedLine", PRESSURE_RED_LINE,
-                "pressureLight", pressureRatio.compareTo(PRESSURE_RED_LINE) >= 0 ? "red" : "green",
+                "pressureLight", !pressureCalculable
+                        ? (pressureNumerator.signum() > 0 ? "red" : "yellow")
+                        : pressureRatio.compareTo(PRESSURE_RED_LINE) >= 0 ? "red" : "green",
                 "yellowPct", bands.yellowPct(),
                 "redPct", bands.redlinePct(),
                 "version", version);
+        BigDecimal coverageRatioDenominator = safe(coverage.ratioLiabilitiesUsd());
+        boolean coverageCalculable = coverageRatioDenominator.signum() > 0;
         Map<String, Object> coverageView = section(
-                "ratio", safe(coverage.coverageRatio()),
-                "light", coverageLight(coverage),
+                "ratio", coverageCalculable ? safe(coverage.coverageRatio()) : null,
+                "light", coverageCalculable ? coverageLight(coverage) : "unavailable",
                 "redlinePct", safe(coverage.redlinePct()),
                 "reserveUsdt", money(coverage.reserveUsd()),
                 "liabilitiesUsdt", money(coverage.liabilitiesUsd()),
+                "ratioReserveUsdt", safe(coverage.ratioReserveUsd()),
+                "ratioLiabilitiesUsdt", safe(coverage.ratioLiabilitiesUsd()),
                 "source", "B1:TreasuryCoverageFacade");
 
         return section(
@@ -134,12 +161,75 @@ public class OpsRiskRadarService {
                         "source", "D2:nx_withdrawal_order"),
                 "killSwitches", killSwitches(),
                 "coverage", coverageView,
+                "pressureHistory", pressureHistory(mapper.pressureWindows(dayStart, dayEnd)),
+                "alertSeverity", mapper.alertSeverity(alertStart, dayEnd),
+                "alertVolume", mapper.alertVolume(alertStart, dayEnd),
+                "recentAlerts", recentAlerts(mapper.recentSignals(alertStart, dayEnd)),
                 "sources", List.of(
                         "B1:TreasuryCoverageFacade",
                         "D2:nx_withdrawal_order",
                         "K:nx_risk_signal",
+                        "K:nx_risk_signal.severity",
+                        "B1:nx_wallet_ledger pressure windows",
                         "J1:killswitch.*",
                         "A3:risk.bankrun-*"));
+    }
+
+    private List<Map<String, Object>> recentAlerts(List<Map<String, Object>> rows) {
+        if (rows == null) {
+            throw new BizException(500, "B5_ALERT_FEED_SOURCE_UNAVAILABLE");
+        }
+        return rows.stream().map(row -> {
+            String signalType = text(row.get("signalType"));
+            String normalized = signalType == null ? "" : signalType.toLowerCase(Locale.ROOT);
+            String label;
+            String target;
+            if (normalized.contains("multi_account")) {
+                label = "反多账户命中";
+                target = "/risk/multi-account";
+            } else if (normalized.contains("arbitrage") || normalized.contains("trial_cycle")
+                    || normalized.contains("leaderboard_velocity")) {
+                label = "套利或循环行为命中";
+                target = "/risk/abuse";
+            } else if (normalized.contains("withdraw")) {
+                label = "提现风险命中";
+                target = "/finance/withdrawals";
+            } else if (normalized.contains("tamper")) {
+                label = "篡改风险命中";
+                target = "/emergency/tamper";
+            } else {
+                label = "风险信号命中";
+                target = "/risk/scoring";
+            }
+            return section(
+                    "signalNo", requireSignalField(row.get("signalNo"), "signalNo"),
+                    "level", requireSignalField(row.get("level"), "level"),
+                    "message", label,
+                    "userId", whole(row.get("userId")),
+                    "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
+                    "target", target,
+                    // nx_risk_signal has no handled/resolved column. Keep the feed visible but never
+                    // mislabel every historical signal as "unhandled".
+                    "handlingStatusAvailable", false);
+        }).toList();
+    }
+
+    private List<Map<String, Object>> pressureHistory(List<Map<String, Object>> rows) {
+        if (rows == null) {
+            throw new BizException(500, "B5_PRESSURE_HISTORY_SOURCE_UNAVAILABLE");
+        }
+        return rows.stream().map(row -> section(
+                "label", requireSignalField(row.get("label"), "pressureHistory.label"),
+                // MyBatis omits NULL select aliases from a result map. Reinsert the key so the
+                // public contract can distinguish an uncomputable denominator from a missing field.
+                "ratio", row.get("ratio") == null ? null : decimal(row.get("ratio"))))
+                .toList();
+    }
+
+    private String requireSignalField(Object value, String field) {
+        String result = text(value);
+        if (result == null) throw new BizException(500, "B5_ALERT_FEED_SOURCE_INVALID:" + field);
+        return result;
     }
 
     public ApiResult<Map<String, Object>> preview(B5ThresholdPreviewRequest request) {
@@ -153,10 +243,16 @@ public class OpsRiskRadarService {
         if (money == null) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal ratio = ratio(decimal(money.get("withdraw24hUsdt")), decimal(money.get("reserveUsdt")));
+        BigDecimal withdrawal24h = decimal(money.get("withdraw24hUsdt"));
+        BigDecimal reserve = decimal(money.get("reserveUsdt"));
+        boolean calculable = reserve.signum() > 0;
+        BigDecimal ratio = calculable ? ratio(withdrawal24h, reserve) : null;
         return ApiResult.ok(section(
                 "ratio24h", ratio,
-                "light", thresholdLight(ratio, thresholds.yellow(), thresholds.red()),
+                "ratioCalculable", calculable,
+                "light", calculable
+                        ? thresholdLight(ratio, thresholds.yellow(), thresholds.red())
+                        : withdrawal24h.signum() > 0 ? "red" : "unavailable",
                 "yellowPct", thresholds.yellow(),
                 "redPct", thresholds.red(),
                 "expectedVersion", currentVersion));
@@ -363,10 +459,11 @@ public class OpsRiskRadarService {
 
     private Map<String, Object> abnormal(
             Map<String, Map<String, Object>> indexed, String category, String label) {
+        Map<String, Object> source = indexed.get(category);
         return section(
                 "category", category,
                 "label", label,
-                "count", whole(indexed.getOrDefault(category, Map.of()).get("count")));
+                "count", source == null ? 0L : whole(source.get("count")));
     }
 
     private Map<String, Object> subscriptionView() {
@@ -487,16 +584,24 @@ public class OpsRiskRadarService {
     }
 
     private BigDecimal decimal(Object value) {
-        if (value == null) return BigDecimal.ZERO;
+        if (value == null) throw new BizException(500, "B5_SOURCE_VALUE_INVALID");
         try {
-            return safe(new BigDecimal(String.valueOf(value)));
+            BigDecimal parsed = new BigDecimal(String.valueOf(value));
+            if (parsed.signum() < 0) throw new BizException(500, "B5_SOURCE_VALUE_INVALID");
+            return parsed;
         } catch (RuntimeException ex) {
+            if (ex instanceof BizException bizException) throw bizException;
             throw new BizException(500, "B5_SOURCE_VALUE_INVALID");
         }
     }
 
     private long whole(Object value) {
-        return decimal(value).longValue();
+        BigDecimal parsed = decimal(value);
+        try {
+            return parsed.longValueExact();
+        } catch (ArithmeticException ex) {
+            throw new BizException(500, "B5_SOURCE_COUNT_INVALID");
+        }
     }
 
     private BigDecimal safe(BigDecimal value) {

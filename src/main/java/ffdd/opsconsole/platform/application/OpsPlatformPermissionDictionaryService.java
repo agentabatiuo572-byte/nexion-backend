@@ -7,6 +7,7 @@ import ffdd.opsconsole.platform.mapper.AdminPermissionMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
@@ -33,7 +34,10 @@ public class OpsPlatformPermissionDictionaryService {
         }
         int offset = (int) requestedOffset;
         List<PermissionDictionaryView> records = permissionMapper.pagePermissions(
-                normalized.keyword(), normalized.domain(), normalized.permType(), limit, offset);
+                normalized.keyword(), normalized.domain(), normalized.permType(), limit, offset)
+                .stream()
+                .map(this::projectLegacyMetadata)
+                .toList();
         return ApiResult.ok(new PageResult<>(total, normalized.pageNum(), normalized.pageSize(), records));
     }
 
@@ -45,7 +49,38 @@ public class OpsPlatformPermissionDictionaryService {
         if (view == null) {
             return ApiResult.fail(404, "PERMISSION_NOT_FOUND");
         }
-        return ApiResult.ok(view);
+        return ApiResult.ok(projectLegacyMetadata(view));
+    }
+
+    /**
+     * Older active API permissions predate the A8 display columns. Keep the permission code as the
+     * authority source, but project missing presentation metadata conservatively so A6 can render the
+     * complete grant catalog. Unknown actions are HIGH and amplifying until explicitly classified.
+     */
+    private PermissionDictionaryView projectLegacyMetadata(PermissionDictionaryView view) {
+        String code = view.permissionCode();
+        String type = normalizedPermissionType(code, view.permType());
+        Integer amplifies = view.amplifies() == null ? 1 : view.amplifies();
+        return new PermissionDictionaryView(
+                code,
+                StringUtils.hasText(view.permissionName()) ? view.permissionName().trim() : code,
+                type,
+                view.menuId() != null && view.menuId() == 0 ? null : view.menuId(),
+                StringUtils.hasText(view.menuCodePath()) ? view.menuCodePath().trim() : "未归类",
+                amplifies,
+                view.boundRoleCount() == null ? 0 : view.boundRoleCount(),
+                view.resourcePath() == null ? "" : view.resourcePath().trim());
+    }
+
+    private String normalizedPermissionType(String code, String rawType) {
+        if (StringUtils.hasText(rawType)) {
+            String type = rawType.trim().toUpperCase(Locale.ROOT);
+            return "CRITICAL".equals(type) ? "HIGH" : type;
+        }
+        String normalizedCode = code == null ? "" : code.trim().toLowerCase(Locale.ROOT);
+        if (normalizedCode.endsWith("_read")) return "READ";
+        if (normalizedCode.endsWith("_write")) return "WRITE";
+        return "HIGH";
     }
 
     private PermissionDictionaryQueryRequest normalize(PermissionDictionaryQueryRequest query) {

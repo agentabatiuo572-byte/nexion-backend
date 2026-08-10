@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.PolicyRow;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.TrialRow;
@@ -43,6 +44,7 @@ public class AppTrialLifecycleService {
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
 
     private final AppTrialLifecycleMapper mapper;
+    private final EarningsReleaseService earningsReleaseService;
     private final AdminIdempotencyService idempotency;
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService audit;
@@ -228,8 +230,16 @@ public class AppTrialLifecycleService {
             return ApiResult.ok(linked("ok", false, "reason", "INSUFFICIENT_FUNDS",
                     "amountUsdt", value.chargeUsdt(), "paymentRail", "NEXION_USDT_WALLET"));
         }
-        if (mapper.settleWallet(userId, value.chargeUsdt(), value.remainderUsdt(), value.shadowNex()) != 1) {
+        if (mapper.settleWallet(userId, value.chargeUsdt(), BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
+        }
+        if (value.remainderUsdt().signum() > 0) {
+            earningsReleaseService.creditReward(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
+                    "USDT", value.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
+        }
+        if (value.shadowNex().signum() > 0) {
+            earningsReleaseService.creditReward(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
+                    "NEX", value.shadowNex(), "H2:" + row.claimNo() + ":NEX");
         }
         BigDecimal usdtAfter = wallet.usdt().subtract(value.chargeUsdt()).add(value.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(value.shadowNex());

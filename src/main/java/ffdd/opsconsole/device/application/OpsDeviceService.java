@@ -77,12 +77,18 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -131,6 +137,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "activated", Set.of("refunded"));
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
+    /** Server-side release configuration; the E6 operator API cannot change this allow-list. */
+    private static final String DOWNLOAD_ALLOWED_TARGETS_CONFIG_KEY = "platform.compute.download.allowedTargets";
     private static final String E1_PHASE_SCOPE = "E1";
     private static final int E5_MAX_DEVICES_PER_USER = 6;
     private static final int SKU_IMAGE_ASSET_ID_MAX_LENGTH = 512;
@@ -556,8 +564,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         t.desc(), t.defaultModel(),
                         readComputeVal(ComputeConfigRegistry.gpuTierKey(t.id(), "tops"), t.defaultTops()),
                         readKeywords(t))).toList();
+        String downloadKey = ComputeConfigRegistry.downloadKey("url");
+        String downloadUrl = sanitizeComputeDownloadUrl(readComputeVal(downloadKey, ""));
+        // The allow-list is mutable configuration. Re-check the final release on every read,
+        // so a formerly healthy artifact that later redirects or disappears has no consumer entry.
+        if (!downloadUrl.isBlank() && verifyComputeDownloadPublication(downloadKey, downloadUrl) != null) {
+            downloadUrl = "";
+        }
         var dl = new ComputeConfigView.DownloadView(
-                readComputeVal(ComputeConfigRegistry.downloadKey("url"), ""),
+                downloadUrl,
                 readComputeVal(ComputeConfigRegistry.downloadKey("zhTitle"), "电脑显卡算力共享"),
                 readComputeVal(ComputeConfigRegistry.downloadKey("zhGuide"), "下载桌面客户端,使用同一账号登录,连接后电脑会出现在设备仓库中。"),
                 readComputeVal(ComputeConfigRegistry.downloadKey("enTitle"), "Computer GPU share"),
@@ -574,6 +589,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .findFirst().orElse(false);
         return ApiResult.ok(new PlatformComputeConfigView(
                 new PlatformComputeConfigView.FeatureFlags(enabled),
+                null,
                 new PlatformComputeConfigView.OnlineBonus(
                         coefficientValue(compute, "h5BaseFactor", "0.6"),
                         coefficientValue(compute, "continuityFullHours", "2")),
@@ -599,6 +615,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if (!A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        String publicationError = verifyComputeDownloadPublication(paramKey, value);
+        if (publicationError != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), publicationError);
         }
         String trustedOperator = operator(request.operator());
         ComputeConfigParamUpdateRequest trusted = new ComputeConfigParamUpdateRequest(
@@ -658,6 +678,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if (!A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        for (Map.Entry<String, String> entry : normalized.entrySet()) {
+            String publicationError = verifyComputeDownloadPublication(entry.getKey(), entry.getValue());
+            if (publicationError != null) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), publicationError);
+            }
         }
         String trustedOperator = operator(request.operator());
         ComputeConfigBatchUpdateRequest trusted = new ComputeConfigBatchUpdateRequest(
@@ -731,12 +757,109 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (value.isBlank()) {
                 return null;
             }
-            return (value.length() <= 300 && value.matches("^https://[^\\s]+$")) ? null : "COMPUTE_URL_INVALID";
+            return computeDownloadUrlValidationError(value);
         }
         if (paramKey.startsWith(ComputeConfigRegistry.PARAM_PREFIX + "download.")) {
             return value.isBlank() || value.length() > 320 ? "COMPUTE_DOWNLOAD_TEXT_INVALID" : null;
         }
         return "COMPUTE_PARAM_KEY_INVALID";
+    }
+
+    private String sanitizeComputeDownloadUrl(String value) {
+        String candidate = value == null ? "" : value.trim();
+        return isApprovedComputeDownloadUrl(candidate) ? candidate : "";
+    }
+
+    /** Only a concrete installer under a server-configured HTTPS release target may be projected. */
+    private boolean isApprovedComputeDownloadUrl(String value) {
+        return computeDownloadUrlValidationError(value) == null;
+    }
+
+    private String computeDownloadUrlValidationError(String value) {
+        if (value == null || value.length() > 300 || value.isBlank()) {
+            return "COMPUTE_URL_INVALID";
+        }
+        try {
+            URI uri = URI.create(value.trim());
+            String host = uri.getHost();
+            String path = uri.getPath();
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null || path == null
+                    || uri.getUserInfo() != null || uri.getFragment() != null) {
+                return "COMPUTE_URL_INVALID";
+            }
+            String normalizedHost = host.toLowerCase(Locale.ROOT);
+            if (normalizedHost.equals("baidu.com") || normalizedHost.endsWith(".baidu.com")
+                    || normalizedHost.equals("example.com") || normalizedHost.endsWith(".example.com")
+                    || normalizedHost.equals("localhost") || normalizedHost.equals("127.0.0.1")) {
+                return "COMPUTE_URL_HOST_NOT_ALLOWED";
+            }
+            if (!path.matches("(?i).+\\.(exe|msi|msix|dmg|pkg|zip)$")) {
+                return "COMPUTE_URL_INVALID";
+            }
+            return isAllowedComputeDownloadTarget(uri) ? null : "COMPUTE_URL_HOST_NOT_ALLOWED";
+        } catch (IllegalArgumentException ignored) {
+            return "COMPUTE_URL_INVALID";
+        }
+    }
+
+    private List<URI> configuredDownloadTargets() {
+        String raw = configFacade.activeValue(DOWNLOAD_ALLOWED_TARGETS_CONFIG_KEY).orElse("");
+        return Arrays.stream(raw.split("[,\\n\\r]+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .map(this::parseConfiguredDownloadTarget)
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    private URI parseConfiguredDownloadTarget(String value) {
+        try {
+            URI target = URI.create(value);
+            return "https".equalsIgnoreCase(target.getScheme())
+                    && target.getHost() != null
+                    && target.getUserInfo() == null
+                    && target.getQuery() == null
+                    && target.getFragment() == null
+                    && target.getPath() != null
+                    && target.getPath().startsWith("/")
+                    ? target : null;
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private boolean isAllowedComputeDownloadTarget(URI candidate) {
+        return configuredDownloadTargets().stream().anyMatch(allowed -> {
+            if (!allowed.getHost().equalsIgnoreCase(candidate.getHost()) || allowed.getPort() != candidate.getPort()) {
+                return false;
+            }
+            String prefix = allowed.getPath().endsWith("/") ? allowed.getPath() : allowed.getPath() + "/";
+            return candidate.getPath().startsWith(prefix);
+        });
+    }
+
+    /** Validate the final release response; redirects are rejected rather than followed. */
+    protected String verifyComputeDownloadPublication(String paramKey, String value) {
+        if (!ComputeConfigRegistry.downloadKey("url").equals(paramKey) || value.isBlank()) {
+            return null;
+        }
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(3))
+                    .followRedirects(HttpClient.Redirect.NEVER)
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder(URI.create(value))
+                    .timeout(Duration.ofSeconds(5))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                    .build();
+            int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+            if (status >= 300 && status < 400) {
+                return "COMPUTE_URL_REDIRECT_FORBIDDEN";
+            }
+            return status >= 200 && status < 300 ? null : "COMPUTE_URL_UNREACHABLE";
+        } catch (Exception ignored) {
+            return "COMPUTE_URL_UNREACHABLE";
+        }
     }
 
     /**

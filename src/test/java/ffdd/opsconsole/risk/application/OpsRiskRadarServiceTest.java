@@ -59,6 +59,13 @@ class OpsRiskRadarServiceTest {
                 Map.of("gateKey", "genesis", "settingValue", "enabled"),
                 Map.of("gateKey", "exchange", "settingValue", "enabled"),
                 Map.of("gateKey", "trial", "settingValue", "enabled")));
+        when(mapper.recentSignals(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(Map.of(
+                        "signalNo", "SIG-20260808-001",
+                        "level", "P1",
+                        "signalType", "risk.multi_account_flagged",
+                        "userId", 42L,
+                        "createdAt", "2026-07-23T03:55:00")));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
                 new BigDecimal("120"), new BigDecimal("100"), true,
                 new BigDecimal("1000"), new BigDecimal("833.33"), BigDecimal.ONE));
@@ -87,6 +94,133 @@ class OpsRiskRadarServiceTest {
         Map<?, ?> backlog = (Map<?, ?>) radar.get("withdrawBacklog");
         assertThat(backlog.get("byState").toString())
                 .contains("submitted", "review-passed", "processing", "slaHours=48");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void exposesUnroundedRatioInputsSoTheClientCanVerifySubCentRatios() {
+        when(mapper.moneySnapshot()).thenReturn(Map.of(
+                "withdraw24hUsdt", new BigDecimal("1.004"),
+                "reserveUsdt", new BigDecimal("3.004"),
+                "payoutUsdt", new BigDecimal("0.504"),
+                "commissionUsdt", new BigDecimal("0.500"),
+                "grossInflowUsdt", new BigDecimal("3.004")));
+
+        Map<String, Object> radar = service.radar().getData();
+        Map<String, Object> bankrun = (Map<String, Object>) radar.get("bankrun");
+
+        assertThat(bankrun)
+                .containsEntry("ratio24h", new BigDecimal("0.3342"))
+                .containsEntry("ratioWithdraw24hUsdt", new BigDecimal("1.004"))
+                .containsEntry("ratioReserveUsdt", new BigDecimal("3.004"));
+        Map<String, Object> coverageView = (Map<String, Object>) radar.get("coverage");
+        assertThat(coverageView)
+                .containsEntry("ratioReserveUsdt", new BigDecimal("1000"))
+                .containsEntry("ratioLiabilitiesUsdt", new BigDecimal("833.33"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void marksCoverageUncomputableWhenAuthoritativeLiabilityDenominatorIsZero() {
+        for (BigDecimal reserve : List.of(BigDecimal.ZERO, BigDecimal.ONE)) {
+            when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                    BigDecimal.valueOf(100), BigDecimal.valueOf(100), true,
+                    reserve, BigDecimal.ZERO, BigDecimal.ONE, reserve, BigDecimal.ZERO));
+
+            Map<String, Object> radar = service.radar().getData();
+            Map<String, Object> coverageView = (Map<String, Object>) radar.get("coverage");
+
+            assertThat(coverageView).containsEntry("ratio", null)
+                    .containsEntry("light", "unavailable");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void neverLabelsAZeroReserveBankrunRatioAsHealthy() {
+        for (BigDecimal withdrawal : List.of(BigDecimal.ZERO, BigDecimal.ONE)) {
+            when(mapper.moneySnapshot()).thenReturn(Map.of(
+                    "withdraw24hUsdt", withdrawal,
+                    "reserveUsdt", BigDecimal.ZERO,
+                    "payoutUsdt", BigDecimal.ZERO,
+                    "commissionUsdt", BigDecimal.ZERO,
+                    "grossInflowUsdt", BigDecimal.ONE));
+
+            Map<String, Object> bankrun = (Map<String, Object>) service.radar().getData().get("bankrun");
+
+            assertThat(bankrun).containsEntry("ratio24h", null)
+                    .containsEntry("ratioCalculable", false)
+                    .containsEntry("light", withdrawal.signum() > 0 ? "red" : "unavailable");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void restoresServerLabeledPressureSeverityAndSevenDayAlertHistory() {
+        when(mapper.pressureWindows(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.stream.IntStream.range(0, 8)
+                        .mapToObj(index -> Map.<String, Object>of("label", "D" + index, "ratio", new BigDecimal("0.10")))
+                        .toList());
+        when(mapper.alertSeverity(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(
+                        Map.of("level", "P0", "count", 1L),
+                        Map.of("level", "P1", "count", 2L),
+                        Map.of("level", "P2", "count", 3L),
+                        Map.of("level", "P3", "count", 4L)));
+        when(mapper.alertVolume(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.stream.IntStream.range(0, 7)
+                        .mapToObj(index -> Map.<String, Object>of("label", "D" + index, "count", (long) index))
+                        .toList());
+
+        Map<String, Object> radar = service.radar().getData();
+
+        assertThat((List<Map<String, Object>>) radar.get("pressureHistory")).hasSize(8);
+        assertThat((List<Map<String, Object>>) radar.get("alertSeverity"))
+                .extracting(row -> row.get("level"))
+                .containsExactly("P0", "P1", "P2", "P3");
+        assertThat((List<Map<String, Object>>) radar.get("alertVolume")).hasSize(7);
+        assertThat(((List<Map<String, Object>>) radar.get("recentAlerts")).get(0))
+                .containsEntry("signalNo", "SIG-20260808-001")
+                .containsEntry("level", "P1")
+                .containsEntry("message", "反多账户命中")
+                .containsEntry("target", "/risk/multi-account")
+                .containsEntry("handlingStatusAvailable", false);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void keepsPressureUnavailableWhenGrossInflowDenominatorIsZero() {
+        when(mapper.moneySnapshot()).thenReturn(Map.of(
+                "withdraw24hUsdt", BigDecimal.ZERO,
+                "reserveUsdt", new BigDecimal("1000"),
+                "payoutUsdt", new BigDecimal("25"),
+                "commissionUsdt", new BigDecimal("5"),
+                "grossInflowUsdt", BigDecimal.ZERO));
+        when(mapper.pressureWindows(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.stream.IntStream.range(0, 8)
+                        // MyBatis result maps omit an alias whose SQL value is NULL.
+                        .mapToObj(index -> Map.<String, Object>of("label", "D" + index))
+                        .toList());
+        when(mapper.alertSeverity(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(
+                        Map.of("level", "P0", "count", 0L),
+                        Map.of("level", "P1", "count", 0L),
+                        Map.of("level", "P2", "count", 0L),
+                        Map.of("level", "P3", "count", 0L)));
+        when(mapper.alertVolume(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.stream.IntStream.range(0, 7)
+                        .mapToObj(index -> Map.<String, Object>of("label", "D" + index, "count", 0L))
+                        .toList());
+
+        Map<String, Object> radar = service.radar().getData();
+        Map<String, Object> bankrun = (Map<String, Object>) radar.get("bankrun");
+        List<Map<String, Object>> history = (List<Map<String, Object>>) radar.get("pressureHistory");
+
+        assertThat(bankrun)
+                .containsEntry("pressureCalculable", false)
+                .containsEntry("pressureRatio", null)
+                .containsEntry("pressureLight", "red");
+        assertThat(history).allSatisfy(row -> assertThat(row).containsEntry("ratio", null));
     }
 
     @Test
@@ -149,6 +283,39 @@ class OpsRiskRadarServiceTest {
         assertThatThrownBy(service::radar)
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B5_COVERAGE_SOURCE_UNAVAILABLE");
+    }
+
+    @Test
+    void failsClosedWhenRiskSeverityOrWithdrawalStatusIsUnknown() {
+        when(mapper.unknownSeverityCount(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(1L);
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_UNKNOWN_SEVERITY");
+
+        when(mapper.unknownSeverityCount(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(0L);
+        when(mapper.unknownWithdrawalStatusCount()).thenReturn(1L);
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_UNKNOWN_WITHDRAWAL_STATUS");
+    }
+
+    @Test
+    void failsClosedOnMissingNegativeOrFractionalSourceNumbers() {
+        when(mapper.abnormalAccountCount()).thenReturn(-1L);
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_SOURCE_COUNT_INVALID");
+
+        when(mapper.abnormalAccountCount()).thenReturn(3L);
+        when(mapper.withdrawalBacklog()).thenReturn(List.of(
+                Map.of("state", "submitted", "count", new BigDecimal("1.5"), "amountUsdt", 10, "overSlaCount", 0),
+                Map.of("state", "review-passed", "count", 0, "amountUsdt", 0, "overSlaCount", 0),
+                Map.of("state", "processing", "count", 0, "amountUsdt", 0, "overSlaCount", 0)));
+        assertThatThrownBy(service::radar)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("B5_SOURCE_COUNT_INVALID");
     }
 
     @Test

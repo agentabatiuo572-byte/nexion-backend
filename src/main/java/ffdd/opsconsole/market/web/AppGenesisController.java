@@ -44,6 +44,13 @@ public class AppGenesisController {
         return userId == null ? forbidden() : service.purchase(userId, idempotencyKey, request);
     }
 
+    @PostMapping("/api/genesis/invite/redeem")
+    public ApiResult<Map<String,Object>> redeemInvite(@RequestBody InviteRedeemRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication){
+        Long userId=userId(authentication);return userId==null?forbidden():service.redeemInvite(userId,idempotencyKey,request==null?null:request.code());
+    }
+
     @PostMapping("/api/genesis/holdings/{holdingNo}/listing")
     public ApiResult<Map<String, Object>> list(
             @PathVariable String holdingNo,
@@ -87,4 +94,6 @@ public class AppGenesisController {
     private ApiResult<Map<String, Object>> forbidden() {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
+
+    public record InviteRedeemRequest(String code) { }
 }

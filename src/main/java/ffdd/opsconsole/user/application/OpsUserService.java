@@ -295,6 +295,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     public UserProfileExportFile exportProfileExcel(String idempotencyKey, UserProfileExportRequest request) {
         String normalizedKey = requireText(idempotencyKey, "IDEMPOTENCY_KEY_REQUIRED");
+        String exportReason = request == null ? "" : text(request.reason()).trim();
+        if (exportReason.length() < 8 || exportReason.length() > 200 || containsRawJsonOrUrl(exportReason)) {
+            throw new IllegalArgumentException("C1_EXPORT_REASON_INVALID");
+        }
         UserQueryRequest query = exportQuery(request, 1, 200);
         String validationError = validateProfileQuery(query);
         if (validationError != null) {
@@ -303,7 +307,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return idempotencyService.execute(
                 "C1_USER_LIST_EXPORT",
                 normalizedKey,
-                filterHash(query),
+                // Idempotency persistence is CHAR(64): hash the complete semantic request
+                // (filter + reason) instead of storing the concatenated material itself.
+                filterHash(filterHash(query) + "|reason=" + exportReason),
                 UserProfileExportFile.class,
                 () -> buildProfileExport(normalizedKey, request));
     }
@@ -340,6 +346,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "jobNo", jobNo,
                         "rowCount", rows.size(),
                         "filterHash", exportFilterHash,
+                        "reason", request.reason().trim(),
                         "idempotencyKey", idempotencyKey,
                         "masked", true));
         outboxService.publish("USER_PROFILE_EXPORT", jobNo, "ADMIN_USER_LIST_EXPORTED", Map.of(

@@ -547,21 +547,26 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      )))
                    END AS cooldownPercent,
                    CASE
-                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID')
-                       OR (unlock_at IS NOT NULL AND unlock_at <= NOW()) THEN '可提'
-                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
                      WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
                      WHEN UPPER(status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
+                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID') THEN '可提'
+                     WHEN UPPER(status) IN ('COOLING', 'PENDING')
+                       AND unlock_at IS NOT NULL AND unlock_at <= NOW() THEN '可提'
                      ELSE '计提'
                    END AS cooldownLabel,
                    CASE
-                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID')
-                       OR (unlock_at IS NOT NULL AND unlock_at <= NOW()) THEN '可提'
-                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
                      WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
                      WHEN UPPER(status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
+                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID') THEN '可提'
+                     WHEN UPPER(status) IN ('COOLING', 'PENDING')
+                       AND unlock_at IS NOT NULL AND unlock_at <= NOW() THEN '可提'
                      ELSE '计提'
                    END AS state,
+                   status AS rawStatus,
+                   version,
+                   frozen_from_status AS frozenFromStatus,
                    'nx_commission_event' AS source
               FROM nx_commission_event
              WHERE is_deleted = 0
@@ -619,6 +624,32 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int updateCommissionStatus(@Param("eventId") String eventId,
                                @Param("status") String status);
+
+    @Update("""
+            UPDATE nx_commission_event
+               SET status=#{nextStatus},
+                   frozen_from_status=CASE WHEN #{nextStatus}='FROZEN' THEN #{expectedStatus}
+                                           WHEN #{expectedStatus}='FROZEN' THEN NULL ELSE frozen_from_status END,
+                   unlock_at=CASE WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW()) ELSE unlock_at END,
+                   version=version+1,updated_at=NOW()
+             WHERE is_deleted=0 AND (CONCAT('CM-',id)=#{eventId} OR order_no=#{eventId})
+               AND UPPER(status)=#{expectedStatus} AND version=#{expectedVersion}
+            """)
+    int updateCommissionStatusCas(@Param("eventId") String eventId,@Param("expectedStatus") String expectedStatus,
+                                  @Param("nextStatus") String nextStatus,@Param("expectedVersion") long expectedVersion);
+
+    @Insert("""
+            INSERT INTO nx_commission_operation(operation_no,operation_type,source_commission_id,user_id,
+              reason,operator,idempotency_key,expected_version,status)
+            SELECT CONCAT('F5-',id,'-',#{expectedVersion},'-',LEFT(SHA2(#{idempotencyKey},256),16)),
+              #{operationType},id,user_id,#{reason},#{operator},#{idempotencyKey},#{expectedVersion},'SUCCESS'
+              FROM nx_commission_event
+             WHERE is_deleted=0 AND (CONCAT('CM-',id)=#{eventId} OR order_no=#{eventId})
+             LIMIT 1
+            """)
+    int insertCommissionOperation(@Param("eventId") String eventId,@Param("operationType") String operationType,
+                                  @Param("idempotencyKey") String idempotencyKey,@Param("expectedVersion") long expectedVersion,
+                                  @Param("operator") String operator,@Param("reason") String reason);
 
     // F4 · 修复2:V-Rank 票权权重写 nx_v_rank_config.leadership_votes。
     // F.pool.votes.V{n} 动态分发 → UPDATE WHERE rank_code=#{rankCode}。
@@ -933,6 +964,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id,
                    user_id AS userId,
+                   version,
                    CASE
                      WHEN UPPER(currency) = 'NEX' THEN amount_nex
                      ELSE amount_usdt

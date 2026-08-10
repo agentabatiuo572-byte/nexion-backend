@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -36,9 +37,10 @@ class G4AdminCommandServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
+    private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final G4AdminCommandService service = new G4AdminCommandService(
             market, mapper, config, idempotency, outbox, audit,
-            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC));
+            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC), earningsRelease);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -61,7 +63,6 @@ class G4AdminCommandServiceTest {
                 new AppGenesisMapper.EmissionItemRow(100L, "20260722", "GN-0001", 42L,
                         new BigDecimal("9.999000"), "PENDING")));
         when(mapper.lockWallet(42L)).thenReturn(new BigDecimal("100"));
-        when(mapper.creditWallet(42L, new BigDecimal("9.999000"))).thenReturn(1);
         when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.markEmissionPaid(eq(100L), any())).thenReturn(1);
         when(mapper.userPolicy(42L)).thenReturn(

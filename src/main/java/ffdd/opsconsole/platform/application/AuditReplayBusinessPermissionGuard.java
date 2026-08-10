@@ -480,6 +480,63 @@ public class AuditReplayBusinessPermissionGuard {
 
     private DelegatedProposalDescriptor delegatedFDescriptor(
             String operation, Map<String, Object> params) {
+        if ("f5_commission_reverse".equals(operation)) {
+            String commissionId = value(params, "commissionId");
+            String refundRef = value(params, "refundRef");
+            if (!commissionId.matches("^CM-[1-9]\\d*$") || refundRef.isBlank() || refundRef.length() > 160) return null;
+            return new DelegatedProposalDescriptor(
+                    "冲正佣金事件 " + commissionId, commissionId, "以服务器执行时状态为准", "REVERSED",
+                    "F5", "fund", false, new AuditLockTarget("F", "commission_event", commissionId));
+        }
+        if ("f5_commission_reissue".equals(operation)) {
+            List<String> ids = canonicalF5CommissionIds(params.get("commissionIds"));
+            if (ids.isEmpty()) return null;
+            return new DelegatedProposalDescriptor(
+                    "批量补发佣金 · " + ids.size() + " 笔", String.join(",", ids),
+                    "以服务器执行时状态为准", "重新进入冷却计提", "F5", "fund", true, null);
+        }
+        if ("f5_commission_suspension".equals(operation)) {
+            String userId = positiveIdentifier(params.get("userId"));
+            List<String> kinds = canonicalF5Kinds(params.get("kinds"));
+            Object rawSuspended = params.get("suspended");
+            if (userId.isBlank() || kinds.isEmpty() || !(rawSuspended instanceof Boolean suspended)) return null;
+            String targetId = userId + ":" + String.join(",", kinds);
+            return new DelegatedProposalDescriptor(
+                    (suspended ? "暂停" : "恢复") + "用户佣金 " + userId, targetId,
+                    "以服务器执行时状态为准", suspended ? "SUSPENDED" : "ACTIVE",
+                    "F5", "acct", false, new AuditLockTarget("F", "commission_user_kind", targetId));
+        }
+        if ("f_commission_status".equals(operation)) {
+            String key = value(params, "key");
+            String state = value(params, "value").toLowerCase(Locale.ROOT);
+            Long expectedVersion = strictLong(params.get("expectedVersion"), 0, Long.MAX_VALUE);
+            String prefix = "F.commission.";
+            String suffix = ".status";
+            if (!key.startsWith(prefix) || !key.endsWith(suffix)
+                    || expectedVersion == null
+                    || !Set.of("frozen", "unlocked", "cooling").contains(state)) {
+                return null;
+            }
+            String eventId = key.substring(prefix.length(), key.length() - suffix.length());
+            if (!eventId.matches("^CM-[1-9]\\d*$")) {
+                return null;
+            }
+            boolean amplifies = "unlocked".equals(state);
+            String action = switch (state) {
+                case "frozen" -> "冻结佣金事件 " + eventId;
+                case "unlocked" -> "提前解锁佣金事件 " + eventId;
+                default -> "解冻佣金事件 " + eventId;
+            };
+            return new DelegatedProposalDescriptor(
+                    action,
+                    key,
+                    "以服务器执行时状态与版本为准",
+                    state,
+                    "F5",
+                    amplifies ? "fund" : "param",
+                    amplifies,
+                    new AuditLockTarget("F", "commission_event", eventId));
+        }
         if (!Set.of("f_config", "f_ui_config", "f_unilevel_rule").contains(operation)) {
             return null;
         }
@@ -597,6 +654,11 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private List<AuditLockTarget> delegatedTargets(AuditReplayCommand command) {
+        if (command != null && "F".equalsIgnoreCase(text(command.domain()))
+                && "f5_commission_reissue".equalsIgnoreCase(text(command.op()))) {
+            return canonicalF5CommissionIds(command.params() == null ? null : command.params().get("commissionIds"))
+                    .stream().map(id -> new AuditLockTarget("F", "commission_event", id)).toList();
+        }
         if (command == null
                 || !"E".equalsIgnoreCase(text(command.domain()))
                 || !"e6_compute_config_batch".equalsIgnoreCase(text(command.op()))) {
@@ -609,6 +671,21 @@ public class AuditReplayBusinessPermissionGuard {
         return values.keySet().stream()
                 .map(key -> new AuditLockTarget("E", "e6_compute_config", key))
                 .toList();
+    }
+
+    private List<String> canonicalF5CommissionIds(Object raw) {
+        if (!(raw instanceof List<?> values) || values.isEmpty() || values.size() > 100) return List.of();
+        List<String> ids = values.stream().map(this::text).toList();
+        List<String> canonical = ids.stream().sorted().distinct().toList();
+        return ids.equals(canonical) && canonical.stream().allMatch(id -> id.matches("^CM-[1-9]\\d*$")) ? canonical : List.of();
+    }
+
+    private List<String> canonicalF5Kinds(Object raw) {
+        if (!(raw instanceof List<?> values) || values.isEmpty() || values.size() > 6) return List.of();
+        List<String> kinds = values.stream().map(this::text).map(value -> value.toLowerCase(Locale.ROOT)).toList();
+        List<String> canonical = kinds.stream().sorted().distinct().toList();
+        Set<String> allowed = Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis");
+        return kinds.equals(canonical) && canonical.stream().allMatch(allowed::contains) ? canonical : List.of();
     }
 
     private TreeMap<String, Object> canonicalComputeBatchValues(Map<String, Object> params) {
@@ -879,6 +956,8 @@ public class AuditReplayBusinessPermissionGuard {
                 case "f_config", "f_ui_config", "f_unilevel_rule" ->
                         fConfigAuthority(operation, command.params());
                 case "f_commission_status" -> f5CommissionAuthority(command.params());
+                case "f5_commission_reverse", "f5_commission_suspension" -> "network_f5_commission_reject";
+                case "f5_commission_reissue" -> "network_f5_commission_dispose";
                 case "f_vrank_override" -> "network_f1_promote_user";
                 case "f_reward_payout_action" -> f1RewardPayoutAuthority(command.params());
                 case "f4_pool_settle" -> "network_f4_pool_fund";

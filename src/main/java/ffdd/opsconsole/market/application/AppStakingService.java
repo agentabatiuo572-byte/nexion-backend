@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -42,6 +43,7 @@ public class AppStakingService {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
+    private final EarningsReleaseService earningsReleaseService;
     private final Clock clock;
 
     public ApiResult<Map<String, Object>> pools() {
@@ -158,8 +160,13 @@ public class AppStakingService {
             throw new BizException(409, "STAKING_POSITION_STATE_CONFLICT");
         }
         BigDecimal interest = money(position.estimatedInterestUsdt());
-        BigDecimal credited = money(position.amountUsdt().add(interest));
-        if (mapper.creditWallet(userId, credited) != 1) throw new BizException(409, "STAKING_WALLET_CONFLICT");
+        BigDecimal principal = money(position.amountUsdt());
+        BigDecimal credited = money(principal.add(interest));
+        if (mapper.creditWallet(userId, principal) != 1) throw new BizException(409, "STAKING_WALLET_CONFLICT");
+        if (interest.signum() > 0) {
+            earningsReleaseService.creditReward(userId, "staking_interest", positionNo, "USDT", interest,
+                    "G1-STAKING-INTEREST-" + position.id());
+        }
         BigDecimal balanceAfter = money(balance.add(credited));
         String billNo = positionNo + "-CLAIM";
         if (mapper.insertLedger(new AppStakingMapper.LedgerWrite(

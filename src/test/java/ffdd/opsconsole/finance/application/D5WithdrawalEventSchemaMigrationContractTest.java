@@ -22,7 +22,7 @@ class D5WithdrawalEventSchemaMigrationContractTest {
                 "actual_penalty_fee", "actual_network_fee",
                 "actual_fee", "net_receive", "cooldown_days", "hold_until",
                 "risk_route", "k3_risk_route", "risk_rule_id", "k4_priority",
-                "k4_risk_score", "k4_model_version", "k4_as_of", "k5_ticket_id")) {
+                "k4_risk_score", "k4_model_version", "k4_as_of")) {
             assertThat(sql).contains("'" + property + "'");
         }
         assertThat(sql)

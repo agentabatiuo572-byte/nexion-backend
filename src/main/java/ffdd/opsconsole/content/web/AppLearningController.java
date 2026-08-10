@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.domain.AppLearningCourseView;
 import ffdd.opsconsole.content.domain.AppLearningOverview;
 import ffdd.opsconsole.content.domain.AppLearningQuizResult;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
+import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -47,8 +49,13 @@ public class AppLearningController {
 
     @PostMapping("/courses/{courseId}/quiz")
     public ApiResult<AppLearningQuizResult> quiz(@PathVariable String courseId,
-            @RequestBody(required = false) AppLearningQuizSubmitRequest request, Authentication auth) {
-        return service.submitQuiz(userId(auth), courseId, request);
+            @RequestBody(required = false) AppLearningQuizSubmitRequest request,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            Authentication auth) {
+        AppLearningQuizSubmitRequest canonicalRequest = request == null
+                ? null
+                : new AppLearningQuizSubmitRequest(request.answers(), idempotencyKey);
+        return service.submitQuiz(userId(auth), courseId, canonicalRequest);
     }
 
     private Long userId(Authentication authentication) {

@@ -36,6 +36,8 @@ public class OpsPlatformParamRegistryService {
             Map.entry("H", "增长节奏"),
             Map.entry("I", "内容合规"),
             Map.entry("J", "紧急合规"),
+            Map.entry("K", "风控与反作弊"),
+            Map.entry("L", "数据与分析 BI"),
             Map.entry("M", "客服中心"));
 
     private final PlatformParamRegistrySource configSource;
@@ -197,8 +199,14 @@ public class OpsPlatformParamRegistryService {
         if ("e6_compute".equals(group) || key.startsWith("e.compute.")) {
             return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
         }
+        if (List.of("dailyusdtperbaseline", "nexperusdt").contains(key)) {
+            return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
+        }
         if ("finance-topup".equals(group) || key.startsWith("finance.topup.")) {
             return new Owner("D", "D1", "D1 充值对账中心", "/finance/recon");
+        }
+        if (key.startsWith("finance.payout_vnd.")) {
+            return new Owner("D", "D7", "D7 法币提现参数", "/finance/payout-vnd");
         }
         if (key.startsWith("growth.phase.") || key.startsWith("h1.rhythm.")) {
             return new Owner("H", "H1", "H1 Phase 调度器", "/growth/phase");
@@ -218,6 +226,9 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("growth.withdraw_nex_gate.")) {
             return new Owner("H", "H1", "H1 Phase 调度器", "/growth/phase");
         }
+        if (key.startsWith("growth.public_stats.")) {
+            return new Owner("H", "H9", "H9 对外公布数据", "/growth/public-stats");
+        }
         if (key.startsWith("k.rewards.")) {
             return new Owner("H", "H8", "H8 新人礼与邀请奖励", "/growth/referral-rewards");
         }
@@ -226,6 +237,9 @@ public class OpsPlatformParamRegistryService {
         }
         if (key.startsWith("g.genesis.")) {
             return new Owner("G", "G4", "G4 Genesis 经济", "/finance-products/genesis");
+        }
+        if (key.startsWith("risk.k1.")) {
+            return new Owner("K", "K1", "K1 反多账户引擎", "/risk/multi-account");
         }
         if (key.startsWith("payout.")) {
             return new Owner("D", "D5", "D5 提现参数", "/finance/params");

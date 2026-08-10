@@ -6,6 +6,7 @@ import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -67,6 +68,7 @@ public class OpsReferralRewardService {
     private final TreasuryCoverageFacade coverage;
     private final EventOutboxService outbox;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final EarningsReleaseService earningsReleaseService;
 
     public Map<String, Object> overview() {
         Map<String, Object> params = new LinkedHashMap<>();
@@ -236,8 +238,14 @@ public class OpsReferralRewardService {
                 skipped++;
                 continue;
             }
-            mapper.creditWallet(row.invitedUserId(), newcomerUsdt, newcomerNex);
-            mapper.creditWallet(row.inviterUserId(), BigDecimal.ZERO, inviterNex);
+            if (earningsReleaseService == null) {
+                mapper.creditWallet(row.invitedUserId(), newcomerUsdt, newcomerNex);
+                mapper.creditWallet(row.inviterUserId(), BigDecimal.ZERO, inviterNex);
+            } else {
+                creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "USDT", newcomerUsdt);
+                creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "NEX", newcomerNex);
+                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "NEX", inviterNex);
+            }
             post(settlementNo + ":NEWCOMER", row.invitedUserId(), newcomerUsdt, newcomerNex, "新用户邀请奖励");
             post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, inviterNex, "邀请人奖励");
             audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key,
@@ -261,6 +269,12 @@ public class OpsReferralRewardService {
                 Map.of("limit", limit, "settled", settled, "skipped", skipped,
                         "operator", operator, "idempotencyKey", key));
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
+    }
+
+    private void creditReward(Long userId, String sourceRef, String asset, BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) return;
+        earningsReleaseService.creditReward(userId, "H8_REFERRAL", sourceRef + ":" + asset,
+                asset, amount, "H8:" + sourceRef + ":" + asset);
     }
 
     private EffectiveRewards effectiveRewards() {

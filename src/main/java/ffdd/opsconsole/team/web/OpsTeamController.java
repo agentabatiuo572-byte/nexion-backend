@@ -129,7 +129,8 @@ public class OpsTeamController {
                 key,
                 request == null ? null : request.value(),
                 request == null ? null : request.reason(),
-                request == null ? null : request.operator());
+                request == null ? null : request.operator(),
+                request == null ? null : request.expectedVersion());
         return teamService.updateConfig(idempotencyKey, normalized);
     }
 

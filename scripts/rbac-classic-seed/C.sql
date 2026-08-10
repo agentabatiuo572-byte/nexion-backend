@@ -5,7 +5,7 @@
 -- amplifies=1 的 6 个（A 类资金流出放大，名字标 ⚡资金放大）：
 --   user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
 --   user_c3_adjust_create / user_c3_adjust_approve / user_c3_adjust_reverse
--- 其余高敏（冻结/解冻/KYC撤销/强制登出/会话吊销/重置2FA/重置密码/impersonate终止/禁入名单/设备回收/换机）amplifies=0
+-- 其余高敏（冻结/解冻/强制登出/会话吊销/重置2FA/重置密码/impersonate终止/禁入名单/设备回收/换机）amplifies=0
 -- 不含 role_permission 绑定（后续 BaselineInitializer 按域级规则统一处理）
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
@@ -67,6 +67,5 @@ ON DUPLICATE KEY UPDATE
   status = 1, is_deleted = 0;
 
 -- 统计：READ 7 · WRITE 6 · HIGH 32 = 45 权限点
--- amplifies=1 计 7 个（⚡资金放大）：user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
+-- amplifies=1 计 6 个（⚡资金放大）：user_c1hub_earning_grant / user_c1hub_earning_reverse / user_c1hub_compensation_grant
 --   user_c3_adjust_create / user_c3_adjust_approve / user_c3_adjust_reverse
---   user_c4_verify

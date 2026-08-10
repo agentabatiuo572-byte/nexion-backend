@@ -28,7 +28,7 @@ class K3A4EventClosureContractTest {
                 .contains("'risk.withdraw_held'")
                 .contains("'rule_id'", "'action'", "'withdrawal_id'", "'amount_usdt'", "'dimension'")
                 .contains("'withdraw.submitted'")
-                .contains("'risk_route'", "'risk_rule_id'", "'k5_ticket_id'")
+                .contains("'risk_route'", "'risk_rule_id'")
                 .contains("is_server_authoritative=1");
     }
 

@@ -193,6 +193,81 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     BigDecimal sumNetUsdtFlowBetween(@Param("startAt") LocalDateTime startAt, @Param("endAt") LocalDateTime endAt);
 
     @Select("""
+            <script>
+            WITH RECURSIVE days AS (
+              SELECT 0 AS seq, DATE(#{startAt}) AS flowDay
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(flowDay, INTERVAL 1 DAY)
+                FROM days
+               WHERE seq &lt; 7
+            ), buckets AS (
+              SELECT DATE(created_at) AS flowDay,
+                     COALESCE(SUM(CASE WHEN direction='IN' THEN amount_usd ELSE 0 END), 0) AS inflowUsdt,
+                     COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_usd ELSE 0 END), 0) AS outflowUsdt
+                FROM nx_treasury_reserve_ledger
+               WHERE is_deleted=0
+                 AND status='CONFIRMED'
+                 AND created_at &gt;= #{startAt}
+                 AND created_at &lt; #{endAt}
+               GROUP BY DATE(created_at)
+            )
+            SELECT DATE_FORMAT(days.flowDay, '%m-%d') AS label,
+                   COALESCE(buckets.inflowUsdt, 0) AS inflowUsdt,
+                   COALESCE(buckets.outflowUsdt, 0) AS outflowUsdt,
+                   COALESCE(buckets.inflowUsdt, 0) - COALESCE(buckets.outflowUsdt, 0) AS netUsdt
+              FROM days
+              LEFT JOIN buckets ON buckets.flowDay=days.flowDay
+             ORDER BY days.flowDay ASC
+            </script>
+            """)
+    List<Map<String, Object>> liquidityFlowWindows(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            <script>
+            WITH RECURSIVE months AS (
+              SELECT 0 AS seq, DATE(#{startAt}) AS monthStart
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(monthStart, INTERVAL 1 MONTH)
+                FROM months
+               WHERE seq &lt; 7
+            ), buckets AS (
+              SELECT DATE_FORMAT(created_at, '%Y-%m-01') AS monthStart,
+                     COALESCE(SUM(CASE
+                       WHEN direction='IN' AND (
+                         UPPER(biz_type) LIKE '%TOPUP%'
+                         OR UPPER(biz_type) LIKE '%DEPOSIT%'
+                         OR UPPER(biz_type) LIKE '%RECHARGE%'
+                       ) THEN amount ELSE 0 END), 0) AS newInflowUsdt,
+                     COALESCE(SUM(CASE
+                       WHEN direction='OUT' AND (
+                         UPPER(biz_type) LIKE '%WITHDRAW%'
+                         OR UPPER(biz_type) LIKE '%PAYOUT%'
+                         OR UPPER(biz_type) LIKE '%COMMISSION%'
+                       ) THEN amount ELSE 0 END), 0) AS outflowUsdt
+                FROM nx_wallet_ledger
+               WHERE is_deleted=0
+                 AND asset='USDT'
+                 AND status='SUCCESS'
+                 AND created_at &gt;= #{startAt}
+                 AND created_at &lt; #{endAt}
+               GROUP BY DATE_FORMAT(created_at, '%Y-%m-01')
+            )
+            SELECT DATE_FORMAT(months.monthStart, '%Y-%m') AS label,
+                   COALESCE(buckets.newInflowUsdt, 0) AS newInflowUsdt,
+                   COALESCE(buckets.outflowUsdt, 0) AS outflowUsdt
+              FROM months
+              LEFT JOIN buckets
+                ON buckets.monthStart=DATE_FORMAT(months.monthStart, '%Y-%m-01')
+             ORDER BY months.monthStart ASC
+            </script>
+            """)
+    List<Map<String, Object>> monthlyGrowthFlowWindows(
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
             SELECT COALESCE(SUM(ABS(COALESCE(w.usdt_available, 0) - COALESCE(latest.balance_after, 0))), 0)
               FROM (
                     SELECT user_id
@@ -299,16 +374,33 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             @Param("endAt") LocalDateTime endAt);
 
     @Select("""
-            SELECT avgScore AS value
-              FROM (
-                    SELECT DATE(created_at) AS riskDay,
-                           COALESCE(AVG(risk_score), 0) AS avgScore
-                      FROM nx_risk_decision
-                     WHERE is_deleted = 0
-                       AND created_at >= #{since}
-                     GROUP BY DATE(created_at)
-              ) buckets
-             ORDER BY riskDay ASC
+            WITH RECURSIVE windows AS (
+              SELECT 0 AS seq, DATE_SUB(CURDATE(), INTERVAL 7 DAY) AS windowDay
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(windowDay, INTERVAL 1 DAY)
+                FROM windows
+               WHERE seq < 7
+            ), flow AS (
+              SELECT DATE(created_at) AS windowDay,
+                     COALESCE(SUM(CASE
+                       WHEN direction='OUT' AND (
+                         UPPER(biz_type) LIKE '%WITHDRAW%'
+                         OR UPPER(biz_type) LIKE '%PAYOUT%'
+                         OR UPPER(biz_type) LIKE '%COMMISSION%'
+                       ) THEN amount ELSE 0 END), 0) AS payoutCommission,
+                     COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE 0 END), 0) AS grossInflow
+                FROM nx_wallet_ledger
+               WHERE is_deleted=0 AND asset='USDT' AND status='SUCCESS'
+                 AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+               GROUP BY DATE(created_at)
+            )
+            SELECT CASE
+                     WHEN COALESCE(flow.grossInflow, 0) <= 0 THEN 0
+                     ELSE ROUND(COALESCE(flow.payoutCommission, 0) / flow.grossInflow * 100, 2)
+                   END AS value
+              FROM windows
+              LEFT JOIN flow ON flow.windowDay = windows.windowDay
+             ORDER BY windows.windowDay ASC
             """)
     List<BigDecimal> riskPressureSeries(@Param("since") LocalDateTime since);
 
@@ -334,42 +426,51 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
     List<Map<String, Object>> riskRuleBuckets(@Param("since") LocalDateTime since);
 
     @Select("""
-            SELECT sev AS nm,
-                   COUNT(1) AS v,
-                   CASE sev
-                     WHEN 'P0' THEN 'var(--danger)'
-                     WHEN 'P1' THEN 'var(--warning)'
-                     WHEN 'P2' THEN 'var(--cyan)'
-                     ELSE 'var(--muted)'
-                   END AS c
+            SELECT levels.nm,
+                   COALESCE(buckets.v, 0) AS v,
+                   levels.c
               FROM (
+                    SELECT 'P0' AS nm, 'var(--danger)' AS c, 0 AS sortOrder
+                    UNION ALL SELECT 'P1', 'var(--warning)', 1
+                    UNION ALL SELECT 'P2', 'var(--cyan)', 2
+                    UNION ALL SELECT 'P3', 'var(--muted)', 3
+              ) levels
+              LEFT JOIN (
                     SELECT CASE
                              WHEN risk_score >= 90 THEN 'P0'
                              WHEN risk_score >= 70 THEN 'P1'
                              WHEN risk_score >= 40 THEN 'P2'
                              ELSE 'P3'
-                           END AS sev
+                           END AS nm,
+                           COUNT(1) AS v
                       FROM nx_risk_decision
                      WHERE is_deleted = 0
                        AND created_at >= #{since}
-              ) buckets
-             GROUP BY sev
-             ORDER BY FIELD(sev, 'P0', 'P1', 'P2', 'P3')
+                     GROUP BY nm
+              ) buckets ON buckets.nm = levels.nm
+             ORDER BY levels.sortOrder
             """)
     List<Map<String, Object>> riskSeverityBuckets(@Param("since") LocalDateTime since);
 
     @Select("""
-            SELECT DATE_FORMAT(riskDay, '%m-%d') AS label,
-                   count
-              FROM (
-                    SELECT DATE(created_at) AS riskDay,
-                           COUNT(1) AS count
-                      FROM nx_risk_decision
-                     WHERE is_deleted = 0
-                       AND created_at >= #{since}
-                     GROUP BY DATE(created_at)
-              ) buckets
-             ORDER BY riskDay ASC
+            WITH RECURSIVE days AS (
+              SELECT 0 AS seq, DATE_SUB(CURDATE(), INTERVAL 6 DAY) AS riskDay
+              UNION ALL
+              SELECT seq + 1, DATE_ADD(riskDay, INTERVAL 1 DAY)
+                FROM days
+               WHERE seq < 6
+            ), buckets AS (
+              SELECT DATE(created_at) AS riskDay, COUNT(1) AS count
+                FROM nx_risk_decision
+               WHERE is_deleted = 0
+                 AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+               GROUP BY DATE(created_at)
+            )
+            SELECT DATE_FORMAT(days.riskDay, '%m-%d') AS label,
+                   COALESCE(buckets.count, 0) AS count
+              FROM days
+              LEFT JOIN buckets ON buckets.riskDay = days.riskDay
+             ORDER BY days.riskDay ASC
             """)
     List<Map<String, Object>> riskVolumeBuckets(@Param("since") LocalDateTime since);
 

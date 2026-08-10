@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.market.application.G2G3AdminCommandService;
 import ffdd.opsconsole.market.application.G4AdminCommandService;
+import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
@@ -14,6 +15,7 @@ import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -32,6 +34,7 @@ public class OpsNexMarketController {
     private final G2G3AdminCommandService commandService;
     private final G4AdminCommandService g4CommandService;
     private final OpsRepurchaseAdminService repurchaseAdminService;
+    private final GenesisCatalogService genesisCatalogService;
 
     @GetMapping("/curve")
     @PreAuthorize("hasAuthority('finprod_g3_read')")
@@ -56,7 +59,7 @@ public class OpsNexMarketController {
     public ApiResult<Map<String, Object>> genesis(
             @RequestParam(value = "page", required = false, defaultValue = "1") Integer page,
             @RequestParam(value = "pageSize", required = false, defaultValue = "10") Integer pageSize) {
-        return marketService.genesisOverview(page, pageSize);
+        return genesisCatalogService.enrich(marketService.genesisOverview(page, pageSize));
     }
 
     @PutMapping("/curve")
@@ -130,6 +133,58 @@ public class OpsNexMarketController {
         return g4CommandService == null ? marketService.updateGenesisMarketStatus(idempotencyKey, request)
                 : g4CommandService.pauseMarket(idempotencyKey, request);
     }
+
+    @PostMapping("/genesis/tiers")
+    @PreAuthorize("hasAnyAuthority('finprod_g4_price_write','finprod_g4_write')")
+    public ApiResult<Map<String,Object>> createGenesisTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.TierRequest request) {
+        ApiResult<Void> result=genesisCatalogService.createTier(idempotencyKey,request);
+        return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
+    }
+
+    @PatchMapping("/genesis/tiers/{tierId}")
+    @PreAuthorize("hasAnyAuthority('finprod_g4_price_write','finprod_g4_write')")
+    public ApiResult<Map<String,Object>> updateGenesisTier(@PathVariable String tierId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.TierRequest request) {
+        ApiResult<Void> result=genesisCatalogService.updateTier(tierId,idempotencyKey,request);
+        return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
+    }
+
+    @DeleteMapping("/genesis/tiers/{tierId}")
+    @PreAuthorize("hasAnyAuthority('finprod_g4_price_write','finprod_g4_write')")
+    public ApiResult<Map<String,Object>> deleteGenesisTier(@PathVariable String tierId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.DeleteTierRequest request) {
+        ApiResult<Void> result=genesisCatalogService.deleteTier(tierId,idempotencyKey,request);
+        return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
+    }
+
+    @PatchMapping("/genesis/market-open-state")
+    @PreAuthorize("hasAuthority('finprod_g4_market_toggle')")
+    public ApiResult<Map<String,Object>> updateGenesisMarketOpenState(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.MarketStateRequest request) {
+        ApiResult<Void> result=genesisCatalogService.updateMarketState(idempotencyKey,request);
+        return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
+    }
+
+    @GetMapping("/genesis/invite-codes")
+    @PreAuthorize("hasAuthority('finprod_g4_read')")
+    public ApiResult<Map<String,Object>> genesisInviteCodes(){return genesisCatalogService.invites();}
+
+    @PostMapping("/genesis/invite-codes")
+    @PreAuthorize("hasAuthority('finprod_g4_write')")
+    public ApiResult<Map<String,Object>> issueGenesisInviteCodes(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.InviteIssueRequest request){return genesisCatalogService.issueInvites(idempotencyKey,request);}
+
+    @PostMapping("/genesis/invite-codes/{code}/void")
+    @PreAuthorize("hasAuthority('finprod_g4_write')")
+    public ApiResult<Map<String,Object>> voidGenesisInviteCode(@PathVariable String code,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.InviteVoidRequest request){return genesisCatalogService.voidInvite(code,idempotencyKey,request);}
 
     @PostMapping("/genesis/dividend-batches/{batchNo}/rerun")
     @PreAuthorize("hasAuthority('finprod_g4_write')")

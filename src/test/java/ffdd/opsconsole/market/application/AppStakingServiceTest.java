@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.market.mapper.AppStakingMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -35,9 +36,10 @@ class AppStakingServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
+    private final EarningsReleaseService earningsReleaseService = mock(EarningsReleaseService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-22T03:00:00Z"), ZoneOffset.UTC);
     private final AppStakingService service = new AppStakingService(
-            mapper, disclosureGate, config, idempotency, outbox, audit, clock);
+            mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService, clock);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -139,6 +141,32 @@ class AppStakingServiceTest {
                 42L, "open-killed", new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100"))))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("STAKING_POOL_KILLED");
+    }
+
+    @Test
+    void maturedPrincipalCreditsDirectlyButInterestUsesTheCanonicalReleaseBuckets() {
+        LocalDateTime unlockedAt = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).minusMinutes(1);
+        AppStakingMapper.PositionRow active = new AppStakingMapper.PositionRow(
+                9L, 42L, "STK-9", 2L, "USDT_30D", "USDT 30D",
+                new BigDecimal("100"), new BigDecimal("1200"), new BigDecimal("500"), 30,
+                unlockedAt.minusDays(30), unlockedAt, new BigDecimal("2.500000"),
+                "ACTIVE", null, null);
+        AppStakingMapper.PositionRow claimed = new AppStakingMapper.PositionRow(
+                9L, 42L, "STK-9", 2L, "USDT_30D", "USDT 30D",
+                new BigDecimal("100"), new BigDecimal("1200"), new BigDecimal("500"), 30,
+                unlockedAt.minusDays(30), unlockedAt, new BigDecimal("2.500000"),
+                "CLAIMED", LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC), null);
+        when(mapper.lockUserPosition(42L, "STK-9")).thenReturn(active);
+        when(mapper.markClaimed(any(), any(), any())).thenReturn(1);
+        when(mapper.creditWallet(42L, new BigDecimal("100.000000"))).thenReturn(1);
+        when(mapper.listUserPositions(42L)).thenReturn(List.of(claimed));
+        when(mapper.walletBalance(42L)).thenReturn(new BigDecimal("1002.500000"));
+
+        assertThat(service.claim(42L, "STK-9", "claim-9").getCode()).isZero();
+
+        verify(mapper).creditWallet(42L, new BigDecimal("100.000000"));
+        verify(earningsReleaseService).creditReward(42L, "staking_interest", "STK-9", "USDT",
+                new BigDecimal("2.500000"), "G1-STAKING-INTEREST-9");
     }
 
     private AppStakingMapper.ProductRow product() {

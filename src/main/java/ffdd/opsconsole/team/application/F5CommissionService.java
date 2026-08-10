@@ -2,12 +2,14 @@ package ffdd.opsconsole.team.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.dto.F5CommissionAnomalyConfigRequest;
 import ffdd.opsconsole.team.dto.F5CommissionQuery;
 import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
@@ -66,12 +68,30 @@ public class F5CommissionService {
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(), normalized.cohort());
         List<Map<String, Object>> sample = mapper.queryEvents(null, null, null, null, null, null, 200);
         List<Map<String, Object>> anomalies = anomalyViews(sample);
+        List<Map<String, Object>> kindAggregates = mapper.aggregateCommissionKinds();
+        List<Map<String, Object>> statusAggregates = mapper.aggregateCommissionStatuses();
+        if (kindAggregates == null || statusAggregates == null) {
+            throw new BizException(500, "F5_COMMISSION_AGGREGATE_UNAVAILABLE");
+        }
+        if (mapper.unknownCommissionKindCount() > 0) {
+            throw new BizException(500, "F5_COMMISSION_KIND_UNKNOWN");
+        }
+        if (kindAggregates.stream().anyMatch(row -> !KINDS.contains(text(row.get("kind"))))) {
+            throw new BizException(500, "F5_COMMISSION_KIND_UNKNOWN");
+        }
+        if (java.util.stream.Stream.concat(kindAggregates.stream(), statusAggregates.stream())
+                .anyMatch(row -> !Set.of("USDT", "NEX").contains(text(row.get("currency")).toUpperCase(Locale.ROOT)))) {
+            throw new BizException(500, "F5_COMMISSION_CURRENCY_UNKNOWN");
+        }
+        if (statusAggregates.stream().anyMatch(row -> !STATUSES.contains(text(row.get("status"))))) {
+            throw new BizException(500, "F5_COMMISSION_STATUS_UNKNOWN");
+        }
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F5");
-        response.put("summary", summary(sample, anomalies));
-        response.put("commissionKinds", kindSummary(sample));
+        response.put("summary", summary(kindAggregates, statusAggregates));
+        response.put("commissionKinds", kindSummary(kindAggregates));
         response.put("commissionFilters", List.of(
                 Map.of("key", "all", "label", "全部状态"),
                 Map.of("key", "cooling", "label", "冷却计提"),
@@ -87,14 +107,16 @@ public class F5CommissionService {
                 "mode", "server-cursor",
                 "defaultWindow", "全量游标",
                 "defaultPageSize", DEFAULT_LIMIT,
+                "pageSize", normalized.limit(),
                 "maxPageSize", MAX_LIMIT,
+                "requestCursor", normalized.cursor() == null ? "" : String.valueOf(normalized.cursor()),
                 "nextCursor", nextCursor == null ? "" : String.valueOf(nextCursor),
                 "total", total));
         response.put("anomalies", anomalies);
         response.put("coolingPolicy", coolingPolicy());
-        response.put("operationHistory", safeOperations());
-        response.put("activeSuspensions", safeSuspensions());
-        response.put("statusDistribution", statusDistribution(sample));
+        response.put("operationHistory", mapper.recentOperations(50));
+        response.put("activeSuspensions", mapper.activeSuspensions(100));
+        response.put("statusDistribution", statusDistribution(statusAggregates));
         response.put("recentAuditFeed", recentAudit(sample));
         response.put("configValues", linked(
                 "commissionAnomalySigma", anomalySigma().toPlainString(),
@@ -139,6 +161,8 @@ public class F5CommissionService {
 
     public ApiResult<Map<String, Object>> reverse(
             String commissionId, String idempotencyKey, F5CommissionReverseRequest request) {
+        ApiResult<Map<String, Object>> denied = requireApprovedReplay();
+        if (denied != null) return denied;
         Long eventId = eventId(commissionId);
         String reason = reason(request == null ? null : request.reason());
         String refundRef = requireText(request == null ? null : request.refundRef(), "REFUND_REF_REQUIRED");
@@ -150,6 +174,8 @@ public class F5CommissionService {
 
     public ApiResult<Map<String, Object>> reissue(
             String idempotencyKey, F5CommissionReissueRequest request) {
+        ApiResult<Map<String, Object>> denied = requireApprovedReplay();
+        if (denied != null) return denied;
         String reason = reason(request == null ? null : request.reason());
         String operator = operator(request == null ? null : request.operator());
         List<Long> eventIds = normalizeCommissionIds(request == null ? null : request.commissionIds());
@@ -160,6 +186,8 @@ public class F5CommissionService {
 
     public ApiResult<Map<String, Object>> suspend(
             Long userId, String idempotencyKey, F5CommissionSuspensionRequest request) {
+        ApiResult<Map<String, Object>> denied = requireApprovedReplay();
+        if (denied != null) return denied;
         if (userId == null || userId <= 0) {
             return ApiResult.fail(422, "USER_ID_INVALID");
         }
@@ -170,6 +198,14 @@ public class F5CommissionService {
         String hash = requestHash("suspension", userId.toString(), kinds.toString(), String.valueOf(suspended), reason);
         return executeIdempotent("F5_COMMISSION_SUSPENSION", idempotencyKey, hash,
                 () -> suspensionInternal(userId, kinds, suspended, reason, operator, idempotencyKey));
+    }
+
+    /** F5 reverse/reissue/suspension mutate commission entitlements and may run only from an approved A2 replay. */
+    private ApiResult<Map<String, Object>> requireApprovedReplay() {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        return null;
     }
 
     public ApiResult<Map<String, Object>> updateAnomalyConfig(
@@ -553,36 +589,34 @@ public class F5CommissionService {
     }
 
     private Map<String, Object> summary(
-            List<Map<String, Object>> rows, List<Map<String, Object>> anomalies) {
-        BigDecimal total = rows.stream().map(row -> decimal(eventView(row).get("amount")))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal cooling = rows.stream()
-                .map(this::eventView)
-                .filter(row -> "cooling".equals(row.get("status")))
-                .map(row -> decimal(row.get("amount")))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal unlocked = rows.stream()
-                .map(this::eventView)
-                .filter(row -> "unlocked".equals(row.get("status")))
-                .map(row -> decimal(row.get("amount")))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        long frozen = rows.stream().map(this::eventView)
-                .filter(row -> "frozen".equals(row.get("status"))).count();
+            List<Map<String, Object>> kindAggregates,
+            List<Map<String, Object>> statusAggregates) {
+        long frozen = statusAggregates.stream()
+                .filter(row -> "frozen".equals(text(row.get("status"))))
+                .mapToLong(row -> longValue(row.get("count")) == null ? 0L : longValue(row.get("count")))
+                .sum();
+        List<Map<String, Object>> cooling = statusAggregates.stream()
+                .filter(row -> "cooling".equals(text(row.get("status")))).toList();
+        List<Map<String, Object>> unlocked = statusAggregates.stream()
+                .filter(row -> "unlocked".equals(text(row.get("status")))).toList();
         return linked(
-                "monthlyCommissionSpendLabel", money(total),
-                "coolingBalanceLabel", money(cooling),
-                "withdrawableThisMonthLabel", money(unlocked),
-                "abnormalOrFrozenCount", anomalies.size() + frozen);
+                "monthlyCommissionSpendLabel", currencyLabel(kindAggregates),
+                "monthlyCommissionSpend", currencySnapshot(kindAggregates),
+                "coolingBalanceLabel", currencyLabel(cooling),
+                "coolingBalance", currencySnapshot(cooling),
+                "withdrawableThisMonthLabel", currencyLabel(unlocked),
+                "withdrawableThisMonth", currencySnapshot(unlocked),
+                "frozenCount", frozen);
     }
 
     private List<Map<String, Object>> kindSummary(List<Map<String, Object>> rows) {
-        Map<String, BigDecimal> totals = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
         Map<String, Long> counts = new LinkedHashMap<>();
-        for (Map<String, Object> raw : rows) {
-            Map<String, Object> row = eventView(raw);
+        for (Map<String, Object> row : rows) {
             String kind = text(row.get("kind"));
-            totals.merge(kind, decimal(row.get("amount")), BigDecimal::add);
-            counts.merge(kind, 1L, Long::sum);
+            grouped.computeIfAbsent(kind, ignored -> new ArrayList<>()).add(row);
+            Long count = longValue(row.get("count"));
+            counts.merge(kind, count == null ? 0L : count, Long::sum);
         }
         Map<String, String> labels = Map.of(
                 "network", "网络版税",
@@ -593,14 +627,20 @@ public class F5CommissionService {
                 "genesis", "创世排放");
         return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis")
                 .stream()
-                .map(kind -> linked(
-                        "key", kind,
-                        "code", kind.toUpperCase(Locale.ROOT),
-                        "label", labels.get(kind),
-                        "amountLabel", money(totals.getOrDefault(kind, BigDecimal.ZERO)),
-                        "countLabel", counts.getOrDefault(kind, 0L) + " 笔",
-                        "className", "k-" + kind,
-                        "amountColor", ""))
+                .map(kind -> {
+                    List<Map<String, Object>> aggregateRows = grouped.getOrDefault(kind, List.of());
+                    long count = counts.getOrDefault(kind, 0L);
+                    return linked(
+                            "key", kind,
+                            "code", kind.toUpperCase(Locale.ROOT),
+                            "label", labels.get(kind),
+                            "amountLabel", currencyLabel(aggregateRows),
+                            "amounts", currencySnapshot(aggregateRows),
+                            "count", count,
+                            "countLabel", count + " 笔",
+                            "className", "k-" + kind,
+                            "amountColor", "");
+                })
                 .toList();
     }
 
@@ -616,16 +656,44 @@ public class F5CommissionService {
     }
 
     private List<Map<String, Object>> statusDistribution(List<Map<String, Object>> rows) {
-        Map<String, Long> counts = rows.stream().map(this::eventView)
-                .collect(java.util.stream.Collectors.groupingBy(
-                        row -> text(row.get("status")),
-                        LinkedHashMap::new,
-                        java.util.stream.Collectors.counting()));
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long count = longValue(row.get("count"));
+            counts.merge(text(row.get("status")), count == null ? 0L : count, Long::sum);
+        }
         return List.of(
                 linked("name", "已解锁可提", "color", "var(--success)", "count", counts.getOrDefault("unlocked", 0L)),
                 linked("name", "冷却计提中", "color", "var(--warning)", "count", counts.getOrDefault("cooling", 0L)),
+                linked("name", "已提现", "color", "var(--cyan)", "count", counts.getOrDefault("withdrawn", 0L)),
                 linked("name", "已撤销", "color", "var(--danger)", "count", counts.getOrDefault("reversed", 0L)),
                 linked("name", "已冻结", "color", "var(--ink-4)", "count", counts.getOrDefault("frozen", 0L)));
+    }
+
+    private String currencyLabel(List<Map<String, Object>> rows) {
+        Map<String, Object> totals = currencySnapshot(rows);
+        return "USDT " + totals.get("usdt") + " · NEX " + totals.get("nex");
+    }
+
+    private Map<String, Object> currencySnapshot(List<Map<String, Object>> rows) {
+        Map<String, BigDecimal> totals = new LinkedHashMap<>();
+        long count = 0L;
+        for (Map<String, Object> row : rows) {
+            String currency = text(row.get("currency")).toUpperCase(Locale.ROOT);
+            if (!Set.of("USDT", "NEX").contains(currency)) {
+                throw new BizException(500, "F5_COMMISSION_CURRENCY_UNKNOWN");
+            }
+            BigDecimal amount = decimal(row.get("amount"));
+            Long rowCount = longValue(row.get("count"));
+            if (amount.signum() < 0 || rowCount == null || rowCount < 0) {
+                throw new BizException(500, "F5_COMMISSION_AGGREGATE_INVALID");
+            }
+            totals.merge(currency, amount, BigDecimal::add);
+            count = Math.addExact(count, rowCount);
+        }
+        return linked(
+                "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
+                "nex", totals.getOrDefault("NEX", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
+                "count", count);
     }
 
     private List<Map<String, Object>> recentAudit(List<Map<String, Object>> rows) {
@@ -635,22 +703,6 @@ public class F5CommissionService {
                         + " · " + row.get("kind"),
                 "level", Set.of("reversed", "frozen").contains(text(row.get("status"))) ? "HIGH" : "LOW"))
                 .toList();
-    }
-
-    private List<Map<String, Object>> safeOperations() {
-        try {
-            return mapper.recentOperations(50);
-        } catch (RuntimeException ignored) {
-            return List.of();
-        }
-    }
-
-    private List<Map<String, Object>> safeSuspensions() {
-        try {
-            return mapper.activeSuspensions(100);
-        } catch (RuntimeException ignored) {
-            return List.of();
-        }
     }
 
     private NormalizedQuery normalizeQuery(F5CommissionQuery query) {

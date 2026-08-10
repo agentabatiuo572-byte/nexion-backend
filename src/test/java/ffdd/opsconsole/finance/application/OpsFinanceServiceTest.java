@@ -281,16 +281,21 @@ class OpsFinanceServiceTest {
                 .containsEntry("version", 7L)
                 .containsEntry("dailyLimitCount", 2)
                 .containsEntry("balanceMaxRatio", new BigDecimal("0.80"))
-                .containsEntry("networkFeeMin", new BigDecimal("0.50"))
-                .containsEntry("networkFeeMax", new BigDecimal("20.00"))
-                .containsEntry("bep20Enabled", true)
+                .containsEntry("networkConfirmFeeUsd", Map.of(
+                        "trc20", new BigDecimal("1.00"),
+                        "bep20", new BigDecimal("1.00"),
+                        "erc20", new BigDecimal("5.00")))
+                .containsEntry("nexFeeOffsetRate", new BigDecimal("0.40"))
+                .containsEntry("smallAmountThresholdUsd", new BigDecimal("50"))
+                .containsEntry("payoutSlaHours", 24)
                 .containsEntry("cooldownDays", 30)
                 .containsEntry("penaltyFeeRate", new BigDecimal("0.20"))
                 .containsEntry("complianceHoldEnabled", false);
         assertThat(result.getData().get("sourceByField"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("dailyLimitCount", "d5")
-                .containsEntry("bep20Enabled", "d5")
+                .containsEntry("smallAmountThresholdUsd", "d5")
+                .containsEntry("payoutSlaHours", "d5")
                 .containsEntry("cooldownDays", "phase-h1");
     }
 
@@ -363,55 +368,6 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void canonicalBep20ToggleWritesCanonicalMirrorVersionAuditAndEvent() {
-        seedCanonicalD5();
-        WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "disable BEP20 during provider maintenance");
-        request.setBep20Enabled(false);
-
-        ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-bep20-disable", request);
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData())
-                .containsEntry("version", 8L)
-                .containsEntry("bep20Enabled", false);
-        assertThat(configFacade.values)
-                .containsEntry("withdrawal.bep20.enabled", "false")
-                .containsEntry("wallet.withdrawal.bep20.enabled", "false")
-                .containsEntry("withdrawal.d5.version", "8");
-        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(audit.capture());
-        assertThat(audit.getValue().getAction()).isEqualTo("D5_WITHDRAWAL_PARAM_CHANGED");
-        assertThat(detailMap(audit.getValue().getDetail()))
-                .containsEntry("field", "bep20Enabled")
-                .containsEntry("before", true)
-                .containsEntry("after", false)
-                .containsEntry("idempotencyKey", "d5-bep20-disable");
-        verify(eventOutboxService).publish(
-                org.mockito.ArgumentMatchers.eq("WITHDRAWAL_PARAM"),
-                org.mockito.ArgumentMatchers.eq("withdrawal.bep20.enabled"),
-                org.mockito.ArgumentMatchers.eq("admin.withdraw_limit_changed"),
-                org.mockito.ArgumentMatchers.any());
-    }
-
-    @Test
-    void canonicalBep20EnableBelowCoverageRedlineIsRejectedWithoutPartialWrites() {
-        seedCanonicalD5();
-        configFacade.values.put("withdrawal.bep20.enabled", "false");
-        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("100"));
-        WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "enable BEP20 below coverage redline");
-        request.setBep20Enabled(true);
-
-        ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-bep20-enable", request);
-
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("COVERAGE_BELOW_REDLINE");
-        assertThat(configFacade.values)
-                .containsEntry("withdrawal.bep20.enabled", "false")
-                .containsEntry("withdrawal.d5.version", "7")
-                .doesNotContainKey("wallet.withdrawal.bep20.enabled");
-    }
-
-    @Test
     void canonicalAmplificationBelowRedlineIsRejectedWithoutPartialWrites() {
         seedCanonicalD5();
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("100"));
@@ -441,6 +397,24 @@ class OpsFinanceServiceTest {
         assertThat(result.getCode()).isEqualTo(400);
         assertThat(result.getMessage()).isEqualTo("NETWORK_FEE_RANGE_INVALID");
         assertThat(configFacade.values).containsEntry("withdrawal.d5.version", "7");
+    }
+
+    @Test
+    void wd01ControlsRejectWritesWhileTheirBusinessExecutorsAreOnHold() {
+        seedCanonicalD5();
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("120"), new BigDecimal("100"));
+        WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "update real WD01 controls");
+        request.setSmallAmountThresholdUsd(new BigDecimal("75"));
+        request.setPayoutSlaHours(12);
+
+        ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-wd01-real", request);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("D5_EXECUTOR_HOLD");
+        assertThat(configFacade.values)
+                .containsEntry("withdrawal.small_amount_threshold_usd", "50")
+                .containsEntry("withdrawal.payout_sla_hours", "24")
+                .containsEntry("withdrawal.d5.version", "7");
     }
 
     @Test
@@ -1436,7 +1410,11 @@ class OpsFinanceServiceTest {
         configFacade.values.put("withdrawal.fee_min_usdt", "0.50");
         configFacade.values.put("withdrawal.fee_max_usdt", "20.00");
         configFacade.values.put("withdrawal.nex_fee_offset_rate", "0.40");
-        configFacade.values.put("withdrawal.bep20.enabled", "true");
+        configFacade.values.put("withdrawal.network_confirm_fee_usd.trc20", "1.00");
+        configFacade.values.put("withdrawal.network_confirm_fee_usd.bep20", "1.00");
+        configFacade.values.put("withdrawal.network_confirm_fee_usd.erc20", "5.00");
+        configFacade.values.put("withdrawal.small_amount_threshold_usd", "50");
+        configFacade.values.put("withdrawal.payout_sla_hours", "24");
         configFacade.values.put("withdrawal.d5.version", "7");
         configFacade.values.put("growth.phase.withdraw_cooldown_days", "30");
         configFacade.values.put("growth.phase.withdraw_penalty_fee_rate", "0.20");

@@ -27,6 +27,8 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
         BigDecimal redlinePct = decimal(values.get("redlinePct"));
         BigDecimal reserveUsd = decimal(values.get("reserveUsd"));
         BigDecimal liabilitiesUsd = decimal(values.get("liabilitiesUsd"));
+        BigDecimal ratioReserveUsd = decimal(values.get("ratioReserveUsd"));
+        BigDecimal ratioLiabilitiesUsd = decimal(values.get("ratioLiabilitiesUsd"));
         BigDecimal nexUsdRate = decimal(values.get("nexUsdRate"));
         boolean reliable = coverageRatio != null && redlinePct != null
                 && Boolean.TRUE.equals(values.get("valuationReliable"));
@@ -36,7 +38,9 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
                 reliable,
                 reserveUsd == null ? BigDecimal.ZERO : reserveUsd,
                 liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd,
-                nexUsdRate == null ? BigDecimal.ZERO : nexUsdRate);
+                nexUsdRate == null ? BigDecimal.ZERO : nexUsdRate,
+                ratioReserveUsd == null ? (reserveUsd == null ? BigDecimal.ZERO : reserveUsd) : ratioReserveUsd,
+                ratioLiabilitiesUsd == null ? (liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd) : ratioLiabilitiesUsd);
     }
 
     private BigDecimal decimal(Object value) {

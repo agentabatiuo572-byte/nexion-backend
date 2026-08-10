@@ -45,7 +45,7 @@ class AppWithdrawalServiceTest {
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -61,9 +61,17 @@ class AppWithdrawalServiceTest {
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("500.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
         when(config.activeValue("withdrawal.trc20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.bep20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.erc20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.d5.version")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.trc20")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.bep20")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.erc20")).thenReturn(Optional.of("5"));
         when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("2"));
         when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("0.8"));
         when(config.activeValue("withdrawal.nex_fee_offset_rate")).thenReturn(Optional.of("0.4"));
+        when(config.activeValue("withdrawal.small_amount_threshold_usd")).thenReturn(Optional.of("50"));
+        when(config.activeValue("withdrawal.payout_sla_hours")).thenReturn(Optional.of("24"));
         when(config.activeValue("withdrawal.fee_rate")).thenReturn(Optional.of("0.02"));
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.50"));
         when(config.activeValue("withdrawal.fee_max_usdt")).thenReturn(Optional.of("20.00"));
@@ -82,45 +90,48 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
-    void snapshotsH1FeeAndCooldownBurnsOptionalNexAndPostsAuditableD4Components() {
+    void snapshotsFixedD5FeeWithoutImplicitNexBurnOrLegacyH1Penalty() {
         ApiResult<java.util.Map<String, Object>> result = service.submit(
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-1");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("penaltyFeeRate", new BigDecimal("20"))
-                .containsEntry("networkFee", new BigDecimal("2.000000"))
-                .containsEntry("grossFee", new BigDecimal("22.000000"))
-                .containsEntry("nexBurned", new BigDecimal("50.000000"))
-                .containsEntry("actualFee", new BigDecimal("2.000000"))
-                .containsEntry("penaltyFeeWaived", new BigDecimal("20.000000"))
+        assertThat(result.getData()).containsEntry("penaltyFeeRate", new BigDecimal("0.000000"))
+                .containsEntry("networkConfirmUsd", new BigDecimal("1.000000"))
+                .containsEntry("networkFee", new BigDecimal("1.000000"))
+                .containsEntry("grossFee", new BigDecimal("1.000000"))
+                .containsEntry("nexBurned", new BigDecimal("0.000000"))
+                .containsEntry("useNexFeeOffset", false)
+                .containsEntry("actualFee", new BigDecimal("1.000000"))
+                .containsEntry("penaltyFeeWaived", new BigDecimal("0.000000"))
                 .containsEntry("networkFeeWaived", new BigDecimal("0.000000"))
                 .containsEntry("actualPenaltyFee", new BigDecimal("0.000000"))
-                .containsEntry("actualNetworkFee", new BigDecimal("2.000000"))
-                .containsEntry("netReceive", new BigDecimal("98.000000"))
+                .containsEntry("actualNetworkFee", new BigDecimal("1.000000"))
+                .containsEntry("netReceive", new BigDecimal("99.000000"))
                 .containsEntry("status", "REVIEW_PENDING");
-        verify(mapper).reserveFunds(7L, new BigDecimal("100.000000"), new BigDecimal("50.000000"), 3L);
+        verify(mapper).reserveFunds(7L, new BigDecimal("100.000000"), new BigDecimal("0.000000"), 3L);
         verify(ledger).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_NET_PRINCIPAL"), eq("USDT"), eq("OUT"),
-                eq(new BigDecimal("98.000000")), eq("POSTED"), eq("D2 withdrawal net principal"));
+                eq(new BigDecimal("99.000000")), eq("POSTED"), eq("D2 withdrawal net principal"));
         verify(ledger).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_NETWORK_FEE"), eq("USDT"), eq("OUT"),
-                eq(new BigDecimal("2.000000")), eq("POSTED"),
+                eq(new BigDecimal("1.000000")), eq("POSTED"),
                 eq("D5 actual network fee after NEX offset"));
-        verify(ledger).postLedgerEntry(
+        verify(ledger, never()).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_FEE_OFFSET"), eq("NEX"), eq("OUT"),
-                eq(new BigDecimal("50.000000")), eq("POSTED"),
-                eq("D5 NEX fee offset; penalty first, then network fee"));
+                any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), eq(7L), eq("WITHDRAW_PENALTY_FEE"), eq("USDT"), eq("OUT"),
                 any(), anyString(), anyString());
         ArgumentCaptor<WithdrawalWrite> write = ArgumentCaptor.forClass(WithdrawalWrite.class);
         verify(mapper).insertWithdrawal(write.capture());
         assertThat(write.getValue().freezePeriod()).isEqualTo("H1:M3:P2");
-        assertThat(write.getValue().penaltyFeeRate()).isEqualByComparingTo("20");
-        assertThat(write.getValue().networkFeeRate()).isEqualByComparingTo("0.02");
-        assertThat(write.getValue().networkFeeMin()).isEqualByComparingTo("0.50");
-        assertThat(write.getValue().networkFeeMax()).isEqualByComparingTo("20.00");
-        assertThat(write.getValue().networkFee()).isEqualByComparingTo("2.000000");
+        assertThat(write.getValue().penaltyFeeRate()).isEqualByComparingTo("0");
+        assertThat(write.getValue().networkFeeRate()).isEqualByComparingTo("0");
+        assertThat(write.getValue().networkFeeMin()).isEqualByComparingTo("1.000000");
+        assertThat(write.getValue().networkFeeMax()).isEqualByComparingTo("1.000000");
+        assertThat(write.getValue().networkFee()).isEqualByComparingTo("1.000000");
+        assertThat(write.getValue().policyVersion()).isNotBlank();
+        assertThat(write.getValue().useNexFeeOffset()).isFalse();
         assertThat(write.getValue().holdUntil()).isAfter(java.time.LocalDateTime.now().plusDays(29));
         verify(outbox).publishUserEvent(eq("WITHDRAWAL"), anyString(), eq("withdraw.submitted"), eq(7L),
                 eq("P2"), eq(1), eq("2026-W30"), any());
@@ -145,7 +156,7 @@ class AppWithdrawalServiceTest {
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-replay");
 
         assertThat(replay.getData().get("withdrawalNo")).isEqualTo(first.getData().get("withdrawalNo"));
-        verify(ledger, org.mockito.Mockito.times(3)).postLedgerEntry(
+        verify(ledger, org.mockito.Mockito.times(2)).postLedgerEntry(
                 anyString(), eq(7L), anyString(), anyString(), eq("OUT"),
                 any(), eq("POSTED"), anyString());
         verify(mapper, org.mockito.Mockito.times(1)).reserveFunds(
@@ -161,15 +172,20 @@ class AppWithdrawalServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
-                .containsEntry("networkFeeRate", new BigDecimal("0.02"))
-                .containsEntry("networkFeeMin", new BigDecimal("0.50"))
-                .containsEntry("networkFeeMax", new BigDecimal("20.00"))
-                .containsEntry("penaltyFeeRate", new BigDecimal("20"))
+                .containsEntry("networkConfirmFeeUsd", java.util.Map.of(
+                        "trc20", new BigDecimal("1"),
+                        "bep20", new BigDecimal("1"),
+                        "erc20", new BigDecimal("5")))
+                .containsEntry("nexFeeOffsetRate", new BigDecimal("0.4"))
+                .containsEntry("smallAmountThresholdUsd", new BigDecimal("50"))
+                .containsEntry("payoutSlaHours", 24)
                 .containsEntry("cooldownDays", 30)
                 .containsEntry("withdrawalEnabled", true)
                 .containsEntry("gateSource", "J1")
-                .containsEntry("enabledNetworks", java.util.List.of("USDT-TRC20"))
-                .containsEntry("source", "D5+H1");
+                .containsEntry("enabledNetworks", java.util.List.of("USDT-BEP20", "USDT-TRC20"))
+                .containsEntry("source", "D5+H1")
+                .containsKey("policyVersion")
+                .doesNotContainKeys("networkFeeRate", "networkFeeMin", "networkFeeMax", "penaltyFeeRate");
     }
 
     @Test
@@ -241,27 +257,6 @@ class AppWithdrawalServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
         verify(mapper, never()).reserveFunds(any(), any(), any(), any());
-    }
-
-    @Test
-    void acceptsEffectiveBep20PayoutAddressAfterDelayWithCaseInsensitiveEvmMatch() {
-        String configuredAddress = "0x55d398326f99059fF775485246999027B3197955";
-        String submittedAddress = configuredAddress.toUpperCase(java.util.Locale.ROOT).replace("0X", "0x");
-        when(config.activeValue("withdrawal.bep20.enabled")).thenReturn(Optional.of("true"));
-        when(mapper.lockPayoutAddress(7L, "USDT-BEP20")).thenReturn(new PayoutAddressRow(
-                "USDT-BEP20", configuredAddress, LocalDateTime.now().minusSeconds(1),
-                LocalDateTime.now().plusDays(7)));
-        when(mapper.withdrawalRiskFacts(7L, submittedAddress)).thenReturn(
-                new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
-                        45, "k4-v13", LocalDateTime.now(), 41, 73, 91));
-
-        ApiResult<java.util.Map<String, Object>> result = service.submit(
-                7L, new BigDecimal("100"), "USDT-BEP20", submittedAddress, "wd-bep20-effective");
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("status", "REVIEW_PENDING");
-        verify(mapper).reserveFunds(7L, new BigDecimal("100.000000"), new BigDecimal("50.000000"), 3L);
-        verify(mapper).insertWithdrawal(any());
     }
 
     @Test

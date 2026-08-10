@@ -87,6 +87,12 @@ public class OpsTreasuryService {
     private static final String B_SCOPE_IDEMPOTENCY_SCOPE = "TREASURY_B_SCOPE_UPDATE";
     private static final String B_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_THRESHOLD_UPDATE";
     private static final String B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_BANKRUN_THRESHOLD";
+    private static final BigDecimal B_GROWTH_OUTFLOW_HEALTHY_RATIO = new BigDecimal("1.2");
+    private static final List<BudgetSeed> B4_OPERATION_BUDGETS = List.of(
+            new BudgetSeed("acquisition", "拉新", "operations.budget.current-month.acquisition"),
+            new BudgetSeed("commission", "返佣", "operations.budget.current-month.commission"),
+            new BudgetSeed("genesis", "创世", "operations.budget.current-month.genesis"),
+            new BudgetSeed("reserve", "储备", "operations.budget.current-month.reserve"));
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现闸"),
             new GateSeed("exchange", "兑换闸"),
@@ -339,6 +345,61 @@ public class OpsTreasuryService {
                 "asOf", LocalDateTime.now(clock)));
     }
 
+    /** B2 only: authoritative reserve-ledger windows plus canonical successful user deposits. */
+    public ApiResult<Map<String, Object>> liquidityHistory() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime dayStart = now.toLocalDate().minusDays(7).atStartOfDay();
+        LocalDateTime dayEnd = dayStart.plusDays(8);
+        LocalDate monthStartDate = now.toLocalDate().withDayOfMonth(1).minusMonths(7);
+        LocalDateTime monthStart = monthStartDate.atStartOfDay();
+        LocalDateTime monthEnd = now.toLocalDate().withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        List<Map<String, Object>> flowWindows = ledgerRepository.liquidityFlowWindows(dayStart, dayEnd).stream()
+                .map(row -> section(
+                        "label", String.valueOf(row.get("label")),
+                        "inflowWan", wan(decimal(row.get("inflowUsdt"))),
+                        "outflowWan", wan(decimal(row.get("outflowUsdt"))),
+                        "netWan", wan(decimal(row.get("netUsdt")))))
+                .toList();
+        List<Map<String, Object>> months = monthlyGrowthFlowRows(monthStart, monthEnd);
+        return ApiResult.ok(section(
+                "generatedAt", now.toString(),
+                "flowWindows", flowWindows,
+                "monthlyNewDeposits", months.stream()
+                        .map(row -> section(
+                                "label", row.get("label"),
+                                "amountWan", row.get("newInflowWan")))
+                        .toList(),
+                "sources", List.of(
+                        "nx_treasury_reserve_ledger:CONFIRMED",
+                        "nx_wallet_ledger:SUCCESS user deposit/topup/recharge")));
+    }
+
+    /** B4 only: month-aligned growth/outflow facts; budget is fail-closed until all four approved keys exist. */
+    public ApiResult<Map<String, Object>> growthFlowHistory() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime start = now.toLocalDate().withDayOfMonth(1).minusMonths(7).atStartOfDay();
+        LocalDateTime end = now.toLocalDate().withDayOfMonth(1).plusMonths(1).atStartOfDay();
+        List<Map<String, Object>> rows = monthlyGrowthFlowRows(start, end);
+        BigDecimal latestRatio = rows.isEmpty() || rows.get(rows.size() - 1).get("ratio") == null
+                ? null
+                : decimal(rows.get(rows.size() - 1).get("ratio"));
+        Map<String, Object> budget = operationalBudgetView();
+        Map<String, Object> response = section(
+                "generatedAt", now.toString(),
+                "healthyRatio", B_GROWTH_OUTFLOW_HEALTHY_RATIO,
+                "ratioSeries", rows,
+                "suggestion", latestRatio == null
+                        ? "数据不足，保持现状"
+                        : latestRatio.compareTo(B_GROWTH_OUTFLOW_HEALTHY_RATIO) >= 0 ? "维持扩张" : "切入收紧",
+                "budget", budget,
+                "sources", List.of(
+                        "nx_wallet_ledger:SUCCESS user deposit/topup/recharge",
+                        "nx_wallet_ledger:SUCCESS withdrawal/payout/commission",
+                        "nx_config_item:operations.budget.current-month.*"));
+        response.put("currentRatio", latestRatio);
+        return ApiResult.ok(response);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> forecastConfig() {
         Map<String, Object> response = new LinkedHashMap<>(forecastConfigSnapshot());
@@ -490,6 +551,8 @@ public class OpsTreasuryService {
         response.put("snapshot", section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
+                "ratioReserveUsd", reserveUsd,
+                "ratioLiabilitiesUsd", liabilitiesUsd,
                 "nexUsdRate", nexUsdRate,
                 "valuationReliable", valuationReliable,
                 "coverageRatio", pctScale(coverageRatio),
@@ -1391,6 +1454,74 @@ public class OpsTreasuryService {
         return flow;
     }
 
+    private List<Map<String, Object>> monthlyGrowthFlowRows(LocalDateTime start, LocalDateTime end) {
+        return ledgerRepository.monthlyGrowthFlowWindows(start, end).stream()
+                .map(row -> {
+                    BigDecimal newInflow = decimal(row.get("newInflowUsdt"));
+                    BigDecimal outflow = decimal(row.get("outflowUsdt"));
+                    Map<String, Object> point = section(
+                            "label", String.valueOf(row.get("label")),
+                            "newInflowWan", wan(newInflow),
+                            "outflowWan", wan(outflow),
+                            "newInflowUsdt", newInflow.stripTrailingZeros(),
+                            "outflowUsdt", outflow.stripTrailingZeros());
+                    point.put("ratio", outflow.signum() == 0
+                            ? null
+                            : newInflow.divide(outflow, 4, RoundingMode.HALF_UP).stripTrailingZeros());
+                    return point;
+                })
+                .toList();
+    }
+
+    private Map<String, Object> operationalBudgetView() {
+        List<String> missing = new ArrayList<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        BigDecimal total = BigDecimal.ZERO;
+        for (BudgetSeed seed : B4_OPERATION_BUDGETS) {
+            Optional<String> raw = configFacade.activeValue(seed.configKey()).filter(StringUtils::hasText);
+            if (raw.isEmpty()) {
+                missing.add(seed.configKey());
+                continue;
+            }
+            BigDecimal amount;
+            try {
+                amount = new BigDecimal(raw.get().trim());
+            } catch (RuntimeException ex) {
+                missing.add(seed.configKey());
+                continue;
+            }
+            if (amount.signum() < 0) {
+                missing.add(seed.configKey());
+                continue;
+            }
+            total = total.add(amount);
+            rows.add(section(
+                    "key", seed.key(),
+                    "label", seed.label(),
+                    "amountUsdt", money(amount),
+                    "source", "nx_config_item:" + seed.configKey()));
+        }
+        boolean available = missing.isEmpty() && rows.size() == B4_OPERATION_BUDGETS.size() && total.signum() > 0;
+        if (!available) {
+            return section(
+                    "available", false,
+                    "reason", total.signum() == 0 && missing.isEmpty()
+                            ? "B4_OPERATION_BUDGET_TOTAL_ZERO"
+                            : "B4_OPERATION_BUDGET_SOURCE_INCOMPLETE",
+                    "missingKeys", missing,
+                    "rows", List.of());
+        }
+        BigDecimal denominator = total;
+        rows.forEach(row -> row.put("sharePct", decimal(row.get("amountUsdt"))
+                .multiply(BigDecimal.valueOf(100))
+                .divide(denominator, 2, RoundingMode.HALF_UP)));
+        return section(
+                "available", true,
+                "totalUsdt", money(total),
+                "missingKeys", List.of(),
+                "rows", rows);
+    }
+
     private List<Map<String, Object>> funnelStagesFromOrders(LocalDateTime since) {
         List<Map<String, Object>> stages = new ArrayList<>(List.of(
                 funnelStage("deposit", "入金", ledgerRepository.countDeposits(since, null), "nx_deposit_order", "var(--brand)"),
@@ -2185,5 +2316,8 @@ public class OpsTreasuryService {
     }
 
     private record GateSeed(String key, String name) {
+    }
+
+    private record BudgetSeed(String key, String label, String configKey) {
     }
 }

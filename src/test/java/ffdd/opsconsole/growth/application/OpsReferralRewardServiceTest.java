@@ -49,7 +49,7 @@ class OpsReferralRewardServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy = mock(OpsReadTimeSeedPolicy.class);
     private final OpsReferralRewardService service = new OpsReferralRewardService(
-            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy);
+            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, null);
 
     @BeforeEach
     void setUp() {

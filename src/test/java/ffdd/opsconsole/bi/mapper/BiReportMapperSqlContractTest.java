@@ -7,6 +7,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class BiReportMapperSqlContractTest {
 
+    private static final String CURRENT_L5_REPORT_TYPES =
+            "UPPER(REPORT_TYPE) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', "
+                    + "'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')";
+
     @Test
     void downloadableReadyCountIncludesImplementedAggregateNetworkAndRegulatoryTypes() throws Exception {
         Select select = BiReportMapper.class.getMethod("countReadyReports").getAnnotation(Select.class);
@@ -15,7 +19,38 @@ class BiReportMapperSqlContractTest {
         assertThat(sql)
                 .contains("STATUS = 'READY'")
                 .contains("SNAPSHOT_CSV IS NOT NULL")
-                .contains("REPORT_TYPE IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')");
+                .contains(CURRENT_L5_REPORT_TYPES);
+    }
+
+    @Test
+    void l5OverviewAndTaskQueriesExcludeRetiredOrUnknownReportTypes() throws Exception {
+        for (String method : new String[]{
+                "countTotalReports",
+                "countSensitiveReports",
+                "countPendingConfirm",
+                "countReadyReportsWithoutSnapshot"
+        }) {
+            Select select = BiReportMapper.class.getMethod(method).getAnnotation(Select.class);
+            String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").toUpperCase();
+            assertThat(sql)
+                    .as(method)
+                    .contains(CURRENT_L5_REPORT_TYPES)
+                    .doesNotContain("KYC_REGULATORY");
+        }
+
+        Select countSelect = BiReportMapper.class
+                .getMethod("countReports", String.class, java.util.List.class)
+                .getAnnotation(Select.class);
+        Select pageSelect = BiReportMapper.class
+                .getMethod("reports", String.class, java.util.List.class, int.class, int.class)
+                .getAnnotation(Select.class);
+
+        for (Select select : new Select[]{countSelect, pageSelect}) {
+            String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").toUpperCase();
+            assertThat(sql)
+                    .contains(CURRENT_L5_REPORT_TYPES)
+                    .doesNotContain("KYC_REGULATORY");
+        }
     }
 
     @Test

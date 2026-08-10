@@ -8,6 +8,7 @@ public record DeviceOrderView(
         String userNo,
         String skuId,
         String skuName,
+        String skuSource,
         BigDecimal amount,
         String state,
         String dcLocation,

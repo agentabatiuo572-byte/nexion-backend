@@ -547,6 +547,9 @@ public class AppCanonicalBoundaryService {
         return ApiResult.ok(linked("orderNo", orderNo, "subtotalUsdt", subtotal,
                 "discountUsdt", discount, "amountUsdt", amount,
                 "voucherId", voucher.voucherId(),
+                "voucherRedemption", voucher.applied() ? linked(
+                        "voucherId", voucher.voucherId(), "grantId", voucher.grantId(),
+                        "status", "REDEEMED", "discountUsdt", voucher.discountUsdt()) : null,
                 "paymentStatus", "PENDING", "orderStatus", "PENDING_PAYMENT", "idSource", "server"));
     }
 

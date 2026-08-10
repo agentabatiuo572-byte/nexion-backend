@@ -2,6 +2,7 @@ package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -38,6 +39,7 @@ public class G4AdminCommandService {
     private final EventOutboxService outbox;
     private final AuditLogService audit;
     private final Clock clock;
+    private final EarningsReleaseService earningsReleaseService;
 
     @Transactional
     public ApiResult<Map<String,Object>> updateParam(String key,String idem,NexMarketValueUpdateRequest request){
@@ -108,8 +110,10 @@ public class G4AdminCommandService {
         int paid=0; BigDecimal paidTotal=BigDecimal.ZERO;
         for(AppGenesisMapper.EmissionItemRow item:mapper.lockPendingEmissionItems(batchNo)){
             BigDecimal before=mapper.lockWallet(item.userId());
-            if(before==null || mapper.creditWallet(item.userId(),item.amountUsdt())!=1) throw new BizException(409,"GENESIS_EMISSION_WALLET_CONFLICT");
+            if(before==null) throw new BizException(409,"GENESIS_EMISSION_WALLET_CONFLICT");
             String billNo="G4E-"+batchNo+"-"+item.holdingNo();
+            earningsReleaseService.creditReward(item.userId(), "G4_GENESIS_EMISSION", billNo,
+                    "USDT", item.amountUsdt(), "G4:"+billNo+":USDT");
             if(mapper.insertLedger(new AppGenesisMapper.LedgerWrite(item.userId(),billNo,"GENESIS_EMISSION","IN",
                     item.amountUsdt(),money(before.add(item.amountUsdt())),"G4 Genesis emission batch "+batchNo))!=1)
                 throw new BizException(409,"GENESIS_EMISSION_LEDGER_CONFLICT");

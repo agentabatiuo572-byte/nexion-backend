@@ -122,7 +122,16 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                        ORDER BY oi.sort_order,oi.id LIMIT 1), p.product_no, CAST(o.product_id AS CHAR)) AS skuId,
             COALESCE((SELECT oi.product_name FROM nx_order_item oi
                        WHERE oi.order_no=o.order_no AND oi.is_deleted=0
-                       ORDER BY oi.sort_order,oi.id LIMIT 1), p.name, o.order_no) AS skuName,
+                         AND NULLIF(TRIM(oi.product_name),'') IS NOT NULL
+                       ORDER BY oi.sort_order,oi.id LIMIT 1),
+                     NULLIF(TRIM(p.name),'')) AS skuName,
+            CASE
+              WHEN EXISTS(SELECT 1 FROM nx_order_item oi
+                          WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                            AND NULLIF(TRIM(oi.product_name),'') IS NOT NULL) THEN 'ORDER_ITEM'
+              WHEN NULLIF(TRIM(p.name),'') IS NOT NULL THEN 'PRODUCT_CATALOG'
+              ELSE 'UNAVAILABLE'
+            END AS skuSource,
             o.amount_usdt AS amount,
             """ + ORDER_STATE_SQL + """
              AS state,

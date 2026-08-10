@@ -44,7 +44,11 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('finance_d5_fee_write',         '提现费率调整',       'API', '/finance/params', 'HIGH', 1, 1, 0),
   -- D6 汇率牌价 /finance/fx-rate
   ('finance_d6_read',              '汇率牌价-读',        'API', '/finance/fx-rate', 'READ', 0, 1, 0),
-  ('finance_d6_manage',            '汇率牌价调整',       'API', '/finance/fx-rate', 'HIGH', 1, 1, 0)
+  ('finance_d6_manage',            '汇率牌价调整',       'API', '/finance/fx-rate', 'HIGH', 1, 1, 0),
+  ('finance_d7_read',              '法币提现参数-读',     'API', '/finance/payout-vnd', 'READ', 0, 1, 0),
+  ('finance_d7_manage',            '法币提现参数调整',    'API', '/finance/payout-vnd', 'HIGH', 1, 1, 0),
+  ('finance_d7_channel_toggle',    '法币提现通道启停',    'API', '/finance/payout-vnd', 'CRITICAL', 1, 1, 0),
+  ('finance_d7_force_inverted',    '法币提现倒挂强制保存','API', '/finance/payout-vnd', 'CRITICAL', 1, 1, 0)
 ON DUPLICATE KEY UPDATE
   permission_name = VALUES(permission_name),
   resource_type   = VALUES(resource_type),

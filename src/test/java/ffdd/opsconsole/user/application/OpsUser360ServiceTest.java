@@ -309,6 +309,7 @@ class OpsUser360ServiceTest {
                 "U00002231",
                 "a100-pro",
                 "A100 节点",
+                "PRODUCT_CATALOG",
                 new BigDecimal("129"),
                 "active",
                 "SG-1",

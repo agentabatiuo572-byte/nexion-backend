@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
+import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
@@ -16,6 +17,7 @@ import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
+import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -34,6 +36,22 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsGrowthController {
     private final OpsGrowthService growthService;
     private final OpsGrowthCommandBoundary commandBoundary;
+    private final GrowthPublicStatsService publicStatsService;
+
+    @GetMapping("/public-stats")
+    @PreAuthorize("hasAuthority('growth_h9_read')")
+    public ApiResult<Map<String, Object>> publicStats() {
+        return publicStatsService.overview();
+    }
+
+    @PatchMapping("/public-stats")
+    @PreAuthorize("hasAuthority('growth_h9_write')")
+    public ApiResult<Map<String, Object>> updatePublicStats(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthPublicStatsUpdateRequest request) {
+        return commandBoundary.execute("H9", "PUBLIC_STATS_UPDATE", "PUBLIC_STATS", idempotencyKey, request,
+                () -> publicStatsService.update(request, idempotencyKey));
+    }
 
     @GetMapping("/phases")
     @PreAuthorize("hasAuthority('growth_h1_read')")

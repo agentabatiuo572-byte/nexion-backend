@@ -33,13 +33,23 @@ class AppGenesisServiceTest {
     private final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox=mock(EventOutboxService.class);
     private final AuditLogService audit=mock(AuditLogService.class);
+    private final GenesisCatalogService catalog=mock(GenesisCatalogService.class);
     private final AppGenesisService service=new AppGenesisService(mapper,config,idempotency,outbox,audit,
-            Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC));
+            Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC),catalog);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes","unchecked"})
     void setUp(){
-        when(config.activeValue(anyString())).thenReturn(Optional.empty());
+        when(config.activeValue(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
+            case "market.genesis.ops.eligibility.enabled" -> Optional.of("true");
+            case "market.genesis.ops.eligibility.maxPerUser" -> Optional.of("5");
+            case "market.genesis.ops.eligibility.minAccountAgeDays" -> Optional.of("0");
+            case "market.genesis.ops.presale.enabled" -> Optional.of("false");
+            case "market.genesis.ops.presale.showCountdown" -> Optional.of("true");
+            case "market.genesis.ops.presale.unitPrice" -> Optional.of("9999");
+            case "market.genesis.ops.presale.maxPerUser" -> Optional.of("5");
+            default -> Optional.empty();
+        });
         when(mapper.controlValue(anyString())).thenReturn(null);
         when(mapper.activeSeries()).thenReturn(series());
         when(mapper.lockActiveSeries()).thenReturn(series());
@@ -59,6 +69,12 @@ class AppGenesisServiceTest {
         when(mapper.emissions(42L)).thenReturn(List.of());
         when(mapper.listings()).thenReturn(List.of());
         when(mapper.transactions()).thenReturn(List.of());
+        when(catalog.marketOpen()).thenReturn(true);
+        when(catalog.priceForSold(anyLong())).thenReturn(new BigDecimal("9999.000000"));
+        when(catalog.hasRedeemedInvite(anyLong())).thenReturn(false);
+        when(catalog.publicState()).thenReturn(java.util.Map.of(
+                "tiers", List.of(), "tiersVersion", 1L, "marketOpenState", "open",
+                "marketOpenStateVersion", 1L, "closedNoticeKey", "default"));
         when(idempotency.execute(anyString(),anyString(),anyString(),any(),any()))
                 .thenAnswer(i->((Supplier)i.getArgument(4)).get());
     }
@@ -90,6 +106,21 @@ class AppGenesisServiceTest {
         assertThatThrownBy(()->service.purchase(42L,"purchase-paused",new AppGenesisService.PurchaseRequest(1)))
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_MARKET_PAUSED");
         verify(mapper,never()).debitWallet(any(),any());
+    }
+
+    @Test
+    void missingSalePolicyRemainsViewableButFailsClosedForMutation() {
+        when(config.activeValue(anyString())).thenReturn(Optional.empty());
+
+        @SuppressWarnings("unchecked")
+        var sale = (java.util.Map<String, Object>) service.state().getData().get("sale");
+        assertThat(sale).containsEntry("available", false).containsEntry("open", false);
+
+        assertThatThrownBy(() -> service.purchase(42L, "policy-missing",
+                new AppGenesisService.PurchaseRequest(1)))
+                .isInstanceOfSatisfying(BizException.class, ex ->
+                        assertThat(ex.getMessage()).isEqualTo("GENESIS_SALE_POLICY_UNAVAILABLE"));
+        verify(mapper, never()).debitWallet(any(), any());
     }
 
     @Test
@@ -188,7 +219,7 @@ class AppGenesisServiceTest {
     }
 
     @Test
-    void activePresaleUsesConfiguredPriceAndAppliesCombinedPerUserCap(){
+    void activePresaleUsesCanonicalTierPriceAndAppliesCombinedPerUserCap(){
         when(config.activeValue("market.genesis.ops.eligibility.maxPerUser")).thenReturn(Optional.of("5"));
         when(config.activeValue("market.genesis.ops.presale.enabled")).thenReturn(Optional.of("true"));
         when(config.activeValue("market.genesis.ops.presale.unitPrice")).thenReturn(Optional.of("7999"));
@@ -198,12 +229,12 @@ class AppGenesisServiceTest {
         when(config.activeValue("market.genesis.ops.presale.endAt"))
                 .thenReturn(Optional.of("2026-08-01T00:00:00Z"));
         when(mapper.userHoldingCount(42L,"genesis-main")).thenReturn(1L);
-        when(mapper.debitWallet(42L,new BigDecimal("7999.000000"))).thenReturn(1);
+        when(mapper.debitWallet(42L,new BigDecimal("9999.000000"))).thenReturn(1);
 
         var result=service.purchase(42L,"purchase-presale-price",new AppGenesisService.PurchaseRequest(1));
 
         assertThat(result.getCode()).isZero();
-        verify(mapper).debitWallet(42L,new BigDecimal("7999.000000"));
+        verify(mapper).debitWallet(42L,new BigDecimal("9999.000000"));
         var eligibility=service.eligibility(42L).getData();
         assertThat(eligibility).containsEntry("maxPerUser",2).containsEntry("remainingCap",1L);
     }

@@ -12,6 +12,8 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -25,6 +27,12 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/risk")
 @RequiredArgsConstructor
 public class OpsRiskRadarController {
+    private static final Map<String, String> TARGET_READ_AUTHORITIES = Map.of(
+            "/finance/withdrawals", "finance_d2_read",
+            "/risk/multi-account", "risk_k1_read",
+            "/risk/abuse", "risk_k2_read",
+            "/emergency/kill-switch", "emergency_j1_read",
+            "/overview/dual-ledger", "overview_b1_read");
     private final OpsRiskRadarService service;
 
     @GetMapping("/radar")
@@ -80,7 +88,13 @@ public class OpsRiskRadarController {
     @PreAuthorize("hasAuthority('overview_b5_triage')")
     public ApiResult<Map<String, Object>> triage(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody B5TriageRequest request) {
+            @RequestBody B5TriageRequest request,
+            Authentication authentication) {
+        String required = request == null ? null : TARGET_READ_AUTHORITIES.get(request.target());
+        if (required != null && (authentication == null || authentication.getAuthorities().stream()
+                .noneMatch(authority -> required.equals(authority.getAuthority())))) {
+            throw new AccessDeniedException("B5_TRIAGE_TARGET_READ_REQUIRED");
+        }
         return service.triage(idempotencyKey, request);
     }
 }

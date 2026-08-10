@@ -10,7 +10,10 @@ import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
@@ -30,6 +33,8 @@ public class AppLearningService {
     private final AppLearningMapper learningMapper;
     private final TreasuryLedgerPostingFacade treasuryLedgerPostingFacade;
     private final EventOutboxService eventOutboxService;
+    private final EarningsReleaseService earningsReleaseService;
+    private final AdminIdempotencyService idempotencyService;
 
     public ApiResult<AppLearningOverview> overview(Long userId, String language) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
@@ -88,15 +93,41 @@ public class AppLearningService {
                 || request.answers().stream().anyMatch(answer -> answer == null || answer < 0)) {
             return ApiResult.fail(422, "LEARNING_QUIZ_ANSWERS_INVALID");
         }
+        if (!StringUtils.hasText(request.idempotencyKey())) {
+            return ApiResult.fail(422, "LEARNING_QUIZ_IDEMPOTENCY_KEY_REQUIRED");
+        }
+        String idempotencyKey = request.idempotencyKey().trim();
+        if (idempotencyKey.length() < 8 || idempotencyKey.length() > 128) {
+            return ApiResult.fail(422, "LEARNING_QUIZ_IDEMPOTENCY_KEY_INVALID");
+        }
+        String requestHash = course.id() + ":" + course.version() + ":" + request.answers();
+        try {
+            AppLearningQuizResult result = idempotencyService.execute(
+                    "APP_LEARNING_QUIZ:" + userId + ":" + course.id() + ":" + course.version(),
+                    idempotencyKey,
+                    requestHash,
+                    AppLearningQuizResult.class,
+                    () -> submitQuizOnce(userId, course, questions, request.answers()));
+            return ApiResult.ok(result);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
+        }
+    }
+
+    private AppLearningQuizResult submitQuizOnce(
+            Long userId,
+            LearningCourseView course,
+            List<LearningQuizQuestionView> questions,
+            List<Integer> answers) {
         LearningProgressRow progress = learningMapper.findProgress(userId, course.id(), course.version());
         int attempts = progress == null ? 0 : progress.attempts();
         int maxAttempts = course.retryLimit() == null ? 1 : course.retryLimit() + 1;
-        if (attempts >= maxAttempts) return ApiResult.fail(409, "LEARNING_QUIZ_RETRY_LIMIT_REACHED");
+        if (attempts >= maxAttempts) throw new BizException(409, "LEARNING_QUIZ_RETRY_LIMIT_REACHED");
         int correct = 0;
         for (int index = 0; index < questions.size(); index += 1) {
-            int answer = request.answers().get(index);
+            int answer = answers.get(index);
             if (answer >= questions.get(index).optionsZh().size()) {
-                return ApiResult.fail(422, "LEARNING_QUIZ_ANSWERS_INVALID");
+                throw new BizException(422, "LEARNING_QUIZ_ANSWERS_INVALID");
             }
             if (answer == questions.get(index).correctOptionIndex()) correct += 1;
         }
@@ -110,7 +141,7 @@ public class AppLearningService {
                     userId, course.id(), course.version(), "course_completed", "{\"source\":\"quiz\"}");
             publishCompletionIfNew(inserted, userId, course);
         }
-        return ApiResult.ok(resultAfterCompletion(userId, course, score, attempts + 1));
+        return resultAfterCompletion(userId, course, score, attempts + 1);
     }
 
     private void publishCompletionIfNew(int inserted, Long userId, LearningCourseView course) {
@@ -130,7 +161,8 @@ public class AppLearningService {
             String rewardNo = "LEARN:" + userId + ":" + course.id() + ":" + course.version();
             granted = learningMapper.grantReward(rewardNo, userId, course.id(), course.version(), course.rewardNex()) == 1;
             if (granted) {
-                learningMapper.creditWallet(userId, course.rewardNex());
+                earningsReleaseService.creditReward(userId, "LEARNING_REWARD", rewardNo,
+                        "NEX", course.rewardNex(), rewardNo + ":NEX");
                 treasuryLedgerPostingFacade.postLedgerEntry(rewardNo, userId, "LEARNING_REWARD", "NEX", "IN",
                         course.rewardNex(), "SUCCESS", "完成课程 " + course.id() + " " + course.version());
             }

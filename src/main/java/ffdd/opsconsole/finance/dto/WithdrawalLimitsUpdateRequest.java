@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonSetter;
 import java.math.BigDecimal;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.Map;
 
 /** Canonical D5 aggregate update. Presence is tracked so explicit null Phase fields cannot bypass the read-only guard. */
 public class WithdrawalLimitsUpdateRequest {
@@ -16,7 +17,9 @@ public class WithdrawalLimitsUpdateRequest {
     private BigDecimal networkFeeMin;
     private BigDecimal networkFeeMax;
     private BigDecimal nexFeeOffsetRate;
-    private Boolean bep20Enabled;
+    private Map<String, BigDecimal> networkConfirmFeeUsd;
+    private BigDecimal smallAmountThresholdUsd;
+    private Integer payoutSlaHours;
     private Integer cooldownDays;
     private BigDecimal penaltyFeeRate;
     private Boolean complianceHoldEnabled;
@@ -37,8 +40,21 @@ public class WithdrawalLimitsUpdateRequest {
     @JsonSetter public void setNetworkFeeMax(BigDecimal value) { networkFeeMax = value; presentFields.add("networkFeeMax"); }
     public BigDecimal getNexFeeOffsetRate() { return nexFeeOffsetRate; }
     @JsonSetter public void setNexFeeOffsetRate(BigDecimal value) { nexFeeOffsetRate = value; presentFields.add("nexFeeOffsetRate"); }
-    public Boolean getBep20Enabled() { return bep20Enabled; }
-    @JsonSetter public void setBep20Enabled(Boolean value) { bep20Enabled = value; presentFields.add("bep20Enabled"); }
+    public Map<String, BigDecimal> getNetworkConfirmFeeUsd() { return networkConfirmFeeUsd; }
+    @JsonSetter public void setNetworkConfirmFeeUsd(Map<String, BigDecimal> value) {
+        networkConfirmFeeUsd = value;
+        presentFields.add("networkConfirmFeeUsd");
+    }
+    public BigDecimal getSmallAmountThresholdUsd() { return smallAmountThresholdUsd; }
+    @JsonSetter public void setSmallAmountThresholdUsd(BigDecimal value) {
+        smallAmountThresholdUsd = value;
+        presentFields.add("smallAmountThresholdUsd");
+    }
+    public Integer getPayoutSlaHours() { return payoutSlaHours; }
+    @JsonSetter public void setPayoutSlaHours(Integer value) {
+        payoutSlaHours = value;
+        presentFields.add("payoutSlaHours");
+    }
     public Integer getCooldownDays() { return cooldownDays; }
     @JsonSetter public void setCooldownDays(Integer value) { cooldownDays = value; presentFields.add("cooldownDays"); }
     public BigDecimal getPenaltyFeeRate() { return penaltyFeeRate; }
@@ -66,7 +82,8 @@ public class WithdrawalLimitsUpdateRequest {
         Set<String> fields = new LinkedHashSet<>(presentFields);
         fields.retainAll(Set.of(
                 "dailyLimitCount", "balanceMaxRatio", "networkFeeRatio",
-                "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "bep20Enabled"));
+                "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd",
+                "smallAmountThresholdUsd", "payoutSlaHours"));
         return fields;
     }
 }

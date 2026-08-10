@@ -51,7 +51,7 @@ class AppWithdrawalK3RoutingServiceTest {
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -66,9 +66,17 @@ class AppWithdrawalK3RoutingServiceTest {
                 new WithdrawalRiskFacts("U00000007", 3, new BigDecimal("4900.000000"), 3, "low",
                         78, "k4-v13", LocalDateTime.now(), 41, 73, 91));
         when(config.activeValue("withdrawal.trc20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.bep20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.erc20.enabled")).thenReturn(Optional.of("true"));
+        when(config.activeValue("withdrawal.d5.version")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.trc20")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.bep20")).thenReturn(Optional.of("1"));
+        when(config.activeValue("withdrawal.network_confirm_fee_usd.erc20")).thenReturn(Optional.of("5"));
         when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("10"));
         when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("0.8"));
         when(config.activeValue("withdrawal.nex_fee_offset_rate")).thenReturn(Optional.of("0.4"));
+        when(config.activeValue("withdrawal.small_amount_threshold_usd")).thenReturn(Optional.of("50"));
+        when(config.activeValue("withdrawal.payout_sla_hours")).thenReturn(Optional.of("24"));
         when(config.activeValue("withdrawal.fee_rate")).thenReturn(Optional.of("0.001"));
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.1"));
         when(config.activeValue("withdrawal.fee_max_usdt")).thenReturn(Optional.of("5"));

@@ -7,6 +7,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.SpinTicket;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.WheelEvent;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelMapper.WheelTier;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -49,6 +50,7 @@ public class AppGrowthWheelService {
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+    private final EarningsReleaseService earningsReleaseService;
     private final Clock clock = Clock.systemUTC();
 
     @Transactional(rollbackFor = Exception.class)
@@ -251,8 +253,15 @@ public class AppGrowthWheelService {
     private void creditWallet(Long userId, String spinNo, String asset, BigDecimal amount) {
         BigDecimal before = "USDT".equals(asset) ? mapper.lockWalletUsdt(userId) : mapper.lockWalletNex(userId);
         if (before == null) throw new BizException(409, "USER_WALLET_NOT_FOUND");
-        int changed = "USDT".equals(asset)
-                ? mapper.creditWalletUsdt(userId, amount) : mapper.creditWalletNex(userId, amount);
+        int changed;
+        if (earningsReleaseService == null) {
+            changed = "USDT".equals(asset)
+                    ? mapper.creditWalletUsdt(userId, amount) : mapper.creditWalletNex(userId, amount);
+        } else {
+            earningsReleaseService.creditReward(userId, "H4_WHEEL", spinNo + ":" + asset,
+                    asset, amount, "H4:" + spinNo + ":" + asset);
+            changed = 1;
+        }
         if (changed != 1 || mapper.insertWalletLedger(userId, spinNo, asset, amount, before.add(amount)) != 1) {
             throw new BizException(409, "WHEEL_REWARD_LEDGER_CONFLICT");
         }

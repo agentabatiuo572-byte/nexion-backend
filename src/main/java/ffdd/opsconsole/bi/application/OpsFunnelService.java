@@ -51,6 +51,12 @@ public class OpsFunnelService {
         String normalizedStage = normalizeStage(stage);
         Map<String, Object> result = mutable(B3FunnelAnalytics.calculate(
                 mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), normalizedStage));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> overviewTrend =
+                (List<Map<String, Object>>) result.getOrDefault("trend", List.of());
+        if (overviewTrend.size() > 13) {
+            result.put("trend", new ArrayList<>(overviewTrend.subList(overviewTrend.size() - 13, overviewTrend.size())));
+        }
         result.put("savedViews", mapper.selectB3Views(currentAdminId()));
         result.put("crossDomainLinks", List.of(
                 linked("label", "L2 完整下钻", "href", "/analytics/funnel-cohort"),

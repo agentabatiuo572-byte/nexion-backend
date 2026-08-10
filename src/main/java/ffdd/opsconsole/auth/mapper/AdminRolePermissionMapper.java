@@ -34,6 +34,62 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     long countActiveSuperAdminClassicPermissions();
 
+    /**
+     * Confirms the durable M5 CONTENT closure installed by the controlled startup migration.
+     * A false result must block startup rather than let Redis serve a legacy M1-M4 cache entry.
+     */
+    @Select("""
+            SELECT CASE WHEN
+                EXISTS (
+                    SELECT 1 FROM nx_admin_role r
+                     WHERE r.role_code = 'CONTENT' AND r.status = 1 AND r.is_deleted = 0
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM nx_admin_role r
+                      JOIN nx_admin_role_permission rp ON rp.role_id = r.id AND rp.is_deleted = 0
+                      JOIN nx_admin_permission p ON p.id = rp.permission_id
+                     WHERE r.role_code = 'CONTENT'
+                       AND r.status = 1
+                       AND r.is_deleted = 0
+                       AND p.permission_code LIKE 'service_m%'
+                       AND p.permission_code NOT IN ('service_m5_read', 'service_m5_write')
+                )
+                AND (
+                    SELECT COUNT(DISTINCT p.permission_code)
+                      FROM nx_admin_role r
+                      JOIN nx_admin_role_permission rp ON rp.role_id = r.id AND rp.is_deleted = 0
+                      JOIN nx_admin_permission p ON p.id = rp.permission_id
+                     WHERE r.role_code = 'CONTENT'
+                       AND r.status = 1
+                       AND r.is_deleted = 0
+                       AND p.permission_code IN ('service_m5_read', 'service_m5_write')
+                ) = 2
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM nx_admin_role r
+                      JOIN nx_admin_role_menu rm ON rm.role_id = r.id AND rm.is_deleted = 0
+                      JOIN nx_admin_menu m ON m.id = rm.menu_id
+                     WHERE r.role_code = 'CONTENT'
+                       AND r.status = 1
+                       AND r.is_deleted = 0
+                       AND m.menu_code LIKE 'M%'
+                       AND m.menu_code NOT IN ('M', 'M5')
+                )
+                AND (
+                    SELECT COUNT(DISTINCT m.menu_code)
+                      FROM nx_admin_role r
+                      JOIN nx_admin_role_menu rm ON rm.role_id = r.id AND rm.is_deleted = 0
+                      JOIN nx_admin_menu m ON m.id = rm.menu_id
+                     WHERE r.role_code = 'CONTENT'
+                       AND r.status = 1
+                       AND r.is_deleted = 0
+                       AND m.menu_code IN ('M', 'M5')
+                ) = 2
+            THEN 1 ELSE 0 END
+            """)
+    boolean isM5ContentRbacClosureApplied();
+
     @Select("""
             SELECT DISTINCT p.permission_code
             FROM nx_admin_role_relation rr

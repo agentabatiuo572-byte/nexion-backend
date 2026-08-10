@@ -2,7 +2,6 @@ package ffdd.opsconsole.treasury.domain;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -55,6 +54,14 @@ public interface TreasuryLedgerRepository {
     BigDecimal sumPendingCommissionUsdt();
 
     BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt);
+
+    default List<Map<String, Object>> liquidityFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+        return List.of();
+    }
+
+    default List<Map<String, Object>> monthlyGrowthFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+        return List.of();
+    }
 
     List<Map<String, Object>> maturityBuckets(LocalDateTime startAt, LocalDateTime endAt);
 

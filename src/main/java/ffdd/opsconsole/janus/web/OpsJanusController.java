@@ -8,6 +8,8 @@ import ffdd.opsconsole.janus.dto.JanusDeviceQueryRequest;
 import ffdd.opsconsole.janus.dto.JanusStatusChangeRequest;
 import ffdd.opsconsole.janus.dto.JanusStrategyActionRequest;
 import ffdd.opsconsole.janus.dto.JanusStrategyUpsertRequest;
+import ffdd.opsconsole.janus.dto.JanusTakeoverAdminRequest;
+import ffdd.opsconsole.janus.application.JanusTakeoverService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -30,6 +33,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsJanusController {
     private final OpsJanusService janusService;
+    private final JanusTakeoverService takeoverService;
 
     @GetMapping("/metadata")
     @PreAuthorize("hasAuthority('risk_k6_read')")
@@ -63,6 +67,30 @@ public class OpsJanusController {
             @RequestBody JanusStatusChangeRequest request) {
         return janusService.updateStatus(sid, idempotencyKey, request);
     }
+
+    @PostMapping("/devices/{sid}/takeover/revoke")
+    @PreAuthorize("hasAuthority('risk_k6_write')")
+    public ApiResult<Map<String,Object>> revokeTakeover(@PathVariable String sid,@RequestHeader("Idempotency-Key") String idempotencyKey,@RequestBody JanusTakeoverAdminRequest request){return takeoverService.revoke(sid,idempotencyKey,request);}
+
+    @PostMapping("/devices/{sid}/takeover/revoke:resend")
+    @PreAuthorize("hasAuthority('risk_k6_write')")
+    public ApiResult<Map<String,Object>> resendRevokeTakeover(@PathVariable String sid,@RequestHeader("Idempotency-Key") String idempotencyKey,@RequestBody JanusTakeoverAdminRequest request){return takeoverService.resendRevoke(sid,idempotencyKey,request);}
+
+    @PostMapping("/devices/{sid}/takeover/target")
+    @PreAuthorize("hasAuthority('risk_k6_write')")
+    public ApiResult<Map<String,Object>> changeTakeoverTarget(@PathVariable String sid,@RequestHeader("Idempotency-Key") String idempotencyKey,@RequestBody JanusTakeoverAdminRequest request){return takeoverService.changeTarget(sid,idempotencyKey,request);}
+
+    @PostMapping("/devices/{sid}/takeover/retry")
+    @PreAuthorize("hasAuthority('risk_k6_write')")
+    public ApiResult<Map<String,Object>> retryTakeover(@PathVariable String sid,@RequestHeader("Idempotency-Key") String idempotencyKey,@RequestBody JanusTakeoverAdminRequest request){return takeoverService.retry(sid,idempotencyKey,request);}
+
+    @GetMapping("/devices/{sid}/takeover/applied")
+    @PreAuthorize("hasAuthority('risk_k6_read')")
+    public ApiResult<Map<String,Object>> takeoverApplied(@PathVariable String sid,@RequestParam(required=false) String reconciliationId){return takeoverService.applied(sid,reconciliationId);}
+
+    @PostMapping("/devices/{sid}/takeover/applied:refresh")
+    @PreAuthorize("hasAuthority('risk_k6_write')")
+    public ApiResult<Map<String,Object>> refreshTakeoverApplied(@PathVariable String sid,@RequestHeader("Idempotency-Key") String idempotencyKey,@RequestBody JanusTakeoverAdminRequest request){return takeoverService.requestApplied(sid,idempotencyKey,request);}
 
     @GetMapping("/strategies")
     @PreAuthorize("hasAuthority('risk_k6_read')")

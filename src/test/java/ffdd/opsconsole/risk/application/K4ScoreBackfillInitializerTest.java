@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
@@ -23,6 +24,25 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class K4ScoreBackfillInitializerTest {
+    @Test
+    void malformedActiveModelIsQuarantinedWithoutWritingScoresOrOutboxEvents() {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        RiskScoreModelView malformed = new RiskScoreModelView(
+                2L, 0L, "active", Map.of(), Map.of(), Map.of(),
+                40, 70, 85, "malformed", "system", "system", "now", "now");
+        when(repository.activeScoringModel()).thenReturn(Optional.of(malformed));
+        EventOutboxService eventOutboxService = mock(EventOutboxService.class);
+        K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
+                repository, new K4RiskScorer(), eventOutboxService, immediateTransactionExecutor());
+
+        initializer.backfillCanonicalScores();
+
+        verify(repository).synchronizeScoringUsers();
+        verify(repository, never()).scoreUserNosNeedingProjection(any(Long.class), any(Integer.class));
+        verify(repository, never()).refreshScoreProjection(any(), any(Long.class), any(), any(Integer.class), any());
+        verify(eventOutboxService, never()).publish(any(), any(), any(), any());
+    }
+
     @Test
     void startupBackfillReplacesLegacyContributionsWithCanonicalActiveModelProjection() {
         RiskOpsRepository repository = mock(RiskOpsRepository.class);

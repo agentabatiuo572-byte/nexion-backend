@@ -104,7 +104,7 @@ public final class B3FunnelAnalytics {
                     "cvrFromPrev", cvr,
                     "momDelta", null,
                     "lifecycleLabel", LIFECYCLES.get(index),
-                    "kpiTarget", index == 2 ? "5%–10%（store→首购）" : null,
+                    "kpiTarget", index == 1 ? "5%–10%（store→首购）" : null,
                     "color", COLORS.get(index),
                     "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)));
         }
@@ -119,6 +119,9 @@ public final class B3FunnelAnalytics {
                 "stages", stages,
                 "auxMetrics", aux,
                 "trend", trendFromEvents(allEvents, normalizeStage(trendStage), phase, ref),
+                "dailyFirstPurchaseTargetPct", 18,
+                "dailyFirstPurchase", dailyFirstPurchase(registered, purchased),
+                "purchaseChannels", purchaseChannels(registered, purchased),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
                 "sourceStatement", "仅统计 schema_registered=1 且权威性满足 A4 规则的事件；主漏斗按同一用户严格有序推进");
     }
@@ -152,6 +155,51 @@ public final class B3FunnelAnalytics {
                     "cvrFromPrev", stageIndex == 0 ? null : percent(selected, previous)));
         }
         return points;
+    }
+
+    private static List<Map<String, Object>> dailyFirstPurchase(
+            Map<String, EventFact> registered, Map<String, EventFact> purchased) {
+        LocalDate end = LocalDate.now();
+        LocalDate start = end.minusDays(7);
+        List<Map<String, Object>> points = new ArrayList<>();
+        for (int offset = 0; offset < 8; offset++) {
+            LocalDate day = start.plusDays(offset);
+            Set<String> cohortActors = registered.entrySet().stream()
+                    .filter(entry -> entry.getValue().at().toLocalDate().equals(day))
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            long firstPurchaseUsers = cohortActors.stream()
+                    .filter(actor -> {
+                        EventFact purchase = purchased.get(actor);
+                        return purchase != null && purchase.at().toLocalDate().equals(day);
+                    })
+                    .count();
+            points.add(linked(
+                    "date", day.toString(),
+                    "registeredUsers", cohortActors.size(),
+                    "firstPurchaseUsers", firstPurchaseUsers,
+                    "conversionPct", percent(firstPurchaseUsers, cohortActors.size())));
+        }
+        return points;
+    }
+
+    private static List<Map<String, Object>> purchaseChannels(
+            Map<String, EventFact> registered, Map<String, EventFact> purchased) {
+        Map<String, Long> counts = purchased.keySet().stream()
+                .map(registered::get)
+                .filter(Objects::nonNull)
+                .collect(Collectors.groupingBy(
+                        registration -> defaultText(registration.ref(), "direct"),
+                        TreeMap::new,
+                        Collectors.counting()));
+        long total = counts.values().stream().mapToLong(Long::longValue).sum();
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry::getKey))
+                .map(entry -> linked(
+                        "channel", entry.getKey(),
+                        "firstPurchaseUsers", entry.getValue(),
+                        "sharePct", percent(entry.getValue(), total)))
+                .toList();
     }
 
     private static List<Map<String, EventFact>> orderedStages(
@@ -239,6 +287,9 @@ public final class B3FunnelAnalytics {
                         "day7Target", 60,
                         "day7Mature", false),
                 "trend", List.of(),
+                "dailyFirstPurchaseTargetPct", 18,
+                "dailyFirstPurchase", dailyFirstPurchase(Map.of(), Map.of()),
+                "purchaseChannels", List.of(),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"),
                 "sourceStatement", "A4 权威事件事实不足，当前已停止计算");
     }

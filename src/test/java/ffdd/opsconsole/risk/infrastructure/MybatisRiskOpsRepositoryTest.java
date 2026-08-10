@@ -10,13 +10,147 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ffdd.opsconsole.risk.mapper.RiskOpsMapper;
+import ffdd.opsconsole.risk.application.K4RiskScorer;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class MybatisRiskOpsRepositoryTest {
     private final RiskOpsMapper mapper = mock(RiskOpsMapper.class);
+
+    @Test
+    void legacyKycDimensionIsRemovedFromTheCurrentK4ProjectionWithoutMutatingHistory() throws Exception {
+        Map<String, Integer> legacyWeights = new LinkedHashMap<>();
+        legacyWeights.put("multiAccount", 25);
+        legacyWeights.put("arbitrage", 20);
+        legacyWeights.put("kycStatus", 20);
+        legacyWeights.put("withdrawVelocity", 15);
+        legacyWeights.put("accountAge", 10);
+        legacyWeights.put("anomalyBehavior", 10);
+        Map<String, Boolean> legacySources = new LinkedHashMap<>();
+        legacyWeights.keySet().forEach(key -> legacySources.put(key, true));
+        Map<String, Integer> legacyMappings = new LinkedHashMap<>(K4RiskScorer.DEFAULT_MAPPINGS);
+        legacyMappings.put("kyc.reviewScore", 20);
+        legacyMappings.put("kyc.pendingScore", 40);
+        legacyMappings.put("kyc.rejectedScore", 80);
+        legacyMappings.put("kyc.sanctionedScore", 100);
+        ObjectMapper json = new ObjectMapper();
+        when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                7L, 3L, "active", json.writeValueAsString(legacyWeights),
+                json.writeValueAsString(legacySources), json.writeValueAsString(legacyMappings),
+                40, 70, 85, "legacy active", "risk-admin", "risk-admin", "now", "now"));
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        var model = repository.activeScoringModel().orElseThrow();
+
+        assertThat(model.weights()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "multiAccount", 30, "arbitrage", 25,
+                "withdrawVelocity", 20, "accountAge", 10, "anomalyBehavior", 15));
+        assertThat(model.weights().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(100);
+        assertThat(model.inputSources()).containsOnlyKeys(
+                "multiAccount", "arbitrage", "withdrawVelocity", "accountAge", "anomalyBehavior");
+        assertThat(model.scoreMappings()).isEqualTo(K4RiskScorer.DEFAULT_MAPPINGS);
+        assertThat(model.scoreMappings()).doesNotContainKeys(
+                "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore");
+    }
+
+    @Test
+    void customLegacyWeightsAreDeterministicallyRenormalizedAndMalformedJsonStillFailsClosed() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        Map<String, Integer> customLegacyWeights = new LinkedHashMap<>();
+        customLegacyWeights.put("multiAccount", 10);
+        customLegacyWeights.put("arbitrage", 10);
+        customLegacyWeights.put("kycStatus", 20);
+        customLegacyWeights.put("withdrawVelocity", 20);
+        customLegacyWeights.put("accountAge", 20);
+        customLegacyWeights.put("anomalyBehavior", 20);
+        Map<String, Boolean> legacySources = new LinkedHashMap<>();
+        customLegacyWeights.keySet().forEach(key -> legacySources.put(key, true));
+        Map<String, Integer> legacyMappings = new LinkedHashMap<>(K4RiskScorer.DEFAULT_MAPPINGS);
+        legacyMappings.put("kyc.reviewScore", 20);
+        legacyMappings.put("kyc.pendingScore", 40);
+        legacyMappings.put("kyc.rejectedScore", 80);
+        legacyMappings.put("kyc.sanctionedScore", 100);
+        when(mapper.activeScoreModel()).thenReturn(
+                new RiskOpsMapper.ScoreModelRecord(
+                        8L, 1L, "active", json.writeValueAsString(customLegacyWeights),
+                        json.writeValueAsString(legacySources), json.writeValueAsString(legacyMappings),
+                        40, 70, 85, "custom legacy", "risk-admin", "risk-admin", "now", "now"),
+                new RiskOpsMapper.ScoreModelRecord(
+                        9L, 1L, "active", "{broken", "{broken", "{broken",
+                        40, 70, 85, "malformed", "risk-admin", "risk-admin", "now", "now"));
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        var custom = repository.activeScoringModel().orElseThrow();
+        var malformed = repository.activeScoringModel().orElseThrow();
+
+        assertThat(custom.weights()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "multiAccount", 13, "arbitrage", 12,
+                "withdrawVelocity", 25, "accountAge", 25, "anomalyBehavior", 25));
+        assertThat(K4RiskScorer.isCurrentModelSnapshot(custom)).isTrue();
+        assertThat(malformed.weights()).isEmpty();
+        assertThat(malformed.inputSources()).isEmpty();
+        assertThat(malformed.scoreMappings()).isEmpty();
+    }
+
+    @Test
+    void unknownOrIncompleteKycMappingsAreNotProjectedAsApprovedLegacyHistory() throws Exception {
+        ObjectMapper json = new ObjectMapper();
+        Map<String, Integer> legacyWeights = new LinkedHashMap<>();
+        legacyWeights.put("multiAccount", 25);
+        legacyWeights.put("arbitrage", 20);
+        legacyWeights.put("kycStatus", 20);
+        legacyWeights.put("withdrawVelocity", 15);
+        legacyWeights.put("accountAge", 10);
+        legacyWeights.put("anomalyBehavior", 10);
+        Map<String, Boolean> legacySources = new LinkedHashMap<>();
+        legacyWeights.keySet().forEach(key -> legacySources.put(key, true));
+        Map<String, Integer> unknownMapping = new LinkedHashMap<>(K4RiskScorer.DEFAULT_MAPPINGS);
+        unknownMapping.put("kyc.unknownScore", 50);
+        Map<String, Integer> incompleteMapping = new LinkedHashMap<>(K4RiskScorer.DEFAULT_MAPPINGS);
+        incompleteMapping.put("kyc.reviewScore", 20);
+        when(mapper.activeScoreModel()).thenReturn(
+                new RiskOpsMapper.ScoreModelRecord(
+                        10L, 1L, "active", json.writeValueAsString(legacyWeights),
+                        json.writeValueAsString(legacySources), json.writeValueAsString(unknownMapping),
+                        40, 70, 85, "unknown mapping", "risk-admin", "risk-admin", "now", "now"),
+                new RiskOpsMapper.ScoreModelRecord(
+                        11L, 1L, "active", json.writeValueAsString(legacyWeights),
+                        json.writeValueAsString(legacySources), json.writeValueAsString(incompleteMapping),
+                        40, 70, 85, "incomplete mapping", "risk-admin", "risk-admin", "now", "now"));
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        var unknown = repository.activeScoringModel().orElseThrow();
+        var incomplete = repository.activeScoringModel().orElseThrow();
+
+        assertThat(unknown.scoreMappings()).containsKey("kyc.unknownScore");
+        assertThat(incomplete.scoreMappings()).containsKey("kyc.reviewScore");
+    }
+
+    @Test
+    void malformedActiveModelDoesNotCrashStartupOrOverwriteDerivedK4Tables() {
+        when(mapper.countScoreModels()).thenReturn(1L);
+        when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
+                12L, 1L, "active", "{broken", "null", "{broken",
+                40, 70, 85, "malformed", "risk-admin", "risk-admin", "now", "now"));
+        MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
+                mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
+
+        repository.ensureRiskSchema();
+
+        verify(mapper, never()).upsertScoreDimension(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt());
+        verify(mapper, never()).upsertScoreConfig(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
 
     @Test
     void k4DraftVersionAdvancesFromTheGreatestImmutableHistoryVersion() {

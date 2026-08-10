@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.risk.application.OpsRiskService;
+import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.risk.dto.RiskClusterReviewRequest;
 import ffdd.opsconsole.risk.dto.RiskDecisionRequest;
 import ffdd.opsconsole.risk.dto.RiskIpWhitelistRequest;
 import ffdd.opsconsole.risk.dto.RiskParamUpdateRequest;
+import ffdd.opsconsole.risk.dto.RiskReleaseParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleConditionRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleCreateRequest;
 import ffdd.opsconsole.risk.dto.RiskRuleDryRunRequest;
@@ -59,21 +61,22 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsRiskController {
     private final OpsRiskService riskService;
+    private final RiskReleaseParamsService releaseParamsService;
 
     @GetMapping("/overview")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read')")
     public ApiResult<Map<String, Object>> overview() {
         return riskService.overview();
     }
 
     @GetMapping("/cases")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read')")
     public ApiResult<PageResult<RiskCaseView>> cases(@ModelAttribute RiskCaseQueryRequest request) {
         return riskService.cases(request);
     }
 
     @GetMapping("/cases/{caseNo}")
-    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read','risk_k5_read')")
+    @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read')")
     public ApiResult<RiskCaseView> detail(@PathVariable String caseNo) {
         return riskService.detail(caseNo);
     }
@@ -105,9 +108,10 @@ public class OpsRiskController {
             @RequestParam(value = "clusterSort", required = false) String clusterSort,
             @RequestParam(value = "whitelistPageNum", required = false) Integer whitelistPageNum,
             @RequestParam(value = "whitelistPageSize", required = false) Integer whitelistPageSize) {
-        return riskService.multiAccountOverview(
+        ApiResult<Map<String,Object>> result=riskService.multiAccountOverview(
                 clusterPageNum, clusterPageSize, clusterLayer, clusterStatus, clusterSort,
                 whitelistPageNum, whitelistPageSize);
+        if(result.getCode()==0&&releaseParamsService!=null){Map<String,Object> data=new java.util.LinkedHashMap<>(result.getData());data.put("releaseParams",releaseParamsService.rows());return ApiResult.ok(data);}return result;
     }
 
     @PatchMapping("/multi-account/params/{key}")
@@ -126,6 +130,15 @@ public class OpsRiskController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskClusterStatusRequest request) {
         return riskService.updateMultiAccountClusterStatus(clusterId, idempotencyKey, request);
+    }
+
+    @PatchMapping("/multi-account/release-params/{key}")
+    @PreAuthorize("hasAuthority('risk_k1_cluster_release')")
+    public ApiResult<Map<String,Object>> updateReleaseParam(@PathVariable String key,
+            @RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String idempotencyKey,
+            @RequestBody RiskReleaseParamUpdateRequest request){
+        if(releaseParamsService==null)return ApiResult.fail(503,"K1_RELEASE_CONFIG_UNAVAILABLE");
+        return releaseParamsService.update(key,idempotencyKey,request);
     }
 
     @PatchMapping("/multi-account/clusters/{clusterId}/review-note")

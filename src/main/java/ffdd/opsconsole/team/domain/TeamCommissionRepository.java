@@ -51,6 +51,10 @@ public interface TeamCommissionRepository {
 
     boolean updateCommissionStatus(String eventId, String status);
 
+    boolean updateCommissionStatusCas(String eventId,String expectedStatus,String status,long expectedVersion);
+
+    boolean recordCommissionOperation(String eventId,String operationType,String idempotencyKey,long expectedVersion,String operator,String reason);
+
     // F4 · 修复2:V-Rank 票权权重(leadership_votes)写业务表 nx_v_rank_config。
     // F.pool.votes.V{n} → UPDATE nx_v_rank_config.leadership_votes WHERE rank_code=V{n}。
     boolean updateVRankLeadershipVotes(String rankCode, int votes);

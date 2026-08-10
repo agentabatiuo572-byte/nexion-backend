@@ -99,18 +99,27 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     int countValidDownloadToken(@Param("reportId") String reportId, @Param("tokenHash") String tokenHash,
                                 @Param("now") java.time.LocalDateTime now);
 
-    @Select("SELECT COUNT(*) FROM nx_admin_fourth_batch_report WHERE module_code = 'L5' AND is_deleted = 0")
+    @Select("""
+            SELECT COUNT(*) FROM nx_admin_fourth_batch_report
+             WHERE module_code = 'L5'
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
+               AND is_deleted = 0
+            """)
     long countTotalReports();
 
     @Select("""
             SELECT COUNT(*) FROM nx_admin_fourth_batch_report
-             WHERE module_code = 'L5' AND contains_pii = 1 AND is_deleted = 0
+             WHERE module_code = 'L5'
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
+               AND contains_pii = 1 AND is_deleted = 0
             """)
     long countSensitiveReports();
 
     @Select("""
             SELECT COUNT(*) FROM nx_admin_fourth_batch_report
-             WHERE module_code = 'L5' AND status IN ('PENDING_CONFIRM', 'PENDING_SPLIT_CONFIRM') AND is_deleted = 0
+             WHERE module_code = 'L5'
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
+               AND status IN ('PENDING_CONFIRM', 'PENDING_SPLIT_CONFIRM') AND is_deleted = 0
             """)
     long countPendingConfirm();
 
@@ -118,7 +127,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             SELECT COUNT(*) FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5' AND status = 'READY'
                AND snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0
-               AND report_type IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
                AND is_deleted = 0
             """)
     long countReadyReports();
@@ -126,6 +135,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("""
             SELECT COUNT(*) FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5' AND status = 'READY'
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
                AND (snapshot_csv IS NULL OR LENGTH(snapshot_csv) = 0)
                AND is_deleted = 0
             """)
@@ -514,6 +524,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND is_deleted = 0
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
              <if test='type != null and type != ""'>AND report_type = #{type}</if>
              <if test='statuses != null and statuses.size() > 0'>
                AND status IN
@@ -546,6 +557,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND is_deleted = 0
+               AND UPPER(report_type) IN ('KPI_SERIES', 'FUNNEL_COHORT', 'FINANCE_AGG', 'OPERATIONS_AGG', 'NETWORK_TREE', 'REGULATORY')
              <if test='type != null and type != ""'>AND report_type = #{type}</if>
              <if test='statuses != null and statuses.size() > 0'>
                AND status IN

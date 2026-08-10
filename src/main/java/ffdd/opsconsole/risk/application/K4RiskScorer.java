@@ -3,12 +3,14 @@ package ffdd.opsconsole.risk.application;
 import ffdd.opsconsole.risk.domain.RiskScoreContributionView;
 import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
 /** Deterministic five-dimension scorer shared by individual and batch recomputation. */
@@ -46,6 +48,9 @@ public class K4RiskScorer {
     }
 
     public ScoreResult score(RiskScoreRawInput input, RiskScoreModelView model) {
+        if (!isCurrentModelSnapshot(model)) {
+            throw new BizException(500, "K4_MODEL_SNAPSHOT_INVALID");
+        }
         List<RiskScoreContributionView> contributions = new ArrayList<>(DIMENSIONS.size());
         contributions.add(contribution(
                 "multiAccount", "多账户", multiAccountScore(input, model),
@@ -71,6 +76,57 @@ public class K4RiskScorer {
                         + (Boolean.TRUE.equals(input.tamperDetected()) ? "，命中篡改拦截" : ""), model));
         int score = contributions.stream().mapToInt(value -> value.points() == null ? 0 : value.points()).sum();
         return new ScoreResult(Math.max(0, Math.min(100, score)), List.copyOf(contributions));
+    }
+
+    public static boolean isCurrentModelSnapshot(RiskScoreModelView model) {
+        return model != null
+                && model.weights() != null
+                && model.weights().keySet().equals(Set.copyOf(DIMENSIONS))
+                && model.weights().values().stream().noneMatch(java.util.Objects::isNull)
+                && model.weights().values().stream().allMatch(value -> value >= 0 && value <= 100)
+                && model.weights().values().stream().mapToInt(Integer::intValue).sum() == 100
+                && model.inputSources() != null
+                && model.inputSources().keySet().equals(Set.copyOf(DIMENSIONS))
+                && model.inputSources().values().stream().noneMatch(java.util.Objects::isNull)
+                && validMappings(model.scoreMappings())
+                && model.bandLowMax() != null && model.bandHighMin() != null
+                && model.bandLowMax() >= 0 && model.bandHighMin() <= 100
+                && model.bandLowMax() < model.bandHighMin()
+                && model.autoEscalateScore() != null
+                && model.autoEscalateScore() >= 70 && model.autoEscalateScore() <= 100
+                && model.autoEscalateScore() >= model.bandHighMin();
+    }
+
+    private static boolean validMappings(Map<String, Integer> mappings) {
+        if (mappings == null || !mappings.keySet().equals(DEFAULT_MAPPINGS.keySet())
+                || mappings.values().stream().anyMatch(java.util.Objects::isNull)) {
+            return false;
+        }
+        for (Map.Entry<String, Integer> entry : mappings.entrySet()) {
+            int value = entry.getValue();
+            if (entry.getKey().endsWith("Score") && (value < 0 || value > 100)) return false;
+            if ("withdraw.largeAmountUsd".equals(entry.getKey()) && (value < 1 || value > 1_000_000)) return false;
+            if ("withdraw.baselineMultiplierPct".equals(entry.getKey()) && (value < 100 || value > 1_000)) return false;
+            if (Set.of("multiAccount.mediumMin", "multiAccount.highMin", "withdraw.highFrequency24h")
+                    .contains(entry.getKey()) && (value < 1 || value > 100)) return false;
+            if ("arbitrage.repeatMin".equals(entry.getKey()) && (value < 2 || value > 100)) return false;
+            if (Set.of("account.newDays", "account.matureDays").contains(entry.getKey())
+                    && (value < 1 || value > 10_000)) return false;
+        }
+        return mappings.get("multiAccount.mediumMin") < mappings.get("multiAccount.highMin")
+                && mappings.get("account.newDays") < mappings.get("account.matureDays")
+                && nonDecreasing(mappings, "multiAccount.mediumScore", "multiAccount.highScore", "multiAccount.fraudScore")
+                && nonDecreasing(mappings, "arbitrage.singleScore", "arbitrage.repeatScore", "arbitrage.severeScore")
+                && nonDecreasing(mappings, "withdraw.baselineScore", "withdraw.highScore")
+                && nonDecreasing(mappings, "account.middleScore", "account.newLargeScore")
+                && nonDecreasing(mappings, "anomaly.lowScore", "anomaly.tamperScore");
+    }
+
+    private static boolean nonDecreasing(Map<String, Integer> mappings, String... keys) {
+        for (int index = 1; index < keys.length; index++) {
+            if (mappings.get(keys[index - 1]) > mappings.get(keys[index])) return false;
+        }
+        return true;
     }
 
     private RiskScoreContributionView contribution(

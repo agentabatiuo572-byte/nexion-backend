@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
+import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
@@ -16,7 +17,9 @@ import org.junit.jupiter.api.Test;
 
 class OpsNexMarketControllerTest {
     private final OpsNexMarketService marketService = mock(OpsNexMarketService.class);
-    private final OpsNexMarketController controller = new OpsNexMarketController(marketService, null, null, null);
+    private final GenesisCatalogService genesisCatalogService = mock(GenesisCatalogService.class);
+    private final OpsNexMarketController controller = new OpsNexMarketController(
+            marketService, null, null, null, genesisCatalogService);
 
     @Test
     void curveDelegatesToService() {
@@ -89,6 +92,7 @@ class OpsNexMarketControllerTest {
     @Test
     void genesisDelegatesToService() {
         when(marketService.genesisOverview(2, 20)).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
+        when(genesisCatalogService.enrich(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> invocation.getArgument(0));
 
         assertThat(controller.genesis(2, 20).getData()).containsEntry("domain", "G4");
 

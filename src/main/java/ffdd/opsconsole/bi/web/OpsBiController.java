@@ -271,13 +271,13 @@ public class OpsBiController {
     }
 
     @GetMapping("/exports/{reportId}/download-token")
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate','user_c4_export')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate')")
     public ApiResult<Map<String, Object>> downloadToken(@PathVariable String reportId) {
         return biService.downloadToken(reportId);
     }
 
     @GetMapping("/exports/{reportId}/download")
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate','user_c4_export')")
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_regulatory_generate')")
     public ResponseEntity<StreamingResponseBody> downloadFile(
             @PathVariable String reportId,
             @RequestParam(value = "token", required = false) String downloadToken) {

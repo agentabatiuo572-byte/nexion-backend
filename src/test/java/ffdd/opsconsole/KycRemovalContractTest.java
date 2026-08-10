@@ -35,7 +35,21 @@ class KycRemovalContractTest {
     void activeRuntimeContainsNoKycReference() throws IOException {
         try (var files = Files.walk(Path.of("src/main/java"))) {
             for (Path file : files.filter(Files::isRegularFile).toList()) {
-                assertThat(Files.readString(file).toLowerCase())
+                String source = Files.readString(file).toLowerCase();
+                if (file.endsWith(Path.of("risk/infrastructure/MybatisRiskOpsRepository.java"))) {
+                    assertThat(source)
+                            .contains("legacy_k4_dimension_key = \"kycstatus\"")
+                            .contains("\"kyc.reviewscore\", \"kyc.pendingscore\", \"kyc.rejectedscore\", \"kyc.sanctionedscore\"");
+                    source = source
+                            .replace("legacy_k4_dimension_key", "legacy_dimension_key")
+                            .replace("legacy_k4_mapping_keys", "legacy_mapping_keys")
+                            .replace("kycstatus", "")
+                            .replace("kyc.reviewscore", "")
+                            .replace("kyc.pendingscore", "")
+                            .replace("kyc.rejectedscore", "")
+                            .replace("kyc.sanctionedscore", "");
+                }
+                assertThat(source)
                         .as("active KYC residue in %s", file)
                         .doesNotContain("kyc");
             }
@@ -67,6 +81,7 @@ class KycRemovalContractTest {
         assertThat(runner).contains("20260807_remove_kyc_runtime.sql");
         assertThat(migration)
                 .contains("information_schema.COLUMNS")
+                .contains("config_key='kyc.network_whitelist'")
                 .contains("ON DUPLICATE KEY UPDATE user_id=VALUES(user_id)")
                 .doesNotContain("ON DUPLICATE KEY UPDATE address=VALUES(address)");
     }

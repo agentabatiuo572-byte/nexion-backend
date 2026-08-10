@@ -228,6 +228,58 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void restoredLiquidityHistoryKeepsEightAuthoritativeFlowAndDepositWindows() {
+        List<Map<String, Object>> daily = new ArrayList<>();
+        List<Map<String, Object>> monthly = new ArrayList<>();
+        for (int index = 0; index < 8; index++) {
+            daily.add(Map.of(
+                    "label", "2026-06-" + String.format("%02d", 10 + index),
+                    "inflowUsdt", new BigDecimal("20000").add(BigDecimal.valueOf(index)),
+                    "outflowUsdt", new BigDecimal("5000"),
+                    "netUsdt", new BigDecimal("15000").add(BigDecimal.valueOf(index))));
+            monthly.add(Map.of(
+                    "label", "2025-" + String.format("%02d", 11 + index),
+                    "newInflowUsdt", new BigDecimal("30000"),
+                    "outflowUsdt", new BigDecimal("10000")));
+        }
+        ledgerRepository.liquidityFlowRows = daily;
+        ledgerRepository.monthlyGrowthFlowRows = monthly;
+
+        Map<String, Object> history = service.liquidityHistory().getData();
+
+        assertThat((List<Map<String, Object>>) history.get("flowWindows")).hasSize(8);
+        assertThat((List<Map<String, Object>>) history.get("monthlyNewDeposits")).hasSize(8);
+        assertThat(history.get("sources").toString())
+                .contains("nx_treasury_reserve_ledger", "nx_wallet_ledger");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void restoredGrowthFlowKeepsRatioHealthLineAndFailsBudgetClosed() {
+        List<Map<String, Object>> monthly = new ArrayList<>();
+        for (int index = 0; index < 8; index++) {
+            monthly.add(Map.of(
+                    "label", "M" + index,
+                    "newInflowUsdt", new BigDecimal("24000"),
+                    "outflowUsdt", new BigDecimal("20000")));
+        }
+        ledgerRepository.monthlyGrowthFlowRows = monthly;
+
+        Map<String, Object> history = service.growthFlowHistory().getData();
+        List<Map<String, Object>> ratios = (List<Map<String, Object>>) history.get("ratioSeries");
+        Map<String, Object> budget = (Map<String, Object>) history.get("budget");
+
+        assertThat(ratios).hasSize(8).allSatisfy(row ->
+                assertThat((BigDecimal) row.get("ratio")).isEqualByComparingTo("1.2"));
+        assertThat((BigDecimal) history.get("healthyRatio")).isEqualByComparingTo("1.2");
+        assertThat(history).containsEntry("suggestion", "维持扩张");
+        assertThat(budget).containsEntry("available", false)
+                .containsEntry("reason", "B4_OPERATION_BUDGET_SOURCE_INCOMPLETE");
+        assertThat((List<Map<String, Object>>) budget.get("rows")).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void bDomainDashboardIgnoresTreasuryBConfigRowsAndUsesBusinessAggregates() {
         ledgerRepository.usdtAvailable = new BigDecimal("1000");
         ledgerRepository.withdrawalQueue = new BigDecimal("120");
@@ -1293,6 +1345,8 @@ class OpsTreasuryServiceTest {
         private String lastBillKeyword;
         private Map<String, Object> k4RiskScoreSnapshot = Map.of();
         private List<Map<String, Object>> riskSeverityRows = List.of();
+        private List<Map<String, Object>> liquidityFlowRows = List.of();
+        private List<Map<String, Object>> monthlyGrowthFlowRows = List.of();
 
         @Override
         public long countDeposits(LocalDateTime since, String status) {
@@ -1392,6 +1446,16 @@ class OpsTreasuryServiceTest {
         @Override
         public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
             return netFlow;
+        }
+
+        @Override
+        public List<Map<String, Object>> liquidityFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+            return liquidityFlowRows;
+        }
+
+        @Override
+        public List<Map<String, Object>> monthlyGrowthFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
+            return monthlyGrowthFlowRows;
         }
 
         @Override
@@ -1520,14 +1584,4 @@ class OpsTreasuryServiceTest {
 
     }
 
-    private static Map<String, Object> k5Alert(
-            String eventKey, String tone, String title, String body, String timeText, int isDeleted) {
-        return Map.of(
-                "eventKey", eventKey,
-                "tone", tone,
-                "title", title,
-                "body", body,
-                "timeText", timeText,
-                "isDeleted", isDeleted);
-    }
 }

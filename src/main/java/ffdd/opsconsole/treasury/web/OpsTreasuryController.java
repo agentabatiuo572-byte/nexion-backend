@@ -78,6 +78,18 @@ public class OpsTreasuryController {
         return treasuryService.netExposure(window);
     }
 
+    @GetMapping("/liquidity-history")
+    @PreAuthorize("hasAuthority('overview_b2_read')")
+    public ApiResult<Map<String, Object>> liquidityHistory() {
+        return treasuryService.liquidityHistory();
+    }
+
+    @GetMapping("/growth-flow-history")
+    @PreAuthorize("hasAuthority('overview_b4_read')")
+    public ApiResult<Map<String, Object>> growthFlowHistory() {
+        return treasuryService.growthFlowHistory();
+    }
+
     @GetMapping("/forecast-config")
     @PreAuthorize("hasAnyAuthority('finance_d3_read', 'overview_b2_read')")
     public ApiResult<Map<String, Object>> forecastConfig() {

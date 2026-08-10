@@ -45,13 +45,14 @@ public class AppGenesisService {
     private final EventOutboxService outbox;
     private final AuditLogService audit;
     private final Clock clock;
+    private final GenesisCatalogService catalogService;
 
     public ApiResult<Map<String, Object>> state() {
         AppGenesisMapper.SeriesRow series = requireSeries();
         long sold = mapper.holdingCount(series.seriesCode());
         boolean marketEnabled = marketEnabled();
         SalePolicy salePolicy = salePolicy(series);
-        return ApiResult.ok(linked(
+        Map<String,Object> result=linked(
                 "series", seriesView(series, sold),
                 "market", linked("enabled", marketEnabled, "restoreOwner", "J1", "internalP2POnly", true),
                 "emission", linked("open", emissionOpen(), "owner", "H1", "dailyRatePct", nz(series.dailyEmissionRatePct())),
@@ -60,7 +61,18 @@ public class AppGenesisService {
                 "serverCanonical", true,
                 "sources", List.of("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order",
                         "nx_genesis_emission_batch", "nx_genesis_emission_item", "nx_wallet_ledger",
-                        "nx_config_item:market.genesis.ops.*")));
+                        "nx_config_item:market.genesis.ops.*"));
+        if(catalogService!=null) result.putAll(catalogService.publicState());
+        boolean tradeAvailable = marketEnabled && salePolicy.available()
+                && Boolean.TRUE.equals(result.get("catalogAvailable"));
+        result.put("tradeAvailable", tradeAvailable);
+        if (!tradeAvailable) {
+            String existingReason = String.valueOf(result.getOrDefault("tradeBlockedReason", ""));
+            result.put("tradeBlockedReason", !salePolicy.available()
+                    ? "GENESIS_SALE_POLICY_UNAVAILABLE"
+                    : StringUtils.hasText(existingReason) ? existingReason : "GENESIS_MARKET_PAUSED");
+        }
+        return ApiResult.ok(result);
     }
 
     public ApiResult<Map<String, Object>> account(Long userId) {
@@ -95,7 +107,9 @@ public class AppGenesisService {
         if (mapper.updateSoldSupply(series.id(), sold + quantity) != 1) {
             throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
         }
-        BigDecimal unitPrice = salePolicy.purchasePrice(clock.instant(), money(series.priceUsdt()));
+        BigDecimal unitPrice = catalogService == null
+                ? salePolicy.purchasePrice(clock.instant(), money(series.priceUsdt()))
+                : catalogService.priceForSold(sold);
         BigDecimal amount = money(unitPrice.multiply(BigDecimal.valueOf(quantity)));
         BigDecimal beforeBalance = requireWallet(userId);
         if (beforeBalance.compareTo(amount) < 0 || mapper.debitWallet(userId, amount) != 1) {
@@ -268,9 +282,9 @@ public class AppGenesisService {
 
     private void requireEligibleUser(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy salePolicy,
                                      int acquiringQuantity) {
+        if (!salePolicy.available()) throw new BizException(503, "GENESIS_SALE_POLICY_UNAVAILABLE");
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppGenesisMapper.UserPolicyRow policy = requirePolicy(userId);
-
         int ageDays = policy.accountAgeDays() == null ? 0 : Math.max(0, policy.accountAgeDays());
         if (salePolicy.eligibilityEnabled() && ageDays < salePolicy.minAccountAgeDays()) {
             throw new BizException(403, "GENESIS_ACCOUNT_AGE_REQUIRED");
@@ -292,8 +306,9 @@ public class AppGenesisService {
         AppGenesisMapper.UserPolicyRow user = requirePolicy(userId);
         long owned = mapper.userHoldingCount(userId, series.seriesCode());
         List<String> reasons = new java.util.ArrayList<>();
-
         int ageDays = user.accountAgeDays() == null ? 0 : Math.max(0, user.accountAgeDays());
+        boolean hasGenesisInvite = catalogService != null && catalogService.hasRedeemedInvite(userId);
+        if (!policy.available()) reasons.add("SALE_POLICY_UNAVAILABLE");
         if (policy.eligibilityEnabled() && ageDays < policy.minAccountAgeDays()) reasons.add("ACCOUNT_AGE_REQUIRED");
         if (user.countryCode() == null || user.countryCode().length() != 2) reasons.add("COUNTRY_REQUIRED");
         else if (mapper.geoBlocked(user.countryCode()) > 0) reasons.add("GEO_BLOCKED");
@@ -304,18 +319,19 @@ public class AppGenesisService {
                 "ownedCount", owned, "maxPerUser", max,
                 "remainingCap", Math.max(0L, (long) max - owned),
                 "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
-                "accountAgeDays", ageDays, "serverCanonical", true);
+                "accountAgeDays", ageDays, "hasGenesisInvite", hasGenesisInvite,
+                "serverCanonical", true);
     }
 
     private SalePolicy salePolicy(AppGenesisMapper.SeriesRow series) {
         try {
-            boolean eligibilityEnabled = configBoolean("eligibility.enabled", true);
-            int eligibilityMax = configInteger("eligibility.maxPerUser", 5);
-            int minAccountAgeDays = configInteger("eligibility.minAccountAgeDays", 0);
-            boolean presaleEnabled = configBoolean("presale.enabled", false);
-            boolean showCountdown = configBoolean("presale.showCountdown", true);
-            BigDecimal presalePrice = configDecimal("presale.unitPrice", money(series.priceUsdt()));
-            int presaleMax = configInteger("presale.maxPerUser", eligibilityMax);
+            boolean eligibilityEnabled = requiredConfigBoolean("eligibility.enabled");
+            int eligibilityMax = requiredConfigInteger("eligibility.maxPerUser");
+            int minAccountAgeDays = requiredConfigInteger("eligibility.minAccountAgeDays");
+            boolean presaleEnabled = requiredConfigBoolean("presale.enabled");
+            boolean showCountdown = requiredConfigBoolean("presale.showCountdown");
+            BigDecimal presalePrice = requiredConfigDecimal("presale.unitPrice");
+            int presaleMax = requiredConfigInteger("presale.maxPerUser");
             Instant startAt = configInstant("presale.startAt");
             Instant endAt = configInstant("presale.endAt");
             if (eligibilityMax < 0 || minAccountAgeDays < 0 || presaleMax < 0 || presalePrice.signum() <= 0) {
@@ -324,28 +340,28 @@ public class AppGenesisService {
             if (presaleEnabled && (startAt == null || endAt == null || !startAt.isBefore(endAt))) {
                 throw new IllegalArgumentException();
             }
-            return new SalePolicy(eligibilityEnabled, eligibilityMax, minAccountAgeDays,
+            return new SalePolicy(true, eligibilityEnabled, eligibilityMax, minAccountAgeDays,
                     presaleEnabled, showCountdown, money(presalePrice), presaleMax, startAt, endAt);
         } catch (RuntimeException ex) {
-            if (ex instanceof BizException bizException) throw bizException;
-            throw new BizException(503, "GENESIS_SALE_POLICY_INVALID");
+            return new SalePolicy(false, true, 0, 0, false, false,
+                    money(series.priceUsdt()), 0, null, null);
         }
     }
 
-    private boolean configBoolean(String key, boolean fallback) {
+    private boolean requiredConfigBoolean(String key) {
         return config.activeValue(SALE_PREFIX + key).map(raw -> {
             if ("true".equalsIgnoreCase(raw.trim())) return true;
             if ("false".equalsIgnoreCase(raw.trim())) return false;
             throw new IllegalArgumentException();
-        }).orElse(fallback);
+        }).orElseThrow();
     }
 
-    private int configInteger(String key, int fallback) {
-        return config.activeValue(SALE_PREFIX + key).map(raw -> Integer.parseInt(raw.trim())).orElse(fallback);
+    private int requiredConfigInteger(String key) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> Integer.parseInt(raw.trim())).orElseThrow();
     }
 
-    private BigDecimal configDecimal(String key, BigDecimal fallback) {
-        return config.activeValue(SALE_PREFIX + key).map(raw -> new BigDecimal(raw.trim())).orElse(fallback);
+    private BigDecimal requiredConfigDecimal(String key) {
+        return config.activeValue(SALE_PREFIX + key).map(raw -> new BigDecimal(raw.trim())).orElseThrow();
     }
 
     private Instant configInstant(String key) {
@@ -378,9 +394,17 @@ public class AppGenesisService {
 
     private boolean marketEnabled() {
         boolean disclosure = config.activeValue(DISCLOSURE_KEY).map(this::switchOn).orElse(false);
-        return !disclosure && KillSwitchState.enabled(
+        return catalogService != null && catalogService.marketOpen() && !disclosure && KillSwitchState.enabled(
                 java.util.Optional.ofNullable(mapper.controlValue(KILL_KEY)),
                 java.util.Optional.ofNullable(mapper.controlValue(LEGACY_KILL_KEY)));
+    }
+
+    public ApiResult<Map<String,Object>> redeemInvite(Long userId,String idempotencyKey,String code){
+        if(catalogService==null) throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");
+        requireUser(userId);
+        String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
+        return once("INVITE_REDEEM", userId, idempotencyKey, normalized,
+                () -> catalogService.redeem(userId, normalized));
     }
 
     private boolean emissionOpen() {
@@ -459,16 +483,18 @@ public class AppGenesisService {
         return result;
     }
 
-    private record SalePolicy(boolean eligibilityEnabled, int eligibilityMaxPerUser,
+    private record SalePolicy(boolean available, boolean eligibilityEnabled, int eligibilityMaxPerUser,
                               int minAccountAgeDays, boolean presaleEnabled, boolean showCountdown,
                               BigDecimal presaleUnitPrice, int presaleMaxPerUser,
                               Instant presaleStartAt, Instant presaleEndAt) {
         int effectiveMaxPerUser() {
+            if (!available) return 0;
             int eligibilityMax = eligibilityEnabled ? eligibilityMaxPerUser : Integer.MAX_VALUE;
             return presaleEnabled ? Math.min(eligibilityMax, presaleMaxPerUser) : eligibilityMax;
         }
 
         boolean saleOpen(Instant now) {
+            if (!available) return false;
             return !presaleEnabled || (presaleStartAt != null && presaleEndAt != null
                     && !now.isBefore(presaleStartAt) && now.isBefore(presaleEndAt));
         }
@@ -485,6 +511,7 @@ public class AppGenesisService {
         Map<String, Object> publicView(Instant now) {
             Map<String, Object> view = new LinkedHashMap<>();
             view.put("eligibilityEnabled", eligibilityEnabled);
+            view.put("available", available);
             view.put("maxPerUser", effectiveMaxPerUser());
             view.put("minAccountAgeDays", eligibilityEnabled ? minAccountAgeDays : 0);
             view.put("presaleEnabled", presaleEnabled);
