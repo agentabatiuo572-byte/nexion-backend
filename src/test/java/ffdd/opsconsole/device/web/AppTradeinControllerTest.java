@@ -7,6 +7,8 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.application.AppTradeinService;
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -34,6 +36,18 @@ class AppTradeinControllerTest {
         var body = new AppTradeinSubmitRequest(11L, 22L);
         controller.submit(body, "idem", userAuth("7"));
         verify(service).submit(7L, "idem", body);
+    }
+
+    @Test
+    void capacityEndpointsPassAuthenticatedUserAndIdempotencyHeader() {
+        var quote = new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2");
+        var submit = new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", null);
+
+        controller.capacityQuote(quote, userAuth("7"));
+        controller.capacityReplace(submit, "capacity-idem", userAuth("7"));
+
+        verify(service).capacityQuote(7L, quote);
+        verify(service).capacityReplace(7L, "capacity-idem", submit);
     }
 
     @Test

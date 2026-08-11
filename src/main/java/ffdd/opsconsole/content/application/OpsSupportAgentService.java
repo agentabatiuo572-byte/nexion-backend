@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
+import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
@@ -250,11 +251,25 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
+        return idempotentCommand(
+                "M5_SUPPORT_AGENT_PROFILE_UPDATE",
+                idempotencyKey,
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                () -> updateProfileOnce(adminId, idempotencyKey, request));
+    }
+
+    private ApiResult<SupportAgentProfileView> updateProfileOnce(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentProfileUpdateRequest request) {
         AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
         if (operator == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
         }
         SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
+        if (currentProfile != null && !currentProfile.version().equals(request.expectedVersion())) {
+            return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        }
         String seatType = currentProfile == null
                 ? defaultSeatType()
                 : normalizeSeatType(currentProfile.seatType(), currentProfile.position());
@@ -268,7 +283,7 @@ public class OpsSupportAgentService {
         List<String> tags = normalizeTags(request.tags());
         int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
-        repository.updateProfile(
+        if (!repository.updateProfileCas(
                 adminId,
                 seatType,
                 position,
@@ -278,7 +293,10 @@ public class OpsSupportAgentService {
                 !Boolean.FALSE.equals(request.enabled()),
                 !Boolean.FALSE.equals(request.transferable()),
                 Boolean.TRUE.equals(request.busy()),
-                now);
+                currentProfile == null ? 1L : currentProfile.version(),
+                now)) {
+            return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        }
         SupportAgentProfileView view = profileView(operator, repository.findProfile(adminId).orElseThrow());
         audit("M5_SUPPORT_AGENT_PROFILE_CHANGED", "SUPPORT_AGENT_PROFILE", String.valueOf(adminId), request.operator(), Map.of(
                 "reason", request.reason().trim(),
@@ -333,9 +351,14 @@ public class OpsSupportAgentService {
         // M1 owns seat assignment only.  Profile fields omitted by a caller must not
         // be interpreted as a request to reset the M5-owned configuration.
         SupportAgentProfileRecord currentProfile = repository.findProfile(adminId).orElse(null);
+        if (currentProfile != null && !currentProfile.version().equals(request.expectedVersion())) {
+            return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        }
         LocalDateTime now = LocalDateTime.now(clock);
         List<String> serviceTypes = request.serviceTypes() == null && currentProfile != null
-                ? currentProfile.serviceTypes()
+                ? (seatType.equals(normalizeSeatType(currentProfile.seatType(), currentProfile.position()))
+                    ? currentProfile.serviceTypes()
+                    : normalizeSeatServiceTypes(seatType, currentProfile.serviceTypes()))
                 : normalizeSeatServiceTypes(seatType, request.serviceTypes());
         List<String> tags = request.tags() == null && currentProfile != null
                 ? currentProfile.tags()
@@ -353,7 +376,7 @@ public class OpsSupportAgentService {
                 ? Boolean.TRUE.equals(currentProfile.busy())
                 : Boolean.TRUE.equals(request.busy());
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
-        repository.updateProfile(
+        if (!repository.updateProfileCas(
                 adminId,
                 seatType,
                 position,
@@ -363,7 +386,10 @@ public class OpsSupportAgentService {
                 enabled,
                 transferable,
                 busy,
-                now);
+                currentProfile == null ? 1L : currentProfile.version(),
+                now)) {
+            return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        }
         List<Long> boundUserIds = new ArrayList<>();
         if (SEAT_DEDICATED.equals(seatType)) {
             for (Long userId : userIds) {
@@ -440,6 +466,66 @@ public class OpsSupportAgentService {
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(assignment);
+    }
+
+    @Transactional
+    public ApiResult<List<SupportAgentAssignmentView>> assignAdvisorUsers(
+            Long adminId,
+            String idempotencyKey,
+            SupportAgentBatchAssignmentRequest request) {
+        if (adminId == null || request == null || request.userIds() == null || request.userIds().isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USERS_REQUIRED");
+        }
+        if (request.userIds().size() > SupportAgentBatchAssignmentRequest.MAX_USER_IDS) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_BATCH_TOO_LARGE");
+        }
+        if (request.userIds().stream().anyMatch(userId -> userId == null || userId <= 0)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USER_ID_INVALID");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
+            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (request.reason().trim().length() > 200) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
+        }
+        if (!StringUtils.hasText(request.operator()) || request.operator().trim().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_INVALID");
+        }
+        repository.ensureSchema();
+        List<Long> userIds = normalizeUserIds(request.userIds());
+        if (userIds.isEmpty()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USERS_REQUIRED");
+        }
+        return idempotentCommand(
+                "M1_SUPPORT_ADVISOR_BIND_BATCH",
+                idempotencyKey,
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                () -> assignAdvisorUsersOnce(adminId, idempotencyKey, request, userIds));
+    }
+
+    private ApiResult<List<SupportAgentAssignmentView>> assignAdvisorUsersOnce(
+            Long adminId, String idempotencyKey, SupportAgentBatchAssignmentRequest request, List<Long> userIds) {
+        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
+        if (operator == null) return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
+        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
+        if (profile == null) return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
+        if (!dedicatedSupportSeat(profile.seatType())) return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
+        if (!profile.serviceTypes().contains("advisor")) return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
+        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
+        if (authorization != null) return ApiResult.fail(authorization.getCode(), authorization.getMessage());
+        List<Long> existingUserIds = repository.findExistingUserIds(userIds);
+        if (existingUserIds.size() != userIds.size() || !existingUserIds.containsAll(userIds)) {
+            return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<SupportAgentAssignmentView> assignments = repository.upsertAssignments(
+                adminId, userIds, operator(request.operator()), request.reason().trim(), now);
+        audit("M1_SUPPORT_ADVISOR_USERS_BOUND", "SUPPORT_ADVISOR_ASSIGNMENT", String.valueOf(adminId), request.operator(), Map.of(
+                "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim(), "userIds", userIds));
+        return ApiResult.ok(assignments);
     }
 
     @Transactional
@@ -591,6 +677,7 @@ public class OpsSupportAgentService {
                 profile.transferable(),
                 profile.busy(),
                 repository.countActiveAssignments(adminId),
+                profile.version(),
                 profile.updatedAt());
     }
 
@@ -777,6 +864,9 @@ public class OpsSupportAgentService {
         if (request == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_REQUIRED");
         }
+        if (request.expectedVersion() == null || request.expectedVersion() < 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_EXPECTED_VERSION_REQUIRED");
+        }
         if (StringUtils.hasText(request.position()) && request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");
         }
@@ -804,6 +894,9 @@ public class OpsSupportAgentService {
         }
         if (request == null || !StringUtils.hasText(request.position())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_REQUIRED");
+        }
+        if (request.expectedVersion() == null || request.expectedVersion() < 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_EXPECTED_VERSION_REQUIRED");
         }
         if (request.position().trim().length() > 64) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_TOO_LONG");

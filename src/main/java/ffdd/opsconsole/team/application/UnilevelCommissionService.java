@@ -69,6 +69,7 @@ public class UnilevelCommissionService {
     private static final String CONFIG_KEY_INFLUENCE_CLAMP_MIN = "team.ui.F.influence.clampMin";
     private static final String CONFIG_KEY_INFLUENCE_CLAMP_MAX = "team.ui.F.influence.clampMax";
     private static final String CONFIG_KEY_PROMO_WEEK_MULTIPLIER = "team.ui.F.promo.weekMultiplier";
+    private static final String CONFIG_KEY_MERGE_EXIT_MAX_PCT = "team.ui.F.unilevel.mergeExitMaxPct";
     private static final double DEFAULT_INFLUENCE_CLAMP_MIN = 1.0;
     private static final double DEFAULT_INFLUENCE_CLAMP_MAX = 5.0;
 
@@ -107,6 +108,10 @@ public class UnilevelCommissionService {
         int depthGateLayer = resolveDepthGateLayer();
         int depthGateRankNum = parseRankNum(resolveDepthGateRank());
         BigDecimal promoMultiplier = resolvePromoMultiplier();
+        BigDecimal mergeExitMaxPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"));
+        BigDecimal mergeExitCap = orderSubtotalUsdt.multiply(mergeExitMaxPct)
+                .divide(HUNDRED, 6, RoundingMode.DOWN);
+        BigDecimal allocatedUsdt = BigDecimal.ZERO;
         int settled = 0;
         int skippedIdempotent = 0;
         int skippedDepthGate = 0;
@@ -153,6 +158,14 @@ public class UnilevelCommissionService {
                     ? usdtAmount
                     : usdtAmount.multiply(influenceScore).setScale(6, RoundingMode.HALF_UP);
             finalUsdt = finalUsdt.multiply(promoMultiplier).setScale(6, RoundingMode.HALF_UP);
+            // 合并出口保护：Influence/promo 放大后，整条 L1-L7 出口仍不得超过订单小计的运营上限。
+            BigDecimal remainingExit = mergeExitCap.subtract(allocatedUsdt).max(BigDecimal.ZERO);
+            finalUsdt = finalUsdt.min(remainingExit).setScale(6, RoundingMode.DOWN);
+            if (finalUsdt.signum() <= 0) {
+                log.info("F2 mergeExitMaxPct exhausted: order={} capPct={} allocated={}",
+                        orderNo, mergeExitMaxPct, allocatedUsdt);
+                continue;
+            }
             if (layer >= 2) {
                 log.info("F2 InfluenceScore applied: order={} ancestor={} layer={} score={} finalUsdt={}",
                         orderNo, ancestor, layer, influenceScore, finalUsdt);
@@ -203,10 +216,21 @@ public class UnilevelCommissionService {
                 }
             }
             settled++;
+            allocatedUsdt = allocatedUsdt.add(finalUsdt);
         }
         log.info("F2 unilevel settled: buyer={} order={} subtotal={} settled={}/{} idempotentSkip={} depthGateSkip={}",
                 buyerUserId, orderNo, orderSubtotalUsdt, settled, upline.size(), skippedIdempotent, skippedDepthGate);
         return settled;
+    }
+
+    private BigDecimal configDecimal(String key, BigDecimal fallback) {
+        return configFacade.activeValue(key)
+                .map(value -> {
+                    try { return new BigDecimal(value.trim().replace("%", "")); }
+                    catch (NumberFormatException ignored) { return null; }
+                })
+                .filter(value -> value.signum() >= 0 && value.compareTo(HUNDRED) <= 0)
+                .orElse(fallback);
     }
 
     /** 加载 nx_commission_rule:UNILEVEL 的 level("L1"-"L7") → usdtPct 映射。 */

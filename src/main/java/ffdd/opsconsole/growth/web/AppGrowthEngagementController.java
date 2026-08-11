@@ -2,6 +2,8 @@ package ffdd.opsconsole.growth.web;
 
 import ffdd.opsconsole.growth.application.AppGrowthEngagementService;
 import ffdd.opsconsole.growth.application.AppGrowthWheelService;
+import ffdd.opsconsole.growth.application.AppReferralRewardService;
+import ffdd.opsconsole.growth.domain.AppReferralRewardView;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -11,6 +13,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -18,6 +21,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppGrowthEngagementController {
     private final AppGrowthEngagementService service;
     private final AppGrowthWheelService wheelService;
+    private final AppReferralRewardService referralRewardService;
+
+    @GetMapping("/api/app/referral-rewards")
+    public ApiResult<AppReferralRewardView> referralRewards(
+            @RequestParam(required = false) Integer limit,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
+                : referralRewardService.snapshot(userId, limit);
+    }
 
     @GetMapping("/api/quests/state")
     public ApiResult<Map<String, Object>> questState(Authentication authentication) {

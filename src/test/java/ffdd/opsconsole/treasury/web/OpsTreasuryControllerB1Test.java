@@ -29,7 +29,7 @@ class OpsTreasuryControllerB1Test {
         assertThat(authority("createInjection"))
                 .contains("finance_d3_injection_create")
                 .doesNotContain("overview_b1_write");
-        assertThat(authority("reconciliationExport"))
+        assertThat(authority("sensitiveReconciliationExport"))
                 .contains("finance_d3_export")
                 .doesNotContain("overview_b1_write");
     }

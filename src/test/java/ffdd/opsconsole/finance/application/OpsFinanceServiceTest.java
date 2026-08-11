@@ -400,7 +400,7 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void wd01ControlsRejectWritesWhileTheirBusinessExecutorsAreOnHold() {
+    void wd01ControlsPersistNowThatWithdrawalExecutorConsumesThem() {
         seedCanonicalD5();
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("120"), new BigDecimal("100"));
         WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "update real WD01 controls");
@@ -409,12 +409,12 @@ class OpsFinanceServiceTest {
 
         ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-wd01-real", request);
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("D5_EXECUTOR_HOLD");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("version", 8L);
         assertThat(configFacade.values)
-                .containsEntry("withdrawal.small_amount_threshold_usd", "50")
-                .containsEntry("withdrawal.payout_sla_hours", "24")
-                .containsEntry("withdrawal.d5.version", "7");
+                .containsEntry("withdrawal.small_amount_threshold_usd", "75")
+                .containsEntry("withdrawal.payout_sla_hours", "12")
+                .containsEntry("withdrawal.d5.version", "8");
     }
 
     @Test

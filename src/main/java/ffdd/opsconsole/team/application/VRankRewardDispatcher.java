@@ -42,8 +42,8 @@ import org.springframework.util.StringUtils;
  *       其余流程同 usdt(currency='NEX')。B1 预检同 usdt。</li>
  *   <li><b>voucher</b> — 调 H7 {@link VoucherGrantFacade} 原子写入用户券权属,随后 payout 记
  *       {@code GRANTED};H7 内部负责幂等、必达审计与 outbox,权益类不入 D4。</li>
- *   <li><b>sku</b> — E 域 SkuFacade 未接入 → payout INSERT only,status='PENDING_GRANT',
- *       不入 D4。待 E 域 SkuService 接入后补 grant 调用。</li>
+ *   <li><b>sku</b> — 原子创建 PENDING_GRANT payout 与 PENDING 履约队列；后台消费者库存预占、
+ *       写用户 SKU 权益后才 CAS 两边为 GRANTED/FULFILLED，失败保持待授予并重试。</li>
  *   <li><b>custom</b> — payout INSERT only,status='GRANTED',不入 D4(无资金流转移)。</li>
  * </ul>
  *
@@ -63,7 +63,6 @@ import org.springframework.util.StringUtils;
  * </pre>
  *
  * <p><b>TODO Sprint4+:</b> 晋升事件发布(outbox / RocketMQ 通知下游域)。
- * <p><b>TODO E 域+:</b> SkuFacade.grant 替换 sku stub。
  */
 @ApplicationService
 @RequiredArgsConstructor
@@ -181,7 +180,7 @@ public class VRankRewardDispatcher {
                     CURRENCY_USDT, operator, triggerEventId, false);
             case REWARD_TYPE_NEX -> dispatchNexReward(userId, rankCode, rule, operator, triggerEventId);
             case REWARD_TYPE_VOUCHER -> dispatchVoucher(userId, rankCode, rule, operator, triggerEventId);
-            case REWARD_TYPE_SKU -> dispatchSkuStub(userId, rankCode, rule, operator, triggerEventId);
+            case REWARD_TYPE_SKU -> dispatchSku(userId, rankCode, rule, operator, triggerEventId);
             case REWARD_TYPE_CUSTOM -> dispatchCustom(userId, rankCode, rule, operator, triggerEventId);
             default -> log.warn("Unknown V-Rank reward type '{}', skip: user={}, rank={}",
                     rewardType, userId, rankCode);
@@ -372,17 +371,26 @@ public class VRankRewardDispatcher {
                 userId, rankCode, voucherId, grant.grantId(), grant.replayed());
     }
 
-    /**
-     * sku stub:SkuFacade 未接入(E 域待实现)。
-     * 当前仅 INSERT payout(status='PENDING_GRANT'),不入 D4 台账。后续 E 域接入后补 grant 调用。
-     */
-    private void dispatchSkuStub(Long userId,
-                                 String rankCode,
-                                 VRankRewardRuleRow rule,
-                                 String operator,
-                                 String triggerEventId) {
-        insertPendingGrantPayout(userId, rankCode, rule, REWARD_TYPE_SKU, operator, triggerEventId);
-        log.info("V-Rank sku reward PENDING_GRANT (E-domain stub): user={}, rank={}, skuId={}",
+    private void dispatchSku(Long userId,
+                             String rankCode,
+                             VRankRewardRuleRow rule,
+                             String operator,
+                             String triggerEventId) {
+        if (!StringUtils.hasText(rule.skuId())) {
+            throw new IllegalArgumentException("VRANK_SKU_ID_REQUIRED");
+        }
+        String reason = "F1 V-Rank SKU entitlement | sku=" + rule.skuId() + " | operator=" + operator;
+        if (!commissionRepository.enqueueVRankSkuFulfillment(userId, rankCode, rule.skuId(), reason)) {
+            throw new IllegalStateException("SKU_FULFILLMENT_ENQUEUE_FAILED");
+        }
+        VRankRewardPayout payout = new VRankRewardPayout(
+                generatePayoutId(userId, rankCode, REWARD_TYPE_SKU),
+                userId, rankCode, REWARD_TYPE_SKU, null, null, rule.skuId(), rule.customLabel(), null,
+                PAYOUT_STATUS_PENDING_GRANT, null, null, triggerEventId, operator, reason);
+        if (!commissionRepository.insertVRankRewardPayout(payout)) {
+            throw new IllegalStateException("PAYOUT_INSERT_FAILED: sku user=" + userId + ", rank=" + rankCode);
+        }
+        log.info("V-Rank sku entitlement PENDING_GRANT and fulfillment queued: user={}, rank={}, skuId={}",
                 userId, rankCode, rule.skuId());
     }
 
@@ -417,35 +425,6 @@ public class VRankRewardDispatcher {
         }
         log.info("V-Rank custom reward GRANTED (no D4 posting): user={}, rank={}, label={}",
                 userId, rankCode, rule.customLabel());
-    }
-
-    private void insertPendingGrantPayout(Long userId,
-                                          String rankCode,
-                                          VRankRewardRuleRow rule,
-                                          String rewardType,
-                                          String operator,
-                                          String triggerEventId) {
-        VRankRewardPayout payout = new VRankRewardPayout(
-                generatePayoutId(userId, rankCode, rewardType),
-                userId,
-                rankCode,
-                rewardType,
-                null,
-                rule.voucherId(),
-                rule.skuId(),
-                rule.customLabel(),
-                null,
-                PAYOUT_STATUS_PENDING_GRANT,
-                null,
-                null,
-                triggerEventId,
-                operator,
-                "F1 V-Rank " + rewardType + " pending grant (stub)");
-        boolean inserted = commissionRepository.insertVRankRewardPayout(payout);
-        if (!inserted) {
-            throw new IllegalStateException("PAYOUT_INSERT_FAILED: " + rewardType + " user=" + userId
-                    + ", rank=" + rankCode);
-        }
     }
 
     // ============================================================

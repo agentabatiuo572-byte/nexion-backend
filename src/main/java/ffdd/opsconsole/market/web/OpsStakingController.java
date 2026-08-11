@@ -56,4 +56,13 @@ public class OpsStakingController {
             @RequestBody NexMarketValueUpdateRequest request) {
         return commandService.kill(idempotencyKey, tierKey, request);
     }
+
+    @PatchMapping("/pools/{tierKey}/restore")
+    @PreAuthorize("hasAuthority('emergency_j1_gate_resume')")
+    public ApiResult<Map<String, Object>> restorePool(
+            @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
+            @PathVariable String tierKey,
+            @RequestBody NexMarketValueUpdateRequest request) {
+        return commandService.restore(idempotencyKey, tierKey, request);
+    }
 }

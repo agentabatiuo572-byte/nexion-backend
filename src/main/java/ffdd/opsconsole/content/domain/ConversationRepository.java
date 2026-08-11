@@ -21,6 +21,14 @@ public interface ConversationRepository {
 
     List<ContentConversationMessageView> messages(String conversationNo);
 
+    /** Public App projection: transfer reasons and other SYSTEM traces remain ops-only. */
+    default List<ContentConversationMessageView> userVisibleMessages(String conversationNo) {
+        return messages(conversationNo).stream()
+                .filter(message -> "user".equalsIgnoreCase(message.senderType())
+                        || "agent".equalsIgnoreCase(message.senderType()))
+                .toList();
+    }
+
     boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now);
 
     List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
@@ -58,6 +66,17 @@ public interface ConversationRepository {
 
     boolean reply(ContentConversationView conversation, String body, String operator, LocalDateTime now);
 
+    /** Returns the exact persisted row id for SSE correlation; production overrides atomically. */
+    default Long replyAndReturnMessageId(
+            ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+        throw new UnsupportedOperationException("EXACT_MESSAGE_ID_REQUIRED");
+    }
+
+    /** App user reply, kept separate from the agent command so sender/audit semantics cannot be forged. */
+    default boolean replyAsUser(ContentConversationView conversation, Long userId, String body, LocalDateTime now) {
+        throw new UnsupportedOperationException("APP_CONVERSATION_REPLY_NOT_IMPLEMENTED");
+    }
+
     boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now);
 
     boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now);
@@ -78,4 +97,28 @@ public interface ConversationRepository {
             String ownerAgentName,
             String openingText,
             LocalDateTime now);
+
+    /** Exact conversation + first persisted message pair used by management SSE. */
+    default PersistedConversation createConversationWithMessage(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String ownerAgentId,
+            String ownerAgentName,
+            String openingText,
+            LocalDateTime now) {
+        throw new UnsupportedOperationException("EXACT_MESSAGE_ID_REQUIRED");
+    }
+
+    record PersistedConversation(ContentConversationView conversation, Long messageId) {}
+
+    /** Creates an inbound App conversation whose first message is authored by the authenticated user. */
+    default ContentConversationView createUserConversation(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String openingText,
+            LocalDateTime now) {
+        throw new UnsupportedOperationException("APP_CONVERSATION_CREATE_NOT_IMPLEMENTED");
+    }
 }

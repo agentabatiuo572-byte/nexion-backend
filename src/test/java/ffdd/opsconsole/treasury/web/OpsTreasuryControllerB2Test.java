@@ -27,7 +27,8 @@ class OpsTreasuryControllerB2Test {
                     .doesNotContain("overview_b2_write", "overview_b2_export");
         }
         assertThat(authority("netExposure")).doesNotContain("overview_b2_read");
-        assertThat(authority("reconciliationExport")).doesNotContain("overview_b2_export");
+        assertThat(java.util.Arrays.stream(OpsTreasuryController.class.getDeclaredMethods())
+                .map(Method::getName)).doesNotContain("reconciliationExport", "liabilitiesExport");
     }
 
     @Test
@@ -35,8 +36,9 @@ class OpsTreasuryControllerB2Test {
         assertThat(authority("updateForecastConfig"))
                 .contains("finance_d3_write", "overview_b2_write")
                 .doesNotContain("overview_b2_read");
-        assertThat(authority("liabilitiesExport"))
-                .contains("finance_d3_export", "overview_b2_export")
+        assertThat(authority("b2LiabilitiesExport"))
+                .contains("overview_b2_export")
+                .doesNotContain("finance_d3_export")
                 .doesNotContain("overview_b2_read");
     }
 
@@ -65,7 +67,7 @@ class OpsTreasuryControllerB2Test {
         when(service.liabilitiesCsv()).thenReturn("category,amount\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         assertThat(controller.updateForecastConfig("idem-b2", request).getData()).containsEntry("version", 2);
-        assertThat(controller.liabilitiesExport().getBody()).isEqualTo("category,amount\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(controller.b2LiabilitiesExport().getBody()).isEqualTo("category,amount\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         verify(service).updateForecastConfig("idem-b2", request);
         verify(service).liabilitiesCsv();

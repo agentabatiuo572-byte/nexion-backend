@@ -14,6 +14,17 @@ import org.junit.jupiter.api.Assertions;
 class L1KpiAnalyticsTest {
 
     @Test
+    void everyAttributionHrefMatchesARegisteredConsoleRoute() {
+        Map<String,Object> result=L1KpiAnalytics.calculate(List.of(),"7d",null,null,null,null);
+        Map<String,Object> ext=map(result.get("kpiExt"));
+        assertThat(ext.values()).allSatisfy(value -> {
+            Map<String,Object> item=map(value);
+            rows(item.get("jump")).forEach(link -> assertThat(link.get("href")).isIn(
+                    "/analytics/funnel-cohort","/analytics/operations","/analytics/financial"));
+        });
+    }
+
+    @Test
     void alwaysReturnsEightContractsAndKeepsMissingDenominatorsNull() {
         Map<String, Object> result = L1KpiAnalytics.calculate(List.of(), "7d", null, null, null, null);
 
@@ -176,6 +187,19 @@ class L1KpiAnalyticsTest {
                 .containsEntry("value", 50D)
                 .containsEntry("numerator", 1L)
                 .containsEntry("denominator", 2L);
+    }
+
+    @Test
+    void day0FormulaAndCalculationConsumeTheA4Window() {
+        LocalDateTime at = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusHours(1);
+        List<Map<String, Object>> kpis = rows(L1KpiAnalytics.calculate(List.of(
+                        event("auth.register_completed", "u1", at, null, 1),
+                        event("device.first_yield_received", "u1", at.plusSeconds(110), 110D, 1)),
+                "7d", null, null, null, null, 120).get("kpis"));
+
+        assertThat(kpis.get(0))
+                .containsEntry("value", 100D)
+                .satisfies(kpi -> assertThat(String.valueOf(kpi.get("kpiSpec"))).contains("120"));
     }
 
     private static Map<String, Object> event(

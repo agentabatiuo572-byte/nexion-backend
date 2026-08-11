@@ -1824,7 +1824,8 @@ CREATE TABLE IF NOT EXISTS nx_behavior_event_fact (
   UNIQUE KEY uk_behavior_event_dedupe(dedupe_key),
   KEY idx_behavior_event_window(event_name,occurred_at,device_type,locale),
   KEY idx_behavior_event_route(route,occurred_at),
-  KEY idx_behavior_event_session(session_hash,occurred_at)
+  KEY idx_behavior_event_session(session_hash,occurred_at),
+  KEY idx_behavior_retention_batch(occurred_at,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_event_outbox (
@@ -1858,7 +1859,8 @@ CREATE TABLE IF NOT EXISTS nx_event_outbox (
   KEY idx_event_outbox_type_time (event_type, created_at),
   KEY idx_event_outbox_a4_time (analytics_event, schema_registered, event_ts),
   KEY idx_event_outbox_a4_family (family_key, event_ts),
-  KEY idx_event_outbox_a4_name (event_name, event_ts)
+  KEY idx_event_outbox_a4_name (event_name, event_ts),
+  KEY idx_event_outbox_retention_batch (analytics_event,status,event_ts,is_deleted,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_genesis_emission_batch (
@@ -2278,6 +2280,8 @@ CREATE TABLE IF NOT EXISTS nx_audit_log (
   result VARCHAR(32) NOT NULL DEFAULT 'SUCCESS',
   risk_level VARCHAR(32) NOT NULL DEFAULT 'INFO',
   detail_json JSON NULL,
+  retention_policy_months INT NULL COMMENT 'Null for legacy or retention-executor audit rows',
+  expire_at DATETIME(3) NULL COMMENT 'Assigned only when the audit row is newly written',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_audit_trace (trace_id, created_at),
@@ -2285,8 +2289,23 @@ CREATE TABLE IF NOT EXISTS nx_audit_log (
   KEY idx_audit_resource (resource_type, resource_id, created_at),
   KEY idx_audit_biz_no (biz_no, created_at),
   KEY idx_audit_user_time (user_id, created_at),
-  KEY idx_audit_actor_time (actor_id, created_at)
+  KEY idx_audit_actor_time (actor_id, created_at),
+  KEY idx_audit_expiry_batch (expire_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_audit_log_archive (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  original_audit_id BIGINT NOT NULL,
+  retention_policy_months INT NOT NULL,
+  expire_at DATETIME(3) NOT NULL,
+  original_created_at DATETIME(3) NOT NULL,
+  cold_payload JSON NOT NULL,
+  content_sha256 CHAR(64) NOT NULL,
+  archived_at DATETIME(3) NOT NULL,
+  UNIQUE KEY uk_audit_archive_original (original_audit_id),
+  KEY idx_audit_archive_expiry (expire_at, original_audit_id),
+  KEY idx_audit_archive_digest (content_sha256)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Append-only A2 cold archive; no update/delete application API';
 
 CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -2821,6 +2840,16 @@ CREATE TABLE IF NOT EXISTS nx_compute_task (
   user_id BIGINT NOT NULL,
   user_device_id BIGINT NOT NULL,
   task_type VARCHAR(64) NOT NULL,
+  task_config_id VARCHAR(64) NULL,
+  task_name VARCHAR(128) NULL,
+  model_name VARCHAR(128) NULL,
+  reward_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  required_seconds INT NOT NULL DEFAULT 60,
+  task_lock_minutes INT NOT NULL DEFAULT 0,
+  completion_nonce CHAR(64) NULL,
+  proof_expires_at DATETIME NULL,
+  proof_consumed_at DATETIME NULL,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
   client_name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL,
   started_at DATETIME NULL,
@@ -2898,6 +2927,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   reward_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   reward_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
   earning_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
   proof_hash VARCHAR(128) NOT NULL,
   completed_at DATETIME NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -2906,6 +2936,34 @@ CREATE TABLE IF NOT EXISTS nx_compute_receipt (
   UNIQUE KEY uk_receipt_no (receipt_no),
   UNIQUE KEY uk_receipt_task_no (task_no),
   KEY idx_receipt_user_time (user_id, completed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_compute_device_task_lock (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  user_device_id BIGINT NOT NULL,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  lock_until DATETIME NOT NULL,
+  last_task_no VARCHAR(96) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_device_task_lock_device_env (user_device_id, source_environment),
+  KEY idx_compute_device_task_lock_user (user_id, lock_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_compute_sandbox_reward (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  task_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  user_device_id BIGINT NOT NULL,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  receipt_no VARCHAR(96) NOT NULL,
+  simulated_reward_usdt DECIMAL(18,6) NOT NULL,
+  proof_hash CHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_compute_sandbox_reward_task (task_no),
+  UNIQUE KEY uk_compute_sandbox_reward_receipt (receipt_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_receipt' AND COLUMN_NAME = 'id') NOT LIKE '%auto_increment%',
@@ -3114,6 +3172,21 @@ CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_tier (
   KEY idx_team_hardware_quota_sort (status, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_team_ambassador_budget_grant (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  application_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  budget_type VARCHAR(32) NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  operator VARCHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_ambassador_budget_grant (application_id, budget_type),
+  KEY idx_ambassador_budget_user (user_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_usage (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   quota_tier_id BIGINT NOT NULL,
@@ -3222,6 +3295,21 @@ CREATE TABLE IF NOT EXISTS nx_v_rank_reward_fulfillment (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   KEY idx_v_rank_fulfillment_status (status, created_at),
   KEY idx_v_rank_fulfillment_user (user_id, rank_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_user_sku_entitlement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  fulfillment_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  sku_id VARCHAR(64) NOT NULL,
+  rank_code VARCHAR(16) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'GRANTED',
+  source VARCHAR(32) NOT NULL DEFAULT 'VRANK_REWARD',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_sku_entitlement_fulfillment (fulfillment_id),
+  KEY idx_user_sku_entitlement_user (user_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_user_level_log (
@@ -4174,6 +4262,17 @@ CREATE TABLE IF NOT EXISTS nx_config_item (
   UNIQUE KEY uk_config_key (config_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Clean-install bootstrap only. INSERT IGNORE never overwrites an operator-managed value.
+INSERT IGNORE INTO nx_config_item
+  (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+VALUES
+  ('admin.a2.reason_min_chars','8 字','STRING','admin_a2','ADMIN','A2 authoritative reason minimum',1,0),
+  ('admin.a2.retention_months','13 个月','STRING','admin_a2','ADMIN','A2 audit retention policy',1,0),
+  ('admin.a2.schema_version','v3','STRING','admin_a2','ADMIN','A2 audit schema version',1,0),
+  ('admin.a4.event.kpi.day0','90 秒','STRING','admin_a4_event','ADMIN','A4 PRD default',1,0),
+  ('admin.a4.event.kpi.event_retention','13 个月','STRING','admin_a4_event','ADMIN','A4 PRD minimum',1,0),
+  ('admin.a4.event.kpi.sampling','浏览/会话 10% · 资金/风控/转化 100%','STRING','admin_a4_event','ADMIN','A4 authoritative runtime sampling',1,0);
+
 CREATE TABLE IF NOT EXISTS nx_admin_third_batch_record (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   module_code VARCHAR(8) NOT NULL,
@@ -4958,6 +5057,61 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'ALTER TABLE nx_referral_reward_settlement ADD COLUMN idempotency_key VARCHAR(160) NOT NULL DEFAULT '''' AFTER reason', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- Acceptance-only H8 proof facts stay out of nx_wallet_ledger so production
+-- BI, regulatory and wallet-bill consumers cannot aggregate MOCK_REFERRAL.
+-- Acceptance-only H8 settlement facts. They are deliberately separate from
+-- nx_referral_reward_settlement so production risk, BI and outbox consumers
+-- cannot ingest sandbox runs.
+CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_settlement (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  settlement_no VARCHAR(96) NOT NULL,
+  invited_user_id BIGINT NOT NULL,
+  inviter_user_id BIGINT NOT NULL,
+  newcomer_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  newcomer_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  inviter_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
+  lock_mode VARCHAR(24) NOT NULL DEFAULT 'risk_bucket',
+  config_snapshot VARCHAR(500) NOT NULL DEFAULT '',
+  operator VARCHAR(96) NOT NULL DEFAULT 'system',
+  reason VARCHAR(500) NOT NULL DEFAULT 'acceptance sandbox settlement',
+  idempotency_key VARCHAR(160) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'SETTLED',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_h8_sandbox_referral_invited (invited_user_id),
+  UNIQUE KEY uk_h8_sandbox_referral_no (settlement_no),
+  UNIQUE KEY uk_h8_sandbox_referral_idempotency (idempotency_key),
+  KEY idx_h8_sandbox_referral_inviter (inviter_user_id, created_at),
+  CONSTRAINT chk_h8_sandbox_referral_amounts
+    CHECK (newcomer_usdt >= 0 AND newcomer_nex >= 0 AND inviter_nex >= 0),
+  CONSTRAINT chk_h8_sandbox_referral_source
+    CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_ledger (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  settlement_no VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  asset VARCHAR(16) NOT NULL,
+  amount DECIMAL(18,6) NOT NULL,
+  balance_after DECIMAL(18,6) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  remark VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_h8_sandbox_referral_ledger_fact (settlement_no, user_id, asset),
+  KEY idx_h8_sandbox_referral_ledger_user_time (user_id, created_at),
+  CONSTRAINT chk_h8_sandbox_referral_ledger_amount CHECK (amount > 0),
+  CONSTRAINT chk_h8_sandbox_referral_ledger_source
+    CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- G4 local simulations are admin-only and are excluded from real wallets, ledgers and market statistics.
 CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
   lock_key VARCHAR(64) PRIMARY KEY,
@@ -4965,7 +5119,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_operation_mutex (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT IGNORE INTO nx_admin_operation_mutex (lock_key) VALUES
-('G4_CONFIG'), ('H1_RHYTHM'), ('H3_CONFIG'), ('H4_EVENT'), ('H4_WHEEL'), ('H5_MILESTONE'), ('H8_REWARD');
+('G2_EXCHANGE_EXECUTION'), ('G4_CONFIG'), ('H1_RHYTHM'), ('H3_CONFIG'), ('H4_EVENT'), ('H4_WHEEL'), ('H5_MILESTONE'), ('H8_REWARD');
 
 CREATE TABLE IF NOT EXISTS nx_genesis_admin_simulation (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -5793,4 +5947,82 @@ CREATE TABLE IF NOT EXISTS nx_admin_risk_param (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_admin_risk_param (section_key,param_key),
   KEY idx_admin_risk_param_section (section_key,is_deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Janus trusted executor baseline. The canonical startup runner still applies the idempotent migration.
+CREATE TABLE IF NOT EXISTS nx_janus_applied_proof (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  proof_id VARCHAR(40) NOT NULL,
+  executor_mode VARCHAR(16) NOT NULL,
+  executor_id VARCHAR(64) NOT NULL,
+  proof_nonce VARCHAR(128) NOT NULL,
+  proof_hash CHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  sid VARCHAR(128) NOT NULL,
+  device_id VARCHAR(128) NOT NULL,
+  command_id VARCHAR(128) NOT NULL,
+  command_version BIGINT NOT NULL,
+  target_id VARCHAR(128) NOT NULL,
+  target_version INT NULL,
+  target_catalog_version BIGINT NULL,
+  handoff_receipt VARCHAR(512) NOT NULL,
+  proof_timestamp DATETIME(3) NOT NULL,
+  earnings_consumed_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_janus_applied_proof_id (proof_id),
+  UNIQUE KEY uk_janus_applied_proof_nonce (executor_id, proof_nonce),
+  KEY idx_janus_applied_proof_command (sid, command_id, command_version),
+  KEY idx_janus_applied_proof_user (user_id, device_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_janus_executor_claim_nonce (
+  executor_id VARCHAR(128) NOT NULL,
+  claim_nonce VARCHAR(128) NOT NULL,
+  claim_hash CHAR(64) NOT NULL,
+  device_id VARCHAR(128) NOT NULL,
+  proof_timestamp DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (executor_id, claim_nonce),
+  KEY idx_janus_executor_claim_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_janus_command_lease (
+  device_id VARCHAR(128) NOT NULL,
+  command_id VARCHAR(128) NOT NULL,
+  command_version BIGINT NOT NULL,
+  executor_id VARCHAR(128) NOT NULL,
+  claim_nonce VARCHAR(128) NOT NULL,
+  lease_token CHAR(64) NOT NULL,
+  fencing_token BIGINT NOT NULL DEFAULT 1,
+  lease_until DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (device_id, command_id, command_version),
+  UNIQUE KEY uk_janus_command_lease_token (lease_token),
+  KEY idx_janus_command_lease_expiry (lease_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- G2 acceptance-only fixture persistence. Never join these tables to production exchange/wallet/ledger read models.
+CREATE TABLE IF NOT EXISTS nx_g2_acceptance_sandbox_batch (
+  batch_no VARCHAR(80) PRIMARY KEY, source VARCHAR(16) NOT NULL, source_environment VARCHAR(16) NOT NULL,
+  status VARCHAR(24) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+  CONSTRAINT chk_g2_acceptance_batch_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS nx_g2_acceptance_sandbox_order (
+  exchange_no VARCHAR(100) PRIMARY KEY, batch_no VARCHAR(80) NOT NULL, fixture_outcome VARCHAR(16) NOT NULL,
+  status VARCHAR(24) NOT NULL, reason_code VARCHAR(80), reason VARCHAR(255), amount_usdt DECIMAL(20,6) NOT NULL,
+  source VARCHAR(16) NOT NULL, source_environment VARCHAR(16) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+  KEY idx_g2_acceptance_order_batch (batch_no),
+  CONSTRAINT chk_g2_acceptance_order_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS nx_g2_acceptance_sandbox_ledger (
+  entry_no VARCHAR(120) PRIMARY KEY, batch_no VARCHAR(80) NOT NULL, exchange_no VARCHAR(100) NOT NULL,
+  asset VARCHAR(16) NOT NULL, direction VARCHAR(8) NOT NULL, amount DECIMAL(20,6) NOT NULL,
+  source VARCHAR(16) NOT NULL, source_environment VARCHAR(16) NOT NULL, created_at DATETIME NOT NULL,
+  KEY idx_g2_acceptance_ledger_batch (batch_no),
+  CONSTRAINT chk_g2_acceptance_ledger_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS nx_g2_acceptance_sandbox_idempotency (
+  command_key VARCHAR(160) PRIMARY KEY, batch_no VARCHAR(80) NOT NULL, created_at DATETIME NOT NULL,
+  KEY idx_g2_acceptance_idempotency_batch (batch_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

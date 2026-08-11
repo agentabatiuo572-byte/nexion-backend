@@ -1709,6 +1709,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                                       WHERE o.user_no=s.user_no AND o.active=1 AND o.is_deleted=0
                                       ORDER BY o.id DESC LIMIT 1),s.model_score) AS effective_score
                       FROM nx_admin_risk_score_user s
+                      JOIN nx_user u
+                        ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+                       AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                      WHERE s.is_deleted=0
               ) scores
             """)
@@ -1731,7 +1734,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_override o
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=o.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=o.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET o.active=0,o.updated_at=NOW()
              WHERE o.active=1 AND o.is_deleted=0 AND u.id IS NULL
             """)
@@ -1740,7 +1744,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_contribution c
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=c.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=c.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET c.is_deleted=1
              WHERE c.is_deleted=0 AND u.id IS NULL
             """)
@@ -1749,7 +1754,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_user s
               LEFT JOIN nx_user u
-                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no AND u.is_deleted=0
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.is_deleted=1,s.updated_at=NOW()
              WHERE s.is_deleted=0 AND u.id IS NULL
             """)
@@ -1760,30 +1766,43 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               (user_no,model_score,model_version,row_version,as_of,updated_text,is_deleted)
             SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),0,'pending',0,NOW(),'待首次评分',0
               FROM nx_user u
-             WHERE u.is_deleted=0
+             WHERE u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
             ON DUPLICATE KEY UPDATE is_deleted=0,updated_at=NOW()
             """)
     int ensureAllActiveUsersHaveScoreRows();
 
-    @Select("SELECT COUNT(*) FROM nx_admin_risk_score_user WHERE is_deleted = 0")
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE s.is_deleted=0
+            """)
     long countScoreUsers();
 
     @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,model_version AS modelVersion,
-                   row_version AS rowVersion,
-                   COALESCE(DATE_FORMAT(as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
-                   updated_text AS updatedText
-              FROM nx_admin_risk_score_user
-             WHERE user_no = #{userNo} AND is_deleted = 0
+            SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
+                   s.row_version AS rowVersion,
+                   COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
+                   s.updated_text AS updatedText
+              FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE s.user_no = #{userNo} AND s.is_deleted = 0
              LIMIT 1
             """)
     ScoreUserRecord findScoreUser(@Param("userNo") String userNo);
 
     /** Per-user K4 mutation root. Every score/override/contribution write locks this row first. */
     @Select("""
-            SELECT user_no
-              FROM nx_admin_risk_score_user
-             WHERE user_no = #{userNo} AND is_deleted = 0
+            SELECT s.user_no
+              FROM nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE s.user_no = #{userNo} AND s.is_deleted = 0
              FOR UPDATE
             """)
     String lockScoreUserForUpdate(@Param("userNo") String userNo);
@@ -1797,7 +1816,10 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               JOIN nx_admin_risk_score_model m
                 ON m.state = 'active'
                AND m.is_deleted = 0
-               AND s.model_version = CONCAT('k4-v', m.model_version)
+                AND s.model_version = CONCAT('k4-v', m.model_version)
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE s.user_no = #{userNo}
                AND s.is_deleted = 0
                AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
@@ -1810,7 +1832,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
-               AND u.is_deleted=0
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE s.is_deleted=0
              ORDER BY s.user_no
             """)
@@ -1821,7 +1843,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
-               AND u.is_deleted=0
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
@@ -1865,7 +1887,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
-               AND u.is_deleted=0
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
               LEFT JOIN (
                     SELECT user_no,COUNT(*) AS contribution_count,
                            COUNT(DISTINCT dim_key) AS dimension_count,
@@ -1952,7 +1974,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                            WHERE s.user_id=u.id AND s.is_deleted=0 AND s.signal_type='TAMPER_DETECTED'
                              AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
               FROM nx_user u
-             WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo} AND u.is_deleted=0
+             WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo}
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              LIMIT 1
             """)
     ScoreRawInputRecord scoreRawInput(@Param("userNo") String userNo);
@@ -1970,9 +1993,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    END AS phoneMasked,
                    u.referral_code AS referralCode
               FROM nx_admin_risk_score_user s
-              LEFT JOIN nx_user u
-                ON CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) = s.user_no
-               AND u.is_deleted = 0
+               JOIN nx_user u
+                 ON CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) = s.user_no
+                AND u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0
              WHERE s.is_deleted = 0
                AND (
                     #{keyword} IS NULL
@@ -2052,10 +2075,13 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     List<ScoreHistoryRecord> scoreHistory(@Param("userNo") String userNo, @Param("limit") int limit);
 
     @Update("""
-            UPDATE nx_admin_risk_score_user
-               SET model_score=#{modelScore},model_version=#{modelVersion},as_of=NOW(),updated_text='刚刚',
-                   row_version=row_version+1,updated_at=NOW()
-             WHERE user_no=#{userNo} AND row_version=#{expectedVersion} AND is_deleted=0
+            UPDATE nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+               SET s.model_score=#{modelScore},s.model_version=#{modelVersion},s.as_of=NOW(),s.updated_text='刚刚',
+                   s.row_version=s.row_version+1,s.updated_at=NOW()
+             WHERE s.user_no=#{userNo} AND s.row_version=#{expectedVersion} AND s.is_deleted=0
             """)
     int updateScoreUserModelIfVersion(
             @Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion,
@@ -2069,6 +2095,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Update("""
             UPDATE nx_admin_risk_score_user s
               JOIN nx_user u ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+                            AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
                SET s.as_of=GREATEST(COALESCE(s.as_of,'1970-01-01'),NOW(),
                    COALESCE(u.updated_at,'1970-01-01'),
                    COALESCE((SELECT MAX(k1.updated_at)
@@ -2088,9 +2115,12 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     int advanceScoreAsOfToLatestSource(@Param("userNo") String userNo);
 
     @Update("""
-            UPDATE nx_admin_risk_score_user
-               SET row_version=row_version+1,as_of=NOW(),updated_text='刚刚',updated_at=NOW()
-             WHERE user_no=#{userNo} AND row_version=#{expectedVersion} AND is_deleted=0
+            UPDATE nx_admin_risk_score_user s
+              JOIN nx_user u
+                ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
+               AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+               SET s.row_version=s.row_version+1,s.as_of=NOW(),s.updated_text='刚刚',s.updated_at=NOW()
+             WHERE s.user_no=#{userNo} AND s.row_version=#{expectedVersion} AND s.is_deleted=0
             """)
     int bumpScoreUserVersion(@Param("userNo") String userNo,@Param("expectedVersion") long expectedVersion);
 
@@ -2475,6 +2505,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               JOIN nx_wallet_bank_card card
                 ON card.user_id=context.userId AND card.is_deleted=0
              WHERE card.status IN ('BOUND','ACTIVE','VERIFIED')
+               AND COALESCE(card.source_environment,'PRODUCTION')='PRODUCTION'
                AND card.card_token IS NOT NULL AND card.card_token<>''
             """)
     List<MultiAccountSignalFactRecord> multiAccountSignalFacts();

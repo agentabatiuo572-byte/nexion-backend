@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -21,6 +22,7 @@ import java.time.ZoneOffset;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 class AppExchangeServiceTest {
     private final AppExchangeMapper mapper = mock(AppExchangeMapper.class);
@@ -39,6 +41,7 @@ class AppExchangeServiceTest {
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
+        when(mapper.lockExchangeExecutionMutex()).thenReturn("G2_EXCHANGE_EXECUTION");
         when(mapper.currentPrice()).thenReturn(BigDecimal.ONE);
         when(mapper.lockActiveUserNo(7L)).thenReturn("U00000007");
         when(mapper.lockWalletGate(7L)).thenReturn(
@@ -67,5 +70,9 @@ class AppExchangeServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(((java.util.Map<?, ?>) result.getData().get("order")).get("status"))
                 .isEqualTo("COMPLETED");
+        InOrder capOrder = inOrder(mapper);
+        capOrder.verify(mapper).lockExchangeExecutionMutex();
+        capOrder.verify(mapper).platformTodayUsdt();
+        capOrder.verify(mapper).applyWalletDelta(eq(7L), any(), any());
     }
 }

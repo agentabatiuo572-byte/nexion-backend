@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -71,6 +72,7 @@ class AppWithdrawalServiceTest {
         when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("0.8"));
         when(config.activeValue("withdrawal.nex_fee_offset_rate")).thenReturn(Optional.of("0.4"));
         when(config.activeValue("withdrawal.small_amount_threshold_usd")).thenReturn(Optional.of("50"));
+        when(config.activeValue("withdrawal.strong_review_threshold_usdt")).thenReturn(Optional.of("1000"));
         when(config.activeValue("withdrawal.payout_sla_hours")).thenReturn(Optional.of("24"));
         when(config.activeValue("withdrawal.fee_rate")).thenReturn(Optional.of("0.02"));
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.50"));
@@ -135,6 +137,28 @@ class AppWithdrawalServiceTest {
         assertThat(write.getValue().holdUntil()).isAfter(java.time.LocalDateTime.now().plusDays(29));
         verify(outbox).publishUserEvent(eq("WITHDRAWAL"), anyString(), eq("withdraw.submitted"), eq(7L),
                 eq("P2"), eq(1), eq("2026-W30"), any());
+    }
+
+    @Test
+    void amountAtA3StrongReviewThresholdForcesManualReviewEvenWhenK3Passes() {
+        when(config.activeValue("withdrawal.strong_review_threshold_usdt")).thenReturn(Optional.of("100"));
+
+        ApiResult<java.util.Map<String, Object>> result = service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-strong-review");
+
+        assertThat(result.getData()).containsEntry("status", "REVIEW_PENDING")
+                .containsEntry("riskRoute", "strong-review")
+                .containsEntry("strongReview", true);
+    }
+
+    @Test
+    void missingA3StrongReviewThresholdFailsClosedBeforeFundsAreReserved() {
+        when(config.activeValue("withdrawal.strong_review_threshold_usdt")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-threshold-missing"))
+                .hasMessage("A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
+        verify(mapper, never()).reserveFunds(eq(7L), any(), any(), anyLong());
     }
 
     @Test

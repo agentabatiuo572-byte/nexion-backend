@@ -12,6 +12,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.List;
@@ -62,6 +64,36 @@ class OpsGrowthCommandBoundaryTest {
                 "operation", "QUEST_REWARD_UPDATE",
                 "target_id", "dayOne.tasks.0.reward",
                 "idempotency_key", "idem-h3-1"));
+    }
+
+    @Test
+    void h3MissionLifecycleUsesActionKindAndCodeInDurableScope() {
+        GrowthMissionEditRequest edit = new GrowthMissionEditRequest(
+                "MISSION", "Renamed", "Original", "approved rename", "superadmin");
+        GrowthMissionStatusRequest status = new GrowthMissionStatusRequest(
+                "MONTHLY", "paused", "active", "pause review", "superadmin");
+        GrowthMissionStatusRequest archive = new GrowthMissionStatusRequest(
+                "MISSION", "archived", "paused", "archive review", "superadmin");
+        GrowthMissionStatusRequest delete = new GrowthMissionStatusRequest(
+                "MONTHLY", "deleted", "archived", "delete review", "superadmin");
+
+        boundary.execute("H3", "MISSION_EDIT", "task-a", "idem-edit", edit,
+                () -> ApiResult.ok(Map.of()));
+        boundary.execute("H3", "MISSION_STATUS", "task-b", "idem-status", status,
+                () -> ApiResult.ok(Map.of()));
+        boundary.execute("H3", "MISSION_ARCHIVE", "task-c", "idem-archive", archive,
+                () -> ApiResult.ok(Map.of()));
+        boundary.execute("H3", "MISSION_DELETE", "task-d", "idem-delete", delete,
+                () -> ApiResult.ok(Map.of()));
+
+        verify(idempotency).execute(eq("H3_MISSION:EDIT:MISSION:task-a"), eq("idem-edit"),
+                anyString(), eq(ApiResult.class), any(Supplier.class));
+        verify(idempotency).execute(eq("H3_MISSION:STATUS:MONTHLY:task-b"), eq("idem-status"),
+                anyString(), eq(ApiResult.class), any(Supplier.class));
+        verify(idempotency).execute(eq("H3_MISSION:ARCHIVE:MISSION:task-c"), eq("idem-archive"),
+                anyString(), eq(ApiResult.class), any(Supplier.class));
+        verify(idempotency).execute(eq("H3_MISSION:DELETE:MONTHLY:task-d"), eq("idem-delete"),
+                anyString(), eq(ApiResult.class), any(Supplier.class));
     }
 
     @Test

@@ -25,14 +25,14 @@ public class OpsSupportWorkbenchController {
     private final OpsUserService userService;
 
     // 设备 SKU 列表 — M1 客服总览 读
-    @PreAuthorize("hasAuthority('service_m1_read')")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     @GetMapping("/skus")
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
         return deviceService.skus(request);
     }
 
     // 用户账号列表 — M1 客服总览 读
-    @PreAuthorize("hasAuthority('service_m1_read')")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     @GetMapping("/users")
     public ApiResult<PageResult<UserProfileListView>> users(UserQueryRequest request) {
         ApiResult<PageResult<UserAccountView>> result = userService.profilePage(request);

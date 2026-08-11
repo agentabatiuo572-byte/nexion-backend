@@ -50,7 +50,8 @@ class I3A4NotificationEventClosureContractTest {
     @Test
     void allThreeI3PayloadsSatisfyTheRegisteredA4Types() {
         EventOutboxMapper mapper = mock(EventOutboxMapper.class);
-        EventOutboxService outbox = new EventOutboxService(mapper, new ObjectMapper(), new OutboxProperties());
+        EventOutboxService outbox = new EventOutboxService(mapper, new ObjectMapper(), new OutboxProperties(),
+                org.mockito.Mockito.mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
         when(mapper.findActiveSchema("notification.delivered"))
                 .thenReturn(new EventOutboxMapper.SchemaGateRow("notification", 164, true));
         when(mapper.findActiveSchema("notification.read"))

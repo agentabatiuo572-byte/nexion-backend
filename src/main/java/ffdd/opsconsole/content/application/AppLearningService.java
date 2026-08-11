@@ -18,6 +18,9 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -75,14 +78,19 @@ public class AppLearningService {
         if (course.quizQuestions() != null && !course.quizQuestions().isEmpty()) {
             return ApiResult.fail(409, "LEARNING_QUIZ_REQUIRED");
         }
+        String sourceEnvironment = lockedRewardEnvironment(userId);
+        LearningProgressRow progress = learningMapper.findProgress(userId, course.id(), course.version());
+        if (progress != null && progress.progressPct() >= 100) {
+            return ApiResult.ok(resultAfterCompletion(
+                    userId, course, 100, progress.attempts(), sourceEnvironment));
+        }
         learningMapper.recordQuiz(userId, course.id(), course.version(), 100, 100);
         int inserted = learningMapper.insertLearningEvent(
                 userId, course.id(), course.version(), "course_completed", "{\"source\":\"content\"}");
-        publishCompletionIfNew(inserted, userId, course);
-        return ApiResult.ok(resultAfterCompletion(userId, course, 100, 1));
+        publishCompletionIfNew(inserted, userId, course, sourceEnvironment);
+        return ApiResult.ok(resultAfterCompletion(userId, course, 100, 1, sourceEnvironment));
     }
 
-    @Transactional
     public ApiResult<AppLearningQuizResult> submitQuiz(Long userId, String courseId, AppLearningQuizSubmitRequest request) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         LearningCourseView course = publishedCourse(courseId);
@@ -100,10 +108,10 @@ public class AppLearningService {
         if (idempotencyKey.length() < 8 || idempotencyKey.length() > 128) {
             return ApiResult.fail(422, "LEARNING_QUIZ_IDEMPOTENCY_KEY_INVALID");
         }
-        String requestHash = course.id() + ":" + course.version() + ":" + request.answers();
+        String requestHash = sha256(course.id() + ":" + course.version() + ":" + request.answers());
         try {
             AppLearningQuizResult result = idempotencyService.execute(
-                    "APP_LEARNING_QUIZ:" + userId + ":" + course.id() + ":" + course.version(),
+                    "APP_LEARNING_QUIZ:" + sha256(userId + "|" + course.id() + "|" + course.version()),
                     idempotencyKey,
                     requestHash,
                     AppLearningQuizResult.class,
@@ -119,8 +127,12 @@ public class AppLearningService {
             LearningCourseView course,
             List<LearningQuizQuestionView> questions,
             List<Integer> answers) {
+        String sourceEnvironment = lockedRewardEnvironment(userId);
         LearningProgressRow progress = learningMapper.findProgress(userId, course.id(), course.version());
         int attempts = progress == null ? 0 : progress.attempts();
+        if (progress != null && progress.progressPct() >= 100) {
+            return resultAfterCompletion(userId, course, 100, attempts, sourceEnvironment);
+        }
         int maxAttempts = course.retryLimit() == null ? 1 : course.retryLimit() + 1;
         if (attempts >= maxAttempts) throw new BizException(409, "LEARNING_QUIZ_RETRY_LIMIT_REACHED");
         int correct = 0;
@@ -139,13 +151,16 @@ public class AppLearningService {
             learningMapper.insertLearningEvent(userId, course.id(), course.version(), "quiz_passed", "{\"score\":" + score + "}");
             int inserted = learningMapper.insertLearningEvent(
                     userId, course.id(), course.version(), "course_completed", "{\"source\":\"quiz\"}");
-            publishCompletionIfNew(inserted, userId, course);
+            publishCompletionIfNew(inserted, userId, course, sourceEnvironment);
         }
-        return resultAfterCompletion(userId, course, score, attempts + 1);
+        return resultAfterCompletion(userId, course, score, attempts + 1, sourceEnvironment);
     }
 
-    private void publishCompletionIfNew(int inserted, Long userId, LearningCourseView course) {
-        if (inserted != 1) return;
+    private void publishCompletionIfNew(
+            int inserted, Long userId, LearningCourseView course, String sourceEnvironment) {
+        // Sandbox completion remains visible through progress and the isolated earnings entry;
+        // the production H3 quest consumer must never observe it through the shared outbox.
+        if (inserted != 1 || "SANDBOX".equals(sourceEnvironment)) return;
         eventOutboxService.publish(
                 "LEARNING",
                 userId + ":" + course.id() + ":" + course.version(),
@@ -154,21 +169,43 @@ public class AppLearningService {
                         "nex_reward", nz(course.rewardNex())));
     }
 
-    private AppLearningQuizResult resultAfterCompletion(Long userId, LearningCourseView course, int score, int attempts) {
+    private AppLearningQuizResult resultAfterCompletion(
+            Long userId, LearningCourseView course, int score, int attempts, String sourceEnvironment) {
         boolean passed = score >= (course.passScore() == null ? 100 : course.passScore());
         boolean granted = false;
         if (passed && course.rewardNex() != null && course.rewardNex().signum() > 0) {
             String rewardNo = "LEARN:" + userId + ":" + course.id() + ":" + course.version();
             granted = learningMapper.grantReward(rewardNo, userId, course.id(), course.version(), course.rewardNex()) == 1;
             if (granted) {
-                earningsReleaseService.creditReward(userId, "LEARNING_REWARD", rewardNo,
-                        "NEX", course.rewardNex(), rewardNo + ":NEX");
-                treasuryLedgerPostingFacade.postLedgerEntry(rewardNo, userId, "LEARNING_REWARD", "NEX", "IN",
-                        course.rewardNex(), "SUCCESS", "完成课程 " + course.id() + " " + course.version());
+                boolean sandbox = "SANDBOX".equals(sourceEnvironment);
+                earningsReleaseService.creditReward(userId,
+                        sandbox ? "MOCK_LEARNING_REWARD" : "LEARNING_REWARD", rewardNo,
+                        "NEX", course.rewardNex(), sandbox ? "SANDBOX" : "PRODUCTION", rewardNo + ":NEX");
+                if (!sandbox) {
+                    treasuryLedgerPostingFacade.postLedgerEntry(rewardNo, userId, "LEARNING_REWARD", "NEX", "IN",
+                            course.rewardNex(), "SUCCESS", "完成课程 " + course.id() + " " + course.version());
+                }
             }
         }
         return new AppLearningQuizResult(course.id(), course.version(), score, passed, passed, granted,
                 granted ? course.rewardNex() : BigDecimal.ZERO, attempts);
+    }
+
+    private String lockedRewardEnvironment(Long userId) {
+        String sourceEnvironment = learningMapper.lockRewardEnvironment(userId);
+        if (!"PRODUCTION".equals(sourceEnvironment) && !"SANDBOX".equals(sourceEnvironment)) {
+            throw new BizException(409, "LEARNING_REWARD_ENVIRONMENT_INVALID");
+        }
+        return sourceEnvironment;
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            throw new IllegalStateException("LEARNING_IDEMPOTENCY_HASH_UNAVAILABLE", ex);
+        }
     }
 
     private LearningCourseView publishedCourse(String courseId) {

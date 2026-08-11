@@ -18,6 +18,14 @@ public interface SupportTicketRepository {
 
     List<SupportTicketMessageView> messages(String ticketNo);
 
+    /** Public App projection: excludes internal notes and operational system traces. */
+    default List<SupportTicketMessageView> userVisibleMessages(String ticketNo) {
+        return messages(ticketNo).stream()
+                .filter(message -> "user".equalsIgnoreCase(message.senderType())
+                        || "agent".equalsIgnoreCase(message.senderType()))
+                .toList();
+    }
+
     SupportTicketView createTicket(
             String ticketNo,
             Long userId,
@@ -35,6 +43,11 @@ public interface SupportTicketRepository {
     default boolean appendReplyCas(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
         appendReply(ticket, body, operator, now);
         return true;
+    }
+
+    /** App user reply: reopens a non-closed ticket and increments the ops unread counter under CAS. */
+    default boolean appendUserReplyCas(SupportTicketView ticket, String body, LocalDateTime now) {
+        throw new UnsupportedOperationException("APP_SUPPORT_TICKET_REPLY_NOT_IMPLEMENTED");
     }
 
     void updateStatus(SupportTicketView ticket, String status, String operator, LocalDateTime now);

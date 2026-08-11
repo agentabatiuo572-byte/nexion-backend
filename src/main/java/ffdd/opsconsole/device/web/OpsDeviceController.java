@@ -425,6 +425,16 @@ public class OpsDeviceController {
         return deviceService.executeTradeinAction(operation, idempotencyKey, request);
     }
 
+    @PostMapping("/users/{userId}/tradein/{operation}")
+    @PreAuthorize("hasAuthority('user_c2_write')")
+    public ApiResult<DeviceOpsView> executeUserTradeinAction(
+            @PathVariable Long userId,
+            @PathVariable String operation,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceTradeinActionRequest request) {
+        return deviceService.executeUserTradeinAction(userId, operation, idempotencyKey, request);
+    }
+
     @PostMapping("/{deviceId}/restore")
     @PreAuthorize("hasAuthority('device_e5_write')")
     public ApiResult<DeviceOpsView> restoreDevice(
@@ -490,6 +500,12 @@ public class OpsDeviceController {
     @PreAuthorize("hasAuthority('device_e5_read')")
     public ApiResult<List<DeviceDatacenterView>> datacenters() {
         return deviceService.datacenters();
+    }
+
+    @GetMapping("/observability")
+    @PreAuthorize("hasAuthority('device_e5_read')")
+    public ApiResult<Map<String, Object>> observability() {
+        return deviceService.e5Observability();
     }
 
     @PostMapping("/datacenters")

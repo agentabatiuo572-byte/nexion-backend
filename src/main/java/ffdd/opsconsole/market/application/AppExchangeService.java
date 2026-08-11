@@ -44,6 +44,7 @@ public class AppExchangeService {
     private static final String COST_BASIS = "wallet.nex_market.cost_basis";
     private static final String EXCHANGE_KILL = "killswitch.exchange";
     private static final String EXCHANGE_KILL_LEGACY = "emergency.killswitch.exchange";
+    private static final String EXCHANGE_EXECUTION_MUTEX = "G2_EXCHANGE_EXECUTION";
 
     private final AppExchangeMapper mapper;
     private final PlatformConfigFacade config;
@@ -98,6 +99,9 @@ public class AppExchangeService {
     }
 
     private ApiResult<Map<String, Object>> swapInternal(Long userId, String idempotencyKey, NormalizedSwap request) {
+        if (!EXCHANGE_EXECUTION_MUTEX.equals(mapper.lockExchangeExecutionMutex())) {
+            throw new BizException(503, "G2_EXECUTION_MUTEX_UNAVAILABLE");
+        }
         String userNo = mapper.lockActiveUserNo(userId);
         if (!StringUtils.hasText(userNo)) throw new BizException(404, "USER_NOT_FOUND");
         AppExchangeMapper.WalletGateRow wallet = mapper.lockWalletGate(userId);

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -109,7 +110,133 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getData())
                 .containsEntry("state", "ELIGIBLE")
                 .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "phase-closed")
                 .containsEntry("trialGateEnabled", false);
+    }
+
+    @Test
+    void stateProjectsRiskBlockedEligibilityWithoutTrustingClientStorage() {
+        when(mapper.trial(7L)).thenReturn(null);
+        when(mapper.trialCycleSignalCount(7L)).thenReturn(1L);
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("state", "ELIGIBLE")
+                .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "risk")
+                .containsEntry("authoritative", true)
+                .containsKey("serverNowEpochMs");
+    }
+
+    @Test
+    void configuredTrialProductMapsToTheServerOwnedTrialDeviceInsteadOfClientInput() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "device-trial-standard"),
+                new PolicyRow("trialDays", "3"),
+                new PolicyRow("shadowDailyUSD", "40"),
+                new PolicyRow("shadowDailyNEX", "5"),
+                new PolicyRow("trialOffsetCapUSD", "50"),
+                new PolicyRow("trialPriceUSD", "1299")));
+        when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.start(7L, null, "untrusted-client-name", "h2-product-map");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).insertTrial(eq(7L), anyString(), eq("h2-product-map"), isNull(),
+                eq("NexGridBox S1"), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void unknownConfiguredTrialProductFailsClosedForReadAndStart() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "device-trial-unknown")));
+        when(mapper.trial(7L)).thenReturn(null);
+
+        ApiResult<Map<String, Object>> state = service.state(7L);
+        ApiResult<Map<String, Object>> start = service.start(7L, null, "untrusted-client-name", "h2-product-invalid");
+
+        assertThat(state.getData()).containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "unknown");
+        assertThat(start.getCode()).isEqualTo(409);
+        assertThat(start.getMessage()).isEqualTo("TRIAL_PRODUCT_CONFIG_INVALID");
+        verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void stateNormalizesTrialBooleanPolicyEnumsToActualBooleanDtoValues() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "开放"),
+                new PolicyRow("autoPushEnabled", "开"),
+                new PolicyRow("autoChargeAtEnd", "关")));
+        when(mapper.lockTrial(7L)).thenReturn(null);
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat(result.getData().get("config"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("phaseOpen", true)
+                .containsEntry("autoPushEnabled", true)
+                .containsEntry("autoChargeAtEnd", false);
+    }
+
+    @Test
+    void stateProjectsCorruptPersistedStatusAsUnknownAndNeverEligible() {
+        TrialRow corrupt = trialWithStatus(" CORRUPT ", null, 4L);
+        when(mapper.lockTrial(7L)).thenReturn(corrupt);
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("state", "CORRUPT")
+                .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "unknown")
+                .containsEntry("version", 4L);
+        verify(mapper, never()).restartTrial(any(), anyLong(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void startRejectsUnknownPersistedStatusBeforeAnyOverwrite() {
+        TrialRow corrupt = trialWithStatus(null, null, 4L);
+        when(mapper.lockTrial(7L)).thenReturn(corrupt);
+
+        ApiResult<Map<String, Object>> result = service.start(7L, null, "Trial", "h2-corrupt");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_STATE_UNKNOWN");
+        verify(mapper, never()).restartTrial(any(), anyLong(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void legacyCancelledTerminalRemainsTheOnlyRestartableFamilyAfterCooldown() {
+        TrialRow cancelled = trialWithStatus("CANCELLED", LocalDateTime.now().minusDays(1), 4L);
+        TrialRow restarted = trialWithStatus("ACTIVE", null, 5L);
+        when(mapper.lockTrial(7L)).thenReturn(cancelled);
+        when(mapper.restartTrial(eq(1L), eq(4L), anyString(), eq("h2-legacy-cancelled"),
+                any(), anyString(), anyInt(), any(), any(), any(), any(), any(), any(), anyString()))
+                .thenReturn(1);
+        when(mapper.trial(7L)).thenReturn(restarted);
+
+        ApiResult<Map<String, Object>> result = service.start(
+                7L, null, "Trial", "h2-legacy-cancelled");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("state", "ACTIVE")
+                .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "in-progress");
+        verify(mapper).restartTrial(eq(1L), eq(4L), anyString(), eq("h2-legacy-cancelled"),
+                any(), anyString(), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -156,6 +283,12 @@ class AppTrialLifecycleServiceTest {
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 0L);
         when(mapper.trial(7L)).thenReturn(expired);
+        when(mapper.lockTrial(7L)).thenReturn(expired, new TrialRow(1L, 7L, "TRIAL-1", "GRACE", null, null, "Trial",
+                3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
+                new BigDecimal("1299"), expired.claimedAt(), expired.expiresAt(),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, null, 1L));
+        when(mapper.enterGrace(eq(1L), eq(0L), any())).thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.state(7L);
 
@@ -163,7 +296,13 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getData()).containsEntry("state", "GRACE")
                 .containsEntry("canStart", false)
                 .containsEntry("shadowUsdt", new BigDecimal("120.000000"))
-                .containsEntry("shadowNex", new BigDecimal("15.000000"));
+                .containsEntry("shadowNex", new BigDecimal("15.000000"))
+                .containsKey("claimedAtEpochMs")
+                .containsKey("expiresAtEpochMs")
+                .containsKey("graceEndsAtEpochMs");
+        verify(mapper).enterGrace(eq(1L), eq(0L), any());
+        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.grace_entered"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
         assertThat(result.getData().get("config")).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .doesNotContainKey("chargeFailRate")
                 .containsEntry("trialOffsetCapUSD", "50");
@@ -202,5 +341,16 @@ class AppTrialLifecycleServiceTest {
                 new BigDecimal("1299"), now.minusDays(1), now.plusDays(2),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 0L);
+    }
+
+    private TrialRow trialWithStatus(String status, LocalDateTime cooldownUntil, long version) {
+        LocalDateTime now = LocalDateTime.now();
+        boolean active = "ACTIVE".equals(status);
+        return new TrialRow(1L, 7L, "TRIAL-LEGACY", status, null, null, "Trial",
+                3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
+                new BigDecimal("1299"), active ? now.minusDays(1) : now.minusDays(4),
+                active ? now.plusDays(2) : now.minusDays(1),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, cooldownUntil, version);
     }
 }

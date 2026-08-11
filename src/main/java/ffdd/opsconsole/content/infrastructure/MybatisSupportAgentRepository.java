@@ -29,6 +29,9 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             if (mapper.countSeatTypeColumn() == 0) {
                 mapper.addSeatTypeColumn();
             }
+            if (mapper.countProfileVersionColumn() == 0) {
+                mapper.addProfileVersionColumn();
+            }
             mapper.backfillSeatType();
             mapper.createAssignmentTable();
             if (mapper.countAssignmentTypeColumn() > 0) {
@@ -100,6 +103,16 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     }
 
     @Override
+    public boolean updateProfileCas(
+            Long adminId, String seatType, String position, List<String> serviceTypes, List<String> tags,
+            int maxConcurrent, boolean enabled, boolean transferable, boolean busy,
+            long expectedVersion, LocalDateTime now) {
+        return mapper.updateProfileCas(
+                adminId, seatType, position, join(serviceTypes), join(tags), maxConcurrent,
+                enabled ? 1 : 0, transferable ? 1 : 0, busy ? 1 : 0, expectedVersion, now) == 1;
+    }
+
+    @Override
     public long countActiveAssignments(Long agentAdminId) {
         return mapper.countActiveAssignments(agentAdminId);
     }
@@ -107,6 +120,14 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     @Override
     public boolean userExists(Long userId) {
         return userId != null && mapper.countActiveUser(userId) > 0;
+    }
+
+    @Override
+    public List<Long> findExistingUserIds(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return List.of();
+        }
+        return mapper.listActiveUserIds(userIds);
     }
 
     @Override
@@ -124,6 +145,29 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
         mapper.deactivateActiveAssignmentsForUser(userId, operator, reason, now);
         mapper.insertAssignment(agentAdminId, userId, operator, reason, now);
         return mapper.findActiveAssignment(agentAdminId, userId);
+    }
+
+    @Override
+    public List<SupportAgentAssignmentView> upsertAssignments(
+            Long agentAdminId,
+            List<Long> userIds,
+            String operator,
+            String reason,
+            LocalDateTime now) {
+        if (userIds == null || userIds.isEmpty()) {
+            return List.of();
+        }
+        mapper.deactivateActiveAssignmentsForUsers(userIds, operator, reason, now);
+        mapper.insertAssignments(agentAdminId, userIds, operator, reason, now);
+        var rowsByUserId = mapper.listActiveAssignmentsForUsers(agentAdminId, userIds).stream()
+                .collect(Collectors.toMap(
+                        SupportAgentAssignmentView::userId,
+                        row -> row,
+                        (left, right) -> left));
+        return userIds.stream()
+                .map(userId -> Optional.ofNullable(rowsByUserId.get(userId))
+                        .orElseThrow(() -> new IllegalStateException("SUPPORT_ADVISOR_BATCH_WRITE_INCOMPLETE")))
+                .toList();
     }
 
     @Override
@@ -153,6 +197,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
                 row.enabled() != null && row.enabled() == 1,
                 row.transferable() != null && row.transferable() == 1,
                 row.busy() != null && row.busy() == 1,
+                row.version() == null ? 1L : row.version(),
                 row.updatedAt());
     }
 

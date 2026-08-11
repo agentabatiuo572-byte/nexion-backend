@@ -35,15 +35,37 @@ public interface SupportAgentRepository {
             boolean busy,
             LocalDateTime now);
 
+    boolean updateProfileCas(
+            Long adminId,
+            String seatType,
+            String position,
+            List<String> serviceTypes,
+            List<String> tags,
+            int maxConcurrent,
+            boolean enabled,
+            boolean transferable,
+            boolean busy,
+            long expectedVersion,
+            LocalDateTime now);
+
     long countActiveAssignments(Long agentAdminId);
 
     boolean userExists(Long userId);
+
+    List<Long> findExistingUserIds(List<Long> userIds);
 
     List<SupportAgentAssignmentView> listActiveAssignments(List<Long> agentAdminIds);
 
     SupportAgentAssignmentView upsertAssignment(
             Long agentAdminId,
             Long userId,
+            String operator,
+            String reason,
+            LocalDateTime now);
+
+    List<SupportAgentAssignmentView> upsertAssignments(
+            Long agentAdminId,
+            List<Long> userIds,
             String operator,
             String reason,
             LocalDateTime now);

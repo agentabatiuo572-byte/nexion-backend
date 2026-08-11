@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -24,5 +25,10 @@ public class AppE2ConfigController {
     @GetMapping("/api/config/phone-tiers")
     public ApiResult<Map<String, Object>> phoneTiers() {
         return deviceService.e2PhoneTiers();
+    }
+
+    @GetMapping("/api/tasks/route")
+    public ApiResult<Map<String, Object>> routeTask(@RequestParam Integer deviceVramGb) {
+        return deviceService.routeE2Task(deviceVramGb);
     }
 }

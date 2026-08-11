@@ -6,6 +6,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.mapper.ConversationMapper;
@@ -13,6 +14,7 @@ import ffdd.opsconsole.content.mapper.ConversationMessageMapper;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.dao.DuplicateKeyException;
 
 class MybatisConversationRepositoryTest {
@@ -74,6 +76,24 @@ class MybatisConversationRepositoryTest {
         assertThat(repository.archive(open, true, "agent-1", now)).isFalse();
 
         verifyNoInteractions(messageMapper);
+    }
+
+    @Test
+    void equalBodyRepliesReturnEachExactGeneratedMessageId() {
+        ContentConversationView open = openConversation();
+        when(mapper.replyConversation("CV-RACE", "same", "OPEN", 0L, now)).thenReturn(1);
+        AtomicLong generated = new AtomicLong(76L);
+        when(messageMapper.insert(any(ConversationMessageEntity.class))).thenAnswer(invocation -> {
+            ConversationMessageEntity entity = invocation.getArgument(0);
+            entity.setId(generated.incrementAndGet());
+            return 1;
+        });
+
+        Long first = repository.replyAndReturnMessageId(open, "same", "agent-1", now);
+        Long second = repository.replyAndReturnMessageId(open, "same", "agent-2", now);
+
+        assertThat(first).isEqualTo(77L);
+        assertThat(second).isEqualTo(78L);
     }
 
     @Test

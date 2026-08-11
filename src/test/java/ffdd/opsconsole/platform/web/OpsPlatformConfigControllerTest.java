@@ -24,6 +24,7 @@ class OpsPlatformConfigControllerTest {
                 List.of(),
                 List.of(),
                 List.of(),
+                List.of(),
                 Map.of());
         when(configService.overview()).thenReturn(ApiResult.ok(overview));
 

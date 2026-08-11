@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doThrow;
 
 import ffdd.opsconsole.auth.mapper.AdminMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -33,8 +34,14 @@ class AuditLogServiceTest {
     private final ApplicationNameProperties applicationNameProperties = applicationNameProperties();
     private final AuditProperties auditProperties = new AuditProperties();
     private final AdminMapper adminMapper = org.mockito.Mockito.mock(AdminMapper.class);
+    private final A2RuntimePolicy a2RuntimePolicy = org.mockito.Mockito.mock(A2RuntimePolicy.class);
     private final AuditLogService service = new AuditLogService(
-            auditLogMapper, sanitizer, applicationNameProperties, auditProperties, adminMapper);
+            auditLogMapper, sanitizer, applicationNameProperties, auditProperties, adminMapper, a2RuntimePolicy);
+
+    AuditLogServiceTest() {
+        when(a2RuntimePolicy.schemaVersion()).thenReturn("audit.v4");
+        when(a2RuntimePolicy.retentionMonths()).thenReturn(18);
+    }
 
     private ApplicationNameProperties applicationNameProperties() {
         ApplicationNameProperties properties = new ApplicationNameProperties();
@@ -69,6 +76,35 @@ class AuditLogServiceTest {
         verify(auditLogMapper).insertAuditLog(params.capture());
         assertThat(params.getValue().actorId()).isEqualTo(1L);
         assertThat(params.getValue().actorUsername()).isEqualTo("superadmin");
+        assertThat(params.getValue().detailJson()).contains("\"schemaVersion\":\"audit.v4\"");
+        assertThat(params.getValue().retentionPolicyMonths()).isEqualTo(18);
+        assertThat(params.getValue().expireAt()).isAfter(LocalDateTime.now().plusMonths(17));
+    }
+
+    @Test
+    void retentionExecutorAuditIsPermanentlyExemptFromItsOwnCleanup() {
+        service.recordRequired(AuditLogWriteRequest.builder()
+                .action("A2_AUDIT_RETENTION_EXECUTED")
+                .resourceType("A2_AUDIT_RETENTION")
+                .actorType("SYSTEM")
+                .actorUsername("system")
+                .build());
+
+        ArgumentCaptor<AuditLogMapper.AuditLogWrite> params = ArgumentCaptor.forClass(AuditLogMapper.AuditLogWrite.class);
+        verify(auditLogMapper).insertAuditLog(params.capture());
+        assertThat(params.getValue().retentionPolicyMonths()).isNull();
+        assertThat(params.getValue().expireAt()).isNull();
+    }
+
+    @Test
+    void queryContractExposesSchemaVersionAndKeepsLegacyRowsNullable() throws Exception {
+        Select annotation = Arrays.stream(AuditLogMapper.class.getMethods())
+                .filter(candidate -> candidate.getName().equals("list"))
+                .findFirst().orElseThrow().getAnnotation(Select.class);
+        assertThat(String.join("\n", annotation.value()))
+                .contains("$.schemaVersion")
+                .contains("AS schemaVersion");
+        assertThat(AuditLogRecord.class.getDeclaredField("schemaVersion")).isNotNull();
     }
 
     @Test

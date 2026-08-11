@@ -1269,12 +1269,14 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                      WHEN 'PENDING_REVIEW' THEN '待复核'
                      WHEN 'APPROVED' THEN '已通过'
                      WHEN 'REJECTED' THEN '已驳回'
+                     WHEN 'WITHDRAWN' THEN '发起人已撤回'
                      WHEN 'SUSPENDED' THEN '红线挂起'
                      ELSE a.status
                    END AS statusLabel,
                    CASE UPPER(a.status)
                      WHEN 'APPROVED' THEN 'ok'
                      WHEN 'REJECTED' THEN 'bad'
+                     WHEN 'WITHDRAWN' THEN 'dim'
                      WHEN 'SUSPENDED' THEN 'bad'
                      ELSE 'warn'
                    END AS statusTone,
@@ -1397,6 +1399,23 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("adjustmentNo") String adjustmentNo,
             @Param("status") String status,
             @Param("checker") String checker,
+            @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_wallet_asset_adjustment
+               SET status = 'WITHDRAWN',
+                   checker = NULL,
+                   review_reason = #{reason},
+                   reviewed_at = NOW(),
+                   updated_at = NOW()
+             WHERE adjustment_no = #{adjustmentNo}
+               AND maker = #{maker}
+               AND is_deleted = 0
+               AND UPPER(status) IN ('PENDING', 'PENDING_REVIEW', 'SUSPENDED')
+            """)
+    int withdrawAssetAdjustment(
+            @Param("adjustmentNo") String adjustmentNo,
+            @Param("maker") String maker,
             @Param("reason") String reason);
 
     @Insert("""

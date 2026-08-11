@@ -50,9 +50,21 @@ public class BehaviorAnalyticsService {
     private final AuditLogService auditLogService;
     @Value("${nexion.analytics.pseudonym-secret:${jwt.secret:nexion-l6-local-only}}")
     private final String pseudonymSecret;
+    /** Server-owned provenance for App telemetry; never accepted from a client request. */
+    @Value("${nexion.analytics.source-environment:PRODUCTION}")
+    private final String clientSourceEnvironment;
 
     @Transactional
     public ApiResult<Map<String, Object>> ingest(Long userId, BehaviorEventRequest request) {
+        return ingest(userId,request,clientSourceEnvironment);
+    }
+
+    @Transactional
+    public ApiResult<Map<String,Object>> ingestFixture(Long userId,BehaviorEventRequest request){
+        return ingest(userId,request,"MOCK");
+    }
+
+    private ApiResult<Map<String,Object>> ingest(Long userId,BehaviorEventRequest request,String sourceEnvironment) {
         require(userId != null && userId > 0, "USER_AUTH_REQUIRED");
         require(request != null && EVENTS.contains(request.eventName()), "L6_EVENT_NOT_ALLOWED");
         require(CLIENT_EVENT_ID.matcher(text(request.clientEventId())).matches(), "L6_CLIENT_EVENT_ID_INVALID");
@@ -80,6 +92,7 @@ public class BehaviorAnalyticsService {
         payload.put("parent_l2", page.parentL2());
         payload.put("platform", device.toLowerCase(Locale.ROOT));
         payload.put("locale", locale);
+        payload.put("source_environment",sourceEnvironment);
 
         if ("app.page_viewed".equals(request.eventName())) {
             require(request.dwellMs() != null && request.dwellMs() >= 0 && request.dwellMs() <= MAX_DWELL_MS,
@@ -106,6 +119,14 @@ public class BehaviorAnalyticsService {
             if (elementId != null) payload.put("element_id", elementId);
         }
 
+        // Acceptance traffic has completed the same contract validation as a
+        // production event, but it must not contaminate the production L6
+        // event outbox or fact table. The status is explicit to the caller;
+        // this is a server-derived environment decision, never request data.
+        if ("SANDBOX".equals(sourceEnvironment)) {
+            return ApiResult.ok(linked("accepted", true, "duplicate", false,
+                    "sourceEnvironment", "SANDBOX", "dispatchState", "HOLD"));
+        }
         BehaviorAnalyticsMapper.ExistingEventRow existing = mapper.findByClientEventId(request.clientEventId());
         if (existing != null) {
             require(existing.eventName().equals(request.eventName())
@@ -132,11 +153,16 @@ public class BehaviorAnalyticsService {
                 throw new BizException(429, "L6_CLICK_THROTTLED");
             }
         }
-        String eventId = outbox.publishClientAnalyticsEvent(sessionHash, request.eventName(), payload);
+        EventOutboxService.ClientAnalyticsPublishResult published =
+                outbox.publishTrustedClientAnalyticsEvent(sessionHash, actorHash, request.eventName(), payload);
+        if (!published.sampledIn()) {
+            return ApiResult.ok(linked("accepted", true, "duplicate", false, "sampledIn", false));
+        }
+        String eventId = published.eventId();
         mapper.insertFact(new BehaviorAnalyticsMapper.BehaviorFactRow(
                 eventId, request.clientEventId(), dedupeKey, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(), page.parentL2(),
-                dwellMs, xNorm, yNorm, zone, elementId, device, locale, occurredAt));
-        return ApiResult.ok(linked("accepted", true, "duplicate", false, "eventId", eventId));
+                dwellMs, xNorm, yNorm, zone, elementId, device, locale, sourceEnvironment, occurredAt));
+        return ApiResult.ok(linked("accepted", true, "duplicate", false, "sampledIn", true, "eventId", eventId));
     }
 
     public ApiResult<Map<String, Object>> behavior(String window, String device, String locale, String depth, String sort) {

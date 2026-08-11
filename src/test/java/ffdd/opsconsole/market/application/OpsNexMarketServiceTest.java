@@ -105,7 +105,7 @@ class OpsNexMarketServiceTest {
                 new UsernamePasswordAuthenticationToken(1L, null, List.of()));
         when(permissionCache.getPermissionCodes(anyLong())).thenReturn(Set.of(
                 "finprod_g1_apy_write", "finprod_g1_penalty_write", "finprod_g1_min_write",
-                "finprod_g1_write", "finprod_g1_kill_toggle",
+                "finprod_g1_write", "finprod_g1_kill_toggle", "emergency_j1_gate_resume",
                 "finprod_g2_cap_user_write", "finprod_g2_cap_platform_write", "finprod_g2_fee_rate_write",
                 "finprod_g2_write", "finprod_g2_swap_toggle",
                 "finprod_g3_write", "finprod_g3_override_price_write", "finprod_g3_engine_pause_toggle",
@@ -1101,6 +1101,49 @@ class OpsNexMarketServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G1_STAKING_POOL_KILL_STATUS_CHANGED");
+    }
+
+    @Test
+    void restoringKilledTierRequiresKilledToActiveTransitionAndAuditsUnderJ1() {
+        configFacade.values.put("G.staking.usdt365d.killed", "true");
+
+        ApiResult<Map<String, Object>> result = service.restoreStakingPool(
+                "idem-g1-restore",
+                "usdt365d",
+                new NexMarketValueUpdateRequest(
+                        "false",
+                        "incident controls and coverage recovered",
+                        "superadmin",
+                        null,
+                        "manual review confirms the tier can safely reopen",
+                        "MANUAL_RISK_REVIEW"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("G.staking.usdt365d.killed", "false");
+        assertThat(detailMap(result.getData().get("updated")))
+                .containsEntry("stateTransition", "KILLED->ACTIVE");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("J1_STAKING_POOL_RESTORED");
+    }
+
+    @Test
+    void restoringAnActiveTierRejectsIllegalStateWithoutWriting() {
+        configFacade.values.put("G.staking.usdt30d.killed", "false");
+
+        ApiResult<Map<String, Object>> result = service.restoreStakingPool(
+                "idem-g1-restore-active",
+                "usdt30d",
+                new NexMarketValueUpdateRequest(
+                        "false",
+                        "attempt duplicate restore command",
+                        "superadmin",
+                        null,
+                        "manual review conclusion remains available",
+                        "MANUAL_RISK_REVIEW"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("G1_STAKING_POOL_NOT_KILLED");
     }
 
     @Test

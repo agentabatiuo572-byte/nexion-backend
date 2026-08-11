@@ -30,7 +30,8 @@ class K4D2RoutingEventClosureContractTest {
                 "src/main/java/ffdd/opsconsole/finance/application/AppWithdrawalService.java"));
 
         assertThat(service)
-                .contains("(fastTrack || delayed) ? \"EXTENDED_HOLD\"")
+                .contains("strongReview ? \"REVIEW_PENDING\"")
+                .contains("fastTrack || delayed || \"fast-pass\".equals(riskRoute)")
                 .contains("\"k3_risk_route\"", "\"k4_priority\"", "\"k4_risk_score\"", "\"k4_model_version\"", "\"k4_as_of\"")
                 .contains("\"withdrawal_id\"", "\"user_no\"", "\"risk_score\"", "\"priority\"")
                 .contains("\"notify_permission\"", "\"model_version\"", "\"score_as_of\"");

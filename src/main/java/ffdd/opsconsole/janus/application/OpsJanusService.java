@@ -28,6 +28,7 @@ import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.nio.charset.StandardCharsets;
 import java.net.URI;
@@ -101,6 +102,8 @@ public class OpsJanusService {
     private final JanusTransitionPolicy transitionPolicy = new JanusTransitionPolicy();
     private final JanusTakeoverService takeoverService;
     private final ffdd.opsconsole.finance.application.EarningsReleaseService earningsReleaseService;
+    private final JanusAppliedProofVerifier appliedProofVerifier;
+    private final JanusSandboxProfileGuard sandboxProfileGuard;
 
     public ApiResult<Map<String, Object>> metadata() {
         List<Map<String, Object>> remoteTargets = remoteTargetRepository.list().stream()
@@ -257,6 +260,36 @@ public class OpsJanusService {
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String,Object>> commandTerminal(Long userId, String deviceId, String commandId,
+                                                          Long commandVersion, String desiredStatus) {
+        if (userId == null || userId <= 0 || !validText(deviceId,128) || !validText(commandId,128)
+                || commandVersion == null || commandVersion <= 0) return ApiResult.fail(422,"JANUS_TERMINAL_QUERY_INVALID");
+        String sid=deviceSid(userId,deviceId.trim());
+        if(commandId.startsWith("device-status:")){
+            String applied=desiredStatus==null?null:desiredStatus.trim().toUpperCase(Locale.ROOT);
+            boolean accepted=applied!=null&&repository.isDeviceCommandAckReplay(userId,sid,commandVersion,true,applied);
+            return ApiResult.ok(Map.of("terminal",accepted,"accepted",accepted,
+                    "phase",accepted?"ACKED":"PENDING"));
+        }
+        if(takeoverService==null)return ApiResult.fail(503,"K6_TAKEOVER_SERVICE_UNAVAILABLE");
+        ApiResult<Map<String,Object>> current=takeoverService.applied(sid,null);
+        if(current.getCode()!=0||current.getData()==null)return current;
+        Map<String,Object> row=current.getData();
+        if(!commandId.trim().equals(String.valueOf(row.get("commandId")))
+                || commandVersion.longValue()!=Long.parseLong(String.valueOf(row.get("commandVersion")))){
+            return ApiResult.ok(Map.of("terminal",true,"accepted",false,"phase","SUPERSEDED"));
+        }
+        Object reconciliationId=row.get("reconciliationId");
+        if(reconciliationId instanceof String value && StringUtils.hasText(value)
+                && row.get("reconciledAt") == null){
+            return ApiResult.ok(Map.of("terminal",false,"accepted",false,"phase","RECONCILIATION_PENDING"));
+        }
+        String phase=String.valueOf(row.getOrDefault("phase","UNKNOWN"));
+        boolean terminal=Set.of("SUCCEEDED","REVOKED","FAILED","REVOKE_FAILED","CANCELLED").contains(phase);
+        boolean accepted=Set.of("SUCCEEDED","REVOKED").contains(phase);
+        return ApiResult.ok(Map.of("terminal",terminal,"accepted",accepted,"phase",phase));
+    }
+
     @Transactional
     public ApiResult<Map<String, Object>> acknowledgeCommand(Long userId, JanusCommandAckRequest request) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
@@ -271,11 +304,44 @@ public class OpsJanusService {
             return ApiResult.fail(422, "APPLIED_STATUS_INVALID");
         }
         String sid = deviceSid(userId, request.deviceId());
+        JanusAppliedProofVerifier.Verification proof=null;
+        if(Boolean.TRUE.equals(request.success())){
+            if(request.deviceAppliedVersion()==null||!request.deviceAppliedVersion().equals(request.revision())
+                    ||!StringUtils.hasText(request.deviceAppVersion())||!StringUtils.hasText(request.handoffReceipt())){
+                return ApiResult.fail(422,"JANUS_APPLIED_PROOF_REQUIRED");
+            }
+            Map<String,Object> pending=repository.findPendingDeviceCommand(userId,sid).orElse(null);
+            boolean replay=repository.isDeviceCommandAckReplay(userId,sid,request.revision(),true,applied);
+            if(pending==null&&!replay)return ApiResult.fail(409,"JANUS_PENDING_COMMAND_REQUIRED");
+            String target=StringUtils.hasText(request.actualTargetId())?request.actualTargetId().trim():"none";
+            Integer targetVersion=request.actualTargetVersion();Long catalogVersion=request.actualTargetCatalogVersion();
+            if(pending!=null){
+                String expected=pending.get("remoteUrlKey") instanceof String value&&StringUtils.hasText(value)?value.trim():"none";
+                Integer expectedVersion=numberOrNull(pending.get("remoteTargetVersion"));Long expectedCatalog=longNumberOrNull(pending.get("remoteTargetCatalogVersion"));
+                if(!expected.equals(target)||!java.util.Objects.equals(expectedVersion==null?0:expectedVersion,targetVersion)
+                        ||!java.util.Objects.equals(expectedCatalog==null?0L:expectedCatalog,catalogVersion))return ApiResult.fail(422,"JANUS_APPLIED_TARGET_MISMATCH");
+            }
+            JanusTakeoverProgressRequest appliedRequest=new JanusTakeoverProgressRequest(
+                    request.deviceId(),"device-status:"+request.revision(),request.revision(),request.leaseToken(),request.fencingToken(),"SUCCEEDED",
+                    target,targetVersion,catalogVersion,
+                    request.deviceAppliedVersion(),request.deviceAppVersion(),request.handoffReceipt(),
+                    request.actualAppliedCommandId(),request.actualAppliedCommandVersion(),request.actualFencingToken(),
+                    null,null,null,null,
+                    request.proofMode(),request.executorId(),request.proofNonce(),request.proofTimestamp(),request.proofSignature());
+            Map<String,Object> proofRow=new LinkedHashMap<>();proofRow.put("commandVersion",request.revision());
+            proofRow.put("expectedTargetId",target);proofRow.put("expectedTargetVersion",targetVersion==null?0:targetVersion);
+            proofRow.put("expectedTargetCatalogVersion",catalogVersion==null?0L:catalogVersion);
+            proof=appliedProofVerifier.verify(userId,sid,proofRow,appliedRequest,pending!=null);
+            if(!proof.accepted())return ApiResult.fail(422,proof.error());
+        }
         boolean updated = repository.acknowledgeDeviceCommand(userId, sid, request.revision(),
                 request.success(), applied);
         if (!updated && !repository.isDeviceCommandAckReplay(userId, sid, request.revision(),
                 request.success(), applied)) {
-            return ApiResult.fail(409, "JANUS_ACK_CONFLICT");
+            // A successful proof verification may already have claimed its nonce in
+            // this transaction. Throwing, instead of returning a failed ApiResult,
+            // guarantees that the proof claim and ACK CAS roll back together.
+            throw new BizException(409, "JANUS_ACK_CONFLICT");
         }
         String state = request.success() ? "ACKED" : "FAILED";
         if (updated) {
@@ -289,8 +355,16 @@ public class OpsJanusService {
             if (StringUtils.hasText(request.message())) event.put("message", request.message().trim());
             outboxService.publish("JANUS_DEVICE", sid, "JANUS_DEVICE_COMMAND_" + state, event);
         }
+        if(Boolean.TRUE.equals(request.success())&&proof!=null){
+            earningsReleaseService.recordTrustedAttestation(new ffdd.opsconsole.finance.application.EarningsReleaseService.TrustedAttestationProof(
+                    proof.proofId(),userId,request.deviceId().trim(),request.revision(),applied,
+                    "SANDBOX".equals(proof.proofMode())?"JANUS_SANDBOX_EXECUTOR":"JANUS_PRODUCTION_EXECUTOR",proof.proofHash()));
+        }
         return ApiResult.ok(Map.of("sid", sid, "revision", request.revision(), "state", state));
     }
+
+    private static Integer numberOrNull(Object value){return value instanceof Number number?number.intValue():null;}
+    private static Long longNumberOrNull(Object value){return value instanceof Number number?number.longValue():null;}
 
     public ApiResult<Map<String, Object>> dashboard() {
         List<JanusDeviceView> devices = loadAllDevices();
@@ -317,6 +391,7 @@ public class OpsJanusService {
         JanusStrategyView primary = strategies.stream().filter(s -> "active".equals(s.status()))
                 .max(Comparator.comparingInt(JanusStrategyView::priority)).orElse(null);
         return ApiResult.ok(Map.of(
+                "executionEnvironment", sandboxProfileGuard.executionEnvironment(),
                 "summary", summary,
                 "distribution", distribution,
                 "funnel", funnelData(devices, summary),

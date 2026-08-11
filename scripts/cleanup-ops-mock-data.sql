@@ -314,6 +314,16 @@ UPDATE nx_earning_summary s
        s.updated_at = NOW()
  WHERE s.user_id IN (SELECT user_id FROM tmp_ops_mock_user);
 
+UPDATE nx_h8_sandbox_referral_ledger l
+   SET l.is_deleted = 1
+ WHERE l.user_id IN (SELECT user_id FROM tmp_ops_mock_user);
+
+UPDATE nx_h8_sandbox_referral_settlement s
+   SET s.is_deleted = 1,
+       s.updated_at = NOW()
+ WHERE s.invited_user_id IN (SELECT user_id FROM tmp_ops_mock_user)
+    OR s.inviter_user_id IN (SELECT user_id FROM tmp_ops_mock_user);
+
 UPDATE nx_user_wallet w
    SET w.usdt_available = 0,
        w.nex_available = 0,

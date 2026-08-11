@@ -19,7 +19,6 @@ import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
-import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
@@ -610,31 +609,40 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationReplyRequest request) {
+        return replyWithMessageId(conversationNo, idempotencyKey, request).result();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public MessageCommandResult replyWithMessageId(
+            String conversationNo,
+            String idempotencyKey,
+            ConversationReplyRequest request) {
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReplyCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
-            return guard;
+            return new MessageCommandResult(guard, null);
         }
         ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
-            return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
+            return new MessageCommandResult(ApiResult.fail(404, "CONVERSATION_NOT_FOUND"), null);
         }
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
-            return invalidState();
+            return new MessageCommandResult(invalidState(), null);
         }
         String body = request.body().trim();
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        if (!conversationRepository.reply(conversation, body, actor, now)) {
-            return invalidState();
+        Long messageId = conversationRepository.replyAndReturnMessageId(conversation, body, actor, now);
+        if (messageId == null) {
+            return new MessageCommandResult(invalidState(), null);
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_REPLIED", conversation.conversationNo(), actor, Map.of(
                 "bodyLength", body.length(),
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
                 "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(updated);
+        return new MessageCommandResult(ApiResult.ok(updated), messageId);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -858,34 +866,6 @@ public class OpsConversationService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<ContentConversationView> fallbackTransfer(
-            String conversationNo,
-            String idempotencyKey,
-            ConversationFallbackRequest request) {
-        ensureSeedData();
-        ApiResult<ContentConversationView> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
-        if (conversation == null) {
-            return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
-        }
-        if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
-                || !"TRANSFERRED".equalsIgnoreCase(conversation.status())) {
-            return invalidState();
-        }
-        String actor = operator(request.operator());
-        LocalDateTime now = LocalDateTime.now(clock);
-        boolean changed = conversationRepository.fallbackTransfer(conversation, request.reason().trim(), actor, now);
-        if (!changed) {
-            return invalidState();
-        }
-        ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        return ApiResult.ok(updated);
-    }
-
-    @Transactional(rollbackFor = Exception.class)
     public int runTimeoutFallback() {
         if (!timeoutFallbackEnabled()) {
             return 0;
@@ -978,10 +958,17 @@ public class OpsConversationService {
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
             ConversationInitiateRequest request) {
+        return initiateWithMessageId(idempotencyKey, request).result();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public MessageCommandResult initiateWithMessageId(
+            String idempotencyKey,
+            ConversationInitiateRequest request) {
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireInitiateCommand(idempotencyKey, request);
         if (guard != null) {
-            return guard;
+            return new MessageCommandResult(guard, null);
         }
         String type = normalizeConversationType(request.conversationType());
         String actor = operator(request.operator());
@@ -991,7 +978,7 @@ public class OpsConversationService {
         String text = request.openingText().trim();
         LocalDateTime now = LocalDateTime.now(clock);
         String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
-        ContentConversationView created = conversationRepository.createConversation(
+        ConversationRepository.PersistedConversation persisted = conversationRepository.createConversationWithMessage(
                 conversationNo,
                 request.userId(),
                 type,
@@ -999,6 +986,7 @@ public class OpsConversationService {
                 ownerName,
                 text,
                 now);
+        ContentConversationView created = persisted.conversation();
         SupportTicketView fallbackTicket = routing.fallbackTicket()
                 ? createAdvisorFallbackTicket(created, text, routing, actor, now)
                 : null;
@@ -1018,8 +1006,10 @@ public class OpsConversationService {
             detail.put("fallbackTicketNo", fallbackTicket.ticketNo());
         }
         audit("I9_CONVERSATION_INITIATED", created.conversationNo(), actor, detail);
-        return ApiResult.ok(created);
+        return new MessageCommandResult(ApiResult.ok(created), persisted.messageId());
     }
+
+    public record MessageCommandResult(ApiResult<ContentConversationView> result, Long messageId) {}
 
     private AdvisorRoutingDecision routingDecision(String type, ConversationInitiateRequest request, String actor) {
         if ("advisor".equals(type) && request.userId() != null) {

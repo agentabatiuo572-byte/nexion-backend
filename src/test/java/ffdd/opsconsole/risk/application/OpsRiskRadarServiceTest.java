@@ -3,6 +3,7 @@ package ffdd.opsconsole.risk.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -23,6 +24,8 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsRiskRadarServiceTest {
     private final B5RiskRadarMapper mapper = mock(B5RiskRadarMapper.class);
@@ -35,7 +38,8 @@ class OpsRiskRadarServiceTest {
             mock(AdminIdempotencyService.class),
             mock(AuditLogService.class),
             mock(AdminOperatorRoleResolver.class),
-            Clock.fixed(Instant.parse("2026-07-23T04:00:00Z"), ZoneOffset.UTC));
+            Clock.fixed(Instant.parse("2026-07-23T04:00:00Z"), ZoneOffset.UTC),
+            "");
 
     @BeforeEach
     void setUp() {
@@ -65,6 +69,9 @@ class OpsRiskRadarServiceTest {
                         "level", "P1",
                         "signalType", "risk.multi_account_flagged",
                         "userId", 42L,
+                        "handlingStatus", "open",
+                        "handlingVersion", 0L,
+                        "deliveryStatus", "NOT_QUEUED",
                         "createdAt", "2026-07-23T03:55:00")));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
                 new BigDecimal("120"), new BigDecimal("100"), true,
@@ -184,7 +191,9 @@ class OpsRiskRadarServiceTest {
                 .containsEntry("level", "P1")
                 .containsEntry("message", "反多账户命中")
                 .containsEntry("target", "/risk/multi-account")
-                .containsEntry("handlingStatusAvailable", false);
+                .containsEntry("handlingStatusAvailable", true)
+                .containsEntry("handlingStatus", "open")
+                .containsEntry("handlingVersion", 0L);
     }
 
     @Test
@@ -330,5 +339,28 @@ class OpsRiskRadarServiceTest {
         assertThatThrownBy(() -> service.preview(new B5ThresholdPreviewRequest("20", "45", 2L)))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B5_THRESHOLD_VERSION_CONFLICT");
+    }
+
+    @Test
+    void inboxQueriesAreScopedToTheAuthenticatedSubscriber() {
+        try {
+            UsernamePasswordAuthenticationToken alice = new UsernamePasswordAuthenticationToken(
+                    "principal-a", "n/a", List.of());
+            alice.setDetails(Map.of("username", "risk-alice"));
+            SecurityContextHolder.getContext().setAuthentication(alice);
+            when(mapper.subscriberInbox("risk-alice", 100)).thenReturn(List.of(Map.of("id", 71L)));
+
+            assertThat(service.alertInbox().getData()).containsExactly(Map.of("id", 71L));
+            verify(mapper).subscriberInbox("risk-alice", 100);
+
+            UsernamePasswordAuthenticationToken bob = new UsernamePasswordAuthenticationToken(
+                    "principal-b", "n/a", List.of());
+            bob.setDetails(Map.of("username", "risk-bob"));
+            SecurityContextHolder.getContext().setAuthentication(bob);
+            service.alertInbox();
+            verify(mapper).subscriberInbox("risk-bob", 100);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 }

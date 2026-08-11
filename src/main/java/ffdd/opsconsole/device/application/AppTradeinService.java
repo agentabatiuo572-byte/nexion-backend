@@ -1,6 +1,9 @@
 package ffdd.opsconsole.device.application;
 
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteResponse;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
@@ -34,6 +37,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppTradeinService {
+    private static final int MAX_ACTIVE_DEVICES = 6;
     private static final Pattern LEVEL_GATE = Pattern.compile("^L([2-6])\\+\\s*持有者$");
     private static final Set<String> REQUIRED_CONFIG = Set.of(
             "tradeinEnabled", "eligibility",
@@ -68,6 +72,34 @@ public class AppTradeinService {
         return ApiResult.ok(evaluation.response());
     }
 
+    @Transactional(readOnly = true)
+    public ApiResult<AppCapacityReplaceQuoteResponse> capacityQuote(
+            Long userId, AppCapacityReplaceQuoteRequest request) {
+        requireUser(userId);
+        String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
+        if (!StringUtils.hasText(mapper.userLevel(userId))) {
+            throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
+        }
+        return ApiResult.ok(evaluateCapacity(userId, targetProductNo, false));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppTradeinSubmitResponse> capacityReplace(
+            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
+        requireUser(userId);
+        if (request == null || request.sourceDeviceId() == null || request.sourceDeviceId() <= 0) {
+            throw new BizException(422, "CAPACITY_REPLACEMENT_SOURCE_REQUIRED");
+        }
+        String targetProductNo = requireTargetProductNo(request.targetProductNo());
+        if (mapper.lockActiveUser(userId) == null) {
+            throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
+        }
+        AppCapacityReplaceSubmitRequest normalized = new AppCapacityReplaceSubmitRequest(
+                request.sourceDeviceId(), targetProductNo, request.expectedPayableUsdt());
+        return executeCapacityOnce(userId, idempotencyKey, normalized,
+                () -> capacityReplaceInternal(userId, idempotencyKey, normalized));
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTradeinSubmitResponse> submit(
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
@@ -85,6 +117,12 @@ public class AppTradeinService {
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
         Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true);
         AppTradeinQuoteResponse quote = evaluation.response();
+        if ((request.expectedPayableUsdt() != null
+                && money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0)
+                || (request.expectedDiscountUsdt() != null
+                && money(request.expectedDiscountUsdt()).compareTo(quote.discountUsdt()) != 0)) {
+            throw new BizException(409, "TRADEIN_QUOTE_CHANGED");
+        }
         if (!quote.sufficientFunds()) {
             throw new BizException(409, "TRADEIN_INSUFFICIENT_FUNDS");
         }
@@ -194,6 +232,132 @@ public class AppTradeinService {
         return ApiResult.ok(new AppTradeinSubmitResponse(
                 tradeinNo, orderNo, evaluation.source().id(), targetDeviceId,
                 "COMPLETED", "COMPLETED", quote.discountUsdt(), quote.payableUsdt(), balanceAfter));
+    }
+
+    private ApiResult<AppTradeinSubmitResponse> capacityReplaceInternal(
+            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
+        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
+        if (!"REPLACE_REQUIRED".equals(quote.decision()) || quote.sourceDeviceId() == null) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_NOT_REQUIRED");
+        }
+        if (!quote.sourceDeviceId().equals(request.sourceDeviceId())) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+        }
+        if (request.expectedPayableUsdt() == null
+                || money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_QUOTE_CHANGED");
+        }
+        if (!quote.sufficientFunds()) throw new BizException(409, "TRADEIN_INSUFFICIENT_FUNDS");
+
+        AppTradeinMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
+        if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
+            throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        AppTradeinMapper.SourceDevice source = mapper.lockCapacityReplacementSource(userId);
+        if (source == null || !source.id().equals(request.sourceDeviceId())) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+        }
+        AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
+        if (target == null || target.stock() == null || target.stock() < 1) {
+            throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
+        }
+
+        String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String tradeinNo = "CPR-" + nonce;
+        String orderNo = "CPO-" + nonce;
+        String instanceNo = "DEV-CPR-" + nonce;
+        BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(quote.payableUsdt())
+                .setScale(6, RoundingMode.HALF_UP);
+        if (quote.payableUsdt().signum() > 0 && mapper.debitWalletUsdt(userId, quote.payableUsdt()) != 1) {
+            throw new BizException(409, "TRADEIN_WALLET_CONFLICT");
+        }
+        if (mapper.insertWalletLedger(orderNo, userId, quote.payableUsdt(), balanceAfter) != 1
+                || mapper.decrementTargetStock(target.id()) != 1) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_PAYMENT_CONFLICT");
+        }
+
+        AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
+                userId, orderNo, target.id(), target.productNo(), target.name(),
+                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt());
+        if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
+            throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
+        }
+        if (mapper.moveSourceDeviceToInventory(userId, source.id()) != 1) {
+            throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CONFLICT");
+        }
+        AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
+                userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
+                target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
+                nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt());
+        if (mapper.insertTargetDevice(delivered) != 1) {
+            throw new BizException(409, "TRADEIN_TARGET_DELIVERY_CONFLICT");
+        }
+        Long targetDeviceId = mapper.findDeviceIdByInstanceNo(instanceNo);
+        if (targetDeviceId == null || targetDeviceId <= 0) {
+            throw new BizException(409, "TRADEIN_TARGET_DELIVERY_NOT_FOUND");
+        }
+        AppTradeinMapper.TradeinApplicationWrite application = new AppTradeinMapper.TradeinApplicationWrite(
+                tradeinNo, idempotencyKey.trim(), userId, source.id(), source.instanceNo(), source.productId(),
+                source.productName(), source.productTier(), target.id(), target.name(), target.tier(),
+                money(nz(source.actualPaidUsdt())), quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6),
+                BigDecimal.ZERO.setScale(6), BigDecimal.ZERO.setScale(6), BigDecimal.ZERO.setScale(6),
+                quote.payableUsdt(), orderNo, targetDeviceId);
+        if (mapper.insertTradeinApplication(application) != 1
+                || mapper.insertTradeinCompatibilityOrder(application) != 1) {
+            throw new BizException(409, "TRADEIN_APPLICATION_CREATE_CONFLICT");
+        }
+
+        Map<String, Object> event = linked(
+                "tradeinNo", tradeinNo, "sourceDeviceId", source.id(), "targetDeviceId", targetDeviceId,
+                "orderNo", orderNo, "walletDebitUsdt", quote.payableUsdt(), "operation", "CAPACITY_REPLACE");
+        outboxService.publishUserEvent(
+                "TRADEIN", tradeinNo, "capacity_replacement.completed", userId, normalizePhase(attribution.phase()),
+                attribution.accountAgeMonths(), attribution.cohort(), event);
+        outboxService.publishUserEvent(
+                "ORDER", orderNo, "checkout.completed", userId, normalizePhase(attribution.phase()),
+                attribution.accountAgeMonths(), attribution.cohort(), linked(
+                        "orderId", orderNo, "orderNo", orderNo, "orderSubtotalUsdt", quote.payableUsdt()));
+        outboxService.publishUserEvent(
+                "DEVICE_ORDER", orderNo, "device.purchase_completed", userId, normalizePhase(attribution.phase()),
+                attribution.accountAgeMonths(), attribution.cohort(), linked("orderId", orderNo));
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_CAPACITY_REPLACEMENT_COMPLETED")
+                .resourceType("TRADEIN_APPLICATION").resourceId(tradeinNo).bizNo(orderNo)
+                .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
+                .method("POST").path("/api/app/trade-in/capacity-replace")
+                .result("SUCCESS").riskLevel("HIGH")
+                .detail(linked("idempotencyScope", "USER_SCOPED", "decisionSource", "server",
+                        "before", linked("sourceDeviceId", source.id(), "status", source.status()),
+                        "after", linked("targetDeviceId", targetDeviceId, "status", "ACTIVE")))
+                .build());
+        return ApiResult.ok(new AppTradeinSubmitResponse(
+                tradeinNo, orderNo, source.id(), targetDeviceId, "COMPLETED", "COMPLETED",
+                BigDecimal.ZERO.setScale(6), quote.payableUsdt(), balanceAfter));
+    }
+
+    private AppCapacityReplaceQuoteResponse evaluateCapacity(
+            Long userId, String targetProductNo, boolean locked) {
+        int activeDevices = Math.max(0, mapper.countActiveDevices(userId));
+        AppTradeinMapper.TargetProduct target = locked
+                ? mapper.lockTargetProduct(null, targetProductNo)
+                : mapper.findTargetProduct(null, targetProductNo);
+        if (target == null || target.priceUsdt() == null || target.priceUsdt().signum() <= 0
+                || target.stock() == null || target.stock() < 1) {
+            throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
+        }
+        BigDecimal targetPrice = money(target.priceUsdt());
+        BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
+        AppTradeinMapper.SourceDevice source = null;
+        String decision = "CAPACITY_AVAILABLE";
+        if (activeDevices >= MAX_ACTIVE_DEVICES) {
+            source = locked ? mapper.lockCapacityReplacementSource(userId) : mapper.findCapacityReplacementSource(userId);
+            decision = source == null ? "NO_ACTIVE_DEVICE" : "REPLACE_REQUIRED";
+        }
+        return new AppCapacityReplaceQuoteResponse(
+                decision, activeDevices, MAX_ACTIVE_DEVICES,
+                source == null ? null : source.id(), source == null ? null : source.productName(),
+                target.id(), target.productNo(), target.name(), targetPrice, targetPrice, wallet,
+                wallet.compareTo(targetPrice) >= 0, "server");
     }
 
     private Evaluation evaluate(
@@ -349,12 +513,29 @@ public class AppTradeinService {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
 
+    private String requireTargetProductNo(String value) {
+        String normalized = normalizeProductNo(value);
+        if (normalized == null || !normalized.matches("[A-Za-z0-9._:-]{1,64}")) {
+            throw new BizException(422, "CAPACITY_REPLACEMENT_TARGET_REQUIRED");
+        }
+        return normalized;
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ApiResult<AppTradeinSubmitResponse> executeOnce(
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request,
             Supplier<ApiResult<AppTradeinSubmitResponse>> action) {
         return (ApiResult<AppTradeinSubmitResponse>) (ApiResult) idempotencyService.execute(
                 "APP:E3_TRADEIN_SUBMIT:USER:" + userId, idempotencyKey,
+                sha256(String.valueOf(request)), ApiResult.class, (Supplier) action);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private ApiResult<AppTradeinSubmitResponse> executeCapacityOnce(
+            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request,
+            Supplier<ApiResult<AppTradeinSubmitResponse>> action) {
+        return (ApiResult<AppTradeinSubmitResponse>) (ApiResult) idempotencyService.execute(
+                "APP:E3_CAPACITY_REPLACE:USER:" + userId, idempotencyKey,
                 sha256(String.valueOf(request)), ApiResult.class, (Supplier) action);
     }
 

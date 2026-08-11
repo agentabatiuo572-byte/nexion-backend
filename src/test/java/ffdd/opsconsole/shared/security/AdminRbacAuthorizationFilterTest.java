@@ -178,7 +178,7 @@ class AdminRbacAuthorizationFilterTest {
                 "/api/admin/treasury/liabilities",
                 "/api/admin/treasury/maturity-forecast",
                 "/api/admin/treasury/forecast-config",
-                "/api/admin/treasury/liabilities/export")) {
+                "/api/admin/treasury/b2/liabilities/export")) {
             AtomicBoolean invoked = new AtomicBoolean(false);
             filter.doFilter(request("GET", path), new MockHttpServletResponse(), mark(invoked));
             assertThat(invoked).as(path).isTrue();
@@ -645,6 +645,38 @@ class AdminRbacAuthorizationFilterTest {
                 mark(writeInvoked));
 
         assertThat(writeInvoked).isTrue();
+    }
+
+    @Test
+    void permitsStakingPoolRestoreWithOnlyJ1ResumeAuthority() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("emergency_j1_gate_resume");
+
+        filter.doFilter(
+                request("PATCH", "/api/admin/market/staking/pools/usdt365d/restore"),
+                new MockHttpServletResponse(),
+                mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
+    void rejectsStakingPoolRestoreWithOnlyG1WriteAuthority() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        authenticate("finprod_g1_write");
+
+        filter.doFilter(
+                request("PATCH", "/api/admin/market/staking/pools/usdt365d/restore"),
+                response,
+                mark(invoked));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PERMISSION_DENIED");
+        verify(auditLogService).record(argThat(request ->
+                "emergency_j1_gate_resume".equals(
+                        ((java.util.Map<?, ?>) request.getDetail()).get("requiredAuthority"))));
     }
 
     private MockHttpServletRequest request(String method, String path) {

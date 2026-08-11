@@ -66,6 +66,11 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     }
 
     @Override
+    public List<SupportTicketMessageView> userVisibleMessages(String ticketNo) {
+        return messageMapper.listUserVisibleByTicketNo(ticketNo);
+    }
+
+    @Override
     public SupportTicketView createTicket(
             String ticketNo,
             Long userId,
@@ -118,6 +123,16 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
             return false;
         }
         insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
+        return true;
+    }
+
+    @Override
+    public boolean appendUserReplyCas(SupportTicketView ticket, String body, LocalDateTime now) {
+        if (ticketMapper.appendUserReplyHeader(
+                ticket.ticketNo(), ticket.userId(), headerSummary(body), ticket.status(), safeVersion(ticket), now) != 1) {
+            return false;
+        }
+        insertMessage(ticket.id(), ticket.ticketNo(), ticket.userId(), "user", "用户", body, now);
         return true;
     }
 

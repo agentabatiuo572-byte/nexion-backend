@@ -35,9 +35,21 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> quotaRows();
 
+    default List<Map<String, Object>> quotaUsages(int limit) { return List.of(); }
+
+    default boolean updateHardwareQuotaTierCas(String quotaCode, int expectedMonthlyQuota, int monthlyQuota) {
+        return false;
+    }
+
+    default boolean recycleHardwareQuotaUsage(Long usageId, String reason) { return false; }
+
     List<Map<String, Object>> ambassadorBands();
 
     Map<String, Object> ambassadorSummary();
+
+    default List<Map<String, Object>> ambassadorApplications(int limit) { return List.of(); }
+
+    default boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) { return false; }
 
     List<Map<String, Object>> leaderboardPodium(int limit);
 
@@ -66,6 +78,19 @@ public interface TeamCommissionRepository {
     // F4 · 修复4:榜单处置 INSERT 流水到 nx_team_leaderboard_action。
     // member_user_id=0 表示"本期全局期处置"(非针对具体用户的期级 action)。
     boolean insertLeaderboardAction(String period, String actionType, String reason, String operator);
+
+    default boolean insertLeaderboardMemberAction(String period, Long memberUserId, String actionType, String reason, String operator) { return false; }
+
+    default List<Map<String, Object>> leaderboardCandidates(BigDecimal minVolumeUsd, int limit) { return List.of(); }
+
+    default List<Map<String, Object>> leaderboardCandidates(
+            String period,
+            java.time.LocalDateTime fromInclusive,
+            java.time.LocalDateTime toExclusive,
+            BigDecimal minVolumeUsd,
+            int limit) {
+        return leaderboardCandidates(minVolumeUsd, limit);
+    }
 
     // ============================================================
     // F1 V-Rank 晋升引擎(Sprint 1+2):引擎读取 + 写入接口
@@ -184,6 +209,8 @@ public interface TeamCommissionRepository {
      * @return true=插入成功
      */
     boolean insertVRankRewardPayout(VRankRewardPayout payout);
+
+    default boolean enqueueVRankSkuFulfillment(Long userId, String rankCode, String skuId, String reason) { return false; }
 
     // ============================================================
     // F1 V-Rank 晋升流水查询(Sprint 5):promotion-log 端点读取

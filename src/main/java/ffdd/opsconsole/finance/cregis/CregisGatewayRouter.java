@@ -29,4 +29,16 @@ public final class CregisGatewayRouter {
         }
         return new LocalCregisSandboxGateway();
     }
+
+    public String payoutCallbackUrl() {
+        if (properties.getMode() == CregisProperties.Mode.LOCAL_SANDBOX) {
+            return "https://sandbox.invalid/cregis/payout";
+        }
+        if (properties.getMode() != CregisProperties.Mode.PROVIDER
+                || properties.getCallbackBaseUrl() == null || properties.getCallbackBaseUrl().isBlank()) {
+            throw new CregisGatewayException(
+                    CregisGatewayException.Kind.CONFIGURATION, "CREGIS_CALLBACK_NOT_CONFIGURED");
+        }
+        return properties.getCallbackBaseUrl().trim().replaceAll("/+$", "") + "/payout";
+    }
 }

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.audit;
 
 import ffdd.opsconsole.auth.mapper.AdminMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -35,6 +36,7 @@ public class AuditLogService {
     private final ApplicationNameProperties applicationNameProperties;
     private final AuditProperties auditProperties;
     private final AdminMapper adminMapper;
+    private final A2RuntimePolicy a2RuntimePolicy;
 
     public void record(AuditLogWriteRequest request) {
         if (!auditProperties.isEnabled() || request == null || !StringUtils.hasText(request.getAction())) {
@@ -202,10 +204,14 @@ public class AuditLogService {
         String actorUsername = trustedRecordedActor
                 ? requestedActor
                 : (StringUtils.hasText(authenticatedActor) ? authenticatedActor : requestedActor);
+        String action = normalizeCode(request.getAction(), "UNKNOWN");
+        boolean retentionExecutorAudit = action.startsWith("A2_AUDIT_RETENTION_");
+        Integer retentionMonths = retentionExecutorAudit ? null : a2RuntimePolicy.retentionMonths();
+        LocalDateTime expireAt = retentionMonths == null ? null : LocalDateTime.now().plusMonths(retentionMonths);
         return new AuditLogMapper.AuditLogWrite(
                 firstText(request.getTraceId(), AuditTraceContext.currentTraceId(), requestTraceId(servletRequest)),
                 applicationNameProperties.getName(),
-                normalizeCode(request.getAction(), "UNKNOWN"),
+                action,
                 normalizeCode(request.getResourceType(), "UNKNOWN"),
                 textOrNull(request.getResourceId()),
                 textOrNull(request.getBizNo()),
@@ -218,7 +224,10 @@ public class AuditLogService {
                 firstText(request.getPath(), servletRequest == null ? null : servletRequest.getRequestURI()),
                 normalizeCode(request.getResult(), "SUCCESS"),
                 normalizeCode(request.getRiskLevel(), "INFO"),
-                sanitizer.toSafeJson(request.getDetail()));
+                sanitizer.toSafeJson(sanitizer.withRequiredSchemaVersion(
+                        request.getDetail(), a2RuntimePolicy.schemaVersion())),
+                retentionMonths,
+                expireAt);
     }
 
     private Long firstActorId(Long requestedActorId, String actorUsername) {

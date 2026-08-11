@@ -6,12 +6,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.bi.dto.B3FunnelViewRequest;
 import ffdd.opsconsole.bi.domain.B3FunnelAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -37,12 +39,15 @@ class OpsFunnelServiceTest {
     private AuditLogService auditLogService;
     @Mock
     private AdminIdempotencyService idempotencyService;
+    @Mock
+    private A4RuntimePolicyService a4RuntimePolicyService;
 
     private OpsFunnelService service;
 
     @BeforeEach
     void setUp() {
-        service = new OpsFunnelService(mapper, auditLogService, idempotencyService);
+        lenient().when(a4RuntimePolicyService.day0Seconds()).thenReturn(90);
+        service = new OpsFunnelService(mapper, auditLogService, idempotencyService, a4RuntimePolicyService);
         TestingAuthenticationToken authentication = new TestingAuthenticationToken("9001", null);
         authentication.setAuthenticated(true);
         SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -120,6 +125,19 @@ class OpsFunnelServiceTest {
 
         assertThat(all).hasSize(14);
         assertThat(actual).containsExactlyElementsOf(all.subList(1, 14));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void overviewConsumesTheCurrentA4Day0Window() {
+        when(a4RuntimePolicyService.day0Seconds()).thenReturn(120);
+        when(mapper.selectB3EventFacts()).thenReturn(List.of(
+                event("auth.register_completed", "u1", LocalDateTime.now().minusMinutes(3)),
+                event("device.first_yield_received", "u1", LocalDateTime.now().minusMinutes(1))));
+
+        Map<String, Object> result = service.overview(null, null, null).getData();
+        Map<String, Object> aux = (Map<String, Object>) result.get("auxMetrics");
+        assertThat(aux).containsEntry("day0WindowSeconds", 120);
     }
 
     private static Map<String, Object> event(String name, String actor, LocalDateTime at) {

@@ -8,14 +8,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 import org.springframework.util.StringUtils;
 
 public final class LocalCregisSandboxGateway implements CregisGateway {
     private static final Pattern EVM_ADDRESS = Pattern.compile("(?i)^0x[0-9a-f]{40}$");
-    private final AtomicLong nextCid = new AtomicLong(9_000_000_000_000_000L);
-
     private final Map<String, AddressFixture> addressesByRequestId = new ConcurrentHashMap<>();
     private final Map<String, String> addressOwners = new ConcurrentHashMap<>();
     private final Map<String, PayoutFixture> payoutsByThirdPartyId = new ConcurrentHashMap<>();
@@ -62,7 +59,7 @@ public final class LocalCregisSandboxGateway implements CregisGateway {
     @Override
     public PayoutSubmission createPayout(PayoutRequest request) {
         PayoutRequest normalized = normalize(request);
-        PayoutFixture candidate = new PayoutFixture(normalized, nextCid.incrementAndGet());
+        PayoutFixture candidate = new PayoutFixture(normalized, deterministicCid(normalized.thirdPartyId()));
         PayoutFixture existing = payoutsByThirdPartyId.putIfAbsent(normalized.thirdPartyId(), candidate);
         if (existing != null) throw duplicateBusinessIdUnknown();
         payoutsByCid.put(candidate.cid(), new PayoutOrder(
@@ -129,6 +126,17 @@ public final class LocalCregisSandboxGateway implements CregisGateway {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(("NEXION-CREGIS-LOCAL-SANDBOX:" + requestId).getBytes(StandardCharsets.UTF_8));
             return "0x" + java.util.HexFormat.of().formatHex(digest, 0, 20);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("CREGIS_SANDBOX_HASH_UNAVAILABLE", impossible);
+        }
+    }
+
+    private long deterministicCid(String thirdPartyId) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(("NEXION-CREGIS-LOCAL-PAYOUT:" + thirdPartyId).getBytes(StandardCharsets.UTF_8));
+            long value = java.nio.ByteBuffer.wrap(digest, 0, Long.BYTES).getLong() & Long.MAX_VALUE;
+            return 8_000_000_000_000_000L + (value % 999_999_999_999_999L);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("CREGIS_SANDBOX_HASH_UNAVAILABLE", impossible);
         }

@@ -25,4 +25,6 @@ public class AuditLogEntity extends BaseEntity {
     private String result;
     private String riskLevel;
     private String detailJson;
+    private Integer retentionPolicyMonths;
+    private java.time.LocalDateTime expireAt;
 }

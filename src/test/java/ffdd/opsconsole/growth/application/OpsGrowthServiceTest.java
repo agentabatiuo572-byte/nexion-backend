@@ -20,6 +20,8 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
@@ -41,8 +43,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsGrowthServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
@@ -250,6 +255,11 @@ class OpsGrowthServiceTest {
         when(questEventMapper.debitWalletUsdt(anyLong(), any(BigDecimal.class))).thenReturn(1);
         when(questEventMapper.insertTrialChargeLedger(anyLong(), anyString(), any(BigDecimal.class), any(BigDecimal.class), anyString())).thenReturn(1);
         when(questEventMapper.countActiveWheelTiers()).thenAnswer(ignored -> (long) wheelTiers.size());
+    }
+
+    @AfterEach
+    void clearSecurityContext() {
+        SecurityContextHolder.clearContext();
     }
 
     @Test
@@ -712,6 +722,99 @@ class OpsGrowthServiceTest {
         assertThat(result.getCode()).isZero();
         verify(questEventMapper).updateMissionRewardByCode("H3_DEVICE_ACTIVATED", 100, 120);
         verify(questEventMapper).lockH3ConfigMutex();
+    }
+
+    @Test
+    void missionLifecycleEditsPausesArchivesAndDeletesWithAuthoritativeReadback() {
+        Map<String, Object> persistedTask = row(
+                "taskCode", "H3_DEVICE_ACTIVATED", "taskKind", "MISSION",
+                "task", "Activate device", "cond", "Activate device", "status", "active");
+        missionRows.put("DAY_ONE", new ArrayList<>(List.of(persistedTask)));
+        when(questEventMapper.lockMission("H3_DEVICE_ACTIVATED")).thenReturn(
+                row("taskCode", "H3_DEVICE_ACTIVATED", "taskName", "Activate device", "taskKind", "MISSION", "status", 1),
+                row("taskCode", "H3_DEVICE_ACTIVATED", "taskName", "Activate first device", "taskKind", "MISSION", "status", 1),
+                row("taskCode", "H3_DEVICE_ACTIVATED", "taskName", "Activate first device", "taskKind", "MISSION", "status", 0),
+                row("taskCode", "H3_DEVICE_ACTIVATED", "taskName", "Activate first device", "taskKind", "MISSION", "status", 2));
+        when(questEventMapper.updateMissionNameCas("H3_DEVICE_ACTIVATED", "Activate device", "Activate first device"))
+                .thenAnswer(ignored -> {
+                    persistedTask.put("task", "Activate first device");
+                    persistedTask.put("cond", "Activate first device");
+                    return 1;
+                });
+        when(questEventMapper.transitionMissionStatusCas("H3_DEVICE_ACTIVATED", 1, 0)).thenAnswer(ignored -> {
+            persistedTask.put("status", "paused");
+            return 1;
+        });
+        when(questEventMapper.transitionMissionStatusCas("H3_DEVICE_ACTIVATED", 0, 2)).thenAnswer(ignored -> {
+            persistedTask.put("status", "archived");
+            return 1;
+        });
+        when(questEventMapper.softDeleteMissionCas("H3_DEVICE_ACTIVATED", 2)).thenAnswer(ignored -> {
+            missionRows.get("DAY_ONE").clear();
+            return 1;
+        });
+
+        ApiResult<Map<String, Object>> edited = service.editMission("idem-h3-edit", "H3_DEVICE_ACTIVATED",
+                new GrowthMissionEditRequest("MISSION", "Activate first device", "Activate device",
+                        "rename task clearly", "superadmin"));
+        assertThat(edited.getCode()).isZero();
+        assertThat(firstTask(edited)).containsEntry("task", "Activate first device");
+        ApiResult<Map<String, Object>> paused = service.transitionMission("idem-h3-pause", "H3_DEVICE_ACTIVATED",
+                new GrowthMissionStatusRequest("MISSION", "paused", "active", "pause during review", "superadmin"));
+        assertThat(paused.getCode()).isZero();
+        assertThat(firstTask(paused)).containsEntry("status", "paused");
+        ApiResult<Map<String, Object>> archived = service.archiveMission("idem-h3-archive", "H3_DEVICE_ACTIVATED",
+                new GrowthMissionStatusRequest("MISSION", "archived", "paused", "archive retired task", "superadmin"));
+        assertThat(archived.getCode()).isZero();
+        assertThat(firstTask(archived)).containsEntry("status", "archived");
+        ApiResult<Map<String, Object>> deleted = service.deleteMission("idem-h3-delete", "H3_DEVICE_ACTIVATED",
+                new GrowthMissionStatusRequest("MISSION", "deleted", "archived", "remove archived task", "superadmin"));
+
+        assertThat(List.of(edited, paused, archived, deleted)).allMatch(result -> result.getCode() == 0);
+        assertThat(deleted.getData().get("dayOneTasks")).asList().isEmpty();
+        assertThat(deleted.getData()).containsEntry("domain", "H3");
+        verify(auditLogService, org.mockito.Mockito.times(4)).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void forgedMissionOperatorCannotReplaceAuthenticatedAuditPrincipal() {
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken("991", null, List.of(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority("growth_h3_write")));
+        authentication.setDetails(Map.of("username", "actual-h3-admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        when(questEventMapper.lockMission("H3_SECURE_TASK")).thenReturn(row(
+                "taskCode", "H3_SECURE_TASK", "taskName", "Original", "taskKind", "MISSION", "status", 1));
+        when(questEventMapper.updateMissionNameCas("H3_SECURE_TASK", "Original", "Renamed")).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.editMission(
+                "idem-h3-secure-actor",
+                "H3_SECURE_TASK",
+                new GrowthMissionEditRequest(
+                        "MISSION", "Renamed", "Original", "approved secure rename", "forged-superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("actual-h3-admin");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> firstTask(ApiResult<Map<String, Object>> result) {
+        return ((List<Map<String, Object>>) result.getData().get("dayOneTasks")).get(0);
+    }
+
+    @Test
+    void archivedMissionRejectsIllegalReactivation() {
+        when(questEventMapper.lockMission("H3_OLD_TASK")).thenReturn(row(
+                "taskCode", "H3_OLD_TASK", "taskName", "Old task", "taskKind", "MISSION", "status", 2));
+
+        ApiResult<Map<String, Object>> result = service.transitionMission("idem-h3-reactivate", "H3_OLD_TASK",
+                new GrowthMissionStatusRequest("MISSION", "active", "archived", "must not reactivate", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("H3_MISSION_STATE_TRANSITION_INVALID");
+        verify(questEventMapper, never()).transitionMissionStatusCas(anyString(), anyInt(), anyInt());
     }
 
     @Test

@@ -4,6 +4,7 @@ import ffdd.opsconsole.bi.domain.B3FunnelAnalytics;
 import ffdd.opsconsole.bi.dto.B3FunnelViewRequest;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -41,6 +42,7 @@ public class OpsFunnelService {
     private final BiReportMapper mapper;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
+    private final A4RuntimePolicyService a4RuntimePolicyService;
 
     public ApiResult<Map<String, Object>> overview(String cohort, String phase, String ref) {
         return overview(cohort, phase, ref, "purchase");
@@ -50,7 +52,8 @@ public class OpsFunnelService {
         Filter filter = filter(cohort, phase, ref);
         String normalizedStage = normalizeStage(stage);
         Map<String, Object> result = mutable(B3FunnelAnalytics.calculate(
-                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), normalizedStage));
+                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), normalizedStage,
+                a4RuntimePolicyService.day0Seconds()));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> overviewTrend =
                 (List<Map<String, Object>>) result.getOrDefault("trend", List.of());
@@ -153,7 +156,8 @@ public class OpsFunnelService {
     public FunnelCsvFile export(String cohort, String phase, String ref) {
         Filter filter = filter(cohort, phase, ref);
         Map<String, Object> dashboard = B3FunnelAnalytics.calculate(
-                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref());
+                mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), "purchase",
+                a4RuntimePolicyService.day0Seconds());
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> stages =
                 (List<Map<String, Object>>) dashboard.getOrDefault("stages", List.of());

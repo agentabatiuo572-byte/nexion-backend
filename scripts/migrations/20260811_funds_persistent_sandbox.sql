@@ -1,0 +1,79 @@
+CREATE TABLE IF NOT EXISTS nx_funds_sandbox_wallet (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  available_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  reserved_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_funds_sandbox_wallet_user (user_id),
+  CONSTRAINT chk_funds_sandbox_wallet_non_negative CHECK (available_usdt >= 0 AND reserved_usdt >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_funds_sandbox_order (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  channel VARCHAR(48) NOT NULL,
+  amount DECIMAL(18,6) NOT NULL,
+  target_address VARCHAR(128) NULL,
+  status VARCHAR(32) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  settled_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_funds_sandbox_order_no (order_no),
+  UNIQUE KEY uk_funds_sandbox_order_idem (user_id,idempotency_key),
+  KEY idx_funds_sandbox_order_user_time (user_id,created_at),
+  CONSTRAINT chk_funds_sandbox_order_amount CHECK (amount > 0),
+  CONSTRAINT chk_funds_sandbox_order_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_funds_sandbox_ledger (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  ledger_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  entry_role VARCHAR(48) NOT NULL,
+  direction VARCHAR(16) NOT NULL,
+  amount DECIMAL(18,6) NOT NULL,
+  available_after DECIMAL(18,6) NOT NULL,
+  reserved_after DECIMAL(18,6) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_funds_sandbox_ledger_no (ledger_no),
+  UNIQUE KEY uk_funds_sandbox_ledger_role (order_no,entry_role),
+  KEY idx_funds_sandbox_ledger_user_time (user_id,created_at),
+  CONSTRAINT chk_funds_sandbox_ledger_amount CHECK (amount > 0),
+  CONSTRAINT chk_funds_sandbox_ledger_balances CHECK (available_after >= 0 AND reserved_after >= 0),
+  CONSTRAINT chk_funds_sandbox_ledger_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_funds_sandbox_callback_inbox (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  event_id VARCHAR(128) NOT NULL,
+  user_id BIGINT NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  target_status VARCHAR(32) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  process_status VARCHAR(24) NOT NULL DEFAULT 'RECEIVED',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  received_at DATETIME NOT NULL,
+  processed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_funds_sandbox_callback_event (event_id),
+  KEY idx_funds_sandbox_callback_order (order_no,received_at),
+  CONSTRAINT chk_funds_sandbox_callback_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

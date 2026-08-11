@@ -37,6 +37,20 @@ public final class L1KpiAnalytics {
             String phase,
             String locale,
             String ref) {
+        return calculate(rawRows, window, cohort, phase, locale, ref, 90);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows,
+            String window,
+            String cohort,
+            String phase,
+            String locale,
+            String ref,
+            int day0WindowSeconds) {
+        if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
+            throw new IllegalArgumentException("A4_DAY0_POLICY_INVALID");
+        }
         LocalDateTime now = LocalDateTime.now(BUSINESS_ZONE);
         WindowRange range = windowRange(window, now);
         String normalizedWindow = range.label();
@@ -47,14 +61,14 @@ public final class L1KpiAnalytics {
         long windowSeconds = Math.max(1, ChronoUnit.SECONDS.between(from, end));
         LocalDateTime previousFrom = from.minusSeconds(windowSeconds);
 
-        List<KpiSpec> specs = specs();
+        List<KpiSpec> specs = specs(day0WindowSeconds);
         List<Map<String, Object>> kpis = new ArrayList<>();
         Map<String, Object> plain = new LinkedHashMap<>();
         Map<String, Object> ext = new LinkedHashMap<>();
         for (KpiSpec spec : specs) {
-            KpiValue current = value(spec.id(), all, from, end, dimensions);
-            KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions);
-            List<Double> spark = spark(spec.id(), all, from, end, dimensions);
+            KpiValue current = value(spec.id(), all, from, end, dimensions, day0WindowSeconds);
+            KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions, day0WindowSeconds);
+            List<Double> spark = spark(spec.id(), all, from, end, dimensions, day0WindowSeconds);
             String status = status(spec, current.value());
             kpis.add(linked(
                     "n", spec.id(), "kpiId", String.valueOf(spec.id()), "name", spec.name(),
@@ -91,7 +105,13 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> drilldown(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref);
+        return drilldown(rows, kpiId, window, cohort, phase, locale, ref, 90);
+    }
+
+    public static Map<String, Object> drilldown(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
@@ -103,7 +123,13 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> trend(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref);
+        return trend(rows, kpiId, window, cohort, phase, locale, ref, 90);
+    }
+
+    public static Map<String, Object> trend(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
@@ -117,14 +143,15 @@ public final class L1KpiAnalytics {
             List<EventFact> events,
             LocalDateTime from,
             LocalDateTime end,
-            Predicate<EventFact> dimensions) {
+            Predicate<EventFact> dimensions,
+            int day0WindowSeconds) {
         return switch (id) {
             case 1 -> orderedRatio(
                     anchors(events, "auth.register_completed", from, end, dimensions),
                     events,
                     event -> event.name().equals("device.first_yield_received")
-                            && event.latencySec() != null && event.latencySec() <= 90,
-                    90L,
+                            && event.latencySec() != null && event.latencySec() <= day0WindowSeconds,
+                    (long) day0WindowSeconds,
                     end,
                     "NO_REGISTRATION_DENOMINATOR");
             case 2 -> day7(events, from, end, dimensions);
@@ -248,13 +275,14 @@ public final class L1KpiAnalytics {
             List<EventFact> events,
             LocalDateTime from,
             LocalDateTime to,
-            Predicate<EventFact> dimensions) {
+            Predicate<EventFact> dimensions,
+            int day0WindowSeconds) {
         List<Double> result = new ArrayList<>();
         long seconds = Math.max(1, ChronoUnit.SECONDS.between(from, to));
         for (int index = 0; index < 6; index++) {
             LocalDateTime start = from.plusSeconds(seconds * index / 6);
             LocalDateTime end = from.plusSeconds(seconds * (index + 1) / 6);
-            KpiValue point = value(id, events, start, end, dimensions);
+            KpiValue point = value(id, events, start, end, dimensions, day0WindowSeconds);
             if (point.value() == null) return List.of();
             result.add(point.value());
         }
@@ -284,16 +312,16 @@ public final class L1KpiAnalytics {
         return Math.min(5, (int) (elapsed * 6 / total));
     }
 
-    private static List<KpiSpec> specs() {
+    private static List<KpiSpec> specs(int day0WindowSeconds) {
         return List.of(
-                spec(1, "Day0 接入", 95, "%", "gte", List.of(), "V1 实时", "90 秒内首笔收益人数 ÷ 注册完成人数", "device.first_yield_received.latency_sec ≤ 90 ÷ auth.register_completed", List.of("device.first_yield_received", "auth.register_completed"), "衡量注册后能否快速感知收益", "/analytics/funnel-cohort"),
+                spec(1, "Day0 接入", 95, "%", "gte", List.of(), "V1 实时", day0WindowSeconds + " 秒内首笔收益人数 ÷ 注册完成人数", "device.first_yield_received.latency_sec ≤ " + day0WindowSeconds + " ÷ auth.register_completed", List.of("device.first_yield_received", "auth.register_completed"), "衡量注册后能否快速感知收益", "/analytics/funnel-cohort"),
                 spec(2, "Day7 留存", 60, "%", "gte", List.of(), "V1 实时", "第 7 天活跃人数 ÷ 已成熟注册 cohort", "day7 app.dau ÷ register cohort", List.of("app.dau", "auth.register_completed"), "未满 7 天的 cohort 不进入分母", "/analytics/funnel-cohort"),
                 spec(3, "注册→进 store", 30, "%", "gte", List.of(), "V1 实时", "看过商城的去重用户 ÷ 注册完成人数", "store.viewed distinct user ÷ auth.register_completed", List.of("store.viewed", "auth.register_completed"), "客户端浏览事件按锁定 KPI 口径统计", "/analytics/funnel-cohort"),
                 spec(4, "购买转化", 5, "%", "band", List.of(5, 10), "V1 实时", "支付完成去重用户 ÷ 看过商城去重用户", "checkout.completed ÷ store.viewed", List.of("checkout.completed", "store.viewed"), "健康带为 5%–10%", "/analytics/funnel-cohort"),
                 spec(5, "L4→L5 推广", 40, "%", "gte", List.of(), "V4 完整", "发出邀请的设备持有者 ÷ 设备持有者", "device holder referral.invite_sent ÷ device holders", List.of("referral.invite_sent", "device.purchase_completed"), "推广率不是提现或收入指标", "/analytics/operations"),
                 spec(6, "Nova 推送点击", 25, "%", "gte", List.of(), "V1 实时", "推送点击去重用户 ÷ 推送送达去重用户", "nova.push_clicked ÷ nova.push_sent", List.of("nova.push_clicked", "nova.push_sent"), "点击为锁定的客户端 KPI 事件", "/analytics/funnel-cohort"),
                 spec(7, "团队佣金触发率", 80, "%", "gte", List.of(), "V4 完整", "直推中产生首单佣金的人数 ÷ 直推人数", "L1 referred first commission.paid ÷ referral.bound", List.of("commission.paid", "referral.bound"), "只计算能与直推关系匹配的佣金事件", "/analytics/operations"),
-                spec(8, "Genesis 售罄速度", 14, "d", "lte", List.of(), "V1 实时", "累计售出达到 1,000 的自然日数", "genesis.purchased cumulative 1,000 days", List.of("genesis.purchased"), "未售罄时显示不可计算并保留进度", "/analytics/finance"));
+                spec(8, "Genesis 售罄速度", 14, "d", "lte", List.of(), "V1 实时", "累计售出达到 1,000 的自然日数", "genesis.purchased cumulative 1,000 days", List.of("genesis.purchased"), "未售罄时显示不可计算并保留进度", "/analytics/financial"));
     }
 
     private static KpiSpec spec(int id, String name, double target, String unit, String direction,

@@ -1,0 +1,14 @@
+# Explicit non-production profile for H5 acceptance. This is a durable server
+# sandbox only: the runtime never contacts a payment or withdrawal provider.
+nexion:
+  analytics:
+    # Acceptance H5 facts are isolated from production BI aggregates. This is
+    # server configuration, not a client-controlled payload field.
+    source-environment: SANDBOX
+  finance:
+    funds-sandbox:
+      mode: LOCAL_SANDBOX
+  market:
+    g2-acceptance-sandbox:
+      # Explicit opt-in. The guard also rejects every mixed profile at runtime.
+      mode: ENABLED

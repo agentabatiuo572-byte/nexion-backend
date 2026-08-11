@@ -304,6 +304,15 @@ public class OpsUserController {
         return userService.rejectAssetAdjustment(adjustmentNo, idempotencyKey, request);
     }
 
+    @PostMapping("/asset-adjustments/{adjustmentNo}/withdraw")
+    @PreAuthorize("hasAuthority('user_c3_adjust_create')")
+    public ApiResult<UserAssetAdjustmentDetail> withdrawAssetAdjustment(
+            @PathVariable String adjustmentNo,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody UserAssetAdjustmentReviewRequest request) {
+        return userService.withdrawAssetAdjustment(adjustmentNo, idempotencyKey, request);
+    }
+
     @PostMapping("/asset-adjustments/{adjustmentNo}/reverse")
     @PreAuthorize("hasAuthority('user_c3_adjust_reverse')")
     public ApiResult<Map<String, Object>> reverseAssetAdjustment(

@@ -62,11 +62,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Select("""
             SELECT COUNT(1)
-              FROM nx_user_device
+             FROM nx_user_device
              WHERE user_id = #{userId} AND is_deleted = 0
-               AND UPPER(status) = 'ACTIVE'
+               AND UPPER(ownership_status) = 'OWNED'
+               AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND deactivated_at IS NULL AND pending_deactivate = 0
             """)
     int activeDeviceCount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE(SUM(quantity), 0)
+              FROM nx_order
+             WHERE user_id = #{userId} AND is_deleted = 0
+               AND UPPER(order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+               AND UPPER(COALESCE(activation_status, 'WAITING_PAYMENT')) NOT IN
+                   ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
+            """)
+    int reservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE((
@@ -88,7 +100,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND (SELECT active_count FROM (
                     SELECT COUNT(1) AS active_count
                       FROM nx_user_device
-                     WHERE user_id = #{userId} AND is_deleted = 0 AND UPPER(status) = 'ACTIVE'
+                     WHERE user_id = #{userId} AND is_deleted = 0
+                       AND UPPER(ownership_status) = 'OWNED'
+                       AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                       AND deactivated_at IS NULL AND pending_deactivate = 0
                ) active_snapshot) < #{slotCap}
             """)
     int activateOwnedDeviceCas(@Param("userId") Long userId,
@@ -179,8 +194,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
                             NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
                    COALESCE((SELECT SUM(r.reward_usdt)
-                               FROM nx_compute_receipt r
+                              FROM nx_compute_receipt r
                               WHERE r.user_device_id = d.id AND r.is_deleted = 0
+                                AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
                                 AND UPPER(r.earning_status) IN
                                     ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')), 0) AS cumulativeOutputUsdt
               FROM nx_user_device d
@@ -313,7 +329,14 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
               LEFT JOIN nx_tradein_application ta
                 ON ta.user_id = o.user_id AND ta.target_order_no = o.order_no AND ta.is_deleted = 0
               LEFT JOIN nx_user_device ud
-                ON ud.id = ta.target_device_id AND ud.user_id = o.user_id AND ud.is_deleted = 0
+                ON ud.id = COALESCE(ta.target_device_id, (
+                     SELECT MIN(ordinary_device.id)
+                       FROM nx_user_device ordinary_device
+                      WHERE ordinary_device.user_id = o.user_id
+                        AND ordinary_device.source_order_no = o.order_no
+                        AND ordinary_device.is_deleted = 0
+                   ))
+               AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
              ORDER BY o.created_at DESC, o.id DESC
              LIMIT 100
@@ -398,6 +421,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String deviceType,
             String productCode,
             String status,
+            Long rowVersion,
             LocalDateTime activatedAt,
             LocalDateTime purchasedAt,
             BigDecimal dailyUsdt,
@@ -407,16 +431,15 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             BigDecimal basePowerW,
             String location,
             BigDecimal actualPaidUsdt,
-            BigDecimal cumulativeOutputUsdt,
-            Long rowVersion) {
+            BigDecimal cumulativeOutputUsdt) {
         public OwnedDevice(
                 Long id, String instanceNo, String name, String deviceType, String productCode, String status,
                 LocalDateTime activatedAt, LocalDateTime purchasedAt, BigDecimal dailyUsdt, BigDecimal dailyNex,
                 String gpuModel, Integer vramTotalGb, BigDecimal basePowerW, String location,
                 BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
-            this(id, instanceNo, name, deviceType, productCode, status, activatedAt, purchasedAt,
+            this(id, instanceNo, name, deviceType, productCode, status, 0L, activatedAt, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
-                    actualPaidUsdt, cumulativeOutputUsdt, 0L);
+                    actualPaidUsdt, cumulativeOutputUsdt);
         }
     }
 

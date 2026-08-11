@@ -3,6 +3,8 @@ package ffdd.opsconsole.shared.canonical;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.inOrder;
@@ -153,6 +155,46 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void ordinaryOrderCannotBypassServerCapacityReplacementAtTheActiveDeviceCap() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
+        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+
+        var result = service.createOrder(42L, null, 8L, 1, "capacity-bypass-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+    }
+
+    @Test
+    void ordinaryOrderReservesEveryRequestedAndAlreadyAcceptedDeviceSlot() {
+        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
+        when(mapper.activeDeviceCount(42L)).thenReturn(4);
+        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(1);
+
+        var result = service.createOrder(42L, null, 8L, 2, "capacity-reservation-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+        var serialization = inOrder(mapper, idempotency);
+        serialization.verify(mapper).lockUser(42L);
+        serialization.verify(idempotency).execute(anyString(), anyString(), anyString(),
+                eq(ffdd.opsconsole.shared.api.ApiResult.class),
+                org.mockito.ArgumentMatchers.<java.util.function.Supplier<ffdd.opsconsole.shared.api.ApiResult>>any());
+        serialization.verify(mapper).activeDeviceCount(42L);
+        serialization.verify(mapper).reservedDeviceOrderCount(42L);
+    }
+
+    @Test
     void returnsUserScopedCanonicalOrderHistoryIncludingCompletedTradeinReceipt() {
         when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
                 "TIO-1", 5L, "stellarbox-pro-v2", "StellarBox Pro v2", 1,
@@ -201,6 +243,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
                 9L, "DEV-9", "NexionBox S1", "BOX", "STELLARBOX-S1", "ACTIVE",
+                73L,
                 LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
                 LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
                 new BigDecimal("100"), new BigDecimal("50"), "RTX 4090", 96,
@@ -219,6 +262,7 @@ class AppCanonicalBoundaryServiceTest {
         @SuppressWarnings("unchecked")
         var devices = (List<Map<String, Object>>) result.getData().get("devices");
         assertThat(devices.get(0))
+                .containsEntry("rowVersion", 73L)
                 .containsEntry("capacityPct", new BigDecimal("80.643786"))
                 .containsEntry("capacityAgeMonths", 5)
                 .containsEntry("dailyUsdt", new BigDecimal("80.643786"))

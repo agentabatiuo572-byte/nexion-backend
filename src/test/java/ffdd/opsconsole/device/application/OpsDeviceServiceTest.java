@@ -2516,6 +2516,31 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e2RuntimeRouterUsesPersistedEnablementRewardAndVramConstraints() {
+        for (String taskClass : List.of("IG", "VG", "LL")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+        for (String taskClass : List.of("FT", "EM", "SP")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 24);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+        configFacade.values.put("E.task.queueSaturation", "0.35");
+
+        ApiResult<Map<String, Object>> result = service.routeE2Task(8);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("routable", true);
+        List<String> eligible = ((List<?>) result.getData().get("eligibleTaskClasses"))
+                .stream().map(String::valueOf).toList();
+        assertThat(eligible).containsExactlyInAnyOrder("IG", "VG", "LL");
+        Map<?, ?> selected = (Map<?, ?>) result.getData().get("selectedTask");
+        assertThat(selected.get("enabled")).isEqualTo(true);
+        assertThat(selected.get("minVRAM")).isEqualTo(8);
+        assertThat(service.routeE2Task(-1).getMessage()).isEqualTo("DEVICE_VRAM_INVALID");
+    }
+
+    @Test
     void e2TaskPricingUpdateRequiresEightCharacterReasonAndPublishesGovernedEvent() {
         DeviceTaskView row = taskWithClass("TK-IG", "IG", 12);
         catalogRepository.tasks.put(row.taskId(), row);

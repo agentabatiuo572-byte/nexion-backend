@@ -12,11 +12,14 @@ import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.math.BigDecimal;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 class OpsGrowthControllerTest {
     private final OpsGrowthService growthService = mock(OpsGrowthService.class);
@@ -124,6 +127,50 @@ class OpsGrowthControllerTest {
                 .containsEntry("ok", true);
 
         verify(growthService).updateQuestConfig("idem-h3-config", "dayOne.tasks.0.reward", request);
+    }
+
+    @Test
+    void missionLifecycleDelegatesEveryCommandWithItsIdempotencyHeader() {
+        GrowthMissionEditRequest edit = new GrowthMissionEditRequest(
+                "MISSION", "Renamed task", "Original task", "approved rename", "superadmin");
+        GrowthMissionStatusRequest pause = new GrowthMissionStatusRequest(
+                "MISSION", "paused", "active", "pause for review", "superadmin");
+        GrowthMissionStatusRequest archive = new GrowthMissionStatusRequest(
+                "MISSION", "archived", "paused", "archive retired task", "superadmin");
+        GrowthMissionStatusRequest delete = new GrowthMissionStatusRequest(
+                "MISSION", "deleted", "archived", "delete archived task", "superadmin");
+        when(growthService.editMission("idem-h3-edit", "H3_TASK", edit))
+                .thenReturn(ApiResult.ok(Map.of("action", "edited")));
+        when(growthService.transitionMission("idem-h3-status", "H3_TASK", pause))
+                .thenReturn(ApiResult.ok(Map.of("action", "status_changed")));
+        when(growthService.archiveMission("idem-h3-archive", "H3_TASK", archive))
+                .thenReturn(ApiResult.ok(Map.of("action", "archived")));
+        when(growthService.deleteMission("idem-h3-delete", "H3_TASK", delete))
+                .thenReturn(ApiResult.ok(Map.of("action", "deleted")));
+
+        assertThat(controller.editMission("idem-h3-edit", "H3_TASK", edit).getCode()).isZero();
+        assertThat(controller.transitionMission("idem-h3-status", "H3_TASK", pause).getCode()).isZero();
+        assertThat(controller.archiveMission("idem-h3-archive", "H3_TASK", archive).getCode()).isZero();
+        assertThat(controller.deleteMission("idem-h3-delete", "H3_TASK", delete).getCode()).isZero();
+
+        verify(growthService).editMission("idem-h3-edit", "H3_TASK", edit);
+        verify(growthService).transitionMission("idem-h3-status", "H3_TASK", pause);
+        verify(growthService).archiveMission("idem-h3-archive", "H3_TASK", archive);
+        verify(growthService).deleteMission("idem-h3-delete", "H3_TASK", delete);
+    }
+
+    @Test
+    void missionLifecycleRequiresH3WriteAuthority() {
+        for (String methodName : java.util.List.of(
+                "editMission", "transitionMission", "archiveMission", "deleteMission")) {
+            PreAuthorize guard = java.util.Arrays.stream(OpsGrowthController.class.getMethods())
+                    .filter(method -> method.getName().equals(methodName))
+                    .findFirst()
+                    .orElseThrow()
+                    .getAnnotation(PreAuthorize.class);
+            assertThat(guard).isNotNull();
+            assertThat(guard.value()).isEqualTo("hasAuthority('growth_h3_write')");
+        }
     }
 
     @Test

@@ -6,6 +6,8 @@ import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 @SuppressWarnings("MybatisPlusBaseMapper") // Read-only radar aggregates span risk, withdrawal, reserve, and wallet tables.
@@ -132,26 +134,153 @@ public interface B5RiskRadarMapper {
             @Param("endAt") LocalDateTime endAt);
 
     @Select("""
-            SELECT signal_no AS signalNo,
+            SELECT s.signal_no AS signalNo,
                    CASE UPPER(severity)
                      WHEN 'CRITICAL' THEN 'P0'
                      WHEN 'HIGH' THEN 'P1'
                      WHEN 'MEDIUM' THEN 'P2'
                      ELSE 'P3'
                    END AS level,
-                   signal_type AS signalType,
-                   user_id AS userId,
-                   DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s') AS createdAt
-              FROM nx_risk_signal
-             WHERE is_deleted=0
-               AND created_at >= #{startAt}
-               AND created_at < #{endAt}
-             ORDER BY created_at DESC, id DESC
+                   s.signal_type AS signalType,
+                   s.user_id AS userId,
+                   DATE_FORMAT(s.created_at, '%Y-%m-%dT%H:%i:%s') AS createdAt,
+                   COALESCE(d.handling_status, 'open') AS handlingStatus,
+                   COALESCE(d.version, 0) AS handlingVersion,
+                   COALESCE((SELECT CASE WHEN x.receipt_source='mock' THEN 'SANDBOX_DELIVERED'
+                                        ELSE x.delivery_status END
+                               FROM nx_admin_risk_alert_delivery x
+                              WHERE x.signal_no=s.signal_no AND x.is_deleted=0
+                              ORDER BY x.id DESC LIMIT 1), 'NOT_QUEUED') AS deliveryStatus
+              FROM nx_risk_signal s
+              LEFT JOIN nx_admin_risk_signal_disposition d
+                ON d.signal_no=s.signal_no AND d.is_deleted=0
+             WHERE s.is_deleted=0
+               AND s.created_at >= #{startAt}
+               AND s.created_at < #{endAt}
+             ORDER BY s.created_at DESC, s.id DESC
              LIMIT 20
             """)
     List<Map<String, Object>> recentSignals(
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt);
+
+    @Select("SELECT COUNT(*) FROM nx_risk_signal WHERE signal_no=#{signalNo} AND is_deleted=0")
+    int signalExists(@Param("signalNo") String signalNo);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_admin_risk_signal_disposition
+              (signal_no, handling_status, version, created_at, updated_at, is_deleted)
+            VALUES (#{signalNo}, 'open', 0, NOW(), NOW(), 0)
+            """)
+    int ensureSignalDisposition(@Param("signalNo") String signalNo);
+
+    @Select("""
+            SELECT signal_no AS signalNo, handling_status AS status, version
+              FROM nx_admin_risk_signal_disposition
+             WHERE signal_no=#{signalNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
+            """)
+    SignalDispositionRecord lockSignalDisposition(@Param("signalNo") String signalNo);
+
+    @Update("""
+            UPDATE nx_admin_risk_signal_disposition
+               SET handling_status=#{targetStatus}, version=version+1, handled_by=#{actor},
+                   reason=#{reason}, handled_at=NOW(), updated_at=NOW()
+             WHERE signal_no=#{signalNo} AND handling_status=#{expectedStatus}
+               AND version=#{expectedVersion} AND is_deleted=0
+            """)
+    int updateSignalDisposition(@Param("signalNo") String signalNo,
+                                @Param("targetStatus") String targetStatus,
+                                @Param("expectedStatus") String expectedStatus,
+                                @Param("expectedVersion") long expectedVersion,
+                                @Param("actor") String actor,
+                                @Param("reason") String reason);
+
+    @Select("""
+            SELECT s.signal_no
+              FROM nx_risk_signal s
+              JOIN nx_config_item c ON c.config_key='risk.alert-subscription.subscriber'
+                 AND c.config_value=#{subscriber} AND c.status=1 AND c.is_deleted=0
+             WHERE s.is_deleted=0
+               AND s.created_at >= c.updated_at
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_admin_risk_alert_delivery d
+                    WHERE d.signal_no=s.signal_no AND d.subscriber=#{subscriber}
+                      AND d.channel=#{channel} AND d.is_deleted=0)
+             ORDER BY s.created_at ASC, s.id ASC LIMIT #{limit}
+            """)
+    List<String> undeliveredSignalNos(@Param("subscriber") String subscriber,
+                                      @Param("channel") String channel,
+                                      @Param("limit") int limit);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_admin_risk_alert_delivery
+              (signal_no, subscriber, channel, delivery_status, retry_count, next_retry_at,
+               created_at, updated_at, is_deleted)
+            VALUES (#{signalNo}, #{subscriber}, #{channel}, 'PENDING', 0, NOW(), NOW(), NOW(), 0)
+            """)
+    int enqueueAlertDelivery(@Param("signalNo") String signalNo,
+                             @Param("subscriber") String subscriber,
+                             @Param("channel") String channel);
+
+    @Select("""
+            SELECT id, signal_no AS signalNo, subscriber, channel,
+                   delivery_status AS deliveryStatus, retry_count AS retryCount,
+                   next_retry_at AS nextRetryAt
+              FROM nx_admin_risk_alert_delivery
+             WHERE is_deleted=0 AND ((delivery_status IN ('PENDING','FAILED_RETRY')
+               AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
+               OR (delivery_status='SENDING' AND processing_started_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)))
+             ORDER BY created_at ASC, id ASC LIMIT #{limit}
+            """)
+    List<AlertDeliveryRecord> dueAlertDeliveries(@Param("limit") int limit);
+
+    @Update("""
+            UPDATE nx_admin_risk_alert_delivery
+               SET delivery_status='SENDING', processing_started_at=NOW(), updated_at=NOW()
+             WHERE id=#{id} AND is_deleted=0 AND (delivery_status IN ('PENDING','FAILED_RETRY')
+                OR (delivery_status='SENDING' AND processing_started_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)))
+            """)
+    int claimAlertDelivery(@Param("id") long id);
+
+    @Update("""
+            UPDATE nx_admin_risk_alert_delivery
+               SET delivery_status='DELIVERED', delivered_at=NOW(), last_error=NULL,
+                   receipt_source=#{receiptSource}, provider_receipt=#{providerReceipt}, updated_at=NOW()
+             WHERE id=#{id} AND delivery_status='SENDING' AND is_deleted=0
+            """)
+    int markAlertDelivered(@Param("id") long id,
+                           @Param("receiptSource") String receiptSource,
+                           @Param("providerReceipt") String providerReceipt);
+
+    @Update("""
+            UPDATE nx_admin_risk_alert_delivery
+               SET delivery_status=CASE WHEN retry_count + 1 >= #{maxRetries} THEN 'DEAD' ELSE 'FAILED_RETRY' END,
+                   retry_count=retry_count+1,
+                   next_retry_at=CASE WHEN retry_count + 1 >= #{maxRetries} THEN NULL
+                     ELSE DATE_ADD(NOW(), INTERVAL LEAST(60, POW(2, retry_count + 1)) MINUTE) END,
+                   last_error=#{error}, updated_at=NOW()
+             WHERE id=#{id} AND delivery_status='SENDING' AND is_deleted=0
+            """)
+    int markAlertFailure(@Param("id") long id, @Param("error") String error,
+                         @Param("maxRetries") int maxRetries);
+
+    @Select("""
+            SELECT id, signal_no AS signalNo, channel, delivery_status AS deliveryStatus,
+                   receipt_source AS receiptSource, provider_receipt AS providerReceipt,
+                   delivered_at AS deliveredAt, read_at AS readAt, acknowledged_at AS acknowledgedAt
+              FROM nx_admin_risk_alert_delivery
+             WHERE subscriber=#{subscriber} AND is_deleted=0 AND channel='inApp'
+             ORDER BY created_at DESC, id DESC LIMIT #{limit}
+            """)
+    List<Map<String, Object>> subscriberInbox(@Param("subscriber") String subscriber, @Param("limit") int limit);
+
+    @Update("""
+            UPDATE nx_admin_risk_alert_delivery SET read_at=COALESCE(read_at,NOW()),
+                   acknowledged_at=NOW(), updated_at=NOW()
+             WHERE id=#{id} AND subscriber=#{subscriber} AND channel='inApp'
+               AND delivery_status='DELIVERED' AND is_deleted=0
+            """)
+    int acknowledgeInbox(@Param("id") long id, @Param("subscriber") String subscriber);
 
     @Select("""
             SELECT COUNT(1)
@@ -272,4 +401,11 @@ public interface B5RiskRadarMapper {
              ORDER BY FIELD(gates.gateKey,'withdraw','staking','genesis','exchange','trial')
             """)
     List<Map<String, Object>> killSwitchStates();
+
+    record SignalDispositionRecord(String signalNo, String status, long version) {
+    }
+
+    record AlertDeliveryRecord(long id, String signalNo, String subscriber, String channel,
+                               String deliveryStatus, int retryCount, LocalDateTime nextRetryAt) {
+    }
 }

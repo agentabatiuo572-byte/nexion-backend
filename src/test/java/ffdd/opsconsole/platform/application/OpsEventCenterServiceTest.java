@@ -1,9 +1,11 @@
 package ffdd.opsconsole.platform.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,6 +34,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DuplicateKeyException;
 
 class OpsEventCenterServiceTest {
     private final FakeConfigFacade configFacade = new FakeConfigFacade();
@@ -315,6 +318,26 @@ class OpsEventCenterServiceTest {
 
         assertThat(result.getCode()).isZero();
         verify(governanceMapper).completeDomainExtension("conversation", "conversation.session_started");
+    }
+
+    @Test
+    void concurrentDuplicateFailsTheIdempotentActionSoTheTransactionRollsBackAllSchemaWrites() {
+        EventSchemaRegistrationRequest request = new EventSchemaRegistrationRequest(
+                "app.session_started", "app", "client", "L1 BI", "session_id", "id",
+                false, false, "10%", "v6", "register concurrent schema property");
+        EventGovernanceMapper.EventSchemaRecord inserted = new EventGovernanceMapper.EventSchemaRecord(
+                105L, "app.session_started", "app", "acquisition", "client", "L1 BI", false,
+                "浏览/会话 10% · 资金/风控/转化 100%", 7);
+        when(governanceMapper.findSchema("app.session_started")).thenReturn(null, inserted);
+        when(governanceMapper.advanceRevision(6, 7)).thenReturn(1);
+        org.mockito.Mockito.doThrow(new DuplicateKeyException("concurrent duplicate"))
+                .when(governanceMapper).insertProperty(105L, "session_id", "id", 7);
+
+        assertThatThrownBy(() -> service.registerSchema("idem-a4-schema-race", request))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("A4_SCHEMA_DUPLICATE");
+
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test

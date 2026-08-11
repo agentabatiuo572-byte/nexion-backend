@@ -17,6 +17,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.GlobalExceptionHandler;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -85,5 +86,22 @@ class OpsStakingControllerTest {
         assertThat(controller.updatePoolKillStatus("idem-g1-kill", "usdt365d", request).getCode()).isZero();
 
         verify(commandService).kill("idem-g1-kill", "usdt365d", request);
+    }
+
+    @Test
+    void restoreUsesDedicatedJ1ResumeAuthorityAndCommand() throws Exception {
+        PreAuthorize guard = OpsStakingController.class
+                .getMethod("restorePool", String.class, String.class, NexMarketValueUpdateRequest.class)
+                .getAnnotation(PreAuthorize.class);
+        assertThat(guard.value()).isEqualTo("hasAuthority('emergency_j1_gate_resume')");
+
+        NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(
+                "false", "incident controls recovered", "superadmin", null,
+                "manual review confirms safe reopening", "MANUAL_RISK_REVIEW");
+        when(commandService.restore("idem-g1-restore", "usdt365d", request))
+                .thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.restorePool("idem-g1-restore", "usdt365d", request).getCode()).isZero();
+        verify(commandService).restore("idem-g1-restore", "usdt365d", request);
     }
 }

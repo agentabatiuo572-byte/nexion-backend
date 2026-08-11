@@ -85,6 +85,36 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public Map<String, Object> e5Observability() {
+        DeviceOpsMapper.FleetObservabilityMetrics row = mapper.e5FleetObservabilityMetrics();
+        Map<String, Object> telemetry = new LinkedHashMap<>();
+        telemetry.put("heartbeatLost1h", row == null || row.heartbeatLost1h() == null ? 0L : row.heartbeatLost1h());
+        telemetry.put("reconnectEvents24h", mapper.countE5ReconnectEvents24h());
+        telemetry.put("persistentOffline1h", row == null || row.persistentOffline1h() == null ? 0L : row.persistentOffline1h());
+        telemetry.put("activeTasks", row == null || row.activeTasks() == null ? 0L : row.activeTasks());
+        telemetry.put("avgGpuUsagePct", row == null ? null : row.avgGpuUsagePct());
+        telemetry.put("avgGpuPowerW", row == null ? null : row.avgGpuPowerW());
+        telemetry.put("avgCpuUsagePct", null);
+        telemetry.put("dispatchLatencyP95Ms", null);
+        telemetry.put("dispatchLatencySampleCount", 0);
+        telemetry.put("latestRuntimeAt", row == null ? null : row.latestRuntimeAt());
+        List<Map<String, Object>> activity = mapper.e5Activity24h().stream().map(event -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("eventType", event.eventType());
+            item.put("aggregateType", event.aggregateType());
+            item.put("aggregateId", event.aggregateId());
+            item.put("occurredAt", event.createdAt());
+            return item;
+        }).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("telemetry", telemetry);
+        result.put("activity", activity);
+        result.put("sources", List.of("nx_user_device_runtime", "nx_event_outbox"));
+        result.put("missingMetrics", List.of("avgCpuUsagePct", "dispatchLatencyP95Ms"));
+        return result;
+    }
+
+    @Override
     public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request) {
         String status = request == null ? null : normalizeUpper(request.status());
         String dcLocation = request == null ? null : normalize(request.dcLocation());

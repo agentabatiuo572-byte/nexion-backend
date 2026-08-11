@@ -99,6 +99,7 @@ public class EventOutboxDispatchScheduler {
             }
             for (EventOutboxMessage message : pending) {
                 try {
+                    outboxService.assertDispatchAllowed(message);
                     eventPublisher.publishEvent(message);
                     if (!outboxService.markPublished(message.getEventId())) {
                         log.warn("Outbox message was delivered but status was not updated eventId={}", message.getEventId());

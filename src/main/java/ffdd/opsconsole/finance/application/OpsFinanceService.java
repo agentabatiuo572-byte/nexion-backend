@@ -500,13 +500,6 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (changedFields.isEmpty()) {
             return ApiResult.fail(400, "D5_CHANGE_REQUIRED");
         }
-        if (changedFields.contains("smallAmountThresholdUsd")
-                || changedFields.contains("payoutSlaHours")) {
-            // WD01 remains fail-closed: these values are published for diagnostics/versioning,
-            // but there is no production withdrawal executor that can honour either promise.
-            // Reject direct API writes instead of recording an operational fake success.
-            return ApiResult.fail(409, "D5_EXECUTOR_HOLD");
-        }
         ApiResult<Map<String, Object>> validation = validateWithdrawalLimitsRequest(request, changedFields);
         if (validation != null) {
             return validation;

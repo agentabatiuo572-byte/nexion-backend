@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -61,6 +62,8 @@ class OpsTreasuryServiceTest {
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final RiskTamperSignalFacade riskTamperSignalFacade = mock(RiskTamperSignalFacade.class);
+    private final ffdd.opsconsole.platform.application.A2RuntimePolicy a2RuntimePolicy =
+            mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class);
     private final Map<String, String> idempotencyHashes = new LinkedHashMap<>();
     private final Map<String, ApiResult<Map<String, Object>>> idempotencyResponses = new LinkedHashMap<>();
     private final OpsTreasuryService service = service();
@@ -81,7 +84,13 @@ class OpsTreasuryServiceTest {
                 CLOCK,
                 new TreasuryDualLedgerProperties(),
                 new ObjectMapper(),
-                seedPolicy);
+                seedPolicy,
+                a2RuntimePolicy);
+        when(a2RuntimePolicy.reasonMinChars()).thenReturn(8);
+        doAnswer(invocation -> {
+            ffdd.opsconsole.platform.application.A2RuntimePolicy.validateReason(invocation.getArgument(0), 8);
+            return null;
+        }).when(a2RuntimePolicy).validateReason(org.mockito.ArgumentMatchers.nullable(String.class));
         when(riskTamperSignalFacade.tamperRadarSnapshot(any()))
                 .thenReturn(RiskTamperSignalFacade.TamperRadarSnapshot.empty());
         return service;

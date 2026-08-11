@@ -11,6 +11,8 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.dto.F5CommissionAnomalyConfigRequest;
+import ffdd.opsconsole.team.dto.F5CommissionExportPayload;
+import ffdd.opsconsole.team.dto.F5CommissionExportRequest;
 import ffdd.opsconsole.team.dto.F5CommissionQuery;
 import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
 import ffdd.opsconsole.team.dto.F5CommissionReverseRequest;
@@ -21,8 +23,15 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -31,6 +40,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -42,6 +52,9 @@ public class F5CommissionService {
             Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen");
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 100;
+    private static final int EXPORT_PAGE_SIZE = 1000;
+    private static final long EXPORT_MAX_ROWS = 50_000L;
+    private static final int EXPORT_MAX_BYTES = 10 * 1024 * 1024;
     private static final String ANOMALY_SIGMA_KEY = "commission/anomaly-sigma";
     private static final String LAYER_RATIO_KEY = "commission/layer-ratio-anomaly-pct";
     private static final String COOLING_DAYS_KEY = "commission/cooling-days";
@@ -145,6 +158,181 @@ public class F5CommissionService {
                 "nx_wallet_ledger",
                 "nx_event_outbox"));
         return ApiResult.ok(response);
+    }
+
+    /**
+     * Produces a complete, redacted artifact from the canonical database query. The caller's
+     * cursor/limit are intentionally absent: paging is controlled here until every matching row
+     * has been read or a hard safety bound is reached.
+     */
+    public F5CommissionExportPayload export(
+            String idempotencyKey, F5CommissionExportRequest request, String authenticatedOperator) {
+        NormalizedQuery query = normalizeQuery(new F5CommissionQuery(
+                request == null ? null : request.kind(),
+                request == null ? null : request.currency(),
+                exportUserId(request == null ? null : request.userId()),
+                request == null ? null : request.status(),
+                request == null ? null : request.cohort(),
+                null,
+                EXPORT_PAGE_SIZE));
+        String normalizedReason = reason(request == null ? null : request.reason());
+        String operator = operator(authenticatedOperator);
+        // The reason is immutable audit metadata, not export selection.  Keep the execution
+        // identity aligned with the PC retry key so an uncertain response can replay its exact
+        // artifact even if the operator clarifies the displayed reason before retrying.
+        String requestHash = requestHash(
+                "export", Objects.toString(query.kind(), ""), Objects.toString(query.currency(), ""),
+                Objects.toString(query.userId(), ""), Objects.toString(query.status(), ""),
+                Objects.toString(query.cohort(), ""));
+        return idempotencyService.execute(
+                "F5_COMMISSION_EXPORT", idempotencyKey, requestHash,
+                F5CommissionExportPayload.class,
+                () -> exportInternal(query, normalizedReason, operator));
+    }
+
+    private F5CommissionExportPayload exportInternal(
+            NormalizedQuery query, String reason, String operator) {
+        long expectedRows = mapper.countEvents(
+                query.kind(), query.currency(), query.userId(), query.status(), query.cohort());
+        if (expectedRows < 0) {
+            throw new BizException(500, "F5_EXPORT_COUNT_INVALID");
+        }
+        if (expectedRows > EXPORT_MAX_ROWS) {
+            throw new BizException(413, "F5_EXPORT_ROW_LIMIT_EXCEEDED");
+        }
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream((int) Math.min(
+                EXPORT_MAX_BYTES, 256L + expectedRows * 160L));
+        output.writeBytes(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
+        writeCsvLine(output, List.of(
+                "commissionId", "eventId", "user", "kind", "currency", "amount",
+                "sourceUser", "layer", "status", "settledAt"));
+        long written = 0L;
+        Long cursor = null;
+        while (written < expectedRows) {
+            List<Map<String, Object>> page = mapper.queryExportEvents(
+                    query.kind(), query.currency(), query.userId(), query.status(), query.cohort(),
+                    cursor, EXPORT_PAGE_SIZE);
+            if (page == null || page.isEmpty()) {
+                throw new BizException(409, "F5_EXPORT_SOURCE_CHANGED_RETRY");
+            }
+            if (page.size() > EXPORT_PAGE_SIZE) {
+                throw new BizException(500, "F5_EXPORT_PAGE_BOUNDARY_INVALID");
+            }
+            Long previousCursor = cursor;
+            for (Map<String, Object> row : page) {
+                Long eventId = longValue(row.get("eventId"));
+                if (eventId == null || eventId <= 0 || (cursor != null && eventId >= cursor)) {
+                    throw new BizException(500, "F5_EXPORT_CURSOR_INVALID");
+                }
+                String commissionId = text(row.get("commissionId"));
+                Long userId = longValue(row.get("userId"));
+                String kind = text(row.get("kind")).toLowerCase(Locale.ROOT);
+                String currency = text(row.get("currency")).toUpperCase(Locale.ROOT);
+                String status = text(row.get("status")).toLowerCase(Locale.ROOT);
+                if (!commissionId.equals("CM-" + eventId)
+                        || userId == null || userId <= 0
+                        || !KINDS.contains(kind)
+                        || !Set.of("USDT", "NEX").contains(currency)
+                        || !STATUSES.contains(status)
+                        || row.get("amount") == null || decimal(row.get("amount")).signum() < 0) {
+                    throw new BizException(500, "F5_EXPORT_ROW_INVALID");
+                }
+                writeCsvLine(output, List.of(
+                        commissionId,
+                        eventId.toString(),
+                        redactUserId(userId),
+                        kind,
+                        currency,
+                        decimal(row.get("amount")).stripTrailingZeros().toPlainString(),
+                        redactUserId(longValue(row.get("sourceUserId"))),
+                        Objects.toString(row.get("layer"), ""),
+                        status,
+                        text(row.get("settledAt"))));
+                cursor = eventId;
+                written++;
+                if (written > expectedRows || written > EXPORT_MAX_ROWS) {
+                    throw new BizException(409, "F5_EXPORT_SOURCE_CHANGED_RETRY");
+                }
+                if (output.size() > EXPORT_MAX_BYTES) {
+                    throw new BizException(413, "F5_EXPORT_SIZE_LIMIT_EXCEEDED");
+                }
+            }
+            if (Objects.equals(previousCursor, cursor)) {
+                throw new BizException(500, "F5_EXPORT_CURSOR_STALLED");
+            }
+        }
+        if (written != expectedRows) {
+            throw new BizException(409, "F5_EXPORT_SOURCE_CHANGED_RETRY");
+        }
+
+        byte[] content = output.toByteArray();
+        String digest = sha256(content);
+        String exportId = "F5-CSV-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String filename = "f5-commissions-" + DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(ZoneOffset.UTC).format(Instant.now()) + ".csv";
+        Map<String, Object> detail = linked(
+                "reason", reason,
+                "filters", linked(
+                        "kind", query.kind(), "currency", query.currency(), "userId", query.userId(),
+                        "status", query.status(), "cohort", query.cohort()),
+                "rowCount", written,
+                "byteSize", content.length,
+                "sha256", digest,
+                "redacted", true);
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("F5_COMMISSION_CSV_EXPORTED")
+                .resourceType("COMMISSION_EXPORT")
+                .resourceId(exportId)
+                .bizNo(exportId)
+                .actorType("ADMIN")
+                .actorUsername(operator)
+                .result("SUCCESS")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+        eventOutboxService.publish("ADMIN_COMMISSION_EXPORT", exportId, "admin.commission_exported", detail);
+        return new F5CommissionExportPayload(exportId, filename, written, content.length, digest, content);
+    }
+
+    private void writeCsvLine(ByteArrayOutputStream output, List<String> values) {
+        String line = values.stream().map(this::csvCell).collect(java.util.stream.Collectors.joining(",")) + "\r\n";
+        output.writeBytes(line.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String csvCell(String value) {
+        String safe = value == null ? "" : value.replace("\r", " ").replace("\n", " ");
+        if (!safe.isEmpty() && "=+-@".indexOf(safe.charAt(0)) >= 0) safe = "'" + safe;
+        return "\"" + safe.replace("\"", "\"\"") + "\"";
+    }
+
+    private String redactUserId(Long value) {
+        if (value == null) return "";
+        String raw = value.toString();
+        return "U***" + raw.substring(Math.max(0, raw.length() - 4));
+    }
+
+    private Long exportUserId(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String normalized = value.trim();
+        if (!normalized.matches("^[1-9]\\d{0,18}$")) {
+            throw new IllegalArgumentException("COMMISSION_USER_ID_INVALID");
+        }
+        try {
+            long parsed = Long.parseLong(normalized);
+            if (parsed > 0) return parsed;
+        } catch (NumberFormatException ignored) {
+            // converted to a stable validation error below
+        }
+        throw new IllegalArgumentException("COMMISSION_USER_ID_INVALID");
+    }
+
+    private String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     public ApiResult<Map<String, Object>> anomalies(String type, Long cursor) {
@@ -315,28 +503,41 @@ public class F5CommissionService {
             List<Long> eventIds, String reason, String operator, String idempotencyKey) {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (coverage == null || !coverage.reliable()) {
-            return ApiResult.fail(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
+            throw new BizException(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
         }
         if (coverage.coverageRatio() == null || coverage.redlinePct() == null
                 || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            return ApiResult.fail(
+            throw new BizException(
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
-        String batchNo = operationNo("REI");
-        List<Map<String, Object>> reissued = new ArrayList<>();
-        BigDecimal total = BigDecimal.ZERO;
+        // Lock in canonical order and validate the entire batch before the first
+        // event, ledger or operation write. Overlapping batches serialize on the
+        // source rows; the database unique guard remains the final arbiter.
+        List<ReissueSource> sources = new ArrayList<>(eventIds.size());
         for (Long eventId : eventIds) {
             Map<String, Object> original = mapper.findEventForUpdate(eventId);
             if (original == null) {
-                return ApiResult.fail(409, "COMMISSION_REISSUE_SOURCE_NOT_FOUND:CM-" + eventId);
+                throw new BizException(409, "COMMISSION_REISSUE_SOURCE_NOT_FOUND:CM-" + eventId);
             }
             String status = text(original.get("rawStatus")).toUpperCase(Locale.ROOT);
             if (!Set.of("REVERSED", "REJECTED", "ROLLBACK").contains(status)) {
-                return ApiResult.fail(409, "COMMISSION_REISSUE_STATE_CONFLICT:CM-" + eventId);
+                throw new BizException(409, "COMMISSION_REISSUE_STATE_CONFLICT:CM-" + eventId);
             }
+            if (mapper.findReissueOperationForUpdate(eventId) != null) {
+                throw new BizException(409, "COMMISSION_REISSUE_ALREADY_CONSUMED:CM-" + eventId);
+            }
+            sources.add(new ReissueSource(eventId, original));
+        }
+
+        String batchNo = operationNo("REI");
+        List<Map<String, Object>> reissued = new ArrayList<>();
+        BigDecimal total = BigDecimal.ZERO;
+        for (ReissueSource source : sources) {
+            Long eventId = source.eventId();
+            Map<String, Object> original = source.original();
             if (mapper.insertReissueFromOriginal(eventId, batchNo, coolingDays(), reason) != 1) {
-                return ApiResult.fail(409, "COMMISSION_REISSUE_CAS_CONFLICT:CM-" + eventId);
+                throw new BizException(409, "COMMISSION_REISSUE_CAS_CONFLICT:CM-" + eventId);
             }
             Long newEventId = mapper.selectLastInsertId();
             if (newEventId == null || newEventId <= 0) {
@@ -358,9 +559,16 @@ public class F5CommissionService {
                         ledgerStatus,
                         "F5 commission reissue | source=CM-" + eventId + " | batch=" + batchNo);
             }
-            mapper.insertOperation(
-                    batchNo + "-" + eventId, "REISSUE", eventId, newEventId, userId, kind, amount,
-                    currency, null, reason, operator, idempotencyKey);
+            try {
+                int operationWritten = mapper.insertOperation(
+                        batchNo + "-" + eventId, "REISSUE", eventId, newEventId, userId, kind, amount,
+                        currency, null, reason, operator, reissueOperationEvidenceKey(idempotencyKey, eventId));
+                if (operationWritten != 1) {
+                    throw new BizException(500, "COMMISSION_REISSUE_OPERATION_WRITE_FAILED:CM-" + eventId);
+                }
+            } catch (DuplicateKeyException ex) {
+                throw new BizException(409, "COMMISSION_REISSUE_ALREADY_CONSUMED:CM-" + eventId);
+            }
             total = total.add(amount);
             reissued.add(linked(
                     "sourceCommissionId", "CM-" + eventId,
@@ -746,7 +954,7 @@ public class F5CommissionService {
         if (ids == null || ids.isEmpty() || ids.size() > 100) {
             throw new IllegalArgumentException("COMMISSION_IDS_REQUIRED_1_100");
         }
-        List<Long> normalized = ids.stream().map(this::eventId).distinct().toList();
+        List<Long> normalized = ids.stream().map(this::eventId).distinct().sorted().toList();
         if (normalized.size() != ids.size()) {
             throw new IllegalArgumentException("COMMISSION_IDS_DUPLICATED");
         }
@@ -852,6 +1060,11 @@ public class F5CommissionService {
         return "F5-" + prefix + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
     }
 
+    private String reissueOperationEvidenceKey(String idempotencyKey, Long eventId) {
+        String material = "F5_REISSUE_OPERATION\u001f" + idempotencyKey + "\u001f" + eventId;
+        return "F5R:" + UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8));
+    }
+
     private String money(BigDecimal value) {
         return "$" + value.setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
@@ -899,6 +1112,8 @@ public class F5CommissionService {
         }
         return map;
     }
+
+    private record ReissueSource(Long eventId, Map<String, Object> original) {}
 
     private record NormalizedQuery(
             String kind,

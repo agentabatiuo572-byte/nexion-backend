@@ -464,6 +464,11 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     }
 
     @Override
+    public boolean withdrawAssetAdjustment(String adjustmentNo, String maker, String reason) {
+        return mapper.withdrawAssetAdjustment(adjustmentNo, maker, reason) == 1;
+    }
+
+    @Override
     public boolean assetAdjustmentHasReversal(String adjustmentNo) {
         return mapper.countActiveAssetAdjustmentReversals(trim(adjustmentNo)) > 0;
     }

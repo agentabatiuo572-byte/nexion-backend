@@ -17,6 +17,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationWithdrawRequest;
 import ffdd.opsconsole.platform.infrastructure.AuditConfirmCategoryEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditObjectLockEntity;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationHistoryEntity;
@@ -54,6 +55,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @ApplicationService
@@ -143,6 +145,15 @@ public class OpsAuditCenterService {
             String idempotencyKey, String operationId, AuditOperationDecisionRequest request) {
         return idempotentTicket("REJECT:" + operationId, idempotencyKey, request,
                 () -> decide(idempotencyKey, operationId, request, STATUS_REJECTED, "A2_OPERATION_REJECTED"));
+    }
+
+    public ApiResult<AuditOperationTicket> withdraw(
+            String idempotencyKey, String operationId, AuditOperationWithdrawRequest request) {
+        return idempotentTicket("WITHDRAW:" + operationId, idempotencyKey, request,
+                () -> decide(idempotencyKey, operationId,
+                        request == null ? null : new AuditOperationDecisionRequest(request.reason(), request.operator()),
+                        "withdrawn", "A2_OPERATION_WITHDRAWN",
+                        request == null ? null : request.expectedStatus(), true));
     }
 
     public ApiResult<AuditOperationTicket> createProposal(String idempotencyKey, AuditOperationProposalRequest request) {
@@ -404,13 +415,17 @@ public class OpsAuditCenterService {
         return ApiResult.ok(toTicket(ticket));
     }
 
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public ApiResult<AuditMechanismParam> updateMechanismParam(
             String idempotencyKey, String paramKey, AuditMechanismParamUpdateRequest request) {
         String actor = AdminActorResolver.resolve(request == null ? null : request.operator());
-        ApiResult<AuditMechanismParam> guard = requireMutation(idempotencyKey,
-                request == null ? null : request.reason(), actor);
+        ApiResult<AuditMechanismParam> guard = requireMechanismMutation(idempotencyKey, paramKey, request, actor);
         if (guard != null) {
             return guard;
+        }
+        ApiResult<AuditMechanismParam> schemaGuard = requireSchemaUpgrade(paramKey, request);
+        if (schemaGuard != null) {
+            return schemaGuard;
         }
         try {
             AuditMechanismParam result = idempotencyService.execute(
@@ -419,6 +434,11 @@ public class OpsAuditCenterService {
                     () -> requireSuccess(updateMechanismParamOnce(idempotencyKey, paramKey, request)));
             return ApiResult.ok(result);
         } catch (BizException ex) {
+            // The API keeps its structured ApiResult contract, but swallowing BizException must
+            // never commit a policy row/idempotency claim after the required audit failed.
+            if (TransactionSynchronizationManager.isActualTransactionActive()) {
+                TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            }
             return ApiResult.fail(ex.getCode(), ex.getMessage());
         }
     }
@@ -439,7 +459,13 @@ public class OpsAuditCenterService {
         String before = configRepository.findActiveByKey(config.configKey())
                 .map(PlatformConfigItem::configValue).filter(StringUtils::hasText)
                 .orElse(defaultMechanismValue(config.key()));
+        boolean controlledBootstrap = "ttl".equals(config.key())
+                && configRepository.findActiveByKey(A2RuntimePolicy.REASON_MIN_KEY)
+                        .map(PlatformConfigItem::configValue).filter(StringUtils::hasText).isEmpty();
         PlatformConfigItem saved = saveConfig(config.configKey(), normalizedValue, config.remark(request.reason()));
+        if (controlledBootstrap) {
+            bootstrapMissingA2CompanionPolicies(request.reason());
+        }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_MECHANISM_PARAM_CHANGED")
                 .resourceType("A2_MECHANISM_PARAM")
@@ -459,11 +485,47 @@ public class OpsAuditCenterService {
         return ApiResult.ok(paramView(config, saved.configValue()));
     }
 
+    /** Reject schema rollback before the idempotency executor, config save, or audit write. */
+    private ApiResult<AuditMechanismParam> requireSchemaUpgrade(
+            String paramKey, AuditMechanismParamUpdateRequest request) {
+        if (!"schema".equalsIgnoreCase(normalizeText(paramKey))) {
+            return null;
+        }
+        try {
+            String requestedValue = normalizeText(request == null ? null : request.value());
+            String current = configRepository.findActiveByKey(A2RuntimePolicy.SCHEMA_VERSION_KEY)
+                    .map(PlatformConfigItem::configValue)
+                    .filter(StringUtils::hasText)
+                    .orElse("v3");
+            if (A2RuntimePolicy.numericSchemaVersionOrder(requestedValue)
+                    <= A2RuntimePolicy.schemaVersionOrder(current)) {
+                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "A2_SCHEMA_VERSION_DOWNGRADE_OR_NOOP");
+            }
+            normalizeSchemaValue(requestedValue);
+            return null;
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
+        }
+    }
+
+    private void bootstrapMissingA2CompanionPolicies(String reason) {
+        if (configRepository.findActiveByKey(A2RuntimePolicy.RETENTION_KEY)
+                .map(PlatformConfigItem::configValue).filter(StringUtils::hasText).isEmpty()) {
+            saveConfig(A2RuntimePolicy.RETENTION_KEY, "13 个月", "A2 controlled bootstrap: " + reason.trim());
+        }
+        if (configRepository.findActiveByKey(A2RuntimePolicy.SCHEMA_VERSION_KEY)
+                .map(PlatformConfigItem::configValue).filter(StringUtils::hasText).isEmpty()) {
+            saveConfig(A2RuntimePolicy.SCHEMA_VERSION_KEY, "v3", "A2 controlled bootstrap: " + reason.trim());
+        }
+    }
+
     private ApiResult<AuditOperationTicket> idempotentTicket(
             String operation, String idempotencyKey, Object request,
             java.util.function.Supplier<ApiResult<AuditOperationTicket>> action) {
         String actor = AdminActorResolver.resolve(request instanceof AuditOperationDecisionRequest value
-                ? value.operator() : request instanceof AuditOperationProposalRequest value ? value.operator() : null);
+                ? value.operator() : request instanceof AuditOperationProposalRequest value ? value.operator()
+                : request instanceof AuditOperationWithdrawRequest value ? value.operator() : null);
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
@@ -512,6 +574,17 @@ public class OpsAuditCenterService {
             AuditOperationDecisionRequest request,
             String nextStatus,
             String auditAction) {
+        return decide(idempotencyKey, operationId, request, nextStatus, auditAction, null, false);
+    }
+
+    private ApiResult<AuditOperationTicket> decide(
+            String idempotencyKey,
+            String operationId,
+            AuditOperationDecisionRequest request,
+            String nextStatus,
+            String auditAction,
+            String expectedStatus,
+            boolean makerOnly) {
         ensureSeedData();
         String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey, request == null ? null : request.reason(),
@@ -529,8 +602,14 @@ public class OpsAuditCenterService {
         if (!accessPolicy.canAccessTicket(ticket)) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
+        if (expectedStatus != null && !status(ticket.getStatus()).equalsIgnoreCase(expectedStatus.trim())) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_WITHDRAW_STALE");
+        }
         if (!STATUS_PENDING.equals(status(ticket.getStatus()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_OPERATION_ALREADY_TERMINAL");
+        }
+        if (makerOnly && !sameActor(ticket.getOperatorName(), authenticatedOperator)) {
+            return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
         }
         if (STATUS_APPROVED.equals(nextStatus)
                 && sameActor(ticket.getOperatorName(), authenticatedOperator)) {
@@ -619,14 +698,37 @@ public class OpsAuditCenterService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason)) {
-            return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
+        int minimum = currentReasonMinChars();
+        try {
+            A2RuntimePolicy.validateReason(reason, minimum);
+        } catch (BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getMessage());
         }
-        if (reason.trim().codePointCount(0, reason.trim().length()) < currentReasonMinChars()) {
-            return fail(OpsErrorCode.REASON_REQUIRED, "REASON_TOO_SHORT_MIN_" + currentReasonMinChars());
+        if (!StringUtils.hasText(operator)) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
         }
-        if (reason.trim().codePointCount(0, reason.trim().length()) > 200) {
-            return fail(OpsErrorCode.VALIDATION_FAILED, "REASON_TOO_LONG_MAX_200");
+        return null;
+    }
+
+    private ApiResult<AuditMechanismParam> requireMechanismMutation(
+            String idempotencyKey, String paramKey, AuditMechanismParamUpdateRequest request, String operator) {
+        boolean reasonPolicyMissing = configRepository.findActiveByKey(A2RuntimePolicy.REASON_MIN_KEY)
+                .map(PlatformConfigItem::configValue).filter(StringUtils::hasText).isEmpty();
+        if (!reasonPolicyMissing) {
+            return requireMutation(idempotencyKey, request == null ? null : request.reason(), operator);
+        }
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (!"ttl".equalsIgnoreCase(normalizeText(paramKey)) || request == null) {
+            return ApiResult.fail(503, "A2_REASON_POLICY_UNAVAILABLE");
+        }
+        try {
+            int proposedMinimum = A2RuntimePolicy.parseReasonMinChars(normalizeReasonMin(request.value()));
+            A2RuntimePolicy.validateReason(request.reason(), proposedMinimum);
+        } catch (BizException | IllegalArgumentException ex) {
+            int code = ex instanceof BizException biz ? biz.getCode() : OpsErrorCode.VALIDATION_FAILED.httpStatus();
+            return ApiResult.fail(code, ex.getMessage());
         }
         if (!StringUtils.hasText(operator)) {
             return fail(OpsErrorCode.VALIDATION_FAILED, "OPERATOR_REQUIRED");
@@ -635,14 +737,11 @@ public class OpsAuditCenterService {
     }
 
     public int currentReasonMinChars() {
-        String configured = configRepository.findActiveByKey("admin.a2.reason_min_chars")
-                .map(PlatformConfigItem::configValue).orElse("8");
-        try {
-            int value = parseConfiguredPositiveInt(configured, "reason min chars");
-            return value >= 8 && value <= 200 ? value : 8;
-        } catch (IllegalArgumentException ex) {
-            return 8;
-        }
+        String configured = configRepository.findActiveByKey(A2RuntimePolicy.REASON_MIN_KEY)
+                .map(PlatformConfigItem::configValue)
+                .filter(StringUtils::hasText)
+                .orElseThrow(() -> new BizException(503, "A2_REASON_POLICY_UNAVAILABLE"));
+        return A2RuntimePolicy.parseReasonMinChars(configured);
     }
 
     private String defaultMechanismValue(String key) {
@@ -838,19 +937,7 @@ public class OpsAuditCenterService {
     }
 
     private String normalizeSchemaValue(String value) {
-        String normalized = normalizeText(value)
-                .replaceFirst("(?i)^统一\\s*schema\\s*·?\\s*", "")
-                .trim();
-        if (!StringUtils.hasText(normalized)) {
-            throw new IllegalArgumentException("schema version is required");
-        }
-        if (normalized.length() > 32) {
-            throw new IllegalArgumentException("schema version is too long");
-        }
-        if (!normalized.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,31}")) {
-            throw new IllegalArgumentException("schema version contains unsupported characters");
-        }
-        return normalized;
+        return A2RuntimePolicy.normalizeSupportedSchemaVersion(normalizeText(value));
     }
 
     private int parsePositiveInt(String value, String label) {
@@ -922,7 +1009,9 @@ public class OpsAuditCenterService {
 
     private PlatformConfigItem saveConfig(String configKey, String value, String remark) {
         LocalDateTime now = LocalDateTime.now();
-        PlatformConfigItem existing = configRepository.findActiveByKey(configKey).orElseGet(() ->
+        // Reuse and reactivate a tombstoned unique-key row during the explicit controlled
+        // bootstrap; inserting a second row would fail uk_config_key and deadlock recovery.
+        PlatformConfigItem existing = configRepository.findAnyByKey(configKey).orElseGet(() ->
                 new PlatformConfigItem(null, configKey, value, "STRING", GROUP_A2, "ADMIN", remark, 1, now, now));
         return configRepository.save(existing.withValue(value, GROUP_A2, remark, 1));
     }

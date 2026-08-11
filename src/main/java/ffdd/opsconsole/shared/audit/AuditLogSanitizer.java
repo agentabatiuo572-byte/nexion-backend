@@ -30,10 +30,23 @@ public class AuditLogSanitizer {
             return null;
         }
         try {
-            return clip(objectMapper.writeValueAsString(sanitizeValue(detail)));
+            Object sanitized = sanitizeValue(detail);
+            return clip(objectMapper.writeValueAsString(sanitized), sanitized);
         } catch (JsonProcessingException ex) {
             return "{\"serialization\":\"failed\"}";
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    public Object withRequiredSchemaVersion(Object detail, String schemaVersion) {
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        if (detail instanceof Map<?, ?> map) {
+            map.forEach((key, value) -> envelope.put(String.valueOf(key), value));
+        } else if (detail != null) {
+            envelope.putAll(objectMapper.convertValue(detail, Map.class));
+        }
+        envelope.put("schemaVersion", schemaVersion);
+        return envelope;
     }
 
     @SuppressWarnings("unchecked")
@@ -84,7 +97,7 @@ public class AuditLogSanitizer {
         return false;
     }
 
-    private String clip(String json) {
+    private String clip(String json, Object sanitized) {
         if (json == null || json.length() <= MAX_DETAIL_JSON_LENGTH) {
             return json;
         }
@@ -92,6 +105,9 @@ public class AuditLogSanitizer {
         clipped.put("truncated", true);
         clipped.put("originalLength", json.length());
         clipped.put("preview", json.substring(0, Math.min(3500, json.length())));
+        if (sanitized instanceof Map<?, ?> map && map.get("schemaVersion") != null) {
+            clipped.put("schemaVersion", String.valueOf(map.get("schemaVersion")));
+        }
         try {
             return objectMapper.writeValueAsString(clipped);
         } catch (JsonProcessingException ex) {

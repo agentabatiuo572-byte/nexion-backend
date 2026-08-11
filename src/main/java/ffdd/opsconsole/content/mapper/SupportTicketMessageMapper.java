@@ -23,4 +23,13 @@ public interface SupportTicketMessageMapper extends BaseMapper<SupportTicketMess
             ORDER BY created_at ASC,id ASC
             """)
     List<SupportTicketMessageView> listByTicketNo(@Param("ticketNo") String ticketNo);
+
+    @Select("""
+            SELECT id,ticket_id AS ticketId,ticket_no AS ticketNo,sender_id AS senderId,
+                   sender_type AS senderType,sender_name AS senderName,content,created_at AS createdAt
+              FROM nx_support_ticket_message
+             WHERE is_deleted=0 AND ticket_no=#{ticketNo} AND sender_type IN ('user','agent')
+             ORDER BY created_at ASC,id ASC
+            """)
+    List<SupportTicketMessageView> listUserVisibleByTicketNo(@Param("ticketNo") String ticketNo);
 }

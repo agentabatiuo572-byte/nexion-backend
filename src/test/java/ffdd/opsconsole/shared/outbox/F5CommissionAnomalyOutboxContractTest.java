@@ -29,7 +29,8 @@ class F5CommissionAnomalyOutboxContractTest {
     private final EventOutboxMapper mapper = Mockito.mock(EventOutboxMapper.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final EventOutboxService service =
-            new EventOutboxService(mapper, objectMapper, new OutboxProperties());
+            new EventOutboxService(mapper, objectMapper, new OutboxProperties(),
+                    org.mockito.Mockito.mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
 
     @Test
     void revision303AcceptsAndPersistsTheCanonicalF5Payload() throws Exception {

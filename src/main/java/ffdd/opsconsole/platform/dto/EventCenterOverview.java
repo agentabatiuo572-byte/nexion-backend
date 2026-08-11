@@ -61,7 +61,12 @@ public record EventCenterOverview(
             boolean serverAuthoritative,
             String samplingPolicy,
             String version,
-            String updatedAt) {
+            String updatedAt,
+            String lifecycleState,
+            long lifecycleVersion) {
+    }
+
+    public record EventLifecycleView(String eventName, String state, long version, String updatedAt) {
     }
 
     public record EventDomainExtensionBatch(

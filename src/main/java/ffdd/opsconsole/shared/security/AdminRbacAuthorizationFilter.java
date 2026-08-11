@@ -27,6 +27,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @RequiredArgsConstructor
 public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     private static final String ADMIN_PREFIX = "/api/admin/";
+    private static final String STAKING_POOL_RESTORE_PATH =
+            "/api/admin/market/staking/pools/*/restore";
+    private static final String STAKING_POOL_RESTORE_AUTHORITY = "emergency_j1_gate_resume";
     private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
     private static final Set<String> PASSWORD_CHANGE_REQUIRED_STATUSES = Set.of(
             PASSWORD_CHANGE_REQUIRED,
@@ -77,6 +80,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/treasury/liquidity-history", null),
             rule("/api/admin/treasury/growth-flow-history", null),
             rule("/api/admin/treasury/forecast-config", null),
+            rule("/api/admin/treasury/b2/liabilities/export", null),
             rule("/api/admin/treasury/dual-ledger/scope", null),
             rule("/api/admin/treasury/dual-ledger/thresholds", null),
             rule("/api/admin/treasury/b-domain", "overview_"),
@@ -201,6 +205,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     }
 
     private RequiredAuthority requiredAuthority(String path, String method) {
+        if (HttpMethod.PATCH.matches(method) && pathMatcher.match(STAKING_POOL_RESTORE_PATH, path)) {
+            return RequiredAuthority.exact(STAKING_POOL_RESTORE_AUTHORITY);
+        }
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
         return RULES.stream()
                 .filter(rule -> pathMatcher.match(rule.pattern(), path))
@@ -248,26 +255,46 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     private record Rule(String pattern, String domainPrefix) {
     }
 
-    private record RequiredAuthority(String domainPrefix, boolean read, boolean authenticatedOnly) {
+    private record RequiredAuthority(
+            String domainPrefix,
+            boolean read,
+            boolean authenticatedOnly,
+            String exactAuthority) {
         static RequiredAuthority domainRead(String prefix) {
-            return new RequiredAuthority(prefix, true, false);
+            return new RequiredAuthority(prefix, true, false, null);
         }
 
         static RequiredAuthority domainWrite(String prefix) {
-            return new RequiredAuthority(prefix, false, false);
+            return new RequiredAuthority(prefix, false, false, null);
         }
 
         static RequiredAuthority authenticated() {
-            return new RequiredAuthority(null, false, true);
+            return new RequiredAuthority(null, false, true, null);
+        }
+
+        static RequiredAuthority exact(String authority) {
+            return new RequiredAuthority(null, false, false, authority);
         }
 
         String describe() {
-            return authenticatedOnly ? "AUTHENTICATED" : domainPrefix + (read ? "*_read" : "*_(write/high)");
+            if (authenticatedOnly) {
+                return "AUTHENTICATED";
+            }
+            if (exactAuthority != null) {
+                return exactAuthority;
+            }
+            return domainPrefix + (read ? "*_read" : "*_(write/high)");
         }
 
         boolean matches(Collection<String> actualAuthorities) {
-            if (authenticatedOnly || domainPrefix == null) {
+            if (authenticatedOnly) {
                 return true;
+            }
+            if (exactAuthority != null) {
+                return actualAuthorities.contains(exactAuthority);
+            }
+            if (domainPrefix == null) {
+                return false;
             }
             return actualAuthorities.stream().anyMatch(authority -> authority.startsWith(domainPrefix)
                     && (read ? authority.endsWith("_read") : !authority.endsWith("_read")));

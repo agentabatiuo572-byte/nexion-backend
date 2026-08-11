@@ -93,7 +93,7 @@ class B3FunnelAnalyticsTest {
     void emptyRegistrationDenominatorReturnsACompleteFailClosedShape() {
         Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
                 event("withdraw.submitted", "orphan", LocalDateTime.now().minusHours(1), "P2", "direct")),
-                null, "P2", "direct");
+                null, "P2", "direct", "purchase", 120);
 
         assertThat(result)
                 .containsEntry("available", false)
@@ -102,7 +102,21 @@ class B3FunnelAnalyticsTest {
         assertThat(rows(result.get("trend"))).isEmpty();
         assertThat(map(result.get("auxMetrics")))
                 .containsEntry("storeViewDenominator", 0)
-                .containsEntry("day0Denominator", 0);
+                .containsEntry("day0Denominator", 0)
+                .containsEntry("day0WindowSeconds", 120);
+    }
+
+    @Test
+    void day0WindowComesFromA4InsteadOfTheHistoricalNinetySecondLiteral() {
+        LocalDateTime at = LocalDateTime.now().minusHours(1);
+        Map<String, Object> result = B3FunnelAnalytics.calculate(List.of(
+                event("auth.register_completed", "u1", at, "P3", "direct"),
+                event("device.first_yield_received", "u1", at.plusSeconds(110), "P3", "direct", 110)),
+                null, "P3", "direct", "purchase", 120);
+
+        assertThat(map(result.get("auxMetrics")))
+                .containsEntry("day0AccessRate", 100D)
+                .containsEntry("day0WindowSeconds", 120);
     }
 
     private static Map<String, Object> event(

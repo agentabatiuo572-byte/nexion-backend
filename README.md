@@ -22,10 +22,14 @@ Legacy distributed service directories, the old `nexion-common` module, and the 
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1
 ```
 
-The startup script applies the idempotent A1 account-version CAS migration and C2
-account-list A4 registry migration before starting the backend. It fails closed if either
-migration cannot run, so sensitive A1 account writes and the C2 block-list action cannot
-be deployed against a database missing their durable contract.
+The startup script applies all required idempotent startup migrations before starting the
+backend. The migration runner and application use `NEXION_DB_URL`, `NEXION_DB_USERNAME`,
+and `NEXION_DB_PASSWORD` as one authoritative database bundle. A complete legacy
+`SPRING_DATASOURCE_*` bundle is accepted only as a compatibility input: partial bundles or
+two bundles with any conflicting value fail closed before a migration or backend launch.
+The application bootstrap enforces the same rule before Spring creates the application
+context, including direct Maven launches, without copying the password into JVM arguments
+or system properties.
 For a controlled pre-deployment step (including `-WhatIf`), run:
 
 ```powershell
@@ -39,8 +43,11 @@ Direct Maven run:
 ```
 
 Before a direct Maven run, execute the controlled migration command above; direct Maven
-does not run deployment migrations automatically. Provide database credentials through
-`SPRING_DATASOURCE_PASSWORD`; never pass a database password in a command line.
+does not run deployment migrations automatically. Set the `NEXION_DB_*` bundle for both
+commands; never pass a database password in a command line. The controlled startup script
+normalizes a complete legacy compatibility bundle to `NEXION_DB_*` and removes the legacy
+variables from the child application environment, so migration and runtime cannot select
+different databases.
 
 Default app entry:
 
@@ -53,9 +60,9 @@ Use environment variables for local credentials and secrets. Do not commit plain
 
 Common placeholders:
 
-- `SPRING_DATASOURCE_URL`
-- `SPRING_DATASOURCE_USERNAME`
-- `SPRING_DATASOURCE_PASSWORD`
+- `NEXION_DB_URL`
+- `NEXION_DB_USERNAME`
+- `NEXION_DB_PASSWORD`
 - `SPRING_DATA_REDIS_HOST`
 - `SPRING_DATA_REDIS_PORT`
 - `SPRING_DATA_REDIS_PASSWORD`

@@ -446,10 +446,10 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0 AND status IN ('ONLINE','BUSY','ACTIVE','RUNNING')")
     long countActiveUserDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0")
+    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0 AND source_environment = 'PRODUCTION'")
     long countComputeTasks();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0 AND status = 'COMPLETED'")
+    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0 AND status = 'COMPLETED' AND source_environment = 'PRODUCTION'")
     long countCompletedComputeTasks();
 
     @Select("SELECT COUNT(*) FROM nx_admin_device_task WHERE is_deleted = 0")

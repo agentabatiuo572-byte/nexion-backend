@@ -92,7 +92,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> USER_STATUSES = Set.of("ACTIVE", "FROZEN", "BANNED", "RESTRICTED");
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
     private static final Set<String> DIRECTIONS = Set.of("CREDIT", "DEBIT");
-    private static final Set<String> ADJUSTMENT_STATUSES = Set.of("PENDING", "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED");
+    private static final Set<String> ADJUSTMENT_STATUSES = Set.of(
+            "PENDING", "PENDING_REVIEW", "APPROVED", "REJECTED", "SUSPENDED", "WITHDRAWN");
     private static final Set<String> REVIEWABLE_ADJUSTMENT_STATUSES = Set.of("PENDING", "PENDING_REVIEW", "SUSPENDED");
     private static final Set<String> C3_LARGE_EXECUTOR_ROLES = Set.of("SUPER_ADMIN", "FINANCE_LEAD");
     private static final Set<String> C3_REVIEWER_ROLES = Set.of("SUPER_ADMIN", "FINANCE_LEAD");
@@ -2197,6 +2198,57 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String idempotencyKey,
             UserAssetAdjustmentReviewRequest request) {
         return reviewAssetAdjustmentIdempotent(adjustmentNo, "REJECTED", idempotencyKey, request);
+    }
+
+    @Transactional
+    public ApiResult<UserAssetAdjustmentDetail> withdrawAssetAdjustment(
+            String adjustmentNo,
+            String idempotencyKey,
+            UserAssetAdjustmentReviewRequest request) {
+        String actor = operator(request == null ? null : request.operator());
+        ApiResult<UserAssetAdjustmentDetail> authorityGuard = requireC3Authority("user_c3_adjust_create");
+        if (authorityGuard != null) {
+            return authorityGuard;
+        }
+        ApiResult<UserAssetAdjustmentDetail> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        String normalizedNo = text(adjustmentNo).trim();
+        Map<String, Object> fingerprint = new LinkedHashMap<>();
+        fingerprint.put("adjustmentNo", normalizedNo);
+        fingerprint.put("maker", actor);
+        fingerprint.put("reason", request.reason().trim());
+        return idempotentC3("C3_ASSET_ADJUSTMENT_WITHDRAW", idempotencyKey, fingerprint, () -> {
+            UserAssetAdjustmentView before = userRepository.findAssetAdjustment(normalizedNo).orElse(null);
+            if (before == null) {
+                return c3Reject(404, "ASSET_ADJUSTMENT_NOT_FOUND", normalizedNo, null, actor, idempotencyKey);
+            }
+            if (!StringUtils.hasText(before.maker()) || !before.maker().trim().equalsIgnoreCase(actor)) {
+                return c3Reject(403, "C3_ONLY_MAKER_CAN_WITHDRAW", normalizedNo,
+                        before.userId(), actor, idempotencyKey);
+            }
+            String currentStatus = normalizeAdjustmentStatus(before.status());
+            if (!REVIEWABLE_ADJUSTMENT_STATUSES.contains(currentStatus)) {
+                return c3Reject(409, "C3_ADJUSTMENT_WITHDRAW_CONFLICT", normalizedNo,
+                        before.userId(), actor, idempotencyKey);
+            }
+            if (!userRepository.withdrawAssetAdjustment(normalizedNo, actor, request.reason().trim())) {
+                return c3Reject(409, "C3_ADJUSTMENT_WITHDRAW_RACE_LOST", normalizedNo,
+                        before.userId(), actor, idempotencyKey);
+            }
+            UserAssetAdjustmentView updated = userRepository.findAssetAdjustment(normalizedNo).orElse(null);
+            if (updated == null || !"WITHDRAWN".equals(normalizeAdjustmentStatus(updated.status()))) {
+                // A successful CAS followed by a missing/non-terminal readback is an invariant failure.
+                // Returning ApiResult here would commit WITHDRAWN and persist a failed idempotency receipt.
+                throw new BizException(409, "C3_ADJUSTMENT_WITHDRAW_READBACK_FAILED");
+            }
+            c3RequiredAudit("C3_ASSET_ADJUSTMENT_WITHDRAWN", normalizedNo, before.userId(), actor,
+                    Map.of("fromStatus", currentStatus, "toStatus", "WITHDRAWN",
+                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+            return ApiResult.ok(assetAdjustmentDetail(updated));
+        });
     }
 
     private ApiResult<UserAssetAdjustmentDetail> reviewAssetAdjustmentIdempotent(

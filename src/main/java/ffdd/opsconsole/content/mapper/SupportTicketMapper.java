@@ -211,6 +211,28 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
 
     @Update("""
             UPDATE nx_support_ticket
+               SET status=CASE WHEN status IN ('IN_PROGRESS','PENDING_USER','RESOLVED') THEN 'OPEN' ELSE status END,
+                   last_message=#{body},
+                   last_message_at=#{now},
+                   user_unread_count=0,
+                   ops_unread_count=ops_unread_count+1,
+                   message_count=message_count+1,
+                   closed_at=NULL,
+                   updated_at=#{now},
+                   version=version+1
+             WHERE ticket_no=#{ticketNo} AND user_id=#{userId} AND is_deleted=0
+               AND archived=0 AND status=#{expectedStatus} AND status<>'CLOSED' AND version=#{expectedVersion}
+            """)
+    int appendUserReplyHeader(
+            @Param("ticketNo") String ticketNo,
+            @Param("userId") Long userId,
+            @Param("body") String body,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_support_ticket
                SET message_count=message_count+1,
                    updated_at=#{now},
                    version=version+1

@@ -39,6 +39,22 @@ class EventOutboxDispatchSchedulerTest {
     }
 
     @Test
+    void disabledLifecycleCannotReachTheRealConsumer() {
+        EventOutboxMessage message = message("event-disabled");
+        message.setAnalyticsEvent(true);
+        message.setEventName("risk.multi_account_flagged");
+        when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
+                .thenReturn(List.of(message));
+        doThrow(new IllegalStateException("A4_EVENT_LIFECYCLE_BLOCKED_DISABLED"))
+                .when(service).assertDispatchAllowed(message);
+
+        scheduler.dispatchPending();
+
+        verify(publisher, org.mockito.Mockito.never()).publishEvent(message);
+        verify(service).markFailed("event-disabled", "A4_EVENT_LIFECYCLE_BLOCKED_DISABLED");
+    }
+
+    @Test
     void tamperMessagesUseTheSameDurableDispatchAndPublicationState() {
         EventOutboxMessage message = message("event-tamper");
         message.setEventType(EventOutboxDispatchScheduler.TAMPER_EVENT_TYPE);

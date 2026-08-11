@@ -76,6 +76,7 @@ class AppWithdrawalK3RoutingServiceTest {
         when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("0.8"));
         when(config.activeValue("withdrawal.nex_fee_offset_rate")).thenReturn(Optional.of("0.4"));
         when(config.activeValue("withdrawal.small_amount_threshold_usd")).thenReturn(Optional.of("50"));
+        when(config.activeValue("withdrawal.strong_review_threshold_usdt")).thenReturn(Optional.of("1000"));
         when(config.activeValue("withdrawal.payout_sla_hours")).thenReturn(Optional.of("24"));
         when(config.activeValue("withdrawal.fee_rate")).thenReturn(Optional.of("0.001"));
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.1"));

@@ -48,6 +48,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               enabled TINYINT NOT NULL DEFAULT 1,
               transferable TINYINT NOT NULL DEFAULT 1,
               busy TINYINT NOT NULL DEFAULT 0,
+              version BIGINT NOT NULL DEFAULT 1,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -84,6 +85,20 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                 OR seat_type = 'GENERAL'
             """)
     int backfillSeatType();
+
+    @Select("""
+            SELECT COUNT(1) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_support_agent_profile'
+               AND COLUMN_NAME = 'version'
+            """)
+    long countProfileVersionColumn();
+
+    @Update("""
+            ALTER TABLE nx_support_agent_profile
+            ADD COLUMN version BIGINT NOT NULL DEFAULT 1 AFTER busy
+            """)
+    int addProfileVersionColumn();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_support_agent_user_assignment (
@@ -183,6 +198,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    enabled,
                    transferable,
                    busy,
+                   version,
                    DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
               FROM nx_support_agent_profile
              WHERE is_deleted=0
@@ -212,6 +228,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    enabled,
                    transferable,
                    busy,
+                   version,
                    DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
               FROM nx_support_agent_profile
              WHERE is_deleted=0 AND admin_id=#{adminId}
@@ -264,6 +281,25 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                       @Param("busy") int busy,
                       @Param("now") LocalDateTime now);
 
+    @Update("""
+            UPDATE nx_support_agent_profile
+               SET seat_type=#{seatType}, position=#{position}, service_types=#{serviceTypes}, tags=#{tags},
+                   max_concurrent=#{maxConcurrent}, enabled=#{enabled}, transferable=#{transferable}, busy=#{busy},
+                   version=version+1, updated_at=#{now}, is_deleted=0
+             WHERE admin_id=#{adminId} AND version=#{expectedVersion} AND is_deleted=0
+            """)
+    int updateProfileCas(@Param("adminId") Long adminId,
+                         @Param("seatType") String seatType,
+                         @Param("position") String position,
+                         @Param("serviceTypes") String serviceTypes,
+                         @Param("tags") String tags,
+                         @Param("maxConcurrent") int maxConcurrent,
+                         @Param("enabled") int enabled,
+                         @Param("transferable") int transferable,
+                         @Param("busy") int busy,
+                         @Param("expectedVersion") long expectedVersion,
+                         @Param("now") LocalDateTime now);
+
     @Select("""
             SELECT COUNT(1)
               FROM nx_support_agent_user_assignment
@@ -280,6 +316,19 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                AND is_deleted=0
             """)
     long countActiveUser(@Param("userId") Long userId);
+
+    @Select("""
+            <script>
+            SELECT id
+              FROM nx_user
+             WHERE is_deleted=0
+               AND id IN
+               <foreach collection='userIds' item='userId' open='(' separator=',' close=')'>
+                 #{userId}
+               </foreach>
+            </script>
+            """)
+    List<Long> listActiveUserIds(@Param("userIds") List<Long> userIds);
 
     @Select("""
             <script>
@@ -330,6 +379,27 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                                            @Param("reason") String reason,
                                            @Param("now") LocalDateTime now);
 
+    @Update("""
+            <script>
+            UPDATE nx_support_agent_user_assignment
+               SET status='INACTIVE',
+                   ends_at=#{now},
+                   operator=#{operator},
+                   reason=#{reason},
+                   updated_at=#{now}
+             WHERE status='ACTIVE'
+               AND is_deleted=0
+               AND user_id IN
+               <foreach collection='userIds' item='userId' open='(' separator=',' close=')'>
+                 #{userId}
+               </foreach>
+            </script>
+            """)
+    int deactivateActiveAssignmentsForUsers(@Param("userIds") List<Long> userIds,
+                                             @Param("operator") String operator,
+                                             @Param("reason") String reason,
+                                             @Param("now") LocalDateTime now);
+
     @Insert("""
             INSERT INTO nx_support_agent_user_assignment (
               agent_admin_id, user_id, status, starts_at, operator, reason,
@@ -344,6 +414,24 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                          @Param("operator") String operator,
                          @Param("reason") String reason,
                          @Param("now") LocalDateTime now);
+
+    @Insert("""
+            <script>
+            INSERT INTO nx_support_agent_user_assignment (
+              agent_admin_id, user_id, status, starts_at, operator, reason,
+              created_at, updated_at, is_deleted
+            ) VALUES
+            <foreach collection='userIds' item='userId' separator=','>
+              (#{agentAdminId}, #{userId}, 'ACTIVE', #{now}, #{operator}, #{reason},
+               #{now}, #{now}, 0)
+            </foreach>
+            </script>
+            """)
+    int insertAssignments(@Param("agentAdminId") Long agentAdminId,
+                          @Param("userIds") List<Long> userIds,
+                          @Param("operator") String operator,
+                          @Param("reason") String reason,
+                          @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT a.id,
@@ -368,6 +456,34 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             """)
     SupportAgentAssignmentView findActiveAssignment(@Param("agentAdminId") Long agentAdminId,
                                                     @Param("userId") Long userId);
+
+    @Select("""
+            <script>
+            SELECT a.id,
+                   a.agent_admin_id AS agentAdminId,
+                   a.user_id AS userId,
+                   CONCAT('U', LPAD(a.user_id, GREATEST(8, LENGTH(CAST(a.user_id AS CHAR))), '0')) AS userNo,
+                   COALESCE(NULLIF(u.nickname, ''), CONCAT('用户', a.user_id)) AS nickname,
+                   a.status,
+                   DATE_FORMAT(a.starts_at, '%Y-%m-%dT%H:%i:%s') AS startsAt,
+                   DATE_FORMAT(a.ends_at, '%Y-%m-%dT%H:%i:%s') AS endsAt,
+                   a.operator,
+                   a.reason,
+                   DATE_FORMAT(a.updated_at, '%Y-%m-%dT%H:%i:%s') AS updatedAt
+              FROM nx_support_agent_user_assignment a
+              JOIN nx_user u ON u.id=a.user_id AND u.is_deleted=0
+             WHERE a.agent_admin_id=#{agentAdminId}
+               AND a.status='ACTIVE'
+               AND a.is_deleted=0
+               AND a.user_id IN
+               <foreach collection='userIds' item='userId' open='(' separator=',' close=')'>
+                 #{userId}
+               </foreach>
+            </script>
+            """)
+    List<SupportAgentAssignmentView> listActiveAssignmentsForUsers(
+            @Param("agentAdminId") Long agentAdminId,
+            @Param("userIds") List<Long> userIds);
 
     @Select("""
             SELECT a.id,
@@ -419,6 +535,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             Integer enabled,
             Integer transferable,
             Integer busy,
+            Long version,
             String updatedAt) {
     }
 }

@@ -75,6 +75,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public List<ContentConversationMessageView> userVisibleMessages(String conversationNo) {
+        return messageMapper.listUserVisibleByConversationNo(conversationNo);
+    }
+
+    @Override
     public boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now) {
         return messageMapper.markAgentMessagesReadThrough(conversationNo, lastSeenMessageId, operator, now) > 0;
     }
@@ -153,10 +158,24 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     @Override
     public boolean reply(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+        return replyAndReturnMessageId(conversation, body, operator, now) != null;
+    }
+
+    @Override
+    public Long replyAndReturnMessageId(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
         if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), conversation.version(), now) == 0) {
+            return null;
+        }
+        return insertMessage(conversation.id(), conversation.conversationNo(), null, "agent", operator, body, now);
+    }
+
+    @Override
+    public boolean replyAsUser(ContentConversationView conversation, Long userId, String body, LocalDateTime now) {
+        if (mapper.replyConversationAsUser(
+                conversation.conversationNo(), userId, body, conversation.status(), conversation.version(), now) == 0) {
             return false;
         }
-        insertMessage(conversation.id(), conversation.conversationNo(), null, "agent", operator, body, now);
+        insertMessage(conversation.id(), conversation.conversationNo(), userId, "user", "用户", body, now);
         return true;
     }
 
@@ -232,6 +251,19 @@ public class MybatisConversationRepository implements ConversationRepository {
             String ownerAgentName,
             String openingText,
             LocalDateTime now) {
+        return createConversationWithMessage(
+                conversationNo, userId, conversationType, ownerAgentId, ownerAgentName, openingText, now).conversation();
+    }
+
+    @Override
+    public PersistedConversation createConversationWithMessage(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String ownerAgentId,
+            String ownerAgentName,
+            String openingText,
+            LocalDateTime now) {
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
@@ -247,8 +279,8 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        insertMessage(entity.getId(), conversationNo, userId, "agent", ownerAgentName, openingText, now);
-        return findByConversationNo(conversationNo)
+        Long messageId = insertMessage(entity.getId(), conversationNo, userId, "agent", ownerAgentName, openingText, now);
+        ContentConversationView conversation = findByConversationNo(conversationNo)
                 .orElseGet(() -> new ContentConversationView(
                         entity.getId(),
                         conversationNo,
@@ -268,9 +300,36 @@ public class MybatisConversationRepository implements ConversationRepository {
                         null,
                         null,
                         now));
+        return new PersistedConversation(conversation, messageId);
     }
 
-    private void insertMessage(
+    @Override
+    public ContentConversationView createUserConversation(
+            String conversationNo,
+            Long userId,
+            String conversationType,
+            String openingText,
+            LocalDateTime now) {
+        ConversationEntity entity = new ConversationEntity();
+        entity.setConversationNo(conversationNo);
+        entity.setUserId(userId);
+        entity.setConversationType(conversationType);
+        entity.setStatus("OPEN");
+        entity.setOwnerAgentId(null);
+        entity.setOwnerAgentName("Unassigned");
+        entity.setUnreadCount(1);
+        entity.setLastMessage(openingText);
+        entity.setLastMessageAt(now);
+        entity.setVersion(0L);
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        entity.setIsDeleted(0);
+        mapper.insert(entity);
+        insertMessage(entity.getId(), conversationNo, userId, "user", "用户", openingText, now);
+        return findByConversationNo(conversationNo).orElseThrow();
+    }
+
+    private Long insertMessage(
             Long conversationId,
             String conversationNo,
             Long senderId,
@@ -289,6 +348,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         message.setUpdatedAt(now);
         message.setIsDeleted(0);
         messageMapper.insert(message);
+        return message.getId();
     }
 
     private long normalizePage(Long pageNum) {

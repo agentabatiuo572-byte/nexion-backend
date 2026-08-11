@@ -63,7 +63,7 @@ class ConversationMapperSqlTest {
         assertThat(sql)
                 .contains("conversation_no=#{conversationNo}")
                 .contains("sender_type='agent'")
-                .contains("#{lastSeenMessageId} >= id")
+                .contains("#{lastSeenMessageId} >= msg.id")
                 .doesNotContain("ORDER BY")
                 .doesNotContain("LIMIT 1")
                 .doesNotContain("&lt;")

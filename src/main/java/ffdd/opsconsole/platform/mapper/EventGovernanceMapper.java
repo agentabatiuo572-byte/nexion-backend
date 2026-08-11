@@ -6,11 +6,28 @@ import ffdd.opsconsole.platform.infrastructure.EventSchemaRegistryEntity;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEntity> {
+    @Select("SELECT GET_LOCK('nexion:a4:event-retention',0)")
+    Integer tryAcquireRetentionLock();
+
+    @Select("SELECT RELEASE_LOCK('nexion:a4:event-retention')")
+    Integer releaseRetentionLock();
+
+    @Delete("""
+            DELETE FROM nx_event_outbox
+             WHERE is_deleted=0 AND analytics_event=1
+               AND status IN ('PUBLISHED','DEAD')
+               AND event_ts < #{cutoff}
+             ORDER BY event_ts,id
+             LIMIT #{limit}
+            """)
+    int deleteTerminalAnalyticsEventsBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_event_outbox
@@ -106,16 +123,52 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
                    s.is_server_authoritative AS serverAuthoritative,
                    s.sampling_policy AS samplingPolicy,
                    CONCAT('v', s.current_revision) AS version,
-                   DATE_FORMAT(s.updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
+                   DATE_FORMAT(s.updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt,
+                   COALESCE(l.lifecycle_state, 'new') AS lifecycleState,
+                   COALESCE(l.version, 0) AS lifecycleVersion
               FROM nx_event_schema_registry s
               JOIN nx_event_schema_property p ON p.schema_id=s.id AND p.is_deleted=0
+              LEFT JOIN nx_admin_event_lifecycle l ON l.event_name=s.event_name AND l.is_deleted=0
              WHERE s.status='ACTIVE' AND s.is_deleted=0
              GROUP BY s.id, s.event_name, s.owner_domain, s.family_key, s.producer, s.consumers,
-                      s.is_server_authoritative, s.sampling_policy, s.current_revision, s.updated_at
+                      s.is_server_authoritative, s.sampling_policy, s.current_revision, s.updated_at,
+                      l.lifecycle_state, l.version
              ORDER BY s.updated_at DESC, s.id DESC
              LIMIT #{limit}
             """)
     List<EventSchemaRegistration> listSchemas(@Param("limit") int limit);
+
+    @Select("""
+            SELECT event_name AS eventName, lifecycle_state AS state, version,
+                   DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
+              FROM nx_admin_event_lifecycle
+             WHERE event_name=#{eventName} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    EventLifecycleRecord lockLifecycle(@Param("eventName") String eventName);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_admin_event_lifecycle
+              (event_name, lifecycle_state, version, changed_by, reason, created_at, updated_at, is_deleted)
+            VALUES (#{eventName}, 'new', 0, #{actor}, #{reason}, NOW(), NOW(), 0)
+            """)
+    int insertLifecycle(@Param("eventName") String eventName,
+                        @Param("actor") String actor,
+                        @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_admin_event_lifecycle
+               SET lifecycle_state=#{targetState}, version=version+1,
+                   changed_by=#{actor}, reason=#{reason}, updated_at=NOW()
+             WHERE event_name=#{eventName} AND lifecycle_state=#{expectedState}
+               AND version=#{expectedVersion} AND is_deleted=0
+            """)
+    int transitionLifecycle(@Param("eventName") String eventName,
+                            @Param("targetState") String targetState,
+                            @Param("expectedState") String expectedState,
+                            @Param("expectedVersion") long expectedVersion,
+                            @Param("actor") String actor,
+                            @Param("reason") String reason);
 
     @Select("""
             SELECT id, domain_name AS domainName, event_name AS eventName, producer, consumer, status
@@ -186,5 +239,8 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
             String producer,
             String consumer,
             String status) {
+    }
+
+    record EventLifecycleRecord(String eventName, String state, long version, String updatedAt) {
     }
 }

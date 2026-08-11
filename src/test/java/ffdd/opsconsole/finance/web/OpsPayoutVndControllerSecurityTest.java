@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import ffdd.opsconsole.finance.application.PayoutVndCommandBoundary;
 import ffdd.opsconsole.finance.application.PayoutVndConfigService;
+import ffdd.opsconsole.finance.application.PayoutVndSandboxService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -42,6 +43,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class OpsPayoutVndControllerSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockBean private PayoutVndConfigService service;
+    @MockBean private PayoutVndSandboxService sandbox;
     @MockBean private AuditLogService audit;
     @MockBean private AdminIdempotencyService idempotency;
     @MockBean private JwtAuthenticationFilter jwtAuthenticationFilter;

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.application;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -11,11 +13,18 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.YearMonth;
+import java.time.ZonedDateTime;
+import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -40,12 +49,16 @@ public class LeadershipPoolService {
 
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
     private static final int SCALE = 6;
-    /** PRD 默认 leadershipPoolInjectRate 5%;运营端以百分数配置 F.pool.ratio。 */
-    private static final BigDecimal DEFAULT_INJECT_RATE = new BigDecimal("0.05");
-    private static final String CONFIG_KEY_INJECT_RATE = "team.ui.F.pool.ratio";
-    private static final String CONFIG_KEY_UNLOCK_RANK = "team.ui.F.pool.unlockVRank";
-    private static final String CONFIG_KEY_MONTHLY_CAP = "team.ui.F.pool.monthlyCap";
+    private static final String CONFIG_KEY_TOP1_MAX_PCT = "team.ui.F.pool.top1MaxPct";
+    private static final String CONFIG_KEY_TOP5_MAX_PCT = "team.ui.F.pool.top5MaxPct";
+    private static final String CONFIG_KEY_PERIOD_PRIZE = "team.ui.F.pool.periodPrize";
+    private static final String CONFIG_KEY_LEADERBOARD_POOL = "team.ui.F.leaderboard.poolUsd";
+    private static final String CONFIG_KEY_LEADERBOARD_MIN = "team.ui.F.leaderboard.minUsd";
+    private static final String CONFIG_KEY_LEADERBOARD_PAUSED = "team.ui.F.leaderboard.paused";
+    private static final String CONFIG_KEY_LAST_SETTLED_PREFIX = "team.runtime.F.leaderboard.lastSettled.";
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String COMMISSION_LEADERSHIP = "leadership";
+    private static final String COMMISSION_LEADERBOARD_PRIZE = "leaderboard_prize";
     private static final String CURRENCY_USDT = "USDT";
     private static final String STATUS_UNLOCKED = "UNLOCKED";
 
@@ -55,6 +68,8 @@ public class LeadershipPoolService {
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final EventOutboxService eventOutboxService;
+    private final LeadershipPoolConfigGuard settlementConfigGuard;
+    private final LeadershipPoolConfigAlertService settlementConfigAlertService;
 
     /** Scheduler entry point: resolve the database-canonical ISO week at execution time. */
     @Transactional(rollbackFor = Exception.class)
@@ -78,41 +93,6 @@ public class LeadershipPoolService {
                 teamCommissionMapper.currentYearWeek(), null, "ADMIN", normalizedOperator, normalizedReason);
     }
 
-    /** 读 team.ui.F.pool.ratio(0-100%),兼容 5 / 5% / 0.05,解析失败回退默认 5%。 */
-    private BigDecimal resolveInjectRate() {
-        return configFacade.activeValue(CONFIG_KEY_INJECT_RATE)
-                .map(v -> {
-                    try {
-                        String raw = v.trim();
-                        boolean percent = raw.endsWith("%");
-                        BigDecimal parsed = new BigDecimal(percent ? raw.substring(0, raw.length() - 1).trim() : raw);
-                        if (percent || parsed.compareTo(BigDecimal.ONE) > 0) {
-                            parsed = parsed.movePointLeft(2);
-                        }
-                        return parsed;
-                    }
-                    catch (NumberFormatException e) { return null; }
-                })
-                .filter(b -> b.signum() >= 0 && b.compareTo(BigDecimal.ONE) <= 0)
-                .orElse(DEFAULT_INJECT_RATE);
-    }
-
-    private int resolveUnlockRank() {
-        return configFacade.activeValue(CONFIG_KEY_UNLOCK_RANK)
-                .map(v -> {
-                    try { return Integer.parseInt(v.trim().toUpperCase().replaceFirst("^V", "")); }
-                    catch (NumberFormatException e) { return null; }
-                })
-                .filter(rank -> rank >= 1 && rank <= 12)
-                .orElse(3);
-    }
-
-    private Optional<BigDecimal> resolveMonthlyCap() {
-        return configFacade.activeValue(CONFIG_KEY_MONTHLY_CAP)
-                .map(LeadershipPoolService::parseMoney)
-                .filter(cap -> cap != null && cap.signum() >= 0);
-    }
-
     /**
      * 注入 + 结算:平台周交易额 × 5% → 按票权分配给 V3+ 用户。幂等(同 weekKey 已结算则跳过)。
      *
@@ -126,35 +106,268 @@ public class LeadershipPoolService {
 
     private int injectAndSettleTrusted(
             int weekCode, Long actorId, String actorType, String actorUsername, String reason) {
+        LeadershipPoolConfigGuard.SettlementConfig settlementConfig = requireSettlementConfig("settlement");
         String weekKey = String.valueOf(weekCode);
         teamCommissionMapper.ensureLeadershipSettlementMutex(weekCode);
         if (teamCommissionMapper.lockLeadershipSettlementMutex(weekCode) == null) {
             throw new IllegalStateException("F4_SETTLEMENT_MUTEX_UNAVAILABLE");
         }
-        if (teamCommissionMapper.countLeadershipByWeek(weekKey) > 0) {
-            log.info("F4 leadership pool week={} already settled, skip", weekKey);
+        int leadershipSettled = 0;
+        boolean leadershipSkipped = teamCommissionMapper.countLeadershipByWeek(weekKey) > 0;
+        if (!leadershipSkipped) {
+            BigDecimal weeklyVolume = teamCommissionMapper.weeklyPlatformVolume(weekCode);
+            if (weeklyVolume == null || weeklyVolume.signum() <= 0) {
+                leadershipSkipped = true;
+                log.info("F4 leadership pool week={} no platform volume, skip leadership settlement", weekKey);
+            } else {
+                BigDecimal injectRate = settlementConfig.injectRate();
+                BigDecimal poolAmount = weeklyVolume.multiply(injectRate).setScale(SCALE, RoundingMode.HALF_UP);
+                BigDecimal monthPaid = safe(teamCommissionMapper.monthlyLeadershipAmount());
+                BigDecimal remaining = settlementConfig.monthlyCap().subtract(monthPaid).max(BigDecimal.ZERO);
+                poolAmount = poolAmount.min(remaining).setScale(SCALE, RoundingMode.DOWN);
+                if (poolAmount.signum() <= 0) {
+                    leadershipSkipped = true;
+                    log.info("F4 leadership pool week={} blocked by monthly cap", weekKey);
+                } else {
+                    log.info("F4 leadership pool inject: week={} weeklyVolume={} × {} = poolAmount={}",
+                            weekKey, weeklyVolume, injectRate, poolAmount);
+                    leadershipSettled = settleTrusted(
+                            poolAmount, weekKey, actorId, actorType, actorUsername, reason, settlementConfig);
+                }
+            }
+        } else {
+            log.info("F4 leadership pool week={} already settled, skip leadership settlement", weekKey);
+        }
+        if (leadershipSettled == 0 && leadershipSkipped) {
             return -1;
         }
-        BigDecimal weeklyVolume = teamCommissionMapper.weeklyPlatformVolume(weekCode);
-        if (weeklyVolume == null || weeklyVolume.signum() <= 0) {
-            log.info("F4 leadership pool week={} no platform volume, skip", weekKey);
-            return -1;
+        return leadershipSettled;
+    }
+
+    /** 每分钟补齐所有已结束周期；持久化 checkpoint 使午夜停机后仍可追赶。 */
+    @Transactional(rollbackFor = Exception.class)
+    public int settleClosedLeaderboardPeriods(ZonedDateTime nowUtc) {
+        ZonedDateTime now = nowUtc.withSecond(0).withNano(0);
+        LocalDate today = now.toLocalDate();
+        int settled = catchUpDaily(today);
+        settled += catchUpWeekly(today);
+        settled += catchUpMonthly(today);
+        return settled;
+    }
+
+    private int catchUpDaily(LocalDate today) {
+        LocalDate latestClosed = today.minusDays(1);
+        LocalDate last = configFacade.activeValue(CONFIG_KEY_LAST_SETTLED_PREFIX + "today")
+                .map(this::parseDateOrNull).orElse(null);
+        if (last == null) last = latestClosed.minusDays(1);
+        int settled = 0;
+        for (LocalDate period = last.plusDays(1); !period.isAfter(latestClosed); period = period.plusDays(1)) {
+            settled += settleLeaderboardPrize("today", "today:" + period,
+                    period.atStartOfDay(), period.plusDays(1).atStartOfDay(),
+                    null, "SYSTEM", "SYSTEM", "排行榜日榜自动/补偿结算");
+            persistLastSettled("today", period.toString());
         }
-        BigDecimal injectRate = resolveInjectRate();
-        BigDecimal poolAmount = weeklyVolume.multiply(injectRate).setScale(SCALE, RoundingMode.HALF_UP);
-        Optional<BigDecimal> monthlyCap = resolveMonthlyCap();
-        if (monthlyCap.isPresent()) {
-            BigDecimal monthPaid = safe(teamCommissionMapper.monthlyLeadershipAmount());
-            BigDecimal remaining = monthlyCap.get().subtract(monthPaid).max(BigDecimal.ZERO);
-            poolAmount = poolAmount.min(remaining).setScale(SCALE, RoundingMode.DOWN);
+        return settled;
+    }
+
+    private int catchUpWeekly(LocalDate today) {
+        LocalDate currentMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        LocalDate latestClosed = currentMonday.minusWeeks(1);
+        LocalDate last = configFacade.activeValue(CONFIG_KEY_LAST_SETTLED_PREFIX + "week")
+                .map(this::parseDateOrNull).orElse(null);
+        if (last == null) last = latestClosed.minusWeeks(1);
+        int settled = 0;
+        for (LocalDate period = last.plusWeeks(1); !period.isAfter(latestClosed); period = period.plusWeeks(1)) {
+            settled += settleLeaderboardPrize("week", "week:" + period,
+                    period.atStartOfDay(), period.plusWeeks(1).atStartOfDay(),
+                    null, "SYSTEM", "SYSTEM", "排行榜周榜自动/补偿结算");
+            persistLastSettled("week", period.toString());
         }
-        if (poolAmount.signum() <= 0) {
-            log.info("F4 leadership pool week={} blocked by monthly cap", weekKey);
-            return -1;
+        return settled;
+    }
+
+    private int catchUpMonthly(LocalDate today) {
+        YearMonth latestClosed = YearMonth.from(today).minusMonths(1);
+        YearMonth last = configFacade.activeValue(CONFIG_KEY_LAST_SETTLED_PREFIX + "month")
+                .map(this::parseMonthOrNull).orElse(null);
+        if (last == null) last = latestClosed.minusMonths(1);
+        int settled = 0;
+        for (YearMonth period = last.plusMonths(1); !period.isAfter(latestClosed); period = period.plusMonths(1)) {
+            LocalDate start = period.atDay(1);
+            settled += settleLeaderboardPrize("month", "month:" + period,
+                    start.atStartOfDay(), period.plusMonths(1).atDay(1).atStartOfDay(),
+                    null, "SYSTEM", "SYSTEM", "排行榜月榜自动/补偿结算");
+            persistLastSettled("month", period.toString());
         }
-        log.info("F4 leadership pool inject: week={} weeklyVolume={} × {} = poolAmount={}",
-                weekKey, weeklyVolume, injectRate, poolAmount);
-        return settleTrusted(poolAmount, weekKey, actorId, actorType, actorUsername, reason);
+        return settled;
+    }
+
+    private void persistLastSettled(String period, String value) {
+        configFacade.upsertAdminValue(CONFIG_KEY_LAST_SETTLED_PREFIX + period, value,
+                "TEXT", "team_runtime", "F16 leaderboard settlement checkpoint");
+    }
+
+    private LocalDate parseDateOrNull(String value) {
+        try { return LocalDate.parse(value); } catch (RuntimeException ignored) { return null; }
+    }
+
+    private YearMonth parseMonthOrNull(String value) {
+        try { return YearMonth.parse(value); } catch (RuntimeException ignored) { return null; }
+    }
+
+    /** allTime 无自动 reset，只能由 A2 审批后人工派发，且 lifetime key 保证只能成功一次。 */
+    @Transactional(rollbackFor = Exception.class)
+    public int settleApprovedLeaderboardPeriod(String period, String operator, String reason) {
+        return settleApprovedLeaderboardPeriod(period, null, operator, reason);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public int settleApprovedLeaderboardPeriod(String period, String requestedPeriodKey, String operator, String reason) {
+        if (!A2ReplayContext.isReplaying()) throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
+        String canonical = period == null ? "" : period.trim();
+        String normalizedReason = reason == null ? "" : reason.trim();
+        if (!Set.of("today", "week", "month", "allTime").contains(canonical)) {
+            throw new BizException(422, "F4_LEADERBOARD_PERIOD_INVALID");
+        }
+        if (normalizedReason.length() < 8) throw new BizException(422, "F4_SETTLEMENT_REASON_REQUIRED");
+        LocalDate today = LocalDate.now(java.time.ZoneOffset.UTC);
+        LocalDateTime from = null;
+        LocalDateTime to = today.plusDays(1).atStartOfDay();
+        String key;
+        if ("today".equals(canonical)) {
+            LocalDate date = parseDateOrNull(requestedPeriodKey);
+            if (date == null || !date.isBefore(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            from = date.atStartOfDay();
+            to = date.plusDays(1).atStartOfDay();
+            key = "today:" + date;
+        } else if ("week".equals(canonical)) {
+            LocalDate monday = parseDateOrNull(requestedPeriodKey);
+            if (monday == null || monday.getDayOfWeek() != DayOfWeek.MONDAY
+                    || monday.plusWeeks(1).isAfter(today)) throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            from = monday.atStartOfDay();
+            to = monday.plusWeeks(1).atStartOfDay();
+            key = "week:" + monday;
+        } else if ("month".equals(canonical)) {
+            YearMonth month = parseMonthOrNull(requestedPeriodKey);
+            if (month == null || !month.isBefore(YearMonth.from(today))) {
+                throw new BizException(422, "F4_CLOSED_PERIOD_REQUIRED");
+            }
+            from = month.atDay(1).atStartOfDay();
+            to = month.plusMonths(1).atDay(1).atStartOfDay();
+            key = "month:" + month;
+        } else {
+            key = "allTime:lifetime";
+        }
+        return settleLeaderboardPrize(canonical, key, from, to, null, "ADMIN",
+                operator == null || operator.isBlank() ? "unknown-admin" : operator.trim(), normalizedReason);
+    }
+
+    private int settleLeaderboardPrize(
+            String period,
+            String settlementKey,
+            LocalDateTime fromInclusive,
+            LocalDateTime toExclusive,
+            Long actorId,
+            String actorType,
+            String actorUsername,
+            String reason) {
+        if (configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false)
+                || teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) {
+            return 0;
+        }
+        int mutexKey = settlementKey.hashCode() & Integer.MAX_VALUE;
+        teamCommissionMapper.ensureLeadershipSettlementMutex(mutexKey);
+        if (teamCommissionMapper.lockLeadershipSettlementMutex(mutexKey) == null) {
+            throw new IllegalStateException("F4_LEADERBOARD_MUTEX_UNAVAILABLE");
+        }
+        if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) return 0;
+        BigDecimal prizePool = "week".equals(period)
+                ? configMoney(CONFIG_KEY_LEADERBOARD_POOL).filter(value -> value.signum() > 0)
+                        .orElseGet(() -> configuredPeriodPrize(period))
+                : configuredPeriodPrize(period);
+        if (prizePool.signum() <= 0) return 0;
+        BigDecimal minVolume = configMoney(CONFIG_KEY_LEADERBOARD_MIN).orElse(BigDecimal.ZERO);
+        int topN = switch (period) {
+            case "today" -> 20;
+            case "week" -> 50;
+            default -> 100;
+        };
+        List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
+                period, fromInclusive, toExclusive, minVolume, topN);
+        if (candidates.isEmpty()) return 0;
+
+        BigDecimal top1Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25")));
+        BigDecimal top5Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60")));
+        BigDecimal totalWeight = BigDecimal.valueOf((long) candidates.size() * (candidates.size() + 1) / 2);
+        BigDecimal allocated = BigDecimal.ZERO;
+        BigDecimal allocatedTop5 = BigDecimal.ZERO;
+        int settled = 0;
+        for (int index = 0; index < candidates.size(); index++) {
+            Long userId = asLong(candidates.get(index).get("userId"));
+            if (userId == null) continue;
+            BigDecimal weight = BigDecimal.valueOf(candidates.size() - index);
+            BigDecimal share = prizePool.multiply(weight).divide(totalWeight, SCALE, RoundingMode.DOWN);
+            if (index == 0) share = share.min(top1Cap);
+            if (index < 5) share = share.min(top5Cap.subtract(allocatedTop5).max(BigDecimal.ZERO));
+            if (share.signum() <= 0) continue;
+            String remark = "F4 leaderboard | settlementKey=" + settlementKey + "| period=" + period
+                    + " rank=" + (index + 1)
+                    + " top1MaxPct=" + configText(CONFIG_KEY_TOP1_MAX_PCT, "25")
+                    + " top5MaxPct=" + configText(CONFIG_KEY_TOP5_MAX_PCT, "60");
+            Long eventId = commissionRepository.insertCommissionEvent(
+                    userId, COMMISSION_LEADERBOARD_PRIZE, null, CURRENCY_USDT,
+                    share, ZERO, STATUS_UNLOCKED, 0, remark);
+            if (eventId == null) throw new IllegalStateException("F4_LEADERBOARD_EVENT_INSERT_FAILED");
+            ledgerPostingFacade.postLedgerEntry("F4-LB-" + settlementKey + "-" + eventId, userId,
+                    "TEAM_COMMISSION", CURRENCY_USDT, "IN", share, "SUCCESS", remark);
+            eventOutboxService.publish("LEADERBOARD_PRIZE", "F4-LB-" + settlementKey + "-" + eventId,
+                    "commission.paid", linked("userId", userId, "amount", share,
+                            "period", period, "settlementKey", settlementKey));
+            allocated = allocated.add(share);
+            if (index < 5) allocatedTop5 = allocatedTop5.add(share);
+            settled++;
+        }
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("F4_LEADERBOARD_PRIZE_SETTLED")
+                .resourceType("LEADERBOARD_SETTLEMENT")
+                .resourceId(settlementKey)
+                .bizNo("F4-LB-" + settlementKey)
+                .actorId(actorId).actorType(actorType).actorUsername(actorUsername)
+                .result("SUCCESS").riskLevel("HIGH")
+                .detail(linked("period", period, "settlementKey", settlementKey,
+                        "configuredPool", prizePool, "allocated", allocated,
+                        "minUsd", minVolume, "settledUsers", settled, "reason", reason))
+                .build());
+        return settled;
+    }
+
+    BigDecimal configuredPeriodPrize(String period) {
+        return configFacade.activeValue(CONFIG_KEY_PERIOD_PRIZE).map(value -> {
+            try {
+                JsonNode amount = JSON.readTree(value).get(period);
+                return amount != null && amount.isNumber() ? amount.decimalValue() : BigDecimal.ZERO;
+            } catch (Exception ignored) {
+                return BigDecimal.ZERO;
+            }
+        }).orElse(BigDecimal.ZERO);
+    }
+
+    private Optional<BigDecimal> configMoney(String key) {
+        return configFacade.activeValue(key).map(LeadershipPoolService::parseMoney)
+                .filter(value -> value != null && value.signum() >= 0);
+    }
+
+    private BigDecimal configPercent(String key, BigDecimal fallbackPct) {
+        return configMoney(key).orElse(fallbackPct).min(new BigDecimal("100")).movePointLeft(2);
+    }
+
+    private boolean configBoolean(String key, boolean fallback) {
+        return configFacade.activeValue(key).map(value -> Set.of("on", "true", "1", "paused")
+                .contains(value.trim().toLowerCase())).orElse(fallback);
+    }
+
+    private String configText(String key, String fallback) {
+        return configFacade.activeValue(key).filter(value -> !value.isBlank()).orElse(fallback);
     }
 
     /**
@@ -166,7 +379,9 @@ public class LeadershipPoolService {
      */
     @Transactional(rollbackFor = Exception.class)
     public int settle(BigDecimal poolAmountUsdt, String weekKey) {
-        return settleTrusted(poolAmountUsdt, weekKey, null, "SYSTEM", "SYSTEM", "测试/补偿结算");
+        LeadershipPoolConfigGuard.SettlementConfig settlementConfig = requireSettlementConfig("direct-settlement");
+        return settleTrusted(
+                poolAmountUsdt, weekKey, null, "SYSTEM", "SYSTEM", "测试/补偿结算", settlementConfig);
     }
 
     private int settleTrusted(
@@ -175,11 +390,12 @@ public class LeadershipPoolService {
             Long actorId,
             String actorType,
             String actorUsername,
-            String reason) {
+            String reason,
+            LeadershipPoolConfigGuard.SettlementConfig settlementConfig) {
         if (poolAmountUsdt == null || poolAmountUsdt.signum() <= 0 || weekKey == null || weekKey.isBlank()) {
             return 0;
         }
-        int unlockRank = resolveUnlockRank();
+        int unlockRank = settlementConfig.unlockRank();
         List<Map<String, Object>> voters = teamCommissionMapper.listLeadershipVoters(unlockRank);
         if (voters == null || voters.isEmpty()) {
             log.warn("F4 leadership pool settle: no V{}+ voters, week={}", unlockRank, weekKey);
@@ -250,6 +466,8 @@ public class LeadershipPoolService {
                         "week", weekKey,
                         "poolAmountUsdt", poolAmountUsdt,
                         "unlockRank", "V" + unlockRank,
+                        "configVersion", settlementConfig.version(),
+                        "configFingerprint", settlementConfig.fingerprint(),
                         "totalVotes", totalVotes,
                         "settledUsers", settled,
                         "reason", reason))
@@ -257,6 +475,15 @@ public class LeadershipPoolService {
         log.info("F4 leadership pool settled: week={} pool={} voters={} settled={}",
                 weekKey, poolAmountUsdt, voters.size(), settled);
         return settled;
+    }
+
+    private LeadershipPoolConfigGuard.SettlementConfig requireSettlementConfig(String source) {
+        try {
+            return settlementConfigGuard.requireValid();
+        } catch (LeadershipPoolConfigGuard.ConfigUnavailableException failure) {
+            settlementConfigAlertService.recordBlocked(failure, source);
+            throw new BizException(503, "F4_SETTLEMENT_CONFIG_UNAVAILABLE");
+        }
     }
 
     private static BigDecimal parseMoney(String value) {

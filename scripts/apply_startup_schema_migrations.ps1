@@ -1,12 +1,14 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
-  [string]$JdbcUrl = $env:SPRING_DATASOURCE_URL,
-  [string]$Username = $(if ([string]::IsNullOrWhiteSpace($env:SPRING_DATASOURCE_USERNAME)) { "root" } else { $env:SPRING_DATASOURCE_USERNAME })
+  [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1")
+$JdbcUrl = $databaseEnvironment.JdbcUrl
+$Username = $databaseEnvironment.Username
+$Password = $databaseEnvironment.Password
 $migrations = @(
   (Join-Path $root "scripts\migrations\20260729_a1_admin_account_status_cas.sql"),
   (Join-Path $root "scripts\migrations\20260729_c2_account_list_event_schema.sql"),
@@ -20,12 +22,27 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql"),
   (Join-Path $root "scripts\migrations\20260808_d7_payout_vnd_config.sql"),
   (Join-Path $root "scripts\migrations\20260809_m5_content_rbac_closure.sql"),
-  (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql")
+  (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql"),
+  (Join-Path $root "scripts\migrations\20260810_e18_task_assignment_runtime.sql"),
+  (Join-Path $root "scripts\migrations\20260810_f5_commission_reissue_atomicity.sql"),
+  (Join-Path $root "scripts\migrations\20260810_ab_pending_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260810_cd_finance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260810_kl_janus_applied_proof.sql"),
+  (Join-Path $root "scripts\migrations\20260811_f4_l6_acceptance_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
+  (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_config_blocked_event_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260811_funds_persistent_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260811_g2_exchange_execution_mutex.sql"),
+  (Join-Path $root "scripts\migrations\20260811_g2_acceptance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260811_h8_acceptance_sandbox_referral_ledger.sql"),
+  (Join-Path $root "scripts\migrations\20260811_a2_a4_runtime_policy_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260811_f5_commission_export_event_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260811_l6_source_environment_schema.sql"),
+  (Join-Path $root "scripts\migrations\20260811_l6_h5_runtime_contract_fix.sql"),
+  (Join-Path $root "scripts\migrations\20260811_l6_h5_active_route_catalog.sql"),
+  (Join-Path $root "scripts\migrations\20260811_janus_executor_claim_nonce.sql")
 )
 
-if ([string]::IsNullOrWhiteSpace($JdbcUrl)) {
-  $JdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai"
-}
 if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "Only jdbc:mysql URLs are supported by this controlled migration runner."
 }
@@ -50,9 +67,8 @@ if ($WhatIfPreference) {
 if (-not (Test-Path -LiteralPath $MySql)) {
   throw "MySQL executable not found: $MySql"
 }
-$password = $env:SPRING_DATASOURCE_PASSWORD
-if ([string]::IsNullOrWhiteSpace($password)) {
-  throw "SPRING_DATASOURCE_PASSWORD is required to apply startup schema migrations."
+if ([string]::IsNullOrWhiteSpace($Password)) {
+  throw "NEXION_DB_PASSWORD is required to apply startup schema migrations."
 }
 foreach ($migration in $migrations) {
   if (-not (Test-Path -LiteralPath $migration)) {
@@ -65,7 +81,7 @@ if (-not $PSCmdlet.ShouldProcess("$($databaseUri.Host):$port/$database", "apply 
 
 $previousMySqlPassword = $env:MYSQL_PWD
 try {
-  $env:MYSQL_PWD = $password
+  $env:MYSQL_PWD = $Password
   $sources = ($migrations | ForEach-Object { "source $($_.Replace('\', '/'));" }) -join " "
   & $MySql --default-character-set=utf8mb4 --protocol=tcp -h $databaseUri.Host -P $port -u $Username $database -e $sources
   if ($LASTEXITCODE -ne 0) {

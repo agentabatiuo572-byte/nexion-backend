@@ -90,14 +90,19 @@ class MybatisJanusRepositoryTest {
         when(mapper.strategies()).thenReturn(List.of());
         AuditLogService audit = mock(AuditLogService.class);
         when(audit.list(org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        ffdd.opsconsole.janus.application.JanusSandboxProfileGuard sandboxProfileGuard =
+                mock(ffdd.opsconsole.janus.application.JanusSandboxProfileGuard.class);
+        when(sandboxProfileGuard.executionEnvironment()).thenReturn("PRODUCTION");
         OpsJanusService service = new OpsJanusService(repository,
                 mock(ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository.class),
                 new JanusRemoteTargetProperties(), mock(JanusRemoteTargetNetworkGuard.class),
-                new JanusRuleEvaluator(), new ObjectMapper(), audit, mock(EventOutboxService.class), null, null);
+                new JanusRuleEvaluator(), new ObjectMapper(), audit, mock(EventOutboxService.class), null, null, null,
+                sandboxProfileGuard);
 
         Map<String, Object> summary = castMap(service.dashboard().getData().get("summary"));
 
         assertThat(summary.get("manualOverrides")).isEqualTo(1L);
+        assertThat(service.dashboard().getData().get("executionEnvironment")).isEqualTo("PRODUCTION");
     }
 
     @Test

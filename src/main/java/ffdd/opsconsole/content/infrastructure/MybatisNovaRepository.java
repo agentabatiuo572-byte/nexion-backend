@@ -27,10 +27,12 @@ public class MybatisNovaRepository implements NovaRepository {
         if (mapper.targetCtrColumnCount() == 0) {
             mapper.addTargetCtrColumn();
         }
+        mapper.seedV3RuntimeChannels();
         mapper.createTemplateTable();
         if (mapper.templateContentColumnCount() == 0) {
             mapper.addTemplateContentColumns();
         }
+        mapper.seedV3RuntimeTemplates();
         mapper.quarantineIncompleteTemplates();
         mapper.createSocialDistributionTable();
         mapper.seedSocialDistributionDefaults();

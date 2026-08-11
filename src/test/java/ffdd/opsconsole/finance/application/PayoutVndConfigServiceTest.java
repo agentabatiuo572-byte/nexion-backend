@@ -31,9 +31,10 @@ class PayoutVndConfigServiceTest {
     private final VietnamPaymentMapper vietnam = mock(VietnamPaymentMapper.class);
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final AuditLogService audit = mock(AuditLogService.class);
+    private final PayoutVndProviderProperties providerProperties = new PayoutVndProviderProperties();
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-08T08:00:00Z"), ZoneOffset.UTC);
     private final PayoutVndConfigService service = new PayoutVndConfigService(
-            config, vietnam, coverage, audit, new ObjectMapper(), clock);
+            config, vietnam, coverage, audit, new ObjectMapper(), clock, providerProperties);
 
     @BeforeEach
     void setUp() {
@@ -62,6 +63,7 @@ class PayoutVndConfigServiceTest {
                 .containsEntry("channelEnabled", false)
                 .containsEntry("providerReady", false)
                 .containsEntry("providerStatusAvailable", true)
+                .containsEntry("sandboxAvailable", false)
                 .containsKeys("defaults", "effectiveAt", "sources");
     }
 

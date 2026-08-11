@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.web;
 
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
@@ -13,6 +14,8 @@ import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
@@ -181,6 +184,64 @@ public class OpsGrowthController {
             @RequestBody GrowthMonthlyMissionRequest request) {
         return commandBoundary.execute("H3", "MONTHLY_MISSION_CREATE", request == null ? "MISSION" : request.challengeCode(), idempotencyKey, request,
                 () -> growthService.createMonthlyMission(idempotencyKey, request));
+    }
+
+    @PatchMapping("/quest-events/tasks/{taskCode}")
+    @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String, Object>> editMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String taskCode,
+            @RequestBody GrowthMissionEditRequest request) {
+        GrowthMissionEditRequest authenticated = authenticated(request);
+        return commandBoundary.execute("H3", "MISSION_EDIT", taskCode, idempotencyKey, authenticated,
+                () -> growthService.editMission(idempotencyKey, taskCode, authenticated));
+    }
+
+    @PatchMapping("/quest-events/tasks/{taskCode}/status")
+    @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String, Object>> transitionMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String taskCode,
+            @RequestBody GrowthMissionStatusRequest request) {
+        GrowthMissionStatusRequest authenticated = authenticated(request);
+        return commandBoundary.execute("H3", "MISSION_STATUS", taskCode, idempotencyKey, authenticated,
+                () -> growthService.transitionMission(idempotencyKey, taskCode, authenticated));
+    }
+
+    @PostMapping("/quest-events/tasks/{taskCode}/archive")
+    @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String, Object>> archiveMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String taskCode,
+            @RequestBody GrowthMissionStatusRequest request) {
+        GrowthMissionStatusRequest authenticated = authenticated(request);
+        return commandBoundary.execute("H3", "MISSION_ARCHIVE", taskCode, idempotencyKey, authenticated,
+                () -> growthService.archiveMission(idempotencyKey, taskCode, authenticated));
+    }
+
+    @DeleteMapping("/quest-events/tasks/{taskCode}")
+    @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String, Object>> deleteMission(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String taskCode,
+            @RequestBody GrowthMissionStatusRequest request) {
+        GrowthMissionStatusRequest authenticated = authenticated(request);
+        return commandBoundary.execute("H3", "MISSION_DELETE", taskCode, idempotencyKey, authenticated,
+                () -> growthService.deleteMission(idempotencyKey, taskCode, authenticated));
+    }
+
+    private GrowthMissionEditRequest authenticated(GrowthMissionEditRequest request) {
+        if (request == null) return null;
+        return new GrowthMissionEditRequest(
+                request.taskKind(), request.name(), request.expectedName(), request.reason(),
+                AdminActorResolver.resolve(request.operator()));
+    }
+
+    private GrowthMissionStatusRequest authenticated(GrowthMissionStatusRequest request) {
+        if (request == null) return null;
+        return new GrowthMissionStatusRequest(
+                request.taskKind(), request.targetStatus(), request.expectedStatus(), request.reason(),
+                AdminActorResolver.resolve(request.operator()));
     }
 
     @PostMapping("/quest-events/wheel-tiers")

@@ -8,10 +8,12 @@ import ffdd.opsconsole.content.domain.SupportAgentOverview;
 import ffdd.opsconsole.content.domain.SupportAgentPageView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
+import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -81,6 +83,18 @@ public class OpsSupportAgentController {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }
         return supportAgentService.assignAdvisorUser(adminId, idempotencyKey, request);
+    }
+
+    @PreAuthorize("hasAuthority('service_m1_write')")
+    @PostMapping("/{adminId}/assignments/batch")
+    public ApiResult<java.util.List<SupportAgentAssignmentView>> assignAdvisorUsers(
+            @PathVariable Long adminId,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @Valid @RequestBody SupportAgentBatchAssignmentRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
+        return supportAgentService.assignAdvisorUsers(adminId, idempotencyKey, request);
     }
 
     // 停用顾问指派 — M1 客服总览 写

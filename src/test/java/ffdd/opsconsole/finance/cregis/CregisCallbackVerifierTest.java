@@ -37,9 +37,16 @@ class CregisCallbackVerifierTest {
         expired.put("sign", signer.sign(KEY, expired));
         assertThat(verify(expired).reason()).isEqualTo("TIMESTAMP_OUT_OF_WINDOW");
 
-        Map<String, Object> unknown = callbackAt(NOW, 0);
+        for (int progressStatus : new int[] {0, 1, 5}) {
+            Map<String, Object> progress = callbackAt(NOW, progressStatus);
+            progress.put("sign", signer.sign(KEY, progress));
+            assertThat(verify(progress)).as("provider progress status %s", progressStatus)
+                    .isEqualTo(new CregisCallbackVerifier.Verification(true, "OK"));
+        }
+
+        Map<String, Object> unknown = callbackAt(NOW, 8);
         unknown.put("sign", signer.sign(KEY, unknown));
-        assertThat(verify(unknown).reason()).isEqualTo("STATUS_NOT_TERMINAL");
+        assertThat(verify(unknown).reason()).isEqualTo("STATUS_INVALID");
 
         Map<String, Object> successWithoutTxid = callbackAt(NOW, 6);
         successWithoutTxid.remove("txid");

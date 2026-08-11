@@ -160,6 +160,8 @@ public interface UserOpsRepository {
 
     boolean reviewAssetAdjustment(String adjustmentNo, String status, String checker, String reason);
 
+    boolean withdrawAssetAdjustment(String adjustmentNo, String maker, String reason);
+
     boolean assetAdjustmentHasReversal(String adjustmentNo);
 
     BigDecimal findWalletPendingWithdraw(Long userId);

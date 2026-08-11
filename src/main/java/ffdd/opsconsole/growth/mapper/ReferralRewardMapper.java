@@ -8,18 +8,250 @@ import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 public interface ReferralRewardMapper extends BaseMapper<Object> {
+    @Select("""
+            SELECT u.referral_code AS referralCode, COALESCE(u.sandbox, 0) AS sandbox,
+                   COALESCE(w.nex_available, 0) AS walletNexAvailable
+              FROM nx_user u
+              JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+               AND COALESCE(w.sandbox, 0) = COALESCE(u.sandbox, 0)
+             WHERE u.id = #{userId} AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+             LIMIT 1
+            """)
+    AppReferralAccount appReferralAccount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COUNT(*)
+             FROM nx_user invited
+             JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
+             WHERE invited.sponsor_user_id = #{userId}
+               AND invited.id <> #{userId}
+               AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
+               AND invited.created_at >= #{effectiveAt}
+               AND ((#{sourceEnvironment} = 'PRODUCTION'
+                     AND COALESCE(owner.sandbox, 0) = 0 AND COALESCE(invited.sandbox, 0) = 0)
+                 OR (#{sourceEnvironment} = 'SANDBOX'
+                     AND COALESCE(owner.sandbox, 0) = 1 AND COALESCE(invited.sandbox, 0) = 1))
+             """)
+    long appInvitedCount(@Param("userId") Long userId,
+                         @Param("effectiveAt") LocalDateTime effectiveAt,
+                         @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user invited
+              JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
+              LEFT JOIN nx_referral_reward_settlement s
+                ON s.invited_user_id = invited.id AND s.is_deleted = 0
+             WHERE invited.sponsor_user_id = #{userId} AND invited.id <> #{userId}
+               AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
+               AND invited.created_at >= #{effectiveAt} AND s.id IS NULL
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(owner.sandbox, 0) = 0 AND COALESCE(invited.sandbox, 0) = 0
+             """)
+    long appPendingCount(@Param("userId") Long userId,
+                         @Param("effectiveAt") LocalDateTime effectiveAt,
+                         @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+             """)
+    long appPositiveSettlementCount(@Param("userId") Long userId,
+                                    @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED'
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+             """)
+    long appSettlementCount(@Param("userId") Long userId,
+                            @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
+            SELECT COUNT(*) AS settledCount, COALESCE(SUM(s.inviter_nex), 0) AS lifetimeInviterNex
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+               JOIN nx_wallet_ledger production_ledger
+                ON production_ledger.user_id = #{userId} AND production_ledger.biz_no = CONCAT(s.settlement_no, ':INVITER')
+               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'NEX'
+               AND production_ledger.direction = 'IN' AND production_ledger.status = 'SUCCESS'
+               AND production_ledger.amount = s.inviter_nex AND production_ledger.is_deleted = 0
+               AND #{sourceEnvironment} = 'PRODUCTION'
+              JOIN nx_earnings_release_entry e
+                ON e.user_id = #{userId} AND e.source_ref = CONCAT(s.settlement_no, ':INVITER:NEX')
+               AND e.asset = 'NEX' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
+               AND e.source_type = #{sourceType} AND e.source_environment = #{sourceEnvironment}
+               AND e.is_deleted = 0
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+            """)
+    AppReferralLedgerSummary appVerifiedRewardSummary(
+            @Param("userId") Long userId,
+            @Param("sourceType") String sourceType,
+            @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
+            SELECT s.settlement_no AS settlementNo, s.inviter_nex AS amountNex,
+                   production_ledger.status AS ledgerStatus,
+                   production_ledger.balance_after AS balanceAfter,
+                   e.bucket AS releaseBucket, e.source_environment AS sourceEnvironment,
+                   s.created_at AS settledAt
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+               JOIN nx_wallet_ledger production_ledger
+                ON production_ledger.user_id = #{userId} AND production_ledger.biz_no = CONCAT(s.settlement_no, ':INVITER')
+               AND production_ledger.biz_type = 'REFERRAL_REWARD' AND production_ledger.asset = 'NEX'
+               AND production_ledger.direction = 'IN' AND production_ledger.status = 'SUCCESS'
+               AND production_ledger.amount = s.inviter_nex AND production_ledger.is_deleted = 0
+               AND #{sourceEnvironment} = 'PRODUCTION'
+              JOIN nx_earnings_release_entry e
+                ON e.user_id = #{userId} AND e.source_ref = CONCAT(s.settlement_no, ':INVITER:NEX')
+               AND e.asset = 'NEX' AND e.amount = s.inviter_nex AND e.status = 'ACTIVE'
+               AND e.source_type = #{sourceType} AND e.source_environment = #{sourceEnvironment}
+               AND e.is_deleted = 0
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+             ORDER BY s.id DESC
+             LIMIT #{limit}
+            """)
+    List<AppReferralLedgerRow> appRecentVerifiedRewards(
+            @Param("userId") Long userId,
+            @Param("sourceType") String sourceType,
+            @Param("sourceEnvironment") String sourceEnvironment,
+            @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user invited
+              JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
+              LEFT JOIN nx_h8_sandbox_referral_settlement s
+                ON s.invited_user_id = invited.id AND s.is_deleted = 0
+             WHERE invited.sponsor_user_id = #{userId} AND invited.id <> #{userId}
+               AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
+               AND invited.created_at >= #{effectiveAt} AND s.id IS NULL
+               AND COALESCE(owner.sandbox, 0) = 1 AND COALESCE(invited.sandbox, 0) = 1
+            """)
+    long appSandboxPendingCount(@Param("userId") Long userId,
+                                @Param("effectiveAt") LocalDateTime effectiveAt);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_h8_sandbox_referral_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND s.source = 'mock' AND s.source_environment = 'SANDBOX'
+               AND COALESCE(invited.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+            """)
+    long appSandboxPositiveSettlementCount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_h8_sandbox_referral_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED'
+               AND s.source = 'mock' AND s.source_environment = 'SANDBOX'
+               AND COALESCE(invited.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+            """)
+    long appSandboxSettlementCount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COUNT(*) AS settledCount, COALESCE(SUM(s.inviter_nex), 0) AS lifetimeInviterNex
+              FROM nx_h8_sandbox_referral_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+              JOIN nx_h8_sandbox_referral_ledger sandbox_ledger
+                ON sandbox_ledger.user_id = #{userId} AND sandbox_ledger.settlement_no = s.settlement_no
+               AND sandbox_ledger.asset = 'NEX' AND sandbox_ledger.status = 'SUCCESS'
+               AND sandbox_ledger.amount = s.inviter_nex AND sandbox_ledger.is_deleted = 0
+               AND sandbox_ledger.source = 'mock' AND sandbox_ledger.source_environment = 'SANDBOX'
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND s.source = 'mock' AND s.source_environment = 'SANDBOX'
+               AND COALESCE(invited.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+            """)
+    AppReferralLedgerSummary appVerifiedSandboxRewardSummary(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT s.settlement_no AS settlementNo, s.inviter_nex AS amountNex,
+                   sandbox_ledger.status AS ledgerStatus,
+                   sandbox_ledger.balance_after AS balanceAfter,
+                   CASE WHEN s.lock_mode = 'direct' THEN 'withdrawable' ELSE 'bonus_locked' END AS releaseBucket,
+                   s.source_environment AS sourceEnvironment, s.created_at AS settledAt
+              FROM nx_h8_sandbox_referral_settlement s
+              JOIN nx_user invited ON invited.id = s.invited_user_id
+              JOIN nx_user inviter ON inviter.id = s.inviter_user_id
+              JOIN nx_h8_sandbox_referral_ledger sandbox_ledger
+                ON sandbox_ledger.user_id = #{userId} AND sandbox_ledger.settlement_no = s.settlement_no
+               AND sandbox_ledger.asset = 'NEX' AND sandbox_ledger.status = 'SUCCESS'
+               AND sandbox_ledger.amount = s.inviter_nex AND sandbox_ledger.is_deleted = 0
+               AND sandbox_ledger.source = 'mock' AND sandbox_ledger.source_environment = 'SANDBOX'
+             WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
+               AND s.status = 'SETTLED' AND s.inviter_nex > 0
+               AND s.source = 'mock' AND s.source_environment = 'SANDBOX'
+               AND COALESCE(invited.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+             ORDER BY s.id DESC
+             LIMIT #{limit}
+            """)
+    List<AppReferralLedgerRow> appRecentVerifiedSandboxRewards(
+            @Param("userId") Long userId,
+            @Param("limit") int limit);
+
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key = 'H8_REWARD' FOR UPDATE")
     String lockRewardMutation();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND ((TABLE_NAME = 'nx_h8_sandbox_referral_ledger'
+                     AND COLUMN_NAME IN ('settlement_no', 'user_id', 'asset', 'amount', 'balance_after',
+                                         'status', 'source', 'source_environment', 'is_deleted'))
+                 OR (TABLE_NAME = 'nx_h8_sandbox_referral_settlement'
+                     AND COLUMN_NAME IN ('settlement_no', 'invited_user_id', 'inviter_user_id',
+                                         'newcomer_usdt', 'newcomer_nex', 'inviter_nex', 'lock_mode',
+                                         'config_snapshot', 'operator', 'reason', 'idempotency_key',
+                                         'status', 'source', 'source_environment', 'is_deleted')))
+            """)
+    int h8AcceptanceSandboxSchemaColumns();
 
     @Select("""
             SELECT u.id AS invitedUserId, u.sponsor_user_id AS inviterUserId
               FROM nx_user u
               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+                AND invited_wallet.is_deleted = 0
+                AND invited_wallet.sandbox = 0
+              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
+                AND inviter_wallet.is_deleted = 0
+                AND inviter_wallet.sandbox = 0
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
@@ -69,12 +301,35 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                  )
                ))
                AND s.id IS NULL
+               AND (#{onlyInvitedUserId} IS NULL OR u.id = #{onlyInvitedUserId})
              ORDER BY u.created_at ASC, u.id ASC
              LIMIT #{limit}
             """)
     List<ReferralRow> findPendingReferrals(@Param("effectiveAt") LocalDateTime effectiveAt,
+                                           @Param("sourceEnvironment") String sourceEnvironment,
                                            @Param("holdRisky") boolean holdRisky,
-                                           @Param("limit") int limit);
+                                           @Param("limit") int limit,
+                                           @Param("onlyInvitedUserId") Long onlyInvitedUserId);
+
+    @Select("""
+            SELECT u.id AS invitedUserId, u.sponsor_user_id AS inviterUserId
+              FROM nx_user u
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
+               AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+               AND invited_wallet.is_deleted = 0 AND invited_wallet.sandbox = 1
+              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
+               AND inviter_wallet.is_deleted = 0 AND inviter_wallet.sandbox = 1
+              LEFT JOIN nx_h8_sandbox_referral_settlement s
+                ON s.invited_user_id = u.id AND s.is_deleted = 0
+             WHERE u.id = #{onlyInvitedUserId}
+               AND u.sponsor_user_id IS NOT NULL AND u.sponsor_user_id <> u.id
+               AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND COALESCE(u.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+               AND u.created_at >= #{effectiveAt} AND s.id IS NULL
+            """)
+    List<ReferralRow> findPendingSandboxReferral(@Param("effectiveAt") LocalDateTime effectiveAt,
+                                                 @Param("onlyInvitedUserId") Long onlyInvitedUserId);
 
     @Insert("""
             INSERT IGNORE INTO nx_referral_reward_settlement (
@@ -85,10 +340,18 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             SELECT #{settlementNo}, u.id, inviter.id, #{newcomerUsdt}, #{newcomerNex},
                    #{inviterNex}, #{lockMode}, #{configSnapshot}, #{operator}, #{reason},
                    #{idempotencyKey}, 'SETTLED', NOW(), NOW(), 0
-              FROM nx_user u
-              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
-             WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
-               AND u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               FROM nx_user u
+               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+                 AND invited_wallet.is_deleted = 0
+                 AND invited_wallet.sandbox = 0
+               JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
+                 AND inviter_wallet.is_deleted = 0
+                 AND inviter_wallet.sandbox = 0
+              WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
+                 AND #{sourceEnvironment} = 'PRODUCTION'
+                 AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+                AND u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND u.sponsor_user_id <> u.id AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
                  SELECT 1 FROM nx_admin_risk_arbitrage_row risk
@@ -147,24 +410,95 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                          @Param("configSnapshot") String configSnapshot,
                          @Param("operator") String operator,
                          @Param("reason") String reason,
-                         @Param("idempotencyKey") String idempotencyKey,
-                         @Param("effectiveAt") LocalDateTime effectiveAt,
-                         @Param("holdRisky") boolean holdRisky);
+                          @Param("idempotencyKey") String idempotencyKey,
+                          @Param("effectiveAt") LocalDateTime effectiveAt,
+                          @Param("sourceEnvironment") String sourceEnvironment,
+                           @Param("holdRisky") boolean holdRisky);
 
     @Insert("""
-            INSERT INTO nx_user_wallet (
-              user_id, usdt_available, nex_available, pending_withdraw, lifetime_earned,
-              version, created_at, updated_at, is_deleted
-            ) VALUES (#{userId}, #{usdt}, #{nex}, 0, #{usdt} + #{nex}, 0, NOW(), NOW(), 0)
-            ON DUPLICATE KEY UPDATE
-              usdt_available = usdt_available + VALUES(usdt_available),
-              nex_available = nex_available + VALUES(nex_available),
-              lifetime_earned = lifetime_earned + VALUES(lifetime_earned),
-              version = version + 1, updated_at = NOW(), is_deleted = 0
+            INSERT IGNORE INTO nx_h8_sandbox_referral_settlement (
+              settlement_no, invited_user_id, inviter_user_id, newcomer_usdt, newcomer_nex,
+              inviter_nex, lock_mode, config_snapshot, operator, reason, idempotency_key,
+              status, source, source_environment, created_at, updated_at, is_deleted
+            )
+            SELECT #{settlementNo}, u.id, inviter.id, #{newcomerUsdt}, #{newcomerNex},
+                   #{inviterNex}, #{lockMode}, #{configSnapshot}, #{operator}, #{reason},
+                   #{idempotencyKey}, 'SETTLED', 'mock', 'SANDBOX', NOW(), NOW(), 0
+              FROM nx_user u
+              JOIN nx_user inviter ON inviter.id = u.sponsor_user_id
+               AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
+              JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
+               AND invited_wallet.is_deleted = 0 AND invited_wallet.sandbox = 1
+              JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
+               AND inviter_wallet.is_deleted = 0 AND inviter_wallet.sandbox = 1
+             WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
+               AND u.sponsor_user_id IS NOT NULL AND u.sponsor_user_id <> u.id
+               AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND COALESCE(u.sandbox, 0) = 1 AND COALESCE(inviter.sandbox, 0) = 1
+               AND u.created_at >= #{effectiveAt}
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_h8_sandbox_referral_settlement existing
+                  WHERE existing.invited_user_id = u.id AND existing.is_deleted = 0
+               )
             """)
-    int creditWallet(@Param("userId") Long userId, @Param("usdt") BigDecimal usdt, @Param("nex") BigDecimal nex);
+    int insertSandboxSettlement(@Param("settlementNo") String settlementNo,
+                                @Param("invitedUserId") Long invitedUserId,
+                                @Param("inviterUserId") Long inviterUserId,
+                                @Param("newcomerUsdt") BigDecimal newcomerUsdt,
+                                @Param("newcomerNex") BigDecimal newcomerNex,
+                                @Param("inviterNex") BigDecimal inviterNex,
+                                @Param("lockMode") String lockMode,
+                                @Param("configSnapshot") String configSnapshot,
+                                @Param("operator") String operator,
+                                @Param("reason") String reason,
+                                @Param("idempotencyKey") String idempotencyKey,
+                                @Param("effectiveAt") LocalDateTime effectiveAt);
 
-    @Select("SELECT COUNT(*) FROM nx_referral_reward_settlement WHERE is_deleted = 0")
+    @Update("""
+            UPDATE nx_user_wallet w
+              JOIN nx_user u ON u.id = w.user_id
+               AND u.is_deleted = 0 AND u.status = 'ACTIVE' AND COALESCE(u.sandbox, 0) = 1
+               SET w.usdt_available = w.usdt_available + CASE WHEN #{asset} = 'USDT' THEN #{amount} ELSE 0 END,
+                   w.nex_available = w.nex_available + CASE WHEN #{asset} = 'NEX' THEN #{amount} ELSE 0 END,
+                   w.lifetime_earned = w.lifetime_earned + #{amount},
+                   w.version = w.version + 1,
+                   w.updated_at = NOW()
+             WHERE w.user_id = #{userId} AND w.is_deleted = 0 AND w.sandbox = 1
+               AND #{asset} IN ('USDT', 'NEX') AND #{amount} > 0
+            """)
+    int creditSandboxWallet(@Param("userId") Long userId,
+                            @Param("asset") String asset,
+                            @Param("amount") BigDecimal amount);
+
+    /**
+     * Server-owned sandbox proof ledger. The SELECT guard makes it impossible
+     * for a sandbox H8 call to create a production-wallet ledger record.
+     */
+    @Insert("""
+            INSERT INTO nx_h8_sandbox_referral_ledger (
+              settlement_no, user_id, asset, amount, balance_after, status,
+              source, source_environment, remark, created_at, is_deleted
+            )
+            SELECT SUBSTRING_INDEX(#{bizNo}, ':', 1), u.id, #{asset}, #{amount},
+                   CASE WHEN #{asset} = 'USDT' THEN w.usdt_available ELSE w.nex_available END,
+                   'SUCCESS', 'mock', 'SANDBOX', #{remark}, NOW(), 0
+              FROM nx_user u
+              JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0 AND w.sandbox = 1
+             WHERE u.id = #{userId} AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND COALESCE(u.sandbox, 0) = 1
+            """)
+    int insertSandboxLedger(@Param("bizNo") String bizNo,
+                            @Param("userId") Long userId,
+                            @Param("asset") String asset,
+                            @Param("amount") BigDecimal amount,
+                            @Param("remark") String remark);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id=s.invited_user_id
+              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+             WHERE s.is_deleted=0 AND COALESCE(invited.sandbox,0)=0 AND COALESCE(inviter.sandbox,0)=0
+            """)
     long totalSettled();
 
     @Select("""
@@ -172,6 +506,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
@@ -231,6 +566,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
+               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND s.id IS NULL
@@ -281,13 +617,22 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                           @Param("holdRisky") boolean holdRisky);
 
     @Select("""
-            SELECT settlement_no AS settlementNo, invited_user_id AS invitedUserId,
-                   inviter_user_id AS inviterUserId, newcomer_usdt AS newcomerUsdt,
-                   newcomer_nex AS newcomerNex, inviter_nex AS inviterNex, status, created_at AS createdAt
-              FROM nx_referral_reward_settlement
-             WHERE is_deleted = 0 ORDER BY id DESC LIMIT #{limit}
+            SELECT s.settlement_no AS settlementNo, s.invited_user_id AS invitedUserId,
+                   s.inviter_user_id AS inviterUserId, s.newcomer_usdt AS newcomerUsdt,
+                   s.newcomer_nex AS newcomerNex, s.inviter_nex AS inviterNex,
+                   s.status AS status, s.created_at AS createdAt
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id=s.invited_user_id
+              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+             WHERE s.is_deleted=0 AND COALESCE(invited.sandbox,0)=0 AND COALESCE(inviter.sandbox,0)=0
+             ORDER BY s.id DESC LIMIT #{limit}
             """)
     List<Map<String, Object>> recentSettlements(@Param("limit") int limit);
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
+    record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}
+    record AppReferralLedgerSummary(Long settledCount, BigDecimal lifetimeInviterNex) {}
+    record AppReferralLedgerRow(String settlementNo, BigDecimal amountNex, String ledgerStatus,
+                                BigDecimal balanceAfter, String releaseBucket,
+                                String sourceEnvironment, LocalDateTime settledAt) {}
 }

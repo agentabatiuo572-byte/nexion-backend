@@ -54,6 +54,15 @@ public final class B3FunnelAnalytics {
 
     public static Map<String, Object> calculate(
             List<Map<String, Object>> rawRows, String cohort, String phase, String ref, String trendStage) {
+        return calculate(rawRows, cohort, phase, ref, trendStage, 90);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String cohort, String phase, String ref,
+            String trendStage, int day0WindowSeconds) {
+        if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
+            throw new IllegalArgumentException("A4_DAY0_POLICY_INVALID");
+        }
         List<EventFact> allEvents = facts(rawRows);
         long relevantRaw = rawRows == null ? 0 : rawRows.stream()
                 .filter(row -> MAIN_EVENTS.contains(text(row, "eventName", "event_name")))
@@ -63,7 +72,7 @@ public final class B3FunnelAnalytics {
             return unavailable(
                     "ACTOR_COVERAGE_INCOMPLETE",
                     "存在缺少用户标识或事件时间的主漏斗事实，已停止计算，避免产生伪转化率",
-                    cohort, phase, ref);
+                    cohort, phase, ref, day0WindowSeconds);
         }
 
         List<EventFact> registrations = named(allEvents, "auth.register_completed");
@@ -80,7 +89,7 @@ public final class B3FunnelAnalytics {
             return unavailable(
                     "EMPTY_REGISTRATION_DENOMINATOR",
                     "当前筛选范围没有可确认的注册用户，转化率不可计算；请检查 A4 注册事件或调整筛选条件。",
-                    cohort, phase, ref);
+                    cohort, phase, ref, day0WindowSeconds);
         }
         Map<String, List<EventFact>> byActor = allEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
@@ -109,7 +118,7 @@ public final class B3FunnelAnalytics {
                     "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)));
         }
 
-        Map<String, Object> aux = auxMetrics(allEvents, registered, byActor);
+        Map<String, Object> aux = auxMetrics(allEvents, registered, byActor, day0WindowSeconds);
         return linked(
                 "available", true,
                 "module", "B3",
@@ -213,7 +222,8 @@ public final class B3FunnelAnalytics {
     private static Map<String, Object> auxMetrics(
             List<EventFact> events,
             Map<String, EventFact> registered,
-            Map<String, List<EventFact>> byActor) {
+            Map<String, List<EventFact>> byActor,
+            int day0WindowSeconds) {
         Set<String> day0Actors = new LinkedHashSet<>();
         Set<String> matureActors = new LinkedHashSet<>();
         Set<String> day7Actors = new LinkedHashSet<>();
@@ -225,7 +235,7 @@ public final class B3FunnelAnalytics {
                     .filter(event -> event.actor().equals(actor))
                     .filter(event -> event.name().equals("device.first_yield_received"))
                     .filter(event -> !event.at().isBefore(registration.at()))
-                    .filter(event -> event.latencySec() != null && event.latencySec() <= 90)
+                    .filter(event -> event.latencySec() != null && event.latencySec() <= day0WindowSeconds)
                     .findFirst()
                     .ifPresent(event -> day0Actors.add(actor));
             long ageDays = ChronoUnit.DAYS.between(registration.at().toLocalDate(), today);
@@ -252,6 +262,7 @@ public final class B3FunnelAnalytics {
                 "day0Numerator", day0Actors.size(),
                 "day0Denominator", registered.size(),
                 "day0Target", 95,
+                "day0WindowSeconds", day0WindowSeconds,
                 "day7Retention", matureActors.isEmpty() ? null : percent(day7Actors.size(), matureActors.size()),
                 "day7Numerator", day7Actors.size(),
                 "day7Denominator", matureActors.size(),
@@ -260,7 +271,7 @@ public final class B3FunnelAnalytics {
     }
 
     private static Map<String, Object> unavailable(
-            String reason, String message, String cohort, String phase, String ref) {
+            String reason, String message, String cohort, String phase, String ref, int day0WindowSeconds) {
         return linked(
                 "available", false,
                 "module", "B3",
@@ -281,6 +292,7 @@ public final class B3FunnelAnalytics {
                         "day0Numerator", 0,
                         "day0Denominator", 0,
                         "day0Target", 95,
+                        "day0WindowSeconds", day0WindowSeconds,
                         "day7Retention", null,
                         "day7Numerator", 0,
                         "day7Denominator", 0,

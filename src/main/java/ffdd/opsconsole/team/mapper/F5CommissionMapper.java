@@ -118,6 +118,80 @@ public interface F5CommissionMapper {
             @Param("cursor") Long cursor,
             @Param("limit") int limit);
 
+    /**
+     * Bounded server-side export page. The projection intentionally omits order numbers,
+     * ledger references and every other field that is not part of the redacted CSV contract.
+     */
+    @Select("""
+            <script>
+            SELECT CONCAT('CM-', e.id) AS commissionId,
+                   e.id AS eventId,
+                   e.user_id AS userId,
+                   LOWER(e.commission_type) AS kind,
+                   UPPER(e.currency) AS currency,
+                   CASE WHEN UPPER(e.currency) = 'NEX' THEN e.amount_nex ELSE e.amount_usdt END AS amount,
+                   e.source_user_id AS sourceUserId,
+                   e.layer_no AS layer,
+                   DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
+                   CASE
+                     WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED') THEN 'reversed'
+                     WHEN UPPER(e.status) = 'FROZEN' THEN 'frozen'
+                     WHEN UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED') THEN 'withdrawn'
+                     WHEN UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE') THEN 'unlocked'
+                     WHEN UPPER(e.status) IN ('PENDING', 'COOLING')
+                       AND LOWER(e.commission_type) NOT IN ('network', 'binary') THEN 'unlocked'
+                     WHEN UPPER(e.status) IN ('PENDING', 'COOLING') THEN 'cooling'
+                     ELSE 'unknown'
+                   END AS status
+              FROM nx_commission_event e
+              LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
+             WHERE e.is_deleted = 0
+               AND LOWER(e.commission_type) IN
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis')
+             <if test="kind != null and kind != ''">
+               AND LOWER(e.commission_type) = LOWER(#{kind})
+             </if>
+             <if test="currency != null and currency != ''">
+               AND UPPER(e.currency) = UPPER(#{currency})
+             </if>
+             <if test="userId != null">
+               AND e.user_id = #{userId}
+             </if>
+             <if test="cohort != null and cohort != ''">
+               AND DATE_FORMAT(u.created_at, '%Y-%m') = #{cohort}
+             </if>
+             <if test="status != null and status != ''">
+               AND (
+                 (LOWER(#{status}) = 'cooling'
+                   AND LOWER(e.commission_type) IN ('network', 'binary')
+                   AND UPPER(e.status) IN ('PENDING', 'COOLING'))
+                 OR (LOWER(#{status}) = 'unlocked'
+                   AND (UPPER(e.status) IN ('UNLOCKED', 'AVAILABLE')
+                     OR (LOWER(e.commission_type) NOT IN ('network', 'binary')
+                       AND UPPER(e.status) IN ('PENDING', 'COOLING'))))
+                 OR (LOWER(#{status}) = 'withdrawn'
+                   AND UPPER(e.status) IN ('PAID', 'WITHDRAWN', 'SETTLED'))
+                 OR (LOWER(#{status}) = 'reversed'
+                   AND UPPER(e.status) IN ('REVERSED', 'ROLLBACK', 'REJECTED'))
+                 OR (LOWER(#{status}) = 'frozen' AND UPPER(e.status) = 'FROZEN')
+               )
+             </if>
+             <if test="cursor != null">
+               AND e.id &lt; #{cursor}
+             </if>
+             ORDER BY e.id DESC
+             LIMIT #{limit}
+            </script>
+            """)
+    List<Map<String, Object>> queryExportEvents(
+            @Param("kind") String kind,
+            @Param("currency") String currency,
+            @Param("userId") Long userId,
+            @Param("status") String status,
+            @Param("cohort") String cohort,
+            @Param("cursor") Long cursor,
+            @Param("limit") int limit);
+
     @Select("""
             <script>
             SELECT COUNT(1)
@@ -239,6 +313,17 @@ public interface F5CommissionMapper {
              FOR UPDATE
             """)
     Map<String, Object> findEventForUpdate(@Param("eventId") Long eventId);
+
+    @Select("""
+            SELECT id
+             FROM nx_commission_operation
+             WHERE operation_type = 'REISSUE'
+               AND source_commission_id = #{eventId}
+             ORDER BY id DESC
+             LIMIT 1
+             FOR UPDATE
+            """)
+    Long findReissueOperationForUpdate(@Param("eventId") Long eventId);
 
     @Select("""
             SELECT COUNT(1)

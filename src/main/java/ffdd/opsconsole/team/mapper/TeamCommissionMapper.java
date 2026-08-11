@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -339,7 +340,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> leadershipRanks();
 
     @Select("""
-            SELECT COALESCE(t.display_name, t.quota_code) AS name,
+            SELECT t.id,
+                   t.quota_code AS quotaCode,
+                   COALESCE(t.display_name, t.quota_code) AS name,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE' THEN u.quantity ELSE 0 END), 0) AS current,
                    t.monthly_quota AS cap,
                    CASE
@@ -350,13 +353,61 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               FROM nx_team_hardware_quota_tier t
               LEFT JOIN nx_team_hardware_quota_usage u
                 ON u.quota_tier_id = t.id
-               AND u.occurred_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+               AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
              WHERE t.is_deleted = 0
                AND t.status = 1
              GROUP BY t.id, t.display_name, t.quota_code, t.monthly_quota, t.sort_order
              ORDER BY t.sort_order ASC, t.id ASC
             """)
     List<Map<String, Object>> quotaRows();
+
+    @Select("""
+            SELECT u.id,
+                   COALESCE(u.quota_code, t.quota_code) AS quotaCode,
+                   COALESCE(u.product_no, t.product_no) AS productNo,
+                   u.user_id AS userId,
+                   u.order_no AS orderNo,
+                   u.quantity,
+                   UPPER(u.status) AS status,
+                   DATE_FORMAT(u.occurred_at, '%Y-%m-%d %H:%i:%s') AS occurredAt
+              FROM nx_team_hardware_quota_usage u
+              JOIN nx_team_hardware_quota_tier t ON t.id = u.quota_tier_id
+             WHERE u.is_deleted = 0
+               AND UPPER(u.status) = 'ACTIVE'
+             ORDER BY u.occurred_at DESC, u.id DESC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> quotaUsages(@Param("limit") int limit);
+
+    @Update("""
+            UPDATE nx_team_hardware_quota_tier
+               SET monthly_quota = #{monthlyQuota}, updated_at = NOW()
+             WHERE quota_code = #{quotaCode}
+               AND monthly_quota = #{expectedMonthlyQuota}
+               AND is_deleted = 0
+               AND status = 1
+               AND #{monthlyQuota} >= (
+                    SELECT COALESCE(SUM(u.quantity), 0)
+                      FROM nx_team_hardware_quota_usage u
+                     WHERE u.quota_tier_id = nx_team_hardware_quota_tier.id
+                       AND u.is_deleted = 0
+                       AND UPPER(u.status) = 'ACTIVE'
+                        AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+               )
+            """)
+    int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,
+                                   @Param("expectedMonthlyQuota") int expectedMonthlyQuota,
+                                   @Param("monthlyQuota") int monthlyQuota);
+
+    @Update("""
+            UPDATE nx_team_hardware_quota_usage
+               SET status = 'RECYCLED', usage_type = 'RECYCLED', remark = #{reason}, updated_at = NOW()
+             WHERE id = #{usageId}
+               AND is_deleted = 0
+               AND UPPER(status) = 'ACTIVE'
+            """)
+    int recycleHardwareQuotaUsage(@Param("usageId") Long usageId,
+                                  @Param("reason") String reason);
 
     @Select("""
             SELECT UPPER(status) AS name,
@@ -386,7 +437,49 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     Map<String, Object> ambassadorSummary();
 
     @Select("""
+            SELECT id,
+                   user_id AS userId,
+                   applicant_name AS applicantName,
+                   region,
+                   city,
+                   current_rank AS currentRank,
+                   requested_budget_usdt AS requestedBudgetUsd,
+                   kol_budget_pct AS kolBudgetPct,
+                   UPPER(status) AS status,
+                   DATE_FORMAT(event_date, '%Y-%m-%d') AS eventDate,
+                   DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt
+              FROM nx_team_ambassador_application
+             WHERE is_deleted = 0
+             ORDER BY CASE WHEN UPPER(status) = 'PENDING' THEN 0 ELSE 1 END, created_at DESC, id DESC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> ambassadorApplications(@Param("limit") int limit);
+
+    @Insert("""
+            INSERT INTO nx_team_ambassador_budget_grant
+              (application_id, user_id, budget_type, amount_usdt, status, operator)
+            SELECT a.id, a.user_id, budget_type,
+                   CASE
+                     WHEN budget_type = 'KOL' THEN ROUND(a.requested_budget_usdt * a.kol_budget_pct / 100, 6)
+                     ELSE ROUND((a.requested_budget_usdt - (a.requested_budget_usdt * a.kol_budget_pct / 100)) / 3, 6)
+                   END,
+                   'ACTIVE', #{operator}
+              FROM nx_team_ambassador_application a
+              JOIN (
+                    SELECT 'KOL' AS budget_type UNION ALL SELECT 'EVENT'
+                    UNION ALL SELECT 'TRAVEL' UNION ALL SELECT 'PROMOTION'
+                   ) types
+             WHERE a.id = #{applicationId}
+               AND a.is_deleted = 0
+               AND UPPER(a.status) = 'APPROVED'
+            ON DUPLICATE KEY UPDATE updated_at = NOW()
+            """)
+    int insertAmbassadorBudgetGrants(@Param("applicationId") Long applicationId,
+                                     @Param("operator") String operator);
+
+    @Select("""
             SELECT ranked.rank_no AS `rank`,
+                   ranked.member_user_id AS memberUserId,
                    CONCAT('U', LPAD(ranked.member_user_id, GREATEST(8, CHAR_LENGTH(CAST(ranked.member_user_id AS CHAR))), '0')) AS userId,
                    CONCAT('$', ROUND(ranked.volume, 0)) AS gmvLabel,
                    CASE
@@ -674,6 +767,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    updated_at = NOW()
              WHERE id = #{applicationId}
                AND is_deleted = 0
+               AND UPPER(status) = 'PENDING'
             """)
     int updateAmbassadorStatusById(@Param("applicationId") Long applicationId,
                                    @Param("status") String status,
@@ -715,6 +809,80 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                                 @Param("actionType") String actionType,
                                 @Param("reason") String reason,
                                 @Param("operator") String operator);
+
+    @Insert("""
+            INSERT INTO nx_team_leaderboard_action
+              (period, user_id, member_user_id, member_no, nickname, action_type, reason, operator)
+            SELECT #{period}, m.user_id, m.member_user_id,
+                   CONCAT('U', LPAD(m.member_user_id,
+                       GREATEST(8, CHAR_LENGTH(CAST(m.member_user_id AS CHAR))), '0')),
+                   CONCAT('U', LPAD(m.member_user_id,
+                       GREATEST(8, CHAR_LENGTH(CAST(m.member_user_id AS CHAR))), '0')),
+                   #{actionType}, #{reason}, #{operator}
+              FROM nx_team_member m
+             WHERE m.member_user_id = #{memberUserId}
+               AND m.is_deleted = 0
+             ORDER BY m.id ASC
+             LIMIT 1
+            """)
+    int insertLeaderboardMemberAction(@Param("period") String period,
+                                      @Param("memberUserId") Long memberUserId,
+                                      @Param("actionType") String actionType,
+                                      @Param("reason") String reason,
+                                      @Param("operator") String operator);
+
+    @Select("""
+            SELECT m.member_user_id AS userId,
+                   SUM(m.volume) AS volume
+              FROM nx_team_member m
+             WHERE m.is_deleted = 0
+               AND m.volume >= #{minVolumeUsd}
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_team_leaderboard_action a
+                    WHERE a.is_deleted = 0
+                      AND a.period = 'week'
+                      AND a.member_user_id = m.member_user_id
+                      AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+               )
+             GROUP BY m.member_user_id
+             ORDER BY SUM(m.volume) DESC, m.member_user_id ASC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> leaderboardCandidates(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
+                                                     @Param("limit") int limit);
+
+    /** F16:按对应日/周/月/总榜窗口汇总真实已解锁佣金，禁止复用全期 member.volume。 */
+    @Select("""
+            <script>
+            SELECT e.user_id AS userId,
+                   SUM(e.amount_usdt) AS volume
+              FROM nx_commission_event e
+             WHERE e.is_deleted = 0
+               AND UPPER(e.status) = 'UNLOCKED'
+               AND LOWER(e.commission_type) IN
+                   ('unilevel','network','binary','peer','cultivation','leadership','genesis')
+               <if test="fromInclusive != null">AND e.created_at &gt;= #{fromInclusive}</if>
+               <if test="toExclusive != null">AND e.created_at &lt; #{toExclusive}</if>
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM nx_team_leaderboard_action a
+                     WHERE a.is_deleted = 0
+                       AND LOWER(a.period) = LOWER(#{period})
+                       AND a.member_user_id = e.user_id
+                       AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+               )
+             GROUP BY e.user_id
+            HAVING SUM(e.amount_usdt) &gt;= #{minVolumeUsd}
+             ORDER BY SUM(e.amount_usdt) DESC, e.user_id ASC
+             LIMIT #{limit}
+            </script>
+            """)
+    List<Map<String, Object>> leaderboardCandidatesByPeriod(
+            @Param("period") String period,
+            @Param("fromInclusive") java.time.LocalDateTime fromInclusive,
+            @Param("toExclusive") java.time.LocalDateTime toExclusive,
+            @Param("minVolumeUsd") BigDecimal minVolumeUsd,
+            @Param("limit") int limit);
 
     // ============================================================
     // F1 V-Rank 晋升引擎(Sprint 1+2)
@@ -1048,6 +1216,24 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int countLeadershipByWeek(@Param("weekKey") String weekKey);
 
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_commission_event
+             WHERE LOWER(commission_type) = 'leadership'
+               AND remark LIKE CONCAT('%F4 leaderboard%', #{weekKey}, '%')
+               AND is_deleted = 0
+            """)
+    int countLeaderboardByWeek(@Param("weekKey") String weekKey);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_commission_event
+             WHERE LOWER(commission_type) = 'leaderboard_prize'
+               AND remark LIKE CONCAT('%settlementKey=', #{settlementKey}, '|%')
+               AND is_deleted = 0
+            """)
+    int countLeaderboardBySettlementKey(@Param("settlementKey") String settlementKey);
+
     /** 取上一条 INSERT 的自增 id(同连接内调用,紧跟 INSERT 后)。 */
     @Select("SELECT LAST_INSERT_ID()")
     Long selectLastInsertId();
@@ -1078,6 +1264,17 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                                 @Param("triggerEventId") String triggerEventId,
                                 @Param("operator") String operator,
                                 @Param("reason") String reason);
+
+    @Insert("""
+            INSERT INTO nx_v_rank_reward_fulfillment
+              (user_id, rank_code, reward_name, status, reason)
+            VALUES
+              (#{userId}, #{rankCode}, #{skuId}, 'PENDING', #{reason})
+            """)
+    int enqueueVRankSkuFulfillment(@Param("userId") Long userId,
+                                   @Param("rankCode") String rankCode,
+                                   @Param("skuId") String skuId,
+                                   @Param("reason") String reason);
 
     // ============================================================
     // F1 V-Rank 晋升流水查询(Sprint 5 端点 3):promotion-log

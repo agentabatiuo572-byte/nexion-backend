@@ -6,6 +6,7 @@ import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
 import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
 import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
+import ffdd.opsconsole.platform.dto.EventLifecycleTransitionRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCenterStats;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCommonField;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventDetailRow;
@@ -28,6 +29,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +58,11 @@ public class OpsEventCenterService {
     private static final int REASON_MAX_LENGTH = 200;
     private static final Set<String> PRODUCERS = Set.of("server", "client", "server+client");
     private static final Set<String> PROPERTY_TYPES = Set.of("string", "number", "boolean", "enum", "timestamp", "id", "json");
+    private static final Map<String, String> LIFECYCLE_NEXT = Map.of(
+            "new", "pending_publish",
+            "pending_publish", "gray",
+            "gray", "full",
+            "full", "disabled");
 
     private static final List<String> REGISTERED_DOMAINS = List.of(
             "app", "auth", "referral", "onboarding", "store", "checkout", "device",
@@ -253,6 +260,37 @@ public class OpsEventCenterService {
         return (ApiResult<EventDomainExtensionBatch>) idempotencyService.execute(
                 "A4_DOMAIN_EXTENSION:" + normalized.domainName(), idempotencyKey.trim(), hash, ApiResult.class,
                 () -> registerDomainExtensionOnce(normalized, idempotencyKey.trim()));
+    }
+
+    @Transactional
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ApiResult<EventCenterOverview.EventLifecycleView> transitionLifecycle(
+            String idempotencyKey, String eventName, EventLifecycleTransitionRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, "IDEMPOTENCY_KEY_REQUIRED");
+        if (!StringUtils.hasText(eventName) || request == null) return fail(OpsErrorCode.VALIDATION_FAILED, "A4_EVENT_LIFECYCLE_REQUEST_REQUIRED");
+        String reason;
+        String expected;
+        String target;
+        try {
+            reason = normalizeReason(request.reason());
+            expected = normalizeLifecycle(request.expectedState());
+            target = normalizeLifecycle(request.targetState());
+        } catch (IllegalArgumentException ex) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
+        }
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_EVENT_LIFECYCLE_VERSION_REQUIRED");
+        }
+        if (!target.equals(LIFECYCLE_NEXT.get(expected))) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_EVENT_LIFECYCLE_TRANSITION_INVALID");
+        }
+        String normalizedEvent = eventName.trim().toLowerCase(Locale.ROOT);
+        String hash = requestHash(normalizedEvent, expected, target, String.valueOf(request.expectedVersion()), reason);
+        ApiResult result = idempotencyService.execute(
+                "A4_EVENT_LIFECYCLE:" + normalizedEvent, idempotencyKey.trim(), hash, ApiResult.class,
+                () -> transitionLifecycleOnce(normalizedEvent, expected, target, request.expectedVersion(), reason,
+                        idempotencyKey.trim()));
+        return (ApiResult<EventCenterOverview.EventLifecycleView>) result;
     }
 
     private List<EventDimensionParam> dimensionParams() {
@@ -533,6 +571,7 @@ public class OpsEventCenterService {
                     throw new IllegalStateException("A4_SCHEMA_INSERT_NOT_VISIBLE");
                 }
                 schemaId = inserted.id();
+                governanceMapper.insertLifecycle(schema.eventName(), actor, schema.reason());
             } else {
                 schemaId = existing.id();
                 if (governanceMapper.updateSchemaRevision(schemaId, nextRevision, actor, schema.reason()) != 1) {
@@ -545,7 +584,11 @@ public class OpsEventCenterService {
                 throw new IllegalStateException("A4_DOMAIN_EXTENSION_CLOSE_FAILED");
             }
         } catch (DuplicateKeyException ex) {
-            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_DUPLICATE");
+            // This method participates in the idempotency executor's transaction. Returning a
+            // failure result here would commit the already-advanced revision/schema row and mark
+            // the idempotency record SUCCEEDED. Throwing is required for atomic rollback and a
+            // durable FAILED idempotency claim that can be safely retried.
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "A4_SCHEMA_DUPLICATE");
         }
         auditRequired("A4_EVENT_SCHEMA_REGISTERED", "A4_EVENT_SCHEMA", schema.eventName(), idempotencyKey, schema.reason(),
                 Map.of(
@@ -560,6 +603,36 @@ public class OpsEventCenterService {
                         "beforeVersion", schema.expectedVersion(),
                         "afterVersion", "v" + nextRevision));
         return overview();
+    }
+
+    private ApiResult<EventCenterOverview.EventLifecycleView> transitionLifecycleOnce(
+            String eventName, String expectedState, String targetState, long expectedVersion,
+            String reason, String idempotencyKey) {
+        EventGovernanceMapper.EventSchemaRecord schema = governanceMapper.findSchema(eventName);
+        if (schema == null) return fail(OpsErrorCode.VALIDATION_FAILED, "A4_EVENT_SCHEMA_NOT_FOUND");
+        EventGovernanceMapper.EventLifecycleRecord current = governanceMapper.lockLifecycle(eventName);
+        if (current == null) return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_EVENT_LIFECYCLE_NOT_CONFIGURED");
+        if (!expectedState.equals(current.state()) || expectedVersion != current.version()) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_EVENT_LIFECYCLE_STALE");
+        }
+        String actor = authenticatedActor();
+        if (governanceMapper.transitionLifecycle(
+                eventName, targetState, expectedState, expectedVersion, actor, reason) != 1) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_EVENT_LIFECYCLE_STALE");
+        }
+        auditRequired("A4_EVENT_LIFECYCLE_CHANGED", "A4_EVENT_LIFECYCLE", eventName,
+                idempotencyKey, reason, Map.of("before", expectedState, "after", targetState,
+                        "beforeVersion", expectedVersion, "afterVersion", expectedVersion + 1));
+        return ApiResult.ok(new EventCenterOverview.EventLifecycleView(
+                eventName, targetState, expectedVersion + 1, LocalDateTime.now().toString()));
+    }
+
+    private String normalizeLifecycle(String value) {
+        String normalized = StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : "";
+        if (!Set.of("new", "pending_publish", "gray", "full", "disabled").contains(normalized)) {
+            throw new IllegalArgumentException("A4_EVENT_LIFECYCLE_STATE_INVALID");
+        }
+        return normalized;
     }
 
     private ApiResult<EventDomainExtensionBatch> registerDomainExtensionOnce(
@@ -655,7 +728,7 @@ public class OpsEventCenterService {
             throw new IllegalArgumentException("A4_SAMPLING_VALUE_INVALID");
         }
         int percent = Integer.parseInt(matcher.group(1));
-        if (percent < 1 || percent > 100 || (protectedFamily && percent != 100)) {
+        if (percent < 0 || percent > 100 || (protectedFamily && percent != 100)) {
             throw new IllegalArgumentException(protectedFamily
                     ? "A4_PROTECTED_EVENT_SAMPLING_INVALID"
                     : "A4_SAMPLING_VALUE_INVALID");
@@ -810,13 +883,13 @@ public class OpsEventCenterService {
     private List<ParamDefinition> paramDefinitions() {
         return List.of(
                 new ParamDefinition("day0", "Day0 接入窗口", "注册到首笔收益到账的达标时限(KPI #1 口径)",
-                        "90 秒", false, "admin.a4.event.kpi.day0"),
+                        "90 秒", false, A4RuntimePolicyService.DAY0_KEY),
                 new ParamDefinition("retention", "留存口径", "Day1 / Day7 / Day30 三窗",
                         "D1·D7·D30", true, "admin.a4.event.kpi.retention"),
                 new ParamDefinition("event_retention", "事件留存期", "完整 12 月周期 + 1 月缓冲;审计日志同口径",
-                        "13 个月", false, "admin.a4.event.kpi.event_retention"),
+                        "13 个月", false, A4RuntimePolicyService.EVENT_RETENTION_KEY),
                 new ParamDefinition("sampling", "采样率", "浏览/会话类抽样省成本;资金/风控/转化类永远全量",
-                        "浏览/会话 10% · 资金/风控/转化 100%", false, "admin.a4.event.kpi.sampling"));
+                        "浏览/会话 10% · 资金/风控/转化 100%", false, A4RuntimePolicyService.SAMPLING_KEY));
     }
 
     private List<String> guardrails() {

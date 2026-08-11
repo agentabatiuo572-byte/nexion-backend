@@ -4,12 +4,21 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
+    @Delete("""
+            DELETE FROM nx_behavior_event_fact
+             WHERE occurred_at < #{cutoff}
+             ORDER BY occurred_at,id
+             LIMIT #{limit}
+            """)
+    int deleteExpiredFacts(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
     @Select("""
             SELECT route, title_zh AS titleZh, page_level AS pageLevel,
                    parent_l1 AS parentL1, parent_l2 AS parentL2, tracked
@@ -31,10 +40,10 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_behavior_event_fact
               (event_id,client_event_id,dedupe_key,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
-               dwell_ms,x_norm,y_norm,zone,element_id,device_type,locale,occurred_at,created_at)
+               dwell_ms,x_norm,y_norm,zone,element_id,device_type,locale,source_environment,occurred_at,created_at)
             VALUES
               (#{eventId},#{clientEventId},#{dedupeKey},#{eventName},#{sessionHash},#{actorHash},#{route},#{pageLevel},#{parentL1},#{parentL2},
-               #{dwellMs},#{xNorm},#{yNorm},#{zone},#{elementId},#{deviceType},#{locale},#{occurredAt},NOW())
+               #{dwellMs},#{xNorm},#{yNorm},#{zone},#{elementId},#{deviceType},#{locale},#{sourceEnvironment},#{occurredAt},NOW())
             """)
     int insertFact(BehaviorFactRow row);
 
@@ -100,6 +109,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    ROUND(SUM(CASE WHEN NOT EXISTS (
                      SELECT 1 FROM nx_behavior_event_fact n
                       WHERE n.event_name='app.page_viewed' AND n.session_hash=p.session_hash
+                        AND n.source_environment='PRODUCTION'
                         AND n.occurred_at&gt;p.occurred_at AND n.occurred_at&lt;=#{endAt}
                    ) THEN 1 ELSE 0 END) / COUNT(*), 4) AS bounceRate,
                    COUNT(DISTINCT p.route) AS pageCount
@@ -115,7 +125,8 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                        COUNT(*) clicks
                   FROM nx_behavior_event_fact ce
                   JOIN nx_behavior_page_catalog cc ON cc.route=ce.route AND cc.tracked=1 AND cc.is_deleted=0
-                 WHERE ce.event_name='app.element_clicked' AND ce.occurred_at BETWEEN #{startAt} AND #{endAt}
+                 WHERE ce.event_name='app.element_clicked' AND ce.source_environment='PRODUCTION'
+                   AND ce.occurred_at BETWEEN #{startAt} AND #{endAt}
                  <if test="deviceType != null">AND ce.device_type=#{deviceType}</if>
                  <if test="locale != null">AND ce.locale=#{locale}</if>
                  <if test="depth == 'L3'">AND cc.page_level=3</if>
@@ -131,7 +142,8 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                      <when test="depth == 'L2'">pc.parent_l2</when>
                      <otherwise>p.route</otherwise>
                    </choose>
-             WHERE p.event_name='app.page_viewed' AND p.occurred_at BETWEEN #{startAt} AND #{endAt}
+             WHERE p.event_name='app.page_viewed' AND p.source_environment='PRODUCTION'
+               AND p.occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND p.device_type=#{deviceType}</if>
              <if test="locale != null">AND p.locale=#{locale}</if>
              <if test="depth == 'L3'">AND pc.page_level=3</if>
@@ -154,7 +166,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    SUM(event_name='app.page_viewed') pv,
                    SUM(event_name='app.element_clicked') clicks
               FROM nx_behavior_event_fact
-             WHERE occurred_at BETWEEN #{startAt} AND #{endAt}
+             WHERE source_environment='PRODUCTION' AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
              <if test="locale != null">AND locale=#{locale}</if>
              GROUP BY DATE_FORMAT(occurred_at,'%Y-%m-%d') ORDER BY bucket
@@ -169,7 +181,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                    SUM(event_name='app.page_viewed') pv,
                    SUM(event_name='app.element_clicked') clicks
               FROM nx_behavior_event_fact
-             WHERE occurred_at BETWEEN #{startAt} AND #{endAt}
+             WHERE source_environment='PRODUCTION' AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
              <if test="locale != null">AND locale=#{locale}</if>
              GROUP BY DATE_FORMAT(occurred_at,'%x-W%v') ORDER BY bucket
@@ -182,7 +194,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             <script>
             SELECT ROUND(x_norm,2) x,ROUND(y_norm,2) y,COUNT(*) weight
               FROM nx_behavior_event_fact
-             WHERE event_name='app.element_clicked' AND route=#{route}
+             WHERE event_name='app.element_clicked' AND source_environment='PRODUCTION' AND route=#{route}
                AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
              <if test="locale != null">AND locale=#{locale}</if>
@@ -197,7 +209,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             <script>
             SELECT zone,COUNT(*) count
               FROM nx_behavior_event_fact
-             WHERE event_name='app.element_clicked' AND route=#{route}
+             WHERE event_name='app.element_clicked' AND source_environment='PRODUCTION' AND route=#{route}
                AND occurred_at BETWEEN #{startAt} AND #{endAt}
              <if test="deviceType != null">AND device_type=#{deviceType}</if>
              <if test="locale != null">AND locale=#{locale}</if>
@@ -211,7 +223,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
     record CatalogRow(String route, String titleZh, int pageLevel, String parentL1, String parentL2, boolean tracked) {}
     record BehaviorFactRow(String eventId, String clientEventId, String dedupeKey, String eventName, String sessionHash, String actorHash, String route,
                            int pageLevel, String parentL1, String parentL2, Long dwellMs, Double xNorm, Double yNorm,
-                           String zone, String elementId, String deviceType, String locale, LocalDateTime occurredAt) {}
+                           String zone, String elementId, String deviceType, String locale,String sourceEnvironment, LocalDateTime occurredAt) {}
     record ExistingEventRow(String eventName, String sessionHash, String route, Long dwellMs) {}
     record ActivityRow(String route, long pv, long uv, long clicks, long dwellMs, double bounceRate, int pageCount) {}
     record TrendRow(String bucket, long pv, long clicks) {}

@@ -13,6 +13,9 @@ import org.apache.ibatis.annotations.Update;
 // Statement-only SQL boundary: there is no single aggregate entity for BaseMapper<T> CRUD.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppExchangeMapper {
+    @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='G2_EXCHANGE_EXECUTION' FOR UPDATE")
+    String lockExchangeExecutionMutex();
+
     @Select("SELECT CONCAT('U', IF(id<100000000,LPAD(id,8,'0'),CAST(id AS CHAR))) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     String lockActiveUserNo(@Param("userId") Long userId);
 
@@ -176,12 +179,21 @@ public interface AppExchangeMapper {
             """)
     List<QueuedRow> lockQueuedBatch(@Param("limit") int limit);
 
+    @Select("SELECT COUNT(1) FROM nx_exchange_order WHERE UPPER(status)='QUEUED' AND is_deleted=0")
+    int countQueued();
+
     @Update("""
             UPDATE nx_exchange_order SET to_amount=#{toAmount},rate=#{rate},status='COMPLETED',updated_at=NOW()
              WHERE exchange_no=#{exchangeNo} AND UPPER(status)='QUEUED' AND is_deleted=0
             """)
     int completeQueued(@Param("exchangeNo") String exchangeNo,@Param("toAmount") BigDecimal toAmount,
                        @Param("rate") BigDecimal rate);
+
+    @Update("""
+            UPDATE nx_exchange_order SET status='CANCELLED',updated_at=NOW()
+             WHERE exchange_no=#{exchangeNo} AND UPPER(status)='QUEUED' AND is_deleted=0
+            """)
+    int cancelQueuedBySystem(@Param("exchangeNo") String exchangeNo);
 
     @Update("""
             UPDATE nx_exchange_order SET status='CANCELLED',updated_at=NOW()

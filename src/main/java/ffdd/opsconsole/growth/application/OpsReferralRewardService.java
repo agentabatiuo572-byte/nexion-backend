@@ -2,6 +2,7 @@ package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
+import ffdd.opsconsole.growth.dto.AcceptanceSandboxReferralSettlementRequest;
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
@@ -42,6 +43,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class OpsReferralRewardService {
+    private static final String SETTLEMENT_ENVIRONMENT = "PRODUCTION";
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";
     // This product ceiling is exact in JavaScript and remains below DECIMAL(18,6).
@@ -196,7 +198,7 @@ public class OpsReferralRewardService {
             requireApprovedSnapshot(request, snapshot);
             return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
                     hash(limit + ":" + snapshot.hash() + ":" + reason), Map.class,
-                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot));
+                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot, null));
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
@@ -205,12 +207,108 @@ public class OpsReferralRewardService {
         }
     }
 
+    /**
+     * Acceptance-only entry point. Its web controller is profile-gated, and the
+     * settlement remains the same server-side H8 chain while using the explicit
+     * MOCK_REFERRAL/SANDBOX source pair.
+     */
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public Map<String, Object> runAcceptanceSandboxSettlement(
+            String idempotencyKey, AcceptanceSandboxReferralSettlementRequest request) {
+        try {
+            validateIdempotency(idempotencyKey);
+            if (request == null || request.invitedUserId() == null || request.invitedUserId() <= 0) {
+                throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                        "H8_SANDBOX_INVITED_USER_REQUIRED");
+            }
+            String reason = requireReason(request.reason());
+            requireRewardMutex();
+            RewardSnapshot snapshot = rewardSnapshot();
+            Map<String, Object> result = idempotency.execute("H8_ACCEPTANCE_SANDBOX_REFERRAL", idempotencyKey,
+                    hash(request.invitedUserId() + ":" + snapshot.hash() + ":" + reason), Map.class,
+                    () -> settleSandbox(reason, actor(request.operator()), idempotencyKey, snapshot,
+                            request.invitedUserId()));
+            Map<String, Object> response = new LinkedHashMap<>(result);
+            response.put("source", "mock");
+            response.put("sourceEnvironment", "SANDBOX");
+            response.put("sourceType", "MOCK_REFERRAL");
+            return response;
+        } catch (RuntimeException ex) {
+            rejectedAudit("H8_ACCEPTANCE_SANDBOX_SETTLEMENT_REJECTED", "sandbox",
+                    request == null ? null : request.operator(), idempotencyKey,
+                    request == null ? null : request.reason(), ex);
+            throw ex;
+        }
+    }
+
+    private Map<String, Object> settleSandbox(
+            String reason,
+            String operator,
+            String key,
+            RewardSnapshot snapshot,
+            Long onlyInvitedUserId) {
+        EffectiveRewards rewards = snapshot.rewards();
+        if (rewards.newcomerUsdt().signum() == 0
+                && rewards.newcomerNex().signum() == 0
+                && rewards.inviterNex().signum() == 0) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "REFERRAL_REWARD_NOT_CONFIGURED");
+        }
+        String configSnapshot = "usdt=" + rewards.newcomerUsdt().toPlainString()
+                + ",newcomerNex=" + rewards.newcomerNex().toPlainString()
+                + ",inviterNex=" + rewards.inviterNex().toPlainString()
+                + ",newcomerMultiplier=" + rewards.newcomerMultiplier().toPlainString()
+                + ",inviterMultiplier=" + rewards.inviterMultiplier().toPlainString()
+                + ",lockMode=" + snapshot.lockMode();
+        int settled = 0;
+        int skipped = 0;
+        for (ReferralRewardMapper.ReferralRow row : mapper.findPendingSandboxReferral(
+                snapshot.effectiveAt(), onlyInvitedUserId)) {
+            String settlementNo = "SBX-REF-"
+                    + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
+            if (mapper.insertSandboxSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
+                    rewards.newcomerUsdt(), rewards.newcomerNex(), rewards.inviterNex(),
+                    snapshot.lockMode(), configSnapshot, operator, reason, key, snapshot.effectiveAt()) != 1) {
+                skipped++;
+                continue;
+            }
+            postSandboxAsset(settlementNo, row.invitedUserId(), "USDT", rewards.newcomerUsdt(),
+                    "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
+            postSandboxAsset(settlementNo, row.invitedUserId(), "NEX", rewards.newcomerNex(),
+                    "[SANDBOX][MOCK_REFERRAL] newcomer referral reward");
+            postSandboxAsset(settlementNo, row.inviterUserId(), "NEX", rewards.inviterNex(),
+                    "[SANDBOX][MOCK_REFERRAL] inviter referral reward");
+            audit("H8_ACCEPTANCE_SANDBOX_REFERRAL_SETTLED", settlementNo, operator, key,
+                    Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
+                            "source", "mock", "sourceEnvironment", "SANDBOX", "reason", reason));
+            settled++;
+        }
+        audit("H8_ACCEPTANCE_SANDBOX_SETTLEMENT_RUN", "sandbox", operator, key,
+                Map.of("limit", 1, "settled", settled, "skipped", skipped,
+                        "source", "mock", "sourceEnvironment", "SANDBOX"));
+        return Map.of("settled", settled, "skipped", skipped, "limit", 1);
+    }
+
+    private void postSandboxAsset(
+            String settlementNo,
+            Long userId,
+            String asset,
+            BigDecimal amount,
+            String remark) {
+        if (amount == null || amount.signum() <= 0) return;
+        if (mapper.creditSandboxWallet(userId, asset, amount) != 1
+                || mapper.insertSandboxLedger(settlementNo, userId, asset, amount, remark) != 1) {
+            throw new BizException(409, "H8_SANDBOX_LEDGER_WRITE_CONFLICT");
+        }
+    }
+
     private Map<String, Object> settle(
             int limit,
             String reason,
             String operator,
             String key,
-            RewardSnapshot snapshot) {
+            RewardSnapshot snapshot,
+            Long onlyInvitedUserId) {
         requireHealthyCoverage();
         LocalDateTime effectiveAt = snapshot.effectiveAt();
         EffectiveRewards effectiveRewards = snapshot.rewards();
@@ -230,41 +328,46 @@ public class OpsReferralRewardService {
         int settled = 0;
         int skipped = 0;
         boolean holdRisky = "risk_bucket".equals(lockMode);
-        for (ReferralRewardMapper.ReferralRow row : mapper.findPendingReferrals(effectiveAt, holdRisky, limit)) {
+        for (ReferralRewardMapper.ReferralRow row : mapper.findPendingReferrals(
+                effectiveAt, SETTLEMENT_ENVIRONMENT, holdRisky, limit, onlyInvitedUserId)) {
             String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
             if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
                     newcomerUsdt, newcomerNex, inviterNex, lockMode, configSnapshot, operator, reason, key,
-                    effectiveAt, holdRisky) != 1) {
+                    effectiveAt, SETTLEMENT_ENVIRONMENT, holdRisky) != 1) {
                 skipped++;
                 continue;
             }
-            if (earningsReleaseService == null) {
-                mapper.creditWallet(row.invitedUserId(), newcomerUsdt, newcomerNex);
-                mapper.creditWallet(row.inviterUserId(), BigDecimal.ZERO, inviterNex);
-            } else {
-                creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "USDT", newcomerUsdt);
-                creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "NEX", newcomerNex);
-                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "NEX", inviterNex);
-            }
+            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "USDT", newcomerUsdt);
+            creditReward(row.invitedUserId(), settlementNo + ":NEWCOMER", "NEX", newcomerNex);
+            creditReward(row.inviterUserId(), settlementNo + ":INVITER", "NEX", inviterNex);
             post(settlementNo + ":NEWCOMER", row.invitedUserId(), newcomerUsdt, newcomerNex, "新用户邀请奖励");
             post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, inviterNex, "邀请人奖励");
             audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key,
                     Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
                             "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
-                            "inviterNex", inviterNex, "lockMode", lockMode, "reason", reason));
+                            "inviterNex", inviterNex, "lockMode", lockMode, "reason", reason,
+                            "sourceEnvironment", SETTLEMENT_ENVIRONMENT));
             outbox.publish("REFERRAL_REWARD_SETTLEMENT", settlementNo, "H8_REFERRAL_REWARD_SETTLED",
                     Map.of("invitedUserId", row.invitedUserId(), "inviterUserId", row.inviterUserId(),
                             "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex,
-                            "inviterNex", inviterNex, "lockMode", lockMode));
+                            "inviterNex", inviterNex, "lockMode", lockMode,
+                            "sourceEnvironment", SETTLEMENT_ENVIRONMENT));
             settled++;
         }
         // Recompute from the wallet state written by this transaction. If the batch
         // itself crosses B1 or makes NEX valuation unavailable, throwing here rolls
         // back every settlement, wallet credit, ledger entry and audit in the batch.
         requireHealthyCoverage();
-        audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key,
-                Map.of("limit", limit, "settled", settled, "skipped", skipped, "reason", reason,
-                        "lockMode", lockMode, "effectiveAt", effectiveAt, "coverage", coverageDetail()));
+        Map<String, Object> batchAudit = new LinkedHashMap<>();
+        batchAudit.put("limit", limit);
+        batchAudit.put("settled", settled);
+        batchAudit.put("skipped", skipped);
+        batchAudit.put("reason", reason);
+        batchAudit.put("lockMode", lockMode);
+        batchAudit.put("effectiveAt", effectiveAt);
+        batchAudit.put("sourceEnvironment", SETTLEMENT_ENVIRONMENT);
+        batchAudit.put("coverage", coverageDetail());
+        audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
         outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
                 Map.of("limit", limit, "settled", settled, "skipped", skipped,
                         "operator", operator, "idempotencyKey", key));
@@ -274,7 +377,7 @@ public class OpsReferralRewardService {
     private void creditReward(Long userId, String sourceRef, String asset, BigDecimal amount) {
         if (amount == null || amount.signum() <= 0) return;
         earningsReleaseService.creditReward(userId, "H8_REFERRAL", sourceRef + ":" + asset,
-                asset, amount, "H8:" + sourceRef + ":" + asset);
+                asset, amount, SETTLEMENT_ENVIRONMENT, "H8:" + sourceRef + ":" + asset);
     }
 
     private EffectiveRewards effectiveRewards() {
@@ -371,11 +474,15 @@ public class OpsReferralRewardService {
 
     private void post(String bizNo, Long userId, BigDecimal usdt, BigDecimal nex, String remark) {
         if (usdt.signum() > 0) {
-            ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", "USDT", "IN", usdt, "SUCCESS", remark);
+            postAsset(bizNo, userId, "USDT", usdt, remark);
         }
         if (nex.signum() > 0) {
-            ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", "NEX", "IN", nex, "SUCCESS", remark);
+            postAsset(bizNo, userId, "NEX", nex, remark);
         }
+    }
+
+    private void postAsset(String bizNo, Long userId, String asset, BigDecimal amount, String remark) {
+        ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
     }
 
     private BigDecimal amount(String key) {

@@ -22,5 +22,7 @@ public class AuditLogRecord {
     private String result;
     private String riskLevel;
     private String detailJson;
+    /** Null only for legacy rows written before A2 schema governance. */
+    private String schemaVersion;
     private LocalDateTime createdAt;
 }

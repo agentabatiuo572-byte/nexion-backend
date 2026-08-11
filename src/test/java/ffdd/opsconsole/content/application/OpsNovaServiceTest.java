@@ -81,18 +81,33 @@ class OpsNovaServiceTest {
                 .extracting("name")
                 .containsExactly("risk-alert", "team_event", "staking_event", "market_event", "weekly-quest-refresh");
         assertThat(result.getData().stats().totalChannels()).isZero();
+        assertThat(result.getData().runtimeSourceOptions())
+                .extracting("value")
+                .contains("a4:commission.paid", "a4:staking.opened", "a4:market.curve_advanced");
+    }
+
+    @Test
+    void createDynamicChannelRejectsUncontrolledClientEventSource() {
+        NovaChannelUpsertRequest request = new NovaChannelUpsertRequest(
+                "unsafeSource", "不受控来源", "a4:client.fabricated", "15 min", "7d",
+                BigDecimal.ZERO, false, "Marina K.", "拒绝客户端伪造事实源");
+
+        var result = service.createChannel("idem-i2-unsafe-source", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
     }
 
     @Test
     void commandReasonMustContainEightToTwoHundredCharacters() {
         NovaChannelUpsertRequest seven = new NovaChannelUpsertRequest(
-                "reasonMin", "Reason minimum", "周期扫描", "15 min", "7d",
+                "reasonMin", "Reason minimum", "a4:commission.paid", "15 min", "7d",
                 BigDecimal.ZERO, false, "forged", "1234567");
         NovaChannelUpsertRequest eight = new NovaChannelUpsertRequest(
-                "reasonOk", "Reason accepted", "周期扫描", "15 min", "7d",
+                "reasonOk", "Reason accepted", "a4:commission.paid", "15 min", "7d",
                 BigDecimal.ZERO, false, "forged", "12345678");
         NovaChannelUpsertRequest twoHundredOne = new NovaChannelUpsertRequest(
-                "reasonMax", "Reason maximum", "周期扫描", "15 min", "7d",
+                "reasonMax", "Reason maximum", "a4:commission.paid", "15 min", "7d",
                 BigDecimal.ZERO, false, "forged", "x".repeat(201));
 
         assertThat(service.createChannel("idem-i2-reason-min", seven).getMessage())
@@ -202,7 +217,7 @@ class OpsNovaServiceTest {
         assertThat(result.getData().key()).isEqualTo("weeklyRecap");
         assertThat(novaRepository.channel("weeklyRecap")).get()
                 .extracting(NovaChannelView::name, NovaChannelView::trigger, NovaChannelView::enabled)
-                .containsExactly("Weekly recap", "每周任务完成后触发", false);
+                .containsExactly("Weekly recap", "a4:commission.paid", false);
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -575,7 +590,7 @@ class OpsNovaServiceTest {
         return new NovaChannelUpsertRequest(
                 key,
                 "Weekly recap",
-                "每周任务完成后触发",
+                "a4:commission.paid",
                 "15 min",
                 "7d",
                 new BigDecimal("12.5"),

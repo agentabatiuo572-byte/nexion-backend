@@ -22,6 +22,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +43,14 @@ import org.springframework.util.StringUtils;
 public class AppTrialLifecycleService {
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
+    private static final List<String> ACTIVE_STATES = List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED");
+    private static final List<String> RESTARTABLE_STATES = List.of("CANCELLED", "FAILED");
+    private static final List<String> PERSISTED_STATES = List.of(
+            "CLAIMED", "ACTIVE", "GRACE", "EXTENDED", "REDEEMED", "FAILED", "CANCELLED");
+    /** Only product ids that have a reviewed server-owned device projection may start or settle H2. */
+    private static final Map<String, String> TRIAL_PRODUCT_DEVICE_NAMES = Map.of(
+            "stellarbox-s1", "NexGridBox S1",
+            "device-trial-standard", "NexGridBox S1");
 
     private final AppTrialLifecycleMapper mapper;
     private final EarningsReleaseService earningsReleaseService;
@@ -50,12 +59,35 @@ public class AppTrialLifecycleService {
     private final AuditLogService audit;
     private final EventOutboxService outbox;
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> state(Long userId) {
         if (userId == null || mapper.activeUser(userId) == null) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
-        TrialRow row = mapper.trial(userId);
-        return ApiResult.ok(project(row, policyMap(), LocalDateTime.now()));
+        LocalDateTime now = LocalDateTime.now();
+        Map<String, String> policy = policyMap();
+        TrialRow row = mapper.lockTrial(userId);
+        row = advanceExpiredActiveToGrace(userId, row, policy, now);
+        return ApiResult.ok(project(userId, row, policy, now));
+    }
+
+    private TrialRow advanceExpiredActiveToGrace(
+            Long userId, TrialRow row, Map<String, String> policy, LocalDateTime now) {
+        if (row == null || !List.of("CLAIMED", "ACTIVE").contains(normalize(row.status()))
+                || row.expiresAt() == null || row.expiresAt().isAfter(now)) {
+            return row;
+        }
+        Settlement frozen = settlement(row, policy, false, now);
+        if (mapper.enterGrace(row.id(), row.version(), now) == 1) {
+            Attribution attr = requireAttribution(userId);
+            publish("TRIAL", row.claimNo(), "trial.grace_entered", userId, attr,
+                    linked("grace_days", nonNegativeInt(policy, "graceDays", 7),
+                            "shadow_usdt", frozen.shadowUsdt(), "shadow_nex", frozen.shadowNex()));
+            record("H2_TRIAL_GRACE_ENTERED", row.claimNo(), userId,
+                    linked("shadowUsdt", frozen.shadowUsdt(), "shadowNex", frozen.shadowNex()));
+        }
+        TrialRow refreshed = mapper.lockTrial(userId);
+        return refreshed == null ? row : refreshed;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -78,9 +110,13 @@ public class AppTrialLifecycleService {
         }
         TrialRow existing = mapper.lockTrial(userId);
         LocalDateTime now = LocalDateTime.now();
-        if (existing != null && active(existing.status())) return ApiResult.fail(409, "TRIAL_ALREADY_ACTIVE");
-        if (existing != null && "REDEEMED".equals(normalize(existing.status()))) {
+        String existingState = existing == null ? null : normalize(existing.status());
+        if (existing != null && active(existingState)) return ApiResult.fail(409, "TRIAL_ALREADY_ACTIVE");
+        if (existing != null && "REDEEMED".equals(existingState)) {
             return ApiResult.fail(409, "TRIAL_ALREADY_REDEEMED");
+        }
+        if (existing != null && !restartable(existingState)) {
+            return ApiResult.fail(409, "TRIAL_STATE_UNKNOWN");
         }
         if (existing != null && existing.cooldownUntil() != null && existing.cooldownUntil().isAfter(now)) {
             return ApiResult.fail(409, "TRIAL_COOLDOWN_ACTIVE");
@@ -91,8 +127,11 @@ public class AppTrialLifecycleService {
         BigDecimal offsetCap = decimal(policy, "trialOffsetCapUSD",
                 policy.getOrDefault("discountCapUSD", "50"));
         BigDecimal price = decimal(policy, "trialPriceUSD", "1299");
-        String productCode = policy.getOrDefault("trialProductId", "device-trial-standard");
-        String normalizedDevice = StringUtils.hasText(deviceName) ? deviceName.trim() : "Nexion Trial Device";
+        String productCode = trialProductCode(policy);
+        String normalizedDevice = trialDeviceName(policy);
+        if (productCode == null || normalizedDevice == null) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
+        }
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=NEXION_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
@@ -108,7 +147,7 @@ public class AppTrialLifecycleService {
         publish("TRIAL", claimNo, "trial.started", userId, attr, linked(
                 "trial_price_usdt", price, "trial_days", days, "payment_rail", "NEXION_USDT_WALLET"));
         record("H2_TRIAL_STARTED", claimNo, userId, linked("claimNo", claimNo, "policySnapshot", snapshot));
-        return ApiResult.ok(project(mapper.trial(userId), policy, now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -133,7 +172,7 @@ public class AppTrialLifecycleService {
                 linked("cause", reason, "state_before", normalize(row.status())));
         record("H2_TRIAL_CANCELLED", row.claimNo(), userId,
                 linked("cause", reason, "stateBefore", normalize(row.status())));
-        return ApiResult.ok(project(mapper.trial(userId), policyMap(), now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policyMap(), now));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -167,7 +206,7 @@ public class AppTrialLifecycleService {
                 linked("extension_days", days, "shadow_usdt", preview.shadowUsdt()));
         record("H2_TRIAL_EXTENDED", row.claimNo(), userId,
                 linked("extensionDays", days, "shadowUsdt", preview.shadowUsdt()));
-        return ApiResult.ok(project(mapper.trial(userId), policy, now));
+        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -215,6 +254,8 @@ public class AppTrialLifecycleService {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CHARGEABLE");
         Map<String, String> policy = policyMap();
+        String productCode = trialProductCode(policy);
+        if (productCode == null) return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
         LocalDateTime now = LocalDateTime.now();
         Settlement value = settlement(row, policy, early, now);
         requireCoverage(value.remainderUsdt(), value.shadowNex());
@@ -250,7 +291,6 @@ public class AppTrialLifecycleService {
                 "USDT", "IN", value.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
         if (value.shadowNex().signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":NEX", "TRIAL_BONUS",
                 "NEX", "IN", value.shadowNex(), nexAfter, "H2 shadow NEX credited after purchase");
-        String productCode = policy.getOrDefault("trialProductId", "device-trial-standard");
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
         if (mapper.insertPurchasedDevice(userId, row.claimNo(), productCode, instanceNo, row.deviceName(),
                 row.priceUsdt(), row.dailyUsdt(), row.dailyNex()) != 1) {
@@ -272,7 +312,7 @@ public class AppTrialLifecycleService {
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
         publishChargeAttempt(userId, row, trigger, "SUCCESS", value.chargeUsdt(), "REDEEMED");
         record("H2_TRIAL_REDEEMED", row.claimNo(), userId, detail);
-        Map<String, Object> response = new LinkedHashMap<>(project(mapper.trial(userId), policy, now));
+        Map<String, Object> response = new LinkedHashMap<>(project(userId, mapper.trial(userId), policy, now));
         response.putAll(detail);
         response.put("ok", true);
         return ApiResult.ok(response);
@@ -308,13 +348,24 @@ public class AppTrialLifecycleService {
         record("H2_TRIAL_CHARGE_ATTEMPTED", row.claimNo(), userId, detail);
     }
 
-    private Map<String, Object> project(TrialRow row, Map<String, String> policy, LocalDateTime now) {
+    private Map<String, Object> project(
+            Long userId, TrialRow row, Map<String, String> policy, LocalDateTime now) {
         Map<String, Object> result = new LinkedHashMap<>();
         boolean trialGateEnabled = trialGateEnabled();
+        boolean phaseOpen = flag(policy, "phaseOpen", true);
+        boolean riskBlocked = mapper.trialCycleSignalCount(userId) > 0;
+        boolean productConfigured = trialProductCode(policy) != null;
+        result.put("authoritative", true);
+        result.put("serverNowEpochMs", now.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
         if (row == null) {
             result.put("state", "ELIGIBLE");
-            result.put("canStart", trialGateEnabled && flag(policy, "phaseOpen", true));
+            boolean canStart = productConfigured && trialGateEnabled && phaseOpen && !riskBlocked;
+            result.put("canStart", canStart);
+            result.put("eligibilityReason", productConfigured
+                    ? eligibilityReason("ELIGIBLE", canStart, trialGateEnabled, phaseOpen, riskBlocked, null, now)
+                    : "unknown");
             result.put("trialGateEnabled", trialGateEnabled);
+            result.put("version", 0L);
             result.put("source", "nx_trial_claim");
             result.put("paymentRail", "NEXION_USDT_WALLET");
             result.put("config", safePolicy(policy));
@@ -323,21 +374,33 @@ public class AppTrialLifecycleService {
         String effectiveState = effectiveState(row, now);
         Settlement preview = active(effectiveState) ? settlement(row, policy, false, now) : null;
         int graceDays = nonNegativeInt(policy, "graceDays", 7);
+        boolean canStart = restartable(effectiveState)
+                && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
+                && productConfigured && trialGateEnabled && phaseOpen && !riskBlocked;
         result.put("claimNo", row.claimNo());
         result.put("state", effectiveState);
-        result.put("canStart", !active(effectiveState)
-                && !"REDEEMED".equals(effectiveState)
-                && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
-                && trialGateEnabled);
+        result.put("canStart", canStart);
+        result.put("eligibilityReason", productConfigured
+                ? eligibilityReason(effectiveState, canStart, trialGateEnabled, phaseOpen, riskBlocked,
+                        row.cooldownUntil(), now)
+                : "unknown");
         result.put("trialGateEnabled", trialGateEnabled);
+        result.put("version", row.version());
         result.put("deviceName", row.deviceName());
         result.put("claimedAt", row.claimedAt());
+        result.put("claimedAtEpochMs", epochMillis(row.claimedAt()));
         result.put("expiresAt", row.expiresAt());
+        result.put("expiresAtEpochMs", epochMillis(row.expiresAt()));
         result.put("activeEndsAt", "EXTENDED".equals(effectiveState) ? null : row.expiresAt());
-        result.put("graceEndsAt", List.of("ACTIVE", "GRACE").contains(effectiveState)
-                ? row.expiresAt().plusDays(graceDays) : null);
-        result.put("extendedEndsAt", "EXTENDED".equals(effectiveState) ? row.expiresAt() : null);
+        LocalDateTime graceEndsAt = List.of("ACTIVE", "GRACE").contains(effectiveState)
+                ? row.expiresAt().plusDays(graceDays) : null;
+        LocalDateTime extendedEndsAt = "EXTENDED".equals(effectiveState) ? row.expiresAt() : null;
+        result.put("graceEndsAt", graceEndsAt);
+        result.put("graceEndsAtEpochMs", epochMillis(graceEndsAt));
+        result.put("extendedEndsAt", extendedEndsAt);
+        result.put("extendedEndsAtEpochMs", epochMillis(extendedEndsAt));
         result.put("cooldownUntil", row.cooldownUntil());
+        result.put("cooldownUntilEpochMs", epochMillis(row.cooldownUntil()));
         result.put("shadowUsdt", preview == null ? safe(row.shadowAccruedUsdt()) : preview.shadowUsdt());
         result.put("shadowNex", preview == null ? safe(row.shadowAccruedNex()) : preview.shadowNex());
         result.put("offsetUsdt", preview == null ? BigDecimal.ZERO : preview.offsetUsdt());
@@ -347,6 +410,23 @@ public class AppTrialLifecycleService {
         result.put("source", "nx_trial_claim + nx_user_wallet");
         result.put("config", safePolicy(policy));
         return result;
+    }
+
+    private Long epochMillis(LocalDateTime value) {
+        return value == null ? null : value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+    }
+
+    private String eligibilityReason(
+            String state, boolean canStart, boolean trialGateEnabled, boolean phaseOpen,
+            boolean riskBlocked, LocalDateTime cooldownUntil, LocalDateTime now) {
+        if (!"ELIGIBLE".equals(state) && !PERSISTED_STATES.contains(normalize(state))) return "unknown";
+        if (canStart) return null;
+        if (active(state)) return "in-progress";
+        if ("REDEEMED".equals(state)) return "converted";
+        if (riskBlocked) return "risk";
+        if (!trialGateEnabled || !phaseOpen) return "phase-closed";
+        if (cooldownUntil != null && cooldownUntil.isAfter(now)) return "used";
+        return "unknown";
     }
 
     private String effectiveState(TrialRow row, LocalDateTime now) {
@@ -360,14 +440,38 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> safePolicy(Map<String, String> policy) {
         Map<String, Object> result = new LinkedHashMap<>();
-        for (String key : List.of(
-                "trialDays", "graceDays", "extensionDays", "discountRate", "discountCapUSD",
-                "trialOffsetCapUSD", "autoChargeAtEnd", "highQualityThresholdUSD", "trialProductId",
-                "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "cooldownDays", "phaseOpen",
-                "autoPushEnabled", "autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession")) {
-            if (policy.containsKey(key)) result.put(key, policy.get(key));
-        }
+        Map<String, String> defaults = linkedString(
+                "trialDays", "3", "graceDays", "7", "extensionDays", "3",
+                "discountRate", "0.15", "discountCapUSD", "20", "trialOffsetCapUSD", "50",
+                "autoChargeAtEnd", "true", "highQualityThresholdUSD", "100",
+                "trialProductId", "device-trial-standard", "trialPriceUSD", "1299",
+                "shadowDailyUSD", "38.52", "shadowDailyNEX", "65", "cooldownDays", "30",
+                "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
+                "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1");
+        defaults.forEach((key, fallback) -> {
+            if (List.of("phaseOpen", "autoPushEnabled", "autoChargeAtEnd").contains(key)) {
+                result.put(key, flag(policy, key, Boolean.parseBoolean(fallback)));
+            } else {
+                result.put(key, policy.getOrDefault(key, fallback));
+            }
+        });
         return result;
+    }
+
+    private Map<String, String> linkedString(String... values) {
+        Map<String, String> result = new LinkedHashMap<>();
+        for (int i = 0; i < values.length; i += 2) result.put(values[i], values[i + 1]);
+        return result;
+    }
+
+    private String trialProductCode(Map<String, String> policy) {
+        String productCode = policy.getOrDefault("trialProductId", "device-trial-standard");
+        return TRIAL_PRODUCT_DEVICE_NAMES.containsKey(productCode) ? productCode : null;
+    }
+
+    private String trialDeviceName(Map<String, String> policy) {
+        String productCode = trialProductCode(policy);
+        return productCode == null ? null : TRIAL_PRODUCT_DEVICE_NAMES.get(productCode);
     }
 
     private void requireCoverage(BigDecimal remainderUsdt, BigDecimal rewardNex) {
@@ -449,13 +553,17 @@ public class AppTrialLifecycleService {
         String value = policy.get(key);
         if (!StringUtils.hasText(value)) return fallback;
         String normalized = value.trim().toLowerCase(Locale.ROOT);
-        if (List.of("1", "true", "enabled", "on", "yes", "是", "开", "开启").contains(normalized)) return true;
+        if (List.of("1", "true", "enabled", "on", "yes", "是", "开", "开启", "开放").contains(normalized)) return true;
         if (List.of("0", "false", "disabled", "off", "no", "否", "关", "关闭").contains(normalized)) return false;
-        return fallback;
+        return false;
     }
 
     private boolean active(String status) {
-        return List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED").contains(normalize(status));
+        return ACTIVE_STATES.contains(normalize(status));
+    }
+
+    private boolean restartable(String status) {
+        return RESTARTABLE_STATES.contains(normalize(status));
     }
 
     private String normalize(String value) {

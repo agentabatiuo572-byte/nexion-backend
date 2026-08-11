@@ -570,6 +570,57 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> restoreStakingPool(
+            String idempotencyKey,
+            String tierKey,
+            NexMarketValueUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        ApiResult<Map<String, Object>> permissionGuard = requirePermission("emergency_j1_gate_resume");
+        if (permissionGuard != null) {
+            return permissionGuard;
+        }
+        if (!A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("G", "staking_pool", tierKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        StakingPoolDef pool = stakingPoolDef(tierKey);
+        if (pool == null) {
+            return validation("G1_STAKING_TIER_KEY_INVALID");
+        }
+        if (!stakingPoolKilled(pool)) {
+            return ApiResult.fail(
+                    OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                    "G1_STAKING_POOL_NOT_KILLED");
+        }
+        if (!Boolean.FALSE.equals(parseBooleanValue(request.value()))) {
+            return validation("G1_RESTORE_VALUE_INVALID");
+        }
+        ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+        if (redline != null) {
+            return redline;
+        }
+        String configKey = STAKING_PREFIX + pool.tierKey() + ".killed";
+        configFacade.upsertAdminValue(configKey, "false", "BOOLEAN", "market", "J1 staking pool restoration");
+        auditRequired("J1_STAKING_POOL_RESTORED", "STAKING_POOL", pool.tierKey(), request.operator(), map(
+                "tierKey", pool.tierKey(),
+                "product", pool.product(),
+                "before", "KILLED",
+                "after", "ACTIVE",
+                "reason", request.reason().trim(),
+                "triggerBasis", request.triggerBasis().trim(),
+                "reviewConclusion", request.dispositionPlan().trim(),
+                "linkedDomain", "G1",
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = stakingOverview().getData();
+        response.put("updated", map(
+                "tierKey", pool.tierKey(), "key", "killStatus",
+                "before", true, "after", false, "stateTransition", "KILLED->ACTIVE"));
+        return ApiResult.ok(response);
+    }
+
     public ApiResult<Map<String, Object>> repurchaseOverview() {
         Optional<StakingProductView> product = marketRepository.repurchaseProduct();
         RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());

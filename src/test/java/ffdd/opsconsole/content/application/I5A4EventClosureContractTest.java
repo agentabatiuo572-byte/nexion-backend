@@ -63,7 +63,8 @@ class I5A4EventClosureContractTest {
     @Test
     void allFourI5PayloadsSatisfyTheirRegisteredTypesAndRequiredFields() {
         EventOutboxMapper mapper = mock(EventOutboxMapper.class);
-        EventOutboxService outbox = new EventOutboxService(mapper, new ObjectMapper(), new OutboxProperties());
+        EventOutboxService outbox = new EventOutboxService(mapper, new ObjectMapper(), new OutboxProperties(),
+                org.mockito.Mockito.mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class));
         when(mapper.findActiveSchema(anyString()))
                 .thenReturn(new EventOutboxMapper.SchemaGateRow("compliance", 115, true));
         when(mapper.listActiveProperties("disclosure.viewed")).thenReturn(List.of(

@@ -19,6 +19,8 @@ import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
@@ -34,6 +36,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -921,6 +924,177 @@ public class OpsGrowthService implements AuditReplayable {
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> editMission(
+            String idempotencyKey, String taskCode, GrowthMissionEditRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            String code = normalizeMissionCode(taskCode);
+            String kind = normalizeMissionKind(request.taskKind());
+            String name = normalizePlainText(request.name(), 128);
+            String expectedName = normalizePlainText(request.expectedName(), 128);
+            Map<String, Object> current = lockMission(kind, code);
+            if (current == null) return validation("H3_MISSION_NOT_FOUND");
+            int currentStatus = intValue(current.get("status"), -1);
+            if (currentStatus == 2) return invalidMissionTransition();
+            if (!expectedName.equals(String.valueOf(current.get("taskName")))) {
+                return ApiResult.fail(409, "H3_MISSION_STALE");
+            }
+            if (name.equals(expectedName)) return validation("H3_MISSION_NO_CHANGE");
+            int updated = "MISSION".equals(kind)
+                    ? questEventMapper.get().updateMissionNameCas(code, expectedName, name)
+                    : questEventMapper.get().updateMonthlyMissionNameCas(code, expectedName, name);
+            if (updated != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
+            audit("H3_MISSION_EDITED", "GROWTH_MISSION", code, request.operator(), row(
+                    "taskCode", code, "taskKind", kind, "before", expectedName, "after", name,
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+            return missionMutationResponse(code, kind, "edited");
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> transitionMission(
+            String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            String code = normalizeMissionCode(taskCode);
+            String kind = normalizeMissionKind(request.taskKind());
+            int expected = missionStatusCode(request.expectedStatus());
+            int target = missionStatusCode(request.targetStatus());
+            if (!((expected == 1 && target == 0) || (expected == 0 && target == 1))) {
+                return invalidMissionTransition();
+            }
+            Map<String, Object> current = lockMission(kind, code);
+            if (current == null) return validation("H3_MISSION_NOT_FOUND");
+            if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
+            if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
+            audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(
+                    "taskCode", code, "taskKind", kind, "before", missionStatusName(expected),
+                    "after", missionStatusName(target), "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            return missionMutationResponse(code, kind, "status_changed");
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> archiveMission(
+            String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            String code = normalizeMissionCode(taskCode);
+            String kind = normalizeMissionKind(request.taskKind());
+            int expected = missionStatusCode(request.expectedStatus());
+            int target = missionStatusCode(request.targetStatus());
+            if ((expected != 0 && expected != 1) || target != 2) return invalidMissionTransition();
+            Map<String, Object> current = lockMission(kind, code);
+            if (current == null) return validation("H3_MISSION_NOT_FOUND");
+            if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
+            if (transitionMissionStatus(kind, code, expected, 2) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
+            audit("H3_MISSION_ARCHIVED", "GROWTH_MISSION", code, request.operator(), row(
+                    "taskCode", code, "taskKind", kind, "before", missionStatusName(expected),
+                    "after", "archived", "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            return missionMutationResponse(code, kind, "archived");
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> deleteMission(
+            String idempotencyKey, String taskCode, GrowthMissionStatusRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            String code = normalizeMissionCode(taskCode);
+            String kind = normalizeMissionKind(request.taskKind());
+            if (missionStatusCode(request.expectedStatus()) != 2
+                    || !"deleted".equalsIgnoreCase(request.targetStatus())) {
+                return invalidMissionTransition();
+            }
+            Map<String, Object> current = lockMission(kind, code);
+            if (current == null) return validation("H3_MISSION_NOT_FOUND");
+            if (intValue(current.get("status"), -1) != 2) return invalidMissionTransition();
+            int deleted = "MISSION".equals(kind)
+                    ? questEventMapper.get().softDeleteMissionCas(code, 2)
+                    : questEventMapper.get().softDeleteMonthlyMissionCas(code, 2);
+            if (deleted != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
+            audit("H3_MISSION_DELETED", "GROWTH_MISSION", code, request.operator(), row(
+                    "taskCode", code, "taskKind", kind, "before", "archived", "after", "deleted",
+                    "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
+            return missionMutationResponse(code, kind, "deleted");
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    private String normalizeMissionCode(String taskCode) {
+        String code = normalizePlainText(taskCode, 64);
+        if (!Pattern.compile("^[A-Za-z0-9_-]{2,64}$").matcher(code).matches()) {
+            throw new IllegalArgumentException("MISSION_CODE_INVALID");
+        }
+        return code;
+    }
+
+    private String normalizeMissionKind(String taskKind) {
+        String kind = normalizePlainText(taskKind, 16).toUpperCase(Locale.ROOT);
+        if (!Set.of("MISSION", "MONTHLY").contains(kind)) {
+            throw new IllegalArgumentException("H3_MISSION_KIND_INVALID");
+        }
+        return kind;
+    }
+
+    private int missionStatusCode(String status) {
+        return switch (status == null ? "" : status.trim().toLowerCase(Locale.ROOT)) {
+            case "paused" -> 0;
+            case "active" -> 1;
+            case "archived" -> 2;
+            default -> -1;
+        };
+    }
+
+    private String missionStatusName(int status) {
+        return switch (status) {
+            case 0 -> "paused";
+            case 1 -> "active";
+            case 2 -> "archived";
+            default -> "unknown";
+        };
+    }
+
+    private Map<String, Object> lockMission(String kind, String code) {
+        return "MISSION".equals(kind)
+                ? questEventMapper.get().lockMission(code)
+                : questEventMapper.get().lockMonthlyMission(code);
+    }
+
+    private int transitionMissionStatus(String kind, String code, int expected, int target) {
+        return "MISSION".equals(kind)
+                ? questEventMapper.get().transitionMissionStatusCas(code, expected, target)
+                : questEventMapper.get().transitionMonthlyMissionStatusCas(code, expected, target);
+    }
+
+    private ApiResult<Map<String, Object>> invalidMissionTransition() {
+        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "H3_MISSION_STATE_TRANSITION_INVALID");
+    }
+
+    private ApiResult<Map<String, Object>> missionMutationResponse(String code, String kind, String action) {
+        Map<String, Object> response = questTasks().getData();
+        response.put("updated", Map.of("taskCode", code, "taskKind", kind, "action", action));
+        return ApiResult.ok(response);
     }
 
     @Transactional
@@ -4532,7 +4706,8 @@ public class OpsGrowthService implements AuditReplayable {
                 .resourceId(resourceId)
                 .bizNo(resourceId)
                 .actorType("ADMIN")
-                .actorUsername(StringUtils.hasText(operator) ? operator.trim() : "system")
+                .actorUsername(AdminActorResolver.resolve(
+                        StringUtils.hasText(operator) ? operator.trim() : "system"))
                 .result("SUCCESS")
                 .riskLevel("HIGH")
                 .detail(detail)

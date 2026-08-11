@@ -12,6 +12,7 @@ import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 import java.io.IOException;
@@ -29,6 +30,7 @@ public class MybatisBiReportRepository implements BiReportRepository {
     private final BiReportMapper mapper;
     private final BiReportArtifactStore artifactStore;
     private final EventOutboxService eventOutboxService;
+    private final A4RuntimePolicyService a4RuntimePolicyService;
 
     @PostConstruct
     void ensureSchema() {
@@ -180,19 +182,22 @@ public class MybatisBiReportRepository implements BiReportRepository {
     @Override
     public Map<String, Object> kpiDashboard(
             String window, String cohort, String phase, String locale, String ref) {
-        return L1KpiAnalytics.calculate(mapper.selectL1EventFacts(), window, cohort, phase, locale, ref);
+        return L1KpiAnalytics.calculate(mapper.selectL1EventFacts(), window, cohort, phase, locale, ref,
+                a4RuntimePolicyService.day0Seconds());
     }
 
     @Override
     public Map<String, Object> kpiDrilldown(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        return L1KpiAnalytics.drilldown(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref);
+        return L1KpiAnalytics.drilldown(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
+                a4RuntimePolicyService.day0Seconds());
     }
 
     @Override
     public Map<String, Object> kpiTrend(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref);
+        return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
+                a4RuntimePolicyService.day0Seconds());
     }
 
     private Map<String, Object> funnelDashboard() {

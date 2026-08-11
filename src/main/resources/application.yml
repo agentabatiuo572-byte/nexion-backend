@@ -37,6 +37,9 @@ spring:
 
 nexion:
   janus:
+    executor:
+      # Production applied proofs stay disabled until attested enrollment and native WebView handoff ship.
+      production-applied-enabled: ${NEXION_JANUS_PRODUCTION_APPLIED_ENABLED:false}
     remote-target:
       # Comma-separated exact HTTPS origins. Empty fails closed.
       allowed-origins: ${NEXION_JANUS_REMOTE_TARGET_ALLOWED_ORIGINS:}
@@ -50,6 +53,14 @@ nexion:
         connect-timeout-ms: ${NEXION_K3_ADDRESS_REPUTATION_CONNECT_TIMEOUT_MS:1000}
         read-timeout-ms: ${NEXION_K3_ADDRESS_REPUTATION_READ_TIMEOUT_MS:1500}
   finance:
+    funds-sandbox:
+      # Server-persistent fake funds are acceptance/test only. Production stays disabled.
+      mode: ${NEXION_FUNDS_SANDBOX_MODE:DISABLED}
+    payment-method-provider:
+      mode: ${NEXION_PAYMENT_METHOD_PROVIDER_MODE:DISABLED}
+    payout-vnd-provider:
+      mode: ${NEXION_PAYOUT_VND_PROVIDER_MODE:DISABLED}
+      sandbox-callback-secret: ${NEXION_PAYOUT_VND_SANDBOX_CALLBACK_SECRET:}
     # Required by the payment gateway / provider-statement adapter. At least 32 bytes;
     # empty or short secrets fail closed at the OpenAPI boundary.
     provider-ingestion-secret: ${NEXION_PAYMENT_INGESTION_SECRET:}

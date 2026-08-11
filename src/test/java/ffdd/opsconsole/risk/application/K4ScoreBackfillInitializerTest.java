@@ -25,6 +25,26 @@ import org.mockito.ArgumentCaptor;
 
 class K4ScoreBackfillInitializerTest {
     @Test
+    void sandboxUsersExcludedFromProductionTargetsProduceNoSharedProjectionOrOutbox() {
+        RiskOpsRepository repository = mock(RiskOpsRepository.class);
+        RiskScoreModelView model = model();
+        when(repository.activeScoringModel()).thenReturn(Optional.of(model));
+        when(repository.scoreUserNosNeedingProjection(1L, K4ScoreBackfillInitializer.CHUNK_SIZE))
+                .thenReturn(List.of());
+        EventOutboxService outbox = mock(EventOutboxService.class);
+        K4ScoreBackfillInitializer initializer = new K4ScoreBackfillInitializer(
+                repository, new K4RiskScorer(), outbox, immediateTransactionExecutor());
+
+        initializer.backfillCanonicalScores();
+
+        verify(repository).synchronizeScoringUsers();
+        verify(repository, never()).findScoreUser(any());
+        verify(repository, never()).scoringInput(any());
+        verify(repository, never()).refreshScoreProjection(any(), any(Long.class), any(), any(Integer.class), any());
+        verify(outbox, never()).publish(any(), any(), eq("risk.score_updated"), any());
+    }
+
+    @Test
     void malformedActiveModelIsQuarantinedWithoutWritingScoresOrOutboxEvents() {
         RiskOpsRepository repository = mock(RiskOpsRepository.class);
         RiskScoreModelView malformed = new RiskScoreModelView(

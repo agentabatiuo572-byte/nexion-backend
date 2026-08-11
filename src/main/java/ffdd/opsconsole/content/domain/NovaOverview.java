@@ -13,5 +13,6 @@ public record NovaOverview(
         List<NovaOptionView> socialEventStatuses,
         List<String> templateStatuses,
         List<NovaOptionView> templateCtaOptions,
+        List<NovaOptionView> runtimeSourceOptions,
         List<String> sources) {
 }

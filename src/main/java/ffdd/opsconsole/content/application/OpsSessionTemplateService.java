@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
 import ffdd.opsconsole.content.domain.SessionScriptView;
+import ffdd.opsconsole.content.domain.SessionRuntimeTemplateOverview;
 import ffdd.opsconsole.content.domain.SessionSegmentField;
 import ffdd.opsconsole.content.domain.SessionTemplateOverview;
 import ffdd.opsconsole.content.domain.SessionTemplateRepository;
@@ -411,6 +412,13 @@ public class OpsSessionTemplateService {
                 request.operator(),
                 request.reason());
         return ApiResult.ok(updated);
+    }
+
+    public ApiResult<SessionRuntimeTemplateOverview> runtimeOverview() {
+        return ApiResult.ok(new SessionRuntimeTemplateOverview(
+                workbenchPolicy(),
+                templateRepository.listScripts().stream().filter(row -> "published".equalsIgnoreCase(row.status())).toList(),
+                templateRepository.listReplyTemplates().stream().filter(row -> "published".equalsIgnoreCase(row.status())).toList()));
     }
 
     private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalZh) {

@@ -4,13 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
+import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -39,8 +43,10 @@ class AppTradeinServiceTest {
         when(mapper.listTradeinConfig()).thenReturn(validConfig());
         when(mapper.findSourceDevice(7L, 11L)).thenReturn(source());
         when(mapper.findTargetProduct(22L, null)).thenReturn(target());
+        when(mapper.findTargetProduct(null, "stellarbox-pro-v2")).thenReturn(target());
         when(mapper.lockSourceDevice(7L, 11L)).thenReturn(source());
         when(mapper.lockTargetProduct(22L, null)).thenReturn(target());
+        when(mapper.lockTargetProduct(null, "stellarbox-pro-v2")).thenReturn(target());
         when(mapper.userLevel(7L)).thenReturn("L4");
         when(mapper.cumulativeDeviceOutputUsdt(11L)).thenReturn(new BigDecimal("400.00"));
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("1000.00"));
@@ -48,6 +54,9 @@ class AppTradeinServiceTest {
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.userEventAttribution(7L)).thenReturn(
                 new AppTradeinMapper.UserEventAttribution("P3", 8, "2026-W30"));
+        when(mapper.countActiveDevices(7L)).thenReturn(6);
+        when(mapper.findCapacityReplacementSource(7L)).thenReturn(source());
+        when(mapper.lockCapacityReplacementSource(7L)).thenReturn(source());
     }
 
     @Test
@@ -168,6 +177,84 @@ class AppTradeinServiceTest {
         verify(mapper, never()).debitWalletUsdt(any(), any());
         verify(mapper, never()).recycleSourceDevice(any(), any());
         verify(mapper, never()).insertTradeinApplication(any());
+    }
+
+    @Test
+    void submitRejectsWhenTheLockedQuoteNoLongerMatchesTheUserConfirmedQuote() {
+        var request = new AppTradeinSubmitRequest(
+                11L, 22L, null, new BigDecimal("950.000000"), new BigDecimal("550.000000"));
+
+        assertThatThrownBy(() -> service.submit(7L, "idem-stale-quote", request))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_QUOTE_CHANGED");
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).decrementTargetStock(any());
+        verify(mapper, never()).recycleSourceDevice(any(), any());
+    }
+
+    @Test
+    void capacityQuoteUsesServerCountAndSelectsTheAuthoritativeReplacementSource() {
+        var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getData().decision()).isEqualTo("REPLACE_REQUIRED");
+        assertThat(result.getData().activeDevices()).isEqualTo(6);
+        assertThat(result.getData().maxActiveDevices()).isEqualTo(6);
+        assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
+        assertThat(result.getData().payableUsdt()).isEqualByComparingTo("1500.000000");
+        assertThat(result.getData().decisionSource()).isEqualTo("server");
+    }
+
+    @Test
+    void capacityQuoteReportsNoActiveDeviceWithoutInventingALocalReplacement() {
+        when(mapper.countActiveDevices(7L)).thenReturn(6);
+        when(mapper.findCapacityReplacementSource(7L)).thenReturn(null);
+
+        var result = service.capacityQuote(7L, new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getData().decision()).isEqualTo("NO_ACTIVE_DEVICE");
+        assertThat(result.getData().sourceDeviceId()).isNull();
+    }
+
+    @Test
+    void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit() {
+        when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
+        when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.decrementTargetStock(22L)).thenReturn(1);
+        when(mapper.moveSourceDeviceToInventory(7L, 11L)).thenReturn(1);
+        when(mapper.insertTargetDevice(any())).thenReturn(1);
+        when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
+        when(mapper.insertTradeinApplication(any())).thenReturn(1);
+        when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
+        when(mapper.insertPaidOrder(any())).thenReturn(1);
+        when(mapper.insertPaidOrderItem(any())).thenReturn(1);
+
+        var result = service.capacityReplace(7L, "cap-idem-7",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000")));
+
+        assertThat(result.getData().orderStatus()).isEqualTo("COMPLETED");
+        assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
+        assertThat(result.getData().walletDebitUsdt()).isEqualByComparingTo("1500.000000");
+        verify(mapper).moveSourceDeviceToInventory(7L, 11L);
+        verify(mapper).insertPaidOrder(any());
+        verify(mapper).insertTradeinApplication(any());
+        verify(mapper, never()).recycleSourceDevice(7L, 11L);
+        verify(idempotency).execute(eq("APP:E3_CAPACITY_REPLACE:USER:7"), eq("cap-idem-7"),
+                anyString(), eq(ApiResult.class), any());
+        var serialization = inOrder(mapper, idempotency);
+        serialization.verify(mapper).lockActiveUser(7L);
+        serialization.verify(idempotency).execute(eq("APP:E3_CAPACITY_REPLACE:USER:7"),
+                eq("cap-idem-7"), anyString(), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void capacityReplacementRejectsAClientChosenDeviceThatIsNotTheServerQuote() {
+        assertThatThrownBy(() -> service.capacityReplace(7L, "cap-idem-tamper",
+                new AppCapacityReplaceSubmitRequest(99L, "stellarbox-pro-v2", new BigDecimal("1500.000000"))))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+        verify(mapper, never()).debitWalletUsdt(any(), any());
     }
 
     private List<AppTradeinMapper.ConfigRow> validConfig() {

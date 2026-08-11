@@ -38,6 +38,7 @@ public class PayoutVndConfigService {
     private final AuditLogService audit;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final PayoutVndProviderProperties providerProperties;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> overview() {
@@ -195,6 +196,7 @@ public class PayoutVndConfigService {
         for (String key : operationalKeys()) result.put(key, values.get(key));
         result.put("providerReady", providerReady);
         result.put("providerStatusAvailable", providerStatusAvailable);
+        result.put("sandboxAvailable", providerProperties.getMode() == PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         result.put("defaults", defaults());
         result.put("effectiveAt", Instant.ofEpochMilli(longValue(values.get("effectiveAt"))).toString());
         result.put("lastUpdatedBy", String.valueOf(values.get("lastUpdatedBy")));

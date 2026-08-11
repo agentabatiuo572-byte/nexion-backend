@@ -43,6 +43,18 @@ public interface NovaMapper extends BaseMapper<Object> {
             """)
     void createChannelTable();
 
+    @Insert("""
+            INSERT INTO nx_nova_channel
+              (channel_key, channel_name, trigger_rule, tick_rule, cooldown_rule, phase_keyed,
+               ctr_pct, target_ctr_pct, enabled, sort_order, operator, reason, is_deleted)
+            VALUES
+              ('team_event', '团队事件', 'a4:commission.paid', '90 s', '90 s', '', 0, 0, 0, 910, 'system', 'I2 v3 服务端 cadence', 0),
+              ('staking_event', '质押事件', 'a4:staking.opened', '240 s', '300 s', '', 0, 0, 0, 920, 'system', 'I2 v3 服务端 cadence', 0),
+              ('market_event', '市场事件', 'a4:market.curve_advanced', '360 s', '420 s', '', 0, 0, 0, 930, 'system', 'I2 v3 服务端 cadence', 0)
+            ON DUPLICATE KEY UPDATE channel_key = VALUES(channel_key)
+            """)
+    void seedV3RuntimeChannels();
+
     @Select("""
             SELECT COUNT(1)
               FROM information_schema.COLUMNS
@@ -79,6 +91,21 @@ public interface NovaMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTemplateTable();
+
+    @Insert("""
+            INSERT INTO nx_nova_template
+              (channel_key, template_name, cta, version, title_zh, body_zh,
+               title_vi, body_vi, title_en, body_en, status, operator, reason, is_deleted)
+            VALUES
+              ('team_event', '团队事件', '/team', 'v1', '团队动态', '你的团队有新的业务动态。',
+               'Cập nhật đội nhóm', 'Đội nhóm của bạn có hoạt động mới.', 'Team update', 'Your team has a new activity.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0),
+              ('staking_event', '质押事件', '/staking', 'v1', '质押动态', '你的质押仓位有新的业务动态。',
+               'Cập nhật staking', 'Vị thế staking của bạn có hoạt động mới.', 'Staking update', 'Your staking position has a new activity.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0),
+              ('market_event', '市场事件', '/earn', 'v1', '市场动态', '市场曲线已有新的服务端事实。',
+               'Cập nhật thị trường', 'Đường cong thị trường có dữ liệu mới từ máy chủ.', 'Market update', 'The market curve has a new server fact.', 'PUBLISHED', 'system', 'I2 v3 可执行模板', 0)
+            ON DUPLICATE KEY UPDATE channel_key = VALUES(channel_key)
+            """)
+    void seedV3RuntimeTemplates();
 
     @Select("""
             SELECT COUNT(1)

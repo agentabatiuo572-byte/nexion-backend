@@ -1,6 +1,7 @@
 package ffdd.opsconsole.janus.application;
 
 import ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.janus.domain.JanusRemoteTargetView;
 import ffdd.opsconsole.janus.dto.JanusTakeoverAdminRequest;
 import ffdd.opsconsole.janus.dto.JanusTakeoverProgressRequest;
@@ -46,6 +47,8 @@ public class JanusTakeoverService {
     private final JanusRemoteTargetRepository targetRepository;
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
+    private final JanusAppliedProofVerifier proofVerifier;
+    private final EarningsReleaseService earningsReleaseService;
 
     public Map<String,Object> view(String sid) {
         Map<String,Object> row=mapper.find(sid);
@@ -146,7 +149,8 @@ public class JanusTakeoverService {
         Map<String,Object> row=mapper.find(sid);if(row==null)return ApiResult.ok(Map.of("hasCommand",false));
         boolean reconciliation=StringUtils.hasText(text(row,"reconciliationId"))&&row.get("reconciledAt")==null;
         String phase=text(row,"phase");
-        if(!reconciliation&&!Set.of("COMMAND_PENDING_ACK","REVOKE_PENDING_ACK").contains(phase))return ApiResult.ok(Map.of("hasCommand",false));
+        if(!reconciliation&&!Set.of("COMMAND_PENDING_ACK","RECEIVED","WAITING_SESSION_EDGE","LOADING",
+                "HANDOFF_FETCHING","HANDOFF_MERGING","HANDOFF_ACKED","REVOKE_PENDING_ACK").contains(phase))return ApiResult.ok(Map.of("hasCommand",false));
         Map<String,Object> out=new LinkedHashMap<>(row);out.put("hasCommand",true);
         if(reconciliation)out.put("commandType","QUERY_APPLIED");
         String commandType = reconciliation ? "QUERY_APPLIED" : text(row,"commandType");
@@ -167,30 +171,71 @@ public class JanusTakeoverService {
         Map<String,Object> row=mapper.findForUpdate(sid);if(row==null)return ApiResult.fail(404,"K6_TAKEOVER_NOT_FOUND");
         if(!request.commandId().trim().equals(text(row,"commandId"))||request.commandVersion()!=num(row,"commandVersion"))return ApiResult.fail(409,"K6_TAKEOVER_STALE_COMMAND");
         if(StringUtils.hasText(request.reconciliationId())){
+            if("FAILED".equals(upper(request.phase()))
+                    &&"JANUS_FOREGROUND_ABORTED_HOLD".equals(trim(request.failureCode()))
+                    &&"contract".equals(trim(request.failureClass()))
+                    &&StringUtils.hasText(request.failureMessage())){
+                if(mapper.reconcileHold(sid,request.reconciliationId().trim(),request.commandId().trim(),
+                        request.commandVersion())!=1)return ApiResult.fail(409,"K6_RECONCILIATION_CONFLICT");
+                return ApiResult.ok(mapper.find(sid));
+            }
             boolean revoked="REVOKE".equals(text(row,"commandType"))&&"REVOKED".equals(text(row,"phase"));
-            if(!validAppliedEvidence(row,request,revoked))return ApiResult.fail(422,"K6_RECONCILIATION_EVIDENCE_REQUIRED");
-            if(mapper.reconcile(sid,request.reconciliationId().trim(),request.commandId().trim(),request.commandVersion(),request.actualTargetId().trim(),request.actualTargetVersion(),request.actualTargetCatalogVersion(),request.deviceAppliedVersion(),trim(request.deviceAppVersion()),trim(request.handoffReceipt()))!=1)return ApiResult.fail(409,"K6_RECONCILIATION_CONFLICT");
+            if(!validObservedEvidence(row,request))return ApiResult.fail(422,"K6_RECONCILIATION_EVIDENCE_REQUIRED");
+            JanusAppliedProofVerifier.Verification proof=proofVerifier.verify(userId,sid,row,request);
+            if(!proof.accepted())return ApiResult.fail(422,proof.error());
+            boolean expected=validAppliedEvidence(row,request,revoked);
+            int reconciled=expected
+                    ? mapper.reconcile(sid,request.reconciliationId().trim(),request.commandId().trim(),request.commandVersion(),request.actualTargetId().trim(),request.actualTargetVersion(),request.actualTargetCatalogVersion(),request.deviceAppliedVersion(),trim(request.deviceAppVersion()),trim(request.handoffReceipt()))
+                    : mapper.reconcileDrift(sid,request.reconciliationId().trim(),request.commandId().trim(),request.commandVersion(),request.actualTargetId().trim(),request.actualTargetVersion(),request.actualTargetCatalogVersion(),request.deviceAppliedVersion(),trim(request.deviceAppVersion()),trim(request.handoffReceipt()));
+            if(reconciled!=1)return ApiResult.fail(409,"K6_RECONCILIATION_CONFLICT");
             return ApiResult.ok(mapper.find(sid));
         }
         String from=text(row,"phase");String to=upper(request.phase());
+        if(progressRank(to)>0&&progressRank(to)<=progressRank(from))return ApiResult.ok(row);
         if(!NEXT.getOrDefault(from,Set.of()).contains(to))return ApiResult.fail(409,"K6_TAKEOVER_ILLEGAL_PHASE_TRANSITION");
         String failureClass=trim(request.failureClass());
         if(Set.of("FAILED","REVOKE_FAILED").contains(to)&&(!FAILURE_CLASSES.contains(failureClass)||!StringUtils.hasText(request.failureMessage())))return ApiResult.fail(422,"K6_TAKEOVER_FAILURE_DETAIL_REQUIRED");
         if(!Set.of("FAILED","REVOKE_FAILED").contains(to)){failureClass=null;}
         if("SUCCEEDED".equals(to)&&!validAppliedEvidence(row,request,false))return ApiResult.fail(422,"K6_TAKEOVER_SUCCESS_EVIDENCE_REQUIRED");
         if("REVOKED".equals(to)&&!validAppliedEvidence(row,request,true))return ApiResult.fail(422,"K6_TAKEOVER_REVOKE_EVIDENCE_REQUIRED");
+        JanusAppliedProofVerifier.Verification verifiedProof=null;
+        if(Set.of("SUCCEEDED","REVOKED").contains(to)){
+            verifiedProof=proofVerifier.verify(userId,sid,row,request);
+            if(!verifiedProof.accepted())return ApiResult.fail(422,verifiedProof.error());
+            if(verifiedProof.duplicate()&&sameApplied(row,request))return ApiResult.ok(row);
+        }
         if(mapper.progress(sid,num(row,"rowVersion"),request.commandId().trim(),request.commandVersion(),from,to,trim(request.actualTargetId()),request.actualTargetVersion(),request.actualTargetCatalogVersion(),request.deviceAppliedVersion(),trim(request.deviceAppVersion()),trim(request.handoffReceipt()),StringUtils.hasText(failureClass)?trim(request.failureCode()):null,failureClass,StringUtils.hasText(failureClass)?trim(request.failureMessage()):null)!=1)return ApiResult.fail(409,"K6_TAKEOVER_PROGRESS_CONFLICT");
+        if("SUCCEEDED".equals(to)&&verifiedProof!=null&&"PRODUCTION".equals(verifiedProof.proofMode())){
+            earningsReleaseService.recordTrustedAttestation(new EarningsReleaseService.TrustedAttestationProof(
+                    verifiedProof.proofId(),userId,request.deviceId().trim(),request.commandVersion(),to,
+                    "SANDBOX".equals(verifiedProof.proofMode())?"JANUS_SANDBOX_EXECUTOR":"JANUS_PRODUCTION_EXECUTOR",verifiedProof.proofHash()));
+        }
         return ApiResult.ok(mapper.find(sid));
     }
 
     private boolean validAppliedEvidence(Map<String,Object> row,JanusTakeoverProgressRequest request,boolean revoked) {
-        if(!StringUtils.hasText(request.actualTargetId())||request.actualTargetVersion()==null||request.actualTargetCatalogVersion()==null
-                ||request.deviceAppliedVersion()==null||!StringUtils.hasText(request.deviceAppVersion())||!StringUtils.hasText(request.handoffReceipt()))return false;
-        if(request.deviceAppliedVersion()!=num(row,"commandVersion"))return false;
+        if(!validObservedEvidence(row,request))return false;
+        if(!request.actualAppliedCommandId().trim().equals(text(row,"commandId"))
+                ||!request.actualAppliedCommandVersion().equals(longOrNull(row,"commandVersion")))return false;
         if(revoked)return "none".equals(request.actualTargetId().trim())&&request.actualTargetVersion()==0&&request.actualTargetCatalogVersion()==0;
         return request.actualTargetId().trim().equals(text(row,"expectedTargetId"))
                 &&request.actualTargetVersion().equals(intOrNull(row,"expectedTargetVersion"))
                 &&request.actualTargetCatalogVersion().equals(longOrNull(row,"expectedTargetCatalogVersion"));
+    }
+
+    private boolean validObservedEvidence(Map<String,Object> row,JanusTakeoverProgressRequest request) {
+        return validText(request.actualTargetId(),64)&&request.actualTargetVersion()!=null&&request.actualTargetVersion()>=0
+                &&request.actualTargetCatalogVersion()!=null&&request.actualTargetCatalogVersion()>=0
+                &&validText(request.actualAppliedCommandId(),128)&&request.actualAppliedCommandVersion()!=null
+                &&request.actualAppliedCommandVersion()>0&&request.actualFencingToken()!=null&&request.actualFencingToken()>0
+                &&request.deviceAppliedVersion()!=null&&request.deviceAppliedVersion()==num(row,"commandVersion")
+                &&validText(request.deviceAppVersion(),64)&&validText(request.handoffReceipt(),256);
+    }
+
+    private boolean sameApplied(Map<String,Object> row,JanusTakeoverProgressRequest request) {
+        return trim(request.handoffReceipt()).equals(text(row,"handoffReceipt"))
+                && request.deviceAppliedVersion()!=null&&request.deviceAppliedVersion()==num(row,"commandVersion")
+                && trim(request.actualTargetId()).equals(text(row,"actualTargetId"));
     }
 
     private boolean validTarget(String key,Integer version,Long catalog){if(!StringUtils.hasText(key)||version==null||version<=0||catalog==null||catalog<=0)return false;JanusRemoteTargetView t=targetRepository.find(key.trim(),version).orElse(null);return t!=null&&"ACTIVE".equals(t.status())&&t.catalogVersion()==catalog;}
@@ -199,11 +244,13 @@ public class JanusTakeoverService {
     private String actor(){Authentication a=SecurityContextHolder.getContext().getAuthentication();return a==null?"unknown":a.getName();}
     private static String upper(String value){return trim(value)==null?"":trim(value).toUpperCase(Locale.ROOT);}
     private static String trim(String value){return StringUtils.hasText(value)?value.trim():null;}
+    private static boolean validText(String value,int max){return StringUtils.hasText(value)&&value.trim().length()<=max;}
     private static String text(Map<String,Object> row,String key){Object v=row.get(key);return v==null?"":String.valueOf(v).trim();}
     private static String textOrNull(Map<String,Object> row,String key){String v=text(row,key);return v.isEmpty()?null:v;}
     private static long num(Map<String,Object> row,String key){Object v=row.get(key);return v instanceof Number n?n.longValue():Long.parseLong(String.valueOf(v));}
     private static Long longOrNull(Map<String,Object> row,String key){Object v=row.get(key);return v==null?null:(v instanceof Number n?n.longValue():Long.valueOf(String.valueOf(v)));}
     private static Integer intOrNull(Map<String,Object> row,String key){Long v=longOrNull(row,key);return v==null?null:v.intValue();}
+    private static int progressRank(String phase){return switch(phase){case "COMMAND_PENDING_ACK"->1;case "RECEIVED"->2;case "WAITING_SESSION_EDGE"->3;case "LOADING"->4;case "HANDOFF_FETCHING"->5;case "HANDOFF_MERGING"->6;case "HANDOFF_ACKED"->7;case "SUCCEEDED"->8;default->0;};}
 
     @SuppressWarnings({"rawtypes","unchecked"})
     private ApiResult<Map<String,Object>> once(String action,String sid,String key,Object request,Supplier<ApiResult<Map<String,Object>>> supplier){

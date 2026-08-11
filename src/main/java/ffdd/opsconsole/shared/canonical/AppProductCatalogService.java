@@ -1,12 +1,9 @@
 package ffdd.opsconsole.shared.canonical;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
-import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
-import ffdd.opsconsole.device.domain.DeviceSkuView;
-import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -16,34 +13,32 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
+/**
+ * App purchase catalogue.  It intentionally reads the same nx_product truth
+ * used by the quote and submit paths, rather than the administrative SKU
+ * configuration surface.
+ */
 @ApplicationService
 @RequiredArgsConstructor
 public class AppProductCatalogService {
     private static final Set<String> TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
-    private static final Set<String> LIFECYCLES = Set.of("active", "legacy");
 
-    private final DeviceCatalogRepository catalogRepository;
+    private final AppTradeinMapper tradeinMapper;
 
     public ApiResult<Map<String, Object>> catalog() {
         try {
-            PageResult<DeviceSkuView> page =
-                    catalogRepository.pageSkus(new DeviceSkuQueryRequest("on", null, 1L, 500L));
-            if (page == null || page.getRecords() == null) {
-                return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
-            }
+            List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
+            if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
-            for (DeviceSkuView sku : page.getRecords()) {
-                if (sku == null || !"on".equals(sku.status())) {
-                    return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
-                }
-                products.add(product(sku));
-                if (sku.updatedAt() != null && (revision == null || sku.updatedAt().isAfter(revision))) {
-                    revision = sku.updatedAt();
+            for (AppTradeinMapper.CatalogTargetProduct target : targets) {
+                products.add(product(target));
+                if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
+                    revision = target.updatedAt();
                 }
             }
             Map<String, Object> response = new LinkedHashMap<>();
-            response.put("source", "nx_admin_device_sku");
+            response.put("source", "nx_product");
             response.put("revision", revision == null ? null : revision.toString());
             response.put("products", products);
             return ApiResult.ok(response);
@@ -52,91 +47,55 @@ public class AppProductCatalogService {
         }
     }
 
-    private Map<String, Object> product(DeviceSkuView sku) {
-        if (!StringUtils.hasText(sku.skuId())
-                || !StringUtils.hasText(sku.name())
-                || !TIERS.contains(sku.tier())
-                || sku.price() == null
-                || sku.price().signum() <= 0
-                || sku.dailyEarn() == null
-                || sku.dailyEarn().signum() < 0
-                || sku.dailyEarnNex() == null
-                || sku.dailyEarnNex().signum() < 0) {
-            throw new IllegalArgumentException("invalid product catalog row");
+    private Map<String, Object> product(AppTradeinMapper.CatalogTargetProduct target) {
+        if (target == null
+                || !StringUtils.hasText(target.productNo())
+                || !StringUtils.hasText(target.name())
+                || !TIERS.contains(target.tier())
+                || target.priceUsdt() == null
+                || target.priceUsdt().signum() <= 0
+                || target.stock() == null
+                || target.stock() < 1
+                || target.dailyUsdt() == null
+                || target.dailyUsdt().signum() < 0
+                || target.dailyNex() == null
+                || target.dailyNex().signum() < 0
+                || target.sold() == null
+                || target.sold() < 0) {
+            throw new IllegalArgumentException("invalid purchasable product catalog row");
         }
-        String lifecycle = StringUtils.hasText(sku.lifecycle()) ? sku.lifecycle() : "active";
-        if (!LIFECYCLES.contains(lifecycle)) {
-            throw new IllegalArgumentException("invalid product lifecycle");
-        }
-        Long stock = stock(sku.stock());
-
         Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", sku.skuId());
-        item.put("name", sku.name());
-        item.put("tier", sku.tier());
-        item.put("tagline", text(sku.tagline()));
-        item.put("badge", nullableText(sku.badge()));
-        item.put("gpu", text(sku.gpu()));
-        item.put("vram", text(sku.vram()));
-        item.put("hashRate", nullableText(sku.hashRate()));
-        item.put("power", nullableText(sku.power()));
-        item.put("dailyEarn", sku.dailyEarn());
-        item.put("dailyEarnNEX", sku.dailyEarnNex());
-        item.put("price", sku.price());
-        item.put("sold", sku.sold() == null ? 0L : Math.max(0L, sku.sold()));
-        item.put("stock", stock);
-        item.put("features", sku.features() == null ? List.of() : sku.features());
-        item.put("ai", ai(sku));
-        item.put("status", lifecycle);
-        item.put("unlocksAtPhase", nullableText(sku.unlockPhase()));
-        item.put("purchaseGate", purchaseGate(sku.purchaseGate()));
+        item.put("id", target.productNo());
+        item.put("name", target.name());
+        item.put("tier", target.tier());
+        item.put("tagline", text(target.tagline()));
+        item.put("badge", nullableText(target.badge()));
+        item.put("gpu", text(target.gpuModel()));
+        item.put("vram", target.vramTotalGb() == null ? "" : target.vramTotalGb() + "GB");
+        item.put("hashRate", decimalText(target.hashrate()));
+        item.put("power", "");
+        item.put("dailyEarn", target.dailyUsdt());
+        item.put("dailyEarnNEX", target.dailyNex());
+        item.put("price", target.priceUsdt());
+        item.put("sold", target.sold());
+        item.put("stock", target.stock());
+        item.put("features", List.of());
+        item.put("ai", null);
+        item.put("status", "active");
+        item.put("unlocksAtPhase", nullableText(target.unlockPhase()));
+        item.put("purchaseGate", null);
         return item;
     }
 
-    private Long stock(String value) {
-        if (!StringUtils.hasText(value) || "∞".equals(value.trim())) return null;
-        long parsed = Long.parseLong(value.trim());
-        if (parsed < 0) throw new IllegalArgumentException("invalid product stock");
-        return parsed;
-    }
-
-    private Map<String, Object> ai(DeviceSkuView sku) {
-        if (sku.aiImageGenPerMin() == null
-                && sku.aiLlmTokensPerSec() == null
-                && sku.aiVideoMinPerHour() == null
-                && sku.aiFineTuneMins() == null
-                && !StringUtils.hasText(sku.aiUnlocks())) {
-            return null;
-        }
-        Map<String, Object> ai = new LinkedHashMap<>();
-        ai.put("imageGenPerMin", sku.aiImageGenPerMin());
-        ai.put("llmTokensPerSec", sku.aiLlmTokensPerSec());
-        ai.put("videoMinPerHour", sku.aiVideoMinPerHour());
-        ai.put("fineTuneMins", sku.aiFineTuneMins());
-        ai.put("unlocks", nullableText(sku.aiUnlocks()));
-        return ai;
-    }
-
-    private Map<String, Object> purchaseGate(DevicePurchaseGateView gate) {
-        if (gate == null) return null;
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("rankMin", gate.rankMin());
-        result.put("activeDirectMin", gate.activeDirectMin());
-        result.put("teamVolumeMin", gate.teamVolumeMin());
-        result.put("mode", gate.mode());
-        result.put("quotaCap", gate.quotaCap());
-        result.put("quotaSold", gate.quotaSold());
-        result.put("quotaPeriod", gate.quotaPeriod());
-        result.put("enforce", gate.enforce());
-        return result;
-    }
-
     private String text(String value) {
-        return value == null ? "" : value.trim();
+        return value == null ? "" : value;
     }
 
     private String nullableText(String value) {
-        String normalized = text(value);
-        return normalized.isEmpty() ? null : normalized;
+        return StringUtils.hasText(value) ? value : null;
+    }
+
+    private String decimalText(BigDecimal value) {
+        return value == null ? null : value.stripTrailingZeros().toPlainString();
     }
 }

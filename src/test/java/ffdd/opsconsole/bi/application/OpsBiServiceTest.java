@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -60,12 +61,20 @@ class OpsBiServiceTest {
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final ffdd.opsconsole.platform.application.A2RuntimePolicy a2RuntimePolicy =
+            mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class);
     private Map<String, Object> financeSnapshot = Map.of();
     private final TreasuryFinanceAnalyticsFacade financeAnalyticsFacade = () -> financeSnapshot;
-    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository, financeAnalyticsFacade, auditLogService, permissionCache, lockMapper, idempotencyService);
+    private final OpsBiService service = new OpsBiService(reportRepository, growthRhythmFacade, ledgerRepository,
+            financeAnalyticsFacade, auditLogService, permissionCache, lockMapper, idempotencyService, a2RuntimePolicy);
 
     @BeforeEach
     void seedPermissionContext() {
+        when(a2RuntimePolicy.reasonMinChars()).thenReturn(8);
+        doAnswer(invocation -> {
+            ffdd.opsconsole.platform.application.A2RuntimePolicy.validateReason(invocation.getArgument(0), 8);
+            return null;
+        }).when(a2RuntimePolicy).validateReason(org.mockito.ArgumentMatchers.nullable(String.class));
         // reportAction service 层二次校验需 admin id + 权限码;默认 stub 全 bi_l5 码让二次校验通过
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(1L, null, List.of()));

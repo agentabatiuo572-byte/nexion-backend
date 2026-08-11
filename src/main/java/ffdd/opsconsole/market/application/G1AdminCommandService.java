@@ -85,6 +85,32 @@ public class G1AdminCommandService {
         });
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> restore(
+            String key, String tierKey, NexMarketValueUpdateRequest request) {
+        requireReason(request == null ? null : request.reason());
+        if (request == null || !Boolean.FALSE.equals(parseBoolean(request.value()))) {
+            throw new BizException(422, "G1_RESTORE_VALUE_INVALID");
+        }
+        String triggerBasis = requiredText(request.triggerBasis(), "G1_RESTORE_BASIS_REQUIRED");
+        if (!List.of("MANUAL_RISK_REVIEW", "INCIDENT_RESOLVED", "COMPLIANCE_RELEASED")
+                .contains(triggerBasis)) {
+            throw new BizException(422, "G1_RESTORE_BASIS_INVALID");
+        }
+        String dispositionPlan = requiredText(request.dispositionPlan(), "G1_RESTORE_REVIEW_REQUIRED");
+        if (dispositionPlan.length() < 8 || dispositionPlan.length() > 500) {
+            throw new BizException(422, "G1_RESTORE_REVIEW_LENGTH_INVALID");
+        }
+        return once("RESTORE:" + tierKey, key, request, () -> {
+            ApiResult<Map<String, Object>> result = success(market.restoreStakingPool(key, tierKey, request));
+            outbox.publish("STAKING_POOL", tierKey, "admin.staking_pool_restored", linked(
+                    "tierKey", tierKey, "triggerBasis", triggerBasis, "reviewConclusion", dispositionPlan,
+                    "reason", request.reason().trim(), "operator", actor(request.operator()),
+                    "restorationDomain", "J1"));
+            return result;
+        });
+    }
+
     private void requireReason(String reason) {
         if (!StringUtils.hasText(reason)) throw new BizException(422, "REASON_REQUIRED");
         int length = reason.trim().length();

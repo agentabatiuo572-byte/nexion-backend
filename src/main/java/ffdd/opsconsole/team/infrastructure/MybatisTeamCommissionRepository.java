@@ -120,6 +120,21 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Map<String, Object>> quotaUsages(int limit) {
+        return mapper.quotaUsages(Math.max(1, Math.min(limit, 100)));
+    }
+
+    @Override
+    public boolean updateHardwareQuotaTierCas(String quotaCode, int expectedMonthlyQuota, int monthlyQuota) {
+        return mapper.updateHardwareQuotaTierCas(quotaCode, expectedMonthlyQuota, monthlyQuota) > 0;
+    }
+
+    @Override
+    public boolean recycleHardwareQuotaUsage(Long usageId, String reason) {
+        return mapper.recycleHardwareQuotaUsage(usageId, reason) > 0;
+    }
+
+    @Override
     public List<Map<String, Object>> ambassadorBands() {
         return mapper.ambassadorBands();
     }
@@ -128,6 +143,16 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     public Map<String, Object> ambassadorSummary() {
         Map<String, Object> row = mapper.ambassadorSummary();
         return row == null ? new LinkedHashMap<>() : row;
+    }
+
+    @Override
+    public List<Map<String, Object>> ambassadorApplications(int limit) {
+        return mapper.ambassadorApplications(Math.max(1, Math.min(limit, 100)));
+    }
+
+    @Override
+    public boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) {
+        return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 4;
     }
 
     @Override
@@ -177,22 +202,39 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
         return mapper.updateVRankLeadershipVotes(rankCode, votes) > 0;
     }
 
-    // F4 · 修复3:大使审批写业务表。applicationId 数字 → 按 id;非数字 → fallback 最新 PENDING。
-    // 两条分支任一影响行数 > 0 视为成功。
+    // 大使审批只允许按申请 id 精确更新，禁止“最新 PENDING”并发误批。
     @Override
     public boolean updateAmbassadorStatus(String applicationId, String status, String reviewer, String reason) {
         String canonical = normalizeStatus(status);
         Long numericId = parseLongOrNull(applicationId);
-        if (numericId != null) {
-            return mapper.updateAmbassadorStatusById(numericId, canonical, reviewer, reason) > 0;
-        }
-        return mapper.updateLatestPendingAmbassadorStatus(canonical, reviewer, reason) > 0;
+        return numericId != null && mapper.updateAmbassadorStatusById(numericId, canonical, reviewer, reason) > 0;
     }
 
     // F4 · 修复4:榜单处置 INSERT 流水。
     @Override
     public boolean insertLeaderboardAction(String period, String actionType, String reason, String operator) {
         return mapper.insertLeaderboardAction(period, actionType, reason, operator) > 0;
+    }
+
+    @Override
+    public boolean insertLeaderboardMemberAction(String period, Long memberUserId, String actionType, String reason, String operator) {
+        return mapper.insertLeaderboardMemberAction(period, memberUserId, actionType, reason, operator) > 0;
+    }
+
+    @Override
+    public List<Map<String, Object>> leaderboardCandidates(BigDecimal minVolumeUsd, int limit) {
+        return mapper.leaderboardCandidates(minVolumeUsd, Math.max(1, Math.min(limit, 100)));
+    }
+
+    @Override
+    public List<Map<String, Object>> leaderboardCandidates(
+            String period,
+            java.time.LocalDateTime fromInclusive,
+            java.time.LocalDateTime toExclusive,
+            BigDecimal minVolumeUsd,
+            int limit) {
+        return mapper.leaderboardCandidatesByPeriod(
+                period, fromInclusive, toExclusive, minVolumeUsd, Math.max(1, Math.min(limit, 100)));
     }
 
     // ============================================================
@@ -368,6 +410,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
                 payout.triggerEventId(),
                 payout.operator(),
                 payout.reason()) > 0;
+    }
+
+    @Override
+    public boolean enqueueVRankSkuFulfillment(Long userId, String rankCode, String skuId, String reason) {
+        return mapper.enqueueVRankSkuFulfillment(userId, rankCode, skuId, reason) > 0;
     }
 
     // Sprint5 端点 3:promotion-log 查询委托 mapper。SQL 用 IF(...) 兼容 MyBatis Boolean 映射,

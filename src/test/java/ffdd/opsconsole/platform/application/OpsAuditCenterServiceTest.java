@@ -83,6 +83,8 @@ class OpsAuditCenterServiceTest {
     void setUp() {
         SecurityContextHolder.clearContext();
         repository.items.clear();
+        repository.save(new PlatformConfigItem(null, A2RuntimePolicy.REASON_MIN_KEY, "8 字", "STRING",
+                "admin_a2", "ADMIN", "test baseline", 1, null, null));
         ticketRows.clear();
         historyRows.clear();
         categoryRows.clear();
@@ -586,6 +588,91 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void schemaVersionOnlyAllowsRegisteredStrictUpgradesBeforeAnyWriteOrAudit() {
+        repository.save(new PlatformConfigItem(null, A2RuntimePolicy.SCHEMA_VERSION_KEY, "v3", "STRING",
+                "admin_a2", "ADMIN", "test baseline", 1, null, null));
+
+        ApiResult<AuditCenterOverview.AuditMechanismParam> downgrade = service.updateMechanismParam(
+                "idem-schema-downgrade", "schema",
+                new AuditMechanismParamUpdateRequest("v2", "registered schema rollback review", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> unsupported = service.updateMechanismParam(
+                "idem-schema-unsupported", "schema",
+                new AuditMechanismParamUpdateRequest("vx", "registered schema input review", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> unregisteredFuture = service.updateMechanismParam(
+                "idem-schema-future", "schema",
+                new AuditMechanismParamUpdateRequest("v5", "registered schema future review", "superadmin"));
+
+        assertThat(downgrade.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(downgrade.getMessage()).isEqualTo("A2_SCHEMA_VERSION_DOWNGRADE_OR_NOOP");
+        assertThat(unsupported.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(unsupported.getMessage()).isEqualTo("A2_SCHEMA_VERSION_UNSUPPORTED");
+        assertThat(unregisteredFuture.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(unregisteredFuture.getMessage()).isEqualTo("A2_SCHEMA_VERSION_UNSUPPORTED");
+        assertThat(repository.items.get(A2RuntimePolicy.SCHEMA_VERSION_KEY).configValue()).isEqualTo("v3");
+        verify(auditLogService, never()).recordRequired(any());
+        verify(idempotencyService, never()).execute(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void schemaVersionAllowsTheNextRegisteredUpgradeAndKeepsExistingAuditContract() {
+        repository.save(new PlatformConfigItem(null, A2RuntimePolicy.SCHEMA_VERSION_KEY, "v3", "STRING",
+                "admin_a2", "ADMIN", "test baseline", 1, null, null));
+
+        ApiResult<AuditCenterOverview.AuditMechanismParam> result = service.updateMechanismParam(
+                "idem-schema-v4", "schema",
+                new AuditMechanismParamUpdateRequest("v4", "registered schema v4 rollout", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().value()).isEqualTo("统一 schema · v4");
+        assertThat(repository.items.get(A2RuntimePolicy.SCHEMA_VERSION_KEY).configValue()).isEqualTo("v4");
+        verify(auditLogService).recordRequired(any());
+    }
+
+    @Test
+    void legacyInstallCanBootstrapReasonPolicyButCannotBootstrapOtherA2PoliciesFirst() {
+        repository.items.clear();
+        ApiResult<AuditCenterOverview.AuditMechanismParam> blocked = service.updateMechanismParam(
+                "idem-retention-bootstrap", "retention",
+                new AuditMechanismParamUpdateRequest("13", "abcdefghijkl", "superadmin"));
+        ApiResult<AuditCenterOverview.AuditMechanismParam> bootstrapped = service.updateMechanismParam(
+                "idem-reason-bootstrap", "ttl",
+                new AuditMechanismParamUpdateRequest("12", "abcdefghijkl", "superadmin"));
+
+        assertThat(blocked.getCode()).isEqualTo(503);
+        assertThat(bootstrapped.getCode()).isZero();
+        assertThat(repository.items.get(A2RuntimePolicy.REASON_MIN_KEY).configValue()).isEqualTo("12 字");
+        assertThat(repository.items.get(A2RuntimePolicy.RETENTION_KEY).configValue()).isEqualTo("13 个月");
+        assertThat(repository.items.get(A2RuntimePolicy.SCHEMA_VERSION_KEY).configValue()).isEqualTo("v3");
+    }
+
+    @Test
+    void controlledBootstrapReactivatesExistingUniqueKeyInsteadOfAttemptingDuplicateInsert() {
+        repository.items.clear();
+        repository.items.put(A2RuntimePolicy.REASON_MIN_KEY, new PlatformConfigItem(
+                77L, A2RuntimePolicy.REASON_MIN_KEY, "8 字", "STRING", "admin_a2", "ADMIN",
+                "disabled legacy row", 0, LocalDateTime.now(), LocalDateTime.now()));
+
+        ApiResult<AuditCenterOverview.AuditMechanismParam> result = service.updateMechanismParam(
+                "idem-reason-reactivate", "ttl",
+                new AuditMechanismParamUpdateRequest("12", "abcdefghijkl", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(repository.items.get(A2RuntimePolicy.REASON_MIN_KEY).id()).isEqualTo(77L);
+        assertThat(repository.items.get(A2RuntimePolicy.REASON_MIN_KEY).status()).isEqualTo(1);
+    }
+
+    @Test
+    void mechanismPolicyAndRequiredAuditShareOneRollbackCapableTransaction() throws Exception {
+        org.springframework.transaction.annotation.Transactional transactional = OpsAuditCenterService.class
+                .getDeclaredMethod("updateMechanismParam", String.class, String.class,
+                        AuditMechanismParamUpdateRequest.class)
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+
+        assertThat(transactional).isNotNull();
+        assertThat(java.util.Arrays.asList(transactional.rollbackFor())).contains(Exception.class);
+    }
+
+    @Test
     void mechanismParamRejectsReasonShorterThanCurrentConfiguredMinimum() {
         repository.save(new PlatformConfigItem(null, "admin.a2.reason_min_chars", "12 字", "STRING",
                 "admin_a2", "INTERNAL", "test", 1, null, null));
@@ -652,10 +739,10 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
-    void schemaVersionUsesTheSameThirtyTwoCharacterContractAsTheFrontend() {
+    void schemaVersionUsesTheSameRegisteredUpgradeContractAsTheFrontend() {
         ApiResult<AuditCenterOverview.AuditMechanismParam> valid = service.updateMechanismParam(
                 "idem-schema-valid", "schema",
-                new AuditMechanismParamUpdateRequest("schema2026", "publish audited schema version", "superadmin"));
+                new AuditMechanismParamUpdateRequest("v4", "publish audited schema version", "superadmin"));
         ApiResult<AuditCenterOverview.AuditMechanismParam> invalidChars = service.updateMechanismParam(
                 "idem-schema-chars", "schema",
                 new AuditMechanismParamUpdateRequest("v4 unsafe", "reject malformed schema version", "superadmin"));
@@ -664,7 +751,7 @@ class OpsAuditCenterServiceTest {
                 new AuditMechanismParamUpdateRequest("v".repeat(33), "reject oversized schema version", "superadmin"));
 
         assertThat(valid.getCode()).isZero();
-        assertThat(valid.getData().value()).isEqualTo("统一 schema · schema2026");
+        assertThat(valid.getData().value()).isEqualTo("统一 schema · v4");
         assertThat(invalidChars.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(tooLong.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
     }
@@ -761,6 +848,11 @@ class OpsAuditCenterServiceTest {
 
         @Override
         public Optional<PlatformConfigItem> findActiveByKey(String configKey) {
+            return Optional.ofNullable(items.get(configKey)).filter(item -> item.status() != null && item.status() == 1);
+        }
+
+        @Override
+        public Optional<PlatformConfigItem> findAnyByKey(String configKey) {
             return Optional.ofNullable(items.get(configKey));
         }
 

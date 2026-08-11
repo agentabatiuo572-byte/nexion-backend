@@ -376,10 +376,12 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT id - 1 AS id,
+                   mission_code AS taskCode,
+                   'MISSION' AS taskKind,
                    mission_name AS task,
                    mission_name AS cond,
                    CONCAT(reward_points, ' NEX') AS reward,
-                   CASE WHEN status = 1 THEN 'active' ELSE 'inactive' END AS status,
+                   CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
                    'event' AS completionType,
                    mission_code AS completionEvent,
                    '' AS href
@@ -420,6 +422,38 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     int updateMissionRewardByCode(@Param("missionCode") String missionCode,
                                   @Param("expectedRewardPoints") int expectedRewardPoints,
                                   @Param("rewardPoints") int rewardPoints);
+
+    @Select("""
+            SELECT mission_code AS taskCode, mission_name AS taskName, 'MISSION' AS taskKind, status
+              FROM nx_mission
+             WHERE mission_code = #{taskCode} AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    Map<String, Object> lockMission(@Param("taskCode") String taskCode);
+
+    @Update("""
+            UPDATE nx_mission SET mission_name=#{name}, updated_at=NOW()
+             WHERE mission_code=#{taskCode} AND mission_name=#{expectedName}
+               AND status<>2 AND is_deleted=0
+            """)
+    int updateMissionNameCas(@Param("taskCode") String taskCode,
+                             @Param("expectedName") String expectedName,
+                             @Param("name") String name);
+
+    @Update("""
+            UPDATE nx_mission SET status=#{targetStatus}, updated_at=NOW()
+             WHERE mission_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
+            """)
+    int transitionMissionStatusCas(@Param("taskCode") String taskCode,
+                                   @Param("expectedStatus") int expectedStatus,
+                                   @Param("targetStatus") int targetStatus);
+
+    @Update("""
+            UPDATE nx_mission SET is_deleted=1, updated_at=NOW()
+             WHERE mission_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
+            """)
+    int softDeleteMissionCas(@Param("taskCode") String taskCode,
+                             @Param("expectedStatus") int expectedStatus);
 
     @Select("""
             SELECT reward_amount
@@ -487,16 +521,52 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT challenge_code AS id,
+                   challenge_code AS taskCode,
+                   'MONTHLY' AS taskKind,
                    COALESCE(theme, challenge_name) AS theme,
                    CONCAT(months_from, '-', months_to, ' 月') AS age,
                    CONCAT(reward_amount, ' ', reward_type) AS reward,
                    description AS goals,
-                   CASE WHEN status = 1 THEN 'active' ELSE 'paused' END AS status
+                   CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status
               FROM nx_monthly_challenge
              WHERE is_deleted = 0
              ORDER BY sort_order ASC, id ASC
             """)
     List<Map<String, Object>> monthlyMissions();
+
+    @Select("""
+            SELECT challenge_code AS taskCode, COALESCE(theme, challenge_name) AS taskName,
+                   'MONTHLY' AS taskKind, status
+              FROM nx_monthly_challenge
+             WHERE challenge_code = #{taskCode} AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    Map<String, Object> lockMonthlyMission(@Param("taskCode") String taskCode);
+
+    @Update("""
+            UPDATE nx_monthly_challenge
+               SET challenge_name=#{name}, theme=#{name}, updated_at=NOW()
+             WHERE challenge_code=#{taskCode} AND COALESCE(theme, challenge_name)=#{expectedName}
+               AND status<>2 AND is_deleted=0
+            """)
+    int updateMonthlyMissionNameCas(@Param("taskCode") String taskCode,
+                                    @Param("expectedName") String expectedName,
+                                    @Param("name") String name);
+
+    @Update("""
+            UPDATE nx_monthly_challenge SET status=#{targetStatus}, updated_at=NOW()
+             WHERE challenge_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
+            """)
+    int transitionMonthlyMissionStatusCas(@Param("taskCode") String taskCode,
+                                          @Param("expectedStatus") int expectedStatus,
+                                          @Param("targetStatus") int targetStatus);
+
+    @Update("""
+            UPDATE nx_monthly_challenge SET is_deleted=1, updated_at=NOW()
+             WHERE challenge_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
+            """)
+    int softDeleteMonthlyMissionCas(@Param("taskCode") String taskCode,
+                                    @Param("expectedStatus") int expectedStatus);
 
     @Select("""
             SELECT mission_type AS label,

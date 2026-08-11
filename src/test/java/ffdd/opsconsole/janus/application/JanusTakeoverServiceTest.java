@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.janus.domain.JanusRemoteTargetRepository;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.janus.dto.JanusTakeoverProgressRequest;
 import ffdd.opsconsole.janus.mapper.JanusTakeoverMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -17,6 +18,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import ffdd.opsconsole.janus.domain.JanusRemoteTargetView;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -25,7 +28,9 @@ class JanusTakeoverServiceTest {
     private final JanusRemoteTargetRepository targets = mock(JanusRemoteTargetRepository.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
-    private final JanusTakeoverService service = new JanusTakeoverService(mapper, targets, audit, idempotency);
+    private final JanusAppliedProofVerifier proofVerifier = mock(JanusAppliedProofVerifier.class);
+    private final EarningsReleaseService earnings = mock(EarningsReleaseService.class);
+    private final JanusTakeoverService service = new JanusTakeoverService(mapper, targets, audit, idempotency, proofVerifier, earnings);
     private Map<String,Object> row;
 
     @BeforeEach
@@ -52,8 +57,8 @@ class JanusTakeoverServiceTest {
     void succeededRequiresExactApprovedTargetAndReceipt() {
         row.put("phase", "HANDOFF_ACKED");
         JanusTakeoverProgressRequest missingReceipt = new JanusTakeoverProgressRequest(
-                "device-1", "cmd-1", 3L, "SUCCEEDED", "approved", 2, 9L, 3L, "app-1", null,
-                null, null, null, null);
+                "device-1", "cmd-1", 3L, "e".repeat(64), 1L, "SUCCEEDED", "approved", 2, 9L, 3L, "app-1", null,
+                "cmd-1", 3L, 1L, null, null, null, null, null, null, null, null, null);
         ApiResult<Map<String,Object>> result = service.progress(5L, "SID-1", missingReceipt);
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("K6_TAKEOVER_SUCCESS_EVIDENCE_REQUIRED");
@@ -61,10 +66,52 @@ class JanusTakeoverServiceTest {
     }
 
     @Test
+    void userOwnedDeviceCannotAdvanceWithForgedReceipt() {
+        row.put("phase", "HANDOFF_ACKED");
+        JanusTakeoverProgressRequest forged = progress("SUCCEEDED", true);
+        when(proofVerifier.verify(5L, "SID-1", row, forged)).thenReturn(
+                JanusAppliedProofVerifier.Verification.rejected("JANUS_APPLIED_PROOF_UNTRUSTED"));
+
+        ApiResult<Map<String,Object>> result = service.progress(5L, "SID-1", forged);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("JANUS_APPLIED_PROOF_UNTRUSTED");
+        assertThat(row).containsEntry("phase", "HANDOFF_ACKED");
+        verify(mapper, never()).progress(any(), anyLong(), any(), anyLong(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(earnings, never()).recordTrustedAttestation(any(EarningsReleaseService.TrustedAttestationProof.class));
+    }
+
+    @Test
+    void trustedAppliedProofAdvancesAndFeedsK1ExactlyAfterCas() {
+        row.put("phase", "HANDOFF_ACKED");
+        JanusTakeoverProgressRequest applied = progress("SUCCEEDED", true);
+        when(proofVerifier.verify(5L,"SID-1",row,applied)).thenReturn(
+                new JanusAppliedProofVerifier.Verification(true,false,null,"JAP-1","a".repeat(64),"PRODUCTION"));
+        when(mapper.progress(any(),anyLong(),any(),anyLong(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any())).thenReturn(1);
+
+        ApiResult<Map<String,Object>> result=service.progress(5L,"SID-1",applied);
+
+        assertThat(result.getCode()).isZero();
+        verify(earnings).recordTrustedAttestation(any(EarningsReleaseService.TrustedAttestationProof.class));
+    }
+
+    @Test
+    void claimedCommandRemainsDeliverableAfterIntermediateProgress() {
+        row.put("phase","HANDOFF_MERGING");
+        when(targets.find("approved",2)).thenReturn(Optional.of(new JanusRemoteTargetView(
+                9L,"approved",2,"ACTIVE","approved","https://approved.example/path",
+                "https://approved.example","ADMIN","owner",1,2,"admin","reason long enough",
+                "impact long enough",0,0,0,0)));
+        ApiResult<Map<String,Object>> result=service.pending(5L,"SID-1","device-1");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("hasCommand",true);
+    }
+
+    @Test
     void staleCommandIsRejectedBeforeStateTransition() {
         JanusTakeoverProgressRequest stale = new JanusTakeoverProgressRequest(
-                "device-1", "old", 2L, "FAILED", null, null, null, null, "app-1", null,
-                "DELIVERY", "delivery", "not delivered", null);
+                "device-1", "old", 2L, "e".repeat(64), 1L, "FAILED", null, null, null, null, "app-1", null,
+                null, null, null, "DELIVERY", "delivery", "not delivered", null, null, null, null, null, null);
         ApiResult<Map<String,Object>> result = service.progress(5L, "SID-1", stale);
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("K6_TAKEOVER_STALE_COMMAND");
@@ -79,11 +126,54 @@ class JanusTakeoverServiceTest {
         verify(mapper, never()).findForUpdate(any());
     }
 
+    @Test
+    void reconciliationDriftIsProofVerifiedAndMovedToAuditableFailureHold() {
+        row.put("phase", "SUCCEEDED");
+        row.put("reconciliationId", "reconcile-1");
+        JanusTakeoverProgressRequest drift = new JanusTakeoverProgressRequest(
+                "device-1", "cmd-1", 3L, "e".repeat(64), 1L, "REVOKED", "none", 0, 0L, 3L, "app-1", "receipt-drift",
+                "cmd-1", 3L, 1L, null, null, null, "reconcile-1", "PRODUCTION", "executor-1", "a".repeat(32),
+                System.currentTimeMillis(), "b".repeat(64));
+        when(proofVerifier.verify(5L, "SID-1", row, drift)).thenReturn(
+                new JanusAppliedProofVerifier.Verification(true, false, null, "JAP-DRIFT",
+                        "c".repeat(64), "PRODUCTION"));
+        when(mapper.reconcileDrift(eq("SID-1"), eq("reconcile-1"), eq("cmd-1"), eq(3L),
+                eq("none"), eq(0), eq(0L), eq(3L), eq("app-1"), eq("receipt-drift"))).thenReturn(1);
+
+        ApiResult<Map<String,Object>> result = service.progress(5L, "SID-1", drift);
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).reconcileDrift(eq("SID-1"), eq("reconcile-1"), eq("cmd-1"), eq(3L),
+                eq("none"), eq(0), eq(0L), eq(3L), eq("app-1"), eq("receipt-drift"));
+        verify(mapper, never()).reconcile(any(), any(), any(), anyLong(), any(), any(), any(), any(), any(), any());
+        verify(earnings, never()).recordTrustedAttestation(any(EarningsReleaseService.TrustedAttestationProof.class));
+    }
+
+    @Test
+    void stoppedReconciliationIsPersistedAsManualReviewHoldWithoutAppliedProof() {
+        row.put("phase", "SUCCEEDED");
+        row.put("reconciliationId", "reconcile-1");
+        JanusTakeoverProgressRequest hold = new JanusTakeoverProgressRequest(
+                "device-1", "cmd-1", 3L, "e".repeat(64), 1L, "FAILED", null, null, null, null,
+                "app-1", null, null, null, null, "JANUS_FOREGROUND_ABORTED_HOLD", "contract",
+                "Executor stopped before terminal acceptance", "reconcile-1", null, null, null, null, null);
+        when(mapper.reconcileHold("SID-1", "reconcile-1", "cmd-1", 3L)).thenReturn(1);
+
+        ApiResult<Map<String,Object>> result = service.progress(5L, "SID-1", hold);
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).reconcileHold("SID-1", "reconcile-1", "cmd-1", 3L);
+        verify(proofVerifier, never()).verify(anyLong(), any(), any(), any());
+        verify(mapper, never()).reconcile(any(), any(), any(), anyLong(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).reconcileDrift(any(), any(), any(), anyLong(), any(), any(), any(), any(), any(), any());
+    }
+
     private JanusTakeoverProgressRequest progress(String phase, boolean evidence) {
         return new JanusTakeoverProgressRequest(
-                "device-1", "cmd-1", 3L, phase,
+                "device-1", "cmd-1", 3L, "e".repeat(64), 1L, phase,
                 evidence ? "approved" : null, evidence ? 2 : null, evidence ? 9L : null,
                 evidence ? 3L : null, evidence ? "app-1" : null, evidence ? "receipt-1" : null,
-                null, null, null, null);
+                evidence ? "cmd-1" : null, evidence ? 3L : null, evidence ? 1L : null,
+                null, null, null, null, null, null, null, null, null);
     }
 }

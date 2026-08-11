@@ -1,6 +1,8 @@
 package ffdd.opsconsole.user.application;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.finance.application.PaymentMethodProviderProperties;
+import ffdd.opsconsole.finance.application.PaymentMethodSandboxProfileGuard;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -14,6 +16,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,13 +28,16 @@ public class OpsUserPaymentMethodService {
     private final UserPaymentMethodMapper mapper;
     private final AuditLogService audit;
     private final AdminIdempotencyService idempotency;
+    private final PaymentMethodProviderProperties providerProperties;
+    private final PaymentMethodSandboxProfileGuard sandboxGuard;
 
     public Map<String, Object> list(Long userId, boolean includeUnbound, int page, int pageSize) {
         requireUser(userId);
         int safePage = Math.max(1, page);
         int safeSize = Math.min(50, Math.max(1, pageSize));
-        long total = mapper.countMethods(userId, includeUnbound);
-        var items = mapper.listMethods(userId, includeUnbound, (safePage - 1) * safeSize, safeSize);
+        String sourceEnvironment = sandboxGuard.sourceEnvironment();
+        long total = mapper.countMethods(userId, includeUnbound, sourceEnvironment);
+        var items = mapper.listMethods(userId, includeUnbound, sourceEnvironment, (safePage - 1) * safeSize, safeSize);
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("USER_PAYMENT_METHOD_LIST")
                 .resourceType("USER")
@@ -49,16 +55,18 @@ public class OpsUserPaymentMethodService {
     @Transactional
     public Map<String, Object> unbind(Long userId, Long methodId, String key, UserPaymentMethodCommandRequest request) {
         validateCommand(key, request, true);
-        return idempotency.execute("USER_PAYMENT_METHOD_UNBIND", key,
-                hash(userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
+        String sourceEnvironment = sandboxGuard.sourceEnvironment();
+        return idempotency.execute("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
+                hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
                 Map.class, () -> doUnbind(userId, methodId, key, request));
     }
 
     @Transactional
     public Map<String, Object> notifyRebind(Long userId, Long methodId, String key, UserPaymentMethodCommandRequest request) {
         validateCommand(key, request, true);
-        return idempotency.execute("USER_PAYMENT_METHOD_REBIND_NOTICE", key,
-                hash(userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
+        String sourceEnvironment = sandboxGuard.sourceEnvironment();
+        return idempotency.execute("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
+                hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
                 Map.class, () -> doNotifyRebind(userId, methodId, key, request));
     }
 
@@ -85,6 +93,7 @@ public class OpsUserPaymentMethodService {
     }
 
     private Map<String, Object> doUnbind(Long userId, Long methodId, String key, UserPaymentMethodCommandRequest request) {
+        String sourceEnvironment = sandboxGuard.sourceEnvironment();
         UserPaymentMethodMapper.PaymentMethodRow row = requireMethod(userId, methodId);
         if (row.trialGuard()) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_TRIAL_GUARDED");
@@ -92,18 +101,36 @@ public class OpsUserPaymentMethodService {
         if (!"BOUND".equals(row.status())) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_NOT_BOUND");
         }
-        if (mapper.unbind(userId, methodId, request.expectedVersion(), request.reason().trim(), operator(request)) != 1) {
+        boolean sandboxRevocation = providerProperties.getMode() == PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX
+                && "SANDBOX".equals(sourceEnvironment) && "SANDBOX".equals(row.sourceEnvironment());
+        String providerRevocation = sandboxRevocation ? "CONFIRMED" : "PENDING";
+        if (mapper.unbind(userId, methodId, request.expectedVersion(), request.reason().trim(), operator(request),
+                providerRevocation, sourceEnvironment) != 1) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_VERSION_CONFLICT");
         }
+        String revokeCommandNo = "PMR-" + hash(userId + ":" + methodId + ":" + key).substring(0, 24).toUpperCase();
+        LocalDateTime now = LocalDateTime.now();
+        if (mapper.insertRevokeCommand(revokeCommandNo, methodId, userId, row.cardToken(), providerRevocation,
+                sandboxRevocation ? "mock" : "provider", sourceEnvironment, sandboxRevocation ? null : now,
+                sandboxRevocation ? now : now.plusMinutes(15),
+                sandboxRevocation ? "mock:" + revokeCommandNo : null) != 1) {
+            throw new BizException(409, "PAYMENT_METHOD_REVOKE_COMMAND_CONFLICT");
+        }
         if (row.isDefault()) {
-            mapper.promoteFallbackDefault(userId);
+            mapper.promoteFallbackDefault(userId, sourceEnvironment);
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_UNBOUND:" + methodId + ":" + key,
                 "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 Nexion 账户解绑，不再用于后续扣款。",
                 "/pages/me/wallet/cards");
         audit("USER_PAYMENT_METHOD_UNBIND", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
-                Map.of("last4", row.last4(), "provider", row.provider(), "providerRevocation", "NOT_REQUIRED"));
-        return Map.of("id", methodId, "status", "UNBOUND", "providerRevocation", "NOT_REQUIRED");
+                Map.of("last4", row.last4(), "provider", row.provider(),
+                        "providerRevocation", providerRevocation,
+                        "revokeCommandNo", revokeCommandNo,
+                        "source", sandboxRevocation ? "mock" : "provider",
+                        "sandbox", sandboxRevocation));
+        return Map.of("id", methodId, "status", "UNBOUND", "providerRevocation", providerRevocation,
+                "revokeCommandNo", revokeCommandNo,
+                "source", sandboxRevocation ? "mock" : "provider", "sandbox", sandboxRevocation);
     }
 
     private Map<String, Object> doNotifyRebind(Long userId, Long methodId, String key,
@@ -112,7 +139,7 @@ public class OpsUserPaymentMethodService {
         if (!row.trialGuard() || !"BOUND".equals(row.status())) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_REBIND_NOTICE_NOT_ALLOWED");
         }
-        if (mapper.markRebindNotified(userId, methodId, request.expectedVersion()) != 1) {
+        if (mapper.markRebindNotified(userId, methodId, request.expectedVersion(), sandboxGuard.sourceEnvironment()) != 1) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "PAYMENT_METHOD_VERSION_CONFLICT");
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_REBIND:" + methodId + ":" + key,
@@ -146,7 +173,7 @@ public class OpsUserPaymentMethodService {
     }
 
     private UserPaymentMethodMapper.PaymentMethodRow requireMethod(Long userId, Long methodId) {
-        UserPaymentMethodMapper.PaymentMethodRow row = mapper.findMethod(userId, methodId);
+        UserPaymentMethodMapper.PaymentMethodRow row = mapper.findMethod(userId, methodId, sandboxGuard.sourceEnvironment());
         if (row == null) {
             throw new BizException(404, "PAYMENT_METHOD_NOT_FOUND");
         }

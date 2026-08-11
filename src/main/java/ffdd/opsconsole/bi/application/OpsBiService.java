@@ -23,6 +23,7 @@ import ffdd.opsconsole.bi.dto.BiReportQueryRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -83,6 +84,7 @@ public class OpsBiService implements AuditReplayable {
     private final AdminPermissionCache permissionCache;
     private final AuditObjectLockMapper lockMapper;
     private final AdminIdempotencyService idempotencyService;
+    private final A2RuntimePolicy a2RuntimePolicy;
 
     public ApiResult<Map<String, Object>> overview() {
         Long adminId = parseAdminIdFromContext();
@@ -1666,11 +1668,10 @@ public class OpsBiService implements AuditReplayable {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (!StringUtils.hasText(reason)) {
-            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
-        }
-        if (reason.trim().length() < 8 || reason.trim().length() > 200) {
-            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), "REASON_LENGTH_INVALID");
+        try {
+            a2RuntimePolicy.validateReason(reason);
+        } catch (ffdd.opsconsole.shared.exception.BizException ex) {
+            return ApiResult.fail(ex.getCode(), ex.getCode() == 422 ? "REASON_LENGTH_INVALID" : ex.getMessage());
         }
         return null;
     }

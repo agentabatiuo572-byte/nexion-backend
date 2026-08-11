@@ -40,6 +40,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppCanonicalBoundaryService {
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final int MAX_ACTIVE_DEVICES = 6;
     private static final Set<String> E3_CAPACITY_KEYS = Set.of(
             "capacityBand1DeltaPct", "capacityBand2DeltaPct", "capacityBand3DeltaPct",
             "stageEarlyEnd", "stageMidEnd", "cycleMonths", "capacityFloorPct", "capacitySubsidyDays",
@@ -516,6 +517,16 @@ public class AppCanonicalBoundaryService {
         CanonicalStateMapper.ProductStock product = mapper.lockProduct(validProductId ? productId : null, normalizedProductNo);
         if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0) {
             return ApiResult.fail(409, "PRODUCT_NOT_AVAILABLE");
+        }
+        // A capacity quote is a UX aid, never the invariant.  The ordinary order
+        // command is the last server-authoritative boundary before money/order
+        // side effects, so it must reject a full account even when a client skips
+        // or races the quote endpoint.  Capacity replacement uses its own locked
+        // transaction which removes one active device before adding the target.
+        int activeDevices = Math.max(0, mapper.activeDeviceCount(userId));
+        int reservedDevices = Math.max(0, mapper.reservedDeviceOrderCount(userId));
+        if ((long) activeDevices + reservedDevices + qty > MAX_ACTIVE_DEVICES) {
+            return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         if (product.stock() == null || product.stock() < qty) return ApiResult.fail(409, "PRODUCT_OUT_OF_STOCK");
         CanonicalStateMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);

@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.util.Map;
@@ -24,7 +25,99 @@ import org.mockito.Mockito;
 class EventOutboxServiceTest {
     private final EventOutboxMapper mapper = Mockito.mock(EventOutboxMapper.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final EventOutboxService service = new EventOutboxService(mapper, objectMapper, new OutboxProperties());
+    private final A4RuntimePolicyService a4Policy = Mockito.mock(A4RuntimePolicyService.class);
+    private final EventOutboxService service = new EventOutboxService(mapper, objectMapper, new OutboxProperties(), a4Policy);
+
+    EventOutboxServiceTest() {
+        when(a4Policy.samplingPercent(anyString(), anyBoolean())).thenReturn(100);
+    }
+
+    @Test
+    void trustedClientSamplingIsStableAndDropsBeforeAnyDurableInsert() {
+        when(mapper.findActiveSchema("app.page_viewed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("acquisition", 9, false));
+        when(a4Policy.samplingPercent("acquisition", false)).thenReturn(10);
+        when(mapper.findLifecycleState("app.page_viewed")).thenReturn("full");
+        when(mapper.listActiveProperties("app.page_viewed")).thenReturn(List.of());
+        String sampledOutActor = java.util.stream.IntStream.range(0, 1000)
+                .mapToObj(index -> "server-actor-" + index)
+                .filter(actor -> !EventOutboxService.isSampledIn(actor, "app.page_viewed", 10))
+                .findFirst().orElseThrow();
+
+        EventOutboxService.ClientAnalyticsPublishResult result = service.publishTrustedClientAnalyticsEvent(
+                "server-session", sampledOutActor, "app.page_viewed", Map.of("anon_id", sampledOutActor));
+
+        assertThat(result.sampledIn()).isFalse();
+        assertThat(EventOutboxService.isSampledIn(sampledOutActor, "app.page_viewed", 10)).isFalse();
+        verify(mapper, never()).insertEvent(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void trustedClientIngestHonorsAuthoritativeAdminSamplingAtZeroAndOneHundred() {
+        when(mapper.findActiveSchema("app.page_viewed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("acquisition", 9, false));
+        when(mapper.findLifecycleState("app.page_viewed")).thenReturn("full");
+        when(mapper.listActiveProperties("app.page_viewed")).thenReturn(List.of(
+                required("source_environment", "enum")));
+        when(a4Policy.samplingPercent("acquisition", false)).thenReturn(0, 100);
+
+        EventOutboxService.ClientAnalyticsPublishResult dropped = service.publishTrustedClientAnalyticsEvent(
+                "session-1", "server-actor-1", "app.page_viewed", Map.of("source_environment", "PRODUCTION"));
+        EventOutboxService.ClientAnalyticsPublishResult kept = service.publishTrustedClientAnalyticsEvent(
+                "session-1", "server-actor-1", "app.page_viewed", Map.of("source_environment", "PRODUCTION"));
+
+        assertThat(dropped.sampledIn()).isFalse();
+        assertThat(kept.sampledIn()).isTrue();
+        verify(mapper, org.mockito.Mockito.times(1)).insertEvent(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void lifecycleBlocksPendingAndDisabledAnalyticsBeforeOutboxWrite() {
+        when(mapper.findActiveSchema("risk.multi_account_flagged"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("risk", 5, true));
+
+        for (String state : List.of("pending_publish", "disabled")) {
+            when(mapper.findLifecycleState("risk.multi_account_flagged")).thenReturn(state);
+            assertThatThrownBy(() -> service.publish(
+                    "RISK_CLUSTER", "cluster-7", "RISK_MULTI_ACCOUNT_FLAGGED", Map.of()))
+                    .isInstanceOf(BizException.class)
+                    .hasMessageContaining("A4_EVENT_LIFECYCLE_BLOCKED");
+        }
+        verify(mapper, never()).insertEvent(anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void lifecycleGrayUsesStableTenPercentScopeAndFullAlwaysWrites() {
+        String eventName = "risk.multi_account_flagged";
+        when(mapper.findActiveSchema(eventName))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("risk", 5, true));
+        when(mapper.listActiveProperties(eventName)).thenReturn(List.of());
+        String grayAllowed = java.util.stream.IntStream.range(0, 10_000)
+                .mapToObj(value -> "cluster-" + value)
+                .filter(value -> EventOutboxService.isGrayEligible(eventName, "RISK_CLUSTER:" + value))
+                .findFirst().orElseThrow();
+        String grayDenied = java.util.stream.IntStream.range(0, 10_000)
+                .mapToObj(value -> "cluster-" + value)
+                .filter(value -> !EventOutboxService.isGrayEligible(eventName, "RISK_CLUSTER:" + value))
+                .findFirst().orElseThrow();
+
+        when(mapper.findLifecycleState(eventName)).thenReturn("gray");
+        service.publish("RISK_CLUSTER", grayAllowed, "RISK_MULTI_ACCOUNT_FLAGGED", Map.of());
+        assertThatThrownBy(() -> service.publish(
+                "RISK_CLUSTER", grayDenied, "RISK_MULTI_ACCOUNT_FLAGGED", Map.of()))
+                .hasMessageContaining("A4_EVENT_GRAY_SCOPE_REJECTED");
+
+        when(mapper.findLifecycleState(eventName)).thenReturn("full");
+        service.publish("RISK_CLUSTER", grayDenied, "RISK_MULTI_ACCOUNT_FLAGGED", Map.of());
+        verify(mapper, org.mockito.Mockito.times(2)).insertEvent(anyString(), eq("RISK_CLUSTER"), anyString(),
+                eq("RISK_MULTI_ACCOUNT_FLAGGED"), eq(eventName), eq("risk"), eq("SYSTEM"), eq(0), anyString(),
+                eq(true), eq(5), eq(true), eq(true), anyString());
+    }
 
     @Test
     void registeredAnalyticsEventIsPersistedWithCanonicalA4Envelope() throws Exception {

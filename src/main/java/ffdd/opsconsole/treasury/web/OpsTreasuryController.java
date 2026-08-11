@@ -9,6 +9,7 @@ import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
@@ -18,8 +19,8 @@ import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -151,16 +152,28 @@ public class OpsTreasuryController {
         return treasuryService.updateThresholds(idempotencyKey, request);
     }
 
-    @GetMapping(value = "/reconciliation/export", produces = "text/csv")
-    @PreAuthorize("hasAuthority('finance_d3_export')")
-    public ResponseEntity<byte[]> reconciliationExport() {
-        return csv("d3-reconciliation.csv", treasuryService.reconciliationCsv());
+    @GetMapping(value = "/b2/liabilities/export", produces = "text/csv")
+    @PreAuthorize("hasAuthority('overview_b2_export')")
+    public ResponseEntity<byte[]> b2LiabilitiesExport() {
+        return csv("d3-liabilities.csv", treasuryService.liabilitiesCsv());
     }
 
-    @GetMapping(value = "/liabilities/export", produces = "text/csv")
-    @PreAuthorize("hasAnyAuthority('finance_d3_export', 'overview_b2_export')")
-    public ResponseEntity<byte[]> liabilitiesExport() {
-        return csv("d3-liabilities.csv", treasuryService.liabilitiesCsv());
+    @PostMapping(value = "/reconciliation/export", produces = "text/csv")
+    @PreAuthorize("hasAuthority('finance_d3_export')")
+    public ResponseEntity<byte[]> sensitiveReconciliationExport(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) TreasuryExportRequest request) {
+        return csv("d3-reconciliation.csv",
+                treasuryService.sensitiveExportCsv("reconciliation", idempotencyKey, request));
+    }
+
+    @PostMapping(value = "/liabilities/export", produces = "text/csv")
+    @PreAuthorize("hasAuthority('finance_d3_export')")
+    public ResponseEntity<byte[]> sensitiveLiabilitiesExport(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) TreasuryExportRequest request) {
+        return csv("d3-liabilities.csv",
+                treasuryService.sensitiveExportCsv("liabilities", idempotencyKey, request));
     }
 
     private ResponseEntity<byte[]> csv(String fileName, byte[] body) {

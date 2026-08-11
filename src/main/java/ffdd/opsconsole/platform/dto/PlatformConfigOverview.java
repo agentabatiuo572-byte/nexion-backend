@@ -5,6 +5,7 @@ import java.util.Map;
 
 public record PlatformConfigOverview(
         List<Map<String, Object>> featureFlags,
+        List<Map<String, Object>> platformParams,
         List<Map<String, Object>> killSwitches,
         List<Map<String, Object>> systemHealth,
         Map<String, Object> stats) {

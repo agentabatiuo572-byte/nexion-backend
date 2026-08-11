@@ -9,10 +9,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.content.application.ConversationMessageEvent;
 import ffdd.opsconsole.content.application.OpsConversationService;
+import ffdd.opsconsole.content.domain.ContentConversationDetail;
+import ffdd.opsconsole.content.domain.ContentConversationMessageView;
+import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
-import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
 import ffdd.opsconsole.content.dto.ConversationStatusRequest;
@@ -24,6 +27,7 @@ import ffdd.opsconsole.content.dto.CustomerNoteRequest;
 import ffdd.opsconsole.content.dto.CustomerTagRequest;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 
 class OpsConversationControllerTest {
@@ -62,11 +66,47 @@ class OpsConversationControllerTest {
     @Test
     void replyDelegatesWithIdempotencyHeader() {
         ConversationReplyRequest request = new ConversationReplyRequest("hello", "agent reply", "agent-1");
-        when(conversationService.reply("CV-1", "idem-i9-reply", request)).thenReturn(ApiResult.ok(null));
+        when(conversationService.replyWithMessageId("CV-1", "idem-i9-reply", request))
+                .thenReturn(new OpsConversationService.MessageCommandResult(ApiResult.ok(null), null));
 
         assertThat(controller.reply("CV-1", "idem-i9-reply", request).getCode()).isZero();
 
-        verify(conversationService).reply("CV-1", "idem-i9-reply", request);
+        verify(conversationService).replyWithMessageId("CV-1", "idem-i9-reply", request);
+    }
+
+    @Test
+    void replyEventCarriesThePersistentMessageIdUsedBySnapshotDedup() {
+        ConversationReplyRequest request = new ConversationReplyRequest("hello", "agent reply", "agent-1");
+        ContentConversationView view = conversation("CV-1", "hello");
+        ContentConversationMessageView persisted = new ContentConversationMessageView(
+                77L, 1L, "CV-1", 9L, "agent", "Agent One", "hello", "sent", LocalDateTime.now());
+        when(conversationService.replyWithMessageId("CV-1", "idem-message-id", request))
+                .thenReturn(new OpsConversationService.MessageCommandResult(ApiResult.ok(view), persisted.id()));
+
+        controller.reply("CV-1", "idem-message-id", request);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(ConversationMessageEvent.class);
+        verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().getMessageId()).isEqualTo(77L);
+    }
+
+    @Test
+    void equalBodyRepliesKeepTheirOwnPersistedIdsWhenPublicationInterleaves() {
+        ConversationReplyRequest request = new ConversationReplyRequest("hello", "agent reply", "agent-1");
+        ContentConversationView view = conversation("CV-1", "hello");
+        when(conversationService.replyWithMessageId("CV-1", "reply-b", request))
+                .thenReturn(new OpsConversationService.MessageCommandResult(ApiResult.ok(view), 78L));
+        when(conversationService.replyWithMessageId("CV-1", "reply-a", request)).thenAnswer(invocation -> {
+            controller.reply("CV-1", "reply-b", request);
+            return new OpsConversationService.MessageCommandResult(ApiResult.ok(view), 77L);
+        });
+
+        controller.reply("CV-1", "reply-a", request);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(ConversationMessageEvent.class);
+        verify(eventPublisher, org.mockito.Mockito.times(2)).publishEvent(captor.capture());
+        assertThat(captor.getAllValues()).extracting(ConversationMessageEvent::getMessageId)
+                .containsExactly(78L, 77L);
     }
 
     @Test
@@ -104,16 +144,6 @@ class OpsConversationControllerTest {
     }
 
     @Test
-    void fallbackDelegatesWithIdempotencyHeader() {
-        ConversationFallbackRequest request = new ConversationFallbackRequest("pending transfer timeout", "agent-1");
-        when(conversationService.fallbackTransfer("CV-1", "idem-i9-fallback", request)).thenReturn(ApiResult.ok(null));
-
-        assertThat(controller.fallbackTransfer("CV-1", "idem-i9-fallback", request).getCode()).isZero();
-
-        verify(conversationService).fallbackTransfer("CV-1", "idem-i9-fallback", request);
-    }
-
-    @Test
     void waitTransferDelegatesWithIdempotencyHeader() {
         ConversationTransferDecisionRequest request = new ConversationTransferDecisionRequest("continue waiting", "agent-1");
         when(conversationService.waitTransfer("CV-1", "idem-i9-wait", request)).thenReturn(ApiResult.ok(null));
@@ -138,11 +168,12 @@ class OpsConversationControllerTest {
     void initiateDelegatesWithIdempotencyHeader() {
         ConversationInitiateRequest request = new ConversationInitiateRequest(
                 "support", 1001L, "agent-1", "Agent One", "hello", null, "agent-1");
-        when(conversationService.initiate("idem-i9-init", request)).thenReturn(ApiResult.ok(null));
+        when(conversationService.initiateWithMessageId("idem-i9-init", request))
+                .thenReturn(new OpsConversationService.MessageCommandResult(ApiResult.ok(null), null));
 
         assertThat(controller.initiate("idem-i9-init", request).getCode()).isZero();
 
-        verify(conversationService).initiate("idem-i9-init", request);
+        verify(conversationService).initiateWithMessageId("idem-i9-init", request);
     }
 
     @Test
@@ -183,5 +214,12 @@ class OpsConversationControllerTest {
         assertThat(controller.removeNote("CV-1", 5L, "idem-i9-note", request).getCode()).isZero();
 
         verify(conversationService).removeNote("CV-1", 5L, "idem-i9-note", request);
+    }
+
+    private ContentConversationView conversation(String conversationNo, String lastMessage) {
+        LocalDateTime now = LocalDateTime.now();
+        return new ContentConversationView(
+                1L, conversationNo, 1001L, "support", "OPEN", "agent-1", "Agent One",
+                0, lastMessage, now, null, null, null, null, null, null, null, now, 1L);
     }
 }

@@ -8,10 +8,68 @@ import ffdd.opsconsole.shared.audit.infrastructure.AuditLogEntity;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
+    @Select("SELECT GET_LOCK('nexion:a2:audit-retention',0)")
+    Integer tryAcquireRetentionLock();
+
+    @Select("SELECT RELEASE_LOCK('nexion:a2:audit-retention')")
+    Integer releaseRetentionLock();
+
+    @Select("""
+            SELECT id
+              FROM nx_audit_log
+             WHERE is_deleted=0
+               AND expire_at IS NOT NULL
+               AND expire_at <= #{now}
+               AND action NOT LIKE 'A2_AUDIT_RETENTION_%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_audit_log_archive archive
+                    WHERE archive.original_audit_id=nx_audit_log.id)
+             ORDER BY expire_at,id
+             LIMIT #{limit}
+             FOR UPDATE SKIP LOCKED
+            """)
+    List<Long> lockExpiredForArchive(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_audit_log_archive
+              (original_audit_id,retention_policy_months,expire_at,original_created_at,
+               cold_payload,content_sha256,archived_at)
+            SELECT id,retention_policy_months,expire_at,created_at,
+                   JSON_OBJECT(
+                     'id',id,'traceId',trace_id,'serviceName',service_name,'action',action,
+                     'resourceType',resource_type,'resourceId',resource_id,'bizNo',biz_no,
+                     'userId',user_id,'actorId',actor_id,'actorType',actor_type,
+                     'actorUsername',actor_username,'clientIp',client_ip,'method',method,'path',path,
+                     'result',result,'riskLevel',risk_level,'detail',detail_json,
+                     'retentionPolicyMonths',retention_policy_months,'expireAt',expire_at,'createdAt',created_at),
+                   SHA2(CAST(JSON_OBJECT(
+                     'id',id,'traceId',trace_id,'serviceName',service_name,'action',action,
+                     'resourceType',resource_type,'resourceId',resource_id,'bizNo',biz_no,
+                     'userId',user_id,'actorId',actor_id,'actorType',actor_type,
+                     'actorUsername',actor_username,'clientIp',client_ip,'method',method,'path',path,
+                     'result',result,'riskLevel',risk_level,'detail',detail_json,
+                     'retentionPolicyMonths',retention_policy_months,'expireAt',expire_at,'createdAt',created_at)
+                     AS CHAR),256),NOW(3)
+              FROM nx_audit_log
+             WHERE id=#{id} AND is_deleted=0 AND expire_at IS NOT NULL
+               AND action NOT LIKE 'A2_AUDIT_RETENTION_%'
+            """)
+    int insertArchiveFromHot(@Param("id") long id);
+
+    @Delete("""
+            DELETE hot FROM nx_audit_log hot
+             JOIN nx_audit_log_archive archive ON archive.original_audit_id=hot.id
+             WHERE hot.id=#{id} AND hot.expire_at IS NOT NULL
+               AND hot.action NOT LIKE 'A2_AUDIT_RETENTION_%'
+               AND archive.content_sha256 IS NOT NULL
+            """)
+    int deleteHotAfterArchive(@Param("id") long id);
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_audit_log
@@ -27,10 +85,12 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
               trace_id, service_name, action, resource_type, resource_id, biz_no,
               user_id, actor_id, actor_type, actor_username, client_ip, method, path,
               result, risk_level, detail_json, created_at, is_deleted
+              , retention_policy_months, expire_at
             ) VALUES (
               #{log.traceId}, #{log.serviceName}, #{log.action}, #{log.resourceType}, #{log.resourceId}, #{log.bizNo},
               #{log.userId}, #{log.actorId}, #{log.actorType}, #{log.actorUsername}, #{log.clientIp}, #{log.method}, #{log.path},
               #{log.result}, #{log.riskLevel}, #{log.detailJson}, NOW(), 0
+              , #{log.retentionPolicyMonths}, #{log.expireAt}
             )
             """)
     int insertAuditLog(@Param("log") AuditLogWrite log);
@@ -54,6 +114,7 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
                    result,
                    risk_level AS riskLevel,
                    detail_json AS detailJson,
+                   JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.schemaVersion')) AS schemaVersion,
                    created_at AS createdAt
               FROM nx_audit_log
              WHERE is_deleted = 0
@@ -438,6 +499,8 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             String path,
             String result,
             String riskLevel,
-            String detailJson) {
+            String detailJson,
+            Integer retentionPolicyMonths,
+            LocalDateTime expireAt) {
     }
 }

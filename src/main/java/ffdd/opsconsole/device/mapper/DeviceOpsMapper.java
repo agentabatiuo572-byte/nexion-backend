@@ -92,6 +92,43 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     long countAbnormalDevices();
 
     @Select("""
+            SELECT
+              SUM(CASE WHEN r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) AS heartbeatLost1h,
+              SUM(CASE WHEN r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST')
+                         AND (r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)) THEN 1 ELSE 0 END) AS persistentOffline1h,
+              SUM(CASE WHEN NULLIF(TRIM(r.active_task_no),'') IS NOT NULL THEN 1 ELSE 0 END) AS activeTasks,
+              AVG(r.gpu_usage) AS avgGpuUsagePct,
+              AVG(r.gpu_power_w) AS avgGpuPowerW,
+              MAX(r.updated_at) AS latestRuntimeAt
+              FROM nx_user_device d
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+             WHERE d.is_deleted = 0
+               AND d.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+            """)
+    FleetObservabilityMetrics e5FleetObservabilityMetrics();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_event_outbox
+             WHERE is_deleted = 0
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+               AND event_type IN ('admin.device_activated','admin.device_resumed')
+            """)
+    long countE5ReconnectEvents24h();
+
+    @Select("""
+            SELECT event_type AS eventType, aggregate_type AS aggregateType,
+                   aggregate_id AS aggregateId, created_at AS createdAt
+              FROM nx_event_outbox
+             WHERE is_deleted = 0
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+               AND aggregate_type IN ('E5_DEVICE','E5_DEVICE_BATCH','E5_DATACENTER')
+             ORDER BY created_at DESC, id DESC
+             LIMIT 50
+            """)
+    List<E5ActivityRow> e5Activity24h();
+
+    @Select("""
             <script>
             SELECT COUNT(*)
               FROM nx_user_device d
@@ -804,6 +841,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     int resumeRuntimeByDatacenter(@Param("dcLocation") String dcLocation);
 
     record E3ConfigRow(String configKey, String configValue) {
+    }
+
+    record FleetObservabilityMetrics(
+            Long heartbeatLost1h,
+            Long persistentOffline1h,
+            Long activeTasks,
+            BigDecimal avgGpuUsagePct,
+            BigDecimal avgGpuPowerW,
+            LocalDateTime latestRuntimeAt) {
+    }
+
+    record E5ActivityRow(
+            String eventType,
+            String aggregateType,
+            String aggregateId,
+            LocalDateTime createdAt) {
     }
 
     record LifecycleRuleRow(Integer startMonth, Integer endMonth, BigDecimal monthlyDecayRate, BigDecimal floorEfficiency) {

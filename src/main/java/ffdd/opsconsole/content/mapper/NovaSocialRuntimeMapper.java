@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
+import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -37,6 +38,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
               status VARCHAR(32) NOT NULL,
               reason VARCHAR(255) NOT NULL DEFAULT '',
               notification_count INT NOT NULL DEFAULT 0,
+              fanout_cursor_user_id BIGINT NOT NULL DEFAULT 0,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               UNIQUE KEY uk_nova_business_event (channel_key, source_event_id),
@@ -44,6 +46,17 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createBusinessEventReceiptTable();
+
+    @Select("""
+            SELECT COUNT(1) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_nova_business_event_receipt'
+               AND COLUMN_NAME = 'fanout_cursor_user_id'
+            """)
+    int fanoutCursorColumnCount();
+
+    @Update("ALTER TABLE nx_nova_business_event_receipt ADD COLUMN fanout_cursor_user_id BIGINT NOT NULL DEFAULT 0 AFTER notification_count")
+    void addFanoutCursorColumn();
 
     @Insert("""
             INSERT IGNORE INTO nx_event_schema_registry (
@@ -90,7 +103,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                SET lease_owner = #{leaseOwner}, lease_until = #{leaseUntil}, updated_at = #{now}
              WHERE slot_key = #{slotKey}
                AND completed_at IS NULL
-               AND lease_until <= #{now}
+               AND NOT (lease_until > #{now})
             """)
     int takeoverExpiredSlot(@Param("slotKey") String slotKey,
                             @Param("leaseOwner") String leaseOwner,
@@ -147,6 +160,7 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                      FROM nx_nova_business_event_receipt r
                     WHERE r.channel_key = #{channel}
                       AND r.source_event_id = e.event_id
+                       AND r.status != 'PROCESSING'
                )
              ORDER BY COALESCE(e.event_ts, e.created_at), e.id
              LIMIT #{limit}
@@ -170,6 +184,41 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             @Param("sourceEventId") String sourceEventId,
             @Param("eventName") String eventName,
             @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT fanout_cursor_user_id cursorUserId, notification_count notificationCount
+              FROM nx_nova_business_event_receipt
+             WHERE channel_key = #{channel}
+               AND source_event_id = #{sourceEventId}
+               AND status = 'PROCESSING'
+            """)
+    NovaBusinessFanoutProgress businessFanoutProgress(
+            @Param("channel") String channel, @Param("sourceEventId") String sourceEventId);
+
+    @Select("""
+            SELECT MAX(batch.id)
+              FROM (
+                    SELECT u.id FROM nx_user u
+                     WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
+                       AND u.id > #{afterUserId}
+                     ORDER BY u.id LIMIT #{limit}
+                   ) batch
+            """)
+    Long fanoutBatchUpperUserId(@Param("afterUserId") long afterUserId, @Param("limit") int limit);
+
+    @Update("""
+            UPDATE nx_nova_business_event_receipt
+               SET fanout_cursor_user_id = #{nextCursorUserId},
+                   notification_count = notification_count + #{delivered},
+                   reason = 'FANOUT_BATCH_COMMITTED', updated_at = #{now}
+             WHERE channel_key = #{channel} AND source_event_id = #{sourceEventId}
+               AND status = 'PROCESSING' AND fanout_cursor_user_id = #{expectedCursorUserId}
+            """)
+    int advanceBusinessFanout(
+            @Param("channel") String channel, @Param("sourceEventId") String sourceEventId,
+            @Param("expectedCursorUserId") long expectedCursorUserId,
+            @Param("nextCursorUserId") long nextCursorUserId,
+            @Param("delivered") int delivered, @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_nova_business_event_receipt
@@ -299,6 +348,40 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             @Param("ctaHref") String ctaHref,
             @Param("cooldownSince") LocalDateTime cooldownSince,
             @Param("now") LocalDateTime now);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_notification (
+                biz_no, user_id, type, priority, title, body, cta_label, cta_href,
+                read_flag, push_status, push_attempts, next_push_at,
+                created_at, updated_at, is_deleted)
+            SELECT #{bizNo}, u.id, #{notificationType}, 'normal',
+                   LEFT(CASE WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{titleVi}
+                             WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{titleZh}
+                             ELSE #{titleEn} END, 128),
+                   LEFT(CASE WHEN LOWER(COALESCE(u.language, '')) LIKE 'vi%' THEN #{bodyVi}
+                             WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{bodyZh}
+                             ELSE #{bodyEn} END, 512),
+                   NULL, NULLIF(#{ctaHref}, ''), 0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
+              FROM nx_user u
+              JOIN nx_nova_channel c ON c.channel_key = #{channel} AND c.is_deleted = 0 AND c.enabled = 1
+              JOIN nx_nova_template t ON t.channel_key = c.channel_key AND t.is_deleted = 0 AND t.status = 'PUBLISHED'
+             WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
+               AND u.id > #{afterUserId} AND NOT (u.id > #{upperUserId})
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_notification previous
+                    WHERE previous.user_id = u.id AND previous.is_deleted = 0
+                      AND previous.type = #{notificationType}
+                      AND previous.created_at > #{cooldownSince})
+            """)
+    int enqueueBusinessNotificationBatch(
+            @Param("channel") String channel, @Param("notificationType") String notificationType,
+            @Param("bizNo") String bizNo, @Param("afterUserId") long afterUserId,
+            @Param("upperUserId") long upperUserId,
+            @Param("titleZh") String titleZh, @Param("bodyZh") String bodyZh,
+            @Param("titleVi") String titleVi, @Param("bodyVi") String bodyVi,
+            @Param("titleEn") String titleEn, @Param("bodyEn") String bodyEn,
+            @Param("ctaHref") String ctaHref,
+            @Param("cooldownSince") LocalDateTime cooldownSince, @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_notification

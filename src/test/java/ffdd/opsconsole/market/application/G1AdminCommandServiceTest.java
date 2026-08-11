@@ -1,7 +1,6 @@
 package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -11,7 +10,6 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.StakingMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.Map;
@@ -63,13 +61,20 @@ class G1AdminCommandServiceTest {
     }
 
     @Test
-    void restorationIsRejectedBecauseOnlyJ1MayRecoverKilledPool() {
+    void restorationUsesItsOwnIdempotentJ1CommandAndPublishesAuditEvent() {
         NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(
-                "false", "attempt direct recovery", "superadmin", null,
-                "restore positions", "MANUAL_RISK_REVIEW");
+                "false", "coverage and incident controls recovered", "superadmin", null,
+                "risk review confirms the tier may safely reopen", "MANUAL_RISK_REVIEW");
+        when(market.restoreStakingPool("g1-restore-1", "usdt30d", request))
+                .thenReturn(ApiResult.ok(Map.of("domain", "G1")));
 
-        assertThatThrownBy(() -> service.kill("g1-restore-1", "usdt30d", request))
-                .isInstanceOf(BizException.class)
-                .hasMessageContaining("G1_RESTORE_MUST_USE_J1");
+        assertThat(service.restore("g1-restore-1", "usdt30d", request).getCode()).isZero();
+
+        verify(idempotency).execute(org.mockito.ArgumentMatchers.eq("ADMIN:G1:RESTORE:usdt30d"),
+                org.mockito.ArgumentMatchers.eq("g1-restore-1"), anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class), any());
+        verify(market).restoreStakingPool("g1-restore-1", "usdt30d", request);
+        verify(outbox).publish(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.eq("admin.staking_pool_restored"), any());
     }
 }

@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
+import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
@@ -54,7 +55,8 @@ class NovaBusinessRuntimeServiceTest {
 
         assertThat(contracts).containsOnlyKeys(
                 "welcome", "market", "upgrade", "dailySummary", "tradein",
-                "eventClaim", "wrapped", "taskLockMonthly", "quest");
+                "eventClaim", "wrapped", "taskLockMonthly", "quest",
+                "team_event", "staking_event", "market_event");
         assertThat(contracts.get("welcome")).containsExactly("auth.register_completed");
         assertThat(contracts.get("tradein"))
                 .containsExactly("tradein.eligible")
@@ -62,6 +64,90 @@ class NovaBusinessRuntimeServiceTest {
         assertThat(contracts.get("quest"))
                 .containsExactly("quest.grace_started", "quest.expired", "quest.weekly_refreshed")
                 .doesNotContain("quest.completed");
+    }
+
+    @Test
+    void schedulerIncludesOnlyConfiguredDynamicChannelsWithAllowlistedRuntimeSources() {
+        when(novaRepository.channels()).thenReturn(List.of(
+                new NovaChannelView("opsWeekly", "运营周报", "a4:commission.paid", "15 min", "7d", "", BigDecimal.ZERO, true),
+                new NovaChannelView("unsafe", "不受控来源", "a4:client.fabricated", "15 min", "7d", "", BigDecimal.ZERO, true)));
+
+        assertThat(service.channelKeys())
+                .contains("team_event", "staking_event", "market_event", "opsWeekly")
+                .doesNotContain("unsafe");
+    }
+
+    @Test
+    void broadcastFanoutCommitsAtMostOneBoundedBatchPerSchedulerRun() {
+        NovaBusinessEventFact fact = new NovaBusinessEventFact(
+                "evt-market-1", "market.curve_advanced", null, "P3", 2, "2026-W20", now.minusSeconds(2));
+        when(novaRepository.channel("market_event")).thenReturn(Optional.of(channel("market_event", true)));
+        when(novaRepository.template("market_event")).thenReturn(Optional.of(template("market_event")));
+        when(runtimeRepository.latestNotificationAt("NOVA_MARKET_EVENT")).thenReturn(Optional.empty());
+        when(runtimeRepository.pendingBusinessFacts("market_event", List.of("market.curve_advanced"), 100))
+                .thenReturn(List.of(fact));
+        when(runtimeRepository.claimBusinessFact("market_event", "evt-market-1", "market.curve_advanced", now))
+                .thenReturn(true);
+        when(runtimeRepository.businessFanoutProgress("market_event", "evt-market-1"))
+                .thenReturn(Optional.empty());
+        when(runtimeRepository.fanoutBatchUpperUserId(0, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE))
+                .thenReturn(Optional.of(250L));
+        when(runtimeRepository.fanoutBatchUpperUserId(250L, 1)).thenReturn(Optional.of(251L));
+        when(runtimeRepository.enqueueBusinessNotificationBatch(
+                eq("market_event"), eq("NOVA_MARKET_EVENT"), eq("NOVA-market_event-evt-market-1-B250"),
+                eq(0L), eq(250L), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), any(), eq(now))).thenReturn(0);
+        when(runtimeRepository.markNotificationsDelivered("NOVA-market_event-evt-market-1-B250", now)).thenReturn(0);
+        when(runtimeRepository.notificationFacts("NOVA-market_event-evt-market-1-B250", "P3", now))
+                .thenReturn(List.of());
+        when(runtimeRepository.advanceBusinessFanout(
+                "market_event", "evt-market-1", 0L, 250L, 0, now)).thenReturn(true);
+
+        var result = service.dispatchChannelAt("market_event", now);
+
+        assertThat(result.reason()).isEqualTo("FANOUT_BATCH_COMMITTED_MORE_PENDING");
+        verify(runtimeRepository).fanoutBatchUpperUserId(0, 250);
+        verify(runtimeRepository, never()).completeBusinessFact(
+                eq("market_event"), eq("evt-market-1"), eq("DELIVERED"), anyString(), anyInt(), eq(now));
+        verify(runtimeRepository, never()).enqueueBusinessNotifications(
+                eq("market_event"), anyString(), anyString(), any(), anyString(),
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), any(), eq(now));
+    }
+
+    @Test
+    void retryResumesFromDurableCursorInsteadOfDuplicatingEarlierUsers() {
+        NovaBusinessEventFact fact = new NovaBusinessEventFact(
+                "evt-market-2", "market.curve_advanced", null, "P3", 2, "2026-W20", now.minusSeconds(2));
+        when(novaRepository.channel("market_event")).thenReturn(Optional.of(channel("market_event", true)));
+        when(novaRepository.template("market_event")).thenReturn(Optional.of(template("market_event")));
+        when(runtimeRepository.latestNotificationAt("NOVA_MARKET_EVENT")).thenReturn(Optional.empty());
+        when(runtimeRepository.pendingBusinessFacts("market_event", List.of("market.curve_advanced"), 100))
+                .thenReturn(List.of(fact));
+        when(runtimeRepository.claimBusinessFact("market_event", "evt-market-2", "market.curve_advanced", now))
+                .thenReturn(false);
+        when(runtimeRepository.businessFanoutProgress("market_event", "evt-market-2"))
+                .thenReturn(Optional.of(new NovaBusinessFanoutProgress(250L, 250)));
+        when(runtimeRepository.fanoutBatchUpperUserId(250L, NovaBusinessRuntimeService.FANOUT_BATCH_SIZE))
+                .thenReturn(Optional.of(500L));
+        when(runtimeRepository.fanoutBatchUpperUserId(500L, 1)).thenReturn(Optional.empty());
+        when(runtimeRepository.enqueueBusinessNotificationBatch(
+                eq("market_event"), eq("NOVA_MARKET_EVENT"), eq("NOVA-market_event-evt-market-2-B500"),
+                eq(250L), eq(500L), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), any(), eq(now))).thenReturn(0);
+        when(runtimeRepository.markNotificationsDelivered("NOVA-market_event-evt-market-2-B500", now)).thenReturn(0);
+        when(runtimeRepository.notificationFacts("NOVA-market_event-evt-market-2-B500", "P3", now))
+                .thenReturn(List.of());
+        when(runtimeRepository.advanceBusinessFanout(
+                "market_event", "evt-market-2", 250L, 500L, 0, now)).thenReturn(true);
+
+        var result = service.dispatchChannelAt("market_event", now);
+
+        assertThat(result.reason()).isEqualTo("FANOUT_COMPLETE");
+        verify(runtimeRepository).enqueueBusinessNotificationBatch(
+                eq("market_event"), anyString(), anyString(), eq(250L), eq(500L),
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), anyString(), any(), eq(now));
+        verify(runtimeRepository).completeBusinessFact(
+                "market_event", "evt-market-2", "DELIVERED", "FANOUT_COMPLETE", 250, now);
     }
 
     @Test

@@ -6,6 +6,7 @@ import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
 import ffdd.opsconsole.risk.dto.B5ThresholdPreviewRequest;
 import ffdd.opsconsole.risk.dto.B5TriageRequest;
+import ffdd.opsconsole.risk.dto.B5SignalStatusRequest;
 import ffdd.opsconsole.risk.mapper.B5RiskRadarMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -33,6 +34,7 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -44,6 +46,7 @@ public class OpsRiskRadarService {
     private static final String SUBSCRIPTION_CHANNELS_KEY = "risk.alert-subscription.channels";
     private static final String SUBSCRIPTION_WEBHOOK_KEY = "risk.alert-subscription.webhook-url";
     private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
+    private static final String SUBSCRIPTION_ACTOR_KEY = "risk.alert-subscription.subscriber";
     private static final String THRESHOLD_SCOPE = "B5_BANKRUN_THRESHOLDS";
     private static final String SUBSCRIPTION_SCOPE = "B5_ALERT_SUBSCRIPTION";
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
@@ -63,6 +66,8 @@ public class OpsRiskRadarService {
     private final AuditLogService auditLogService;
     private final AdminOperatorRoleResolver roleResolver;
     private final Clock clock;
+    @Value("${spring.profiles.active:}")
+    private final String activeProfiles;
 
     public ApiResult<Map<String, Object>> radar() {
         return ApiResult.ok(radarView());
@@ -208,9 +213,10 @@ public class OpsRiskRadarService {
                     "userId", whole(row.get("userId")),
                     "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
                     "target", target,
-                    // nx_risk_signal has no handled/resolved column. Keep the feed visible but never
-                    // mislabel every historical signal as "unhandled".
-                    "handlingStatusAvailable", false);
+                    "handlingStatusAvailable", true,
+                    "handlingStatus", requireSignalField(row.get("handlingStatus"), "handlingStatus"),
+                    "handlingVersion", whole(row.get("handlingVersion")),
+                    "deliveryStatus", requireSignalField(row.get("deliveryStatus"), "deliveryStatus"));
         }).toList();
     }
 
@@ -304,6 +310,33 @@ public class OpsRiskRadarService {
         return ApiResult.ok(subscriptionView());
     }
 
+    public ApiResult<List<Map<String, Object>>> alertInbox() {
+        String subscriber = AdminActorResolver.resolve("");
+        requireActor(subscriber);
+        return ApiResult.ok(mapper.subscriberInbox(subscriber, 100));
+    }
+
+    @Transactional
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> acknowledgeAlert(String idempotencyKey, long deliveryId) {
+        String subscriber = AdminActorResolver.resolve("");
+        requireActor(subscriber);
+        if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
+        String hash = hash(deliveryId + "|" + subscriber);
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                "B5_INBOX_ACK:" + deliveryId, idempotencyKey.trim(), hash, ApiResult.class,
+                () -> acknowledgeAlertOnce(deliveryId, subscriber));
+    }
+
+    private ApiResult<Map<String, Object>> acknowledgeAlertOnce(long deliveryId, String subscriber) {
+        if (deliveryId <= 0 || mapper.acknowledgeInbox(deliveryId, subscriber) != 1) {
+            throw new BizException(404, "B5_INBOX_DELIVERY_NOT_FOUND");
+        }
+        auditRequired("B5_INBOX_ACKNOWLEDGED", "B5_ALERT_DELIVERY", String.valueOf(deliveryId), subscriber,
+                section("subscriber", subscriber, "deliveryId", deliveryId));
+        return ApiResult.ok(section("deliveryId", deliveryId, "acknowledged", true));
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateSubscription(
             String idempotencyKey, B5AlertSubscriptionRequest request) {
@@ -317,8 +350,28 @@ public class OpsRiskRadarService {
         if (!inApp && !email && !webhook) {
             throw new BizException(400, "B5_SUBSCRIPTION_CHANNEL_REQUIRED");
         }
+        if (email && (!B5RiskAlertDeliveryService.sandboxProfileAllowed(activeProfiles)
+                || !"sandbox".equalsIgnoreCase(configFacade
+                .activeValue(B5RiskAlertDeliveryService.EMAIL_MODE_KEY).orElse("disabled").trim()))) {
+            throw new BizException(503, "B5_EMAIL_PROVIDER_UNAVAILABLE");
+        }
         if (webhook && (webhookUrl == null || !webhookUrl.startsWith("https://") || webhookUrl.length() > 500)) {
             throw new BizException(400, "B5_WEBHOOK_URL_INVALID");
+        }
+        if (webhook && !StringUtils.hasText(configFacade
+                .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))) {
+            throw new BizException(503, "B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
+        }
+        if (webhook) {
+            try {
+                Set<String> allowlist = java.util.Arrays.stream(configFacade
+                        .activeValue(B5RiskAlertDeliveryService.WEBHOOK_ALLOWLIST_KEY).orElse("").split(","))
+                        .map(String::trim).filter(StringUtils::hasText)
+                        .map(value -> value.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toSet());
+                B5RiskAlertDeliveryService.requireAllowedPublicHttps(java.net.URI.create(webhookUrl), allowlist);
+            } catch (Exception ex) {
+                throw new BizException(400, "B5_WEBHOOK_URL_INVALID");
+            }
         }
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
@@ -348,6 +401,9 @@ public class OpsRiskRadarService {
         configFacade.upsertAdminValue(
                 SUBSCRIPTION_VERSION_KEY, String.valueOf(currentVersion + 1),
                 "NUMBER", "risk_alert_subscription", "B1/B5 shared subscription version");
+        configFacade.upsertAdminValue(
+                SUBSCRIPTION_ACTOR_KEY, actor,
+                "STRING", "risk_alert_subscription", "B5 alert subscriber identity");
         Map<String, Object> after = subscriptionView();
         auditRequired("B5_ALERT_SUBSCRIPTION_CHANGED", "B5_SUBSCRIPTION", "shared", actor, section(
                 "role", roleResolver.resolve(),
@@ -382,6 +438,56 @@ public class OpsRiskRadarService {
                             "target", target));
                     return ApiResult.ok(section("dimension", dimension, "target", target));
                 });
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> updateSignalStatus(
+            String idempotencyKey, String signalNo, B5SignalStatusRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
+        if (!StringUtils.hasText(signalNo) || request == null) throw new BizException(400, "B5_SIGNAL_STATUS_REQUIRED");
+        String target = text(request.targetStatus());
+        String expected = text(request.expectedStatus());
+        if (!Set.of("handled", "resolved").contains(target)
+                || !Set.of("open", "handled").contains(expected)
+                || !("open".equals(expected) && "handled".equals(target)
+                || "handled".equals(expected) && "resolved".equals(target))) {
+            throw new BizException(409, "B5_SIGNAL_STATUS_TRANSITION_INVALID");
+        }
+        if (request.expectedVersion() == null || request.expectedVersion() < 0) {
+            throw new BizException(400, "B5_SIGNAL_VERSION_REQUIRED");
+        }
+        String reason = requireReason(request.reason());
+        String actor = AdminActorResolver.resolve(request.operator());
+        requireActor(actor);
+        String normalizedSignal = signalNo.trim();
+        String hash = hash(normalizedSignal + "|" + expected + "|" + target + "|"
+                + request.expectedVersion() + "|" + reason + "|" + actor);
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+                "B5_SIGNAL_STATUS:" + normalizedSignal, idempotencyKey.trim(), hash, ApiResult.class,
+                () -> updateSignalStatusOnce(normalizedSignal, expected, target,
+                        request.expectedVersion(), reason, actor));
+    }
+
+    @Transactional
+    ApiResult<Map<String, Object>> updateSignalStatusOnce(
+            String signalNo, String expectedStatus, String targetStatus,
+            long expectedVersion, String reason, String actor) {
+        if (mapper.signalExists(signalNo) != 1) throw new BizException(404, "B5_SIGNAL_NOT_FOUND");
+        mapper.ensureSignalDisposition(signalNo);
+        B5RiskRadarMapper.SignalDispositionRecord current = mapper.lockSignalDisposition(signalNo);
+        if (current == null || !expectedStatus.equals(current.status()) || expectedVersion != current.version()) {
+            throw new BizException(409, "B5_SIGNAL_VERSION_CONFLICT");
+        }
+        if (mapper.updateSignalDisposition(
+                signalNo, targetStatus, expectedStatus, expectedVersion, actor, reason) != 1) {
+            throw new BizException(409, "B5_SIGNAL_VERSION_CONFLICT");
+        }
+        auditRequired("B5_SIGNAL_STATUS_CHANGED", "B5_RISK_SIGNAL", signalNo, actor, section(
+                "before", expectedStatus, "after", targetStatus,
+                "beforeVersion", expectedVersion, "afterVersion", expectedVersion + 1,
+                "reason", reason));
+        return ApiResult.ok(section("signalNo", signalNo, "handlingStatus", targetStatus,
+                "handlingVersion", expectedVersion + 1));
     }
 
     private List<Map<String, Object>> killSwitches() {
@@ -468,15 +574,24 @@ public class OpsRiskRadarService {
 
     private Map<String, Object> subscriptionView() {
         Set<String> channels = Set.of(configFacade.activeValue(SUBSCRIPTION_CHANNELS_KEY)
-                .orElse("inApp,email").split(","));
+                .orElse("inApp").split(","));
         String webhookUrl = configFacade.activeValue(SUBSCRIPTION_WEBHOOK_KEY).orElse("");
+        String subscriber = configFacade.activeValue(SUBSCRIPTION_ACTOR_KEY).orElse("unassigned");
         long version = configVersion(SUBSCRIPTION_VERSION_KEY, false);
         return section(
                 "inApp", channels.contains("inApp"),
                 "email", channels.contains("email"),
+                "emailMode", B5RiskAlertDeliveryService.sandboxProfileAllowed(activeProfiles)
+                        && "sandbox".equalsIgnoreCase(configFacade
+                        .activeValue(B5RiskAlertDeliveryService.EMAIL_MODE_KEY).orElse("disabled").trim())
+                        ? "sandbox" : "disabled",
                 "webhook", channels.contains("webhook"),
+                "webhookMode", StringUtils.hasText(configFacade
+                        .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))
+                        ? "controlled-proxy" : "disabled",
                 "webhookUrl", webhookUrl,
                 "version", version,
+                "subscriber", subscriber,
                 "sharedWith", "B1");
     }
 

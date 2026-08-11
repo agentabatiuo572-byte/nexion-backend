@@ -47,6 +47,7 @@ public class AppWithdrawalService {
     private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
+    private static final String STRONG_REVIEW_THRESHOLD_KEY = "withdrawal.strong_review_threshold_usdt";
 
     private final AppWithdrawalMapper mapper;
     private final PlatformConfigFacade config;
@@ -77,12 +78,14 @@ public class AppWithdrawalService {
             throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
         }
         boolean withdrawalEnabled = withdrawGateEnabled();
+        BigDecimal strongReviewThreshold = strongReviewThreshold();
         return ApiResult.ok(linked(
                 "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
                 "balanceMaxRatio", balanceMaxRatio,
                 "networkConfirmFeeUsd", policy.networkConfirmFeeUsd(),
                 "nexFeeOffsetRate", policy.nexFeeOffsetRate(),
                 "smallAmountThresholdUsd", policy.smallAmountThresholdUsd(),
+                "strongReviewThresholdUsdt", strongReviewThreshold,
                 "payoutSlaHours", policy.payoutSlaHours(),
                 "policyVersion", policy.policyVersion(),
                 "cooldownDays", rhythm.withdrawCooldownDays(),
@@ -226,18 +229,24 @@ public class AppWithdrawalService {
         String k4Priority = k4Priority(k4Score, riskFacts);
         boolean frozen = "freeze".equals(riskDecision.action());
         boolean delayed = "delay".equals(riskDecision.action());
-        boolean fastTrack = k4Score < riskFacts.k4BandLowMax()
+        BigDecimal strongReviewThreshold = strongReviewThreshold();
+        boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
+        boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
+        boolean fastTrack = !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
+        String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
-        String status = frozen ? "FROZEN" : (fastTrack || delayed) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
-        String riskRoute = finalRiskRoute(k4Score, riskFacts, riskDecision);
-        String failureReason = fastTrack ? "H1_COOLDOWN_FAST_TRACK"
+        String status = frozen ? "FROZEN" : strongReview ? "REVIEW_PENDING"
+                : (fastTrack || delayed || "fast-pass".equals(riskRoute)) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
+        String failureReason = strongReview ? "A3_STRONG_REVIEW_THRESHOLD"
+                : fastTrack ? "H1_COOLDOWN_FAST_TRACK"
                 : riskRouteEvidence(k4Score, riskFacts, riskDecision);
+        LocalDateTime payoutDueAt = holdUntil.plusHours(policy.payoutSlaHours());
         if (mapper.reserveFunds(userId, amount, nexBurned, wallet.version()) != 1) {
             throw new BizException(409, "WITHDRAWAL_WALLET_CONFLICT");
         }
         WithdrawalWrite write = new WithdrawalWrite(
-                userId, withdrawalNo, chain, amount, address, holdUntil,
+                userId, withdrawalNo, chain, amount, address, holdUntil, payoutDueAt,
                 BigDecimal.ZERO, networkFee, networkFee, networkFee,
                 penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
@@ -272,7 +281,12 @@ public class AppWithdrawalService {
                 "actual_penalty_fee", actualPenaltyFee, "actual_network_fee", actualNetworkFee,
                 "actual_fee", actualFee, "net_receive", netReceive,
                 "cooldown_days", rhythm.withdrawCooldownDays(), "hold_until", holdUntil,
+                "small_amount_auto_review", fastTrack,
+                "small_amount_threshold_usd", policy.smallAmountThresholdUsd(),
+                "payout_sla_hours", policy.payoutSlaHours(), "payout_due_at", payoutDueAt,
                 "risk_route", riskRoute, "k3_risk_route", riskDecision.action(),
+                "strong_review", strongReview,
+                "strong_review_threshold_usdt", strongReviewThreshold,
                 "risk_rule_id", riskDecision.primaryRuleId(), "k4_priority", k4Priority,
                 "k4_risk_score", riskFacts.k4RiskScore(), "k4_model_version", riskFacts.k4ModelVersion(),
                 "k4_as_of", riskFacts.k4AsOf());
@@ -303,6 +317,7 @@ public class AppWithdrawalService {
         return ApiResult.ok(linked(
                 "withdrawalNo", withdrawalNo, "amount", amount, "chain", chain, "status", status,
                 "holdUntil", holdUntil, "networkConfirmUsd", networkFee,
+                "smallAmountEligible", smallAmountEligible, "payoutDueAt", payoutDueAt,
                 "networkFee", networkFee, "penaltyFeeRate", penaltyPct,
                 "penaltyFee", penaltyFee, "grossFee", grossFee,
                 "nexBurned", nexBurned, "feeWaived", feeWaived,
@@ -312,9 +327,23 @@ public class AppWithdrawalService {
                 "netReceive", netReceive, "policyVersion", policy.policyVersion(),
                 "useNexFeeOffset", useNexFeeOffset,
                 "riskRoute", riskRoute, "k3RiskRoute", riskDecision.action(),
+                "strongReview", strongReview, "strongReviewRequired", strongReview,
                 "k4Priority", k4Priority,
                 "riskRuleId", riskDecision.primaryRuleId(),
                 "idSource", "server"));
+    }
+
+    private BigDecimal strongReviewThreshold() {
+        String raw = config.activeValue(STRONG_REVIEW_THRESHOLD_KEY).orElse(null);
+        try {
+            BigDecimal value = new BigDecimal(raw == null ? "" : raw.trim());
+            if (value.compareTo(MIN_WITHDRAWAL) < 0 || value.compareTo(new BigDecimal("10000000")) > 0) {
+                throw new IllegalArgumentException("range");
+            }
+            return value.setScale(6, RoundingMode.UNNECESSARY);
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
+        }
     }
 
     private boolean validK4Thresholds(WithdrawalRiskFacts facts) {

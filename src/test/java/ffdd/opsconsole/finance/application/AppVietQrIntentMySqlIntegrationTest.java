@@ -385,7 +385,7 @@ class AppVietQrIntentMySqlIntegrationTest {
     private BigDecimal bankReceivedToday(Connection connection, String intentNo)
             throws Exception {
         try (PreparedStatement statement = connection.prepareStatement("""
-                SELECT CASE WHEN b.received_business_date = CURRENT_DATE
+                SELECT CASE WHEN b.received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
                             THEN b.received_today_vnd ELSE 0 END
                   FROM nx_vietqr_bank_account b
                   JOIN nx_vietqr_intent i ON i.bank_account_id = b.id

@@ -355,4 +355,33 @@ class UnilevelCommissionServiceTest {
                 eq(new BigDecimal("150.000000")), any(BigDecimal.class),
                 eq("COOLING"), anyInt(), anyString());
     }
+
+    @Test
+    void settle_mergeExitCapLimitsActualPostInfluenceCommission() {
+        when(teamCommissionMapper.listUplineChain(990686L, 7))
+                .thenReturn(List.of(upline(990684L, 2, "V2")));
+        when(teamCommissionMapper.unilevelRates()).thenReturn(List.of(rate("L2", 10)));
+        when(teamCommissionMapper.monthlyNetworkVolume(990684L)).thenReturn(new BigDecimal("10000"));
+        lenient().when(configFacade.activeValue("team.ui.F.influence.clampMin"))
+                .thenReturn(java.util.Optional.of("1"));
+        lenient().when(configFacade.activeValue("team.ui.F.influence.clampMax"))
+                .thenReturn(java.util.Optional.of("2"));
+        lenient().when(configFacade.activeValue("team.ui.F.promo.weekMultiplier"))
+                .thenReturn(java.util.Optional.of("1.5"));
+        lenient().when(configFacade.activeValue("team.ui.F.unilevel.mergeExitMaxPct"))
+                .thenReturn(java.util.Optional.of("10"));
+        when(commissionRepository.countNetworkCommissionByOrder(990684L, "ORD-MERGE-CAP")).thenReturn(0);
+        when(commissionRepository.insertNetworkCommissionEvent(anyLong(), anyString(), anyLong(),
+                any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString()))
+                .thenReturn(903L);
+
+        assertThat(service.settle(990686L, new BigDecimal("1000"), "ORD-MERGE-CAP")).isEqualTo(1);
+
+        // Base 100 × Influence 2 × promo 1.5 = 300, but 10% merge exit cap limits it to 100.
+        verify(commissionRepository).insertNetworkCommissionEvent(eq(990684L), eq("network"), eq(990686L),
+                eq(2), eq("ORD-MERGE-CAP"), eq(new BigDecimal("1000")), eq("USDT"),
+                eq(new BigDecimal("100.000000")), any(BigDecimal.class),
+                eq("COOLING"), anyInt(), anyString());
+    }
 }

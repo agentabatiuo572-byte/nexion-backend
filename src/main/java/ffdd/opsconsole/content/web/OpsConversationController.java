@@ -9,7 +9,6 @@ import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
-import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
@@ -100,8 +99,9 @@ public class OpsConversationController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationInitiateRequest request) {
         return executeCommand("M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)), () -> {
-            ApiResult<ContentConversationView> result = conversationService.initiate(idempotencyKey, request);
-            publishMessage(result.getData(), ConversationMessageEvent.EventType.INITIATE, "AGENT", null);
+            OpsConversationService.MessageCommandResult command = conversationService.initiateWithMessageId(idempotencyKey, request);
+            ApiResult<ContentConversationView> result = command.result();
+            publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.INITIATE, "AGENT", null);
             return result;
         });
     }
@@ -154,8 +154,9 @@ public class OpsConversationController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationReplyRequest request) {
         return executeCommand("M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
-            ApiResult<ContentConversationView> result = conversationService.reply(conversationNo, idempotencyKey, request);
-            publishMessage(result.getData(), ConversationMessageEvent.EventType.MESSAGE, "AGENT", null);
+            OpsConversationService.MessageCommandResult command = conversationService.replyWithMessageId(conversationNo, idempotencyKey, request);
+            ApiResult<ContentConversationView> result = command.result();
+            publishMessage(result.getData(), command.messageId(), ConversationMessageEvent.EventType.MESSAGE, "AGENT", null);
             return result;
         });
     }
@@ -184,20 +185,6 @@ public class OpsConversationController {
         return executeCommand("M3_CONVERSATION_ARCHIVE", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.archive(conversationNo, idempotencyKey, request);
             publishStatus(result.getData(), "ARCHIVED");
-            return result;
-        });
-    }
-
-    // 退回/兜底转交 — M3 即时会话台 写
-    @PreAuthorize("hasAuthority('service_m3_write')")
-    @PostMapping("/{conversationNo}/transfer/fallback")
-    public ApiResult<ContentConversationView> fallbackTransfer(
-            @PathVariable String conversationNo,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ConversationFallbackRequest request) {
-        return executeCommand("M3_CONVERSATION_FALLBACK", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
-            ApiResult<ContentConversationView> result = conversationService.fallbackTransfer(conversationNo, idempotencyKey, request);
-            publishTransfer(result.getData(), "FALLBACK");
             return result;
         });
     }
@@ -305,16 +292,18 @@ public class OpsConversationController {
     /* ============ ConversationMessageEvent 发布辅助 ============ */
 
     /** 消息 / 主动发起：senderType=AGENT，正文取 lastMessage。 */
-    private void publishMessage(ContentConversationView view, ConversationMessageEvent.EventType type, String senderType, String bodyOverride) {
+    private void publishMessage(ContentConversationView view, Long messageId, ConversationMessageEvent.EventType type, String senderType, String bodyOverride) {
         if (view == null || view.conversationNo() == null) {
             return;
         }
+        String body = bodyOverride != null ? bodyOverride : view.lastMessage();
         eventPublisher.publishEvent(ConversationMessageEvent.builder()
                 .conversationNo(view.conversationNo())
+                .messageId(messageId)
                 .eventType(type)
                 .senderType(senderType)
                 .senderName(view.ownerAgentName())
-                .body(bodyOverride != null ? bodyOverride : view.lastMessage())
+                .body(body)
                 .ts(view.lastMessageAt() != null ? view.lastMessageAt() : LocalDateTime.now())
                 .ownerAgentId(view.ownerAgentId())
                 .ownerAgentName(view.ownerAgentName())

@@ -45,6 +45,20 @@ public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
                                      @Param("courseId") String courseId,
                                      @Param("courseVersion") String courseVersion);
 
+    @Select("""
+            SELECT CASE
+                     WHEN u.sandbox = 1 AND w.sandbox = 1 THEN 'SANDBOX'
+                     WHEN u.sandbox = 0 AND w.sandbox = 0 THEN 'PRODUCTION'
+                     ELSE 'UNKNOWN'
+                   END
+              FROM nx_user u
+              JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+             WHERE u.id = #{userId} AND u.is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    String lockRewardEnvironment(@Param("userId") Long userId);
+
     @Insert("""
             INSERT INTO nx_learning_progress (
                 user_id, course_id, course_version, progress_pct, attempts,
@@ -117,9 +131,12 @@ public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
     BigDecimal sumGrantedReward(@Param("userId") Long userId);
 
     @Select("""
-            SELECT COALESCE(SUM(amount_nex), 0) FROM nx_learning_reward_ledger
-             WHERE status = 'GRANTED' AND is_deleted = 0
-               AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            SELECT COALESCE(SUM(r.amount_nex), 0)
+              FROM nx_learning_reward_ledger r
+              JOIN nx_user u ON u.id = r.user_id AND u.is_deleted = 0 AND u.sandbox = 0
+              JOIN nx_user_wallet w ON w.user_id = r.user_id AND w.is_deleted = 0 AND w.sandbox = 0
+             WHERE r.status = 'GRANTED' AND r.is_deleted = 0
+               AND r.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
             """)
     BigDecimal sumGrantedRewardThisWeek();
 }

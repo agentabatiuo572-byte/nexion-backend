@@ -4,6 +4,7 @@ package ffdd.opsconsole.team.application;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
@@ -18,6 +19,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
@@ -119,6 +121,7 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.unilevel.nexCap", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.backfill", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.depth", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.mergeExitMaxPct", "network_f2_policy_amplify"),
             Map.entry("F.sunset.exclusions", "network_f2_policy_amplify"),
             // F3 双轨类:matchRate 阈值类放大 → match_rate(HIGH);threshold/spillover/settlePeriod 等走 write。
             Map.entry("F.binary.matchRate", "network_f3_match_rate"),
@@ -447,7 +450,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_THRESHOLD_UPDATE",
                 idempotencyKey,
-                requestHash("threshold", rank, field, request.value(), request.reason(), request.operator()),
+                requestHash("threshold", rank, field, request.value(), request.reason(), actor(request.operator())),
                 () -> updateVRankThresholdInternal(rank, field, idempotencyKey, request));
     }
 
@@ -469,7 +472,7 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
         }
         String resourceId = "nx_v_rank_config:" + seed.v() + "." + normalizedField;
-        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, request.operator(), Map.of(
+        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, actor(request.operator()), Map.of(
                 "rank", seed.v(),
                 "field", normalizedField,
                 "oldValue", oldValue,
@@ -491,7 +494,7 @@ public class OpsTeamService implements AuditReplayable {
                 idempotencyKey,
                 requestHash(
                         "add", rank, request.type(), request.amount(), request.voucherId(),
-                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                        request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> addVRankRewardInternal(rank, idempotencyKey, request));
     }
 
@@ -506,7 +509,7 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.addVRankReward(seed.v(), item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_INSERT_FAILED");
         }
-        audit("F_TEAM_VRANK_REWARD_ADDED", rewardResourceId(seed.v(), String.valueOf(item.get("id"))), request.operator(), Map.of(
+        audit("F_TEAM_VRANK_REWARD_ADDED", rewardResourceId(seed.v(), String.valueOf(item.get("id"))), actor(request.operator()), Map.of(
                 "rank", seed.v(),
                 "reward", item,
                 "reason", request.reason().trim(),
@@ -527,7 +530,7 @@ public class OpsTeamService implements AuditReplayable {
                 idempotencyKey,
                 requestHash(
                         "update", rank, rewardId, request.type(), request.amount(), request.voucherId(),
-                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                        request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> updateVRankRewardInternal(rank, rewardId, idempotencyKey, request));
     }
 
@@ -548,7 +551,7 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.updateVRankReward(seed.v(), id, item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_UPDATE_FAILED");
         }
-        audit("F_TEAM_VRANK_REWARD_CHANGED", rewardResourceId(seed.v(), id), request.operator(), Map.of(
+        audit("F_TEAM_VRANK_REWARD_CHANGED", rewardResourceId(seed.v(), id), actor(request.operator()), Map.of(
                 "rank", seed.v(),
                 "rewardId", id,
                 "reason", request.reason().trim(),
@@ -569,7 +572,7 @@ public class OpsTeamService implements AuditReplayable {
                 idempotencyKey,
                 requestHash(
                         "remove", rank, rewardId, request.type(), request.amount(), request.voucherId(),
-                        request.skuId(), request.custom(), request.reason(), request.operator()),
+                        request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> removeVRankRewardInternal(rank, rewardId, idempotencyKey, request));
     }
 
@@ -585,7 +588,7 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.deleteVRankReward(seed.v(), id)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_DELETE_FAILED");
         }
-        audit("F_TEAM_VRANK_REWARD_REMOVED", rewardResourceId(seed.v(), id), request.operator(), Map.of(
+        audit("F_TEAM_VRANK_REWARD_REMOVED", rewardResourceId(seed.v(), id), actor(request.operator()), Map.of(
                 "rank", seed.v(),
                 "rewardId", id,
                 "reason", request.reason().trim(),
@@ -604,7 +607,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F_TEAM_CONFIG_UPDATE",
                 idempotencyKey,
-                requestHash("config", request.key(), request.value(), request.reason(), request.operator()),
+                requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator())),
                 () -> updateConfigInternal(idempotencyKey, request));
     }
 
@@ -637,14 +640,23 @@ public class OpsTeamService implements AuditReplayable {
         }
         String configKey = configKey(key);
         configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "team", "F domain team commission policy");
-        audit("F_TEAM_POLICY_CHANGED", configKey, request.operator(), Map.of(
-                "key", key,
-                "oldValue", oldValue,
-                "newValue", newValue,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        Long settlementConfigVersion = bumpLeadershipPoolConfigVersion(key);
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
+        auditDetail.put("key", key);
+        auditDetail.put("oldValue", oldValue);
+        auditDetail.put("newValue", newValue);
+        auditDetail.put("reason", request.reason().trim());
+        auditDetail.put("idempotencyKey", idempotencyKey.trim());
+        if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
+        audit("F_TEAM_POLICY_CHANGED", configKey, actor(request.operator()), auditDetail);
         Map<String, Object> response = overview().getData();
-        response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", newValue));
+        Map<String, Object> updated = new LinkedHashMap<>();
+        updated.put("key", key);
+        updated.put("configKey", configKey);
+        updated.put("oldValue", oldValue);
+        updated.put("newValue", newValue);
+        if (settlementConfigVersion != null) updated.put("settlementConfigVersion", settlementConfigVersion);
+        response.put("updated", updated);
         return ApiResult.ok(response);
     }
 
@@ -688,6 +700,15 @@ public class OpsTeamService implements AuditReplayable {
         if (isAmbassadorStatusKey(key)) {
             return updateAmbassadorStatus(idempotencyKey, request, key);
         }
+        if (isQuotaTierKey(key)) {
+            return updateQuotaTier(idempotencyKey, request, key);
+        }
+        if (isQuotaRecycleKey(key)) {
+            return recycleQuotaUsage(idempotencyKey, request, key);
+        }
+        if (isLeaderboardMemberStatusKey(key)) {
+            return updateLeaderboardMemberStatus(idempotencyKey, request, key);
+        }
         // A1 批2b 修复4:F.leaderboard.period.status=disqualified → INSERT 业务表 nx_team_leaderboard_action 流水。
         if (isLeaderboardPeriodStatusKey(key)) {
             return updateLeaderboardPeriodStatus(idempotencyKey, request, key);
@@ -701,27 +722,68 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeUiValue(request.value());
         validateUiConfig(key, value);
-        String configKey = uiConfigKey(key);
+        // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
+        String configKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
         String oldValue = configFacade.activeValue(configKey).orElse("");
         // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
         // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
         if (loosensPayoutControlUiKey(key, oldValue, value) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
-        configFacade.upsertAdminValue(configKey, value, "TEXT", "team", "F domain UI-backed policy state");
-        // P1 桥接:F.cooldown 配置面写入后同步到引擎读的 commission/cooling-days(消除 UI 配置与引擎割裂)
-        bridgeCooldownToCommission(key, value);
+        String persistedValue;
+        if ("F.cooldown".equals(key)) {
+            persistedValue = String.valueOf(
+                    parseDecimal(value.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO).intValueExact());
+        } else if ("F.pool.settleCron".equals(key)) {
+            persistedValue = LeadershipPoolSettleScheduler.normalizeCron(value);
+        } else if ("F.pool.ratio".equals(key)) {
+            persistedValue = LeadershipPoolConfigGuard.canonicalConfiguredPercent(value);
+        } else {
+            persistedValue = value;
+        }
+        configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+        Long settlementConfigVersion = bumpLeadershipPoolConfigVersion(key);
         postCommissionLedgerIfStatusChanged(key, value);
-        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, request.operator(), Map.of(
-                "key", key,
-                "oldValue", oldValue,
-                "newValue", value,
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
+        auditDetail.put("key", key);
+        auditDetail.put("oldValue", oldValue);
+        auditDetail.put("newValue", value);
+        auditDetail.put("reason", request.reason().trim());
+        auditDetail.put("idempotencyKey", idempotencyKey.trim());
+        if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
+        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail);
         publishApprovedUiConfigOutbox(key, oldValue, value, request);
         Map<String, Object> response = overview().getData();
-        response.put("updated", Map.of("key", key, "configKey", configKey, "oldValue", oldValue, "newValue", value));
+        Map<String, Object> updated = new LinkedHashMap<>();
+        updated.put("key", key);
+        updated.put("configKey", configKey);
+        updated.put("oldValue", oldValue);
+        updated.put("newValue", value);
+        if (settlementConfigVersion != null) updated.put("settlementConfigVersion", settlementConfigVersion);
+        response.put("updated", updated);
         return ApiResult.ok(response);
+    }
+
+    private Long bumpLeadershipPoolConfigVersion(String key) {
+        if (key == null || !key.startsWith("F.pool.")) return null;
+        String versionKey = LeadershipPoolConfigGuard.VERSION_KEY;
+        long previous = configFacade.activeValueForUpdate(versionKey).map(value -> {
+            try {
+                return Math.max(0L, Long.parseLong(value.trim()));
+            } catch (NumberFormatException ex) {
+                return 0L;
+            }
+        }).orElse(0L);
+        long next;
+        try {
+            next = Math.addExact(previous, 1L);
+        } catch (ArithmeticException ex) {
+            throw new IllegalStateException("F4_SETTLEMENT_CONFIG_VERSION_EXHAUSTED", ex);
+        }
+        configFacade.upsertAdminValue(
+                versionKey, Long.toString(next), "NUMBER", "team",
+                "F4 leadership pool authoritative configuration version");
+        return next;
     }
 
     private ApiResult<Map<String, Object>> updateUnilevelRule(
@@ -754,7 +816,7 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNILEVEL_RULE_BUSINESS_TABLE_UPDATE_FAILED");
         }
         String resourceId = "nx_commission_rule:UNILEVEL:L" + layerNo + "." + field;
-        audit("F_TEAM_UNILEVEL_RULE_CHANGED", resourceId, request.operator(), Map.of(
+        audit("F_TEAM_UNILEVEL_RULE_CHANGED", resourceId, actor(request.operator()), Map.of(
                 "key", key,
                 "field", field,
                 "oldValue", oldValue,
@@ -799,7 +861,7 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_VOTES_BUSINESS_TABLE_UPDATE_FAILED");
         }
         String resourceId = "nx_v_rank_config:" + rankCode + ".leadership_votes";
-        audit("F_TEAM_VRANK_VOTES_CHANGED", resourceId, request.operator(), Map.of(
+        audit("F_TEAM_VRANK_VOTES_CHANGED", resourceId, actor(request.operator()), Map.of(
                 "key", key,
                 "rankCode", rankCode,
                 "oldValue", oldValue,
@@ -821,6 +883,10 @@ public class OpsTeamService implements AuditReplayable {
             TeamCommissionConfigUpdateRequest request,
             String key) {
         String label = key.substring("F.ambassador.".length(), key.length() - ".status".length());
+        Long applicationId = parseLongFromMap(label);
+        if (applicationId == null || applicationId <= 0) {
+            return ApiResult.fail(422, "AMBASSADOR_APPLICATION_ID_REQUIRED");
+        }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("F", "ambassador_application", label) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -831,11 +897,15 @@ public class OpsTeamService implements AuditReplayable {
         if ("APPROVED".equals(canonical) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
-        if (!commissionRepository.updateAmbassadorStatus(label, canonical, request.operator(), request.reason().trim())) {
+        if (!commissionRepository.updateAmbassadorStatus(label, canonical, actor(request.operator()), request.reason().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "AMBASSADOR_APPLICATION_UPDATE_FAILED");
         }
+        if ("APPROVED".equals(canonical)
+                && !commissionRepository.insertAmbassadorBudgetGrants(applicationId, actor(request.operator()))) {
+            throw new IllegalStateException("AMBASSADOR_BUDGET_GRANT_FAILED");
+        }
         String resourceId = "nx_team_ambassador_application:" + label + ".status";
-        audit("F_TEAM_AMBASSADOR_REVIEWED", resourceId, request.operator(), Map.of(
+        audit("F_TEAM_AMBASSADOR_REVIEWED", resourceId, actor(request.operator()), Map.of(
                 "key", key,
                 "applicationLabel", label,
                 "newValue", canonical,
@@ -861,11 +931,11 @@ public class OpsTeamService implements AuditReplayable {
                 && lockMapper.countActiveByTarget("F", "leaderboard_action", "week") > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        if (!commissionRepository.insertLeaderboardAction("week", actionType, request.reason().trim(), request.operator())) {
+        if (!commissionRepository.insertLeaderboardAction("week", actionType, request.reason().trim(), actor(request.operator()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEADERBOARD_ACTION_INSERT_FAILED");
         }
         String resourceId = "nx_team_leaderboard_action:week." + actionType;
-        audit("F_TEAM_LEADERBOARD_CHANGED", resourceId, request.operator(), Map.of(
+        audit("F_TEAM_LEADERBOARD_CHANGED", resourceId, actor(request.operator()), Map.of(
                 "key", key,
                 "period", "week",
                 "actionType", actionType,
@@ -952,12 +1022,12 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
         }
-        if(!commissionRepository.recordCommissionOperation(eventId,fromCanonical+"_TO_"+toCanonical,idempotencyKey.trim(),request.expectedVersion(),request.operator(),request.reason().trim())){
+        if(!commissionRepository.recordCommissionOperation(eventId,fromCanonical+"_TO_"+toCanonical,idempotencyKey.trim(),request.expectedVersion(),actor(request.operator()),request.reason().trim())){
             throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
         }
         publishCommissionUnlockedIfEligible(fromCanonical, toCanonical, eventId, oldEvent);
         postCommissionLedgerIfStatusChanged(key, value);
-        audit("F_TEAM_COMMISSION_STATUS_CHANGED", "nx_commission_event:" + eventId, request.operator(), Map.of(
+        audit("F_TEAM_COMMISSION_STATUS_CHANGED", "nx_commission_event:" + eventId, actor(request.operator()), Map.of(
                 "key", key,
                 "eventId", eventId,
                 "oldValue", oldEvent.get("state"),
@@ -1094,7 +1164,8 @@ public class OpsTeamService implements AuditReplayable {
             return switch (key) {
                 case "F.promo.weekMultiplier", "F.peer.rate", "F.pool.periodPrize" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
-                case "F.binary.matchRate", "F.pool.ratio", "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
+                case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
+                case "F.binary.matchRate", "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
                         percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" ->
@@ -1473,8 +1544,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private Map<String, Object> leadershipPoolReadModel() {
-        String ratioLabel = configText("F.pool.ratio", "");
-        BigDecimal poolRatio = percentRatio(ratioLabel, BigDecimal.ZERO);
+        PoolRatioReadModel ratio = poolRatioReadModel();
         Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
         int weeklyGmvUsd = intValue(summary.get("weeklyGmvUsd"), 0);
         int weeklyInjectedUsd = intValue(summary.get("weeklyInjectedUsd"), 0);
@@ -1488,10 +1558,26 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
         String leaderboardStatus = textValue(leaderboard, "periodStatus", "");
         Map<String, Object> pool = new LinkedHashMap<>();
+        // Read-only projection of the same mandatory CAS version consumed by
+        // LeadershipPoolConfigGuard; never synthesize a browser/default version.
+        pool.put("configVersion", configText("F.pool.configVersion", ""));
+        try {
+            new LeadershipPoolConfigGuard(configFacade).requireValid();
+            pool.put("settlementConfigStatus", "READY");
+            pool.put("settlementConfigUnavailableKey", "");
+            pool.put("settlementConfigUnavailableReason", "");
+        } catch (LeadershipPoolConfigGuard.ConfigUnavailableException failure) {
+            pool.put("settlementConfigStatus", "HOLD");
+            pool.put("settlementConfigUnavailableKey", failure.key().replaceFirst("^team\\.ui\\.", ""));
+            pool.put("settlementConfigUnavailableReason", failure.reason());
+        }
         pool.put("weeklyInjectedUsd", weeklyInjectedUsd);
         pool.put("weeklyGmvUsd", weeklyGmvUsd);
-        pool.put("poolRatio", ratioLabel);
-        pool.put("poolRatioValue", poolRatio);
+        pool.put("poolRatio", ratio.label());
+        pool.put("poolRatioValue", ratio.value());
+        pool.put("poolRatioStatus", ratio.available() ? "READY" : "HOLD");
+        pool.put("poolRatioAvailable", ratio.available());
+        pool.put("poolRatioUnavailableReason", ratio.unavailableReason());
         pool.put("monthlyCapLabel", configText("F.pool.monthlyCap", ""));
         pool.put("monthlyCapUsd", moneyLabelToInt(configText("F.pool.monthlyCap", ""), 0));
         pool.put("monthLeadershipUsd", intValue(summary.get("monthLeadershipUsd"), 0));
@@ -1502,6 +1588,7 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("settlementWindow", "周日 23:59 UTC");
         pool.put("settlementDispatchWindow", "周一 00:00 UTC");
         pool.put("quotaRows", quotaRows);
+        pool.put("quotaUsages", commissionRepository.quotaUsages(30));
         pool.put("quotaMonthlyStockLabel", String.valueOf(quotaCap));
         pool.put("quotaMonthlyStockTotal", quotaCap);
         pool.put("quotaMonthlyStockUsed", quotaCurrent);
@@ -1509,6 +1596,7 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("proUnlock", quotaUnlock("PRO"));
         pool.put("rackUnlock", quotaUnlock("RACK"));
         pool.put("ambassadorBands", ambassadorBands());
+        pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30));
         pool.put("ambassadorStatus", textValue(ambassador, "status", ""));
         pool.put("ambassadorPendingCount", intValue(ambassador.get("pendingCount"), 0));
         pool.put("ambassadorBudgetApprovedLabel", moneyLabel(decimalValue(ambassador.get("approvedBudgetUsd"), BigDecimal.ZERO)));
@@ -1524,6 +1612,26 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("voteWeights", voteWeights());
         return pool;
     }
+
+    private PoolRatioReadModel poolRatioReadModel() {
+        String ratioLabel = configText("F.pool.ratio", "");
+        if (ratioLabel.isBlank()) {
+            return new PoolRatioReadModel("", BigDecimal.ZERO, false, "F4_POOL_RATE_MISSING");
+        }
+        try {
+            BigDecimal poolRatio = LeadershipPoolConfigGuard.parseConfiguredRate(ratioLabel);
+            return new PoolRatioReadModel(
+                    LeadershipPoolConfigGuard.canonicalConfiguredPercent(ratioLabel),
+                    poolRatio, true, "");
+        } catch (IllegalArgumentException ignored) {
+            // Management reads remain available and expose an explicit HOLD. Money settlement
+            // independently calls LeadershipPoolConfigGuard.requireValid() and stays fail-closed.
+            return new PoolRatioReadModel("", BigDecimal.ZERO, false, "F4_POOL_RATE_INVALID");
+        }
+    }
+
+    private record PoolRatioReadModel(
+            String label, BigDecimal value, boolean available, String unavailableReason) { }
 
     private List<Map<String, Object>> f4Metrics(Map<String, Object> pool) {
         if (intValue(pool.get("weeklyGmvUsd"), 0) == 0
@@ -1596,18 +1704,17 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
-    private Map<String, Object> quotaRow(String name, int current, int cap, boolean tight) {
-        return Map.of("name", name, "current", current, "cap", cap, "tight", tight);
-    }
-
     private Map<String, Object> normalizeQuotaRow(Map<String, Object> raw) {
         int current = intValue(raw.get("current"), 0);
         int cap = Math.max(current, intValue(raw.get("cap"), current));
-        return quotaRow(
-                String.valueOf(raw.getOrDefault("name", "Quota")),
-                current,
-                cap,
-                boolValue(raw.get("tight"), cap > 0 && current * 100 / cap >= 85));
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", parseLongFromMap(raw.get("id")));
+        row.put("quotaCode", String.valueOf(raw.getOrDefault("quotaCode", "")));
+        row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
+        row.put("current", current);
+        row.put("cap", cap);
+        row.put("tight", boolValue(raw.get("tight"), cap > 0 && current * 100 / cap >= 85));
+        return row;
     }
 
     private List<Map<String, Object>> ambassadorBands() {
@@ -1628,22 +1735,15 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
-    private Map<String, Object> podium(int rank, String userId, String gmvLabel, String tip, String className) {
-        return Map.of(
-                "rank", rank,
-                "userId", userId,
-                "gmvLabel", gmvLabel,
-                "tip", tip,
-                "className", className);
-    }
-
     private Map<String, Object> normalizePodium(Map<String, Object> raw) {
-        return podium(
-                intValue(raw.get("rank"), 0),
-                String.valueOf(raw.getOrDefault("userId", "")),
-                String.valueOf(raw.getOrDefault("gmvLabel", "-")),
-                String.valueOf(raw.getOrDefault("tip", "")),
-                String.valueOf(raw.getOrDefault("className", "")));
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("rank", intValue(raw.get("rank"), 0));
+        row.put("memberUserId", parseLongFromMap(raw.get("memberUserId")));
+        row.put("userId", String.valueOf(raw.getOrDefault("userId", "")));
+        row.put("gmvLabel", String.valueOf(raw.getOrDefault("gmvLabel", "-")));
+        row.put("tip", String.valueOf(raw.getOrDefault("tip", "")));
+        row.put("className", String.valueOf(raw.getOrDefault("className", "")));
+        return row;
     }
 
     private List<Map<String, Object>> voteWeights() {
@@ -1809,6 +1909,86 @@ public class OpsTeamService implements AuditReplayable {
         return event;
     }
 
+    private ApiResult<Map<String, Object>> updateQuotaTier(
+            String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        String quotaCode = key.substring("F.quota.tier.".length(), key.length() - ".monthlyQuota".length());
+        int monthlyQuota = parseDecimal(normalizeUiValue(request.value()), BigDecimal.valueOf(-1)).intValueExact();
+        if (quotaCode.isBlank() || monthlyQuota < 0 || monthlyQuota > 1_000_000) {
+            return ApiResult.fail(422, "HARDWARE_QUOTA_VALUE_INVALID");
+        }
+        Long expectedRaw = request.expectedVersion();
+        if (expectedRaw == null || expectedRaw < 0 || expectedRaw > 1_000_000) {
+            return ApiResult.fail(428, "HARDWARE_QUOTA_EXPECTED_VALUE_REQUIRED", leadershipPool().getData());
+        }
+        int expectedMonthlyQuota = expectedRaw.intValue();
+        if (!commissionRepository.updateHardwareQuotaTierCas(quotaCode, expectedMonthlyQuota, monthlyQuota)) {
+            Map<String, Object> authoritative = leadershipPool().getData();
+            authoritative.put("conflict", Map.of(
+                    "quotaCode", quotaCode,
+                    "expectedMonthlyQuota", expectedMonthlyQuota,
+                    "requestedMonthlyQuota", monthlyQuota,
+                    "authoritativeReread", true));
+            return ApiResult.fail(409, "HARDWARE_QUOTA_TIER_STALE_OR_MISSING", authoritative);
+        }
+        audit("F_TEAM_HARDWARE_QUOTA_UPDATED", "nx_team_hardware_quota_tier:" + quotaCode,
+                actor(request.operator()), Map.of("quotaCode", quotaCode, "monthlyQuota", monthlyQuota,
+                        "expectedMonthlyQuota", expectedMonthlyQuota,
+                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+        Map<String, Object> response = leadershipPool().getData();
+        response.put("updated", Map.of("key", key, "source", "nx_team_hardware_quota_tier", "newValue", monthlyQuota));
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> recycleQuotaUsage(
+            String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        String rawId = key.substring("F.quota.usage.".length(), key.length() - ".status".length());
+        Long usageId = parseLongFromMap(rawId);
+        if (usageId == null || usageId <= 0 || !"recycled".equalsIgnoreCase(normalizeUiValue(request.value()))) {
+            return ApiResult.fail(422, "HARDWARE_QUOTA_RECYCLE_INVALID");
+        }
+        if (!commissionRepository.recycleHardwareQuotaUsage(usageId, request.reason().trim())) {
+            return ApiResult.fail(409, "HARDWARE_QUOTA_ALREADY_RECYCLED_OR_MISSING");
+        }
+        audit("F_TEAM_HARDWARE_QUOTA_RECYCLED", "nx_team_hardware_quota_usage:" + usageId,
+                actor(request.operator()), Map.of("usageId", usageId, "reason", request.reason().trim(),
+                        "idempotencyKey", idempotencyKey));
+        Map<String, Object> response = leadershipPool().getData();
+        response.put("updated", Map.of("key", key, "source", "nx_team_hardware_quota_usage", "newValue", "RECYCLED"));
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> updateLeaderboardMemberStatus(
+            String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        String rawId = key.substring("F.leaderboard.week.user.".length(), key.length() - ".status".length());
+        Long memberUserId = parseLongFromMap(rawId);
+        String actionType = canonicalLeaderboardAction(normalizeUiValue(request.value()));
+        if (memberUserId == null || memberUserId <= 0 || !Set.of("DISQUALIFIED", "FRAUD").contains(actionType)) {
+            return ApiResult.fail(422, "LEADERBOARD_MEMBER_ACTION_INVALID");
+        }
+        if (!commissionRepository.insertLeaderboardMemberAction("week", memberUserId, actionType,
+                request.reason().trim(), actor(request.operator()))) {
+            return ApiResult.fail(409, "LEADERBOARD_MEMBER_ALREADY_DISQUALIFIED_OR_MISSING");
+        }
+        audit("F_TEAM_LEADERBOARD_MEMBER_DISQUALIFIED", "nx_team_leaderboard_action:week:" + memberUserId,
+                actor(request.operator()), Map.of("memberUserId", memberUserId, "actionType", actionType,
+                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+        Map<String, Object> response = leadershipPool().getData();
+        response.put("updated", Map.of("key", key, "source", "nx_team_leaderboard_action", "memberUserId", memberUserId));
+        return ApiResult.ok(response);
+    }
+
+    private boolean isQuotaTierKey(String key) {
+        return key != null && key.matches("^F\\.quota\\.tier\\.[A-Za-z0-9_-]+\\.monthlyQuota$");
+    }
+
+    private boolean isQuotaRecycleKey(String key) {
+        return key != null && key.matches("^F\\.quota\\.usage\\.[1-9][0-9]*\\.status$");
+    }
+
+    private boolean isLeaderboardMemberStatusKey(String key) {
+        return key != null && key.matches("^F\\.leaderboard\\.week\\.user\\.[1-9][0-9]*\\.status$");
+    }
+
     private Map<String, Object> normalizeCommissionAuditFeedItem(Map<String, Object> raw) {
         return Map.of(
                 "when", textValue(raw, "when", "-"),
@@ -1961,7 +2141,7 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    // key-specific 校验:开关 / 数字范围 / JSON schema。批1a 文本项(titles/prize.name/settleCron/unlockVRank)不强校验。
+    // key-specific 校验:开关 / 数字范围 / JSON schema / 动态调度表达式。
     private void validateUiConfig(String key, String value) {
         switch (key) {
             case "F.vrank.permanent", "F.leaderboard.paused", "F.binary.paused" -> {
@@ -2002,13 +2182,15 @@ public class OpsTeamService implements AuditReplayable {
                 }
             }
             case "F.commission.anomalyThreshold" -> validateAnomalyThreshold(value);
-            case "F.pool.top1MaxPct", "F.pool.top5MaxPct" -> {
+            case "F.pool.top1MaxPct", "F.pool.top5MaxPct", "F.unilevel.mergeExitMaxPct" -> {
                 var pct = parseDecimal(value, BigDecimal.valueOf(-1));
                 if (pct.signum() < 0 || pct.compareTo(BigDecimal.valueOf(100)) > 0) {
                     throw new IllegalArgumentException("F_TEAM_PCT_OUT_OF_RANGE");
                 }
             }
+            case "F.pool.ratio" -> LeadershipPoolConfigGuard.parseConfiguredRate(value);
             case "F.pool.periodPrize" -> validatePeriodPrize(value);
+            case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeCron(value);
             case "F.partner.tiers" -> validatePartnerTiers(value);
             case "F.vrank.titles" -> validateVrankTitles(value);
             default -> {
@@ -2109,7 +2291,8 @@ public class OpsTeamService implements AuditReplayable {
     private Map<String, String> configValues() {
         Map<String, String> values = new LinkedHashMap<>();
         for (String key : UI_CONFIG_KEYS) {
-            configFacade.activeValue(uiConfigKey(key)).ifPresent(value -> values.put(key, value));
+            String canonicalKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+            configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, value));
         }
         return values;
     }
@@ -2235,6 +2418,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private Map<String, Object> leadershipSnapshot() {
+        PoolRatioReadModel ratio = poolRatioReadModel();
         Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
         Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
         int unlockRank = leadershipUnlockRank();
@@ -2247,7 +2431,11 @@ public class OpsTeamService implements AuditReplayable {
                 .sum();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("weeklyGmvUsdt", decimalValue(summary.get("weeklyGmvUsd"), BigDecimal.ZERO));
-        response.put("poolRatio", percentRatio(configText("F.pool.ratio", ""), BigDecimal.ZERO));
+        response.put("poolRatio", ratio.value());
+        response.put("poolRatioLabel", ratio.label());
+        response.put("poolRatioStatus", ratio.available() ? "READY" : "HOLD");
+        response.put("poolRatioAvailable", ratio.available());
+        response.put("poolRatioUnavailableReason", ratio.unavailableReason());
         response.put("monthlyCapUsdt", decimalValue(leaderboard.get("poolUsd"), BigDecimal.ZERO));
         response.put("unlockRank", unlockRank);
         response.put("topN", topN);
@@ -2394,6 +2582,7 @@ public class OpsTeamService implements AuditReplayable {
                 "F.leaderboard.paused",
                 "F.leaderboard.minUsd",
                 "F.unilevel.depth",
+                "F.unilevel.mergeExitMaxPct",
                 "F.commission.anomalyThreshold",
                 // 批1c · 高风险:资金/结算语义型配置(配置面存储 + schema 校验;业务逻辑消费 + B1 红线归属留后续批次)。
                 "F.binary.paused",
@@ -2451,48 +2640,6 @@ public class OpsTeamService implements AuditReplayable {
                 })
                 .filter(days -> days >= 0 && days <= 90)
                 .orElse(DEFAULT_COMMISSION_COOLING_DAYS);
-    }
-
-    /**
-     * P1 桥接:F.cooldown(UI 配置面 team.ui.F.cooldown)→ commission/cooling-days(引擎 resolveCoolingDays 读的 key)。
-     *
-     * <p>背景:UI 配置面 admin PUT 写 team.ui.F.cooldown(如 "30"/"30d"),引擎 {@link UnilevelCommissionService#resolveCoolingDays}
-     * 读 commission/cooling-days(F2/F3/F5 coolingDays)。两者割裂导致配置面改了引擎不生效。
-     * 此处在 updateUiConfig 写完 UI key 后,同步 upsert commission/cooling-days 同值,桥接两个配置入口。
-     *
-     * <p>容错:UI 值可能带后缀(如 "30d"/"30 天"),提取前导数字;范围校验已由 validateUiConfig 兜底(0-90),
-     * 此处二次 clamp 防御;解析失败仅告警不阻断(不破坏 UI 写入主流程)。
-     *
-     * @param key UI config key(仅 F.cooldown 触发桥接)
-     * @param uiValue UI 原始值
-     */
-    private void bridgeCooldownToCommission(String key, String uiValue) {
-        if (!"F.cooldown".equals(key)) {
-            return;
-        }
-        try {
-            // 提取前导数字(兼容 "30"/"30d"/"30 天" 等 UI 值)
-            String digits = uiValue == null ? "" : uiValue.trim().replaceAll("[^0-9].*$", "");
-            if (digits.isEmpty()) {
-                log.warn("F.cooldown bridge skipped (no digits in uiValue={})", uiValue);
-                return;
-            }
-            int days = Integer.parseInt(digits);
-            if (days < 0 || days > 90) {
-                log.warn("F.cooldown bridge skipped (out of range 0-90, uiValue={} → {})", uiValue, days);
-                return;
-            }
-            configFacade.upsertAdminValue(
-                    COMMISSION_COOLING_DAYS_KEY,
-                    String.valueOf(days),
-                    "NUMBER",
-                    "team",
-                    "P1 bridge from team.ui.F.cooldown (F domain commission cooling days)");
-            log.info("F.cooldown bridge: uiValue={} → commission/cooling-days={}", uiValue, days);
-        } catch (RuntimeException ex) {
-            // 桥接失败不影响 UI 写入主流程(已 upsert team.ui.F.cooldown 成功)
-            log.warn("F.cooldown bridge FAILED (uiValue={}): {}", uiValue, ex.getMessage());
-        }
     }
 
     private String configText(String key, String fallback) {
@@ -2636,6 +2783,12 @@ public class OpsTeamService implements AuditReplayable {
         return value.trim();
     }
 
+    private static String actor(String claimedOperator) {
+        String resolved = AdminActorResolver.resolve(
+                StringUtils.hasText(claimedOperator) ? claimedOperator.trim() : "system");
+        return StringUtils.hasText(resolved) ? resolved : "system";
+    }
+
     private void audit(String action, String resourceId, String operator, Map<String, Object> detail) {
         auditLogService.record(AuditLogWriteRequest.builder()
                 .action(action)
@@ -2643,7 +2796,7 @@ public class OpsTeamService implements AuditReplayable {
                 .resourceId(resourceId)
                 .bizNo(resourceId)
                 .actorType("ADMIN")
-                .actorUsername(StringUtils.hasText(operator) ? operator.trim() : "system")
+                .actorUsername(actor(operator))
                 .result("SUCCESS")
                 .riskLevel("HIGH")
                 .detail(detail)
@@ -2674,7 +2827,7 @@ public class OpsTeamService implements AuditReplayable {
                         "key", key,
                         "oldValue", oldValue,
                         "newValue", newValue,
-                        "operator", request.operator(),
+                        "operator", actor(request.operator()),
                         "reason", request.reason().trim()));
     }
 
@@ -2763,7 +2916,7 @@ public class OpsTeamService implements AuditReplayable {
         if (!A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
-        String operator = resolveOperator("MANUAL", request.operator());
+        String operator = resolveOperator("MANUAL", actor(request.operator()));
         String manualReason = "[MANUAL] " + request.reason().trim();
         boolean updated = commissionRepository.updateMemberVRank(userId, targetV);
         if (!updated) {
@@ -3024,7 +3177,7 @@ public class OpsTeamService implements AuditReplayable {
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
         BigDecimal amount = decimalValue(original.get("amount"), BigDecimal.ZERO);
         Long sponsorUserId = parseLongFromMap(original.get("sponsorUserId"));
-        String operator = resolveOperator("MANUAL", request == null ? null : request.operator());
+        String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
         String reason = request.reason().trim();
 
         // 资金类(usdt/nex)B1 预检 + 新 commission_event + ledgerPostingFacade.postLedgerEntry
@@ -3132,7 +3285,7 @@ public class OpsTeamService implements AuditReplayable {
         Long commissionEventId = parseLongFromMap(original.get("commissionEventId"));
         BigDecimal amount = decimalValue(original.get("amount"), BigDecimal.ZERO);
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
-        String operator = resolveOperator("MANUAL", request == null ? null : request.operator());
+        String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
         String reason = request.reason().trim();
 
         // 资金类 D4 红冲:UPDATE nx_commission_event.status='REVERSED' + ledgerPostingFacade 反向 OUT 条目
@@ -3255,6 +3408,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
         String operator = ctx.operator();
@@ -3270,8 +3424,36 @@ public class OpsTeamService implements AuditReplayable {
             // f_ui_config: polymorphic UI keys,key 分发(F.binary.spillover/F.fulfillment... 等 toggle)。amplifies false。
             case "f_ui_config" -> {
                 String key = str(p, "key");
-                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
+                TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(
+                        key, str(p, "value"), reason, operator,
+                        parseLongFromMap(p.containsKey("expectedMonthlyQuota")
+                                ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")));
                 return updateUiConfig(idem, req, key);
+            }
+            case "f_config_batch" -> {
+                Object rawChanges = p.get("changes");
+                if (!(rawChanges instanceof List<?> changes) || changes.isEmpty() || changes.size() > 32) {
+                    return ApiResult.fail(422, "F_CONFIG_BATCH_INVALID");
+                }
+                List<Map<String, Object>> applied = new ArrayList<>();
+                for (Object item : changes) {
+                    if (!(item instanceof Map<?, ?> raw)) {
+                        throw new BizException(422, "F_CONFIG_BATCH_ITEM_INVALID");
+                    }
+                    String key = raw.get("key") == null ? "" : String.valueOf(raw.get("key")).trim();
+                    String value = raw.get("value") == null ? "" : String.valueOf(raw.get("value")).trim();
+                    TeamCommissionConfigUpdateRequest req =
+                            new TeamCommissionConfigUpdateRequest(key, value, reason, operator);
+                    ApiResult<Map<String, Object>> result = updateConfigInternal(idem + ":" + applied.size(), req);
+                    if (result.getCode() != 0) {
+                        throw new BizException(result.getCode(), result.getMessage());
+                    }
+                    applied.add(Map.of("key", key, "value", value));
+                }
+                Map<String, Object> response = overview().getData();
+                response.put("updatedBatch", applied);
+                response.put("authoritativeReread", true);
+                return ApiResult.ok(response);
             }
             // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。amplifies true(费率)。
             case "f_unilevel_rule" -> {
@@ -3326,6 +3508,15 @@ public class OpsTeamService implements AuditReplayable {
                 return ApiResult.ok(Map.of(
                         "settled", settled,
                         "source", "F4_A2_APPROVED_REPLAY"));
+            }
+            case "f4_leaderboard_period_payout" -> {
+                String period = str(p, "period");
+                int settled = leadershipPoolService.settleApprovedLeaderboardPeriod(
+                        period, str(p, "periodKey"), operator, reason);
+                return ApiResult.ok(Map.of(
+                        "period", period,
+                        "settled", settled,
+                        "source", "F4_LEADERBOARD_A2_APPROVED_REPLAY"));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());

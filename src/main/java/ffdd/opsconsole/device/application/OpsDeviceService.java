@@ -765,6 +765,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return "COMPUTE_PARAM_KEY_INVALID";
     }
 
+    public ApiResult<Map<String, Object>> e5Observability() {
+        return ApiResult.ok(deviceRepository.e5Observability());
+    }
+
     private String sanitizeComputeDownloadUrl(String value) {
         String candidate = value == null ? "" : value.trim();
         return isApprovedComputeDownloadUrl(candidate) ? candidate : "";
@@ -1555,6 +1559,43 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(response);
     }
 
+    /**
+     * Runtime router projection. The dispatcher and App call this boundary so
+     * operator E2 reward/VRAM/enabled changes affect the next route decision.
+     */
+    public ApiResult<Map<String, Object>> routeE2Task(Integer deviceVramGb) {
+        if (deviceVramGb == null || deviceVramGb < 0) {
+            return ApiResult.fail(400, "DEVICE_VRAM_INVALID");
+        }
+        ApiResult<Map<String, Object>> pricing = e2TaskPricing();
+        Object rawRows = pricing.getData() == null ? null : pricing.getData().get("taskClasses");
+        if (!(rawRows instanceof List<?> rows)) {
+            return ApiResult.fail(503, "E2_TASK_ROUTER_CONFIG_UNAVAILABLE");
+        }
+        List<Map<String, Object>> eligible = rows.stream()
+                .filter(Map.class::isInstance)
+                .map(row -> (Map<String, Object>) row)
+                .filter(row -> Boolean.TRUE.equals(row.get("enabled")))
+                .filter(row -> row.get("minVRAM") instanceof Number number && number.intValue() <= deviceVramGb)
+                .sorted((left, right) -> {
+                    BigDecimal leftPotential = new BigDecimal(String.valueOf(left.getOrDefault("dailyPotential", "0")));
+                    BigDecimal rightPotential = new BigDecimal(String.valueOf(right.getOrDefault("dailyPotential", "0")));
+                    int byPotential = rightPotential.compareTo(leftPotential);
+                    return byPotential != 0 ? byPotential
+                            : String.valueOf(left.get("taskClass")).compareTo(String.valueOf(right.get("taskClass")));
+                })
+                .toList();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("routable", !eligible.isEmpty());
+        response.put("deviceVramGb", deviceVramGb);
+        response.put("selectedTask", eligible.isEmpty() ? null : eligible.get(0));
+        response.put("eligibleTaskClasses", eligible.stream().map(row -> row.get("taskClass")).toList());
+        response.put("queueSaturation", pricing.getData().get("queueSaturation"));
+        response.put("effectiveAt", pricing.getData().get("effectiveAt"));
+        response.put("sources", List.of("nx_admin_device_task", "nx_config_item:" + E2_QUEUE_SATURATION_KEY));
+        return ApiResult.ok(response);
+    }
+
     @Transactional
     public ApiResult<Map<String, Object>> updateE2TaskPricing(
             String idempotencyKey, E2TaskPricingUpdateRequest request) {
@@ -2182,6 +2223,30 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                                     "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(updated);
                 });
+    }
+
+    /** C2 user-detail alias. The user path is an authorization boundary, not a display hint. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<DeviceOpsView> executeUserTradeinAction(
+            Long userId,
+            String operation,
+            String idempotencyKey,
+            DeviceTradeinActionRequest request) {
+        if (userId == null || userId <= 0 || request == null || request.deviceId() == null) {
+            return ApiResult.fail(422, "C2_DEVICE_COMMAND_INVALID");
+        }
+        DeviceOpsView owned = deviceRepository.findDevice(request.deviceId()).orElse(null);
+        if (owned == null) {
+            return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+        }
+        if (!userId.equals(owned.userId())) {
+            return ApiResult.fail(403, "C2_DEVICE_USER_MISMATCH");
+        }
+        ApiResult<DeviceOpsView> result = executeTradeinAction(operation, idempotencyKey, request);
+        if (result.getCode() == 0 && result.getData() != null && !userId.equals(result.getData().userId())) {
+            throw new IllegalStateException("C2_DEVICE_OWNERSHIP_CHANGED");
+        }
+        return result;
     }
 
     public ApiResult<DeviceOpsView> restoreDevice(Long deviceId, String idempotencyKey, DeviceRestoreRequest request) {

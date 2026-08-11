@@ -15,6 +15,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -29,7 +30,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>端点：GET /api/admin/content/conversations/stream —— 返回 SseEmitter（超时 30 分钟）。
  * 鉴权：JwtAuthenticationFilter 已在 SecurityContext 中放入坐席身份——
  *   1) 同源 cookie 走 Next route（app/api/admin/content/[...path]/route.ts）转 Authorization: Bearer；
- *   2) 或直连后端 + ?token=xxx，由 SecurityConfig 的 SseTokenShimFilter 把 query token 头化后走标准 JWT 校验。
+ *   2) 浏览器只经同源 BFF 与 HttpOnly 会话接入；JWT 不进入 URL、查询参数或日志。
  * 两种方式都让本控制器能从 SecurityContext 拿到当前 adminId（JWT subject）作为订阅 key。
  *
  * <p>线程安全：registry 用 ConcurrentHashMap + CopyOnWriteArrayList；emitter 在 onCompletion /
@@ -107,6 +108,17 @@ public class OpsConversationStreamController {
     /** 测试替身入口；生产路径始终创建 Spring 标准 SseEmitter。 */
     protected SseEmitter createEmitter(long timeoutMs) {
         return new SseEmitter(timeoutMs);
+    }
+
+    /**
+     * Lightweight same-authority probe used after EventSource.onerror. Native
+     * EventSource hides the HTTP status, so the BFF calls this endpoint to make
+     * 401/403 terminal instead of retrying an authorization failure forever.
+     */
+    @PreAuthorize("hasAuthority('service_m3_read')")
+    @GetMapping("/stream/status")
+    public ResponseEntity<Void> status() {
+        return ResponseEntity.noContent().build();
     }
 
     /**

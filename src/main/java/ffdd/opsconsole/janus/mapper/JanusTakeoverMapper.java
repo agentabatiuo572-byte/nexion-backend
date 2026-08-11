@@ -36,6 +36,27 @@ public interface JanusTakeoverMapper {
     @Select("SELECT COUNT(1) FROM nx_janus_device WHERE sid=#{sid} AND user_id=#{userId} AND device_id=#{deviceId}")
     int owns(@Param("userId") long userId,@Param("sid") String sid,@Param("deviceId") String deviceId);
 
+    @Select("SELECT proof_hash FROM nx_janus_applied_proof WHERE executor_id=#{executorId} AND proof_nonce=#{proofNonce}")
+    String findProofHash(@Param("executorId") String executorId,@Param("proofNonce") String proofNonce);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_janus_applied_proof(
+              proof_id,executor_mode,executor_id,proof_nonce,proof_hash,user_id,sid,device_id,
+              command_id,command_version,target_id,target_version,target_catalog_version,
+              handoff_receipt,proof_timestamp,created_at)
+            VALUES(#{proofId},#{executorMode},#{executorId},#{proofNonce},#{proofHash},#{userId},#{sid},#{deviceId},
+              #{commandId},#{commandVersion},#{targetId},#{targetVersion},#{targetCatalogVersion},
+              #{handoffReceipt},FROM_UNIXTIME(#{proofTimestamp}/1000),NOW(3))
+            """)
+    int claimAppliedProof(@Param("proofId") String proofId,@Param("executorMode") String executorMode,
+                          @Param("executorId") String executorId,@Param("proofNonce") String proofNonce,
+                          @Param("proofHash") String proofHash,@Param("userId") long userId,
+                          @Param("sid") String sid,@Param("deviceId") String deviceId,
+                          @Param("commandId") String commandId,@Param("commandVersion") long commandVersion,
+                          @Param("targetId") String targetId,@Param("targetVersion") Integer targetVersion,
+                          @Param("targetCatalogVersion") Long targetCatalogVersion,
+                          @Param("handoffReceipt") String handoffReceipt,@Param("proofTimestamp") long proofTimestamp);
+
     @Insert("""
             INSERT INTO nx_janus_takeover_execution(
               sid,phase,command_id,command_type,command_version,delivery_attempts,
@@ -130,4 +151,33 @@ public interface JanusTakeoverMapper {
                   @Param("actualTargetCatalogVersion") Long actualTargetCatalogVersion,
                   @Param("deviceAppliedVersion") Long deviceAppliedVersion,
                   @Param("deviceAppVersion") String deviceAppVersion,@Param("handoffReceipt") String handoffReceipt);
+
+    @Update("""
+            UPDATE nx_janus_takeover_execution SET failure_phase=phase,phase='FAILED',
+              actual_target_id=#{actualTargetId},actual_target_version=#{actualTargetVersion},
+              actual_target_catalog_version=#{actualTargetCatalogVersion},device_applied_version=#{deviceAppliedVersion},
+              device_app_version=#{deviceAppVersion},handoff_receipt=#{handoffReceipt},
+              failure_code='JANUS_APPLIED_STATE_DRIFT',failure_class='contract',
+              failure_message='Native signed readback differs from the expected applied target; manual review required',
+              reconciled_at=NOW(3),row_version=row_version+1
+            WHERE sid=#{sid} AND reconciliation_id=#{reconciliationId} AND reconciled_at IS NULL
+              AND command_id=#{commandId} AND command_version=#{commandVersion}
+            """)
+    int reconcileDrift(@Param("sid") String sid,@Param("reconciliationId") String reconciliationId,
+                       @Param("commandId") String commandId,@Param("commandVersion") long commandVersion,
+                       @Param("actualTargetId") String actualTargetId,@Param("actualTargetVersion") Integer actualTargetVersion,
+                       @Param("actualTargetCatalogVersion") Long actualTargetCatalogVersion,
+                       @Param("deviceAppliedVersion") Long deviceAppliedVersion,
+                       @Param("deviceAppVersion") String deviceAppVersion,@Param("handoffReceipt") String handoffReceipt);
+
+    @Update("""
+            UPDATE nx_janus_takeover_execution SET failure_phase=phase,phase='FAILED',
+              failure_code='JANUS_FOREGROUND_ABORTED_HOLD',failure_class='contract',
+              failure_message='Executor stopped before reconciliation was accepted; native state requires manual review',
+              reconciled_at=NOW(3),row_version=row_version+1
+            WHERE sid=#{sid} AND reconciliation_id=#{reconciliationId} AND reconciled_at IS NULL
+              AND command_id=#{commandId} AND command_version=#{commandVersion}
+            """)
+    int reconcileHold(@Param("sid") String sid,@Param("reconciliationId") String reconciliationId,
+                      @Param("commandId") String commandId,@Param("commandVersion") long commandVersion);
 }

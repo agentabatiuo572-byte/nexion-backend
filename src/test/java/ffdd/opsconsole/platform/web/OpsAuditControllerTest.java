@@ -18,6 +18,10 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
 import ffdd.opsconsole.platform.application.A2AccessPolicy;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
+import ffdd.opsconsole.shared.audit.AuditRetentionService;
+import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
+import ffdd.opsconsole.platform.dto.RetentionExecutionView;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview;
 import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
@@ -44,12 +48,15 @@ class OpsAuditControllerTest {
             mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper =
             new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+    private final A2RuntimePolicy a2RuntimePolicy = mock(A2RuntimePolicy.class);
+    private final AuditRetentionService auditRetentionService = mock(AuditRetentionService.class);
     private final OpsAuditController controller =
             new OpsAuditController(auditLogService, auditCenterService, operatorRoleResolver, accessPolicy,
-                    idempotencyService, objectMapper);
+                    idempotencyService, objectMapper, a2RuntimePolicy, auditRetentionService);
 
     {
         when(accessPolicy.constrain(any(AuditLogQueryRequest.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(a2RuntimePolicy.reasonMinChars()).thenReturn(8);
         when(idempotencyService.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
@@ -62,6 +69,41 @@ class OpsAuditControllerTest {
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+    }
+
+    @Test
+    void reasonPolicyIsAvailableOnlyToAnAuthenticatedAdminSession() throws Exception {
+        PreAuthorize guard = OpsAuditController.class.getDeclaredMethod("reasonPolicy")
+                .getAnnotation(PreAuthorize.class);
+        assertThat(guard).isNotNull();
+        assertThat(guard.value()).isEqualTo("isAuthenticated()");
+    }
+
+    @Test
+    void manualRetentionRequiresA2WriteAndReturnsTheBoundedArchiveCounts() throws Exception {
+        when(auditRetentionService.runNow()).thenReturn(new AuditRetentionService.RetentionRun(
+                13, java.time.LocalDateTime.of(2026, 8, 11, 12, 0), 3, 2, true));
+
+        ApiResult<RetentionExecutionView> result = controller.runRetentionNow("a2-retention-1",
+                new RetentionExecutionRequest("验收执行已过期审计冷归档"));
+
+        assertThat(result.getData()).isEqualTo(new RetentionExecutionView(
+                13, java.time.LocalDateTime.of(2026, 8, 11, 12, 0), true, 2, 3, 0, 0));
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+        assertThat(OpsAuditController.class.getMethod("runRetentionNow", String.class, RetentionExecutionRequest.class)
+                .getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('platform_a2_write')");
+    }
+
+    @Test
+    void latestManualRetentionStatusIsReadBackFromTheRequiredAuditRecord() {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setDetailJson("{\"retentionMonths\":13,\"evaluatedAt\":\"2026-08-11T12:00:00\",\"lockAcquired\":true,\"archivedRows\":2,\"deletedRows\":3,\"outboxRows\":0,\"behaviorFactRows\":0}");
+        when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
+
+        ApiResult<RetentionExecutionView> result = controller.latestRetentionRun();
+
+        assertThat(result.getData().archivedRows()).isEqualTo(2);
+        assertThat(result.getData().deletedRows()).isEqualTo(3);
     }
 
     @Test
@@ -135,6 +177,7 @@ class OpsAuditControllerTest {
         record.setActorUsername("superadmin");
         record.setResult("SUCCESS");
         record.setRiskLevel("LOW");
+        record.setSchemaVersion("audit.v4");
         when(auditLogService.list(any(AuditLogQueryRequest.class))).thenReturn(List.of(record));
 
         ResponseEntity<?> result = controller.export("idem-1", request);
@@ -142,7 +185,8 @@ class OpsAuditControllerTest {
         assertThat(result.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(result.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION)).contains(".xls");
         String workbook = new String((byte[]) result.getBody(), StandardCharsets.UTF_8);
-        assertThat(workbook).contains("A2 审计日志导出", "incident review", "LOGIN", "superadmin");
+        assertThat(workbook).contains("A2 审计日志导出", "incident review", "LOGIN", "superadmin",
+                "Schema 版本", "audit.v4");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());

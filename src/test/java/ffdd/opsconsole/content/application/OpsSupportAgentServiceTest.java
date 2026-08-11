@@ -17,6 +17,7 @@ import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
+import ffdd.opsconsole.content.dto.SupportAgentBatchAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentQueryRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.stream.LongStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -57,6 +59,7 @@ class OpsSupportAgentServiceTest {
 
     @BeforeEach
     void setUp() {
+        ((FakeSupportAgentRepository) repository).reset();
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
                 .execute(anyString(), anyString(), anyString(), any(), any());
@@ -448,6 +451,122 @@ class OpsSupportAgentServiceTest {
         assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
     }
 
+    @Test
+    void batchAdvisorAssignmentValidatesEveryUserBeforeWritingAnything() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 8, true, true, false, now());
+
+        var result = service.assignAdvisorUsers(
+                2L,
+                "idem-batch-invalid",
+                new SupportAgentBatchAssignmentRequest(
+                        List.of(1001L, 9999L),
+                        "superadmin",
+                        "批量绑定专属客服用户"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
+        assertThat(fake.assignments).isEmpty();
+        assertThat(fake.bulkUserLookupCalls).isEqualTo(1);
+        assertThat(fake.bulkUpsertAssignmentCalls).isZero();
+    }
+
+    @Test
+    void batchAdvisorAssignmentWritesEveryUserThroughOneIdempotentCommand() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 8, true, true, false, now());
+
+        var result = service.assignAdvisorUsers(
+                2L,
+                "idem-batch-ok",
+                new SupportAgentBatchAssignmentRequest(
+                        List.of(1001L, 1006L),
+                        "superadmin",
+                        "批量绑定专属客服用户"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).extracting(SupportAgentAssignmentView::userId)
+                .containsExactly(1001L, 1006L);
+        verify(idempotencyService).execute(
+                org.mockito.ArgumentMatchers.eq("M1_SUPPORT_ADVISOR_BIND_BATCH"),
+                org.mockito.ArgumentMatchers.eq("idem-batch-ok"),
+                anyString(),
+                org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                any());
+    }
+
+    @Test
+    void batchAdvisorAssignmentRejectsOneHundredAndOneUsersBeforeAnyDatabaseWork() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 100, true, true, false, now());
+        List<Long> userIds = LongStream.rangeClosed(1001L, 1101L).boxed().toList();
+        fake.resetDatabaseWorkCounters();
+
+        var result = service.assignAdvisorUsers(
+                2L,
+                "idem-batch-too-large",
+                new SupportAgentBatchAssignmentRequest(
+                        userIds,
+                        "superadmin",
+                        "批量绑定专属客服用户达到资源上限"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_BATCH_TOO_LARGE");
+        assertThat(fake.databaseWorkCalls()).isZero();
+        assertThat(fake.assignments).isEmpty();
+        verifyNoInteractions(idempotencyService);
+    }
+
+    @Test
+    void batchAdvisorAssignmentAcceptsExactlyOneHundredUsers() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 100, true, true, false, now());
+        List<Long> userIds = LongStream.rangeClosed(1001L, 1100L).boxed().toList();
+
+        var result = service.assignAdvisorUsers(
+                2L,
+                "idem-batch-at-limit",
+                new SupportAgentBatchAssignmentRequest(
+                        userIds,
+                        "superadmin",
+                        "批量绑定一百名专属客服用户"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).extracting(SupportAgentAssignmentView::userId)
+                .containsExactlyElementsOf(userIds);
+        assertThat(fake.assignments).hasSize(100);
+        assertThat(fake.bulkUserLookupCalls).isEqualTo(1);
+        assertThat(fake.bulkUpsertAssignmentCalls).isEqualTo(1);
+        assertThat(fake.userExistsCalls).isZero();
+        assertThat(fake.upsertAssignmentCalls).isZero();
+    }
+
+    @Test
+    void profileUpdateRejectsAStaleVersionBeforeMutation() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        long currentVersion = fake.findProfile(2L).orElseThrow().version();
+
+        var result = service.updateProfile(
+                2L,
+                "idem-profile-stale",
+                new SupportAgentProfileUpdateRequest(
+                        "通用客服",
+                        List.of("support"),
+                        List.of("夜班"),
+                        14,
+                        true,
+                        true,
+                        false,
+                        currentVersion - 1,
+                        "superadmin",
+                        "并发调整客服接派单配置"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(fake.findProfile(2L).orElseThrow().tags()).isEmpty();
+    }
+
     private static AdminAccountOverview adminOverview(List<AdminAccountOverview.OperatorRecord> operators) {
         return new AdminAccountOverview(
                 new AdminAccountOverview.AdminAccountStats(operators.size(), 1, 0, 0, 1, 0),
@@ -479,11 +598,41 @@ class OpsSupportAgentServiceTest {
     private static final class FakeSupportAgentRepository implements SupportAgentRepository {
         private final Map<Long, SupportAgentProfileRecord> profiles = new LinkedHashMap<>();
         private final List<SupportAgentAssignmentView> assignments = new ArrayList<>();
-        private final List<Long> users = List.of(1001L, 1006L);
+        private final List<Long> users = LongStream.rangeClosed(1001L, 1101L).boxed().toList();
         private final List<Long> seededAdminIds = new ArrayList<>();
         private final List<SupportTicketAssigneeCandidateView> ticketAssigneeCandidates = new ArrayList<>();
         private int ensureSchemaCalls;
         private long assignmentId = 1L;
+        private int userExistsCalls;
+        private int upsertAssignmentCalls;
+        private int bulkUserLookupCalls;
+        private int bulkUpsertAssignmentCalls;
+
+        private void reset() {
+            profiles.clear();
+            assignments.clear();
+            seededAdminIds.clear();
+            ticketAssigneeCandidates.clear();
+            ensureSchemaCalls = 0;
+            assignmentId = 1L;
+            userExistsCalls = 0;
+            upsertAssignmentCalls = 0;
+            bulkUserLookupCalls = 0;
+            bulkUpsertAssignmentCalls = 0;
+        }
+
+        private void resetDatabaseWorkCounters() {
+            ensureSchemaCalls = 0;
+            userExistsCalls = 0;
+            upsertAssignmentCalls = 0;
+            bulkUserLookupCalls = 0;
+            bulkUpsertAssignmentCalls = 0;
+        }
+
+        private int databaseWorkCalls() {
+            return ensureSchemaCalls + userExistsCalls + upsertAssignmentCalls
+                    + bulkUserLookupCalls + bulkUpsertAssignmentCalls;
+        }
 
         @Override
         public void ensureSchema() {
@@ -552,7 +701,23 @@ class OpsSupportAgentServiceTest {
                     enabled,
                     transferable,
                     busy,
+                    profiles.containsKey(adminId) ? profiles.get(adminId).version() + 1 : 1L,
                     now.toString()));
+        }
+
+        @Override
+        public boolean updateProfileCas(
+                Long adminId, String seatType, String position, List<String> serviceTypes, List<String> tags,
+                int maxConcurrent, boolean enabled, boolean transferable, boolean busy,
+                long expectedVersion, LocalDateTime now) {
+            SupportAgentProfileRecord current = profiles.get(adminId);
+            if (current == null || current.version() != expectedVersion) {
+                return false;
+            }
+            profiles.put(adminId, new SupportAgentProfileRecord(
+                    adminId, seatType, position, serviceTypes, tags, maxConcurrent,
+                    enabled, transferable, busy, expectedVersion + 1, now.toString()));
+            return true;
         }
 
         @Override
@@ -564,7 +729,14 @@ class OpsSupportAgentServiceTest {
 
         @Override
         public boolean userExists(Long userId) {
+            userExistsCalls += 1;
             return users.contains(userId);
+        }
+
+        @Override
+        public List<Long> findExistingUserIds(List<Long> userIds) {
+            bulkUserLookupCalls += 1;
+            return userIds.stream().filter(users::contains).toList();
         }
 
         @Override
@@ -581,6 +753,7 @@ class OpsSupportAgentServiceTest {
                 String operator,
                 String reason,
                 LocalDateTime now) {
+            upsertAssignmentCalls += 1;
             assignments.removeIf(row -> row.userId().equals(userId)
                     && "ACTIVE".equals(row.status()));
             SupportAgentAssignmentView row = new SupportAgentAssignmentView(
@@ -597,6 +770,26 @@ class OpsSupportAgentServiceTest {
                     now.toString());
             assignments.add(row);
             return row;
+        }
+
+        @Override
+        public List<SupportAgentAssignmentView> upsertAssignments(
+                Long agentAdminId,
+                List<Long> userIds,
+                String operator,
+                String reason,
+                LocalDateTime now) {
+            bulkUpsertAssignmentCalls += 1;
+            List<SupportAgentAssignmentView> rows = new ArrayList<>();
+            for (Long userId : userIds) {
+                assignments.removeIf(row -> row.userId().equals(userId) && "ACTIVE".equals(row.status()));
+                SupportAgentAssignmentView row = new SupportAgentAssignmentView(
+                        assignmentId++, agentAdminId, userId, "U" + String.format("%08d", userId),
+                        "用户" + userId, "ACTIVE", now.toString(), null, operator, reason, now.toString());
+                assignments.add(row);
+                rows.add(row);
+            }
+            return rows;
         }
 
         @Override

@@ -15,12 +15,13 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class BehaviorAnalyticsServiceTest {
     private final BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final BehaviorAnalyticsService service = new BehaviorAnalyticsService(
-            mapper, outbox, mock(AuditLogService.class), "unit-test-pseudonym-secret");
+            mapper, outbox, mock(AuditLogService.class), "unit-test-pseudonym-secret", "PRODUCTION");
 
     @Test
     void requestRejectsUnknownFieldsEvenWhenGlobalJacksonIsPermissive() throws Exception {
@@ -39,18 +40,62 @@ class BehaviorAnalyticsServiceTest {
         when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(
                 new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
                         "/pages/store/store", "/pages/store/store", true));
-        when(outbox.publishClientAnalyticsEvent(org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.eq("app.page_viewed"), org.mockito.ArgumentMatchers.any()))
-                .thenReturn("evt-1");
+        when(outbox.publishTrustedClientAnalyticsEvent(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq("app.page_viewed"),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new EventOutboxService.ClientAnalyticsPublishResult("evt-1", true));
 
         var result = service.ingest(42L, new BehaviorEventRequest(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed", "0123456789abcdef0123456789abcdef", "/pages/store/detail?sku=secret",
                 1200L, null, null, null, null, Instant.now().toEpochMilli(), "H5", "zh-CN"));
 
         assertThat(result.getCode()).isZero();
+        ArgumentCaptor<java.util.Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(outbox).publishTrustedClientAnalyticsEvent(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("app.page_viewed"), payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue()).containsEntry("source_environment", "PRODUCTION");
         verify(mapper).insertFact(org.mockito.ArgumentMatchers.argThat(row ->
                 row.eventId().equals("evt-1") && row.route().equals("/pages/store/detail")
                         && !row.actorHash().equals("42") && row.actorHash().length() == 64 && row.pageLevel() == 3));
+    }
+
+    @Test
+    void fixtureIngestPersistsAnExplicitMockSource() {
+        when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(
+                new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
+                        "/pages/store/store", "/pages/store/store", true));
+        when(outbox.publishTrustedClientAnalyticsEvent(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq("app.page_viewed"),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new EventOutboxService.ClientAnalyticsPublishResult("fixture-event", true));
+
+        service.ingestFixture(9000001L, new BehaviorEventRequest(
+                "dddddddddddddddddddddddddddddddd", "app.page_viewed",
+                "fedcba9876543210fedcba9876543210", "/pages/store/detail",
+                0L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US"));
+
+        verify(mapper).insertFact(org.mockito.ArgumentMatchers.argThat(row ->
+                "MOCK".equals(row.sourceEnvironment())));
+    }
+
+    @Test
+    void sampledOutTrustedEventIsAcceptedWithoutWritingAQueryableFact() {
+        when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(
+                new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
+                        "/pages/store/store", "/pages/store/store", true));
+        when(outbox.publishTrustedClientAnalyticsEvent(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq("app.page_viewed"),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new EventOutboxService.ClientAnalyticsPublishResult(null, false));
+
+        var result = service.ingest(42L, new BehaviorEventRequest(
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "app.page_viewed",
+                "0123456789abcdef0123456789abcdef", "/pages/store/detail",
+                1200L, null, null, null, null, Instant.now().toEpochMilli(), "H5", "zh-CN"));
+
+        assertThat(result.getData()).containsEntry("accepted", true).containsEntry("sampledIn", false);
+        verify(mapper, org.mockito.Mockito.never()).insertFact(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -89,8 +134,9 @@ class BehaviorAnalyticsServiceTest {
                 1200L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US"));
 
         assertThat(result.getData()).containsEntry("duplicate", true).containsEntry("accepted", false);
-        verify(outbox, org.mockito.Mockito.never()).publishClientAnalyticsEvent(
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+        verify(outbox, org.mockito.Mockito.never()).publishTrustedClientAnalyticsEvent(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
         verify(mapper, org.mockito.Mockito.never()).latestEventAt(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }

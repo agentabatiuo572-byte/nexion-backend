@@ -260,6 +260,9 @@ class OpsTeamServiceTest {
         assertThat(pool.getData())
                 .containsEntry("poolRatio", "")
                 .containsEntry("poolRatioValue", BigDecimal.ZERO)
+                .containsEntry("poolRatioStatus", "HOLD")
+                .containsEntry("poolRatioAvailable", false)
+                .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_MISSING")
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("monthlyCapUsd", 0)
@@ -276,6 +279,12 @@ class OpsTeamServiceTest {
         ApiResult<Map<String, Object>> result = service.ranks();
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("leadership"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("poolRatio", BigDecimal.ZERO)
+                .containsEntry("poolRatioStatus", "HOLD")
+                .containsEntry("poolRatioAvailable", false)
+                .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_MISSING");
         List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("vrankRows");
         assertThat(rows).isEmpty();
         assertThat(result.getData().get("sources").toString())
@@ -339,7 +348,14 @@ class OpsTeamServiceTest {
         assertThat(result.getData()).containsEntry("domain", "F4");
         assertThat((List<Map<String, Object>>) result.getData().get("metrics")).isEmpty();
         assertThat(result.getData())
+                .containsEntry("configVersion", "")
+                .containsEntry("settlementConfigStatus", "HOLD")
+                .containsEntry("settlementConfigUnavailableKey", "F.pool.configVersion")
+                .containsEntry("settlementConfigUnavailableReason", "MISSING")
                 .containsEntry("poolRatio", "")
+                .containsEntry("poolRatioStatus", "HOLD")
+                .containsEntry("poolRatioAvailable", false)
+                .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_MISSING")
                 .containsEntry("weeklyGmvUsd", 0)
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("participantCount", 0)
@@ -354,6 +370,21 @@ class OpsTeamServiceTest {
                 .contains("nx_team_ambassador_application")
                 .contains("nx_team_leaderboard_action");
         assertThat(configFacade.values).isEmpty();
+    }
+
+    @Test
+    void leadershipPoolKeepsManagementReadAvailableWhenStoredRatioIsPolluted() {
+        configFacade.values.put("team.ui.F.pool.ratio", "1x3");
+
+        ApiResult<Map<String, Object>> result = service.leadershipPool();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("poolRatio", "")
+                .containsEntry("poolRatioValue", BigDecimal.ZERO)
+                .containsEntry("poolRatioStatus", "HOLD")
+                .containsEntry("poolRatioAvailable", false)
+                .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_INVALID");
     }
 
     @Test
@@ -634,7 +665,87 @@ class OpsTeamServiceTest {
                 new TeamCommissionConfigUpdateRequest("F.cooldown", "30", "normal cooldown", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry("team.ui.F.cooldown", "30");
+        assertThat(configFacade.values)
+                .containsEntry("commission/cooling-days", "30")
+                .doesNotContainKey("team.ui.F.cooldown");
+    }
+
+    @Test
+    void authenticatedPrincipalOverridesSpoofedPayloadOperatorInAudit() {
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                        77L, null, List.of()));
+
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-real-actor",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.cooldown", "30", "verify authenticated audit actor", "spoofed-superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).record(captor.capture());
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("admin:77");
+    }
+
+    @Test
+    void updateF2CooldownCanonicalWriteFailureLeavesBothKeysAndSideEffectsUnchanged() {
+        configFacade.values.put("team.ui.F.cooldown", "21");
+        configFacade.values.put("commission/cooling-days", "21");
+        configFacade.failOnKey = "commission/cooling-days";
+
+        assertThatThrownBy(() -> service.updateConfig(
+                "idem-f2-cooldown-fail",
+                new TeamCommissionConfigUpdateRequest("F.cooldown", "30", "canonical write fails", "superadmin")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("config write failed");
+
+        assertThat(configFacade.values)
+                .containsEntry("team.ui.F.cooldown", "21")
+                .containsEntry("commission/cooling-days", "21");
+        verify(auditLogService, never()).record(org.mockito.ArgumentMatchers.any());
+        verify(eventOutboxService, never()).publish(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyMap());
+    }
+
+    @Test
+    void updateF4SettleCronRejectsInvalidExpressionWithoutPersisting() {
+        assertThatThrownBy(() -> service.updateConfig(
+                "idem-f4-cron-invalid",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.pool.settleCron", "not-a-cron", "invalid settle schedule", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("F4_SETTLE_CRON_INVALID");
+
+        assertThat(configFacade.values).doesNotContainKey("team.ui.F.pool.settleCron");
+    }
+
+    @Test
+    void updateF4SettleCronPersistsCanonicalSpringExpression() {
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f4-cron-valid",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.pool.settleCron", "59 23 * * 0", "valid settle schedule", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("team.ui.F.pool.settleCron", "0 59 23 * * 0");
+    }
+
+    @Test
+    void firstPositivePoolRateFromBootstrapSentinelIsBlockedBelowCoverageRedline() {
+        configFacade.values.put("team.ui.F.pool.ratio", "__UNCONFIGURED__");
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(
+                new BigDecimal("80.00"), new BigDecimal("85.00")));
+
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f4-first-rate-redline",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.pool.ratio", "1", "first positive pool rate", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values)
+                .containsEntry("team.ui.F.pool.ratio", "__UNCONFIGURED__");
     }
 
     // 批2a · 修复2:F.promo.weekMultiplier promo 周倍率范围校验 · 合法 1.0-3.0,3.5 越界拒绝。
@@ -691,12 +802,48 @@ class OpsTeamServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("team.ui.F.pool.ratio", "6%");
+        assertThat(configFacade.values).containsEntry("team.ui.F.pool.configVersion", "1");
         Map<String, Object> pool = service.leadershipPool().getData();
         assertThat(pool)
+                .containsEntry("configVersion", "1")
+                .containsEntry("settlementConfigStatus", "HOLD")
+                .containsEntry("settlementConfigUnavailableKey", "F.pool.unlockVRank")
                 .containsEntry("poolRatio", "6%")
+                .containsEntry("poolRatioStatus", "READY")
+                .containsEntry("poolRatioAvailable", true)
+                .containsEntry("poolRatioUnavailableReason", "")
                 .containsEntry("weeklyInjectedUsd", 0);
         Map<String, Object> config = (Map<String, Object>) pool.get("config");
         assertThat(config).containsEntry("poolRatio", "6%");
+    }
+
+    @Test
+    void leadershipPoolMarksSettlementReadyOnlyAfterTheBackendGuardAcceptsAllFiveKeys() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "7");
+        configFacade.values.put("team.ui.F.pool.ratio", "5%");
+        configFacade.values.put("team.ui.F.pool.unlockVRank", "V3");
+        configFacade.values.put("team.ui.F.pool.monthlyCap", "5000");
+        configFacade.values.put("team.ui.F.pool.settleCron", "0 59 23 * * 0");
+
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("configVersion", "7")
+                .containsEntry("settlementConfigStatus", "READY")
+                .containsEntry("settlementConfigUnavailableKey", "")
+                .containsEntry("settlementConfigUnavailableReason", "");
+    }
+
+    @Test
+    void leadershipPoolKeepsSettlementOnHoldWhenSpringRejectsThePersistedCron() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "7");
+        configFacade.values.put("team.ui.F.pool.ratio", "5%");
+        configFacade.values.put("team.ui.F.pool.unlockVRank", "V3");
+        configFacade.values.put("team.ui.F.pool.monthlyCap", "5000");
+        configFacade.values.put("team.ui.F.pool.settleCron", "*/0 * * * * *");
+
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("settlementConfigStatus", "HOLD")
+                .containsEntry("settlementConfigUnavailableKey", "F.pool.settleCron")
+                .containsEntry("settlementConfigUnavailableReason", "INVALID_CRON");
     }
 
     @Test
@@ -1045,21 +1192,45 @@ class OpsTeamServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
     }
 
-    // A1 批2b 修复3:F.ambassador.{label}.status 动态分发 → UPDATE nx_team_ambassador_application.status
-    // (label 非数字 → fallback 最新 PENDING 一条) + 审计 F_TEAM_AMBASSADOR_REVIEWED。
+    // F.ambassador.{applicationId}.status 按真实申请 id 精确更新并开通预算。
     @Test
     void updateF4AmbassadorStatusWritesBusinessTableAndAudit() {
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f4-ambassador-approve",
-                new TeamCommissionConfigUpdateRequest("F.ambassador.q3-2025.status", "approved", "approve q3 cycle ambassador", "risk-ops"));
+                new TeamCommissionConfigUpdateRequest("F.ambassador.2025.status", "approved", "approve q3 cycle ambassador", "risk-ops"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(commissionRepository.lastAmbassadorLabel).isEqualTo("q3-2025");
+        assertThat(commissionRepository.lastAmbassadorLabel).isEqualTo("2025");
         assertThat(commissionRepository.lastAmbassadorStatus).isEqualTo("APPROVED");
-        assertThat(configFacade.values).doesNotContainKey("team.ui.F.ambassador.q3-2025.status");
+        assertThat(configFacade.values).doesNotContainKey("team.ui.F.ambassador.2025.status");
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).record(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("F_TEAM_AMBASSADOR_REVIEWED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void updateF4QuotaTierRejectsSecondAdminStaleSnapshotAndReturnsAuthoritativeCap() {
+        commissionRepository.quotaRows.add(new LinkedHashMap<>(Map.of(
+                "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10, "tight", false)));
+
+        ApiResult<Map<String, Object>> first = service.updateConfig(
+                "idem-quota-admin-a",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.quota.tier.PRO.monthlyQuota", "20", "admin A raises quota", "admin-a", 10L));
+        ApiResult<Map<String, Object>> stale = service.updateConfig(
+                "idem-quota-admin-b",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.quota.tier.PRO.monthlyQuota", "30", "admin B stale snapshot", "admin-b", 10L));
+
+        assertThat(first.getCode()).isZero();
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat((Map<String, Object>) stale.getData().get("conflict"))
+                .containsEntry("expectedMonthlyQuota", 10)
+                .containsEntry("requestedMonthlyQuota", 30)
+                .containsEntry("authoritativeReread", true);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) stale.getData().get("quotaRows");
+        assertThat(rows).singleElement().satisfies(row -> assertThat(row.get("cap")).isEqualTo(20));
     }
 
     // A1 批2b 修复3:大使 approved=开通预算=资金放大,B1 红线下阻断;rejected 不放大,放行。
@@ -1069,7 +1240,7 @@ class OpsTeamServiceTest {
 
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f4-ambassador-approve-blocked",
-                new TeamCommissionConfigUpdateRequest("F.ambassador.q3-2025.status", "approved", "approve below redline", "risk-ops"));
+                new TeamCommissionConfigUpdateRequest("F.ambassador.2025.status", "approved", "approve below redline", "risk-ops"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
         assertThat(commissionRepository.lastAmbassadorStatus).isNull();
@@ -1212,6 +1383,7 @@ class OpsTeamServiceTest {
 
     private static final class FakePlatformConfigFacade implements PlatformConfigFacade {
         private final Map<String, String> values = new LinkedHashMap<>();
+        private String failOnKey;
 
         @Override
         public Optional<String> activeValue(String configKey) {
@@ -1220,6 +1392,7 @@ class OpsTeamServiceTest {
 
         @Override
         public void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark) {
+            if (configKey.equals(failOnKey)) throw new IllegalStateException("config write failed");
             values.put(configKey, configValue);
         }
     }
@@ -1434,6 +1607,18 @@ class OpsTeamServiceTest {
         }
 
         @Override
+        public boolean updateHardwareQuotaTierCas(String quotaCode, int expectedMonthlyQuota, int monthlyQuota) {
+            for (Map<String, Object> row : quotaRows) {
+                if (quotaCode.equals(row.get("quotaCode"))
+                        && ((Number) row.get("cap")).intValue() == expectedMonthlyQuota) {
+                    row.put("cap", monthlyQuota);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
         public List<Map<String, Object>> ambassadorBands() {
             return ambassadorBands;
         }
@@ -1495,6 +1680,11 @@ class OpsTeamServiceTest {
             this.lastAmbassadorLabel = applicationId;
             this.lastAmbassadorStatus = status;
             return true;
+        }
+
+        @Override
+        public boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) {
+            return applicationId != null && applicationId > 0;
         }
 
         // A1 批2b:F4 榜单处置写 fake · 记录 lastLeaderboard*。

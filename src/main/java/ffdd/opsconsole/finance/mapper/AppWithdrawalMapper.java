@@ -116,7 +116,7 @@ public interface AppWithdrawalMapper {
     @Insert("""
             INSERT INTO nx_withdrawal_order
               (user_id,withdrawal_no,asset,chain,amount,fee,target_address,status,
-               d2_version,d2_hold_until,d2_penalty_fee_rate,d2_gross_fee,d2_nex_burned,
+               d2_version,d2_hold_until,d5_payout_due_at,d2_penalty_fee_rate,d2_gross_fee,d2_nex_burned,
                d2_network_fee_rate,d2_network_fee_min,d2_network_fee_max,d2_network_fee,
                d2_nex_fee_offset_rate,d2_fee_waived,d2_actual_fee,d2_net_receive,
                d5_policy_version,d5_use_nex_fee_offset,
@@ -127,7 +127,7 @@ public interface AppWithdrawalMapper {
                created_at,updated_at,is_deleted)
             VALUES
               (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},
-               0,#{holdUntil},#{penaltyFeeRate},#{grossFee},#{nexBurned},
+               0,#{holdUntil},#{payoutDueAt},#{penaltyFeeRate},#{grossFee},#{nexBurned},
                #{networkFeeRate},#{networkFeeMin},#{networkFeeMax},#{networkFee},
                #{nexFeeOffsetRate},#{feeWaived},#{actualFee},#{netReceive},
                #{policyVersion},#{useNexFeeOffset},
@@ -167,7 +167,7 @@ public interface AppWithdrawalMapper {
 
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,
-            LocalDateTime holdUntil,
+            LocalDateTime holdUntil, LocalDateTime payoutDueAt,
             BigDecimal networkFeeRate, BigDecimal networkFeeMin, BigDecimal networkFeeMax, BigDecimal networkFee,
             BigDecimal penaltyFeeRate, BigDecimal grossFee,
             BigDecimal nexBurned, BigDecimal nexFeeOffsetRate, BigDecimal feeWaived,

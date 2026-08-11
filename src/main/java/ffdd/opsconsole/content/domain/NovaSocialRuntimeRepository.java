@@ -21,6 +21,14 @@ public interface NovaSocialRuntimeRepository {
     boolean claimBusinessFact(
             String channel, String sourceEventId, String eventName, LocalDateTime now);
 
+    Optional<NovaBusinessFanoutProgress> businessFanoutProgress(String channel, String sourceEventId);
+
+    Optional<Long> fanoutBatchUpperUserId(long afterUserId, int limit);
+
+    boolean advanceBusinessFanout(
+            String channel, String sourceEventId, long expectedCursorUserId,
+            long nextCursorUserId, int delivered, LocalDateTime now);
+
     void completeBusinessFact(
             String channel,
             String sourceEventId,
@@ -57,6 +65,13 @@ public interface NovaSocialRuntimeRepository {
             String ctaHref,
             LocalDateTime cooldownSince,
             LocalDateTime now);
+
+    int enqueueBusinessNotificationBatch(
+            String channel, String notificationType, String bizNo,
+            long afterUserId, long upperUserId,
+            String titleZh, String bodyZh, String titleVi, String bodyVi,
+            String titleEn, String bodyEn, String ctaHref,
+            LocalDateTime cooldownSince, LocalDateTime now);
 
     int markNotificationsDelivered(String bizNo, LocalDateTime now);
 

@@ -69,6 +69,14 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     SchemaGateRow findActiveSchema(@Param("eventName") String eventName);
 
     @Select("""
+            SELECT lifecycle_state
+              FROM nx_admin_event_lifecycle
+             WHERE event_name=#{eventName} AND is_deleted=0
+             LIMIT 1
+            """)
+    String findLifecycleState(@Param("eventName") String eventName);
+
+    @Select("""
             SELECT p.property_name AS propertyName, p.property_type AS propertyType,
                    p.required_field AS requiredField
              FROM nx_event_schema_property p
@@ -164,8 +172,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                    @Param("maxRetries") int maxRetries, @Param("deadStatus") String deadStatus,
                    @Param("failedStatus") String failedStatus, @Param("pendingStatus") String pendingStatus);
 
-    record SchemaGateRow(String familyKey, int revision, boolean serverAuthoritative) {
-    }
+    record SchemaGateRow(String familyKey, int revision, boolean serverAuthoritative) {}
 
     record SchemaPropertyGateRow(String propertyName, String propertyType, boolean requiredField) {
     }

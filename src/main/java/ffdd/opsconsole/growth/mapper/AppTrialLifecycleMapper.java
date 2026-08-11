@@ -97,6 +97,7 @@ public interface AppTrialLifecycleMapper {
     @Select("""
             SELECT id FROM nx_wallet_bank_card
              WHERE id=#{paymentMethodId} AND user_id=#{userId} AND is_deleted=0
+               AND COALESCE(source_environment,'PRODUCTION')='PRODUCTION'
                AND UPPER(status) IN ('ACTIVE','BOUND','VERIFIED')
              LIMIT 1 FOR UPDATE
             """)
@@ -163,7 +164,8 @@ public interface AppTrialLifecycleMapper {
     @Update("""
             UPDATE nx_trial_claim
                SET status='GRACE',version=version+1,updated_at=NOW()
-             WHERE id=#{id} AND version=#{version} AND UPPER(status)='ACTIVE' AND expires_at<=#{now}
+             WHERE id=#{id} AND version=#{version}
+               AND UPPER(status) IN ('CLAIMED','ACTIVE') AND expires_at<=#{now}
             """)
     int enterGrace(@Param("id") Long id, @Param("version") long version, @Param("now") LocalDateTime now);
 

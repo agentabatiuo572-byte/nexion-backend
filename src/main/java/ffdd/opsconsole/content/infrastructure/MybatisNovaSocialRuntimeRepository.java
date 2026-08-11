@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.mapper.NovaSocialRuntimeMapper;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
+import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -22,6 +23,9 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
         if (!runtimeTablesEnsured.get()) {
             mapper.createRuntimeSlotTable();
             mapper.createBusinessEventReceiptTable();
+            if (mapper.fanoutCursorColumnCount() == 0) {
+                mapper.addFanoutCursorColumn();
+            }
             ensureNovaEventSchema("nova.push_sent", List.of(
                     property("notification_id", "id"),
                     property("channel", "enum"),
@@ -69,6 +73,23 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     }
 
     @Override
+    public Optional<NovaBusinessFanoutProgress> businessFanoutProgress(String channel, String sourceEventId) {
+        return Optional.ofNullable(mapper.businessFanoutProgress(channel, sourceEventId));
+    }
+
+    @Override
+    public Optional<Long> fanoutBatchUpperUserId(long afterUserId, int limit) {
+        return Optional.ofNullable(mapper.fanoutBatchUpperUserId(afterUserId, limit));
+    }
+
+    @Override
+    public boolean advanceBusinessFanout(String channel, String sourceEventId, long expectedCursorUserId,
+                                         long nextCursorUserId, int delivered, LocalDateTime now) {
+        return mapper.advanceBusinessFanout(channel, sourceEventId, expectedCursorUserId,
+                nextCursorUserId, delivered, now) == 1;
+    }
+
+    @Override
     public void completeBusinessFact(
             String channel,
             String sourceEventId,
@@ -110,6 +131,17 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
                 channel, notificationType, sourceEventId, userId, bizNo,
                 titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
                 ctaHref, cooldownSince, now);
+    }
+
+    @Override
+    public int enqueueBusinessNotificationBatch(
+            String channel, String notificationType, String bizNo, long afterUserId, long upperUserId,
+            String titleZh, String bodyZh, String titleVi, String bodyVi,
+            String titleEn, String bodyEn, String ctaHref,
+            LocalDateTime cooldownSince, LocalDateTime now) {
+        return mapper.enqueueBusinessNotificationBatch(channel, notificationType, bizNo,
+                afterUserId, upperUserId, titleZh, bodyZh, titleVi, bodyVi,
+                titleEn, bodyEn, ctaHref, cooldownSince, now);
     }
 
     @Override

@@ -78,7 +78,8 @@ class NovaSocialRuntimeMapperContractTest {
         assertThat(insertSql).contains("INSERT IGNORE INTO nx_nova_social_runtime_slot").doesNotContain("${");
         assertThat(takeoverSql)
                 .contains("completed_at IS NULL")
-                .contains("lease_until <= #{now}")
+                .contains("NOT (lease_until > #{now})")
+                .doesNotContain("<")
                 .doesNotContain("${");
     }
 }

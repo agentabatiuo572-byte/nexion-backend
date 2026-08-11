@@ -9,6 +9,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1")
+$databaseVariableNames = @(
+  "NEXION_DB_URL",
+  "NEXION_DB_USERNAME",
+  "NEXION_DB_PASSWORD",
+  "SPRING_DATASOURCE_URL",
+  "SPRING_DATASOURCE_USERNAME",
+  "SPRING_DATASOURCE_PASSWORD"
+)
+$previousDatabaseEnvironment = @{}
+foreach ($name in $databaseVariableNames) {
+  $previousDatabaseEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 $mfaBypassValue = & (Join-Path $PSScriptRoot "resolve_ops_console_mfa_bypass.ps1") `
   -Enabled $TemporarySuperadminMfaBypass
 
@@ -16,32 +29,45 @@ if (-not (Test-Path $Maven)) {
   throw "Maven executable not found: $Maven"
 }
 
-& (Join-Path $PSScriptRoot "apply_startup_schema_migrations.ps1") -MySql $MySql -Confirm:$false
+try {
+  $env:NEXION_DB_URL = $databaseEnvironment.JdbcUrl
+  $env:NEXION_DB_USERNAME = $databaseEnvironment.Username
+  $env:NEXION_DB_PASSWORD = $databaseEnvironment.Password
+  Remove-Item Env:SPRING_DATASOURCE_URL -ErrorAction SilentlyContinue
+  Remove-Item Env:SPRING_DATASOURCE_USERNAME -ErrorAction SilentlyContinue
+  Remove-Item Env:SPRING_DATASOURCE_PASSWORD -ErrorAction SilentlyContinue
 
-if ([string]::IsNullOrWhiteSpace($LogDir)) {
-  $LogDir = Join-Path $root "logs"
-}
+  & (Join-Path $PSScriptRoot "apply_startup_schema_migrations.ps1") -MySql $MySql -Confirm:$false
 
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+  if ([string]::IsNullOrWhiteSpace($LogDir)) {
+    $LogDir = Join-Path $root "logs"
+  }
 
-$outLog = Join-Path $LogDir "ops-console-monolith.out.log"
-$errLog = Join-Path $LogDir "ops-console-monolith.err.log"
+  New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-$commands = @(
-  ('cd /d "{0}"' -f $root.Path),
-  ('set "SERVER_PORT={0}"' -f $Port),
-  'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
-  ('set "NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS={0}"' -f $mfaBypassValue),
-  ('call "{0}" spring-boot:run' -f $Maven)
-)
+  $outLog = Join-Path $LogDir "ops-console-monolith.out.log"
+  $errLog = Join-Path $LogDir "ops-console-monolith.err.log"
 
-$inner = ($commands -join " && ") + (' > "{0}" 2> "{1}"' -f $outLog, $errLog)
-$process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $inner -WindowStyle Hidden -PassThru
+  $commands = @(
+    ('cd /d "{0}"' -f $root.Path),
+    ('set "SERVER_PORT={0}"' -f $Port),
+    'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
+    ('set "NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS={0}"' -f $mfaBypassValue),
+    ('call "{0}" spring-boot:run' -f $Maven)
+  )
 
-[pscustomobject]@{
-  Service = "nexion-backend"
-  Port = $Port
-  ProcessId = $process.Id
-  Stdout = $outLog
-  Stderr = $errLog
+  $inner = ($commands -join " && ") + (' > "{0}" 2> "{1}"' -f $outLog, $errLog)
+  $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $inner -WindowStyle Hidden -PassThru
+
+  [pscustomobject]@{
+    Service = "nexion-backend"
+    Port = $Port
+    ProcessId = $process.Id
+    Stdout = $outLog
+    Stderr = $errLog
+  }
+} finally {
+  foreach ($name in $databaseVariableNames) {
+    [Environment]::SetEnvironmentVariable($name, $previousDatabaseEnvironment[$name], "Process")
+  }
 }

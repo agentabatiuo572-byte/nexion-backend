@@ -33,6 +33,7 @@ import org.springframework.util.StringUtils;
 public class EarningsReleaseService {
     private static final Set<String> BUCKETS = Set.of("withdrawable", "pending_review", "bonus_locked");
     private static final Set<String> ASSETS = Set.of("USDT", "NEX");
+    private static final Set<String> SOURCE_ENVIRONMENTS = Set.of("PRODUCTION", "SANDBOX");
     private final EarningsReleaseMapper mapper;
     private final RiskReleaseParamsService params;
     private final AdminIdempotencyService idempotency;
@@ -42,6 +43,12 @@ public class EarningsReleaseService {
     @Transactional(rollbackFor = Exception.class)
     public String creditReward(Long userId, String sourceType, String sourceRef, String asset,
                                BigDecimal amount, String idempotencyKey) {
+        return creditReward(userId, sourceType, sourceRef, asset, amount, "PRODUCTION", idempotencyKey);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public String creditReward(Long userId, String sourceType, String sourceRef, String asset,
+                               BigDecimal amount, String sourceEnvironment, String idempotencyKey) {
         EarningsReleaseMapper.RiskCluster cluster = mapper.riskCluster(userId);
         String clusterId = cluster == null || !StringUtils.hasText(cluster.clusterId())
                 ? "USER:" + userId : cluster.clusterId();
@@ -50,29 +57,64 @@ public class EarningsReleaseService {
         String bucket = Set.of("detected", "flagged", "frozen").contains(status) || accounts >= params.freezeFrom()
                 ? "bonus_locked"
                 : accounts >= params.pendingFrom() ? "pending_review" : "withdrawable";
-        return credit(userId, clusterId, sourceType, sourceRef, asset, amount, bucket, idempotencyKey);
+        return credit(userId, clusterId, sourceType, sourceRef, asset, amount, bucket,
+                sourceEnvironment, idempotencyKey);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public String credit(Long userId, String clusterId, String sourceType, String sourceRef, String asset,
                          BigDecimal amount, String bucket, String idempotencyKey) {
+        return credit(userId, clusterId, sourceType, sourceRef, asset, amount, bucket,
+                "PRODUCTION", idempotencyKey);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public String credit(Long userId, String clusterId, String sourceType, String sourceRef, String asset,
+                         BigDecimal amount, String bucket, String sourceEnvironment, String idempotencyKey) {
         String normalizedAsset = asset == null ? "" : asset.trim().toUpperCase();
+        String normalizedEnvironment = sourceEnvironment == null ? "" : sourceEnvironment.trim().toUpperCase();
+        String normalizedSourceType = sourceType == null ? "" : sourceType.trim();
+        boolean mockSource = normalizedSourceType.toUpperCase().startsWith("MOCK");
         if (userId == null || !StringUtils.hasText(clusterId) || !StringUtils.hasText(sourceType)
                 || !StringUtils.hasText(sourceRef) || !StringUtils.hasText(idempotencyKey)
                 || amount == null || amount.signum() <= 0 || !BUCKETS.contains(bucket)
-                || !ASSETS.contains(normalizedAsset)) {
+                || !ASSETS.contains(normalizedAsset) || !SOURCE_ENVIRONMENTS.contains(normalizedEnvironment)
+                || ("SANDBOX".equals(normalizedEnvironment) != mockSource)) {
             throw new BizException(422, "EARNINGS_RELEASE_ENTRY_INVALID");
         }
+        String normalizedSourceRef = sourceRef.trim();
+        String normalizedIdempotencyKey = idempotencyKey.trim();
         String no = "ER-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
-        if (mapper.insert(new EarningsReleaseMapper.EntryWrite(no, userId, clusterId, sourceType,
-                sourceRef, normalizedAsset, amount, bucket, idempotencyKey.trim())) != 1) {
-            throw new BizException(409, "EARNINGS_RELEASE_ENTRY_CONFLICT");
+        if (mapper.insert(new EarningsReleaseMapper.EntryWrite(no, userId, clusterId, normalizedSourceType,
+                normalizedSourceRef, normalizedAsset, amount, bucket, normalizedIdempotencyKey, normalizedEnvironment)) != 1) {
+            EarningsReleaseMapper.ExistingEntry existing = mapper.findBySource(
+                    normalizedSourceType, normalizedSourceRef, userId);
+            if (!matchesExistingEntry(existing, userId, normalizedSourceType, normalizedSourceRef,
+                    normalizedAsset, amount, normalizedEnvironment, normalizedIdempotencyKey)) {
+                throw new BizException(409, "EARNINGS_RELEASE_ENTRY_CONFLICT");
+            }
+            return existing.entryNo();
         }
         int credited = "USDT".equals(normalizedAsset)
-                ? mapper.creditUsdt(userId, amount)
-                : mapper.creditNex(userId, amount);
+                ? mapper.creditUsdt(userId, amount, normalizedEnvironment)
+                : mapper.creditNex(userId, amount, normalizedEnvironment);
         if (credited != 1) throw new BizException(409, "EARNINGS_RELEASE_WALLET_CONFLICT");
         return no;
+    }
+
+    private boolean matchesExistingEntry(EarningsReleaseMapper.ExistingEntry existing, Long userId,
+                                         String sourceType, String sourceRef, String asset, BigDecimal amount,
+                                         String sourceEnvironment, String idempotencyKey) {
+        return existing != null
+                && Integer.valueOf(0).equals(existing.isDeleted())
+                && "ACTIVE".equals(existing.status())
+                && userId.equals(existing.userId())
+                && sourceType.equals(existing.sourceType())
+                && sourceRef.equals(existing.sourceRef())
+                && asset.equals(existing.asset())
+                && amount.compareTo(existing.amount()) == 0
+                && sourceEnvironment.equals(existing.sourceEnvironment())
+                && idempotencyKey.equals(existing.idempotencyKey());
     }
 
     public ApiResult<Map<String, Object>> status(Long userId) {
@@ -97,7 +139,7 @@ public class EarningsReleaseService {
         response.put("buckets", assets.get("USDT"));
         response.put("assets", assets);
         response.put("releaseMode", params.manualOnly() ? "manual_only" : "attest_or_manual");
-        response.put("attestedOnlineSeconds", mapper.attestedSeconds(userId));
+        response.put("attestedOnlineSeconds", mapper.attestedSeconds(userId,"PRODUCTION"));
         response.put("requiredAttestationSeconds", params.attestationHours() * 3600L);
         response.put("serverCanonical", true);
         response.put("clusterRestricted", clusterRestricted(cluster));
@@ -124,16 +166,26 @@ public class EarningsReleaseService {
         return ApiResult.ok(Map.of("items", items, "limit", normalizedLimit, "serverCanonical", true));
     }
 
-    /** Trusted Janus reports are accumulated server-side; wall-clock age alone never releases funds. */
+    public record TrustedAttestationProof(String proofId,Long userId,String deviceId,Long commandVersion,
+                                          String appliedStatus,String source,String proofHash) { }
+
+    /** Only a claimed, persisted Janus executor proof may mint trusted online time. */
     @Transactional(rollbackFor = Exception.class)
-    public void recordTrustedAttestation(Long userId, String deviceId) {
+    public void recordTrustedAttestation(TrustedAttestationProof proof) {
+        if (proof == null || proof.userId() == null || proof.commandVersion() == null
+                || !StringUtils.hasText(proof.proofId()) || !StringUtils.hasText(proof.deviceId())
+                || !StringUtils.hasText(proof.proofHash()) || !"JANUS_PRODUCTION_EXECUTOR".equals(proof.source())) return;
+        Long userId=proof.userId(); String deviceId=proof.deviceId().trim();
+        String sourceEnvironment="PRODUCTION";
         if (userId == null || !StringUtils.hasText(deviceId) || params.manualOnly()) return;
+        if(mapper.proofIdentityMatches(userId,proof.source())!=1)return;
         if (params.freeSlotRequiresBinding() && mapper.trustedDeviceBinding(userId, deviceId.trim()) != 1) return;
-        if (mapper.recordAttestation(userId, deviceId.trim()) < 1) {
+        if (mapper.consumeAppliedProof(proof.proofId().trim(),userId,deviceId,proof.commandVersion(),proof.source(),proof.proofHash().trim()) != 1) return;
+        if (mapper.recordAttestation(userId, deviceId.trim(), sourceEnvironment) < 1) {
             throw new BizException(409, "EARNINGS_ATTESTATION_CONFLICT");
         }
-        if (mapper.attestedSeconds(userId) < params.attestationHours() * 3600L) return;
-        for (ProtectedEntry entry : mapper.protectedEntries(userId)) {
+        if (mapper.attestedSeconds(userId, sourceEnvironment) < params.attestationHours() * 3600L) return;
+        for (ProtectedEntry entry : mapper.protectedEntries(userId, sourceEnvironment)) {
             String cluster = StringUtils.hasText(entry.clusterId()) ? entry.clusterId() : "USER:" + userId;
             if (cluster.startsWith("USER:")) {
                 if (mapper.lockUserScope(userId) == null) throw new BizException(409, "EARNINGS_RELEASE_SCOPE_MISSING");
@@ -141,13 +193,14 @@ public class EarningsReleaseService {
                 throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
             }
             if (mapper.releasedAccountsInWindow(cluster, userId, params.releaseWindowHours()) >= params.freeSlots()) continue;
-            if (mapper.release(entry.entryNo(), "attest") != 1) throw new BizException(409, "EARNINGS_RELEASE_CONFLICT");
+            int released=mapper.releaseFromJanusProof(entry.entryNo(),proof.source());
+            if(released!=1)throw new BizException(409,"EARNINGS_RELEASE_CONFLICT");
             audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
                     .action("K1_EARNINGS_ATTESTATION_RELEASED")
                     .resourceType("EARNINGS_RELEASE_ENTRY").resourceId(entry.entryNo())
                     .actorUsername("janus-carrier").riskLevel("HIGH")
                     .detail(Map.of("userId", userId, "clusterId", cluster, "deviceId", deviceId.trim(),
-                            "before", entry.bucket(), "after", "withdrawable", "source", "attest"))
+                            "before", entry.bucket(), "after", "withdrawable", "source", proof.source()))
                     .build());
         }
     }

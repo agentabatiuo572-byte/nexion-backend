@@ -17,11 +17,13 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryScopeRequest;
@@ -110,6 +112,7 @@ public class OpsTreasuryService {
     private final TreasuryDualLedgerProperties dualLedgerProperties;
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final A2RuntimePolicy a2RuntimePolicy;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         ensureD3FallbackSeedData();
@@ -496,6 +499,60 @@ public class OpsTreasuryService {
                     .append(csvCell(row.get("source"))).append("\r\n");
         }
         auditRequired("D3_LIABILITIES_EXPORTED", "TREASURY_EXPORT", "liabilities", AdminActorResolver.resolve(null), section("categoryCount", rows.size()));
+        return csv.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    public byte[] sensitiveExportCsv(String kind, String idempotencyKey, TreasuryExportRequest request) {
+        if (request == null || !StringUtils.hasText(request.reason())
+                || request.reason().trim().length() < 8 || request.reason().trim().length() > 200) {
+            throw new BizException(422, "D3_EXPORT_REASON_INVALID");
+        }
+        String normalizedKind = "reconciliation".equalsIgnoreCase(kind) ? "reconciliation"
+                : "liabilities".equalsIgnoreCase(kind) ? "liabilities" : null;
+        if (normalizedKind == null) throw new BizException(422, "D3_EXPORT_KIND_INVALID");
+        String operator = AdminActorResolver.resolve(request.operator());
+        String requestHash = structuredRequestHash(section(
+                "kind", normalizedKind, "reason", request.reason().trim(), "operator", operator),
+                "D3_EXPORT_HASH_FAILED");
+        return idempotencyService.execute("D3_SENSITIVE_EXPORT_" + normalizedKind.toUpperCase(Locale.ROOT),
+                idempotencyKey, requestHash, byte[].class, () -> {
+                    byte[] payload = "reconciliation".equals(normalizedKind)
+                            ? reconciliationCsvPayload() : liabilitiesCsvPayload();
+                    auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                            .action("D3_SENSITIVE_EXPORT_A2_AUDITED")
+                            .resourceType("A2_SENSITIVE_EXPORT")
+                            .resourceId(normalizedKind)
+                            .bizNo(normalizedKind)
+                            .actorType("ADMIN")
+                            .actorUsername(operator)
+                            .riskLevel("CRITICAL")
+                            .result("SUCCESS")
+                            .detail(section("kind", normalizedKind, "reason", request.reason().trim(),
+                                    "idempotencyKey", idempotencyKey, "bytes", payload.length))
+                            .build());
+                    return payload;
+                });
+    }
+
+    private byte[] reconciliationCsvPayload() {
+        Map<String, Object> reserve = reserve().getData();
+        Map<String, Object> liabilities = liabilities(false).getData();
+        String csv = "item,amount_usdt,as_of\r\n"
+                + "reserve," + reserve.get("reserveTotalUsdt") + "," + reserve.get("asOf") + "\r\n"
+                + "liabilities," + liabilities.get("totalUsdt") + "," + liabilities.get("asOf") + "\r\n"
+                + "net_exposure," + ((BigDecimal) reserve.get("reserveTotalUsdt")).subtract((BigDecimal) liabilities.get("totalUsdt")) + "," + reserve.get("asOf") + "\r\n";
+        return ("\ufeff" + csv).getBytes(StandardCharsets.UTF_8);
+    }
+
+    @SuppressWarnings("unchecked")
+    private byte[] liabilitiesCsvPayload() {
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
+        StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
+        for (Map<String, Object> row : rows) {
+            csv.append(csvCell(row.get("category"))).append(',').append(csvCell(row.get("label"))).append(',')
+                    .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
+                    .append(csvCell(row.get("source"))).append("\r\n");
+        }
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
 
@@ -1111,8 +1168,11 @@ public class OpsTreasuryService {
 
     public byte[] ledgerBillsCsv(TreasuryLedgerQueryRequest request, String reason) {
         String exportReason = trimToNull(reason);
-        if (exportReason == null || exportReason.length() < 8 || exportReason.length() > 200) {
-            throw new BizException(422, "D4_EXPORT_REASON_LENGTH_INVALID");
+        try {
+            a2RuntimePolicy.validateReason(exportReason);
+        } catch (BizException ex) {
+            if (ex.getCode() == 422) throw new BizException(422, "D4_EXPORT_REASON_LENGTH_INVALID");
+            throw ex;
         }
         String type = normalizeLedgerType(request == null ? null : request.type());
         Long userId = request == null ? null : request.userId();

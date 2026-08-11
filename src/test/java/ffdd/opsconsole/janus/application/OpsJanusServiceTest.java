@@ -1,6 +1,7 @@
 package ffdd.opsconsole.janus.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -30,9 +31,12 @@ import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogSanitizer;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,12 +57,16 @@ class OpsJanusServiceTest {
     private final JanusRemoteTargetProperties remoteTargetProperties = new JanusRemoteTargetProperties();
     private final JanusRemoteTargetNetworkGuard remoteTargetNetworkGuard =
             mock(JanusRemoteTargetNetworkGuard.class);
+    private final JanusAppliedProofVerifier proofVerifier = mock(JanusAppliedProofVerifier.class);
+    private final EarningsReleaseService earnings = mock(EarningsReleaseService.class);
+    private final JanusSandboxProfileGuard sandboxProfileGuard = mock(JanusSandboxProfileGuard.class);
     private final OpsJanusService service = new OpsJanusService(
             repository, remoteTargetRepository, remoteTargetProperties, remoteTargetNetworkGuard,
-            new JanusRuleEvaluator(), objectMapper, audit, outbox, null, null);
+            new JanusRuleEvaluator(), objectMapper, audit, outbox, null, earnings, proofVerifier, sandboxProfileGuard);
 
     @BeforeEach
     void commandDoesNotExist() {
+        when(sandboxProfileGuard.executionEnvironment()).thenReturn("PRODUCTION");
         when(repository.findCommand(any())).thenReturn(Optional.empty());
         when(repository.reserveCommand(any(), any(), any(), any(), any())).thenReturn(true);
         when(repository.reserveDailyEvaluation(any(), any(), anyInt())).thenReturn(true);
@@ -116,6 +124,52 @@ class OpsJanusServiceTest {
                 .containsEntry("remoteTargetUrl", "https://approved.example/path");
         verify(remoteTargetRepository).find("finance-main", 3);
         verify(remoteTargetNetworkGuard).allows(any());
+    }
+
+    @Test
+    void successfulTakeoverWithOutstandingReconciliationIsNotTerminalYet() {
+        JanusTakeoverService takeover = mock(JanusTakeoverService.class);
+        OpsJanusService withTakeover = new OpsJanusService(
+                repository, remoteTargetRepository, remoteTargetProperties, remoteTargetNetworkGuard,
+                new JanusRuleEvaluator(), objectMapper, audit, outbox, takeover, earnings, proofVerifier,
+                sandboxProfileGuard);
+        Map<String,Object> row = new LinkedHashMap<>();
+        row.put("commandId", "cmd-1");
+        row.put("commandVersion", 3L);
+        row.put("phase", "SUCCEEDED");
+        row.put("reconciliationId", "reconcile-1");
+        row.put("reconciledAt", null);
+        when(takeover.applied(any(), eq(null))).thenReturn(ApiResult.ok(row));
+
+        ApiResult<Map<String,Object>> result = withTakeover.commandTerminal(5L, "device-1", "cmd-1", 3L, null);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("terminal", false)
+                .containsEntry("accepted", false)
+                .containsEntry("phase", "RECONCILIATION_PENDING");
+    }
+
+    @Test
+    void terminalLookupDoesNotTreatMissingReconciliationAsOutstanding() {
+        JanusTakeoverService takeover = mock(JanusTakeoverService.class);
+        OpsJanusService withTakeover = new OpsJanusService(
+                repository, remoteTargetRepository, remoteTargetProperties, remoteTargetNetworkGuard,
+                new JanusRuleEvaluator(), objectMapper, audit, outbox, takeover, earnings, proofVerifier,
+                sandboxProfileGuard);
+        Map<String,Object> row = new LinkedHashMap<>();
+        row.put("commandId", "cmd-1");
+        row.put("commandVersion", 3L);
+        row.put("phase", "SUCCEEDED");
+        row.put("reconciliationId", null);
+        row.put("reconciledAt", null);
+        when(takeover.applied(any(), eq(null))).thenReturn(ApiResult.ok(row));
+
+        ApiResult<Map<String,Object>> result = withTakeover.commandTerminal(5L, "device-1", "cmd-1", 3L, null);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("terminal", true)
+                .containsEntry("accepted", true)
+                .containsEntry("phase", "SUCCEEDED");
     }
 
     @Test
@@ -796,9 +850,16 @@ class OpsJanusServiceTest {
     @Test
     void commandAckUsesOwnershipRevisionAndClosesInFlightCommand() {
         when(repository.acknowledgeDeviceCommand(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(true);
+        when(repository.findPendingDeviceCommand(eq(42L),any())).thenReturn(Optional.of(Map.of(
+                "remoteUrlKey","approved","remoteTargetVersion",2,"remoteTargetCatalogVersion",9L)));
+        when(proofVerifier.verify(eq(42L),any(),any(),any(),eq(true))).thenReturn(new JanusAppliedProofVerifier.Verification(
+                true,false,null,"JAP-PROOF","a".repeat(64),"PRODUCTION"));
 
         ApiResult<java.util.Map<String, Object>> result = service.acknowledgeCommand(42L,
-                new JanusCommandAckRequest("DEVICE-1", 3L, true, "HIT", "applied"));
+                new JanusCommandAckRequest("DEVICE-1", 3L, "device-status:3", "e".repeat(64), 1L,
+                        true, "HIT", "applied", "device-receipt", "device-status:3", 3L, 1L,
+                        3L,"app-1","approved",2,9L,"PRODUCTION","executor-1","a".repeat(32),
+                        System.currentTimeMillis(),"a".repeat(64)));
 
         assertThat(result.getData()).containsEntry("revision", 3L).containsEntry("state", "ACKED");
         verify(repository).updateDeviceCommandRecord(any(), eq("ACKED"));
@@ -808,7 +869,9 @@ class OpsJanusServiceTest {
     @Test
     void commandAckRejectsOversizedDeviceMessageBeforeMutation() {
         ApiResult<java.util.Map<String, Object>> result = service.acknowledgeCommand(42L,
-                new JanusCommandAckRequest("DEVICE-1", 3L, false, null, "x".repeat(501)));
+                new JanusCommandAckRequest("DEVICE-1", 3L, "device-status:3", "e".repeat(64), 1L,
+                        false, null, "x".repeat(501), null,null,null,null,
+                        null,null,null,null,null,null,null,null,null,null));
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("JANUS_ACK_INVALID");
@@ -832,13 +895,61 @@ class OpsJanusServiceTest {
     void repeatedCommandAckReturnsTheOriginalSuccessAfterAResponseIsLost() {
         when(repository.acknowledgeDeviceCommand(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(false);
         when(repository.isDeviceCommandAckReplay(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(true);
+        when(repository.findPendingDeviceCommand(eq(42L),any())).thenReturn(Optional.of(Map.of(
+                "remoteUrlKey","approved","remoteTargetVersion",2,"remoteTargetCatalogVersion",9L)));
+        when(proofVerifier.verify(eq(42L),any(),any(),any(),eq(true))).thenReturn(new JanusAppliedProofVerifier.Verification(
+                true,true,null,"JAP-PROOF","a".repeat(64),"PRODUCTION"));
 
         ApiResult<java.util.Map<String, Object>> result = service.acknowledgeCommand(42L,
-                new JanusCommandAckRequest("DEVICE-1", 3L, true, "HIT", "retry"));
+                new JanusCommandAckRequest("DEVICE-1", 3L, "device-status:3", "e".repeat(64), 1L,
+                        true, "HIT", "retry", "device-receipt", "device-status:3", 3L, 1L,
+                        3L,"app-1","approved",2,9L,"PRODUCTION","executor-1","a".repeat(32),
+                        System.currentTimeMillis(),"a".repeat(64)));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("revision", 3L).containsEntry("state", "ACKED");
         verify(repository, never()).updateDeviceCommandRecord(any(), any());
+    }
+
+    @Test
+    void proofClaimAndAckConflictFailAsAnExceptionSoTheTransactionRollsBack() {
+        when(repository.acknowledgeDeviceCommand(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(false);
+        when(repository.isDeviceCommandAckReplay(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(false);
+        when(repository.findPendingDeviceCommand(eq(42L), any())).thenReturn(Optional.of(Map.of(
+                "remoteUrlKey", "approved", "remoteTargetVersion", 2, "remoteTargetCatalogVersion", 9L)));
+        when(proofVerifier.verify(eq(42L), any(), any(), any(), eq(true))).thenReturn(
+                new JanusAppliedProofVerifier.Verification(true, false, null,
+                        "JAP-PROOF", "a".repeat(64), "PRODUCTION"));
+
+        assertThatThrownBy(() -> service.acknowledgeCommand(42L,
+                new JanusCommandAckRequest("DEVICE-1", 3L, "device-status:3", "e".repeat(64), 1L,
+                        true, "HIT", "conflict", "device-receipt", "device-status:3", 3L, 1L,
+                        3L, "app-1", "approved", 2, 9L,
+                        "PRODUCTION", "executor-1", "a".repeat(32),
+                        System.currentTimeMillis(), "a".repeat(64))))
+                .isInstanceOf(BizException.class)
+                .hasMessage("JANUS_ACK_CONFLICT");
+        verify(earnings, never()).recordTrustedAttestation(any());
+    }
+
+    @Test
+    void completedCommandRejectsFreshProofInsteadOfTreatingItAsAnIdempotentReplay() {
+        when(repository.findPendingDeviceCommand(eq(42L), any())).thenReturn(Optional.empty());
+        when(repository.isDeviceCommandAckReplay(eq(42L), any(), eq(3L), eq(true), eq("HIT"))).thenReturn(true);
+        when(proofVerifier.verify(eq(42L), any(), any(), any(), eq(false))).thenReturn(
+                JanusAppliedProofVerifier.Verification.rejected("JANUS_APPLIED_PROOF_REPLAY_REQUIRED"));
+
+        ApiResult<java.util.Map<String, Object>> result = service.acknowledgeCommand(42L,
+                new JanusCommandAckRequest("DEVICE-1", 3L, "device-status:3", "e".repeat(64), 1L,
+                        true, "HIT", "fresh proof after ack", "different-receipt", "device-status:3", 3L, 1L,
+                        3L, "app-1", "other-target", 7, 12L,
+                        "PRODUCTION", "executor-1", "b".repeat(32),
+                        System.currentTimeMillis(), "b".repeat(64)));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("JANUS_APPLIED_PROOF_REPLAY_REQUIRED");
+        verify(repository, never()).acknowledgeDeviceCommand(anyLong(), any(), anyLong(), eq(true), any());
+        verify(earnings, never()).recordTrustedAttestation(any());
     }
 
     @Test

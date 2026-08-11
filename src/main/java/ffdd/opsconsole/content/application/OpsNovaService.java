@@ -78,12 +78,12 @@ public class OpsNovaService {
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
             new NovaEventDrivenView("risk-alert", "设备掉线或任务失败的异常状态机即时触发，不使用周期扫描。",
                     "E5/K 域异常状态机", "warn", "事件触发"),
-            new NovaEventDrivenView("team_event", "v3 业务频道尚未接入 Nova cadence 配置。",
-                    "F 域团队事件", "dim", "待整合"),
-            new NovaEventDrivenView("staking_event", "v3 业务频道尚未接入 Nova cadence 配置。",
-                    "G1 质押事件", "dim", "待整合"),
-            new NovaEventDrivenView("market_event", "v3 业务频道尚未接入 Nova cadence 配置。",
-                    "G3 市场事件", "dim", "待整合"),
+            new NovaEventDrivenView("team_event", "服务端 cadence 配置消费 referral.bound / commission.paid。",
+                    "F 域团队事件", "ok", "已接入"),
+            new NovaEventDrivenView("staking_event", "服务端 cadence 配置消费质押仓位真实事件。",
+                    "G1 质押事件", "ok", "已接入"),
+            new NovaEventDrivenView("market_event", "服务端 cadence 配置消费 market.curve_advanced 广播事实。",
+                    "G3 市场事件", "ok", "已接入"),
             new NovaEventDrivenView("weekly-quest-refresh", "归入 quest 配置 key，具体触发时点由 H3 任务状态机负责。",
                     "H3 任务状态机", "warn", "事件触发"));
     private static final Map<String, DistributionOption> DISTRIBUTION_OPTIONS = List.of(
@@ -116,6 +116,7 @@ public class OpsNovaService {
                 SOCIAL_EVENT_STATUS_OPTIONS,
                 List.copyOf(TEMPLATE_STATUSES),
                 TEMPLATE_CTA_OPTIONS,
+                NovaRuntimeAdapterCatalog.options(),
                 List.of(
                         "nx_nova_channel",
                         "nx_nova_template",
@@ -398,6 +399,10 @@ public class OpsNovaService {
         }
         novaRepository.ensureTables();
         String key = normalizeChannelKey(StringUtils.hasText(request.key()) ? request.key() : slug(request.name()));
+        if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(key)
+                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
+        }
         if (novaRepository.channel(key).isPresent()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_CHANNEL_EXISTS");
         }
@@ -434,6 +439,10 @@ public class OpsNovaService {
         Optional<NovaChannelView> current = novaRepository.channel(normalizedKey);
         if (current.isEmpty()) {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
+        }
+        if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
+                && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
         }
         boolean enabled = request.enabled() == null ? current.get().enabled() : request.enabled();
         if (enabled && !current.get().enabled() && novaRepository.template(normalizedKey)

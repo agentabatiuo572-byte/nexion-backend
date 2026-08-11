@@ -20,6 +20,7 @@ public class WalletBankCardEntity extends BaseEntity {
     private String countryCode;
     private String status;
     private Boolean isDefault;
+    private String sourceEnvironment;
     private String pspRevokeStatus;
     private String unboundReason;
     private String unboundBy;

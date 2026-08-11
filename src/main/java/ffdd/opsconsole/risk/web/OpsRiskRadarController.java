@@ -6,9 +6,11 @@ import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
 import ffdd.opsconsole.risk.dto.B5ThresholdPreviewRequest;
 import ffdd.opsconsole.risk.dto.B5TriageRequest;
+import ffdd.opsconsole.risk.dto.B5SignalStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.io.IOException;
 import java.util.Map;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -17,6 +19,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -84,6 +88,18 @@ public class OpsRiskRadarController {
         return service.updateSubscription(idempotencyKey, request);
     }
 
+    @GetMapping("/radar/inbox")
+    @PreAuthorize("hasAuthority('overview_b5_read')")
+    public ApiResult<List<Map<String, Object>>> inbox() { return service.alertInbox(); }
+
+    @PostMapping("/radar/inbox/{deliveryId}/acknowledge")
+    @PreAuthorize("hasAuthority('overview_b5_triage')")
+    public ApiResult<Map<String, Object>> acknowledge(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable long deliveryId) {
+        return service.acknowledgeAlert(idempotencyKey, deliveryId);
+    }
+
     @PostMapping("/radar/triage")
     @PreAuthorize("hasAuthority('overview_b5_triage')")
     public ApiResult<Map<String, Object>> triage(
@@ -96,5 +112,14 @@ public class OpsRiskRadarController {
             throw new AccessDeniedException("B5_TRIAGE_TARGET_READ_REQUIRED");
         }
         return service.triage(idempotencyKey, request);
+    }
+
+    @PatchMapping("/radar/signals/{signalNo}/status")
+    @PreAuthorize("hasAuthority('overview_b5_triage')")
+    public ApiResult<Map<String, Object>> updateSignalStatus(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String signalNo,
+            @RequestBody(required = false) B5SignalStatusRequest request) {
+        return service.updateSignalStatus(idempotencyKey, signalNo, request);
     }
 }

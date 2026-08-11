@@ -11,6 +11,11 @@ import java.util.Optional;
 public interface DeviceOpsRepository {
     Map<String, Object> overviewCounters();
 
+    /** Current fleet telemetry plus durable E5 operator events. Never synthesizes missing samples. */
+    default Map<String, Object> e5Observability() {
+        return Map.of();
+    }
+
     PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request);
 
     List<DeviceOpsView> listUserDevices(Long userId, int limit);

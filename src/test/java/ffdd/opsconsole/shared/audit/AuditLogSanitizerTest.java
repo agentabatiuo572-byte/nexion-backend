@@ -29,13 +29,14 @@ class AuditLogSanitizerTest {
 
     @Test
     void clipsLargePayloadsAsValidJsonEnvelope() throws Exception {
-        String json = sanitizer.toSafeJson(Map.of("note", "x".repeat(7000)));
+        String json = sanitizer.toSafeJson(Map.of("note", "x".repeat(7000), "schemaVersion", "audit.v9"));
 
         assertThat(json).hasSizeLessThanOrEqualTo(4096);
         JsonNode node = new ObjectMapper().readTree(json);
         assertThat(node.get("truncated").asBoolean()).isTrue();
         assertThat(node.get("originalLength").asInt()).isGreaterThan(4096);
         assertThat(node.get("preview").asText()).contains("\"note\"");
+        assertThat(node.get("schemaVersion").asText()).isEqualTo("audit.v9");
     }
 
     @Test

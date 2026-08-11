@@ -25,7 +25,6 @@ import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
 import ffdd.opsconsole.content.dto.ConversationArchiveRequest;
 import ffdd.opsconsole.content.dto.ConversationArchiveBatchRequest;
-import ffdd.opsconsole.content.dto.ConversationFallbackRequest;
 import ffdd.opsconsole.content.dto.ConversationInitiateRequest;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.ConversationReplyRequest;
@@ -621,35 +620,6 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void fallbackTransferredConversationMovesToStandby() {
-        conversationRepository.conversation = transferredConversation("CV-1");
-
-        var result = service.fallbackTransfer(
-                "CV-1",
-                "idem-i9-fallback",
-                new ConversationFallbackRequest("pending transfer timeout", "Marina K."));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().transferToType()).isEqualTo("standby");
-        assertThat(result.getData().transferToId()).isEqualTo("standby-pool");
-    }
-
-    @Test
-    void fallbackThatLosesToAcceptOrReturnReturns409WithoutMessageOrAudit() {
-        conversationRepository.conversation = transferredConversation("CV-FALLBACK-RACE");
-        conversationRepository.fallbackClaimSucceeds = false;
-
-        var result = service.fallbackTransfer(
-                "CV-FALLBACK-RACE",
-                "idem-i9-fallback-race",
-                new ConversationFallbackRequest("pending transfer timeout", "Marina K."));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(conversationRepository.messageWrites).isZero();
-        verifyNoInteractions(auditLogService);
-    }
-
-    @Test
     void timeoutFallbackDoesNothingWhenWorkbenchPolicyOff() {
         configFacade.values.put("I.session.workbench.timeoutFallback", "off");
         conversationRepository.overdueConversations = List.of(transferredConversation("CV-OVER"));
@@ -842,6 +812,7 @@ class OpsConversationServiceTest {
         private int failStateClaimOnAttempt = Integer.MAX_VALUE;
         private int stateWriteAttempts;
         private int messageWrites;
+        private long nextMessageId = 100L;
         private int lockedReads;
         private final Map<String, ContentConversationView> conversations = new LinkedHashMap<>();
         private final List<String> lockOrder = new ArrayList<>();
@@ -1045,6 +1016,11 @@ class OpsConversationServiceTest {
         }
 
         @Override
+        public Long replyAndReturnMessageId(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+            return reply(conversation, body, operator, now) ? ++nextMessageId : null;
+        }
+
+        @Override
         public boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
             if (!claimState()) return false;
             store(new ContentConversationView(
@@ -1123,6 +1099,15 @@ class OpsConversationServiceTest {
                     null,
                     now));
             return this.conversation;
+        }
+
+        @Override
+        public PersistedConversation createConversationWithMessage(
+                String conversationNo, Long userId, String conversationType, String ownerAgentId,
+                String ownerAgentName, String openingText, LocalDateTime now) {
+            return new PersistedConversation(
+                    createConversation(conversationNo, userId, conversationType, ownerAgentId, ownerAgentName, openingText, now),
+                    ++nextMessageId);
         }
 
         private boolean claimState() {

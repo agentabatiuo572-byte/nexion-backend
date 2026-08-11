@@ -5,10 +5,26 @@ import ffdd.opsconsole.platform.dto.PermissionDictionaryView;
 import ffdd.opsconsole.platform.infrastructure.AdminPermissionEntity;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
 
 /** A8 权限字典 mapper（只读）。platform 包首个分页 mapper：手动 count + limit/offset。 */
 public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity> {
+
+    @Insert("""
+            INSERT IGNORE INTO nx_admin_permission
+              (permission_code, permission_name, resource_type, perm_type, amplifies,
+               resource_path, menu_id, remark, status, created_at, updated_at, is_deleted)
+            VALUES
+              (#{permissionCode}, #{permissionName}, 'API', #{permType}, #{amplifies},
+               #{resourcePath}, NULL, #{remark}, 1, NOW(), NOW(), 0)
+            """)
+    int insertUnassignedPermission(@Param("permissionCode") String permissionCode,
+                                   @Param("permissionName") String permissionName,
+                                   @Param("permType") String permType,
+                                   @Param("amplifies") int amplifies,
+                                   @Param("resourcePath") String resourcePath,
+                                   @Param("remark") String remark);
 
     @Select("""
             <script>

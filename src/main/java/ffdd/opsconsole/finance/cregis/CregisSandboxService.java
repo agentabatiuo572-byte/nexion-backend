@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.cregis;
 
+import ffdd.opsconsole.finance.application.FundsSandboxProperties;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
@@ -18,14 +19,17 @@ public final class CregisSandboxService {
     private final CregisGatewayRouter router;
     private final CregisSigner signer;
     private final Clock clock;
+    private final FundsSandboxProperties fundsSandboxProperties;
 
     public SandboxOverview overview() {
         boolean local = router.mode() == CregisProperties.Mode.LOCAL_SANDBOX;
+        boolean persistentFunds = local
+                && fundsSandboxProperties.getMode() == FundsSandboxProperties.Mode.LOCAL_SANDBOX;
         return new SandboxOverview(
                 router.mode().name(),
                 local,
                 false,
-                false,
+                persistentFunds,
                 "USDT-BEP20");
     }
 

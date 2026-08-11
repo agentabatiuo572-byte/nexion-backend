@@ -1,5 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -31,8 +33,8 @@ public class OpsGrowthCommandBoundary {
         String normalizedModule = normalize(module);
         String normalizedOperation = normalize(operation);
         String normalizedTarget = target == null || target.isBlank() ? "GLOBAL" : target.trim();
-        String scope = "GROWTH:" + normalizedModule + ":" + normalizedOperation + ":" + normalizedTarget;
-        String requestHash = hash(normalizedModule + "|" + normalizedOperation + "|" + normalizedTarget + "|" + String.valueOf(request));
+        String scope = commandScope(normalizedModule, normalizedOperation, normalizedTarget, request);
+        String requestHash = hash(scope + "|" + String.valueOf(request));
         try {
             return (ApiResult<Map<String, Object>>) idempotency.execute(
                     scope,
@@ -57,6 +59,25 @@ public class OpsGrowthCommandBoundary {
             }
             throw ex;
         }
+    }
+
+    private String commandScope(String module, String operation, String target, Object request) {
+        if ("H3".equals(module)) {
+            String action = switch (operation) {
+                case "MISSION_EDIT" -> "EDIT";
+                case "MISSION_STATUS" -> "STATUS";
+                case "MISSION_ARCHIVE" -> "ARCHIVE";
+                case "MISSION_DELETE" -> "DELETE";
+                default -> null;
+            };
+            String kind = request instanceof GrowthMissionEditRequest edit
+                    ? edit.taskKind()
+                    : request instanceof GrowthMissionStatusRequest status ? status.taskKind() : null;
+            if (action != null && kind != null && !kind.isBlank()) {
+                return "H3_MISSION:" + action + ":" + normalize(kind) + ":" + target;
+            }
+        }
+        return "GROWTH:" + module + ":" + operation + ":" + target;
     }
 
     private String normalize(String value) {

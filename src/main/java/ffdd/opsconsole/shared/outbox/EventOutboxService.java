@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.time.LocalDate;
@@ -36,6 +37,7 @@ public class EventOutboxService {
     private final EventOutboxMapper mapper;
     private final ObjectMapper objectMapper;
     private final OutboxProperties properties;
+    private final A4RuntimePolicyService a4RuntimePolicy;
 
     public String publish(String aggregateType, String aggregateId, String eventType, Object payload) {
         return publishInternal(
@@ -43,12 +45,14 @@ public class EventOutboxService {
     }
 
     /**
-     * Publishes a schema-governed, non-authoritative client analytics fact.
-     * The caller must pass only server-sanitized pseudonyms and allowlisted fields.
+     * Trusted client-ingest and stable-sampling boundary. The stable sampling key must be derived by the server
+     * (for example from the authenticated actor), never accepted from the request body.
      */
-    public String publishClientAnalyticsEvent(String aggregateId, String eventType, Object payload) {
+    public ClientAnalyticsPublishResult publishTrustedClientAnalyticsEvent(
+            String aggregateId, String trustedSamplingKey, String eventType, Object payload) {
         return publishInternal(
-                "APP_BEHAVIOR", aggregateId, eventType, null, "SYSTEM", 0, currentCohort(), payload);
+                "APP_BEHAVIOR", aggregateId, eventType, null, "SYSTEM", 0, currentCohort(), payload,
+                trustedSamplingKey);
     }
 
     public String publishUserEvent(
@@ -85,6 +89,20 @@ public class EventOutboxService {
             int accountAgeMonths,
             String cohort,
             Object payload) {
+        return publishInternal(aggregateType, aggregateId, eventType, canonicalUserId, phase,
+                accountAgeMonths, cohort, payload, null).eventId();
+    }
+
+    private ClientAnalyticsPublishResult publishInternal(
+            String aggregateType,
+            String aggregateId,
+            String eventType,
+            Long canonicalUserId,
+            String phase,
+            int accountAgeMonths,
+            String cohort,
+            Object payload,
+            String trustedSamplingKey) {
         String eventId = UUID.randomUUID().toString().replace("-", "");
         EventMetadata metadata = metadata(eventType);
         EventOutboxMapper.SchemaGateRow schema = metadata.analyticsEvent()
@@ -92,6 +110,9 @@ public class EventOutboxService {
                 : null;
         if (metadata.analyticsEvent() && schema == null) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "A4_SCHEMA_NOT_REGISTERED");
+        }
+        if (metadata.analyticsEvent()) {
+            enforceLifecycle(metadata.eventName(), aggregateType, aggregateId);
         }
         boolean serverAuthoritative = schema == null || schema.serverAuthoritative();
         int revision = schema == null ? 0 : schema.revision();
@@ -106,6 +127,12 @@ public class EventOutboxService {
         if (metadata.analyticsEvent()) {
             validateAnalyticsPayload(metadata.eventName(), payloadObject);
         }
+        if (trustedSamplingKey != null) {
+            int samplingPercent = a4RuntimePolicy.samplingPercent(schema.familyKey(), schema.serverAuthoritative());
+            if (!isSampledIn(trustedSamplingKey, metadata.eventName(), samplingPercent)) {
+                return new ClientAnalyticsPublishResult(null, false);
+            }
+        }
         String payloadJson = toEnvelopeJson(
                 eventId, metadata.eventName(), phase, accountAgeMonths, cohort,
                 serverAuthoritative, revision, payloadObject);
@@ -114,11 +141,50 @@ public class EventOutboxService {
                 metadata.eventName(), familyKey, phase, accountAgeMonths, cohort,
                 serverAuthoritative, schema == null ? null : revision,
                 schema != null, metadata.analyticsEvent(), payloadJson);
-        return eventId;
+        return new ClientAnalyticsPublishResult(eventId, true);
     }
+
+    static boolean isSampledIn(String trustedSamplingKey, String eventName, int samplingPercent) {
+        if (samplingPercent < 0 || samplingPercent > 100 || trustedSamplingKey == null || trustedSamplingKey.isBlank()) {
+            throw new BizException(503, "A4_SAMPLING_POLICY_INVALID");
+        }
+        if (samplingPercent == 0) return false;
+        if (samplingPercent == 100) return true;
+        return Math.floorMod((trustedSamplingKey + "|" + eventName).hashCode(), 100) < samplingPercent;
+    }
+
+    public record ClientAnalyticsPublishResult(String eventId, boolean sampledIn) {}
 
     public List<EventOutboxMessage> listPending(int limit) {
         return mapper.listPending(normalizeLimit(limit));
+    }
+
+    void assertDispatchAllowed(EventOutboxMessage message) {
+        if (message != null && Boolean.TRUE.equals(message.getAnalyticsEvent())) {
+            enforceLifecycle(message.getEventName(), message.getAggregateType(), message.getAggregateId());
+        }
+    }
+
+    private void enforceLifecycle(String eventName, String aggregateType, String aggregateId) {
+        String raw = mapper.findLifecycleState(eventName);
+        if (raw == null) return; // legacy registered schemas predate lifecycle rollout
+        String state = raw.trim().toLowerCase(Locale.ROOT);
+        switch (state) {
+            case "full" -> { return; }
+            case "gray" -> {
+                String trustedScope = "APP_BEHAVIOR".equals(aggregateType)
+                        ? null : aggregateType + ":" + aggregateId;
+                if (trustedScope != null && isGrayEligible(eventName, trustedScope)) return;
+                throw validation("A4_EVENT_GRAY_SCOPE_REJECTED");
+            }
+            case "new", "pending_publish", "disabled" ->
+                    throw validation("A4_EVENT_LIFECYCLE_BLOCKED_" + state.toUpperCase(Locale.ROOT));
+            default -> throw validation("A4_EVENT_LIFECYCLE_INVALID");
+        }
+    }
+
+    static boolean isGrayEligible(String eventName, String trustedScope) {
+        return Math.floorMod((String.valueOf(eventName) + "|" + String.valueOf(trustedScope)).hashCode(), 100) < 10;
     }
 
     public List<EventOutboxMessage> listPendingByEventType(String eventType, int limit) {

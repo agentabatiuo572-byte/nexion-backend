@@ -29,6 +29,16 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_device
+             WHERE user_id=#{userId} AND is_deleted=0
+               AND UPPER(ownership_status)='OWNED'
+               AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND deactivated_at IS NULL AND pending_deactivate=0
+            """)
+    int countActiveDevices(@Param("userId") Long userId);
+
     @Select("SELECT user_level FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0")
     String userLevel(@Param("userId") Long userId);
 
@@ -59,6 +69,11 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
              LIMIT 1
             """)
     SourceDevice findSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -80,9 +95,87 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
              LIMIT 1 FOR UPDATE
             """)
     SourceDevice lockSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Select("""
+            SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo,
+                   COALESCE(d.product_id,p.id) AS productId,
+                   COALESCE(NULLIF(d.product_code,''),p.product_no) AS productNo,
+                   COALESCE(NULLIF(d.name,''),p.name) AS productName,
+                   COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
+                   d.status,
+                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
+                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt
+              FROM nx_user_device d
+              LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
+              LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+                                  AND o.payment_status='PAID' AND o.is_deleted=0
+             WHERE d.user_id=#{userId} AND d.is_deleted=0
+               AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
+             ORDER BY COALESCE(d.daily_usdt,0), d.id
+             LIMIT 1
+            """)
+    SourceDevice findCapacityReplacementSource(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo,
+                   COALESCE(d.product_id,p.id) AS productId,
+                   COALESCE(NULLIF(d.product_code,''),p.product_no) AS productNo,
+                   COALESCE(NULLIF(d.name,''),p.name) AS productName,
+                   COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
+                   d.status,
+                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
+                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt
+              FROM nx_user_device d
+              LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
+              LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+                                  AND o.payment_status='PAID' AND o.is_deleted=0
+             WHERE d.user_id=#{userId} AND d.is_deleted=0
+               AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
+             ORDER BY COALESCE(d.daily_usdt,0), d.id
+             LIMIT 1 FOR UPDATE
+            """)
+    SourceDevice lockCapacityReplacementSource(@Param("userId") Long userId);
+
+    /**
+     * The App may publish only products that this mapper's quote/submit lookups
+     * can resolve.  Keeping the catalogue on nx_product prevents an admin-only
+     * SKU from presenting a purchase CTA that the transaction service rejects.
+     */
+    @Select("""
+            SELECT product_no AS productNo, name, tier, price_usdt AS priceUsdt, stock,
+                   product_type AS deviceType, generation, gpu_model AS gpuModel,
+                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt,
+                   daily_nex AS dailyNex, tagline, badge, sold_count AS sold,
+                   unlock_phase AS unlockPhase, updated_at AS updatedAt
+              FROM nx_product
+             WHERE is_deleted=0 AND store_visible=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE')
+               AND price_usdt>0 AND stock>=1
+             ORDER BY store_featured DESC, sort_order ASC, id ASC
+            """)
+    List<CatalogTargetProduct> listPurchasableCatalogTargets();
 
     @Select("""
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
@@ -114,8 +207,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
             SELECT COALESCE(SUM(reward_usdt),0)
-              FROM nx_compute_receipt
+             FROM nx_compute_receipt
              WHERE user_device_id=#{deviceId} AND is_deleted=0
+               AND COALESCE(source_environment, 'PRODUCTION') = 'PRODUCTION'
                AND UPPER(earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
             """)
     BigDecimal cumulativeDeviceOutputUsdt(@Param("deviceId") Long deviceId);
@@ -158,8 +252,28 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
                AND deactivated_at IS NULL AND pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=nx_user_device.user_id AND t.user_device_id=nx_user_device.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
             """)
     int recycleSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Update("""
+            UPDATE nx_user_device
+               SET status='INVENTORY', pending_deactivate=0, activated_at=NULL,
+                   deactivated_at=NOW(), updated_at=NOW()
+             WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
+               AND deactivated_at IS NULL AND pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=nx_user_device.user_id AND t.user_device_id=nx_user_device.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
+            """)
+    int moveSourceDeviceToInventory(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Insert("""
             INSERT INTO nx_order
@@ -239,6 +353,12 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                          BigDecimal priceUsdt, Integer stock, String deviceType, Integer generation,
                          String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                          BigDecimal dailyUsdt, BigDecimal dailyNex) {
+    }
+
+    record CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt) {
     }
 
     record PaidOrderWrite(Long userId, String orderNo, Long productId, String productNo, String productName,

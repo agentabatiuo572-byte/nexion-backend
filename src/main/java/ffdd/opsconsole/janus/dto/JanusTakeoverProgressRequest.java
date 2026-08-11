@@ -4,6 +4,8 @@ public record JanusTakeoverProgressRequest(
         String deviceId,
         String commandId,
         Long commandVersion,
+        String leaseToken,
+        Long fencingToken,
         String phase,
         String actualTargetId,
         Integer actualTargetVersion,
@@ -11,8 +13,16 @@ public record JanusTakeoverProgressRequest(
         Long deviceAppliedVersion,
         String deviceAppVersion,
         String handoffReceipt,
+        String actualAppliedCommandId,
+        Long actualAppliedCommandVersion,
+        Long actualFencingToken,
         String failureCode,
         String failureClass,
         String failureMessage,
-        String reconciliationId) {
+        String reconciliationId,
+        String proofMode,
+        String executorId,
+        String proofNonce,
+        Long proofTimestamp,
+        String proofSignature) {
 }

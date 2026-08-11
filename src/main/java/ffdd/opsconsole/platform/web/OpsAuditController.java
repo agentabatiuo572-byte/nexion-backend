@@ -15,7 +15,9 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A2AccessPolicy;
+import ffdd.opsconsole.shared.audit.AuditRetentionService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,6 +27,9 @@ import ffdd.opsconsole.platform.dto.AuditExportRequest;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.dto.AuditOperationWithdrawRequest;
+import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
+import ffdd.opsconsole.platform.dto.RetentionExecutionView;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -57,6 +62,82 @@ public class OpsAuditController {
     private final A2AccessPolicy accessPolicy;
     private final AdminIdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
+    private final A2RuntimePolicy a2RuntimePolicy;
+    private final AuditRetentionService auditRetentionService;
+
+    @GetMapping("/reason-policy")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResult<A2RuntimePolicy.ReasonPolicyView> reasonPolicy() {
+        return ApiResult.ok(a2RuntimePolicy.reasonPolicy());
+    }
+
+    @GetMapping("/retention-runs/latest")
+    public ApiResult<RetentionExecutionView> latestRetentionRun() {
+        AuditLogQueryRequest query = new AuditLogQueryRequest();
+        query.setAction("A2_AUDIT_RETENTION_MANUAL_EXECUTED");
+        query.setResourceType("A2_AUDIT_RETENTION");
+        query.setLimit(1);
+        List<AuditLogRecord> rows = auditLogService.list(query);
+        if (rows == null || rows.isEmpty()) return ApiResult.ok(null);
+        return ApiResult.ok(retentionView(rows.get(0)));
+    }
+
+    @PostMapping("/retention-runs")
+    @PreAuthorize("hasAuthority('platform_a2_write')")
+    public ApiResult<RetentionExecutionView> runRetentionNow(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) RetentionExecutionRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        if (request == null) throw new BizException(422, "REASON_REQUIRED");
+        a2RuntimePolicy.validateReason(request.reason());
+        String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
+        String key = idempotencyKey.trim();
+        return ApiResult.ok(idempotencyService.execute("A2_AUDIT_RETENTION_RUN", key,
+                retentionHash(actor, request.reason()), RetentionExecutionView.class,
+                () -> executeRetention(actor, key, request.reason())));
+    }
+
+    private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
+        AuditRetentionService.RetentionRun run = auditRetentionService.runNow();
+        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
+                run.archivedRows(), run.affectedRows(), 0, 0);
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("A2_AUDIT_RETENTION_MANUAL_EXECUTED").resourceType("A2_AUDIT_RETENTION")
+                .resourceId(run.cutoff().toLocalDate().toString()).actorType("ADMIN").actorUsername(actor)
+                .result(run.lockAcquired() ? "SUCCESS" : "LOCKED").riskLevel("HIGH")
+                .detail(Map.ofEntries(Map.entry("reason", reason.trim()), Map.entry("idempotencyKey", idempotencyKey),
+                        Map.entry("retentionMonths", view.retentionMonths()), Map.entry("evaluatedAt", view.evaluatedAt().toString()),
+                        Map.entry("lockAcquired", view.lockAcquired()), Map.entry("archivedRows", view.archivedRows()),
+                        Map.entry("deletedRows", view.deletedRows()), Map.entry("outboxRows", 0), Map.entry("behaviorFactRows", 0),
+                        Map.entry("idempotent", true), Map.entry("explicitExpireAtOnly", true), Map.entry("coldArchiveRequired", true)))
+                .build());
+        return view;
+    }
+
+    private RetentionExecutionView retentionView(AuditLogRecord record) {
+        try {
+            Map<?, ?> detail = objectMapper.readValue(record.getDetailJson(), Map.class);
+            return new RetentionExecutionView(number(detail.get("retentionMonths")),
+                    LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt"))), Boolean.TRUE.equals(detail.get("lockAcquired")),
+                    number(detail.get("archivedRows")), number(detail.get("deletedRows")),
+                    number(detail.get("outboxRows")), number(detail.get("behaviorFactRows")));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private int number(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private String retentionHash(String actor, String reason) {
+        try {
+            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
+                    objectMapper.writeValueAsBytes(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim()))));
+        } catch (Exception ex) {
+            throw new BizException(422, "A2_RETENTION_HASH_FAILED");
+        }
+    }
 
     public ApiResult<AuditCenterOverview> overview() {
         return overview(new AuditLogQueryRequest());
@@ -92,7 +173,7 @@ public class OpsAuditController {
         int reasonLength = request == null || request.reason() == null ? 0
                 : request.reason().trim().codePointCount(0, request.reason().trim().length());
         if (request == null || !StringUtils.hasText(request.reason())
-                || reasonLength < Math.max(8, auditCenterService.currentReasonMinChars())) {
+                || reasonLength < a2RuntimePolicy.reasonMinChars()) {
             return jsonFailure(OpsErrorCode.REASON_REQUIRED);
         }
         if (reasonLength > 200) {
@@ -180,13 +261,13 @@ public class OpsAuditController {
         html.append('\ufeff')
                 .append("<html><head><meta charset=\"UTF-8\"></head><body>")
                 .append("<table border=\"1\">")
-                .append("<tr><th colspan=\"8\">A2 审计日志导出</th></tr>")
-                .append("<tr><td>导出单号</td><td colspan=\"7\">").append(escape(jobNo)).append("</td></tr>")
-                .append("<tr><td>导出时间</td><td colspan=\"7\">").append(escape(createdAt.toString())).append("</td></tr>")
-                .append("<tr><td>幂等键</td><td colspan=\"7\">").append(escape(idempotencyKey)).append("</td></tr>")
-                .append("<tr><td>导出原因</td><td colspan=\"7\">").append(escape(request.reason().trim())).append("</td></tr>")
+                .append("<tr><th colspan=\"9\">A2 审计日志导出</th></tr>")
+                .append("<tr><td>导出单号</td><td colspan=\"8\">").append(escape(jobNo)).append("</td></tr>")
+                .append("<tr><td>导出时间</td><td colspan=\"8\">").append(escape(createdAt.toString())).append("</td></tr>")
+                .append("<tr><td>幂等键</td><td colspan=\"8\">").append(escape(idempotencyKey)).append("</td></tr>")
+                .append("<tr><td>导出原因</td><td colspan=\"8\">").append(escape(request.reason().trim())).append("</td></tr>")
                 .append("<tr><th>时间</th><th>操作者</th><th>动作</th><th>资源类型</th><th>资源编号</th>")
-                .append("<th>业务编号</th><th>结果</th><th>风险级别</th></tr>");
+                .append("<th>业务编号</th><th>结果</th><th>风险级别</th><th>Schema 版本</th></tr>");
         for (AuditLogRecord row : rows == null ? List.<AuditLogRecord>of() : rows) {
             html.append("<tr>")
                     .append("<td>").append(escape(row.getCreatedAt() == null ? "" : row.getCreatedAt().toString())).append("</td>")
@@ -197,6 +278,7 @@ public class OpsAuditController {
                     .append("<td>").append(escape(row.getBizNo())).append("</td>")
                     .append("<td>").append(escape(row.getResult())).append("</td>")
                     .append("<td>").append(escape(row.getRiskLevel())).append("</td>")
+                    .append("<td>").append(escape(row.getSchemaVersion() == null ? "legacy" : row.getSchemaVersion())).append("</td>")
                     .append("</tr>");
         }
         html.append("</table></body></html>");
@@ -288,6 +370,18 @@ public class OpsAuditController {
             @PathVariable String operationId,
             @RequestBody(required = false) AuditOperationDecisionRequest request) {
         return auditCenterService.reject(idempotencyKey, operationId, authenticated(request));
+    }
+
+    @PostMapping("/operations/{operationId}/withdraw")
+    @PreAuthorize("hasAuthority('platform_a2_proposal_create')"
+            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> withdrawOperation(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String operationId,
+            @RequestBody(required = false) AuditOperationWithdrawRequest request) {
+        AuditOperationWithdrawRequest authenticated = request == null ? null : new AuditOperationWithdrawRequest(
+                request.reason(), request.expectedStatus(), AdminActorResolver.resolve(request.operator()));
+        return auditCenterService.withdraw(idempotencyKey, operationId, authenticated);
     }
 
     private AuditOperationDecisionRequest authenticated(AuditOperationDecisionRequest request) {

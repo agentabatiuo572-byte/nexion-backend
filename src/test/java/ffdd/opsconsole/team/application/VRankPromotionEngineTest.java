@@ -441,7 +441,7 @@ class VRankPromotionEngineTest {
         assertThat(commissionRepository.payouts).isEmpty();
     }
 
-    /** sku stub:E 域未接入,仅落 payout(status=PENDING_GRANT),不入 D4。 */
+    /** SKU 奖励先进入真实履约队列，履约消费者成功前 payout 保持 PENDING_GRANT。 */
     @Test
     void dispatchSkuRewardIsStubPendingGrant() {
         commissionRepository.rewardRules.add(new ffdd.opsconsole.team.domain.VRankRewardRuleRow(
@@ -453,6 +453,8 @@ class VRankPromotionEngineTest {
         VRankRewardPayout payout = commissionRepository.payouts.get(0);
         assertThat(payout.status()).isEqualTo("PENDING_GRANT");
         assertThat(payout.skuId()).isEqualTo("SKU-DEVICE-1");
+        assertThat(commissionRepository.skuFulfillments)
+                .containsExactly("5007|V5|SKU-DEVICE-1");
         assertThat(commissionRepository.commissionEvents).isEmpty();
         assertThat(ledgerPostingFacade.entries).isEmpty();
     }
@@ -555,6 +557,7 @@ class VRankPromotionEngineTest {
         final Map<Long, Long> sponsorMap = new LinkedHashMap<>(); // userId → sponsorUserId
         final List<Map<String, Object>> commissionEvents = new java.util.ArrayList<>();
         final List<VRankRewardPayout> payouts = new java.util.ArrayList<>();
+        final List<String> skuFulfillments = new java.util.ArrayList<>();
         final java.util.Set<String> existingPayoutKeys = new java.util.HashSet<>();
         private long nextCommissionEventId = 1L;
 
@@ -813,6 +816,12 @@ class VRankPromotionEngineTest {
                 return false; // 模拟 UNIQUE 约束
             }
             payouts.add(payout);
+            return true;
+        }
+
+        @Override
+        public boolean enqueueVRankSkuFulfillment(Long userId, String rankCode, String skuId, String reason) {
+            skuFulfillments.add(userId + "|" + rankCode + "|" + skuId);
             return true;
         }
 

@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -79,7 +80,7 @@ public class G2G3AdminCommandService {
         });
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String,Object>> processQueue(String key,ExchangeQueueBatchRequest request) {
         requireReason(request == null ? null : request.reason());
         int limit = request.limit() == null ? 50 : request.limit();
@@ -87,6 +88,7 @@ public class G2G3AdminCommandService {
             Map<String,Object> batch = queueBatch.process(limit);
             outbox.publish("EXCHANGE_QUEUE","daily","admin.exchange_queue_batch_processed",linked(
                     "completedCount",batch.get("completedCount"),"skippedCount",batch.get("skippedCount"),
+                    "failedCount",batch.get("failedCount"),"outcome",batch.get("outcome"),
                     "reason",request.reason().trim(),"operator",actor(request.operator())));
             audit.recordRequired(AuditLogWriteRequest.builder().action("G2_EXCHANGE_QUEUE_BATCH_PROCESSED")
                     .resourceType("EXCHANGE_QUEUE").resourceId("daily").actorType("ADMIN")

@@ -1097,6 +1097,56 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void makerCanWithdrawPendingAdjustmentButAnotherOperatorCannot() {
+        String makerOwned = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5", "admin:superadmin");
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "superadmin", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "user_c3_adjust_create"))));
+
+        ApiResult<UserAssetAdjustmentDetail> withdrawn = service.withdrawAssetAdjustment(
+                makerOwned,
+                "idem-c3-maker-withdraw",
+                new UserAssetAdjustmentReviewRequest("maker cancels duplicate pending request", "superadmin"));
+
+        assertThat(withdrawn.getCode()).isZero();
+        assertThat(withdrawn.getData().adjustment().status()).isEqualTo("WITHDRAWN");
+        assertThat(userRepository.postedLedgerBills).isEmpty();
+
+        String otherOwned = userRepository.seedPendingAdjustment("USDT", "CREDIT", "2");
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "another-maker", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "user_c3_adjust_create"))));
+        ApiResult<UserAssetAdjustmentDetail> denied = service.withdrawAssetAdjustment(
+                otherOwned,
+                "idem-c3-other-withdraw",
+                new UserAssetAdjustmentReviewRequest("another operator cannot cancel this request", "another-maker"));
+
+        assertThat(denied.getCode()).isEqualTo(403);
+        assertThat(userRepository.adjustments.get(otherOwned).status()).isEqualTo("PENDING_REVIEW");
+    }
+
+    @Test
+    void successfulWithdrawCasWithMissingReadbackThrowsBeforeSuccessAudit() throws Exception {
+        String adjustmentNo = userRepository.seedPendingAdjustment("NEX", "DEBIT", "3.5", "admin:superadmin");
+        userRepository.withdrawReadbackMissing = true;
+        SecurityContextHolder.getContext().setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "superadmin", "n/a", List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "user_c3_adjust_create"))));
+
+        assertThatThrownBy(() -> service.withdrawAssetAdjustment(
+                adjustmentNo,
+                "idem-c3-readback-missing",
+                new UserAssetAdjustmentReviewRequest("readback invariant must roll back", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("C3_ADJUSTMENT_WITHDRAW_READBACK_FAILED");
+
+        verify(auditLogService, org.mockito.Mockito.never()).recordRequired(any(AuditLogWriteRequest.class));
+        assertThat(OpsUserService.class.getMethod(
+                        "withdrawAssetAdjustment", String.class, String.class, UserAssetAdjustmentReviewRequest.class)
+                .getAnnotation(org.springframework.transaction.annotation.Transactional.class)).isNotNull();
+    }
+
+    @Test
     void reversingApprovedDebitRestoresOriginalBalanceEvenWhenCoverageIsBelowRedline() {
         String originalNo = "ADJ-ORIGINAL-DEBIT";
         userRepository.adjustments.put(originalNo, userRepository.adjustment(
@@ -1875,6 +1925,7 @@ class OpsUserServiceTest {
         private final Map<String, UserAssetAdjustmentView> adjustments = new LinkedHashMap<>();
         private final List<Map<String, Object>> postedLedgerBills = new ArrayList<>();
         private RuntimeException approvalFailure;
+        private boolean withdrawReadbackMissing;
         private final List<UserAccountListEntryView> accountLists = new ArrayList<>();
         private final List<UserImpersonationSessionView> impersonations = new ArrayList<>();
         private final Map<Long, String> walletAddresses = new LinkedHashMap<>();
@@ -2068,12 +2119,16 @@ class OpsUserServiceTest {
         }
 
         private String seedPendingAdjustment(String asset, String direction, String amountText) {
+            return seedPendingAdjustment(asset, direction, amountText, "superadmin");
+        }
+
+        private String seedPendingAdjustment(String asset, String direction, String amountText, String maker) {
             String adjustmentNo = "ADJ-TEST-" + (adjustments.size() + 1);
             BigDecimal amount = new BigDecimal(amountText);
             createAssetAdjustment(
                     adjustmentNo, 1L, asset, direction, amount, amount,
                     "OPS_USER_ADJUSTMENT", "pending compatibility record for review test",
-                    "ticket:test-review", "idem:" + adjustmentNo, null, "superadmin");
+                    "ticket:test-review", "idem:" + adjustmentNo, null, maker);
             return adjustmentNo;
         }
 
@@ -2470,6 +2525,12 @@ class OpsUserServiceTest {
 
         @Override
         public Optional<UserAssetAdjustmentView> findAssetAdjustment(String adjustmentNo) {
+            if (withdrawReadbackMissing) {
+                UserAssetAdjustmentView row = adjustments.get(adjustmentNo);
+                if (row != null && "WITHDRAWN".equals(row.status())) {
+                    return Optional.empty();
+                }
+            }
             return Optional.ofNullable(adjustments.get(adjustmentNo));
         }
 
@@ -2531,6 +2592,21 @@ class OpsUserServiceTest {
                     checker,
                     reason,
                     before.ledgerId()));
+            return true;
+        }
+
+        @Override
+        public boolean withdrawAssetAdjustment(String adjustmentNo, String maker, String reason) {
+            UserAssetAdjustmentView before = adjustments.get(adjustmentNo);
+            if (before == null || !maker.equalsIgnoreCase(before.maker())
+                    || !List.of("PENDING", "PENDING_REVIEW", "SUSPENDED").contains(before.status())) {
+                return false;
+            }
+            adjustments.put(adjustmentNo, adjustment(
+                    before.adjustmentNo(), before.userId(), before.asset(), before.direction(),
+                    before.amount(), before.amountUsd(), before.reasonCode(), before.reason(),
+                    before.evidenceRef(), before.idempotencyKey(), before.reversalOf(), before.maker(),
+                    "WITHDRAWN", null, reason, before.ledgerId()));
             return true;
         }
 

@@ -300,6 +300,25 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     @Update("""
             UPDATE nx_conversation
+               SET status=CASE WHEN status='RESOLVED' THEN 'OPEN' ELSE status END,
+                   unread_count=unread_count+1,
+                   last_message=#{body},
+                   last_message_at=#{now},
+                   version=version+1,
+                   updated_at=#{now}
+             WHERE conversation_no=#{conversationNo} AND user_id=#{userId} AND is_deleted=0
+               AND status=#{expectedStatus} AND status IN ('OPEN','RESOLVED') AND version=#{expectedVersion}
+            """)
+    int replyConversationAsUser(
+            @Param("conversationNo") String conversationNo,
+            @Param("userId") Long userId,
+            @Param("body") String body,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_conversation
                SET status=#{status}, version=version+1, updated_at=#{now}
              WHERE conversation_no=#{conversationNo} AND is_deleted=0
                AND status=#{expectedStatus}

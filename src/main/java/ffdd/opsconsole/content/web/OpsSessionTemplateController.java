@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.domain.SessionAdvisorPolicyView;
 import ffdd.opsconsole.content.domain.SessionCategoryView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
 import ffdd.opsconsole.content.domain.SessionScriptView;
+import ffdd.opsconsole.content.domain.SessionRuntimeTemplateOverview;
 import ffdd.opsconsole.content.domain.SessionTemplateOverview;
 import ffdd.opsconsole.content.domain.SessionWorkbenchPolicyView;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
@@ -142,6 +143,12 @@ public class OpsSessionTemplateController {
     @GetMapping("/overview")
     public ApiResult<SessionTemplateOverview> overview() {
         return templateService.overview();
+    }
+
+    @PreAuthorize("hasAuthority('service_m3_read')")
+    @GetMapping("/runtime")
+    public ApiResult<SessionRuntimeTemplateOverview> runtimeOverview() {
+        return templateService.runtimeOverview();
     }
 
     // 话术列表 — M5 话术与模板配置 读

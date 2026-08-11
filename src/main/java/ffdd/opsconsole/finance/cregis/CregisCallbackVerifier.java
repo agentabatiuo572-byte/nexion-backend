@@ -5,11 +5,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Pattern;
 
 public final class CregisCallbackVerifier {
-    private static final Set<Integer> TERMINAL_PAYOUT_STATUSES = Set.of(2, 4, 6, 7);
     private static final Pattern EVM_ADDRESS = Pattern.compile("(?i)^0x[0-9a-f]{40}$");
     private static final Pattern BSC_TXID = Pattern.compile("(?i)^(?:0x)?[0-9a-f]{64}$");
 
@@ -66,7 +64,7 @@ public final class CregisCallbackVerifier {
         } catch (IllegalArgumentException malformed) {
             return invalid("CALLBACK_SCHEMA_INVALID");
         }
-        if (!TERMINAL_PAYOUT_STATUSES.contains(status)) return invalid("STATUS_NOT_TERMINAL");
+        if (status < 0 || status > 7) return invalid("STATUS_INVALID");
         if (!CregisConstants.BSC_CHAIN_ID.equals(text(callback.get("chain_id")))
                 || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(text(callback.get("token_id")))
                 || !supportedCurrency(text(callback.get("currency")))) {

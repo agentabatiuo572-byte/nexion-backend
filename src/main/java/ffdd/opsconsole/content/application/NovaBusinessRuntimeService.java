@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
+import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
 import ffdd.opsconsole.content.domain.NovaChannelDispatchResult;
 import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
@@ -12,10 +13,11 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -39,7 +41,7 @@ public class NovaBusinessRuntimeService {
     private static final Pattern DURATION_PATTERN =
             Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final int FACT_BATCH_SIZE = 100;
-    private static final Map<String, Adapter> ADAPTERS = adapters();
+    static final int FANOUT_BATCH_SIZE = 250;
 
     private final NovaRepository novaRepository;
     private final NovaSocialRuntimeRepository runtimeRepository;
@@ -48,7 +50,13 @@ public class NovaBusinessRuntimeService {
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public List<String> channelKeys() {
-        return List.copyOf(ADAPTERS.keySet());
+        novaRepository.ensureTables();
+        LinkedHashSet<String> keys = new LinkedHashSet<>(NovaRuntimeAdapterCatalog.fixedSources().keySet());
+        novaRepository.channels().stream()
+                .filter(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger()).isPresent())
+                .map(NovaChannelView::key)
+                .forEach(keys::add);
+        return List.copyOf(keys);
     }
 
     @Transactional
@@ -65,17 +73,17 @@ public class NovaBusinessRuntimeService {
     }
 
     public NovaChannelDispatchResult dispatchChannelAt(String channelKey, LocalDateTime now) {
-        Adapter adapter = ADAPTERS.get(channelKey);
-        if (adapter == null) {
-            return NovaChannelDispatchResult.skipped(safe(channelKey), "CHANNEL_ADAPTER_UNSUPPORTED");
-        }
         novaRepository.ensureTables();
         runtimeRepository.ensureRuntimeTables();
-
-        NovaChannelView channel = novaRepository.channel(adapter.channel()).orElse(null);
+        NovaChannelView channel = novaRepository.channel(safe(channelKey)).orElse(null);
         if (channel == null) {
-            return NovaChannelDispatchResult.skipped(adapter.channel(), "CHANNEL_NOT_CONFIGURED");
+            return NovaChannelDispatchResult.skipped(safe(channelKey), "CHANNEL_NOT_CONFIGURED");
         }
+        var source = NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger()).orElse(null);
+        if (source == null) {
+            return NovaChannelDispatchResult.skipped(channel.key(), "CHANNEL_ADAPTER_UNSUPPORTED");
+        }
+        Adapter adapter = new Adapter(channel.key(), source.eventNames(), source.targeted());
         if (!channel.enabled()) {
             return NovaChannelDispatchResult.skipped(adapter.channel(), "CHANNEL_DISABLED");
         }
@@ -122,8 +130,11 @@ public class NovaBusinessRuntimeService {
         int deliveredTotal = 0;
         String firstSourceEventId = "";
         for (NovaBusinessEventFact fact : facts) {
-            if (!runtimeRepository.claimBusinessFact(
-                    adapter.channel(), fact.sourceEventId(), fact.eventName(), now)) {
+            boolean claimed = runtimeRepository.claimBusinessFact(
+                    adapter.channel(), fact.sourceEventId(), fact.eventName(), now);
+            var existingFanout = adapter.targeted() ? Optional.<NovaBusinessFanoutProgress>empty()
+                    : runtimeRepository.businessFanoutProgress(adapter.channel(), fact.sourceEventId());
+            if (!claimed && existingFanout.isEmpty()) {
                 continue;
             }
             if (adapter.targeted() && (fact.userId() == null || fact.userId() <= 0)) {
@@ -134,6 +145,46 @@ public class NovaBusinessRuntimeService {
             }
 
             String bizNo = "NOVA-" + adapter.channel() + "-" + fact.sourceEventId();
+            if (!adapter.targeted()) {
+                NovaBusinessFanoutProgress progress = existingFanout.orElse(new NovaBusinessFanoutProgress(0, 0));
+                Optional<Long> upper = runtimeRepository.fanoutBatchUpperUserId(
+                        progress.cursorUserId(), FANOUT_BATCH_SIZE);
+                if (upper.isEmpty()) {
+                    runtimeRepository.completeBusinessFact(
+                            adapter.channel(), fact.sourceEventId(), "DELIVERED",
+                            "FANOUT_COMPLETE", progress.notificationCount(), now);
+                    completeClaimOrThrow(slotKey, now);
+                    return NovaChannelDispatchResult.skipped(adapter.channel(), "FANOUT_COMPLETE_NO_NEW_USERS");
+                }
+                String batchBizNo = bizNo + "-B" + upper.get();
+                int inserted = runtimeRepository.enqueueBusinessNotificationBatch(
+                        adapter.channel(), notificationType, batchBizNo,
+                        progress.cursorUserId(), upper.get(),
+                        template.titleZh(), template.bodyZh(), template.titleVi(), template.bodyVi(),
+                        fallback(template.titleEn(), template.titleZh()),
+                        fallback(template.bodyEn(), template.bodyZh()),
+                        "NONE".equalsIgnoreCase(template.cta()) ? "" : safe(template.cta()),
+                        now.minus(cooldown), now);
+                int delivered = runtimeRepository.markNotificationsDelivered(batchBizNo, now);
+                if (delivered != inserted) {
+                    throw new IllegalStateException("NOVA_BUSINESS_DELIVERY_COUNT_MISMATCH");
+                }
+                publishNotificationFacts(batchBizNo, currentPhase, delivered, adapter.channel(), now);
+                if (!runtimeRepository.advanceBusinessFanout(
+                        adapter.channel(), fact.sourceEventId(), progress.cursorUserId(), upper.get(), delivered, now)) {
+                    throw new IllegalStateException("NOVA_BUSINESS_FANOUT_CURSOR_CONFLICT");
+                }
+                boolean more = runtimeRepository.fanoutBatchUpperUserId(upper.get(), 1).isPresent();
+                if (!more) {
+                    runtimeRepository.completeBusinessFact(
+                            adapter.channel(), fact.sourceEventId(), "DELIVERED", "FANOUT_COMPLETE",
+                            progress.notificationCount() + delivered, now);
+                }
+                completeClaimOrThrow(slotKey, now);
+                return new NovaChannelDispatchResult(
+                        true, adapter.channel(), delivered, fact.sourceEventId(),
+                        more ? "FANOUT_BATCH_COMMITTED_MORE_PENDING" : "FANOUT_COMPLETE");
+            }
             int inserted = runtimeRepository.enqueueBusinessNotifications(
                     adapter.channel(), notificationType, fact.sourceEventId(),
                     adapter.targeted() ? fact.userId() : null,
@@ -155,14 +206,35 @@ public class NovaBusinessRuntimeService {
             if (delivered != inserted) {
                 throw new IllegalStateException("NOVA_BUSINESS_DELIVERY_COUNT_MISMATCH");
             }
-            var notificationFacts = runtimeRepository.notificationFacts(bizNo, currentPhase, now);
-            if (notificationFacts.size() != delivered) {
-                throw new IllegalStateException("NOVA_BUSINESS_DELIVERY_FACT_MISMATCH");
+            publishNotificationFacts(bizNo, currentPhase, delivered, adapter.channel(), now);
+            runtimeRepository.completeBusinessFact(
+                    adapter.channel(), fact.sourceEventId(), "DELIVERED",
+                    "SERVER_CANONICAL_NOTIFICATION", delivered, now);
+            deliveredTotal += delivered;
+            if (firstSourceEventId.isEmpty()) {
+                firstSourceEventId = fact.sourceEventId();
             }
-            notificationFacts.forEach(notification -> {
+        }
+
+        completeClaimOrThrow(slotKey, now);
+        if (deliveredTotal == 0) {
+            return NovaChannelDispatchResult.skipped(adapter.channel(), "NO_USER_OUTSIDE_COOLDOWN");
+        }
+        return new NovaChannelDispatchResult(
+                true, adapter.channel(), deliveredTotal, firstSourceEventId,
+                "DELIVERED_FROM_SERVER_FACT");
+    }
+
+    private void publishNotificationFacts(
+            String bizNo, String currentPhase, int delivered, String channel, LocalDateTime now) {
+        var notificationFacts = runtimeRepository.notificationFacts(bizNo, currentPhase, now);
+        if (notificationFacts.size() != delivered) {
+            throw new IllegalStateException("NOVA_BUSINESS_DELIVERY_FACT_MISMATCH");
+        }
+        notificationFacts.forEach(notification -> {
                 Map<String, Object> payload = Map.of(
                         "notification_id", notification.notificationId(),
-                        "channel", adapter.channel(),
+                        "channel", channel,
                         "priority", notification.priority());
                 eventOutboxService.publishUserEvent(
                         "NOVA_NOTIFICATION", String.valueOf(notification.notificationId()), "nova.push_sent",
@@ -176,32 +248,12 @@ public class NovaBusinessRuntimeService {
                                 "notification_id", notification.notificationId(),
                                 "kind", notification.kind(),
                                 "priority", notification.priority()));
-            });
-            runtimeRepository.completeBusinessFact(
-                    adapter.channel(), fact.sourceEventId(), "DELIVERED",
-                    "SERVER_CANONICAL_NOTIFICATION", delivered, now);
-            deliveredTotal += delivered;
-            if (firstSourceEventId.isEmpty()) {
-                firstSourceEventId = fact.sourceEventId();
-            }
-            if (!adapter.targeted()) {
-                break;
-            }
-        }
-
-        completeClaimOrThrow(slotKey, now);
-        if (deliveredTotal == 0) {
-            return NovaChannelDispatchResult.skipped(adapter.channel(), "NO_USER_OUTSIDE_COOLDOWN");
-        }
-        return new NovaChannelDispatchResult(
-                true, adapter.channel(), deliveredTotal, firstSourceEventId,
-                "DELIVERED_FROM_SERVER_FACT");
+        });
     }
 
     static Map<String, List<String>> adapterContracts() {
-        Map<String, List<String>> result = new LinkedHashMap<>();
-        ADAPTERS.forEach((channel, adapter) -> result.put(channel, adapter.eventNames()));
-        return Map.copyOf(result);
+        return NovaRuntimeAdapterCatalog.fixedSources().entrySet().stream().collect(
+                java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey, entry -> entry.getValue().eventNames()));
     }
 
     private void completeClaimOrThrow(String slotKey, LocalDateTime now) {
@@ -260,29 +312,6 @@ public class NovaBusinessRuntimeService {
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
-    }
-
-    private static Map<String, Adapter> adapters() {
-        Map<String, Adapter> adapters = new LinkedHashMap<>();
-        adapters.put("welcome", targeted("welcome", "auth.register_completed"));
-        adapters.put("market", broadcast("market", "market.curve_advanced"));
-        adapters.put("upgrade", targeted("upgrade", "device.upgrade_recommended"));
-        adapters.put("dailySummary", targeted("dailySummary", "earnings.credited"));
-        adapters.put("tradein", targeted("tradein", "tradein.eligible"));
-        adapters.put("eventClaim", targeted("eventClaim", "event.reward_claimable"));
-        adapters.put("wrapped", targeted("wrapped", "nova.wrapped_ready"));
-        adapters.put("taskLockMonthly", targeted("taskLockMonthly", "quest.monthly_lock_ready"));
-        adapters.put("quest", new Adapter("quest", List.of(
-                "quest.grace_started", "quest.expired", "quest.weekly_refreshed"), true));
-        return Map.copyOf(adapters);
-    }
-
-    private static Adapter targeted(String channel, String... eventNames) {
-        return new Adapter(channel, List.of(eventNames), true);
-    }
-
-    private static Adapter broadcast(String channel, String... eventNames) {
-        return new Adapter(channel, List.of(eventNames), false);
     }
 
     private record Adapter(String channel, List<String> eventNames, boolean targeted) {

@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -14,9 +15,11 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 
 import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
+import ffdd.opsconsole.growth.dto.AcceptanceSandboxReferralSettlementRequest;
 import ffdd.opsconsole.growth.dto.ReferralRewardParamUpdateRequest;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -48,8 +51,9 @@ class OpsReferralRewardServiceTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy = mock(OpsReadTimeSeedPolicy.class);
+    private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final OpsReferralRewardService service = new OpsReferralRewardService(
-            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, null);
+            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, earningsRelease);
 
     @BeforeEach
     void setUp() {
@@ -87,7 +91,8 @@ class OpsReferralRewardServiceTest {
                     .hasMessageContaining("A2_CONFIRMATION_REQUIRED");
 
             verify(mapper, never()).lockRewardMutation();
-            verify(mapper, never()).creditWallet(any(), any(), any());
+            verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
+                    any(), anyString(), anyString());
             verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
                     any(), anyString(), anyString());
         } finally {
@@ -117,34 +122,84 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void settlesRealSponsorChainExactlyOnceAndCreditsBothWallets() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq(true), eq(10)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                any(LocalDateTime.class), eq(true))).thenReturn(1);
+                 any(LocalDateTime.class), eq("PRODUCTION"), eq(true))).thenReturn(1);
 
         Map<String, Object> result = service.runSettlements("idem-ref-1",
                 request(10, "manual reconciliation"));
 
         assertThat(result).containsEntry("settled", 1).containsEntry("skipped", 0);
         verify(mapper).lockRewardMutation();
-        verify(mapper).creditWallet(eq(22L), decimal("5"), decimal("20"));
-        verify(mapper).creditWallet(eq(11L), decimal("0"), decimal("10"));
+        verify(earningsRelease).creditReward(eq(22L), eq("H8_REFERRAL"), anyString(), eq("USDT"),
+                decimal("5"), eq("PRODUCTION"), anyString());
+        verify(earningsRelease).creditReward(eq(22L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+                decimal("20"), eq("PRODUCTION"), anyString());
+        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+                decimal("10"), eq("PRODUCTION"), anyString());
         verify(ledger).postLedgerEntry(anyString(), eq(22L), eq("REFERRAL_REWARD"), eq("USDT"), eq("IN"), decimal("5"), eq("SUCCESS"), anyString());
         verify(ledger).postLedgerEntry(anyString(), eq(11L), eq("REFERRAL_REWARD"), eq("NEX"), eq("IN"), decimal("10"), eq("SUCCESS"), anyString());
         verify(audit, times(2)).recordRequired(any());
     }
 
     @Test
+    void acceptanceSandboxSettlementUsesMockSourceAndNeverCallsProductionLedgerFacade() {
+        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), eq(22L)))
+                .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
+        when(mapper.insertSandboxSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
+                eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
+                any(LocalDateTime.class))).thenReturn(1);
+        when(mapper.creditSandboxWallet(anyLong(), anyString(), any())).thenReturn(1);
+        when(mapper.insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
+
+        Map<String, Object> result = service.runAcceptanceSandboxSettlement("idem-h8-sandbox-1",
+                new AcceptanceSandboxReferralSettlementRequest(22L,
+                        "acceptance fixture settlement", "acceptance-runner"));
+
+        assertThat(result).containsEntry("settled", 1).containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("sourceType", "MOCK_REFERRAL");
+        verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
+        verify(mapper, times(3)).creditSandboxWallet(anyLong(), anyString(), any());
+        verify(mapper, times(3)).insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString());
+        verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
+        verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void acceptanceSandboxSettlementDoesNotDependOnProductionCoverage() {
+        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), eq(22L)))
+                .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
+        when(mapper.insertSandboxSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
+                eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
+                any(LocalDateTime.class))).thenReturn(1);
+        when(mapper.creditSandboxWallet(anyLong(), anyString(), any())).thenReturn(1);
+        when(mapper.insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
+        when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false));
+
+        Map<String, Object> result = service.runAcceptanceSandboxSettlement("idem-h8-sandbox-no-b1",
+                new AcceptanceSandboxReferralSettlementRequest(22L,
+                        "sandbox cannot consume production coverage", "acceptance-runner"));
+
+        assertThat(result).containsEntry("settled", 1).containsEntry("sourceEnvironment", "SANDBOX");
+        verify(coverage, never()).snapshot();
+    }
+
+    @Test
     void finalAtomicEligibilityFailureNeverCreditsWalletOrLedger() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq(true), eq(10)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
 
         Map<String, Object> result = service.runSettlements("idem-ref-race",
                 request(10, "final risk race verification"));
 
         assertThat(result).containsEntry("settled", 0).containsEntry("skipped", 1);
-        verify(mapper, never()).creditWallet(any(), any(), any());
+        verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
                 any(), anyString(), anyString());
     }
@@ -186,16 +241,16 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_MUTEX_UNAVAILABLE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyBoolean(), any(Integer.class));
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
     }
 
     @Test
     void postSettlementCoverageDropRollsBackTheBatch() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq(true), eq(10)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                any(LocalDateTime.class), eq(true))).thenReturn(1);
+                 any(LocalDateTime.class), eq("PRODUCTION"), eq(true))).thenReturn(1);
         when(coverage.snapshot()).thenReturn(
                 new TreasuryCoverageSnapshot(new BigDecimal("100"), new BigDecimal("85")),
                 new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
@@ -215,7 +270,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_DATA_UNAVAILABLE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyBoolean(), any(Integer.class));
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
     }
 
     @Test
@@ -241,7 +296,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_BELOW_REDLINE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyBoolean(), any(Integer.class));
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
     }
 
     @Test
@@ -255,7 +310,8 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("REFERRAL_REWARD_NOT_CONFIGURED");
 
-        verify(mapper, never()).creditWallet(any(), any(), any());
+        verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
                 any(), anyString(), anyString());
     }
@@ -314,7 +370,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_SNAPSHOT_CHANGED_REPROPOSE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyBoolean(), any(Integer.class));
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
     }
 
     @Test
