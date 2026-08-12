@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.content.application.ConversationMessageEvent;
 import ffdd.opsconsole.content.application.OpsConversationService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
@@ -34,7 +35,8 @@ class OpsConversationControllerTest {
     private final OpsConversationService conversationService = mock(OpsConversationService.class);
     private final org.springframework.context.ApplicationEventPublisher eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
     private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService = idempotencyService();
-    private final OpsConversationController controller = new OpsConversationController(conversationService, eventPublisher, idempotencyService);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
+    private final OpsConversationController controller = new OpsConversationController(conversationService, productionPathGuard, eventPublisher, idempotencyService);
 
     private ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService() {
         var service = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);

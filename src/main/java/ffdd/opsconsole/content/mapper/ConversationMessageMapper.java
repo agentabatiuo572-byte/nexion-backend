@@ -44,8 +44,13 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     @Insert("""
             INSERT INTO nx_conversation_message_receipt(message_id,conversation_no,receipt_status,read_by,read_at)
             SELECT msg.id,msg.conversation_no,'read',#{operator},#{now}
-              FROM nx_conversation_message msg
+             FROM nx_conversation_message msg
               LEFT JOIN nx_conversation_message_receipt existing ON existing.message_id=msg.id
+              JOIN nx_conversation conversation
+                ON conversation.conversation_no=msg.conversation_no
+               AND conversation.is_deleted=0
+               AND conversation.status=UPPER(#{expectedStatus})
+               AND conversation.version=#{expectedVersion}
              WHERE msg.is_deleted=0
                AND msg.conversation_no=#{conversationNo}
                AND msg.sender_type='agent'
@@ -56,5 +61,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     int markAgentMessagesReadThrough(@Param("conversationNo") String conversationNo,
                                      @Param("lastSeenMessageId") Long lastSeenMessageId,
                                      @Param("operator") String operator,
-                                     @Param("now") LocalDateTime now);
+                                     @Param("now") LocalDateTime now,
+                                     @Param("expectedStatus") String expectedStatus,
+                                     @Param("expectedVersion") Long expectedVersion);
 }

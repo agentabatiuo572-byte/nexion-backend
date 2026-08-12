@@ -17,6 +17,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
@@ -38,6 +39,7 @@ import java.util.Map;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -64,6 +66,7 @@ public class AppUserAuthService {
     private final PlatformConfigFacade configFacade;
     private final UserOtpDeliveryService otpDeliveryService;
     private final EventOutboxService outboxService;
+    private final Environment environment;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @PostConstruct
@@ -85,20 +88,19 @@ public class AppUserAuthService {
                 || !StringUtils.hasText(request.password())) {
             return invalidCredential();
         }
+        if (UserAuthEnvironment.resolve(environment).isEmpty()) {
+            return ApiResult.fail(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        }
         LocalDateTime now = LocalDateTime.now();
         if (!consumeClientRate(clientAddress, now)) {
             return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         }
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
-        String loginKey = loginKey(countryCode, phone);
+        String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
-        UserEntity user = userMapper.selectOne(new LambdaQueryWrapper<UserEntity>()
-                .in(UserEntity::getCountryCode, countryCode, countryCode.substring(1))
-                .eq(UserEntity::getPhone, phone)
-                .eq(UserEntity::getIsDeleted, 0)
-                .last("LIMIT 1"));
+        UserEntity user = findUser(countryCode, phone);
         if (user != null) {
             loginGuardMapper.bindUser(loginKey, user.getId());
         }
@@ -114,6 +116,8 @@ public class AppUserAuthService {
         if (blocklistVerifier.isBlocked(user.getId())) {
             return ApiResult.fail(403, "ACCOUNT_BLOCKLISTED");
         }
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
 
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
@@ -149,7 +153,7 @@ public class AppUserAuthService {
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
-        String loginKey = loginKey(countryCode, phone);
+        String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         UserEntity user = findUser(countryCode, phone);
@@ -165,6 +169,7 @@ public class AppUserAuthService {
                 && !blocklistVerifier.isBlocked(user.getId())
                 && !userMapper.isPasswordResetRequired(user.getId())
                 && !userMapper.isTwoFactorEnabled(user.getId())
+                && UserAuthEnvironmentPolicy.evaluate(environment, user) == UserAuthEnvironmentPolicy.Decision.ALLOW
                 && otpDeliveryService.available();
         if (!eligible) return ApiResult.ok(disposableOtpLoginChallenge(phone));
         String challengeNo = "LOGIN-" + UUID.randomUUID().toString().replace("-", "");
@@ -200,7 +205,7 @@ public class AppUserAuthService {
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
-        String loginKey = loginKey(countryCode, phone);
+        String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         UserEntity user = findUser(countryCode, phone);
@@ -210,7 +215,10 @@ public class AppUserAuthService {
                 && !blocklistVerifier.isBlocked(user.getId())
                 && !userMapper.isPasswordResetRequired(user.getId())
                 && !userMapper.isTwoFactorEnabled(user.getId())
+                && UserAuthEnvironmentPolicy.evaluate(environment, user) == UserAuthEnvironmentPolicy.Decision.ALLOW
                 && (guard == null || guard.getLockedUntil() == null || !guard.getLockedUntil().isAfter(now));
+        ApiResult<UserLoginResponse> environmentFailure = user == null ? null : environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
         int consumed = eligible
                 ? userMapper.consumeValidLoginOtp(user.getId(), request.challengeNo().trim(), request.code().trim())
                 : 0;
@@ -242,7 +250,7 @@ public class AppUserAuthService {
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
-        String loginKey = loginKey(countryCode, phone);
+        String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
@@ -257,6 +265,8 @@ public class AppUserAuthService {
         if (blocklistVerifier.isBlocked(user.getId())) {
             return ApiResult.fail(403, "ACCOUNT_BLOCKLISTED");
         }
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
         if (!userMapper.isPasswordResetRequired(user.getId())) {
             return ApiResult.fail(409, "USER_PASSWORD_RESET_NOT_REQUIRED");
         }
@@ -290,7 +300,7 @@ public class AppUserAuthService {
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
-        String loginKey = loginKey(countryCode, phone);
+        String loginKey = loginKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
@@ -305,6 +315,8 @@ public class AppUserAuthService {
         if (blocklistVerifier.isBlocked(user.getId())) {
             return ApiResult.fail(403, "ACCOUNT_BLOCKLISTED");
         }
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
         if (userMapper.isPasswordResetRequired(user.getId())) {
             return ApiResult.fail(428, "USER_PASSWORD_RESET_REQUIRED");
         }
@@ -348,6 +360,8 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> issueSession(
             UserEntity user, String countryCode, String phone, String clientAddress) {
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
+        if (environmentFailure != null) return environmentFailure;
         String rawRefreshToken = randomRefreshToken();
         String sessionId = hashToken(rawRefreshToken);
         UserSessionEntity session = new UserSessionEntity();
@@ -362,7 +376,9 @@ public class AppUserAuthService {
         sessionMapper.insert(session);
 
         Duration accessTtl = Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24));
-        String token = tokenProvider.createToken(user.getId(), "USER", phone, List.of(), sessionId, accessTtl);
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
+                .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
+        String token = tokenProvider.createUserToken(user.getId(), phone, List.of(), sessionId, accessTtl, audience);
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname()),
                 rawRefreshToken));
@@ -419,6 +435,11 @@ public class AppUserAuthService {
             sessionMapper.revokeRefreshChain(current.getSessionChainId());
             return ApiResult.fail(403, "USER_REFRESH_NOT_ALLOWED");
         }
+        ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, true);
+        if (environmentFailure != null) {
+            sessionMapper.revokeRefreshChain(current.getSessionChainId());
+            return environmentFailure;
+        }
         String rawNext = randomRefreshToken();
         String nextId = hashToken(rawNext);
         if (sessionMapper.markRefreshRotated(current.getId(), nextId) != 1) {
@@ -437,9 +458,11 @@ public class AppUserAuthService {
         sessionMapper.insert(next);
         String phone = user.getPhone() == null ? "" : user.getPhone();
         String countryCode = StringUtils.hasText(user.getCountryCode()) ? normalizeCountryCode(user.getCountryCode()) : "+1";
-        String access = tokenProvider.createToken(
-                user.getId(), "USER", phone, List.of(), nextId,
-                Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)));
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
+                .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
+        String access = tokenProvider.createUserToken(
+                user.getId(), phone, List.of(), nextId,
+                Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)), audience);
         return ApiResult.ok(new UserLoginResponse(access, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname()), rawNext));
     }
@@ -477,9 +500,12 @@ public class AppUserAuthService {
     }
 
     private UserEntity findUser(String countryCode, String phone) {
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (audience == null) return null;
         return userMapper.selectOne(new LambdaQueryWrapper<UserEntity>()
                 .in(UserEntity::getCountryCode, countryCode, countryCode.substring(1))
                 .eq(UserEntity::getPhone, phone)
+                .eq(UserEntity::getSandbox, audience == UserAuthEnvironment.SANDBOX ? 1 : 0)
                 .eq(UserEntity::getIsDeleted, 0)
                 .last("LIMIT 1"));
     }
@@ -492,6 +518,15 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> invalidCredential() {
         return ApiResult.fail(401, "USER_CREDENTIAL_INVALID");
+    }
+
+    private ApiResult<UserLoginResponse> environmentFailure(UserEntity user, boolean refresh) {
+        return switch (UserAuthEnvironmentPolicy.evaluate(environment, user)) {
+            case ALLOW -> null;
+            case ACCOUNT_MISMATCH -> ApiResult.fail(403,
+                    refresh ? "USER_REFRESH_ENVIRONMENT_FORBIDDEN" : "USER_AUTH_ENVIRONMENT_FORBIDDEN");
+            case PROFILE_FORBIDDEN -> ApiResult.fail(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        };
     }
 
     private UserOtpLoginChallengeResponse disposableOtpLoginChallenge(String phone) {
@@ -592,10 +627,18 @@ public class AppUserAuthService {
         return true;
     }
 
+    private String authNamespace() {
+        return UserAuthEnvironment.resolve(environment).map(Enum::name).orElse("FORBIDDEN");
+    }
+
     private String loginKey(String countryCode, String phone) {
+        return loginKey(countryCode, phone, authNamespace());
+    }
+
+    private String loginKey(String countryCode, String phone, String namespace) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest((countryCode + ':' + phone).getBytes(StandardCharsets.UTF_8));
+                    .digest((namespace + ':' + countryCode + ':' + phone).getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);

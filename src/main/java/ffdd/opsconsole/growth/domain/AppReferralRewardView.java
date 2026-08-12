@@ -16,6 +16,7 @@ public record AppReferralRewardView(
         int limit,
         String source,
         String sourceEnvironment,
+        String runId,
         List<String> factSources,
         Instant refreshedAt) {
 

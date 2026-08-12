@@ -5,7 +5,9 @@
 -- 手动执行（schema.sql 不自动跑，见 schema-manual-init 记忆）：
 --   mysql -uroot -p nexion < scripts/rbac-classic-seed/EF.sql
 
-USE nexion;
+-- Database selection is owned by the controlled migration runner. Never switch
+-- to a hard-coded schema from a sourced seed: acceptance migrations must stay
+-- inside the explicitly selected disposable database.
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES

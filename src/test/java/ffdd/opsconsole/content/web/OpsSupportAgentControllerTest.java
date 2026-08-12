@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.dto.SupportAgentAssignmentRequest;
 import ffdd.opsconsole.content.dto.SupportAgentProfileUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportAgentSeatAssignmentRequest;
@@ -15,7 +16,17 @@ import org.junit.jupiter.api.Test;
 
 class OpsSupportAgentControllerTest {
     private final OpsSupportAgentService service = mock(OpsSupportAgentService.class);
-    private final OpsSupportAgentController controller = new OpsSupportAgentController(service);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
+    private final OpsSupportAgentController controller = new OpsSupportAgentController(service, productionPathGuard);
+
+    @Test
+    void isolatedProfileBlocksSeatMutationBeforeTheOfficialAgentService() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.updateProfile(7L, "key", null))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(service, never()).updateProfile(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
 
     @Test
     void everyM1SeatWriteRejectsAWriteAuthorityHolderWhoIsNotASupportSupervisor() {

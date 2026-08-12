@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.application.AppLearningService;
 import ffdd.opsconsole.content.domain.AppLearningCourseView;
 import ffdd.opsconsole.content.domain.AppLearningOverview;
 import ffdd.opsconsole.content.domain.AppLearningQuizResult;
+import ffdd.opsconsole.content.domain.LearningQuizReceipt;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.util.StringUtils;
 
 @RestController
 @RequestMapping("/api/content/learning")
@@ -38,13 +40,19 @@ public class AppLearningController {
 
     @PostMapping("/courses/{courseId}/start")
     public ApiResult<AppLearningCourseView> start(@PathVariable String courseId,
-            @RequestParam(defaultValue = "vi") String language, Authentication auth) {
-        return service.start(userId(auth), courseId, language);
+            @RequestParam(defaultValue = "vi") String language,
+            @RequestParam(value = "version", required = false) String expectedVersion,
+            Authentication auth) {
+        if (!StringUtils.hasText(expectedVersion)) return ApiResult.fail(422, "LEARNING_COURSE_VERSION_REQUIRED");
+        return service.start(userId(auth), courseId, language, expectedVersion);
     }
 
     @PostMapping("/courses/{courseId}/complete")
-    public ApiResult<AppLearningQuizResult> complete(@PathVariable String courseId, Authentication auth) {
-        return service.complete(userId(auth), courseId);
+    public ApiResult<AppLearningQuizResult> complete(@PathVariable String courseId,
+            @RequestParam(value = "version", required = false) String expectedVersion,
+            Authentication auth) {
+        if (!StringUtils.hasText(expectedVersion)) return ApiResult.fail(422, "LEARNING_COURSE_VERSION_REQUIRED");
+        return service.complete(userId(auth), courseId, expectedVersion);
     }
 
     @PostMapping("/courses/{courseId}/quiz")
@@ -54,8 +62,17 @@ public class AppLearningController {
             Authentication auth) {
         AppLearningQuizSubmitRequest canonicalRequest = request == null
                 ? null
-                : new AppLearningQuizSubmitRequest(request.answers(), idempotencyKey);
+                : new AppLearningQuizSubmitRequest(request.answers(), idempotencyKey, request.expectedVersion());
+        if (canonicalRequest == null || !StringUtils.hasText(canonicalRequest.expectedVersion())) {
+            return ApiResult.fail(422, "LEARNING_COURSE_VERSION_REQUIRED");
+        }
         return service.submitQuiz(userId(auth), courseId, canonicalRequest);
+    }
+
+    @GetMapping("/courses/{courseId}/quiz/receipts/{idempotencyKey}")
+    public ApiResult<LearningQuizReceipt> quizReceipt(@PathVariable String courseId, @PathVariable String idempotencyKey,
+            @RequestParam("version") String expectedVersion, Authentication auth) {
+        return service.quizReceipt(userId(auth), courseId, expectedVersion, idempotencyKey);
     }
 
     private Long userId(Authentication authentication) {

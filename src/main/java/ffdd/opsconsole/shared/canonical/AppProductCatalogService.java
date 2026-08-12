@@ -2,6 +2,9 @@ package ffdd.opsconsole.shared.canonical;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -24,8 +27,21 @@ public class AppProductCatalogService {
     private static final Set<String> TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
 
     private final AppTradeinMapper tradeinMapper;
+    private final CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper;
+    private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
+    private final CommerceAcceptanceRun commerceAcceptanceRun;
 
     public ApiResult<Map<String, Object>> catalog() {
+        return catalog(null);
+    }
+
+    public ApiResult<Map<String, Object>> catalog(Long userId) {
+        if (fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
+            if (userId == null || !commerceAcceptanceSandboxMapper.isSandboxUser(userId)) {
+                return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
+            }
+            return sandboxCatalog();
+        }
         try {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
             if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
@@ -45,6 +61,34 @@ public class AppProductCatalogService {
         } catch (RuntimeException ex) {
             return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
         }
+    }
+
+    private ApiResult<Map<String, Object>> sandboxCatalog() {
+        try {
+            String runId = commerceAcceptanceRun.requireRunId();
+            List<CommerceAcceptanceSandboxMapper.CatalogSeed> seeds = commerceAcceptanceSandboxMapper.listEligibleCatalogSeeds();
+            if (seeds == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
+            for (CommerceAcceptanceSandboxMapper.CatalogSeed seed : seeds) commerceAcceptanceSandboxMapper.insertCatalogIfAbsent(new CommerceAcceptanceSandboxMapper.CatalogSeed(
+                    seed.productId(), seed.productNo(), seed.name(), seed.tier(), seed.priceUsdt(), seed.stock(), seed.sold(), seed.deviceType(),
+                    seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(), runId));
+            List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
+            if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
+            List<Map<String, Object>> products = targets.stream().map(this::sandboxProduct).toList();
+            LocalDateTime revision = targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::updatedAt)
+                    .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
+            return ApiResult.ok(Map.of("source", "mock", "catalogSource", "nx_commerce_sandbox_catalog",
+                    "revision", revision == null ? "" : revision.toString(), "products", products,
+                    "sourceEnvironment", "SANDBOX", "runId", runId));
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
+        }
+    }
+
+    private Map<String, Object> sandboxProduct(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target) {
+        return product(new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
+                target.priceUsdt(), target.stock(), target.productNo(), 0, target.gpuModel(), target.vramTotalGb(),
+                target.hashrate(), target.dailyUsdt(), target.dailyNex(), target.tagline(), target.badge(), target.sold(),
+                target.unlockPhase(), target.updatedAt()));
     }
 
     private Map<String, Object> product(AppTradeinMapper.CatalogTargetProduct target) {

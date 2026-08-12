@@ -18,7 +18,7 @@ class AppProductCatalogControllerTest {
 
     @Test
     void authenticatedUserReadsServerCanonicalCatalog() {
-        when(service.catalog()).thenReturn(ApiResult.ok(Map.of(
+        when(service.catalog(42L)).thenReturn(ApiResult.ok(Map.of(
                 "source", "nx_admin_device_sku",
                 "products", List.of())));
 
@@ -26,7 +26,7 @@ class AppProductCatalogControllerTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().get("source")).isEqualTo("nx_admin_device_sku");
-        verify(service).catalog();
+        verify(service).catalog(42L);
     }
 
     @Test
@@ -35,7 +35,7 @@ class AppProductCatalogControllerTest {
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_SUBJECT_REQUIRED");
-        verify(service, never()).catalog();
+        verify(service, never()).catalog(org.mockito.ArgumentMatchers.anyLong());
     }
 
     private UsernamePasswordAuthenticationToken auth(String id, String subjectType) {

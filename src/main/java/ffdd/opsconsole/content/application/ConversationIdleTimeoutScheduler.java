@@ -26,10 +26,12 @@ public class ConversationIdleTimeoutScheduler {
     private final AuditLogService auditLogService;
     private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @Scheduled(fixedDelayString = "${nexion.content.conversation-idle-timeout-delay-ms:60000}")
     @Transactional
     public SweepResult sweep() {
+        if (!productionPathGuard.productionSupportAutomationAllowed()) return new SweepResult(0, 0);
         ConversationTimeoutPolicy policy = mapper.selectPolicy();
         if (policy == null) {
             return new SweepResult(0, 0);

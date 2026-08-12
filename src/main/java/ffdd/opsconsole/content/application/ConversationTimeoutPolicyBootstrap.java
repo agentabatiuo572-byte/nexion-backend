@@ -9,9 +9,11 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class ConversationTimeoutPolicyBootstrap {
     private final ConversationTimeoutPolicyMapper mapper;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @PostConstruct
     public void initialize() {
+        if (!productionPathGuard.productionSupportAutomationAllowed()) return;
         mapper.ensurePolicyTable();
         mapper.ensureEventTable();
         mapper.insertDefaultPolicy();

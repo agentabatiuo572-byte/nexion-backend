@@ -1447,6 +1447,44 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     int ensureUserWallet(@Param("userId") Long userId);
 
+    /**
+     * Registration is the only wallet-creation path that needs the account's
+     * server-selected isolation bit. Existing wallets continue to use the
+     * general ensure method above so no unrelated write path can reclassify
+     * them.
+     */
+    @Insert("""
+            INSERT INTO nx_user_wallet (
+                user_id,
+                usdt_available,
+                nex_available,
+                pending_withdraw,
+                lifetime_earned,
+                version,
+                sandbox,
+                created_at,
+                updated_at,
+                is_deleted
+            )
+            VALUES (
+                #{userId},
+                0,
+                0,
+                0,
+                0,
+                0,
+                #{sandbox},
+                NOW(),
+                NOW(),
+                0
+            )
+            ON DUPLICATE KEY UPDATE
+                is_deleted = 0,
+                sandbox = VALUES(sandbox),
+                updated_at = NOW()
+            """)
+    int ensureRegisteredUserWallet(@Param("userId") Long userId, @Param("sandbox") int sandbox);
+
     @Update("""
             <script>
             UPDATE nx_user_wallet

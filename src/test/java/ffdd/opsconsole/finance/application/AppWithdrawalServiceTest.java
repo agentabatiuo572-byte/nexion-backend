@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 import org.mockito.ArgumentCaptor;
 
 class AppWithdrawalServiceTest {
@@ -45,12 +46,20 @@ class AppWithdrawalServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
+    private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment);
+
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("production");
+        return environment;
+    }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        environment.setActiveProfiles("production");
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.findActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
@@ -229,6 +238,61 @@ class AppWithdrawalServiceTest {
                 anyString(), any(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox, never()).publishUserEvent(
                 anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void strictAcceptanceProfileRejectsProductionWithdrawalBeforeAnyMapperOrSideEffect() {
+        for (String strictProfile : java.util.List.of("acceptance", "test", "local-sandbox")) {
+            environment.setActiveProfiles(strictProfile);
+            assertThatThrownBy(() -> service.submit(
+                    7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-" + strictProfile))
+                    .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                    .hasMessage("WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
+        }
+
+        verify(mapper, never()).lockActiveUser(anyLong());
+        verify(mapper, never()).lockPayoutAddress(anyLong(), anyString());
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).reserveFunds(anyLong(), any(), any(), anyLong());
+        verify(mapper, never()).insertWithdrawal(any());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sandboxUserIsRejectedInProductionBeforeWalletOrderLedgerAuditOrOutbox() {
+        when(mapper.isSandboxUser(7L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-sandbox-user"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
+
+        verify(mapper, never()).lockActiveUser(anyLong());
+        verify(mapper, never()).lockPayoutAddress(anyLong(), anyString());
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).reserveFunds(anyLong(), any(), any(), anyLong());
+        verify(mapper, never()).insertWithdrawal(any());
+        verify(ledger, never()).postLedgerEntry(anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void defaultProfileAlsoRefusesSandboxUserBeforeAnyFinancialInteraction() {
+        environment.setActiveProfiles();
+        when(mapper.isSandboxUser(7L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-default-sandbox"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
+
+        verify(mapper, never()).lockActiveUser(anyLong());
+        verify(mapper, never()).reserveFunds(anyLong(), any(), any(), anyLong());
+        verify(mapper, never()).insertWithdrawal(any());
+        verify(ledger, never()).postLedgerEntry(anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
     }
 
     @Test

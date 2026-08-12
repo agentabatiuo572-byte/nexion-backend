@@ -3,10 +3,12 @@ package ffdd.opsconsole.content.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSupportTicketService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.dto.SupportLoadConfigUpdateRequest;
 import ffdd.opsconsole.content.dto.SupportLoadRebalanceRequest;
@@ -25,7 +27,8 @@ import org.junit.jupiter.api.Test;
 class OpsSupportTicketControllerTest {
     private final OpsSupportTicketService ticketService = mock(OpsSupportTicketService.class);
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
-    private final OpsSupportTicketController controller = new OpsSupportTicketController(ticketService, supportAgentService);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
+    private final OpsSupportTicketController controller = new OpsSupportTicketController(ticketService, supportAgentService, productionPathGuard);
 
     @Test
     void overviewDelegatesToService() {
@@ -34,6 +37,15 @@ class OpsSupportTicketControllerTest {
         assertThat(controller.overview().getData()).containsEntry("active", 1);
 
         verify(ticketService).overview();
+    }
+
+    @Test
+    void isolatedProfileBlocksOfficialTicketCreateBeforeTheSharedTicketService() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.create("key", null))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(ticketService, never()).create(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     @Test

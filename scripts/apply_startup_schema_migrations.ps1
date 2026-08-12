@@ -10,6 +10,20 @@ $JdbcUrl = $databaseEnvironment.JdbcUrl
 $Username = $databaseEnvironment.Username
 $Password = $databaseEnvironment.Password
 $migrations = @(
+  # Startup is fail-closed unless the classic API permission graph exists.
+  # Keep its rerunnable canonical entry in the controlled sequence so a fresh
+  # schema can satisfy the same invariant as an upgraded database.
+  (Join-Path $root "scripts\migrations\20260712_rbac_classic.sql"),
+  # H1 is a runtime dependency of H8 reward projection and several finance
+  # gates.  Fresh schemas must receive the canonical rhythm keys before any
+  # acceptance endpoint is opened; H8 also owns its permission/menu contract.
+  (Join-Path $root "scripts\migrations\20260711_rhythm_configurable.sql"),
+  (Join-Path $root "scripts\migrations\20260722_h_domain_closure.sql"),
+  # User registration publishes the canonical auth.register_completed event,
+  # and referral binding publishes referral.bound in the same transaction.
+  # Register both schemas before any acceptance account is allowed to exist.
+  (Join-Path $root "scripts\migrations\20260717_a4_event_governance_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260727_l1_kpi_event_chain_closure.sql"),
   (Join-Path $root "scripts\migrations\20260729_a1_admin_account_status_cas.sql"),
   (Join-Path $root "scripts\migrations\20260729_c2_account_list_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260729_l2_report_export_artifact_event_schema.sql"),
@@ -17,6 +31,14 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql"),
+  # The canonical schema intentionally keeps the pre-D2 withdrawal shape. D5
+  # migrations below address columns created by this rerunnable prerequisite,
+  # so a fresh database must apply it before the 20260807 hard blockers.
+  (Join-Path $root "scripts\migrations\20260720_d2_withdrawal_closure.sql"),
+  # The classic seed still contains three historical D3 threshold permissions.
+  # Apply the authoritative D3 closure immediately afterwards so those retired
+  # capabilities cannot be resurrected in a fresh acceptance database.
+  (Join-Path $root "scripts\migrations\20260720_d3_treasury_closure.sql"),
   (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
   (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
   (Join-Path $root "scripts\migrations\20260807_remove_kyc_runtime.sql"),
@@ -28,19 +50,26 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260810_ab_pending_closure.sql"),
   (Join-Path $root "scripts\migrations\20260810_cd_finance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260810_kl_janus_applied_proof.sql"),
+  (Join-Path $root "scripts\migrations\20260812_auth_environment_identity_namespace.sql"),
   (Join-Path $root "scripts\migrations\20260811_f4_l6_acceptance_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_config_blocked_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_funds_persistent_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260812_funds_sandbox_run_scope.sql"),
   (Join-Path $root "scripts\migrations\20260811_g2_exchange_execution_mutex.sql"),
   (Join-Path $root "scripts\migrations\20260811_g2_acceptance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260811_h8_acceptance_sandbox_referral_ledger.sql"),
+  (Join-Path $root "scripts\migrations\20260812_h8_acceptance_sandbox_run_scope.sql"),
   (Join-Path $root "scripts\migrations\20260811_a2_a4_runtime_policy_closure.sql"),
   (Join-Path $root "scripts\migrations\20260811_f5_commission_export_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_source_environment_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_h5_runtime_contract_fix.sql"),
   (Join-Path $root "scripts\migrations\20260811_l6_h5_active_route_catalog.sql"),
-  (Join-Path $root "scripts\migrations\20260811_janus_executor_claim_nonce.sql")
+  (Join-Path $root "scripts\migrations\20260811_janus_executor_claim_nonce.sql"),
+  (Join-Path $root "scripts\migrations\20260812_l6_acceptance_sandbox_fact.sql"),
+  (Join-Path $root "scripts\migrations\20260812_commerce_acceptance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260812_learning_acceptance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260812_support_acceptance_sandbox.sql")
 )
 
 if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {

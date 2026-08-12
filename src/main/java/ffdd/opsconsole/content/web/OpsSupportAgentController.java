@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentOverview;
 import ffdd.opsconsole.content.domain.SupportAgentPageView;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsSupportAgentController {
     private final OpsSupportAgentService supportAgentService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     // 坐席总览（4KPI/坐席负载） — M1 客服总览 读
     @PreAuthorize("hasAuthority('service_m1_read')")
@@ -53,6 +55,7 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentProfileUpdateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }
@@ -66,6 +69,7 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentSeatAssignmentRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }
@@ -79,6 +83,7 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentAssignmentRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }
@@ -91,6 +96,7 @@ public class OpsSupportAgentController {
             @PathVariable Long adminId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @Valid @RequestBody SupportAgentBatchAssignmentRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }
@@ -105,6 +111,7 @@ public class OpsSupportAgentController {
             @PathVariable Long assignmentId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportAgentAssignmentRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
         }

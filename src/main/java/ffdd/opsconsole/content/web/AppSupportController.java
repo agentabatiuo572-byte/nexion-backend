@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.content.application.AppSupportService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationTicketResult;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppSupportController {
     private final AppSupportService service;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @GetMapping("/tickets")
     public ApiResult<PageResult<SupportTicketView>> tickets(
@@ -35,13 +37,13 @@ public class AppSupportController {
             @RequestParam(required = false) Long pageSize,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.tickets(userId, status, pageNum, pageSize);
+        return guarded(userId) ? service.tickets(userId, status, pageNum, pageSize) : forbidden();
     }
 
     @GetMapping("/tickets/{ticketNo}")
     public ApiResult<SupportTicketDetail> ticket(@PathVariable String ticketNo, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.ticket(userId, ticketNo);
+        return guarded(userId) ? service.ticket(userId, ticketNo) : forbidden();
     }
 
     @PostMapping("/tickets")
@@ -50,7 +52,7 @@ public class AppSupportController {
             @RequestBody AppSupportService.CreateTicketRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.createTicket(userId, idempotencyKey, request);
+        return guarded(userId) ? service.createTicket(userId, idempotencyKey, request) : forbidden();
     }
 
     @PostMapping("/tickets/{ticketNo}/replies")
@@ -60,7 +62,7 @@ public class AppSupportController {
             @RequestBody AppSupportService.ReplyRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.replyTicket(userId, ticketNo, idempotencyKey, request);
+        return guarded(userId) ? service.replyTicket(userId, ticketNo, idempotencyKey, request) : forbidden();
     }
 
     @PostMapping("/tickets/{ticketNo}/close")
@@ -70,7 +72,7 @@ public class AppSupportController {
             @RequestBody AppSupportService.CloseRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.closeTicket(userId, ticketNo, idempotencyKey, request);
+        return guarded(userId) ? service.closeTicket(userId, ticketNo, idempotencyKey, request) : forbidden();
     }
 
     @GetMapping("/conversations")
@@ -80,14 +82,14 @@ public class AppSupportController {
             @RequestParam(required = false) Long pageSize,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.conversations(userId, status, pageNum, pageSize);
+        return guarded(userId) ? service.conversations(userId, status, pageNum, pageSize) : forbidden();
     }
 
     @GetMapping("/conversations/{conversationNo}")
     public ApiResult<ContentConversationDetail> conversation(
             @PathVariable String conversationNo, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.conversation(userId, conversationNo);
+        return guarded(userId) ? service.conversation(userId, conversationNo) : forbidden();
     }
 
     @PostMapping("/conversations/{conversationNo}/read")
@@ -96,8 +98,12 @@ public class AppSupportController {
             @RequestBody MarkReadRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden()
-                : service.markConversationRead(userId, conversationNo, request == null ? null : request.lastSeenMessageId());
+        return guarded(userId)
+                ? service.markConversationRead(userId, conversationNo,
+                        request == null ? null : request.lastSeenMessageId(),
+                        request == null ? null : request.expectedStatus(),
+                        request == null ? null : request.expectedVersion())
+                : forbidden();
     }
 
     @PostMapping("/conversations")
@@ -106,7 +112,7 @@ public class AppSupportController {
             @RequestBody AppSupportService.StartConversationRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.startConversation(userId, idempotencyKey, request);
+        return guarded(userId) ? service.startConversation(userId, idempotencyKey, request) : forbidden();
     }
 
     @PostMapping("/conversations/{conversationNo}/replies")
@@ -116,7 +122,7 @@ public class AppSupportController {
             @RequestBody AppSupportService.ReplyRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.replyConversation(userId, conversationNo, idempotencyKey, request);
+        return guarded(userId) ? service.replyConversation(userId, conversationNo, idempotencyKey, request) : forbidden();
     }
 
     @PostMapping("/conversations/{conversationNo}/ticket")
@@ -126,8 +132,9 @@ public class AppSupportController {
             @RequestBody AppSupportService.ConvertToTicketRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden()
-                : service.convertConversationToTicket(userId, conversationNo, idempotencyKey, request);
+        return guarded(userId)
+                ? service.convertConversationToTicket(userId, conversationNo, idempotencyKey, request)
+                : forbidden();
     }
 
     @GetMapping("/faqs")
@@ -136,7 +143,7 @@ public class AppSupportController {
             @RequestParam(required = false) String category,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.faqs(userId, language, category);
+        return guarded(userId) ? service.faqs(userId, language, category) : forbidden();
     }
 
     private Long userId(Authentication authentication) {
@@ -155,5 +162,11 @@ public class AppSupportController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record MarkReadRequest(Long lastSeenMessageId) {}
+    private boolean guarded(Long userId) {
+        if (userId == null) return false;
+        productionPathGuard.requireAllowed(userId);
+        return true;
+    }
+
+    public record MarkReadRequest(Long lastSeenMessageId, String expectedStatus, Long expectedVersion) {}
 }

@@ -86,7 +86,8 @@ class ReferralRewardEnvironmentIsolationContractTest {
                     .contains("CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_ledger")
                     .contains("source_environment")
                     .contains("source = 'mock' AND source_environment = 'SANDBOX'")
-                    .contains("uk_h8_sandbox_referral_invited")
+                    .contains("uk_h8_sandbox_referral_run_invited")
+                    .contains("uk_h8_sandbox_referral_run_idempotency")
                     .contains("uk_h8_sandbox_referral_ledger_fact");
         }
         assertThat(startup)
@@ -143,17 +144,20 @@ class ReferralRewardEnvironmentIsolationContractTest {
         String sandboxService = between(referral, "private Map<String, Object> settleSandbox", "private Map<String, Object> settle(");
         assertThat(sandboxService)
                 .contains("insertSandboxSettlement")
-                .contains("creditSandboxWallet")
                 .contains("insertSandboxLedger")
                 .doesNotContain("earningsReleaseService")
                 .doesNotContain("outbox.publish")
                 .doesNotContain("ledger.postLedgerEntry")
+                .doesNotContain("creditSandboxWallet")
+                .doesNotContain("nx_user_wallet")
                 .doesNotContain("findPendingReferrals");
 
         String sandboxLedgerInsert = between(source, "INSERT INTO nx_h8_sandbox_referral_ledger", "int insertSandboxLedger");
         assertThat(sandboxLedgerInsert)
                 .contains("source_environment")
                 .contains("'SANDBOX'")
+                .contains("nx_h8_sandbox_referral_ledger")
+                .doesNotContain("nx_user_wallet")
                 .doesNotContain("INSERT INTO nx_wallet_ledger");
 
         String appProjection = between(source, "AppReferralLedgerSummary appVerifiedSandboxRewardSummary", "List<AppReferralLedgerRow> appRecentVerifiedSandboxRewards");
@@ -169,7 +173,9 @@ class ReferralRewardEnvironmentIsolationContractTest {
     void joinedRecentSettlementProjectionQualifiesEverySettlementColumn() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/growth/mapper/ReferralRewardMapper.java"));
-        String recent = between(source, "SELECT s.settlement_no AS settlementNo", "List<Map<String, Object>> recentSettlements");
+        String recent = between(source,
+                "SELECT s.settlement_no AS settlementNo, s.invited_user_id AS invitedUserId",
+                "List<Map<String, Object>> recentSettlements");
 
         assertThat(recent)
                 .contains("s.status AS status")

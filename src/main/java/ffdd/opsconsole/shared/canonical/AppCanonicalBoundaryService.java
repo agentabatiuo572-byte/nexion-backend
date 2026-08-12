@@ -7,6 +7,9 @@ import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.VoucherRed
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -14,6 +17,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,11 +39,14 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
 public class AppCanonicalBoundaryService {
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int MAX_ACTIVE_DEVICES = 6;
     private static final Set<String> E3_CAPACITY_KEYS = Set.of(
@@ -56,6 +64,9 @@ public class AppCanonicalBoundaryService {
     private final AppGrowthLifecyclePublisher growthLifecyclePublisher;
     private final GrowthRhythmFacade growthRhythmFacade;
     private final AuditLogService auditLogService;
+    private final CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper;
+    private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
+    private final CommerceAcceptanceRun commerceAcceptanceRun;
 
     @PostConstruct
     void ensureOtpChallengeTable() {
@@ -437,7 +448,18 @@ public class AppCanonicalBoundaryService {
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String idempotencyKey) {
-        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        // Acceptance checkout has its own catalogue/order/inventory facts. Do this
+        // before touching canonical order, product, voucher, or outbox boundaries.
+        if (commerceSandboxProfile()) {
+            if (!isCommerceSandboxUser(userId)) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
+            return executeSandboxOrderOnce(userId, idempotencyKey,
+                    linked("clientOrderId", clientOrderId, "productId", productId,
+                            "productNo", productNo, "quantity", quantity, "voucherId", voucherId),
+                    () -> createSandboxOrderInternal(userId, clientOrderId, productId, productNo, quantity, voucherId));
+        }
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
         return executeOnce("ORDER_CREATE", userId, idempotencyKey,
                 linked("clientOrderId", clientOrderId, "productId", productId,
                         "productNo", productNo, "quantity", quantity, "voucherId", voucherId),
@@ -445,14 +467,34 @@ public class AppCanonicalBoundaryService {
     }
 
     public ApiResult<Map<String, Object>> orders(Long userId) {
+        if (commerceSandboxProfile()) {
+            if (!isCommerceSandboxUser(userId)) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
+            String runId = commerceAcceptanceRun.requireRunId();
+            List<CommerceAcceptanceSandboxMapper.SandboxOrderView> snapshots = commerceAcceptanceSandboxMapper.listSandboxOrders(runId, userId);
+            List<Map<String, Object>> sandboxOrders = (snapshots == null ? List.<CommerceAcceptanceSandboxMapper.SandboxOrderView>of() : snapshots).stream()
+                    .map(this::projectSandboxOrder).toList();
+            return ApiResult.ok(linked("orders", sandboxOrders, "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
+        }
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
         List<CanonicalStateMapper.UserOrder> rows = mapper.userOrders(userId);
+        Map<String, CommerceAcceptanceSandboxMapper.OrderOverlay> overlays = fundsSandboxProfileGuard.isLocalSandboxEnabled()
+                ? commerceAcceptanceSandboxMapper.listOrderOverlays(commerceAcceptanceRun.requireRunId(), userId).stream()
+                .collect(Collectors.toMap(CommerceAcceptanceSandboxMapper.OrderOverlay::orderNo, value -> value, (left, right) -> left))
+                : Map.of();
         List<Map<String, Object>> orders = (rows == null ? List.<CanonicalStateMapper.UserOrder>of() : rows)
-                .stream().map(this::projectUserOrder).toList();
-        return ApiResult.ok(linked("orders", orders,
-                "source", "nx_order + nx_order_item + nx_tradein_application + nx_user_device"));
+                .stream().map(row -> projectUserOrder(row, overlays.get(row.orderNo()))).toList();
+        return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION"));
     }
 
-    private Map<String, Object> projectUserOrder(CanonicalStateMapper.UserOrder order) {
+    private Map<String, Object> projectUserOrder(CanonicalStateMapper.UserOrder order,
+                                                  CommerceAcceptanceSandboxMapper.OrderOverlay overlay) {
+        String sandboxState = overlay == null ? null : normalizeState(overlay.state(), "");
+        String paymentStatus = overlayPaymentStatus(sandboxState, order.paymentStatus());
+        String orderStatus = overlayOrderStatus(sandboxState, order.orderStatus());
+        String activationStatus = overlayActivationStatus(sandboxState, order.activationStatus());
+        LocalDateTime stateAt = overlay == null ? null : overlay.updatedAt();
         return linked(
                 "orderNo", order.orderNo(),
                 "productId", order.productId(),
@@ -463,14 +505,14 @@ public class AppCanonicalBoundaryService {
                 "discountUsdt", zero(order.discountUsdt()),
                 "amountUsdt", zero(order.amountUsdt()),
                 "paymentMethod", order.paymentMethod(),
-                "paymentStatus", normalizeState(order.paymentStatus(), "PENDING"),
-                "orderStatus", normalizeState(order.orderStatus(), "PENDING_PAYMENT"),
-                "activationStatus", normalizeState(order.activationStatus(), "WAITING_PAYMENT"),
-                "canonicalStatus", canonicalOrderStatus(order),
+                "paymentStatus", paymentStatus,
+                "orderStatus", orderStatus,
+                "activationStatus", activationStatus,
+                "canonicalStatus", canonicalOrderStatus(paymentStatus, orderStatus, activationStatus),
                 "orderType", normalizeState(order.orderType(), "SINGLE"),
                 "placedAt", epochMillis(order.placedAt()),
-                "paidAt", epochMillis(order.paidAt()),
-                "activatedAt", epochMillis(order.activatedAt()),
+                "paidAt", epochMillis(order.paidAt() == null && "PAID".equals(paymentStatus) ? stateAt : order.paidAt()),
+                "activatedAt", epochMillis(order.activatedAt() == null && "ACTIVATED".equals(activationStatus) ? stateAt : order.activatedAt()),
                 "dataCenter", order.dataCenter(),
                 "tradeinNo", order.tradeinNo(),
                 "sourceDeviceId", order.sourceDeviceId(),
@@ -478,10 +520,7 @@ public class AppCanonicalBoundaryService {
                 "targetDeviceInstanceNo", order.targetDeviceInstanceNo());
     }
 
-    private String canonicalOrderStatus(CanonicalStateMapper.UserOrder order) {
-        String orderStatus = normalizeState(order.orderStatus(), "PENDING_PAYMENT");
-        String paymentStatus = normalizeState(order.paymentStatus(), "PENDING");
-        String activationStatus = normalizeState(order.activationStatus(), "WAITING_PAYMENT");
+    private String canonicalOrderStatus(String paymentStatus, String orderStatus, String activationStatus) {
         if (orderStatus.contains("CHARGEBACK") || paymentStatus.contains("CHARGEBACK")) return "chargeback";
         if (orderStatus.contains("REFUND") || paymentStatus.contains("REFUND")
                 || activationStatus.contains("REFUND")) return "refunded";
@@ -491,13 +530,103 @@ public class AppCanonicalBoundaryService {
         if (orderStatus.contains("EXPIRE") || paymentStatus.contains("EXPIRE")) return "expired";
         if (orderStatus.contains("CANCEL") || paymentStatus.contains("CANCEL")) return "cancelled";
         if ("COMPLETED".equals(orderStatus) || "ACTIVATED".equals(activationStatus)) return "activated";
+        if ("PAID".equals(paymentStatus) && "WAITING_PROVISIONING".equals(activationStatus)) return "paid";
         if (activationStatus.contains("PROVISION") || orderStatus.contains("PROVISION")) return "provisioning";
-        if ("PAID".equals(paymentStatus) || order.paidAt() != null) return "paid";
+        if ("PAID".equals(paymentStatus)) return "paid";
         return "placed";
+    }
+
+    private String overlayPaymentStatus(String state, String fallback) {
+        if (!StringUtils.hasText(state)) return normalizeState(fallback, "PENDING");
+        return switch (state) {
+            case "PAID", "ACTIVATED", "PROVISIONING_FAILED" -> "PAID";
+            case "PAYMENT_FAILED" -> "FAILED";
+            case "EXPIRED" -> "EXPIRED";
+            case "REFUNDED" -> "REFUNDED";
+            default -> normalizeState(fallback, "PENDING");
+        };
+    }
+
+    private String overlayOrderStatus(String state, String fallback) {
+        if (!StringUtils.hasText(state)) return normalizeState(fallback, "PENDING_PAYMENT");
+        return switch (state) {
+            case "PAID" -> "PAID";
+            case "ACTIVATED" -> "COMPLETED";
+            case "PAYMENT_FAILED", "EXPIRED", "PROVISIONING_FAILED", "REFUNDED" -> state;
+            default -> normalizeState(fallback, "PENDING_PAYMENT");
+        };
+    }
+
+    private String overlayActivationStatus(String state, String fallback) {
+        if (!StringUtils.hasText(state)) return normalizeState(fallback, "WAITING_PAYMENT");
+        return switch (state) {
+            case "PAID" -> "WAITING_PROVISIONING";
+            case "ACTIVATED" -> "ACTIVATED";
+            case "PROVISIONING_FAILED", "REFUNDED" -> state;
+            default -> normalizeState(fallback, "WAITING_PAYMENT");
+        };
     }
 
     private Long epochMillis(LocalDateTime value) {
         return value == null ? null : value.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+    }
+
+    private boolean isCommerceSandboxUser(Long userId) {
+        return userId != null && userId > 0 && commerceAcceptanceSandboxMapper.isSandboxUser(userId);
+    }
+
+    private boolean commerceSandboxProfile() {
+        return fundsSandboxProfileGuard.isLocalSandboxEnabled();
+    }
+
+    private Map<String, Object> projectSandboxOrder(CommerceAcceptanceSandboxMapper.SandboxOrderView order) {
+        String state = normalizeState(order.state(), "PENDING_PAYMENT");
+        String paymentStatus = overlayPaymentStatus(state, "PENDING");
+        String orderStatus = overlayOrderStatus(state, "PENDING_PAYMENT");
+        String activationStatus = overlayActivationStatus(state, "WAITING_PAYMENT");
+        return linked("orderNo", order.orderNo(), "productId", order.productId(), "productNo", order.productNo(),
+                "productName", order.productNo(), "quantity", order.quantity(), "unitPriceUsdt", zero(order.unitPriceUsdt()),
+                "discountUsdt", BigDecimal.ZERO, "amountUsdt", zero(order.amountUsdt()), "paymentMethod", "SANDBOX_WALLET",
+                "paymentStatus", paymentStatus, "orderStatus", orderStatus, "activationStatus", activationStatus,
+                "canonicalStatus", canonicalOrderStatus(paymentStatus, orderStatus, activationStatus), "orderType", "SINGLE",
+                "placedAt", epochMillis(order.createdAt()), "paidAt", "PAID".equals(paymentStatus) ? epochMillis(order.updatedAt()) : null,
+                "activatedAt", "ACTIVATED".equals(activationStatus) ? epochMillis(order.updatedAt()) : null,
+                "dataCenter", null, "tradeinNo", null, "sourceDeviceId", null, "targetDeviceId", null,
+                "targetDeviceInstanceNo", null);
+    }
+
+    private ApiResult<Map<String, Object>> createSandboxOrderInternal(
+            Long userId, String clientOrderId, Long productId, String productNo, Integer quantity, String voucherId) {
+        if (StringUtils.hasText(clientOrderId)) return ApiResult.fail(422, "CLIENT_MINTED_ID_REJECTED");
+        if (StringUtils.hasText(voucherId)) return ApiResult.fail(422, "COMMERCE_SANDBOX_VOUCHER_UNSUPPORTED");
+        int qty = quantity == null ? 1 : quantity;
+        String normalizedProductNo = StringUtils.hasText(productNo) ? productNo.trim() : null;
+        boolean validProductId = productId != null && productId > 0;
+        if ((!validProductId && normalizedProductNo == null) || qty < 1 || qty > 100) {
+            return ApiResult.fail(422, "ORDER_PRODUCT_OR_QUANTITY_INVALID");
+        }
+        CommerceAcceptanceSandboxMapper.SandboxCatalogProduct product = commerceAcceptanceSandboxMapper
+                .lockSandboxCatalogProduct(commerceAcceptanceRun.requireRunId(), validProductId ? productId : null, normalizedProductNo);
+        if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0
+                || product.stock() == null || product.stock() < qty || product.version() == null) {
+            return ApiResult.fail(409, "COMMERCE_SANDBOX_PRODUCT_NOT_AVAILABLE");
+        }
+        BigDecimal amount = product.priceUsdt().multiply(BigDecimal.valueOf(qty)).setScale(6, RoundingMode.DOWN);
+        String orderNo = "CSO-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String runId = commerceAcceptanceRun.requireRunId();
+        if (commerceAcceptanceSandboxMapper.reserveSandboxCatalogStock(runId, product.productId(), product.version(), qty) != 1) {
+            throw new BizException(409, "COMMERCE_SANDBOX_STOCK_CONFLICT");
+        }
+        if (commerceAcceptanceSandboxMapper.insertSandboxOrder(new CommerceAcceptanceSandboxMapper.OrderWrite(
+                orderNo, userId, product.productId(), qty, amount, product.version(), runId)) != 1
+                || commerceAcceptanceSandboxMapper.insertInventory(new CommerceAcceptanceSandboxMapper.InventoryWrite(
+                orderNo, product.productId(), product.productNo(), product.priceUsdt(), qty, runId)) != 1) {
+            throw new BizException(409, "COMMERCE_SANDBOX_ORDER_CREATE_CONFLICT");
+        }
+        return ApiResult.ok(linked("orderNo", orderNo, "subtotalUsdt", amount, "discountUsdt", BigDecimal.ZERO,
+                "amountUsdt", amount, "voucherId", null, "voucherRedemption", null, "paymentStatus", "PENDING",
+                "orderStatus", "PENDING_PAYMENT", "idSource", "sandbox-server", "source", "mock",
+                "sourceEnvironment", "SANDBOX", "runId", runId));
     }
 
     private ApiResult<Map<String, Object>> createOrderInternal(
@@ -649,6 +778,79 @@ public class AppCanonicalBoundaryService {
         String scope = "APP:" + operation + ":USER:" + userId;
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 scope, idempotencyKey, sha256(String.valueOf(request)), ApiResult.class, (java.util.function.Supplier) action);
+    }
+
+    private ApiResult<Map<String, Object>> executeSandboxOrderOnce(
+            Long userId, String idempotencyKey, Object request,
+            java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.length() > 128) {
+            return ApiResult.fail(422, "IDEMPOTENCY_KEY_REQUIRED");
+        }
+        String runId = commerceAcceptanceRun.requireRunId();
+        String requestHash = sha256(String.valueOf(request));
+        String key = idempotencyKey.trim();
+        // Claim before stock/order mutation. The receipt row is the only
+        // cross-request authority. Do not lock an absent receipt first: InnoDB
+        // next-key locks would deadlock two first uses of the same key.
+        var claim = new CommerceAcceptanceSandboxMapper.OrderReceiptWrite(
+                runId, userId, key, requestHash, "{\"state\":\"PENDING\"}");
+        boolean claimed = false;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var replay = commerceAcceptanceSandboxMapper.findOrderReceipt(runId, userId, key);
+            if (replay != null) return replaySandboxReceipt(replay, requestHash);
+            try {
+                if (commerceAcceptanceSandboxMapper.claimOrderReceipt(claim) == 1) {
+                    claimed = true;
+                    break;
+                }
+            } catch (DuplicateKeyException | TransientDataAccessException retryableClaimConflict) {
+                // A duplicate/deadlock can only be resolved by the unique receipt:
+                // re-read it, then make at most two further claim attempts. No
+                // order/inventory action has run at this point.
+            }
+            // The unique-claim contender may have waited behind a winner. This
+            // must be a current locking read, not a repeatable-read snapshot.
+            var committed = currentSandboxReceipt(runId, userId, key);
+            if (committed != null) return replaySandboxReceipt(committed, requestHash);
+        }
+        if (!claimed) throw new BizException(409, "COMMERCE_SANDBOX_IDEMPOTENCY_RESULT_UNKNOWN");
+        ApiResult<Map<String, Object>> result = action.get();
+        if (result.getCode() != 0) {
+            commerceAcceptanceSandboxMapper.releaseOrderReceiptClaim(claim);
+            return result;
+        }
+        try {
+            String resultJson = JSON.writeValueAsString(result.getData());
+            if (commerceAcceptanceSandboxMapper.completeOrderReceipt(new CommerceAcceptanceSandboxMapper.OrderReceiptWrite(
+                    runId, userId, key, requestHash, resultJson)) != 1)
+                throw new BizException(409, "COMMERCE_SANDBOX_IDEMPOTENCY_RESULT_UNKNOWN");
+            return result;
+        } catch (BizException known) {
+            throw known;
+        } catch (Exception serializationFailure) {
+            throw new BizException(409, "COMMERCE_SANDBOX_IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+    }
+
+    private ApiResult<Map<String, Object>> replaySandboxReceipt(
+            CommerceAcceptanceSandboxMapper.SandboxOrderReceipt receipt, String requestHash) {
+        if (!requestHash.equals(receipt.requestHash())) return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_CONFLICT");
+        try {
+            return ApiResult.ok(JSON.readValue(receipt.resultJson(), new TypeReference<LinkedHashMap<String, Object>>() { }));
+        } catch (Exception malformedReceipt) {
+            throw new BizException(409, "COMMERCE_SANDBOX_IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+    }
+
+    private CommerceAcceptanceSandboxMapper.SandboxOrderReceipt currentSandboxReceipt(
+            String runId, Long userId, String key) {
+        try {
+            return commerceAcceptanceSandboxMapper.lockOrderReceipt(runId, userId, key);
+        } catch (TransientDataAccessException retryableCurrentRead) {
+            // A deadlock before any domain mutation is safe to retry through the
+            // bounded receipt loop; do not manufacture a second checkout action.
+            return null;
+        }
     }
 
     private String sha256(String value) {

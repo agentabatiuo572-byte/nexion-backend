@@ -7,6 +7,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.AppSupportService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
@@ -16,7 +18,8 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 
 class AppSupportControllerTest {
     private final AppSupportService service = mock(AppSupportService.class);
-    private final AppSupportController controller = new AppSupportController(service);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
+    private final AppSupportController controller = new AppSupportController(service, productionPathGuard);
 
     @Test
     void adminSubjectCannotReadAnotherUsersSupportData() {
@@ -39,5 +42,18 @@ class AppSupportControllerTest {
 
         assertThat(controller.tickets("open", 1L, 50L, auth).getCode()).isZero();
         verify(service).tickets(42L, "open", 1L, 50L);
+    }
+
+    @Test
+    void isolatedProfileRejectsAProductionSupportPathBeforeAnySharedServiceReadOrWrite() {
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        auth.setDetails(Map.of("subjectType", "USER"));
+        org.mockito.Mockito.doThrow(new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireAllowed(42L);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.tickets(null, null, null, auth))
+                .isInstanceOf(BizException.class);
+        verify(service, never()).tickets(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 }

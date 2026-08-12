@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsSupportKnowledgeService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeOverview;
 import ffdd.opsconsole.content.domain.SupportSlaView;
@@ -32,9 +33,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsSupportKnowledgeController {
     private final OpsSupportKnowledgeService knowledgeService;
     private final AdminIdempotencyService idempotencyService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> executeCommand(String scope, String idempotencyKey, Object request, java.util.function.Supplier<ApiResult<T>> action) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             return action.get();
         }

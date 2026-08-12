@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.content.application.AppSupportService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppConversationReceiptController {
     private final AppSupportService supportService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @PostMapping("/{conversationNo}/receipts/read")
     public ApiResult<Void> markReadReceipt(
@@ -26,8 +28,11 @@ public class AppConversationReceiptController {
         if (userId == null) {
             return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         }
+        productionPathGuard.requireAllowed(userId);
         Long lastSeenMessageId = request == null ? null : request.lastSeenMessageId();
-        var result = supportService.markConversationRead(userId, conversationNo, lastSeenMessageId);
+        var result = supportService.markConversationRead(userId, conversationNo, lastSeenMessageId,
+                request == null ? null : request.expectedStatus(),
+                request == null ? null : request.expectedVersion());
         return result.getCode() == 0
                 ? ApiResult.ok()
                 : ApiResult.fail(result.getCode(), result.getMessage());

@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -58,6 +59,7 @@ public class AppWithdrawalService {
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final EarningsReleaseService earningsReleaseService;
+    private final Environment environment;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
@@ -110,6 +112,7 @@ public class AppWithdrawalService {
     public ApiResult<Map<String, Object>> submit(
             Long userId, BigDecimal amount, String chain, String address, String policyVersion,
             boolean useNexFeeOffset, String idempotencyKey) {
+        requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal normalizedAmount = money(amount);
         String normalizedChain = normalizeChain(chain);
@@ -331,6 +334,26 @@ public class AppWithdrawalService {
                 "k4Priority", k4Priority,
                 "riskRuleId", riskDecision.primaryRuleId(),
                 "idSource", "server"));
+    }
+
+    /**
+     * There is no automatic bridge between acceptance funds fixtures and a real
+     * withdrawal.  This must run before the idempotency table, user lock and
+     * every wallet/order/ledger/audit/outbox interaction.
+     */
+    private void requireProductionWithdrawalSubject(Long userId) {
+        if (!isProductionOrDefaultProfile(environment.getActiveProfiles())) {
+            throw new BizException(409, "WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
+        }
+        if (userId == null || userId <= 0) return;
+        if (Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+            throw new BizException(403, "WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
+        }
+    }
+
+    private boolean isProductionOrDefaultProfile(String... profiles) {
+        return profiles != null && (profiles.length == 0
+                || (profiles.length == 1 && "production".equals(profiles[0])));
     }
 
     private BigDecimal strongReviewThreshold() {

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 import ffdd.opsconsole.growth.domain.AppReferralRewardView;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
@@ -18,16 +19,26 @@ import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppReferralRewardServiceTest {
     private final ReferralRewardMapper mapper = mock(ReferralRewardMapper.class);
     private final OpsReferralRewardService config = mock(OpsReferralRewardService.class);
     private final Clock clock = Clock.fixed(
             Instant.parse("2026-08-11T13:00:00Z"), ZoneId.of("Asia/Shanghai"));
-    private final AppReferralRewardService service = new AppReferralRewardService(mapper, config, clock);
+    private final MockEnvironment environment = productionEnvironment();
+    private final AppReferralRewardService service = new AppReferralRewardService(mapper, config, clock, environment);
+
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("production");
+        return environment;
+    }
 
     @BeforeEach
     void setUp() {
+        environment.setActiveProfiles("production");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "");
         when(config.publicConfig()).thenReturn(new ReferralRewardPublicConfigView(
                 new ReferralRewardPublicConfigView.WelcomeGift("risk_bucket", BigDecimal.ZERO, BigDecimal.ZERO),
                 new ReferralRewardPublicConfigView.InviterReward(new BigDecimal("20.000000")),
@@ -63,6 +74,7 @@ class AppReferralRewardServiceTest {
         assertThat(view.limit()).isEqualTo(20);
         assertThat(view.source()).isEqualTo("ledger");
         assertThat(view.sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(view.runId()).isNull();
         assertThat(view.recentRewards()).singleElement().satisfies(row -> {
             assertThat(row.amountNex()).isEqualByComparingTo("20");
             assertThat(row.balanceAfter()).isEqualByComparingTo("120");
@@ -97,26 +109,85 @@ class AppReferralRewardServiceTest {
 
     @Test
     void sandboxUsesExplicitMockSourceAndCannotReadProductionFacts() {
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
         when(mapper.appReferralAccount(11L)).thenReturn(
-                new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, BigDecimal.ZERO));
-        when(mapper.appInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("SANDBOX")))
+                new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, new BigDecimal("999")));
+        when(mapper.appSandboxInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("RUN-APP-20260812")))
                 .thenReturn(0L);
         when(mapper.appSandboxPendingCount(org.mockito.ArgumentMatchers.eq(11L),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class)))
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("RUN-APP-20260812")))
                 .thenReturn(0L);
-        when(mapper.appSandboxPositiveSettlementCount(11L)).thenReturn(0L);
-        when(mapper.appSandboxSettlementCount(11L)).thenReturn(0L);
-        when(mapper.appVerifiedSandboxRewardSummary(11L))
-                .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(0L, BigDecimal.ZERO));
-        when(mapper.appRecentVerifiedSandboxRewards(11L, 10)).thenReturn(List.of());
+        when(mapper.appSandboxPositiveSettlementCount(11L, "RUN-APP-20260812")).thenReturn(1L);
+        when(mapper.appSandboxSettlementCount(11L, "RUN-APP-20260812")).thenReturn(1L);
+        when(mapper.appVerifiedSandboxRewardSummary(11L, "RUN-APP-20260812"))
+                .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(1L, new BigDecimal("20")));
+        when(mapper.appRecentVerifiedSandboxRewards(11L, "RUN-APP-20260812", 10)).thenReturn(List.of(
+                new ReferralRewardMapper.AppReferralLedgerRow("SBX-REF-1", new BigDecimal("20"), "SUCCESS",
+                        new BigDecimal("20"), "withdrawable", "SANDBOX",
+                        LocalDateTime.of(2026, 8, 11, 1, 2))));
 
         AppReferralRewardView view = service.snapshot(11L, 10).getData();
 
         assertThat(view.source()).isEqualTo("mock");
         assertThat(view.sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(view.recentRewards()).isEmpty();
-        verify(mapper).appRecentVerifiedSandboxRewards(11L, 10);
+        assertThat(view.runId()).isEqualTo("RUN-APP-20260812");
+        assertThat(view.lifetimeInviterNex()).isEqualByComparingTo("20");
+        assertThat(view.walletNexAvailable()).isEqualByComparingTo("20");
+        assertThat(view.recentRewards()).singleElement().satisfies(row ->
+                assertThat(row.balanceAfter()).isEqualByComparingTo("20"));
+        verify(mapper).appRecentVerifiedSandboxRewards(11L, "RUN-APP-20260812", 10);
+    }
+
+    @Test
+    void sandboxFailsClosedWithoutAnIsolatedProfileOrCurrentRunId() {
+        when(mapper.appReferralAccount(11L)).thenReturn(
+                new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, BigDecimal.ZERO));
+
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
+        environment.setActiveProfiles("acceptance");
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_SANDBOX_RUN_ID_REQUIRED");
+    }
+
+    @Test
+    void strictSandboxProfileRejectsProductionAccountBeforeAnyProductionProjectionRead() {
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
+        when(mapper.appReferralAccount(11L)).thenReturn(
+                new ReferralRewardMapper.AppReferralAccount("NEX-PROD", 0, new BigDecimal("120")));
+
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_SANDBOX_ACCOUNT_REQUIRED");
+
+        verify(mapper, never()).appInvitedCount(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString());
+        verify(mapper, never()).appVerifiedRewardSummary(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void productionAndDefaultProfilesRejectSandboxAccountBeforeAnySandboxProjectionRead() {
+        when(mapper.appReferralAccount(11L)).thenReturn(
+                new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, BigDecimal.ZERO));
+
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
+        environment.setActiveProfiles();
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
+
+        verify(mapper, never()).appSandboxInvitedCount(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString());
+        verify(mapper, never()).appVerifiedSandboxRewardSummary(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test

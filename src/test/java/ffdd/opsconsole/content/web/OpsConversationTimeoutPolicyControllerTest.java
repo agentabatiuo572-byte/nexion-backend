@@ -8,9 +8,11 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.ConversationTimeoutPolicyService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.dto.ConversationTimeoutPolicyUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -25,8 +27,24 @@ class OpsConversationTimeoutPolicyControllerTest {
     private final ConversationTimeoutPolicyService service = mock(ConversationTimeoutPolicyService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ProductionSupportPathGuard productionPathGuard = enabledGuard();
     private final OpsConversationTimeoutPolicyController controller =
-            new OpsConversationTimeoutPolicyController(service, idempotencyService, auditLogService);
+            new OpsConversationTimeoutPolicyController(service, idempotencyService, auditLogService, productionPathGuard);
+
+    private ProductionSupportPathGuard enabledGuard() {
+        ProductionSupportPathGuard guard = mock(ProductionSupportPathGuard.class);
+        return guard;
+    }
+
+    @Test
+    void isolatedProfileBlocksTimeoutBeforeIdempotencyServiceOrRejectedAudit() {
+        org.mockito.Mockito.doThrow(new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.update(null, null)).isInstanceOf(BizException.class);
+        verify(service, never()).update(org.mockito.ArgumentMatchers.any());
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+        verify(auditLogService, never()).recordRequiredInNewTransaction(any());
+    }
 
     @BeforeEach
     void setUp() {

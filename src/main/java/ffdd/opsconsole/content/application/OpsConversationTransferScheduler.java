@@ -11,11 +11,13 @@ import java.time.LocalDateTime;
 public class OpsConversationTransferScheduler {
     private final OpsConversationService conversationService;
     private final ApplicationEventPublisher eventPublisher;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @Scheduled(
             initialDelayString = "${nexion.ops.content.transfer-fallback-initial-delay-ms:60000}",
             fixedDelayString = "${nexion.ops.content.transfer-fallback-delay-ms:60000}")
     public void runTimeoutFallback() {
+        if (!productionPathGuard.productionSupportAutomationAllowed()) return;
         int changed = conversationService.runTimeoutFallback();
         if (changed > 0) {
             eventPublisher.publishEvent(ConversationMessageEvent.builder()

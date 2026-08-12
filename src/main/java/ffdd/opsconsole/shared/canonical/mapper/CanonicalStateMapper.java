@@ -42,8 +42,10 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             """)
     String currentPhase();
 
-    @Select("SELECT id FROM nx_user WHERE id = #{userId} AND is_deleted = 0 FOR UPDATE")
-    Long lockUser(@Param("userId") Long userId);
+    @Select("SELECT id,sandbox FROM nx_user WHERE id = #{userId} AND is_deleted = 0 FOR UPDATE")
+    UserLock lockUser(@Param("userId") Long userId);
+
+    record UserLock(Long id, boolean sandbox) { }
 
     @Select("""
             SELECT COALESCE((
@@ -256,6 +258,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                  OR (#{productNo} IS NOT NULL AND product_no = #{productNo}))
                AND UPPER(status) IN ('ACTIVE', 'ON_SALE')
                AND COALESCE(store_visible, 1) = 1
+               AND price_usdt > 0 AND stock >= 1
              LIMIT 1 FOR UPDATE
             """)
     ProductStock lockProduct(@Param("productId") Long productId, @Param("productNo") String productNo);

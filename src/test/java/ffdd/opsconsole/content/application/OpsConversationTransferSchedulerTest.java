@@ -18,7 +18,14 @@ import org.springframework.stereotype.Component;
 class OpsConversationTransferSchedulerTest {
     private final OpsConversationService service = mock(OpsConversationService.class);
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-    private final OpsConversationTransferScheduler scheduler = new OpsConversationTransferScheduler(service, publisher);
+    private final ProductionSupportPathGuard productionPathGuard = enabledGuard();
+    private final OpsConversationTransferScheduler scheduler = new OpsConversationTransferScheduler(service, publisher, productionPathGuard);
+
+    private ProductionSupportPathGuard enabledGuard() {
+        ProductionSupportPathGuard guard = mock(ProductionSupportPathGuard.class);
+        when(guard.productionSupportAutomationAllowed()).thenReturn(true);
+        return guard;
+    }
 
     @Test
     void publishesOneTerminalReloadSignalWhenAutomaticFallbackChangesRows() {
@@ -38,6 +45,14 @@ class OpsConversationTransferSchedulerTest {
     void publishesNothingWhenAutomaticFallbackChangesNothing() {
         when(service.runTimeoutFallback()).thenReturn(0);
         scheduler.runTimeoutFallback();
+        verify(publisher, never()).publishEvent(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void isolatedAutomationNeverInvokesOfficialTransferFallback() {
+        ProductionSupportPathGuard disabled = mock(ProductionSupportPathGuard.class);
+        new OpsConversationTransferScheduler(service, publisher, disabled).runTimeoutFallback();
+        verify(service, never()).runTimeoutFallback();
         verify(publisher, never()).publishEvent(org.mockito.ArgumentMatchers.any());
     }
 

@@ -5,9 +5,18 @@ nexion:
     # Acceptance H5 facts are isolated from production BI aggregates. This is
     # server configuration, not a client-controlled payload field.
     source-environment: SANDBOX
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+  support:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+    acceptance-sandbox:
+      mode: ENABLED
+  learning:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
   finance:
     funds-sandbox:
       mode: LOCAL_SANDBOX
+  commerce:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
   market:
     g2-acceptance-sandbox:
       # Explicit opt-in. The guard also rejects every mixed profile at runtime.

@@ -36,6 +36,18 @@ public class JwtTokenProvider {
         return createTokenInternal(subjectId, subjectType, username, authorities, sessionId, safeTtl);
     }
 
+    public String createUserToken(
+            Long subjectId,
+            String username,
+            Collection<String> authorities,
+            String sessionId,
+            Duration ttl,
+            UserAuthEnvironment audience) {
+        if (audience == null) throw new IllegalArgumentException("USER_AUTH_ENVIRONMENT_REQUIRED");
+        Duration safeTtl = ttl == null || ttl.isZero() || ttl.isNegative() ? expiration() : ttl;
+        return createTokenInternal(subjectId, "USER", username, authorities, sessionId, safeTtl, audience);
+    }
+
     public String createImpersonationToken(Long userId, String username, String sessionNo, int ttlMinutes) {
         return createTokenInternal(
                 userId,
@@ -53,6 +65,12 @@ public class JwtTokenProvider {
             Collection<String> authorities,
             String sessionId,
             Duration ttl) {
+        return createTokenInternal(subjectId, subjectType, username, authorities, sessionId, ttl, null);
+    }
+
+    private String createTokenInternal(
+            Long subjectId, String subjectType, String username, Collection<String> authorities,
+            String sessionId, Duration ttl, UserAuthEnvironment audience) {
         Date now = new Date();
         Date expiresAt = new Date(now.getTime() + ttl.toMillis());
         var builder = Jwts.builder()
@@ -65,6 +83,7 @@ public class JwtTokenProvider {
         if (sessionId != null && !sessionId.isBlank()) {
             builder.claim("sessionId", sessionId);
         }
+        if (audience != null) builder.claim(UserAuthEnvironment.CLAIM, audience.name());
         return builder.signWith(secretKey()).compact();
     }
 

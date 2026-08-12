@@ -19,6 +19,10 @@ public interface AppWithdrawalMapper {
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
+    /** A production withdrawal may never proceed for an acceptance fixture user. */
+    @Select("SELECT 1 FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND COALESCE(sandbox,0)=1 LIMIT 1")
+    Integer isSandboxUser(@Param("userId") Long userId);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Long findActiveUser(@Param("userId") Long userId);
 

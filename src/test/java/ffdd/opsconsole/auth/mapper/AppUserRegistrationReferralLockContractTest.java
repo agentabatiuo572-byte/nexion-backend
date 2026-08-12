@@ -51,4 +51,22 @@ class AppUserRegistrationReferralLockContractTest {
         assertThat(migration).contains("idx_user_registration_otp_ip");
         assertThat(startup).contains("20260729_h003_registration_otp_client_ip.sql");
     }
+
+    @Test
+    void registrationIdentityAndOtpAreScopedByServerOwnedEnvironment() throws Exception {
+        String schema = Files.readString(Path.of("scripts/schema.sql"));
+        String mapper = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/auth/mapper/AppUserRegistrationMapper.java"));
+        String migration = Files.readString(Path.of(
+                "scripts/migrations/20260812_auth_environment_identity_namespace.sql"));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+
+        assertThat(schema).contains("uk_user_phone_sandbox (country_code, phone, sandbox)");
+        assertThat(schema).contains("auth_environment VARCHAR(16) NOT NULL");
+        assertThat(mapper).contains("auth_environment=#{authEnvironment}");
+        assertThat(mapper).contains("consumeValidChallengeInEnvironment");
+        assertThat(migration).contains("uk_user_phone_sandbox");
+        assertThat(migration).contains("DEFAULT ''LEGACY''");
+        assertThat(startup).contains("20260812_auth_environment_identity_namespace.sql");
+    }
 }

@@ -2,6 +2,8 @@ package ffdd.opsconsole.auth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -31,7 +33,10 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class AppUserRegistrationServiceTest {
     private final AppUserRegistrationMapper mapper = mock(AppUserRegistrationMapper.class);
@@ -41,6 +46,7 @@ class AppUserRegistrationServiceTest {
     private final AppUserAuthService authService = mock(AppUserAuthService.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final AppUserRegistrationTransactionExecutor transactionExecutor = mock(AppUserRegistrationTransactionExecutor.class);
+    private final Environment environment = mock(Environment.class);
     private AppUserRegistrationService service;
 
     @BeforeEach
@@ -49,7 +55,126 @@ class AppUserRegistrationServiceTest {
                 .when(transactionExecutor).execute(any());
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
-                transactionExecutor);
+                transactionExecutor, environment);
+        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = { "acceptance", "test", "local-sandbox" })
+    void strictIsolatedProfileAtomicallyMarksTheNewUserAndWalletAsSandbox(String profile) {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { profile });
+        UserEntity sandboxSponsor = user(41L, "NXAB12CD34EF");
+        sandboxSponsor.setSandbox(1);
+        prepareSuccessfulRegistration(sandboxSponsor);
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
+                "127.0.0.3");
+
+        ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userMapper).insert(inserted.capture());
+        verify(userMapper).ensureRegisteredUserWallet(99L, 1);
+        assertThat(result.getCode()).isZero();
+        assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
+    }
+
+    @Test
+    void sandboxRegistrationRequiresAPreProvisionedSandboxSponsorBeforeUserOrWalletWrites() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
+        prepareRegistrationPrerequisites("REG-H003", "81987654321", "127.0.0.3");
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SANDBOX_SPONSOR_REQUIRED");
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(outboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void sandboxRegistrationRejectsAProductionSponsorBeforeUserOrWalletWrites() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
+        prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
+                "127.0.0.3");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(outboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void productionRegistrationRejectsASandboxSponsorBeforeUserOrWalletWrites() {
+        UserEntity sandboxSponsor = user(41L, "NXAB12CD34EF");
+        sandboxSponsor.setSandbox(1);
+        prepareSuccessfulRegistration(sandboxSponsor);
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
+                "127.0.0.3");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(authService, never()).issueRegisteredSession(any(), any());
+        verify(outboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void productionAndDefaultProfilesKeepTheNewUserAndWalletOutOfSandbox() {
+        prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
+                "127.0.0.3");
+
+        ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userMapper).insert(inserted.capture());
+        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
+        assertThat(result.getCode()).isZero();
+        assertThat(inserted.getValue().getSandbox()).isZero();
+        assertThat(inserted.getValue().getClientIp()).isEqualTo("127.0.0.3");
+    }
+
+    @Test
+    void unknownOrMixedProfilesFailClosedBeforeOtpOrAnyRegistrationWrite() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance", "production" });
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_PROFILE_FORBIDDEN");
+        verify(transactionExecutor, never()).execute(any());
+        verify(mapper, never()).consumeValidChallengeInEnvironment(any(), any(), any(), any(), any());
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(outboxService, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void unknownSingleProfileFailsClosedBeforeOtpOrAnyRegistrationWrite() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "staging" });
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+81", "81987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_PROFILE_FORBIDDEN");
+        verify(transactionExecutor, never()).execute(any());
+        verify(mapper, never()).consumeValidChallengeInEnvironment(any(), any(), any(), any(), any());
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
     /**
@@ -69,7 +194,7 @@ class AppUserRegistrationServiceTest {
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(mapper).findSponsorForUpdate(sponsorCode.capture());
         verify(userMapper).insert(inserted.capture());
-        verify(userMapper).ensureUserWallet(99L);
+        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
         verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
         assertThat(result.getCode()).isZero();
         assertThat(sponsorCode.getValue()).isEqualTo("NXAB12CD34EF");
@@ -79,7 +204,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void duplicateRegistrationDoesNotCreateASecondWalletSessionOrReferralBinding() {
-        when(mapper.consumeValidChallenge("REG-DUP", "+81", "81987654322", "123456")).thenReturn(1);
+        when(mapper.consumeValidChallengeInEnvironment("REG-DUP", "+81", "81987654322", "PRODUCTION", "123456")).thenReturn(1);
         UserEntity existing = user(77L, "NXEXISTING77");
         when(userMapper.selectOne(any())).thenReturn(existing);
 
@@ -91,7 +216,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_ACCOUNT_EXISTS");
         verify(mapper, never()).findSponsorForUpdate(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
-        verify(userMapper, never()).ensureUserWallet(any());
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
         verify(authService, never()).issueRegisteredSession(any(), any());
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
@@ -113,10 +238,10 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void rejectsCanonicalReferralAmbiguityBeforeAnyUniqueRowLockOrSideEffect() {
-        when(mapper.consumeValidChallenge("REG-AMB", "+81", "81987654323", "123456")).thenReturn(1);
-        when(mapper.consumedChallengeClientIp("REG-AMB", "+81", "81987654323")).thenReturn("127.0.0.5");
+        when(mapper.consumeValidChallengeInEnvironment("REG-AMB", "+81", "81987654323", "PRODUCTION", "123456")).thenReturn(1);
+        when(mapper.consumedChallengeClientIpInEnvironment("REG-AMB", "+81", "81987654323", "PRODUCTION")).thenReturn("127.0.0.5");
         when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
-        when(mapper.countRegisteredAccountsByClientIp24h("127.0.0.5")).thenReturn(0);
+        when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(eq("127.0.0.5"), any(), anyInt())).thenReturn(0);
         when(mapper.findActiveSponsorsByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(
                 user(41L, "NXAB12CD34EF"), user(42L, "NX-AB12-CD34-EF")));
 
@@ -128,7 +253,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SPONSOR_AMBIGUOUS");
         verify(mapper, never()).findSponsorForUpdate(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
-        verify(userMapper, never()).ensureUserWallet(any());
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
         verify(authService, never()).issueRegisteredSession(any(), any());
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
@@ -152,7 +277,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getCode()).isZero();
         verify(transactionExecutor, org.mockito.Mockito.times(2)).execute(any());
         verify(userMapper, org.mockito.Mockito.times(2)).insert(any(UserEntity.class));
-        verify(userMapper).ensureUserWallet(99L);
+        verify(userMapper).ensureRegisteredUserWallet(99L, 0);
         verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
         verify(outboxService, org.mockito.Mockito.times(2)).publish(any(), any(), any(), any());
     }
@@ -169,7 +294,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_RETRYABLE_CONFLICT");
         verify(transactionExecutor, org.mockito.Mockito.times(3)).execute(any());
         verify(userMapper, never()).insert(any(UserEntity.class));
-        verify(userMapper, never()).ensureUserWallet(any());
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
         verify(authService, never()).issueRegisteredSession(any(), any());
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
@@ -178,10 +303,10 @@ class AppUserRegistrationServiceTest {
     void concurrentAliasesForTheSameSponsorResolveThenLockTheSameStoredUniqueReferralRow() throws Exception {
         UserEntity legacySponsor = user(41L, "nx-ab12-cd34-ef");
         AtomicLong ids = new AtomicLong(100L);
-        when(mapper.consumeValidChallenge(any(), eq("+81"), any(), eq("123456"))).thenReturn(1);
-        when(mapper.consumedChallengeClientIp(any(), eq("+81"), any())).thenReturn("127.0.0.8");
+        when(mapper.consumeValidChallengeInEnvironment(any(), eq("+81"), any(), any(), eq("123456"))).thenReturn(1);
+        when(mapper.consumedChallengeClientIpInEnvironment(any(), eq("+81"), any(), any())).thenReturn("127.0.0.8");
         when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
-        when(mapper.countRegisteredAccountsByClientIp24h("127.0.0.8")).thenReturn(0);
+        when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(eq("127.0.0.8"), any(), anyInt())).thenReturn(0);
         when(mapper.findActiveSponsorsByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(legacySponsor));
         when(mapper.findSponsorForUpdate("nx-ab12-cd34-ef")).thenReturn(legacySponsor);
         when(passwordEncoder.encode(any())).thenReturn("hash");
@@ -199,7 +324,7 @@ class AppUserRegistrationServiceTest {
 
         assertThat(results).extracting(ApiResult::getCode).containsOnly(0);
         verify(mapper, org.mockito.Mockito.times(2)).findSponsorForUpdate("nx-ab12-cd34-ef");
-        verify(userMapper, org.mockito.Mockito.times(2)).ensureUserWallet(any());
+        verify(userMapper, org.mockito.Mockito.times(2)).ensureRegisteredUserWallet(anyLong(), eq(0));
         verify(authService, org.mockito.Mockito.times(2)).issueRegisteredSession(any(), any());
         verify(outboxService, org.mockito.Mockito.times(4)).publish(any(), any(), any(), any());
     }
@@ -207,11 +332,11 @@ class AppUserRegistrationServiceTest {
     @Test
     void concurrentSamePhoneOtpCompareAndSetAllowsOnlyOneWalletSessionAndReferralSideEffect() throws Exception {
         AtomicBoolean otpAvailable = new AtomicBoolean(true);
-        when(mapper.consumeValidChallenge("REG-PHONE", "+81", "81987654333", "123456"))
+        when(mapper.consumeValidChallengeInEnvironment("REG-PHONE", "+81", "81987654333", "PRODUCTION", "123456"))
                 .thenAnswer(invocation -> otpAvailable.compareAndSet(true, false) ? 1 : 0);
-        when(mapper.consumedChallengeClientIp("REG-PHONE", "+81", "81987654333")).thenReturn("127.0.0.9");
+        when(mapper.consumedChallengeClientIpInEnvironment("REG-PHONE", "+81", "81987654333", "PRODUCTION")).thenReturn("127.0.0.9");
         when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
-        when(mapper.countRegisteredAccountsByClientIp24h("127.0.0.9")).thenReturn(0);
+        when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(eq("127.0.0.9"), any(), anyInt())).thenReturn(0);
         when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
         doAnswer(invocation -> {
             ((UserEntity) invocation.getArgument(0)).setId(111L);
@@ -226,16 +351,13 @@ class AppUserRegistrationServiceTest {
 
         assertThat(results).extracting(ApiResult::getCode).containsExactlyInAnyOrder(0, 422);
         verify(userMapper, org.mockito.Mockito.times(1)).insert(any(UserEntity.class));
-        verify(userMapper, org.mockito.Mockito.times(1)).ensureUserWallet(111L);
+        verify(userMapper, org.mockito.Mockito.times(1)).ensureRegisteredUserWallet(111L, 0);
         verify(authService, org.mockito.Mockito.times(1)).issueRegisteredSession(any(), any());
         verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());
     }
 
     private void prepareSuccessfulRegistration(UserEntity sponsor) {
-        when(mapper.consumeValidChallenge("REG-H003", "+81", "81987654321", "123456")).thenReturn(1);
-        when(mapper.consumedChallengeClientIp("REG-H003", "+81", "81987654321")).thenReturn("127.0.0.3");
-        when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
-        when(mapper.countRegisteredAccountsByClientIp24h("127.0.0.3")).thenReturn(0);
+        prepareRegistrationPrerequisites("REG-H003", "81987654321", "127.0.0.3");
         when(mapper.findActiveSponsorsByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(sponsor));
         when(mapper.findSponsorForUpdate("NXAB12CD34EF")).thenReturn(sponsor);
         when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
@@ -247,6 +369,13 @@ class AppUserRegistrationServiceTest {
         when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3")))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(99L, "+81", "81987654321", "Nexion 4321"))));
+    }
+
+    private void prepareRegistrationPrerequisites(String challengeNo, String phone, String clientIp) {
+        when(mapper.consumeValidChallengeInEnvironment(eq(challengeNo), eq("+81"), eq(phone), any(), eq("123456"))).thenReturn(1);
+        when(mapper.consumedChallengeClientIpInEnvironment(eq(challengeNo), eq("+81"), eq(phone), any())).thenReturn(clientIp);
+        when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
+        when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(eq(clientIp), any(), anyInt())).thenReturn(0);
     }
 
     private UserEntity user(Long id, String referralCode) {

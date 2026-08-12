@@ -1,12 +1,15 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
@@ -29,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 class AppSupportServiceTest {
     private final SupportTicketRepository tickets = mock(SupportTicketRepository.class);
@@ -38,11 +42,12 @@ class AppSupportServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-11T00:00:00Z"), ZoneOffset.UTC);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
     private AppSupportService service;
 
     @BeforeEach
     void setUp() {
-        service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock);
+        service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock, productionPathGuard);
         when(idempotency.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
@@ -151,8 +156,58 @@ class AppSupportServiceTest {
     }
 
     @Test
+    void directServiceCallFailsClosedBeforeAnyFormalSupportDependencyForSandboxUser() {
+        doThrow(new RuntimeException("SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireAllowed(42L);
+
+        assertThatThrownBy(() -> service.startConversation(
+                42L, "direct-bypass", new AppSupportService.StartConversationRequest("SUPPORT", "help")))
+                .isInstanceOf(RuntimeException.class);
+
+        verifyNoInteractions(tickets, conversations, knowledge, idempotency, audit, eventPublisher);
+    }
+
+    @Test
+    void conversationSsePublishesOnlyAfterTheEnclosingTransactionCommits() {
+        ContentConversationView conversation = conversation(42L, "CV-AFTER-COMMIT");
+        when(conversations.createUserConversation(any(), any(), any(), any(), any())).thenReturn(conversation);
+        when(conversations.findByConversationNo(conversation.conversationNo())).thenReturn(Optional.of(conversation));
+        when(conversations.userVisibleMessages(conversation.conversationNo())).thenReturn(List.of(
+                new ContentConversationMessageView(7L, 1L, conversation.conversationNo(), 42L, "user", "User", "help", null, LocalDateTime.now(clock))));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.startConversation(42L, "after-commit-key", new AppSupportService.StartConversationRequest("SUPPORT", "help"));
+            verifyNoInteractions(eventPublisher);
+            TransactionSynchronizationManager.getSynchronizations().forEach(sync -> sync.afterCommit());
+            verify(eventPublisher, times(1)).publishEvent(any(ConversationMessageEvent.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
+    void rollbackAfterAConversationWriteEmitsNoPhantomSse() {
+        ContentConversationView conversation = conversation(42L, "CV-ROLLBACK");
+        when(conversations.createUserConversation(any(), any(), any(), any(), any())).thenReturn(conversation);
+        when(conversations.findByConversationNo(conversation.conversationNo())).thenReturn(Optional.of(conversation));
+        when(conversations.userVisibleMessages(conversation.conversationNo())).thenReturn(List.of(
+                new ContentConversationMessageView(8L, 1L, conversation.conversationNo(), 42L, "user", "User", "help", null, LocalDateTime.now(clock))));
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.startConversation(42L, "rollback-key", new AppSupportService.StartConversationRequest("SUPPORT", "help"));
+            // A rollback calls neither afterCommit nor the SSE publisher.
+            verifyNoInteractions(eventPublisher);
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
     void markReadPersistsOnlyTheAuthenticatedUsersVisibleAgentReceipt() {
         ContentConversationView conversation = conversation(42L, "CV-READ");
+        when(conversations.findByConversationNoForUpdate("CV-READ")).thenReturn(Optional.of(conversation));
         when(conversations.findByConversationNo("CV-READ")).thenReturn(Optional.of(conversation));
         LocalDateTime now = LocalDateTime.now(clock);
         ContentConversationMessageView sent = new ContentConversationMessageView(
@@ -161,26 +216,27 @@ class AppSupportServiceTest {
                 11L, 1L, "CV-READ", 9L, "agent", "A", "reply", "read", now);
         when(conversations.userVisibleMessages("CV-READ"))
                 .thenReturn(List.of(sent), List.of(read));
-        when(conversations.markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now)).thenReturn(true);
+        when(conversations.markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now, "OPEN", 9L)).thenReturn(true);
 
-        var result = service.markConversationRead(42L, "CV-READ", 11L);
+        var result = service.markConversationRead(42L, "CV-READ", 11L, "OPEN", 9L);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversation().unreadCount()).isZero();
-        verify(conversations).markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now);
+        verify(conversations).markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now, "OPEN", 9L);
     }
 
     @Test
     void repeatedReadIsIdempotentAndDoesNotPublishAnotherReceiptEvent() {
         ContentConversationView conversation = conversation(42L, "CV-READ");
+        when(conversations.findByConversationNoForUpdate("CV-READ")).thenReturn(Optional.of(conversation));
         when(conversations.findByConversationNo("CV-READ")).thenReturn(Optional.of(conversation));
         LocalDateTime now = LocalDateTime.now(clock);
         ContentConversationMessageView read = new ContentConversationMessageView(
                 11L, 1L, "CV-READ", 9L, "agent", "A", "reply", "read", now);
         when(conversations.userVisibleMessages("CV-READ")).thenReturn(List.of(read));
-        when(conversations.markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now)).thenReturn(false);
+        when(conversations.markAgentMessagesReadThrough("CV-READ", 11L, "user:42", now, "OPEN", 9L)).thenReturn(false);
 
-        var result = service.markConversationRead(42L, "CV-READ", 11L);
+        var result = service.markConversationRead(42L, "CV-READ", 11L, "OPEN", 9L);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().conversation().unreadCount()).isZero();
@@ -210,16 +266,40 @@ class AppSupportServiceTest {
         when(conversations.findByConversationNo("CV-READ"))
                 .thenReturn(Optional.of(conversation(7L, "CV-READ")));
 
-        var result = service.markConversationRead(42L, "CV-READ", 11L);
+        var result = service.markConversationRead(42L, "CV-READ", 11L, "OPEN", 9L);
 
         assertThat(result.getCode()).isEqualTo(404);
-        verify(conversations, never()).markAgentMessagesReadThrough(any(), any(), any(), any());
+        verify(conversations, never()).markAgentMessagesReadThrough(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void staleConversationReadIsRejectedBeforeChangingAnyReceipt() {
+        when(conversations.findByConversationNoForUpdate("CV-READ"))
+                .thenReturn(Optional.of(conversation(42L, "CV-READ")));
+
+        var result = service.markConversationRead(42L, "CV-READ", 11L, "OPEN", 8L);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(conversations, never()).markAgentMessagesReadThrough(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void closedConversationCannotAdvanceAReadReceiptEvenWithMatchingCas() {
+        ContentConversationView closed = new ContentConversationView(
+                1L, "CV-CLOSED", 42L, "support", "CLOSED", null, "Unassigned", 1, "done",
+                LocalDateTime.now(clock), null, null, null, null, null, null, null, LocalDateTime.now(clock), 9L);
+        when(conversations.findByConversationNoForUpdate("CV-CLOSED")).thenReturn(Optional.of(closed));
+
+        var result = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 9L);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(conversations, never()).markAgentMessagesReadThrough(any(), any(), any(), any(), any(), any());
     }
 
     private ContentConversationView conversation(Long userId, String number) {
         LocalDateTime now = LocalDateTime.now(clock);
         return new ContentConversationView(1L, number, userId, "support", "OPEN", null, "Unassigned",
-                9, "help", now, null, null, null, null, null, null, null, now, 0L);
+                9, "help", now, null, null, null, null, null, null, null, now, 9L);
     }
 
     private SupportTicketView ticket(Long userId, String status, Long version) {

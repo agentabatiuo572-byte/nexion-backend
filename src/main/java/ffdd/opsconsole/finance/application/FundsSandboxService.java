@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -37,52 +38,57 @@ public class FundsSandboxService {
     private final FundsSandboxMapper mapper;
     private final FundsSandboxProperties properties;
     private final Clock clock;
+    private final FundsSandboxRunScope runScope;
 
     public Overview overview(Long userId) {
         requireLocalSandbox();
         requireUser(userId);
-        mapper.insertWalletIfAbsent(userId);
-        WalletRow wallet = requireWallet(mapper.walletSnapshot(userId));
-        return new Overview(walletView(wallet), mapper.listOrders(userId, 100), mapper.listLedger(userId, 200), withdrawalPolicy(),
-                "mock", "SANDBOX", "LOCAL_SANDBOX");
+        String runId = runScope.requireRunId();
+        requireSandboxUser(userId);
+        mapper.insertWalletIfAbsent(runId, userId);
+        WalletRow wallet = requireWallet(mapper.walletSnapshot(runId, userId));
+        return new Overview(walletView(wallet), mapper.listOrders(runId, userId, 100), mapper.listLedger(runId, userId, 200), withdrawalPolicy(),
+                "mock", "SANDBOX", "LOCAL_SANDBOX", runId);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public OrderView createTopup(Long userId, String channel, BigDecimal amount, String idempotencyKey) {
         requireLocalSandbox();
         requireUser(userId);
+        String runId = runScope.requireRunId();
+        requireSandboxUser(userId);
         String normalizedChannel = normalizeTopupChannel(channel);
         BigDecimal normalizedAmount = money(amount);
         String key = requireKey(idempotencyKey);
-        String requestHash = hash(userId + "|TOPUP|" + normalizedChannel + "|" + normalizedAmount);
-        OrderRow replay = mapper.findOrderByIdempotency(userId, key);
+        String requestHash = hash(runId + "|" + userId + "|TOPUP|" + normalizedChannel + "|" + normalizedAmount);
+        OrderRow replay = mapper.findOrderByIdempotency(runId, userId, key);
         if (replay != null) return replay(replay, requestHash);
 
-        mapper.insertWalletIfAbsent(userId);
-        WalletRow wallet = requireWallet(mapper.lockWallet(userId));
-        replay = mapper.findOrderByIdempotency(userId, key);
+        mapper.insertWalletIfAbsent(runId, userId);
+        WalletRow wallet = requireWallet(mapper.lockWallet(runId, userId));
+        replay = mapper.lockOrderByIdempotency(runId, userId, key);
         if (replay != null) return replay(replay, requestHash);
 
         LocalDateTime now = LocalDateTime.now(clock);
-        String orderNo = stableNo("SBX-TU-", userId + "|" + key + "|" + requestHash);
+        String orderNo = stableNo("SBX-TU-", runId + "|" + userId + "|" + key + "|" + requestHash);
         OrderWrite write = new OrderWrite(orderNo, userId, "TOPUP", normalizedChannel, normalizedAmount,
-                null, "PENDING", "mock", "SANDBOX", key, requestHash, 0L, now);
+                null, "PENDING", "mock", "SANDBOX", runId, key, requestHash, 0L, now);
         if (mapper.insertOrder(write) != 1) throw new BizException(409, "FUNDS_SANDBOX_ORDER_CONFLICT");
 
-        String eventId = stableNo("SBX-CB-", orderNo + "|SETTLED");
+        String eventId = stableNo("SBX-CB-", runId + "|" + orderNo + "|SETTLED");
         CallbackWrite callback = new CallbackWrite(eventId, userId, orderNo, "SETTLED",
-                hash(orderNo + "|SETTLED|0"), now);
-        if (mapper.insertCallback(callback) != 1) throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_CONFLICT");
-        if (mapper.transitionOrder(orderNo, userId, "PENDING", "SETTLED", 0L) != 1) {
+                hash(runId + "|" + orderNo + "|SETTLED|0"), now);
+        if (mapper.insertCallback(runId, callback) != 1) throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_CONFLICT");
+        if (mapper.transitionOrder(runId, orderNo, userId, "PENDING", "SETTLED", 0L) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_ORDER_VERSION_CONFLICT");
         }
-        if (mapper.creditWallet(userId, normalizedAmount, wallet.version()) != 1) {
+        if (mapper.creditWallet(runId, userId, normalizedAmount, wallet.version()) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_WALLET_VERSION_CONFLICT");
         }
         WalletRow after = new WalletRow(userId, wallet.availableUsdt().add(normalizedAmount),
                 wallet.reservedUsdt(), wallet.version() + 1);
-        insertLedger(userId, orderNo, "TOPUP_CREDIT", "IN", normalizedAmount, after, now);
-        if (mapper.markCallbackProcessed(eventId, "PROCESSED") != 1) {
+        insertLedger(runId, userId, orderNo, "TOPUP_CREDIT", "IN", normalizedAmount, after, now);
+        if (mapper.markCallbackProcessed(runId, eventId, "PROCESSED") != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_STATE_CONFLICT");
         }
         return view(write, "SETTLED", 1L, now, after);
@@ -93,6 +99,8 @@ public class FundsSandboxService {
             Long userId, String channel, BigDecimal amount, String targetAddress, String idempotencyKey) {
         requireLocalSandbox();
         requireUser(userId);
+        String runId = runScope.requireRunId();
+        requireSandboxUser(userId);
         String normalizedChannel = normalizeWithdrawalChannel(channel);
         BigDecimal normalizedAmount = money(amount);
         if (normalizedAmount.compareTo(SANDBOX_WITHDRAWAL_MIN_AMOUNT) < 0) {
@@ -100,30 +108,30 @@ public class FundsSandboxService {
         }
         String address = normalizeAddress(targetAddress);
         String key = requireKey(idempotencyKey);
-        String requestHash = hash(userId + "|WITHDRAWAL|" + normalizedChannel + "|"
+        String requestHash = hash(runId + "|" + userId + "|WITHDRAWAL|" + normalizedChannel + "|"
                 + normalizedAmount + "|" + address);
-        OrderRow replay = mapper.findOrderByIdempotency(userId, key);
+        OrderRow replay = mapper.findOrderByIdempotency(runId, userId, key);
         if (replay != null) return replay(replay, requestHash);
 
-        mapper.insertWalletIfAbsent(userId);
-        WalletRow wallet = requireWallet(mapper.lockWallet(userId));
-        replay = mapper.findOrderByIdempotency(userId, key);
+        mapper.insertWalletIfAbsent(runId, userId);
+        WalletRow wallet = requireWallet(mapper.lockWallet(runId, userId));
+        replay = mapper.lockOrderByIdempotency(runId, userId, key);
         if (replay != null) return replay(replay, requestHash);
         if (wallet.availableUsdt().compareTo(normalizedAmount) < 0) {
             throw new BizException(409, "FUNDS_SANDBOX_INSUFFICIENT_BALANCE");
         }
 
         LocalDateTime now = LocalDateTime.now(clock);
-        String orderNo = stableNo("SBX-WD-", userId + "|" + key + "|" + requestHash);
+        String orderNo = stableNo("SBX-WD-", runId + "|" + userId + "|" + key + "|" + requestHash);
         OrderWrite write = new OrderWrite(orderNo, userId, "WITHDRAWAL", normalizedChannel,
-                normalizedAmount, address, "SUBMITTED", "mock", "SANDBOX", key, requestHash, 0L, now);
+                normalizedAmount, address, "SUBMITTED", "mock", "SANDBOX", runId, key, requestHash, 0L, now);
         if (mapper.insertOrder(write) != 1) throw new BizException(409, "FUNDS_SANDBOX_ORDER_CONFLICT");
-        if (mapper.reserveWallet(userId, normalizedAmount, wallet.version()) != 1) {
+        if (mapper.reserveWallet(runId, userId, normalizedAmount, wallet.version()) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_WALLET_VERSION_CONFLICT");
         }
         WalletRow after = new WalletRow(userId, wallet.availableUsdt().subtract(normalizedAmount),
                 wallet.reservedUsdt().add(normalizedAmount), wallet.version() + 1);
-        insertLedger(userId, orderNo, "WITHDRAWAL_RESERVE", "RESERVE", normalizedAmount, after, now);
+        insertLedger(runId, userId, orderNo, "WITHDRAWAL_RESERVE", "RESERVE", normalizedAmount, after, now);
         // No ETA, timer or client-owned completion. Only applyCallback may enter a terminal state.
         return view(write, "SUBMITTED", 0L, null, after);
     }
@@ -133,21 +141,23 @@ public class FundsSandboxService {
             Long userId, String orderNo, String eventId, String targetStatus, Long expectedVersion) {
         requireLocalSandbox();
         requireUser(userId);
+        String runId = runScope.requireRunId();
+        requireSandboxUser(userId);
         String normalizedOrderNo = requireText(orderNo, 96, "FUNDS_SANDBOX_ORDER_NO_REQUIRED");
         String normalizedEventId = requireText(eventId, 128, "FUNDS_SANDBOX_EVENT_ID_REQUIRED");
         String normalizedStatus = normalizeCallbackStatus(targetStatus);
         if (expectedVersion == null || expectedVersion < 0) {
             throw new BizException(422, "FUNDS_SANDBOX_EXPECTED_VERSION_REQUIRED");
         }
-        OrderRow order = mapper.findOrderForUser(userId, normalizedOrderNo);
+        OrderRow order = mapper.findOrderForUser(runId, userId, normalizedOrderNo);
         if (order == null) throw new BizException(404, "FUNDS_SANDBOX_ORDER_NOT_FOUND");
-        String requestHash = hash(userId + "|" + normalizedOrderNo + "|" + normalizedStatus + "|" + expectedVersion);
-        CallbackRow existing = mapper.findCallback(normalizedEventId);
+        String requestHash = hash(runId + "|" + userId + "|" + normalizedOrderNo + "|" + normalizedStatus + "|" + expectedVersion);
+        CallbackRow existing = mapper.findCallback(runId, normalizedEventId);
         if (existing != null) {
             if (existing.userId().equals(userId) && existing.orderNo().equals(normalizedOrderNo)
                     && existing.requestHash().equals(requestHash)) {
-                OrderRow current = mapper.findOrderForUser(userId, normalizedOrderNo);
-                return view(current == null ? order : current, requireWallet(mapper.walletSnapshot(userId)));
+            OrderRow current = mapper.findOrderForUser(runId, userId, normalizedOrderNo);
+                return view(current == null ? order : current, requireWallet(mapper.walletSnapshot(runId, userId)));
             }
             throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_REPLAY_CONFLICT");
         }
@@ -158,28 +168,47 @@ public class FundsSandboxService {
             throw new BizException(409, "FUNDS_SANDBOX_ORDER_VERSION_CONFLICT");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        if (mapper.insertCallback(new CallbackWrite(normalizedEventId, userId, normalizedOrderNo,
-                normalizedStatus, requestHash, now)) != 1) {
+        int callbackInserted;
+        try {
+            callbackInserted = mapper.insertCallback(runId, new CallbackWrite(normalizedEventId, userId, normalizedOrderNo,
+                    normalizedStatus, requestHash, now));
+        } catch (DuplicateKeyException duplicate) {
+            // MyBatis/MySQL normally reports a unique inbox collision as an
+            // exception, not as a zero-row update.  It has the same replay
+            // semantics as an explicit failed insert below.
+            callbackInserted = 0;
+        }
+        if (callbackInserted != 1) {
+            // A racing request can read before the winning inbox insert commits.
+            // Re-read the single durable event fact: an identical command is a
+            // replay, while a different payload remains an explicit conflict.
+            CallbackRow winner = mapper.lockCallback(runId, normalizedEventId);
+            if (winner != null && winner.userId().equals(userId)
+                    && winner.orderNo().equals(normalizedOrderNo)
+                    && winner.requestHash().equals(requestHash)) {
+                OrderRow current = mapper.findOrderForUser(runId, userId, normalizedOrderNo);
+                return view(current == null ? order : current, requireWallet(mapper.walletSnapshot(runId, userId)));
+            }
             throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_CONFLICT");
         }
-        if (mapper.transitionOrder(normalizedOrderNo, userId, "SUBMITTED", normalizedStatus, expectedVersion) != 1) {
+        if (mapper.transitionOrder(runId, normalizedOrderNo, userId, "SUBMITTED", normalizedStatus, expectedVersion) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_ORDER_VERSION_CONFLICT");
         }
-        WalletRow wallet = requireWallet(mapper.lockWallet(userId));
+        WalletRow wallet = requireWallet(mapper.lockWallet(runId, userId));
         int walletChanged = "CONFIRMED".equals(normalizedStatus)
-                ? mapper.consumeReservedWallet(userId, order.amount(), wallet.version())
-                : mapper.releaseReservedWallet(userId, order.amount(), wallet.version());
+                ? mapper.consumeReservedWallet(runId, userId, order.amount(), wallet.version())
+                : mapper.releaseReservedWallet(runId, userId, order.amount(), wallet.version());
         if (walletChanged != 1) throw new BizException(409, "FUNDS_SANDBOX_WALLET_VERSION_CONFLICT");
         WalletRow after = "CONFIRMED".equals(normalizedStatus)
                 ? new WalletRow(userId, wallet.availableUsdt(), wallet.reservedUsdt().subtract(order.amount()), wallet.version() + 1)
                 : new WalletRow(userId, wallet.availableUsdt().add(order.amount()), wallet.reservedUsdt().subtract(order.amount()), wallet.version() + 1);
-        insertLedger(userId, normalizedOrderNo,
+        insertLedger(runId, userId, normalizedOrderNo,
                 "CONFIRMED".equals(normalizedStatus) ? "WITHDRAWAL_DEBIT" : "WITHDRAWAL_RELEASE",
                 "CONFIRMED".equals(normalizedStatus) ? "OUT" : "RELEASE", order.amount(), after, now);
-        if (mapper.markCallbackProcessed(normalizedEventId, "PROCESSED") != 1) {
+        if (mapper.markCallbackProcessed(runId, normalizedEventId, "PROCESSED") != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_STATE_CONFLICT");
         }
-        return new OrderView(order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
+        return new OrderView(runId, order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
                 normalizedStatus, "mock", "SANDBOX", expectedVersion + 1, order.createdAt(), now, walletView(after));
     }
 
@@ -187,25 +216,25 @@ public class FundsSandboxService {
         if (!order.requestHash().equals(requestHash)) {
             throw new BizException(409, "FUNDS_SANDBOX_IDEMPOTENCY_CONFLICT");
         }
-        return view(order, requireWallet(mapper.walletSnapshot(order.userId())));
+        return view(order, requireWallet(mapper.walletSnapshot(order.runId(), order.userId())));
     }
 
-    private void insertLedger(Long userId, String orderNo, String role, String direction,
+    private void insertLedger(String runId, Long userId, String orderNo, String role, String direction,
                               BigDecimal amount, WalletRow after, LocalDateTime now) {
-        String ledgerNo = stableNo("SBX-LG-", orderNo + "|" + role);
-        if (mapper.insertLedger(new LedgerWrite(ledgerNo, userId, orderNo, role, direction, amount,
+        String ledgerNo = stableNo("SBX-LG-", runId + "|" + orderNo + "|" + role);
+        if (mapper.insertLedger(runId, new LedgerWrite(ledgerNo, userId, orderNo, role, direction, amount,
                 after.availableUsdt(), after.reservedUsdt(), now)) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_LEDGER_CONFLICT");
         }
     }
 
     private OrderView view(OrderWrite order, String status, Long version, LocalDateTime settledAt, WalletRow wallet) {
-        return new OrderView(order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
+        return new OrderView(order.runId(), order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
                 status, order.source(), order.sourceEnvironment(), version, order.createdAt(), settledAt, walletView(wallet));
     }
 
     private OrderView view(OrderRow order, WalletRow wallet) {
-        return new OrderView(order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
+        return new OrderView(order.runId(), order.orderNo(), order.kind(), order.channel(), order.amount(), order.targetAddress(),
                 order.status(), order.source(), order.sourceEnvironment(), order.version(), order.createdAt(),
                 order.settledAt(), walletView(wallet));
     }
@@ -260,6 +289,12 @@ public class FundsSandboxService {
 
     private void requireUser(Long userId) {
         if (userId == null || userId <= 0) throw new BizException(403, "USER_SUBJECT_REQUIRED");
+    }
+
+    private void requireSandboxUser(Long userId) {
+        if (!Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+            throw new BizException(403, "FUNDS_SANDBOX_USER_REQUIRED");
+        }
     }
 
     private BigDecimal money(BigDecimal value) {
@@ -331,12 +366,12 @@ public class FundsSandboxService {
 
     public record WalletView(BigDecimal availableUsdt, BigDecimal reservedUsdt, Long version,
                              String source, String sourceEnvironment) { }
-    public record OrderView(String orderNo, String kind, String channel, BigDecimal amount,
+    public record OrderView(String runId, String orderNo, String kind, String channel, BigDecimal amount,
                             String targetAddress, String status, String source, String sourceEnvironment,
                             Long version, LocalDateTime createdAt, LocalDateTime settledAt, WalletView wallet) { }
     public record Overview(WalletView wallet, List<OrderRow> orders,
                            List<FundsSandboxMapper.LedgerRow> ledger, WithdrawalPolicyView withdrawalPolicy, String source,
-                           String sourceEnvironment, String mode) { }
+                           String sourceEnvironment, String mode, String runId) { }
     public record WithdrawalPolicyView(
             BigDecimal minAmount, int dailyLimitCount, BigDecimal balanceMaxRatio,
             BigDecimal smallAmountThresholdUsd, int payoutSlaHours,

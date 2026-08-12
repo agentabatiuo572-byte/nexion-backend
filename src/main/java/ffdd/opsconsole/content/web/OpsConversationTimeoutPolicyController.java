@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.application.ConversationTimeoutPolicyService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ConversationTimeoutPolicy;
 import ffdd.opsconsole.content.dto.ConversationTimeoutPolicyUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -34,6 +35,7 @@ public class OpsConversationTimeoutPolicyController {
     private final ConversationTimeoutPolicyService service;
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping
@@ -47,6 +49,7 @@ public class OpsConversationTimeoutPolicyController {
     public ApiResult<ConversationTimeoutPolicy> update(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTimeoutPolicyUpdateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             ApiResult<ConversationTimeoutPolicy> rejected = ApiResult.fail(
                     OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(),

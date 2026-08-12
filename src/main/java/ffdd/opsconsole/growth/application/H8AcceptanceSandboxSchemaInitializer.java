@@ -16,9 +16,10 @@ public class H8AcceptanceSandboxSchemaInitializer implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
-        if (mapper.h8AcceptanceSandboxSchemaColumns() != 24) {
+        if (mapper.h8AcceptanceSandboxSchemaColumns() != 41) {
             throw new IllegalStateException("H8_ACCEPTANCE_SANDBOX_SCHEMA_MIGRATION_REQUIRED: "
-                    + "apply scripts/migrations/20260811_h8_acceptance_sandbox_referral_ledger.sql before startup");
+                    + "apply scripts/migrations/20260811_h8_acceptance_sandbox_referral_ledger.sql and "
+                    + "20260812_h8_acceptance_sandbox_run_scope.sql before startup");
         }
     }
 }

@@ -7,5 +7,10 @@ public record LearningProgressRow(
         String courseVersion,
         int progressPct,
         int attempts,
+        int lastScore,
         LocalDateTime completedAt) {
+    public LearningProgressRow(String courseId, String courseVersion, int progressPct, int attempts,
+                               LocalDateTime completedAt) {
+        this(courseId, courseVersion, progressPct, attempts, 0, completedAt);
+    }
 }

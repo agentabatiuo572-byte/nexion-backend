@@ -40,6 +40,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppWithdrawalK3RoutingServiceTest {
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
@@ -50,8 +51,15 @@ class AppWithdrawalK3RoutingServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final WithdrawalRiskRuleFacade k3 = mock(WithdrawalRiskRuleFacade.class);
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
+    private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment);
+
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("production");
+        return environment;
+    }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})

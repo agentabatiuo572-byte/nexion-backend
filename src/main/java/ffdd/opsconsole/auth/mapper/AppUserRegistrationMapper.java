@@ -16,6 +16,7 @@ public interface AppUserRegistrationMapper {
                 country_code VARCHAR(8) NOT NULL,
                 phone VARCHAR(32) NOT NULL,
                 client_ip VARCHAR(64) NOT NULL,
+                auth_environment VARCHAR(16) NOT NULL,
                 code_hash CHAR(64) NOT NULL,
                 expires_at DATETIME NOT NULL,
                 attempts INT NOT NULL DEFAULT 0,
@@ -24,7 +25,7 @@ public interface AppUserRegistrationMapper {
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 is_deleted TINYINT NOT NULL DEFAULT 0,
                 UNIQUE KEY uk_user_registration_otp_no (challenge_no),
-                KEY idx_user_registration_otp_phone (country_code,phone,expires_at,consumed_at),
+                KEY idx_user_registration_otp_phone (country_code,phone,auth_environment,expires_at,consumed_at),
                 KEY idx_user_registration_otp_ip (client_ip,created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
@@ -41,6 +42,10 @@ public interface AppUserRegistrationMapper {
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
 
+    @Select("SELECT COUNT(*) FROM nx_user_registration_otp WHERE country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND created_at>=DATE_SUB(NOW(),INTERVAL 60 SECOND) AND is_deleted=0")
+    int countRecentPhoneInEnvironment(@Param("countryCode") String countryCode, @Param("phone") String phone,
+            @Param("authEnvironment") String authEnvironment);
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_user_registration_otp
@@ -51,6 +56,10 @@ public interface AppUserRegistrationMapper {
     int countDailyPhone(
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
+
+    @Select("SELECT COUNT(*) FROM nx_user_registration_otp WHERE country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND created_at>=DATE_SUB(NOW(),INTERVAL 1 DAY) AND is_deleted=0")
+    int countDailyPhoneInEnvironment(@Param("countryCode") String countryCode, @Param("phone") String phone,
+            @Param("authEnvironment") String authEnvironment);
 
     @Select("""
             SELECT COUNT(*)
@@ -80,6 +89,10 @@ public interface AppUserRegistrationMapper {
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
 
+    @Update("UPDATE nx_user_registration_otp SET consumed_at=NOW(),updated_at=NOW() WHERE country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND consumed_at IS NULL AND is_deleted=0")
+    int invalidateActiveInEnvironment(@Param("countryCode") String countryCode, @Param("phone") String phone,
+            @Param("authEnvironment") String authEnvironment);
+
     @Insert("""
             INSERT INTO nx_user_registration_otp(
                 challenge_no,country_code,phone,client_ip,code_hash,expires_at,attempts,
@@ -97,6 +110,11 @@ public interface AppUserRegistrationMapper {
             @Param("code") String code,
             @Param("ttlMinutes") int ttlMinutes);
 
+    @Insert("INSERT INTO nx_user_registration_otp(challenge_no,country_code,phone,client_ip,auth_environment,code_hash,expires_at,attempts,created_at,updated_at,is_deleted) VALUES(#{challengeNo},#{countryCode},#{phone},#{clientIp},#{authEnvironment},SHA2(CONCAT(#{code},':',#{challengeNo}),256),DATE_ADD(NOW(),INTERVAL #{ttlMinutes} MINUTE),0,NOW(),NOW(),0)")
+    int insertChallengeInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
+            @Param("phone") String phone, @Param("clientIp") String clientIp, @Param("authEnvironment") String authEnvironment,
+            @Param("code") String code, @Param("ttlMinutes") int ttlMinutes);
+
     @Update("""
             UPDATE nx_user_registration_otp
                SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW()
@@ -112,6 +130,10 @@ public interface AppUserRegistrationMapper {
             @Param("phone") String phone,
             @Param("code") String code);
 
+    @Update("UPDATE nx_user_registration_otp SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256) AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0")
+    int consumeValidChallengeInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
+            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment, @Param("code") String code);
+
     @Update("""
             UPDATE nx_user_registration_otp
                SET attempts=attempts+1,updated_at=NOW()
@@ -125,6 +147,10 @@ public interface AppUserRegistrationMapper {
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
 
+    @Update("UPDATE nx_user_registration_otp SET attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0")
+    int recordInvalidAttemptInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
+            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment);
+
     @Select("""
             SELECT client_ip
               FROM nx_user_registration_otp
@@ -137,6 +163,10 @@ public interface AppUserRegistrationMapper {
             @Param("challengeNo") String challengeNo,
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
+
+    @Select("SELECT client_ip FROM nx_user_registration_otp WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND consumed_at IS NOT NULL AND is_deleted=0 LIMIT 1")
+    String consumedChallengeClientIpInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
+            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment);
 
     @Select("""
             SELECT value_text
@@ -161,6 +191,20 @@ public interface AppUserRegistrationMapper {
                AND registration.is_deleted=0
             """)
     int countRegisteredAccountsByClientIp24h(@Param("clientIp") String clientIp);
+
+    @Select("""
+            SELECT COUNT(DISTINCT user_account.id)
+              FROM nx_user_registration_otp registration
+              JOIN nx_user user_account
+                ON REPLACE(COALESCE(user_account.country_code,''),'+','') = REPLACE(COALESCE(registration.country_code,''),'+','')
+               AND user_account.phone=registration.phone
+               AND user_account.sandbox=#{sandbox} AND user_account.is_deleted=0
+             WHERE registration.client_ip=#{clientIp} AND registration.auth_environment=#{authEnvironment}
+               AND registration.consumed_at IS NOT NULL AND registration.created_at>=DATE_SUB(NOW(),INTERVAL 1 DAY)
+               AND registration.is_deleted=0
+            """)
+    int countRegisteredAccountsByClientIp24hInEnvironment(@Param("clientIp") String clientIp,
+            @Param("authEnvironment") String authEnvironment, @Param("sandbox") int sandbox);
 
     /**
      * Compatibility resolver for legacy stored codes that contain hyphens or

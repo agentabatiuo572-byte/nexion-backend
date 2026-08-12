@@ -1,7 +1,5 @@
 package ffdd.opsconsole.finance.application;
 
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.InitializingBean;
@@ -11,17 +9,33 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class FundsSandboxProfileGuard implements InitializingBean {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "acceptance");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "acceptance", "local-sandbox");
     private final FundsSandboxProperties properties;
     private final Environment environment;
 
     @Override
     public void afterPropertiesSet() {
-        Set<String> active = new HashSet<>(Arrays.asList(environment.getActiveProfiles()));
         if (properties.getMode() == FundsSandboxProperties.Mode.LOCAL_SANDBOX
-                && (active.isEmpty() || !ALLOWED_PROFILES.containsAll(active))) {
+                && !isLocalSandboxEnabled()) {
             throw new IllegalStateException("FUNDS_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
         }
+    }
+
+    /**
+     * Single authority for any domain that wants to mutate the isolated funds
+     * wallet. LOCAL_SANDBOX is usable only in exactly one declared acceptance
+     * profile; callers must never infer availability from the properties mode
+     * alone.
+     */
+    public boolean isLocalSandboxEnabled() {
+        return properties.getMode() == FundsSandboxProperties.Mode.LOCAL_SANDBOX
+                && isStrictIsolatedProfile(environment.getActiveProfiles());
+    }
+
+    public static boolean isStrictIsolatedProfile(String... activeProfiles) {
+        return activeProfiles != null
+                && activeProfiles.length == 1
+                && ALLOWED_PROFILES.contains(activeProfiles[0]);
     }
 
     public String source() {

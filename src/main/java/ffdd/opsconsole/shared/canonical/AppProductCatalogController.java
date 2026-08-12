@@ -20,6 +20,10 @@ public class AppProductCatalogController {
                 || !"USER".equals(String.valueOf(details.get("subjectType")))) {
             return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
         }
-        return service.catalog();
+        try {
+            return service.catalog(Long.valueOf(String.valueOf(authentication.getPrincipal())));
+        } catch (NumberFormatException ex) {
+            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        }
     }
 }

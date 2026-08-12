@@ -29,7 +29,15 @@ public interface ConversationRepository {
                 .toList();
     }
 
-    boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now);
+    /**
+     * Receipt mutation is a guarded write: the header expectation is repeated in
+     * the write itself even though callers hold the header lock.  This prevents a
+     * late receipt from crossing a status/version transition when an alternate
+     * repository implementation does not share the same transaction boundary.
+     */
+    boolean markAgentMessagesReadThrough(
+            String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now,
+            String expectedStatus, Long expectedVersion);
 
     List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
 

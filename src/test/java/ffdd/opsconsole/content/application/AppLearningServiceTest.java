@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -15,6 +16,7 @@ import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
+import ffdd.opsconsole.content.domain.LearningSandboxCourseRow;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -31,6 +33,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
 
 class AppLearningServiceTest {
@@ -40,11 +43,19 @@ class AppLearningServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final LearningAcceptanceSandboxGate sandboxGate = mock(LearningAcceptanceSandboxGate.class);
+    private final LearningSandboxQuizIdempotencyService sandboxIdempotencyService = mock(LearningSandboxQuizIdempotencyService.class);
     private final Map<String, QuizReceipt> quizReceipts = new LinkedHashMap<>();
     private final AppLearningService service = new AppLearningService(
-            repository, mapper, ledger, outbox, earningsRelease, idempotencyService);
+            repository, mapper, ledger, outbox, earningsRelease, idempotencyService, sandboxGate,
+            sandboxIdempotencyService, "test-learning-run");
 
     AppLearningServiceTest() {
+        when(mapper.readRewardEnvironment(anyLong())).thenReturn("PRODUCTION");
+        when(sandboxGate.enabled("PRODUCTION")).thenReturn(false);
+        when(sandboxGate.enabled("SANDBOX")).thenReturn(true);
+        when(sandboxIdempotencyService.execute(anyString(), anyLong(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(6)).get());
         when(idempotencyService.execute(anyString(), anyString(), anyString(), any(), any())).thenAnswer(invocation -> {
             String key = invocation.getArgument(1);
             String requestHash = invocation.getArgument(2);
@@ -62,6 +73,7 @@ class AppLearningServiceTest {
     @Test
     void overviewReturnsPublishedCoursesInVietnameseWithRealStats() {
         when(repository.listCourses()).thenReturn(List.of(course("published"), course("draft")));
+        when(mapper.readRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.listProgress(42L)).thenReturn(List.of());
         when(mapper.sumGrantedReward(42L)).thenReturn(new BigDecimal("20.000000"));
 
@@ -71,6 +83,84 @@ class AppLearningServiceTest {
         assertThat(result.getData().courses()).hasSize(1);
         assertThat(result.getData().courses().get(0).title()).isEqualTo("Khóa học thử nghiệm");
         assertThat(result.getData().earnedNex()).isEqualByComparingTo("20");
+    }
+
+    @Test
+    void sandboxOverviewReadsOnlyTheIsolatedProjectionAndRewardLedger() {
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(mapper.listSandboxPublishedCourses("test-learning-run")).thenReturn(List.of(sandboxCourse()));
+        when(mapper.listSandboxProgress("test-learning-run", 42L)).thenReturn(List.of(
+                new LearningProgressRow("test-course", "v2", 100, 1, 100, LocalDateTime.now())));
+        when(mapper.countSandboxGrantedReward("test-learning-run", 42L, "test-course", "v2")).thenReturn(1);
+        when(mapper.sumSandboxGrantedReward("test-learning-run", 42L)).thenReturn(new BigDecimal("20.000000"));
+
+        var result = service.overview(42L, "vi");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().completedCourses()).isEqualTo(1);
+        assertThat(result.getData().earnedNex()).isEqualByComparingTo("20");
+        verify(mapper, never()).listProgress(42L);
+        verify(mapper, never()).sumGrantedReward(42L);
+    }
+
+    @Test
+    void sandboxCourseDetailReadsOnlyTheIsolatedProgressProjection() {
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourse());
+        when(mapper.findSandboxProgress("test-learning-run", 42L, "test-course", "v2"))
+                .thenReturn(new LearningProgressRow("test-course", "v2", 50, 1, 50, null));
+
+        var result = service.course(42L, "test-course", "vi");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().progress()).isEqualTo(50);
+        verify(mapper, never()).findProgress(42L, "test-course", "v2");
+    }
+
+    @Test
+    void dottedAcceptanceRunIdRemainsAValidSandboxPartition() {
+        ReflectionTestUtils.setField(service, "acceptanceRunId", "acceptance.2026-08");
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(mapper.listSandboxPublishedCourses("acceptance.2026-08")).thenReturn(List.of(sandboxCourse()));
+        when(mapper.listSandboxProgress("acceptance.2026-08", 42L)).thenReturn(List.of());
+        when(mapper.sumSandboxGrantedReward("acceptance.2026-08", 42L)).thenReturn(BigDecimal.ZERO);
+
+        var result = service.overview(42L, "vi");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).listSandboxProgress("acceptance.2026-08", 42L);
+        verify(mapper).sumSandboxGrantedReward("acceptance.2026-08", 42L);
+    }
+
+    @Test
+    void controlledProfileNormalUserFailsBeforeAnySharedLearningProjectionCanBeRead() {
+        when(mapper.readRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        doThrow(new IllegalStateException("LEARNING_ACCEPTANCE_SANDBOX_USER_REQUIRED"))
+                .when(sandboxGate).requireEnabled("PRODUCTION");
+
+        assertThatThrownBy(() -> service.overview(42L, "vi"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_SANDBOX_USER_REQUIRED");
+
+        verify(mapper, never()).listProgress(42L);
+        verify(mapper, never()).sumGrantedReward(42L);
+    }
+
+    @Test
+    void controlledProfileNormalUserFailsBeforeStartCanWriteAnyLearningFact() {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        doThrow(new IllegalStateException("LEARNING_ACCEPTANCE_SANDBOX_USER_REQUIRED"))
+                .when(sandboxGate).requireEnabled("PRODUCTION");
+
+        assertThatThrownBy(() -> service.start(42L, "test-course", "vi", "v2"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_SANDBOX_USER_REQUIRED");
+
+        verify(mapper, never()).startCourse(anyLong(), anyString(), anyString());
+        verify(mapper, never()).startSandboxCourse(anyString(), anyLong(), anyString(), anyString());
+        verify(mapper, never()).insertLearningEvent(anyLong(), anyString(), anyString(), anyString(), anyString());
+        verify(mapper, never()).insertSandboxLearningEvent(anyString(), anyLong(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -95,6 +185,7 @@ class AppLearningServiceTest {
                 "LEARNING", "42:test-course:v2", "LEARNING_COURSE_COMPLETED",
                 java.util.Map.of("user_id", 42L, "course_id", "test-course", "course_version", "v2",
                         "nex_reward", new BigDecimal("20.000000")));
+        verify(idempotencyService, times(2)).execute(anyString(), anyString(), anyString(), any(), any());
         verify(mapper, times(1)).recordQuiz(42L, "test-course", "v2", 100, 100);
     }
 
@@ -129,10 +220,12 @@ class AppLearningServiceTest {
     @Test
     void passingQuizCreditsSandboxRewardToItsSandboxLedgerExactlyOnce() {
         when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
-        when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
+        when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourse());
+        when(mapper.findSandboxProgress("test-learning-run", 42L, "test-course", "v2")).thenReturn(null);
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
-        when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.insertLearningEvent(42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
+        when(mapper.grantSandboxReward(anyString(), anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertSandboxLearningEvent("test-learning-run", 42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
                 .thenReturn(1);
 
         var result = service.submitQuiz(42L, "test-course",
@@ -143,20 +236,31 @@ class AppLearningServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().rewardGranted()).isTrue();
         assertThat(replay.getData()).isEqualTo(result.getData());
-        verify(earningsRelease).creditReward(42L, "MOCK_LEARNING_REWARD", "LEARN:42:test-course:v2",
-                "NEX", new BigDecimal("20.000000"), "SANDBOX", "LEARN:42:test-course:v2:NEX");
+        verify(sandboxIdempotencyService, times(2)).execute(
+                org.mockito.ArgumentMatchers.eq("test-learning-run"), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq("test-course"),
+                org.mockito.ArgumentMatchers.eq("v2"), anyString(),
+                org.mockito.ArgumentMatchers.eq("learning-quiz:sandbox-course:v2"), any());
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).startCourse(anyLong(), anyString(), anyString());
+        verify(mapper, never()).recordQuiz(anyLong(), anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+        verify(mapper, never()).insertLearningEvent(anyLong(), anyString(), anyString(), anyString(), anyString());
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
     }
 
     @Test
     void contentOnlySandboxCompletionKeepsItsVisibleRewardWithoutPublishingProductionFacts() {
         when(repository.findCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
+        when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourseWithoutQuiz());
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
-        when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.insertLearningEvent(
-                42L, "test-course", "v2", "course_completed", "{\"source\":\"content\"}"))
+        when(mapper.grantSandboxReward(anyString(), anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertSandboxLearningEvent(
+                "test-learning-run", 42L, "test-course", "v2", "course_completed", "{\"source\":\"content\"}"))
                 .thenReturn(1);
 
         var result = service.complete(42L, "test-course");
@@ -164,18 +268,23 @@ class AppLearningServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().rewardGranted()).isTrue();
         assertThat(result.getData().rewardNex()).isEqualByComparingTo("20.000000");
-        verify(earningsRelease).creditReward(42L, "MOCK_LEARNING_REWARD", "LEARN:42:test-course:v2",
-                "NEX", new BigDecimal("20.000000"), "SANDBOX", "LEARN:42:test-course:v2:NEX");
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).startCourse(anyLong(), anyString(), anyString());
+        verify(mapper, never()).recordQuiz(anyLong(), anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+        verify(mapper, never()).insertLearningEvent(anyLong(), anyString(), anyString(), anyString(), anyString());
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
     }
 
     @Test
     void contentOnlyCompletionReplayDoesNotMutateAttemptsOrIssueAnotherReward() {
         when(repository.findCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
+        when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourseWithoutQuiz());
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
-        when(mapper.findProgress(42L, "test-course", "v2"))
+        when(mapper.findSandboxProgress("test-learning-run", 42L, "test-course", "v2"))
                 .thenReturn(new LearningProgressRow("test-course", "v2", 100, 1, LocalDateTime.now()));
 
         var replay = service.complete(42L, "test-course");
@@ -259,7 +368,84 @@ class AppLearningServiceTest {
         verify(mapper, never()).recordQuiz(anyLong(), anyString(), anyString(),
                 org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
         verify(mapper, never()).insertLearningEvent(anyLong(), anyString(), anyString(), anyString(), anyString());
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void staleQuizVersionFailsClosedBeforeItCanConsumeAnAttempt() {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+
+        var result = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz:stale-version", "v1"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_VERSION_CONFLICT");
+        verify(mapper, never()).recordQuiz(anyLong(), anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void completedQuizReadbackReportsAnAlreadyGrantedServerRewardWithoutIssuingItAgain() {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        when(mapper.findProgress(42L, "test-course", "v2"))
+                .thenReturn(new LearningProgressRow("test-course", "v2", 100, 1, 100, LocalDateTime.now()));
+        when(mapper.countGrantedReward(42L, "test-course", "v2")).thenReturn(1);
+
+        var result = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz:server-readback", "v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().rewardGranted()).isTrue();
+        assertThat(result.getData().rewardNex()).isEqualByComparingTo("20.000000");
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void rewardFailureKeepsTheCompletionUnpublishedSoTheIdempotencyTransactionCanRollBack() {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
+        when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertLearningEvent(42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
+                .thenReturn(1);
+        when(earningsRelease.creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString()))
+                .thenThrow(new BizException(409, "LEARNING_REWARD_CREDIT_FAILED"));
+
+        var result = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz:reward-failure", "v2"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("LEARNING_REWARD_CREDIT_FAILED");
+        verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void failedAnswerClosesItsAttemptSoAChangedAnswerWithANewKeyCanPassExactlyOnce() {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
+        when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertLearningEvent(42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
+                .thenReturn(1);
+
+        var failed = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(0), "learning-quiz-attempt-0", "v2"));
+        var passed = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz-attempt-1", "v2"));
+
+        assertThat(failed.getCode()).isZero();
+        assertThat(failed.getData().passed()).isFalse();
+        assertThat(passed.getCode()).isZero();
+        assertThat(passed.getData().rewardGranted()).isTrue();
+        verify(mapper, times(2)).recordQuiz(org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq("test-course"), org.mockito.ArgumentMatchers.eq("v2"),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+        verify(earningsRelease, times(1)).creditReward(42L, "LEARNING_REWARD", "LEARN:42:test-course:v2",
+                "NEX", new BigDecimal("20.000000"), "PRODUCTION", "LEARN:42:test-course:v2:NEX");
     }
 
     @Test
@@ -290,5 +476,18 @@ class AppLearningServiceTest {
                 new BigDecimal("20.000000"), true, "5 min", "v2", status, "正文",
                 "测试课程", "Test course", "中文正文", "English body", List.of(),
                 80, 2, "content_complete", "course_completed", 3L, "Khóa học thử nghiệm", "Nội dung tiếng Việt");
+    }
+
+    private static LearningSandboxCourseRow sandboxCourse() {
+        return new LearningSandboxCourseRow("test-course", "v2", "PUBLISHED", "测试课程", "Test course", "Khóa học thử nghiệm",
+                "中文正文", "English body", "Nội dung tiếng Việt", "Basics", "Article", "Beginner", new BigDecimal("20.000000"),
+                "5 min", true, "[{\"questionId\":\"q1\",\"questionZh\":\"请选择正确答案\",\"questionEn\":\"Choose the answer\",\"optionsZh\":[\"错误\",\"正确\"],\"optionsEn\":[\"Wrong\",\"Correct\"],\"correctOptionIndex\":1,\"questionVi\":\"Chọn câu trả lời đúng\",\"optionsVi\":[\"Sai\",\"Đúng\"]}]",
+                80, 2, "quiz_passed", "course_completed", 1L);
+    }
+
+    private static LearningSandboxCourseRow sandboxCourseWithoutQuiz() {
+        return new LearningSandboxCourseRow("test-course", "v2", "PUBLISHED", "测试课程", "Test course", "Khóa học thử nghiệm",
+                "中文正文", "English body", "Nội dung tiếng Việt", "Basics", "Article", "Beginner", new BigDecimal("20.000000"),
+                "5 min", true, "[]", 80, 2, "content_complete", "course_completed", 1L);
     }
 }

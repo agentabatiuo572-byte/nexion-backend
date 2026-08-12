@@ -17,6 +17,9 @@ import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
+import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -25,9 +28,14 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class AppCanonicalBoundaryServiceTest {
+    private static CanonicalStateMapper.UserLock productionUser() {
+        return new CanonicalStateMapper.UserLock(42L, false);
+    }
+
     private final CanonicalStateMapper mapper = mock(CanonicalStateMapper.class);
     private final TamperDetectionPublisher publisher = mock(TamperDetectionPublisher.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -35,9 +43,12 @@ class AppCanonicalBoundaryServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final AppGrowthLifecyclePublisher growthLifecyclePublisher = mock(AppGrowthLifecyclePublisher.class);
     private final GrowthRhythmFacade growthRhythmFacade = mock(GrowthRhythmFacade.class);
+    private final CommerceAcceptanceSandboxMapper commerceSandboxMapper = mock(CommerceAcceptanceSandboxMapper.class);
+    private final FundsSandboxProfileGuard fundsSandboxProfileGuard = mock(FundsSandboxProfileGuard.class);
     private final AppCanonicalBoundaryService service =
             new AppCanonicalBoundaryService(
-                    mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade, audit);
+                    mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade, audit,
+                    commerceSandboxMapper, fundsSandboxProfileGuard, new CommerceAcceptanceRun("test-run-0001"));
 
     AppCanonicalBoundaryServiceTest() {
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class),
@@ -46,13 +57,15 @@ class AppCanonicalBoundaryServiceTest {
         when(growthLifecyclePublisher.prepareVoucher(any(), any(), any(), any()))
                 .thenReturn(AppGrowthLifecyclePublisher.VoucherRedemption.none());
         when(growthRhythmFacade.snapshot()).thenReturn(h1Snapshot("P3"));
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.userCanonicalProfile(42L)).thenReturn(new CanonicalStateMapper.UserCanonicalProfile(
                 new BigDecimal("500"), new BigDecimal("80"), LocalDateTime.of(2026, 1, 1, 0, 0)));
     }
 
     @Test
     void rejectsClientTamperAtAllRemainingBusinessBoundaries() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.findTrialState(42L)).thenReturn("CLAIMED");
         when(mapper.twoFactorEnabled(42L)).thenReturn(true);
         when(mapper.activeDeviceCount(42L)).thenReturn(3);
@@ -85,7 +98,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void canonicalRequestsUseServerStateAndNeverTrustClientOwnedValues() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.findTrialState(42L)).thenReturn(null);
         when(mapper.twoFactorEnabled(42L)).thenReturn(false);
         when(mapper.activeDeviceCount(42L)).thenReturn(1);
@@ -156,7 +169,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void ordinaryOrderCannotBypassServerCapacityReplacementAtTheActiveDeviceCap() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
         when(mapper.activeDeviceCount(42L)).thenReturn(6);
@@ -173,7 +186,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void ordinaryOrderReservesEveryRequestedAndAlreadyAcceptedDeviceSlot() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
         when(mapper.activeDeviceCount(42L)).thenReturn(4);
@@ -216,6 +229,165 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("canonicalStatus", "activated")
                 .containsEntry("amountUsdt", new BigDecimal("1664.75"));
         verify(mapper).userOrders(42L);
+        verify(commerceSandboxMapper, never()).listOrderOverlays("test-run-0001", 42L);
+    }
+
+    @Test
+    void acceptanceSandboxCheckoutCreatesOnlySandboxFactsAndNeverMutatesCanonicalCommerce() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null)).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
+                        new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
+                        BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now()));
+        when(commerceSandboxMapper.reserveSandboxCatalogStock("test-run-0001", 8L, 7L, 1)).thenReturn(1);
+        when(commerceSandboxMapper.insertSandboxOrder(any())).thenReturn(1);
+        when(commerceSandboxMapper.insertInventory(any())).thenReturn(1);
+        when(commerceSandboxMapper.claimOrderReceipt(any())).thenReturn(1);
+        when(commerceSandboxMapper.completeOrderReceipt(any())).thenReturn(1);
+
+        var result = service.createOrder(42L, null, 8L, 1, "sandbox-checkout");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("idSource", "sandbox-server")
+                .containsEntry("sourceEnvironment", "SANDBOX");
+        verify(commerceSandboxMapper).reserveSandboxCatalogStock("test-run-0001", 8L, 7L, 1);
+        verify(mapper, never()).lockUser(42L);
+        verify(mapper, never()).lockProduct(any(), any());
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+        verify(growthLifecyclePublisher, never()).redeemVoucher(anyLong(),
+                any(AppGrowthLifecyclePublisher.VoucherRedemption.class), anyString(), anyString(),
+                any(AppGrowthLifecyclePublisher.UserAttribution.class));
+        verify(outbox, never()).publishUserEvent(eq("ORDER"), anyString(), eq("checkout.started"),
+                anyLong(), anyString(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void sandboxReceiptInsertRaceReReadsAndReturnsTheFirstFrozenResponse() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null)).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
+                        new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
+                        BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now()));
+        when(commerceSandboxMapper.reserveSandboxCatalogStock("test-run-0001", 8L, 7L, 1)).thenReturn(1);
+        when(commerceSandboxMapper.insertSandboxOrder(any())).thenReturn(1);
+        when(commerceSandboxMapper.insertInventory(any())).thenReturn(1);
+        AtomicReference<CommerceAcceptanceSandboxMapper.OrderReceiptWrite> attempted = new AtomicReference<>();
+        when(commerceSandboxMapper.claimOrderReceipt(any())).thenAnswer(invocation -> {
+            attempted.set(invocation.getArgument(0));
+            return 0;
+        });
+        when(commerceSandboxMapper.findOrderReceipt("test-run-0001", 42L, "same-checkout-key")).thenReturn(null);
+        when(commerceSandboxMapper.lockOrderReceipt("test-run-0001", 42L, "same-checkout-key"))
+                .thenAnswer(invocation -> new CommerceAcceptanceSandboxMapper.SandboxOrderReceipt(
+                        attempted.get().requestHash(), "{\"orderNo\":\"CSO-FIRST\",\"amountUsdt\":1299}"));
+
+        var result = service.createOrder(42L, null, 8L, 1, "same-checkout-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("orderNo", "CSO-FIRST")
+                .containsEntry("amountUsdt", 1299);
+        verify(commerceSandboxMapper).claimOrderReceipt(any());
+        var sequence = org.mockito.Mockito.inOrder(commerceSandboxMapper);
+        sequence.verify(commerceSandboxMapper).findOrderReceipt("test-run-0001", 42L, "same-checkout-key");
+        sequence.verify(commerceSandboxMapper).claimOrderReceipt(any());
+        sequence.verify(commerceSandboxMapper).lockOrderReceipt("test-run-0001", 42L, "same-checkout-key");
+        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any());
+        verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
+    }
+
+    @Test
+    void sandboxReceiptDeadlockReReadsTheFrozenWinnerBeforeAnySecondMutation() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        AtomicReference<CommerceAcceptanceSandboxMapper.OrderReceiptWrite> attempted = new AtomicReference<>();
+        when(commerceSandboxMapper.claimOrderReceipt(any()))
+                .thenAnswer(invocation -> {
+                    attempted.set(invocation.getArgument(0));
+                    throw new org.springframework.dao.DeadlockLoserDataAccessException("receipt deadlock", null);
+                });
+        when(commerceSandboxMapper.findOrderReceipt("test-run-0001", 42L, "deadlock-checkout-key")).thenReturn(null);
+        when(commerceSandboxMapper.lockOrderReceipt("test-run-0001", 42L, "deadlock-checkout-key"))
+                .thenAnswer(invocation -> new CommerceAcceptanceSandboxMapper.SandboxOrderReceipt(
+                        attempted.get().requestHash(), "{\"orderNo\":\"CSO-WINNER\",\"amountUsdt\":1299}"));
+
+        var result = service.createOrder(42L, null, 8L, 1, "deadlock-checkout-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("orderNo", "CSO-WINNER");
+        verify(commerceSandboxMapper).claimOrderReceipt(any());
+        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any());
+        verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
+    }
+
+    @Test
+    void controlledProfileRejectsNonSandboxUsersBeforeAnyCanonicalCommerceReadOrWrite() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(false);
+
+        var created = service.createOrder(42L, null, 8L, 1, "non-sandbox-checkout");
+        var history = service.orders(42L);
+
+        assertThat(created.getCode()).isEqualTo(403);
+        assertThat(created.getMessage()).isEqualTo("COMMERCE_SANDBOX_USER_REQUIRED");
+        assertThat(history.getCode()).isEqualTo(403);
+        verify(mapper, never()).lockUser(42L);
+        verify(mapper, never()).lockProduct(any(), any());
+        verify(mapper, never()).userOrders(42L);
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+        verify(outbox, never()).publishUserEvent(eq("ORDER"), anyString(), eq("checkout.started"),
+                anyLong(), anyString(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void productionPathRejectsASandboxAccountBeforeProductOrderVoucherOrOutboxMutation() {
+        when(mapper.lockUser(42L)).thenReturn(new CanonicalStateMapper.UserLock(42L, true));
+
+        var created = service.createOrder(42L, null, 8L, 1, "production-jwt-sandbox-account");
+        var history = service.orders(42L);
+
+        assertThat(created.getCode()).isEqualTo(403);
+        assertThat(created.getMessage()).isEqualTo("COMMERCE_SANDBOX_USER_FORBIDDEN");
+        assertThat(history.getCode()).isEqualTo(403);
+        verify(mapper, never()).lockProduct(any(), any());
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
+        verify(mapper, never()).userOrders(42L);
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+        verify(growthLifecyclePublisher, never()).redeemVoucher(anyLong(), any(), anyString(), anyString(), any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), anyLong(), anyString(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void controlledProfileReadsOnlyRunScopedSandboxOrderSnapshots() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        when(commerceSandboxMapper.listSandboxOrders("test-run-0001", 42L)).thenReturn(List.of(
+                new CommerceAcceptanceSandboxMapper.SandboxOrderView("CSO-PAID", 8L, "BOX-8", 1,
+                        new BigDecimal("1299"), new BigDecimal("1299"), "PAID", 1L,
+                        LocalDateTime.of(2026, 8, 12, 1, 1), LocalDateTime.of(2026, 8, 12, 1, 2))));
+
+        var result = service.orders(42L);
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders.get(0)).containsEntry("paymentStatus", "PAID")
+                .containsEntry("orderStatus", "PAID")
+                .containsEntry("activationStatus", "WAITING_PROVISIONING")
+                .containsEntry("canonicalStatus", "paid");
+        assertThat(result.getData()).containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "test-run-0001");
+        verify(mapper, never()).userOrders(42L);
+        verify(commerceSandboxMapper, never()).listOrderOverlays(anyString(), anyLong());
     }
 
     @Test
@@ -325,7 +497,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void serializesMutationsOnTheUserBeforeCreatingAnIdempotencyRecord() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -345,7 +517,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void activationAdvancesVersionAndSameStateReplayDoesNotAdvanceOrDuplicateSideEffects() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 1L));
         when(mapper.deviceSlotCap()).thenReturn(3);
@@ -364,7 +536,7 @@ class AppCanonicalBoundaryServiceTest {
         verify(audit).recordRequiredForTrustedActor(any());
 
         org.mockito.Mockito.reset(mapper, outbox, audit);
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
 
@@ -379,7 +551,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void staleDeactivateFromBeforeReactivationIsRejected() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
 
@@ -392,7 +564,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void staleActivationCannotOverrideANewerDeactivation() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 3L));
 
@@ -408,7 +580,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void deactivatesOnlyTheAuthenticatedUsersActiveDeviceWithCasAuditAndOutbox() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 7L));
         when(mapper.deactivateOwnedDeviceCas(42L, 9L, 7L)).thenReturn(1);
@@ -433,7 +605,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void deviceDeactivationRejectsMissingForeignAndStaleCommandsWithoutMutation() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
 
         assertThat(service.deactivateDevice(42L, null, 0L, "missing-device").getMessage())
                 .isEqualTo("DEVICE_ID_REQUIRED");
@@ -460,7 +632,7 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void alreadyDeactivatedDeviceIsIdempotentWithoutDuplicateAuditOrEvent() {
-        when(mapper.lockUser(42L)).thenReturn(42L);
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                 new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 8L));
 

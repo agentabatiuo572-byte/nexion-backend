@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ffdd.opsconsole.content.application.AppSupportService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import ffdd.opsconsole.shared.security.SecurityConfig;
@@ -26,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class AppSupportControllerSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockBean private AppSupportService service;
+    @MockBean private ProductionSupportPathGuard productionSupportPathGuard;
     @MockBean private JwtAuthenticationFilter jwtAuthenticationFilter;
     @MockBean private AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
 

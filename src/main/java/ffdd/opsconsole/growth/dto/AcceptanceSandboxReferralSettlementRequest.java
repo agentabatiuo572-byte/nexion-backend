@@ -6,6 +6,7 @@ package ffdd.opsconsole.growth.dto;
  * that accepts it is not registered outside the acceptance profile.
  */
 public record AcceptanceSandboxReferralSettlementRequest(
+        String runId,
         Long invitedUserId,
         String reason,
         String operator) {

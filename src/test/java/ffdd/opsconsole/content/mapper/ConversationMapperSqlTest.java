@@ -56,7 +56,9 @@ class ConversationMapperSqlTest {
                         String.class,
                         Long.class,
                         String.class,
-                        LocalDateTime.class)
+                        LocalDateTime.class,
+                        String.class,
+                        Long.class)
                 .getAnnotation(Insert.class)
                 .value());
 
@@ -64,6 +66,8 @@ class ConversationMapperSqlTest {
                 .contains("conversation_no=#{conversationNo}")
                 .contains("sender_type='agent'")
                 .contains("#{lastSeenMessageId} >= msg.id")
+                .contains("conversation.status=UPPER(#{expectedStatus})")
+                .contains("conversation.version=#{expectedVersion}")
                 .doesNotContain("ORDER BY")
                 .doesNotContain("LIMIT 1")
                 .doesNotContain("&lt;")

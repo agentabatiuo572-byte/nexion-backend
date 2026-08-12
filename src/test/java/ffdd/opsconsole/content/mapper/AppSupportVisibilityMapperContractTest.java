@@ -29,8 +29,10 @@ class AppSupportVisibilityMapperContractTest {
     @Test
     void repeatedReadDoesNotTouchAlreadyReadReceiptRows() throws Exception {
         Method method = ConversationMessageMapper.class.getMethod(
-                "markAgentMessagesReadThrough", String.class, Long.class, String.class, java.time.LocalDateTime.class);
+                "markAgentMessagesReadThrough", String.class, Long.class, String.class, java.time.LocalDateTime.class,
+                String.class, Long.class);
         String sql = String.join(" ", method.getAnnotation(Insert.class).value());
         assertThat(sql).contains("existing.receipt_status<>'read'");
+        assertThat(sql).contains("conversation.status=UPPER(#{expectedStatus})", "conversation.version=#{expectedVersion}");
     }
 }

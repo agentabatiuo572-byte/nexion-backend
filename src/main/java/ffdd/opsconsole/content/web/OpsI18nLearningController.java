@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.application.LearningAcceptanceSandboxGate;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
@@ -39,6 +40,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsI18nLearningController {
     private final OpsI18nLearningService i18nLearningService;
     private final AdminIdempotencyService idempotencyService;
+    private final LearningAcceptanceSandboxGate acceptanceGate;
 
     @GetMapping("/overview")
     // 双域合并总览（i18n 文案 + 教程中心），任一读权限即可
@@ -256,6 +258,7 @@ public class OpsI18nLearningController {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> executeCommand(
             String scope, String idempotencyKey, Object request, Supplier<ApiResult<T>> action) {
+        acceptanceGate.requireProductionMutationAllowed();
         // Keep the service's explicit validation response for a missing key; valid commands
         // are claimed durably before any business row or required audit can be written.
         if (idempotencyKey == null || idempotencyKey.isBlank()) {

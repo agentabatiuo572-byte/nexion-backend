@@ -31,11 +31,19 @@ class ConversationIdleTimeoutSchedulerTest {
     private final ConversationTimeoutPolicyMapper mapper = mock(ConversationTimeoutPolicyMapper.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+    private final ProductionSupportPathGuard productionPathGuard = enabledGuard();
     private final ConversationIdleTimeoutScheduler scheduler = new ConversationIdleTimeoutScheduler(
             mapper,
             auditLogService,
             publisher,
-            Clock.fixed(Instant.parse("2026-07-25T10:00:00Z"), ZoneId.of("UTC")));
+            Clock.fixed(Instant.parse("2026-07-25T10:00:00Z"), ZoneId.of("UTC")),
+            productionPathGuard);
+
+    private ProductionSupportPathGuard enabledGuard() {
+        ProductionSupportPathGuard guard = mock(ProductionSupportPathGuard.class);
+        when(guard.productionSupportAutomationAllowed()).thenReturn(true);
+        return guard;
+    }
 
     @Test
     void sweepWarnsAndClosesOnlyStillIdleOpenConversations() {
@@ -64,6 +72,17 @@ class ConversationIdleTimeoutSchedulerTest {
         verify(mapper).insertSystemMessage(eq(42L), eq("CV-WARN"), contains("5 分钟后自动结束"), eq(NOW));
         verify(mapper).insertSystemMessage(eq(42L), eq("CV-CLOSE"), contains("自动结束"), eq(NOW));
         verify(auditLogService).recordRequired(any());
+    }
+
+    @Test
+    void isolatedAutomationSweepDoesNotReadOrWriteOfficialConversationFacts() {
+        ProductionSupportPathGuard disabled = mock(ProductionSupportPathGuard.class);
+        ConversationIdleTimeoutScheduler isolated = new ConversationIdleTimeoutScheduler(mapper, auditLogService, publisher,
+                Clock.systemUTC(), disabled);
+        assertThat(isolated.sweep()).isEqualTo(new ConversationIdleTimeoutScheduler.SweepResult(0, 0));
+        verify(mapper, never()).selectPolicy();
+        verify(auditLogService, never()).recordRequired(any());
+        verify(publisher, never()).publishEvent(any());
     }
 
     @Test

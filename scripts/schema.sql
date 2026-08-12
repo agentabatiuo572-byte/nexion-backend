@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS nx_user (
   user_level VARCHAR(16) NOT NULL DEFAULT 'L1',
   v_rank VARCHAR(16) NOT NULL DEFAULT 'V0',
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+  sandbox TINYINT(1) NOT NULL DEFAULT 0,
   c2_freeze_source VARCHAR(64) NULL,
   c2_freeze_source_ref VARCHAR(128) NULL,
   c2_freeze_reason VARCHAR(500) NULL,
@@ -30,7 +31,7 @@ CREATE TABLE IF NOT EXISTS nx_user (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_user_phone (country_code, phone),
+  UNIQUE KEY uk_user_phone_sandbox (country_code, phone, sandbox),
   UNIQUE KEY uk_user_referral_code (referral_code),
   KEY idx_user_sponsor (sponsor_user_id),
   KEY idx_user_status (status)
@@ -1803,7 +1804,9 @@ CREATE TABLE IF NOT EXISTS nx_behavior_page_catalog (
 CREATE TABLE IF NOT EXISTS nx_behavior_event_fact (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   event_id VARCHAR(64) NOT NULL,
+  client_event_id CHAR(32) NOT NULL,
   dedupe_key CHAR(64) NOT NULL,
+  fingerprint CHAR(64) NOT NULL,
   event_name VARCHAR(64) NOT NULL,
   session_hash CHAR(64) NOT NULL,
   actor_hash CHAR(64) NOT NULL,
@@ -1821,6 +1824,7 @@ CREATE TABLE IF NOT EXISTS nx_behavior_event_fact (
   occurred_at DATETIME(3) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_behavior_event_id(event_id),
+  UNIQUE KEY uk_behavior_client_event_id(client_event_id),
   UNIQUE KEY uk_behavior_event_dedupe(dedupe_key),
   KEY idx_behavior_event_window(event_name,occurred_at,device_type,locale),
   KEY idx_behavior_event_route(route,occurred_at),
@@ -5075,16 +5079,18 @@ CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_settlement (
   operator VARCHAR(96) NOT NULL DEFAULT 'system',
   reason VARCHAR(500) NOT NULL DEFAULT 'acceptance sandbox settlement',
   idempotency_key VARCHAR(160) NOT NULL,
+  run_id VARCHAR(64) NOT NULL DEFAULT 'legacy-run',
   status VARCHAR(24) NOT NULL DEFAULT 'SETTLED',
   source VARCHAR(16) NOT NULL DEFAULT 'mock',
   source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_h8_sandbox_referral_invited (invited_user_id),
+  UNIQUE KEY uk_h8_sandbox_referral_run_invited (run_id, invited_user_id),
   UNIQUE KEY uk_h8_sandbox_referral_no (settlement_no),
-  UNIQUE KEY uk_h8_sandbox_referral_idempotency (idempotency_key),
+  UNIQUE KEY uk_h8_sandbox_referral_run_idempotency (run_id, idempotency_key),
   KEY idx_h8_sandbox_referral_inviter (inviter_user_id, created_at),
+  KEY idx_h8_sandbox_referral_run_created (run_id, created_at),
   CONSTRAINT chk_h8_sandbox_referral_amounts
     CHECK (newcomer_usdt >= 0 AND newcomer_nex >= 0 AND inviter_nex >= 0),
   CONSTRAINT chk_h8_sandbox_referral_source
@@ -5095,6 +5101,7 @@ CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_settlement (
 CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_ledger (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   settlement_no VARCHAR(64) NOT NULL,
+  run_id VARCHAR(64) NOT NULL DEFAULT 'legacy-run',
   user_id BIGINT NOT NULL,
   asset VARCHAR(16) NOT NULL,
   amount DECIMAL(18,6) NOT NULL,
@@ -5105,8 +5112,9 @@ CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_ledger (
   remark VARCHAR(255) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_h8_sandbox_referral_ledger_fact (settlement_no, user_id, asset),
+  UNIQUE KEY uk_h8_sandbox_referral_ledger_fact (run_id, settlement_no, user_id, asset),
   KEY idx_h8_sandbox_referral_ledger_user_time (user_id, created_at),
+  KEY idx_h8_sandbox_referral_ledger_run_user_time (run_id, user_id, created_at),
   CONSTRAINT chk_h8_sandbox_referral_ledger_amount CHECK (amount > 0),
   CONSTRAINT chk_h8_sandbox_referral_ledger_source
     CHECK (source = 'mock' AND source_environment = 'SANDBOX')
@@ -5161,6 +5169,7 @@ CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
   country_code VARCHAR(8) NOT NULL,
   phone VARCHAR(32) NOT NULL,
   client_ip VARCHAR(64) NOT NULL,
+  auth_environment VARCHAR(16) NOT NULL,
   code_hash CHAR(64) NOT NULL,
   expires_at DATETIME NOT NULL,
   attempts INT NOT NULL DEFAULT 0,
@@ -5169,7 +5178,7 @@ CREATE TABLE IF NOT EXISTS nx_user_registration_otp (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_registration_otp_no (challenge_no),
-  KEY idx_user_registration_otp_phone (country_code,phone,expires_at,consumed_at),
+  KEY idx_user_registration_otp_phone (country_code,phone,auth_environment,expires_at,consumed_at),
   KEY idx_user_registration_otp_ip (client_ip,created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -6026,3 +6035,424 @@ CREATE TABLE IF NOT EXISTS nx_g2_acceptance_sandbox_idempotency (
   command_key VARCHAR(160) PRIMARY KEY, batch_no VARCHAR(80) NOT NULL, created_at DATETIME NOT NULL,
   KEY idx_g2_acceptance_idempotency_batch (batch_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- L6 Acceptance Sandbox facts. Production behavior facts and outbox never read this table.
+CREATE TABLE IF NOT EXISTS nx_behavior_sandbox_fact (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  event_id VARCHAR(64) NOT NULL,
+  client_event_id CHAR(32) NOT NULL,
+  dedupe_key CHAR(64) NOT NULL,
+  fingerprint CHAR(64) NOT NULL,
+  run_id VARCHAR(64) NOT NULL,
+  observation_token CHAR(64) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  event_name VARCHAR(64) NOT NULL,
+  session_hash CHAR(64) NOT NULL,
+  actor_hash CHAR(64) NOT NULL,
+  route VARCHAR(160) NOT NULL,
+  page_level TINYINT NOT NULL,
+  parent_l1 VARCHAR(160) NOT NULL,
+  parent_l2 VARCHAR(160) NOT NULL,
+  dwell_ms BIGINT NULL,
+  x_norm DECIMAL(6,4) NULL,
+  y_norm DECIMAL(6,4) NULL,
+  zone VARCHAR(32) NULL,
+  element_id VARCHAR(64) NULL,
+  device_type VARCHAR(16) NOT NULL,
+  locale VARCHAR(16) NOT NULL,
+  occurred_at DATETIME(3) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_behavior_sandbox_run_client_event_id (run_id, client_event_id),
+  UNIQUE KEY uk_behavior_sandbox_run_dedupe_key (run_id, dedupe_key),
+  KEY idx_behavior_sandbox_fingerprint (fingerprint),
+  KEY idx_behavior_sandbox_run_time (run_id, occurred_at),
+  KEY idx_behavior_sandbox_observation_token (observation_token),
+  KEY idx_behavior_sandbox_run_actor_session_time (run_id, actor_hash, session_hash, occurred_at),
+  KEY idx_behavior_sandbox_run_route_time (run_id, route, occurred_at),
+  KEY idx_behavior_sandbox_session_time (session_hash, occurred_at),
+  KEY idx_behavior_sandbox_event_time (event_name, occurred_at),
+  CONSTRAINT chk_behavior_sandbox_provenance CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Commerce callback state is isolated; money movements reuse the authoritative
+-- nx_funds_sandbox_wallet and nx_funds_sandbox_ledger tables above.
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  product_id BIGINT NOT NULL,
+  product_no VARCHAR(96) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  tier VARCHAR(32) NOT NULL,
+  price_usdt DECIMAL(18,6) NOT NULL,
+  stock INT NOT NULL,
+  sold_count INT NOT NULL DEFAULT 0,
+  device_type VARCHAR(64) NULL,
+  generation VARCHAR(64) NULL,
+  gpu_model VARCHAR(255) NULL,
+  vram_total_gb INT NULL,
+  hashrate DECIMAL(18,6) NULL,
+  daily_usdt DECIMAL(18,6) NOT NULL,
+  daily_nex DECIMAL(18,6) NOT NULL,
+  tagline VARCHAR(255) NULL,
+  badge VARCHAR(128) NULL,
+  unlock_phase VARCHAR(32) NULL,
+  run_id VARCHAR(96) NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  sandbox TINYINT(1) NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_catalog_run_product (run_id,product_id),
+  UNIQUE KEY uk_commerce_sandbox_catalog_run_no (run_id,product_no),
+  CONSTRAINT chk_commerce_sandbox_catalog_stock CHECK (stock >= 0 AND sold_count >= 0),
+  CONSTRAINT chk_commerce_sandbox_catalog_price CHECK (price_usdt > 0),
+  CONSTRAINT chk_commerce_sandbox_catalog_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_order (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  order_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  quantity INT NOT NULL,
+  amount_usdt DECIMAL(18,6) NOT NULL,
+  canonical_revision BIGINT NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  state VARCHAR(32) NOT NULL,
+  wallet_debited TINYINT NOT NULL DEFAULT 0,
+  stock_returned TINYINT NOT NULL DEFAULT 0,
+  run_id VARCHAR(96) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_order_run_no (run_id,order_no),
+  KEY idx_commerce_sandbox_order_user_time (run_id,user_id,created_at),
+  CONSTRAINT chk_commerce_sandbox_order_quantity CHECK (quantity > 0),
+  CONSTRAINT chk_commerce_sandbox_order_amount CHECK (amount_usdt >= 0),
+  CONSTRAINT chk_commerce_sandbox_order_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_inventory (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  order_no VARCHAR(96) NOT NULL,
+  product_id BIGINT NOT NULL,
+  product_no VARCHAR(96) NOT NULL,
+  unit_price_usdt DECIMAL(18,6) NOT NULL,
+  reserved_quantity INT NOT NULL,
+  released_quantity INT NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  run_id VARCHAR(96) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_inventory_run_order (run_id,order_no),
+  CONSTRAINT chk_commerce_sandbox_inventory_quantity CHECK (reserved_quantity > 0 AND released_quantity IN (0,reserved_quantity)),
+  CONSTRAINT chk_commerce_sandbox_inventory_price CHECK (unit_price_usdt > 0),
+  CONSTRAINT chk_commerce_sandbox_inventory_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_callback_inbox (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  event_id VARCHAR(128) NOT NULL,
+  order_no VARCHAR(96) NOT NULL,
+  target_status VARCHAR(48) NOT NULL,
+  expected_version BIGINT NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  canonical_status VARCHAR(48) NOT NULL,
+  result_version BIGINT NOT NULL,
+  wallet_after DECIMAL(18,6) NULL,
+  run_id VARCHAR(96) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  received_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_callback_run_event (run_id,event_id),
+  KEY idx_commerce_sandbox_callback_order (run_id,order_no,received_at),
+  CONSTRAINT chk_commerce_sandbox_callback_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_order_receipt (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  result_json JSON NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_receipt_run_user_key (run_id,user_id,idempotency_key),
+  CONSTRAINT chk_commerce_sandbox_receipt_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_audit (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT, run_id VARCHAR(96) NOT NULL, event_id VARCHAR(128) NOT NULL,
+  order_no VARCHAR(96) NOT NULL, actor VARCHAR(128) NOT NULL, reason VARCHAR(300) NOT NULL, event VARCHAR(48) NOT NULL,
+  replay TINYINT NOT NULL, canonical_status VARCHAR(48) NOT NULL, result_version BIGINT NOT NULL, wallet_after DECIMAL(18,6) NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  strict_profile TINYINT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_commerce_sandbox_audit_run_order (run_id,order_no,created_at),
+  CONSTRAINT chk_commerce_sandbox_audit_source CHECK (source='mock' AND source_environment='SANDBOX' AND strict_profile=1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Learning Acceptance Sandbox facts. Published course content remains shared read-only;
+-- progress, attempts, rewards, events and idempotency receipts are isolated here.
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_progress (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  run_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(64) NOT NULL,
+  progress_pct INT NOT NULL DEFAULT 0,
+  attempts INT NOT NULL DEFAULT 0,
+  last_score INT NOT NULL DEFAULT 0,
+  started_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_learning_sandbox_progress_run_user_course_version (run_id, user_id, course_id, course_version),
+  KEY idx_learning_sandbox_progress_user_updated (user_id, updated_at),
+  CONSTRAINT chk_learning_sandbox_progress_pct CHECK (progress_pct BETWEEN 0 AND 100),
+  CONSTRAINT chk_learning_sandbox_progress_attempts CHECK (attempts >= 0),
+  CONSTRAINT chk_learning_sandbox_progress_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_event (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  run_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(64) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  event_payload JSON NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_learning_sandbox_event_once (run_id, user_id, course_id, course_version, event_type),
+  KEY idx_learning_sandbox_event_user_created (user_id, created_at),
+  CONSTRAINT chk_learning_sandbox_event_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_reward_ledger (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  reward_no VARCHAR(160) NOT NULL,
+  user_id BIGINT NOT NULL,
+  run_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(64) NOT NULL,
+  amount_nex DECIMAL(24,6) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'GRANTED',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_learning_sandbox_reward_no (reward_no),
+  UNIQUE KEY uk_learning_sandbox_reward_user_course_version (run_id, user_id, course_id, course_version),
+  KEY idx_learning_sandbox_reward_user_created (user_id, created_at),
+  CONSTRAINT chk_learning_sandbox_reward_amount CHECK (amount_nex > 0),
+  CONSTRAINT chk_learning_sandbox_reward_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_idempotency (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  run_id VARCHAR(64) NOT NULL,
+  course_id VARCHAR(96) NOT NULL,
+  course_version VARCHAR(64) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  result_json JSON NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_learning_sandbox_idempotency_attempt (run_id, user_id, course_id, course_version, idempotency_key),
+  KEY idx_learning_sandbox_idempotency_user_updated (user_id, updated_at),
+  CONSTRAINT chk_learning_sandbox_idempotency_status CHECK (status IN ('PENDING', 'COMPLETED')),
+  CONSTRAINT chk_learning_sandbox_idempotency_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_course (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(64) NOT NULL, course_id VARCHAR(96) NOT NULL, course_version VARCHAR(32) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'DRAFT', title_zh VARCHAR(255) NOT NULL, title_en VARCHAR(255) NOT NULL DEFAULT '', title_vi VARCHAR(255) NOT NULL DEFAULT '',
+  body_zh TEXT NOT NULL, body_en TEXT NOT NULL, body_vi TEXT NOT NULL, category VARCHAR(64) NOT NULL, format VARCHAR(32) NOT NULL, level VARCHAR(32) NOT NULL,
+  reward_nex DECIMAL(24,6) NOT NULL, duration VARCHAR(64) NOT NULL, featured TINYINT NOT NULL DEFAULT 0, quiz_json JSON NULL,
+  pass_score INT NULL, retry_limit INT NULL, completion_condition VARCHAR(128) NOT NULL DEFAULT '', reward_event VARCHAR(96) NOT NULL DEFAULT '',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX', revision BIGINT NOT NULL DEFAULT 0,
+  published_course_id VARCHAR(96) GENERATED ALWAYS AS (CASE WHEN status='PUBLISHED' AND is_deleted=0 THEN course_id ELSE NULL END) STORED,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_sandbox_course_run_version (run_id,course_id,course_version),
+  UNIQUE KEY uk_learning_sandbox_course_one_published (run_id,published_course_id),
+  KEY idx_learning_sandbox_course_run_status (run_id,status,updated_at),
+  CONSTRAINT chk_learning_sandbox_course_source CHECK (source='mock' AND source_environment='SANDBOX'),
+  CONSTRAINT chk_learning_sandbox_course_status CHECK (status IN ('DRAFT','PUBLISHED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_learning_sandbox_admin_idempotency (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(64) NOT NULL, command_scope VARCHAR(96) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL, request_hash CHAR(64) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'PENDING', result_json JSON NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_learning_sandbox_admin_idempotency (run_id,command_scope,idempotency_key),
+  CONSTRAINT chk_learning_sandbox_admin_idempotency_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- Support Acceptance Sandbox facts. Production inboxes, schedulers, audits and outbox
+-- do not consume these tables.
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_run (
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (run_id, account_id),
+  KEY idx_support_acceptance_run_account (account_id, updated_at),
+  CONSTRAINT chk_support_acceptance_run_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_ticket (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  ticket_no VARCHAR(80) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  category VARCHAR(32) NOT NULL,
+  priority VARCHAR(16) NOT NULL,
+  title VARCHAR(160) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  owner_agent_id VARCHAR(80),
+  owner_agent_name VARCHAR(120) NOT NULL,
+  last_message_at DATETIME NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_support_acceptance_ticket_no (ticket_no),
+  KEY idx_support_acceptance_ticket_account (account_id, run_id, updated_at),
+  KEY idx_support_acceptance_ticket_run_status (run_id, status, updated_at),
+  CONSTRAINT chk_support_acceptance_ticket_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_ticket_message (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  ticket_no VARCHAR(80) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  sender_type VARCHAR(16) NOT NULL,
+  sender_name VARCHAR(120) NOT NULL,
+  content VARCHAR(2000) NOT NULL,
+  client_message_id VARCHAR(128),
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_support_acceptance_ticket_message_client (ticket_no, client_message_id),
+  KEY idx_support_acceptance_ticket_message_account (account_id, run_id, ticket_no, id),
+  CONSTRAINT chk_support_acceptance_ticket_message_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_conversation (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  conversation_no VARCHAR(80) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  conversation_type VARCHAR(24) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  owner_agent_id VARCHAR(80),
+  owner_agent_name VARCHAR(120) NOT NULL,
+  unread_count INT NOT NULL DEFAULT 0,
+  last_message VARCHAR(2000) NOT NULL,
+  last_message_at DATETIME NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_support_acceptance_conversation_no (conversation_no),
+  KEY idx_support_acceptance_conversation_account (account_id, run_id, updated_at),
+  KEY idx_support_acceptance_conversation_run_status (run_id, status, updated_at),
+  CONSTRAINT chk_support_acceptance_conversation_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_conversation_message (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  conversation_no VARCHAR(80) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  sender_type VARCHAR(16) NOT NULL,
+  sender_name VARCHAR(120) NOT NULL,
+  content VARCHAR(2000) NOT NULL,
+  client_message_id VARCHAR(128),
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_support_acceptance_conversation_message_client (conversation_no, client_message_id),
+  KEY idx_support_acceptance_conversation_message_account (account_id, run_id, conversation_no, id),
+  CONSTRAINT chk_support_acceptance_conversation_message_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_receipt (
+  message_id BIGINT NOT NULL,
+  conversation_no VARCHAR(80) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  receipt_status VARCHAR(16) NOT NULL,
+  read_by VARCHAR(120),
+  read_at DATETIME,
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (message_id),
+  KEY idx_support_acceptance_receipt_account (account_id, run_id, conversation_no, receipt_status),
+  CONSTRAINT chk_support_acceptance_receipt_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_idempotency (
+  command_key VARCHAR(160) NOT NULL,
+  run_id VARCHAR(80) NOT NULL,
+  account_id BIGINT NOT NULL,
+  command_type VARCHAR(48) NOT NULL,
+  business_key VARCHAR(128) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  payload_hash CHAR(64) NOT NULL,
+  result_json JSON NOT NULL,
+  result_type VARCHAR(32) NOT NULL,
+  result_id VARCHAR(128) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  source VARCHAR(16) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (run_id, account_id, command_key),
+  KEY idx_support_acceptance_command_business (account_id, run_id, command_type, business_key),
+  KEY idx_support_acceptance_command_account (account_id, run_id, updated_at),
+  CONSTRAINT chk_support_acceptance_command_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

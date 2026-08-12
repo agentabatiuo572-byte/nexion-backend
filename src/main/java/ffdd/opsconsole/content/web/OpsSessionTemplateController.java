@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsSessionTemplateService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.SessionAdvisorPolicyView;
 import ffdd.opsconsole.content.domain.SessionCategoryView;
 import ffdd.opsconsole.content.domain.SessionReplyTemplateView;
@@ -49,6 +50,7 @@ public class OpsSessionTemplateController {
     private final OpsSupportAgentService supportAgentService;
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> executeCommand(
@@ -56,6 +58,7 @@ public class OpsSessionTemplateController {
             String idempotencyKey,
             Object request,
             Supplier<ApiResult<T>> action) {
+        productionPathGuard.requireOpsWriteAllowed();
         ApiResult<T> result;
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             result = action.get();
@@ -87,6 +90,7 @@ public class OpsSessionTemplateController {
             String idempotencyKey,
             Object request,
             Supplier<ApiResult<T>> action) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             ApiResult<T> rejected = ApiResult.fail(403, "M5_CONFIGURATION_MANAGEMENT_FORBIDDEN");
             auditRejected(scope, rejected.getCode(), rejected.getMessage(), request);
@@ -100,6 +104,7 @@ public class OpsSessionTemplateController {
             String idempotencyKey,
             Object request,
             Supplier<ApiResult<T>> action) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageM5Content()) {
             ApiResult<T> rejected = ApiResult.fail(403, "M5_CONTENT_MANAGEMENT_FORBIDDEN");
             auditRejected(scope, rejected.getCode(), rejected.getMessage(), request);

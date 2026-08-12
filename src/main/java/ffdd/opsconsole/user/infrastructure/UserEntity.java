@@ -11,6 +11,7 @@ import lombok.EqualsAndHashCode;
 public class UserEntity extends BaseEntity {
     private String countryCode;
     private String phone;
+    private String clientIp;
     private String passwordHash;
     private String nickname;
     private String avatarUrl;
@@ -20,6 +21,7 @@ public class UserEntity extends BaseEntity {
     private String userLevel;
     private String vRank;
     private String status;
+    private Integer sandbox;
     private String language;
     private String region;
     private String bio;

@@ -16,6 +16,13 @@ public record AppLearningCourseView(
         String version,
         int progress,
         boolean completed,
+        int attempts,
+        int lastScore,
+        boolean rewardGranted,
+        String source,
+        String sourceEnvironment,
+        String runId,
+        String permanentLabel,
         List<Question> questions) {
 
     public record Question(String questionId, String question, List<String> options) {

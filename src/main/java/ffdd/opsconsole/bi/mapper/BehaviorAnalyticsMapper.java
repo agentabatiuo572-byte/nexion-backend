@@ -3,11 +3,12 @@ package ffdd.opsconsole.bi.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import java.util.List;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Delete;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
@@ -28,6 +29,9 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             """)
     CatalogRow findTrackedPage(@Param("route") String route);
 
+    @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND is_deleted=0 LIMIT 1")
+    Boolean isSandboxUser(@Param("userId") Long userId);
+
     @Select("""
             SELECT route, title_zh AS titleZh, page_level AS pageLevel,
                    parent_l1 AS parentL1, parent_l2 AS parentL2, tracked
@@ -39,16 +43,32 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_behavior_event_fact
-              (event_id,client_event_id,dedupe_key,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
+              (event_id,client_event_id,dedupe_key,fingerprint,event_name,session_hash,actor_hash,route,page_level,parent_l1,parent_l2,
                dwell_ms,x_norm,y_norm,zone,element_id,device_type,locale,source_environment,occurred_at,created_at)
             VALUES
-              (#{eventId},#{clientEventId},#{dedupeKey},#{eventName},#{sessionHash},#{actorHash},#{route},#{pageLevel},#{parentL1},#{parentL2},
+              (#{eventId},#{clientEventId},#{dedupeKey},#{fingerprint},#{eventName},#{sessionHash},#{actorHash},#{route},#{pageLevel},#{parentL1},#{parentL2},
                #{dwellMs},#{xNorm},#{yNorm},#{zone},#{elementId},#{deviceType},#{locale},#{sourceEnvironment},#{occurredAt},NOW())
             """)
     int insertFact(BehaviorFactRow row);
 
+    /** Finalizes an already-claimed fact only for its original claimant. */
+    @Update("UPDATE nx_behavior_event_fact SET event_id=#{eventId} WHERE client_event_id=#{clientEventId} AND event_id=#{claimEventId}")
+    int replaceClaimEventId(@Param("eventId") String eventId, @Param("claimEventId") String claimEventId,
+                            @Param("clientEventId") String clientEventId);
+
+    /** Sampling happens after claim. A sampled-out event leaves no production fact. */
+    @Delete("DELETE FROM nx_behavior_event_fact WHERE event_id=#{claimEventId} AND client_event_id=#{clientEventId}")
+    int deleteClaim(@Param("claimEventId") String claimEventId, @Param("clientEventId") String clientEventId);
+
+    /** Connection-scoped MySQL mutex used to serialize one production session's L6 decisions. */
+    @Select("SELECT GET_LOCK(#{lockKey}, 0)")
+    Integer tryAcquireSessionLock(@Param("lockKey") String lockKey);
+
+    @Select("SELECT RELEASE_LOCK(#{lockKey})")
+    Integer releaseSessionLock(@Param("lockKey") String lockKey);
+
     @Select("""
-            SELECT event_name AS eventName,session_hash AS sessionHash,route,dwell_ms AS dwellMs
+            SELECT event_name AS eventName,session_hash AS sessionHash,route,fingerprint
              FROM nx_behavior_event_fact
              WHERE client_event_id=#{clientEventId}
              LIMIT 1
@@ -56,19 +76,8 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
             """)
     ExistingEventRow findByClientEventId(@Param("clientEventId") String clientEventId);
 
-    @org.apache.ibatis.annotations.Update("""
-            UPDATE nx_behavior_event_fact
-               SET dwell_ms=#{dwellMs}
-             WHERE client_event_id=#{clientEventId}
-               AND event_name='app.page_viewed'
-               AND session_hash=#{sessionHash}
-               AND route=#{route}
-               AND dwell_ms<=#{dwellMs}
-            """)
-    int backfillPageDwell(@Param("clientEventId") String clientEventId,
-                          @Param("sessionHash") String sessionHash,
-                          @Param("route") String route,
-                          @Param("dwellMs") long dwellMs);
+    @Select("SELECT event_name AS eventName,session_hash AS sessionHash,route,fingerprint FROM nx_behavior_event_fact WHERE dedupe_key=#{dedupeKey} LIMIT 1 FOR UPDATE")
+    ExistingEventRow findByDedupeKey(@Param("dedupeKey") String dedupeKey);
 
     @Select("""
             SELECT COUNT(*) FROM nx_behavior_event_fact
@@ -90,9 +99,6 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
              ORDER BY occurred_at DESC LIMIT 1
             """)
     LocalDateTime latestSessionEventAt(@Param("sessionHash") String sessionHash);
-
-    @Select("SELECT COUNT(*) FROM nx_behavior_event_fact WHERE dedupe_key=#{dedupeKey}")
-    long countByDedupeKey(@Param("dedupeKey") String dedupeKey);
 
     @Select("""
             <script>
@@ -221,10 +227,10 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                         @Param("deviceType") String deviceType, @Param("locale") String locale);
 
     record CatalogRow(String route, String titleZh, int pageLevel, String parentL1, String parentL2, boolean tracked) {}
-    record BehaviorFactRow(String eventId, String clientEventId, String dedupeKey, String eventName, String sessionHash, String actorHash, String route,
+    record BehaviorFactRow(String eventId, String clientEventId, String dedupeKey, String fingerprint, String eventName, String sessionHash, String actorHash, String route,
                            int pageLevel, String parentL1, String parentL2, Long dwellMs, Double xNorm, Double yNorm,
                            String zone, String elementId, String deviceType, String locale,String sourceEnvironment, LocalDateTime occurredAt) {}
-    record ExistingEventRow(String eventName, String sessionHash, String route, Long dwellMs) {}
+    record ExistingEventRow(String eventName, String sessionHash, String route, String fingerprint) {}
     record ActivityRow(String route, long pv, long uv, long clicks, long dwellMs, double bounceRate, int pageCount) {}
     record TrendRow(String bucket, long pv, long clicks) {}
     record ClickPointRow(double x, double y, long weight) {}

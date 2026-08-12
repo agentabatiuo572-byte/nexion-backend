@@ -1,6 +1,7 @@
 package ffdd.opsconsole.bi.application;
 
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsMapper;
+import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsSandboxMapper;
 import ffdd.opsconsole.bi.web.BehaviorEventRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -23,10 +24,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -46,26 +52,39 @@ public class BehaviorAnalyticsService {
     private static final String BUSINESS_TIME_ZONE = "UTC+08:00";
 
     private final BehaviorAnalyticsMapper mapper;
+    private final BehaviorAnalyticsSandboxMapper sandboxMapper;
     private final EventOutboxService outbox;
     private final AuditLogService auditLogService;
+    private final Environment environment;
     @Value("${nexion.analytics.pseudonym-secret:${jwt.secret:nexion-l6-local-only}}")
     private final String pseudonymSecret;
-    /** Server-owned provenance for App telemetry; never accepted from a client request. */
-    @Value("${nexion.analytics.source-environment:PRODUCTION}")
-    private final String clientSourceEnvironment;
+    @Value("${nexion.analytics.acceptance-run-id:}")
+    private final String acceptanceRunId;
 
     @Transactional
     public ApiResult<Map<String, Object>> ingest(Long userId, BehaviorEventRequest request) {
-        return ingest(userId,request,clientSourceEnvironment);
+        return ingestValidated(userId, request);
     }
 
     @Transactional
     public ApiResult<Map<String,Object>> ingestFixture(Long userId,BehaviorEventRequest request){
-        return ingest(userId,request,"MOCK");
+        // Test/acceptance fixtures obey the same isolated path as acceptance
+        // traffic; they are never allowed to seed production BI/outbox rows.
+        return ingestValidated(userId, request);
     }
 
-    private ApiResult<Map<String,Object>> ingest(Long userId,BehaviorEventRequest request,String sourceEnvironment) {
+    private ApiResult<Map<String,Object>> ingestValidated(Long userId, BehaviorEventRequest request) {
         require(userId != null && userId > 0, "USER_AUTH_REQUIRED");
+        String runtimeEnvironment = BehaviorAnalyticsAcceptanceProfileCondition
+                .sourceEnvironmentFor(environment.getActiveProfiles());
+        require(runtimeEnvironment != null, "L6_ANALYTICS_PROFILE_FORBIDDEN");
+        // Environment provenance is derived only from one active server
+        // profile. A request has no environment field and a property cannot
+        // override this decision.
+        String sourceEnvironment = runtimeEnvironment;
+        Boolean sandboxAccount = mapper.isSandboxUser(userId);
+        require(sandboxAccount != null && sandboxAccount == "SANDBOX".equals(runtimeEnvironment),
+                "L6_ACCOUNT_ENVIRONMENT_MISMATCH");
         require(request != null && EVENTS.contains(request.eventName()), "L6_EVENT_NOT_ALLOWED");
         require(CLIENT_EVENT_ID.matcher(text(request.clientEventId())).matches(), "L6_CLIENT_EVENT_ID_INVALID");
         String route = normalizeRoute(request.route());
@@ -118,27 +137,43 @@ public class BehaviorAnalyticsService {
             payload.put("zone", zone);
             if (elementId != null) payload.put("element_id", elementId);
         }
+        final Long validatedDwellMs = dwellMs;
+        final Double validatedXNorm = xNorm;
+        final Double validatedYNorm = yNorm;
+        final String validatedZone = zone;
+        final String validatedElementId = elementId;
+        String fingerprint = fingerprint(runtimeEnvironment, actorHash, sessionHash, request.clientTs(), request.eventName(),
+                route, device, locale, validatedDwellMs, validatedXNorm, validatedYNorm, validatedZone, validatedElementId);
 
         // Acceptance traffic has completed the same contract validation as a
         // production event, but it must not contaminate the production L6
         // event outbox or fact table. The status is explicit to the caller;
         // this is a server-derived environment decision, never request data.
         if ("SANDBOX".equals(sourceEnvironment)) {
-            return ApiResult.ok(linked("accepted", true, "duplicate", false,
-                    "sourceEnvironment", "SANDBOX", "dispatchState", "HOLD"));
+            requireValidAcceptanceRunId();
+            return withSandboxSessionAuthority(sessionHash, () -> ingestSandbox(request, sessionHash, actorHash, route, page,
+                    validatedDwellMs, validatedXNorm, validatedYNorm, validatedZone, validatedElementId,
+                    device, locale, occurredAt, fingerprint));
         }
+        return withProductionSessionAuthority(sessionHash, () -> ingestProduction(request, sessionHash, actorHash, route,
+                page, validatedDwellMs, validatedXNorm, validatedYNorm, validatedZone, validatedElementId,
+                device, locale, occurredAt, fingerprint, sourceEnvironment, payload));
+    }
+
+    /** All decisions that depend on mutable session state execute after its authority lock. */
+    private ApiResult<Map<String, Object>> ingestProduction(BehaviorEventRequest request, String sessionHash,
+            String actorHash, String route, BehaviorAnalyticsMapper.CatalogRow page, Long dwellMs, Double xNorm,
+            Double yNorm, String zone, String elementId, String device, String locale, LocalDateTime occurredAt,
+            String fingerprint, String sourceEnvironment, Map<String, Object> payload) {
         BehaviorAnalyticsMapper.ExistingEventRow existing = mapper.findByClientEventId(request.clientEventId());
         if (existing != null) {
-            require(existing.eventName().equals(request.eventName())
-                    && existing.sessionHash().equals(sessionHash)
-                    && existing.route().equals(route), "L6_CLIENT_EVENT_ID_CONFLICT");
-            boolean backfilled = "app.page_viewed".equals(request.eventName())
-                    && dwellMs != null && dwellMs > (existing.dwellMs() == null ? -1L : existing.dwellMs())
-                    && mapper.backfillPageDwell(request.clientEventId(), sessionHash, route, dwellMs) == 1;
-            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", backfilled));
+            requireClientEventFingerprint(fingerprint, existing.fingerprint());
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false));
         }
         String dedupeKey = pseudonym("event", request.clientEventId());
-        if (mapper.countByDedupeKey(dedupeKey) > 0) {
+        BehaviorAnalyticsMapper.ExistingEventRow dedupeWinner = mapper.findByDedupeKey(dedupeKey);
+        if (dedupeWinner != null) {
+            requireClientEventFingerprint(fingerprint, dedupeWinner.fingerprint());
             return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false));
         }
         LocalDateTime latestSession = mapper.latestSessionEventAt(sessionHash);
@@ -153,19 +188,103 @@ public class BehaviorAnalyticsService {
                 throw new BizException(429, "L6_CLICK_THROTTLED");
             }
         }
+        // Claim the fact first. This is the transaction's atomic winner
+        // election: a concurrent replay that loses its unique key must never
+        // publish an outbox row before it is acknowledged as duplicate.
+        String claimEventId = UUID.randomUUID().toString().replace("-", "");
+        try {
+            int claimed = mapper.insertFact(new BehaviorAnalyticsMapper.BehaviorFactRow(
+                    claimEventId, request.clientEventId(), dedupeKey, fingerprint, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(), page.parentL2(),
+                    dwellMs, xNorm, yNorm, zone, elementId, device, locale, sourceEnvironment, occurredAt));
+            if (claimed != 1) throw new BizException(409, "L6_FACT_CLAIM_LOST");
+        } catch (DuplicateKeyException ignored) {
+            // A replay can pass the optimistic pre-read concurrently. The
+            // unique index selects the persisted winner; re-read it by both
+            // authority keys and only acknowledge an exact canonical match.
+            BehaviorAnalyticsMapper.ExistingEventRow winner = mapper.findByClientEventId(request.clientEventId());
+            if (winner == null) winner = mapper.findByDedupeKey(dedupeKey);
+            if (winner == null) throw new BizException(409, "L6_DUPLICATE_WRITE_CONFLICT");
+            requireClientEventFingerprint(fingerprint, winner.fingerprint());
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false));
+        }
         EventOutboxService.ClientAnalyticsPublishResult published =
                 outbox.publishTrustedClientAnalyticsEvent(sessionHash, actorHash, request.eventName(), payload);
         if (!published.sampledIn()) {
+            if (mapper.deleteClaim(claimEventId, request.clientEventId()) != 1) {
+                throw new BizException(409, "L6_FACT_CLAIM_LOST");
+            }
             return ApiResult.ok(linked("accepted", true, "duplicate", false, "sampledIn", false));
         }
         String eventId = published.eventId();
-        mapper.insertFact(new BehaviorAnalyticsMapper.BehaviorFactRow(
-                eventId, request.clientEventId(), dedupeKey, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(), page.parentL2(),
-                dwellMs, xNorm, yNorm, zone, elementId, device, locale, sourceEnvironment, occurredAt));
+        if (mapper.replaceClaimEventId(eventId, claimEventId, request.clientEventId()) != 1) {
+            // This exception rolls the transaction back, including the just
+            // created outbox record; returning success here could orphan it.
+            throw new BizException(409, "L6_FACT_CLAIM_LOST");
+        }
         return ApiResult.ok(linked("accepted", true, "duplicate", false, "sampledIn", true, "eventId", eventId));
     }
 
+    /**
+     * Acceptance events are durable only inside their own fact table. They
+     * deliberately bypass EventOutboxService and the production fact mapper;
+     * the server owns both sampling and environment provenance.
+     */
+    private ApiResult<Map<String, Object>> ingestSandbox(BehaviorEventRequest request, String sessionHash,
+            String actorHash, String route, BehaviorAnalyticsMapper.CatalogRow page, Long dwellMs, Double xNorm,
+            Double yNorm, String zone, String elementId, String device, String locale, LocalDateTime occurredAt,
+            String fingerprint) {
+        requireValidAcceptanceRunId();
+        String observationToken = observationToken(acceptanceRunId, actorHash, sessionHash);
+        BehaviorAnalyticsSandboxMapper.ExistingEventRow existing = sandboxMapper.findByClientEventId(acceptanceRunId, request.clientEventId());
+        if (existing != null) {
+            requireClientEventFingerprint(fingerprint, existing.fingerprint());
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false,
+                    "source", "mock", "sourceEnvironment", "SANDBOX", "runId", acceptanceRunId,
+                    "observationToken", observationToken));
+        }
+        String dedupeKey = pseudonym("sandbox-event", request.clientEventId());
+        BehaviorAnalyticsSandboxMapper.ExistingEventRow dedupeWinner = sandboxMapper.findByDedupeKey(acceptanceRunId, dedupeKey);
+        if (dedupeWinner != null) {
+            requireClientEventFingerprint(fingerprint, dedupeWinner.fingerprint());
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false,
+                    "source", "mock", "sourceEnvironment", "SANDBOX", "runId", acceptanceRunId,
+                    "observationToken", observationToken));
+        }
+        LocalDateTime latestSession = sandboxMapper.latestSessionEventAt(acceptanceRunId, sessionHash);
+        require(latestSession == null || !occurredAt.isBefore(latestSession), "L6_EVENT_OUT_OF_ORDER");
+        long perMinuteLimit = "app.element_clicked".equals(request.eventName()) ? 180L : 120L;
+        if (sandboxMapper.countRecent(acceptanceRunId, sessionHash, request.eventName(), LocalDateTime.now(BUSINESS_ZONE).minusMinutes(1)) >= perMinuteLimit) {
+            throw new BizException(429, "L6_EVENT_RATE_LIMITED");
+        }
+        if ("app.element_clicked".equals(request.eventName())) {
+            LocalDateTime latest = sandboxMapper.latestEventAt(acceptanceRunId, sessionHash, request.eventName());
+            if (latest != null && occurredAt.isBefore(latest.plusNanos(300_000_000L))) {
+                throw new BizException(429, "L6_CLICK_THROTTLED");
+            }
+        }
+        String eventId = UUID.randomUUID().toString();
+        try {
+            sandboxMapper.insertFact(new BehaviorAnalyticsSandboxMapper.SandboxFactRow(eventId, request.clientEventId(),
+                    dedupeKey, fingerprint, acceptanceRunId, observationToken, request.eventName(), sessionHash, actorHash, route, page.pageLevel(), page.parentL1(),
+                    page.parentL2(), dwellMs, xNorm, yNorm, zone, elementId, device, locale, occurredAt));
+        } catch (DuplicateKeyException ignored) {
+            // Sandbox uniqueness is run-scoped. Never inspect another run's
+            // row when resolving a concurrent client replay.
+            BehaviorAnalyticsSandboxMapper.ExistingEventRow winner = sandboxMapper.findByClientEventId(acceptanceRunId, request.clientEventId());
+            if (winner == null) winner = sandboxMapper.findByDedupeKey(acceptanceRunId, dedupeKey);
+            if (winner == null) throw new BizException(409, "L6_DUPLICATE_WRITE_CONFLICT");
+            requireClientEventFingerprint(fingerprint, winner.fingerprint());
+            return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false,
+                    "source", "mock", "sourceEnvironment", "SANDBOX", "runId", acceptanceRunId,
+                    "observationToken", observationToken));
+        }
+        return ApiResult.ok(linked("accepted", true, "duplicate", false, "eventId", eventId,
+                "source", "mock", "sourceEnvironment", "SANDBOX", "runId", acceptanceRunId,
+                "observationToken", observationToken));
+    }
+
     public ApiResult<Map<String, Object>> behavior(String window, String device, String locale, String depth, String sort) {
+        requireProductionL6Surface();
         Query query = query(window, device, locale);
         String normalizedDepth = normalizeDepth(depth);
         List<BehaviorAnalyticsMapper.ActivityRow> rows = new ArrayList<>(
@@ -179,7 +298,7 @@ public class BehaviorAnalyticsService {
                 "locale", query.locale() == null ? "ALL" : query.locale(),
                 "depth", normalizedDepth,
                 "businessTimeZone", BUSINESS_TIME_ZONE,
-                "lateArrivalPolicy", "included_on_next_query",
+                "lateArrivalPolicy", "rejected_retry_in_order",
                 "activity", rows,
                 "dailyTrend", mapper.dailyTrend(query.startAt(), query.endAt(), query.device(), query.locale()),
                 "weeklyTrend", mapper.weeklyTrend(query.startAt(), query.endAt(), query.device(), query.locale()),
@@ -189,7 +308,63 @@ public class BehaviorAnalyticsService {
                 "sources", List.of("nx_behavior_event_fact", "nx_behavior_page_catalog", "nx_event_outbox")));
     }
 
+    /** A separate, read-only acceptance observation surface; production L6 never calls this fact table. */
+    public ApiResult<Map<String, Object>> acceptanceBehavior(String runId, String actorHash, String sessionHash,
+            String route, LocalDateTime from, LocalDateTime to) {
+        return acceptanceBehavior(runId, null, actorHash, sessionHash, route, from, to);
+    }
+
+    public ApiResult<Map<String, Object>> acceptanceBehavior(String runId, String observationToken, String actorHash,
+            String sessionHash, String route, LocalDateTime from, LocalDateTime to) {
+        require("SANDBOX".equals(BehaviorAnalyticsAcceptanceProfileCondition
+                .sourceEnvironmentFor(environment.getActiveProfiles())), "L6_ACCEPTANCE_PROFILE_FORBIDDEN");
+        require(acceptanceRunId != null && acceptanceRunId.equals(text(runId)), "L6_ACCEPTANCE_RUN_ID_INVALID");
+        if (StringUtils.hasText(observationToken)) {
+            require(observationToken.matches("^[a-f0-9]{64}$"), "L6_ACCEPTANCE_CREDENTIAL_INVALID");
+            BehaviorAnalyticsSandboxMapper.ObservationScope scope = sandboxMapper.findObservationScope(observationToken);
+            require(scope != null && acceptanceRunId.equals(scope.runId()), "L6_ACCEPTANCE_CREDENTIAL_INVALID");
+            require((actorHash == null || actorHash.equals(scope.actorHash()))
+                    && (sessionHash == null || sessionHash.equals(scope.sessionHash())), "L6_ACCEPTANCE_SCOPE_INVALID");
+            actorHash = scope.actorHash();
+            sessionHash = scope.sessionHash();
+        }
+        require(actorHash != null && sessionHash != null, "L6_ACCEPTANCE_SCOPE_REQUIRED");
+        require(actorHash.matches("^[a-f0-9]{64}$") && sessionHash.matches("^[a-f0-9]{64}$"),
+                "L6_ACCEPTANCE_HASH_INVALID");
+        String normalizedRoute = text(route).isEmpty() ? null : normalizeRoute(route);
+        require(text(route).isEmpty() || !normalizedRoute.isEmpty(), "L6_ROUTE_NOT_TRACKED");
+        require(normalizedRoute == null || mapper.findTrackedPage(normalizedRoute) != null, "L6_ROUTE_NOT_TRACKED");
+        require(from != null && to != null && !from.isAfter(to) && !to.isAfter(from.plusDays(31)),
+                "L6_ACCEPTANCE_TIME_WINDOW_INVALID");
+        BehaviorAnalyticsSandboxMapper.SandboxSummary summary = sandboxMapper.summary(acceptanceRunId,
+                actorHash, sessionHash, normalizedRoute, from, to);
+        long pageViews = summary == null || summary.pageViews() == null ? 0L : summary.pageViews();
+        long clicks = summary == null || summary.clicks() == null ? 0L : summary.clicks();
+        long matchedFacts = pageViews + clicks;
+        require(matchedFacts > 0, "L6_ACCEPTANCE_FACTS_NOT_FOUND");
+        BehaviorAnalyticsSandboxMapper.IngestWindow ingestWindow = sandboxMapper.ingestWindow(acceptanceRunId,
+                actorHash, sessionHash, normalizedRoute, from, to);
+        require(ingestWindow != null && ingestWindow.firstIngestedAt() != null && ingestWindow.lastIngestedAt() != null,
+                "L6_ACCEPTANCE_INGEST_WINDOW_UNAVAILABLE");
+        // Both production tables record their durable write time. This catches
+        // a wrongly routed event even if its client occurred_at was backdated.
+        LocalDateTime proofFrom = ingestWindow.firstIngestedAt().minusMinutes(1);
+        LocalDateTime proofTo = ingestWindow.lastIngestedAt().plusMinutes(1);
+        long productionFactDelta = sandboxMapper.productionFactDelta(actorHash, sessionHash, proofFrom, proofTo);
+        long productionOutboxDelta = sandboxMapper.productionOutboxDelta(sessionHash, proofFrom, proofTo);
+        require(productionFactDelta == 0 && productionOutboxDelta == 0, "L6_ACCEPTANCE_PRODUCTION_CONTAMINATION");
+        return ApiResult.ok(linked("available", true, "source", "mock", "sourceEnvironment", "SANDBOX",
+                "status", "AVAILABLE", "runId", acceptanceRunId, "actorHash", actorHash,
+                "sessionHash", sessionHash, "windowFrom", from, "windowTo", to,
+                "pageViews", pageViews, "clicks", clicks, "matchedFacts", matchedFacts, "productionDelta",
+                linked("factRows", productionFactDelta,
+                        "outboxRows", productionOutboxDelta,
+                        "occurredWindowFrom", from, "occurredWindowTo", to,
+                        "ingestProofFrom", proofFrom, "ingestProofTo", proofTo, "expected", "0/0")));
+    }
+
     public ApiResult<Map<String, Object>> clickHeat(String route, String window, String device, String locale, String depth) {
+        requireProductionL6Surface();
         String normalizedDepth = normalizeDepth(depth);
         require(!"L1".equals(normalizedDepth) && !"L2".equals(normalizedDepth), "L6_AGGREGATE_NODE_NO_COORDINATES");
         String normalizedRoute = normalizeRoute(route);
@@ -215,6 +390,7 @@ public class BehaviorAnalyticsService {
     }
 
     public ApiResult<Map<String, Object>> pageCatalog() {
+        requireProductionL6Surface();
         List<BehaviorAnalyticsMapper.CatalogRow> pages = mapper.listCatalog();
         List<BehaviorAnalyticsMapper.CatalogRow> tracked = pages.stream().filter(BehaviorAnalyticsMapper.CatalogRow::tracked).toList();
         List<BehaviorAnalyticsMapper.CatalogRow> excluded = pages.stream().filter(row -> !row.tracked()).toList();
@@ -223,6 +399,9 @@ public class BehaviorAnalyticsService {
     }
 
     public byte[] exportBehavior(String window, String device, String locale, String depth, String sort) {
+        // Must precede queries, audit, and outbox: acceptance admins cannot
+        // use the production export route to create production side effects.
+        requireProductionL6Surface();
         Query query = query(window, device, locale);
         String normalizedDepth = normalizeDepth(depth);
         List<BehaviorAnalyticsMapper.ActivityRow> rows = new ArrayList<>(
@@ -329,6 +508,78 @@ public class BehaviorAnalyticsService {
         }
     }
 
+    /**
+     * MySQL named locks are connection-scoped.  The surrounding transaction
+     * keeps mapper calls on that connection, so latest watermark, rate cap,
+     * click throttle, unique fact claim and outbox finalization are one
+     * per-session critical section.  The key is fixed-width and includes the
+     * server environment plus Run before hashing, preventing cross-run lock
+     * contention or user-controlled lock names.
+     */
+    private <T> T withProductionSessionAuthority(String sessionHash, Supplier<T> work) {
+        String lockKey = sessionLockKey("PRODUCTION", "", sessionHash);
+        if (!Integer.valueOf(1).equals(mapper.tryAcquireSessionLock(lockKey))) {
+            throw new BizException(429, "L6_SESSION_LOCK_BUSY");
+        }
+        boolean releaseAfterTransaction = deferSessionLockRelease(() -> mapper.releaseSessionLock(lockKey));
+        try {
+            return work.get();
+        } finally {
+            if (!releaseAfterTransaction) mapper.releaseSessionLock(lockKey);
+        }
+    }
+
+    private <T> T withSandboxSessionAuthority(String sessionHash, Supplier<T> work) {
+        String lockKey = sessionLockKey("SANDBOX", acceptanceRunId, sessionHash);
+        if (!Integer.valueOf(1).equals(sandboxMapper.tryAcquireSessionLock(lockKey))) {
+            throw new BizException(429, "L6_SESSION_LOCK_BUSY");
+        }
+        boolean releaseAfterTransaction = deferSessionLockRelease(() -> sandboxMapper.releaseSessionLock(lockKey));
+        try {
+            return work.get();
+        } finally {
+            if (!releaseAfterTransaction) sandboxMapper.releaseSessionLock(lockKey);
+        }
+    }
+
+    /** Keep the connection-scoped MySQL authority lock through commit or rollback. */
+    private boolean deferSessionLockRelease(Runnable release) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return false;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                release.run();
+            }
+        });
+        return true;
+    }
+
+    private String sessionLockKey(String sourceEnvironment, String runId, String sessionHash) {
+        // SHA-256 hex is exactly 64 characters, the MySQL named-lock limit.
+        return pseudonym("session-authority-lock", sourceEnvironment + "\u001f" + runId + "\u001f" + sessionHash);
+    }
+
+    private void requireValidAcceptanceRunId() {
+        require(acceptanceRunId != null && acceptanceRunId.matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"),
+                "L6_ACCEPTANCE_RUN_ID_REQUIRED");
+    }
+
+    /** Hash every canonical field, so a reused clientEventId cannot alter any fact dimension. */
+    private String fingerprint(String sourceEnvironment, String actorHash, String sessionHash, Long clientTs,
+            String eventName, String route, String device, String locale, Long dwellMs, Double xNorm, Double yNorm,
+            String zone, String elementId) {
+        return pseudonym("event-fingerprint", String.join("\u001f", sourceEnvironment, actorHash, sessionHash,
+                String.valueOf(clientTs), eventName, route, device, locale, String.valueOf(dwellMs),
+                String.valueOf(xNorm), String.valueOf(yNorm), String.valueOf(zone), String.valueOf(elementId)));
+    }
+
+    private String observationToken(String runId, String actorHash, String sessionHash) {
+        return pseudonym("acceptance-observation", String.join("\u001f", runId, actorHash, sessionHash));
+    }
+
     private double round4(double value) {
         return Math.round(value * 10_000d) / 10_000d;
     }
@@ -339,6 +590,20 @@ public class BehaviorAnalyticsService {
 
     private void require(boolean condition, String message) {
         if (!condition) throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), message);
+    }
+
+    private void requireClientEventFingerprint(String expected, String actual) {
+        if (!expected.equals(actual)) throw new BizException(409, "L6_CLIENT_EVENT_ID_CONFLICT");
+    }
+
+    /** Production L6 endpoints are unavailable in every named non-production,
+     * mixed, or unknown profile. An unprofiled runtime retains legacy/default
+     * production behavior. Acceptance has its own conditional controller. */
+    private void requireProductionL6Surface() {
+        String[] activeProfiles = environment.getActiveProfiles();
+        if (activeProfiles == null || activeProfiles.length == 0) return;
+        require("PRODUCTION".equals(BehaviorAnalyticsAcceptanceProfileCondition
+                .sourceEnvironmentFor(activeProfiles)), "L6_PRODUCTION_SURFACE_FORBIDDEN");
     }
 
     private String text(String value) {

@@ -1,6 +1,8 @@
 package ffdd.opsconsole.shared.security;
 
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.user.infrastructure.UserEntity;
+import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -15,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
+import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -27,6 +30,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
     private final AuthSessionMapper authSessionMapper;
+    private final UserOpsMapper userMapper;
+    private final Environment environment;
     private final GatewaySecurityProperties gatewayProperties;
     private final AdminSessionRegistry adminSessionRegistry;
     private final AdminPermissionCache permissionCache;
@@ -92,6 +97,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (!List.of("USER", "ADMIN").contains(normalizedSubjectType)) {
             return;
         }
+        if ("USER".equals(normalizedSubjectType)) {
+            UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+            if (audience == null) return;
+            try {
+                Long userId = Long.valueOf(subjectId);
+                String sessionId = request.getHeader(AuthHeaders.SESSION_ID);
+                if (!StringUtils.hasText(sessionId)) return;
+                UserEntity user = userMapper.selectById(userId);
+                if (user == null || !audience.acceptsSandbox(user.getSandbox())) return;
+                if (authSessionMapper.countActiveUserSession(sessionId.trim(), userId) <= 0) return;
+            } catch (RuntimeException ignored) {
+                return;
+            }
+        }
         List<SimpleGrantedAuthority> authorities = List.of();
         if (StringUtils.hasText(authoritiesHeader)) {
             authorities = Arrays.stream(authoritiesHeader.split(","))
@@ -107,6 +126,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         details.put("subjectType", normalizedSubjectType);
         if (StringUtils.hasText(username)) {
             details.put("username", username.trim());
+        }
+        if ("USER".equals(normalizedSubjectType)) {
+            details.put("sessionId", request.getHeader(AuthHeaders.SESSION_ID).trim());
         }
         authentication.setDetails(Map.copyOf(details));
         SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -149,9 +171,23 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return false;
         }
         try {
+            UserAuthEnvironment audience = UserAuthEnvironment.fromClaim(
+                            claims.get(UserAuthEnvironment.CLAIM, String.class))
+                    .orElse(null);
+            UserAuthEnvironment activeAudience = UserAuthEnvironment.resolve(environment).orElse(null);
+            // Old unscoped bearer tokens are deliberately invalid: an audience is a mandatory security boundary.
+            if (audience == null || audience != activeAudience) {
+                return false;
+            }
+            Long userId = Long.valueOf(claims.getSubject());
+            UserEntity user = userMapper.selectById(userId);
+            if (user == null || !audience.acceptsSandbox(user.getSandbox())) {
+                authSessionMapper.revokeOwnedUserSession(userId, sessionId);
+                return false;
+            }
             int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
             int activeCount = authSessionMapper.touchActiveUserSession(
-                    sessionId, Long.valueOf(claims.getSubject()), idleDays);
+                    sessionId, userId, idleDays);
             return activeCount > 0;
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex);

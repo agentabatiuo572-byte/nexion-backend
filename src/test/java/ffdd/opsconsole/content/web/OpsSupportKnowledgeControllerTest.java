@@ -3,9 +3,11 @@ package ffdd.opsconsole.content.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSupportKnowledgeService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.dto.SupportFaqStatusRequest;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
@@ -19,7 +21,18 @@ import org.junit.jupiter.api.Test;
 class OpsSupportKnowledgeControllerTest {
     private final OpsSupportKnowledgeService knowledgeService = mock(OpsSupportKnowledgeService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
-    private final OpsSupportKnowledgeController controller = new OpsSupportKnowledgeController(knowledgeService, idempotencyService);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
+    private final OpsSupportKnowledgeController controller = new OpsSupportKnowledgeController(knowledgeService, idempotencyService, productionPathGuard);
+
+    @Test
+    void isolatedProfileBlocksFaqWriteBeforeIdempotencyOrKnowledgeService() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.createFaq("key", null))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class);
+        verify(knowledgeService, never()).createFaq(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(idempotencyService, never()).execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})

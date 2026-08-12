@@ -80,8 +80,11 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
-    public boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now) {
-        return messageMapper.markAgentMessagesReadThrough(conversationNo, lastSeenMessageId, operator, now) > 0;
+    public boolean markAgentMessagesReadThrough(
+            String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now,
+            String expectedStatus, Long expectedVersion) {
+        return messageMapper.markAgentMessagesReadThrough(
+                conversationNo, lastSeenMessageId, operator, now, expectedStatus, expectedVersion) > 0;
     }
 
     @Override

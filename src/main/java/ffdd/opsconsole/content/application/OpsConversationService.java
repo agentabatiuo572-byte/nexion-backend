@@ -99,8 +99,10 @@ public class OpsConversationService {
     private final OpsRiskService riskService;
     // 客户档案标注(自定义标签 + 内部备注,按 user_id 聚合,独立于会话生命周期)
     private final CustomerProfileRepository customerProfileRepository;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     public ApiResult<Map<String, Object>> overview() {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         Map<String, Object> response = new LinkedHashMap<>(conversationRepository.counters());
         response.put("domain", "I9");
@@ -113,11 +115,13 @@ public class OpsConversationService {
     }
 
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         return ApiResult.ok(conversationRepository.pageConversations(request));
     }
 
     public ApiResult<ContentConversationDetail> detail(String conversationNo) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         if (!StringUtils.hasText(conversationNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
@@ -132,12 +136,14 @@ public class OpsConversationService {
         return ApiResult.ok(new ContentConversationDetail(conversation, messages, customerProfile));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Void> markReadReceipt(String conversationNo, Long lastSeenMessageId, Long authenticatedUserId) {
+        productionPathGuard.requireOpsWriteAllowed();
         String normalized = conversationNo == null ? "" : conversationNo.trim();
         if (!StringUtils.hasText(normalized)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
         }
-        ContentConversationView conversation = conversationRepository.findByConversationNo(normalized).orElse(null);
+        ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(normalized).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
         }
@@ -157,7 +163,9 @@ public class OpsConversationService {
                 normalized,
                 lastSeenMessageId,
                 "user:" + authenticatedUserId,
-                LocalDateTime.now(clock));
+                LocalDateTime.now(clock),
+                conversation.status(),
+                conversation.version());
         if (!updated) {
             return ApiResult.fail(404, "CONVERSATION_AGENT_MESSAGE_NOT_FOUND");
         }
@@ -462,6 +470,7 @@ public class OpsConversationService {
     }
 
     public ApiResult<List<Map<String, Object>>> transferTargets() {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         return ApiResult.ok(supportAgentService.transferTargets());
     }
@@ -471,6 +480,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireTransferCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -522,6 +532,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -557,6 +568,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -583,6 +595,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTransferDecisionRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireDecisionCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -609,6 +622,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationReplyRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return replyWithMessageId(conversationNo, idempotencyKey, request).result();
     }
 
@@ -617,6 +631,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationReplyRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReplyCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -647,6 +662,7 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> addCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -675,6 +691,7 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> removeCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -700,6 +717,7 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ConversationCustomerProfile.CustomerNote> addNote(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ConversationCustomerProfile.CustomerNote> guard = requireProfileNoteCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -724,6 +742,7 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Void> removeNote(String conversationNo, Long noteId, String idempotencyKey, CustomerNoteRemoveRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<Void> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -749,6 +768,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationStatusRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireStatusCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -783,6 +803,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationArchiveRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -820,6 +841,7 @@ public class OpsConversationService {
     public ApiResult<List<ContentConversationView>> archiveBatch(
             String idempotencyKey,
             ConversationArchiveBatchRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
@@ -867,6 +889,7 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public int runTimeoutFallback() {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!timeoutFallbackEnabled()) {
             return 0;
         }
@@ -900,6 +923,7 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationTicketRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ConversationTicketResult> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -958,6 +982,7 @@ public class OpsConversationService {
     public ApiResult<ContentConversationView> initiate(
             String idempotencyKey,
             ConversationInitiateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return initiateWithMessageId(idempotencyKey, request).result();
     }
 
@@ -965,6 +990,7 @@ public class OpsConversationService {
     public MessageCommandResult initiateWithMessageId(
             String idempotencyKey,
             ConversationInitiateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireInitiateCommand(idempotencyKey, request);
         if (guard != null) {

@@ -32,8 +32,8 @@ class FundsSandboxIsolationContractTest {
                 "scripts/migrations/20260811_funds_persistent_sandbox.sql"));
 
         assertThat(migration)
-                .contains("UNIQUE KEY uk_funds_sandbox_order_idem (user_id,idempotency_key)")
-                .contains("UNIQUE KEY uk_funds_sandbox_callback_event (event_id)")
+                .contains("UNIQUE KEY uk_funds_sandbox_order_run_idem (run_id,user_id,idempotency_key)")
+                .contains("UNIQUE KEY uk_funds_sandbox_callback_run_event (run_id,event_id)")
                 .contains("source = 'mock' AND source_environment = 'SANDBOX'")
                 .doesNotContain("nx_user_wallet")
                 .doesNotContain("nx_withdrawal_order");

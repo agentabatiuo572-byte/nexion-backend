@@ -1,7 +1,8 @@
 -- L1 KPI canonical event-chain closure.
 -- Registers every locked §2.4.6 event that was still absent from A4 and
 -- extends commission/checkout payloads for the real F2 consumer chain.
-USE nexion;
+-- The controlled startup runner selects the target database.  Do not pin this
+-- migration to the production schema: acceptance uses an isolated database.
 SET NAMES utf8mb4;
 
 INSERT INTO nx_event_schema_registry

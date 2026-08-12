@@ -6,9 +6,11 @@ import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
@@ -22,6 +24,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,6 +48,7 @@ public class AppUserRegistrationService {
     private final AppUserAuthService authService;
     private final EventOutboxService outboxService;
     private final AppUserRegistrationTransactionExecutor transactionExecutor;
+    private final Environment environment;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @PostConstruct
@@ -59,6 +63,8 @@ public class AppUserRegistrationService {
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_PHONE_INVALID");
         }
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (audience == null) return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
         if (!otpDeliveryService.available()) {
             return ApiResult.fail(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
@@ -68,17 +74,17 @@ public class AppUserRegistrationService {
         if (mapper.countRecentClient(clientIp) >= 10 || mapper.countDailyClient(clientIp) >= 100) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_CLIENT_RATE_LIMIT");
         }
-        if (mapper.countRecentPhone(countryCode, phone) > 0) {
+        if (mapper.countRecentPhoneInEnvironment(countryCode, phone, audience.name()) > 0) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_COOLDOWN");
         }
-        if (mapper.countDailyPhone(countryCode, phone) >= 10) {
+        if (mapper.countDailyPhoneInEnvironment(countryCode, phone, audience.name()) >= 10) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_DAILY_LIMIT");
         }
-        mapper.invalidateActive(countryCode, phone);
+        mapper.invalidateActiveInEnvironment(countryCode, phone, audience.name());
         String challengeNo = "REG-" + UUID.randomUUID().toString().replace("-", "");
         String code = String.format("%06d", secureRandom.nextInt(1_000_000));
-        if (mapper.insertChallenge(
-                challengeNo, countryCode, phone, clientIp, code, OTP_TTL_MINUTES) != 1) {
+        if (mapper.insertChallengeInEnvironment(
+                challengeNo, countryCode, phone, clientIp, audience.name(), code, OTP_TTL_MINUTES) != 1) {
             throw new IllegalStateException("USER_REGISTRATION_OTP_CREATE_FAILED");
         }
         try {
@@ -96,9 +102,13 @@ public class AppUserRegistrationService {
     public ApiResult<UserLoginResponse> register(
             UserRegistrationRequest request,
             String clientAddress) {
+        Integer sandbox = sandboxForNewRegistration();
+        if (sandbox == null) {
+            return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
+        }
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
-                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress));
+                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress, sandbox));
             } catch (PessimisticLockingFailureException exception) {
                 log.warn("Registration lock conflict; rolled back attempt {}/3 before retry", attempt);
             }
@@ -108,7 +118,8 @@ public class AppUserRegistrationService {
 
     private ApiResult<UserLoginResponse> registerInTransaction(
             UserRegistrationRequest request,
-            String clientAddress) {
+            String clientAddress,
+            int sandbox) {
         if (request == null
                 || !validCountryCode(request.countryCode())
                 || !validPhone(request.phone())
@@ -122,22 +133,24 @@ public class AppUserRegistrationService {
         String phone = request.phone().trim();
         String challengeNo = request.challengeNo().trim();
         String code = request.code().trim();
-        if (mapper.consumeValidChallenge(challengeNo, countryCode, phone, code) != 1) {
-            mapper.recordInvalidAttempt(challengeNo, countryCode, phone);
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (audience == null) return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
+        if (mapper.consumeValidChallengeInEnvironment(challengeNo, countryCode, phone, audience.name(), code) != 1) {
+            mapper.recordInvalidAttemptInEnvironment(challengeNo, countryCode, phone, audience.name());
             return ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID");
         }
-        UserEntity existing = findUser(countryCode, phone);
+        UserEntity existing = findUser(countryCode, phone, sandbox);
         if (existing != null) {
             return ApiResult.fail(409, "USER_REGISTRATION_ACCOUNT_EXISTS");
         }
-        String registrationIp = mapper.consumedChallengeClientIp(
-                challengeNo, countryCode, phone);
+        String registrationIp = mapper.consumedChallengeClientIpInEnvironment(
+                challengeNo, countryCode, phone, audience.name());
         if (!StringUtils.hasText(registrationIp)
                 || "unknown".equalsIgnoreCase(registrationIp.trim())) {
             throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
         }
         int maxSignupPerIp24h = requiredK1MaxSignupPerIp24h();
-        if (mapper.countRegisteredAccountsByClientIp24h(registrationIp.trim())
+        if (mapper.countRegisteredAccountsByClientIp24hInEnvironment(registrationIp.trim(), audience.name(), sandbox)
                 >= maxSignupPerIp24h) {
             return ApiResult.fail(409, "USER_REGISTRATION_K1_IP_LIMIT");
         }
@@ -165,10 +178,22 @@ public class AppUserRegistrationService {
                 return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
             }
         }
+        // A fixture-backed acceptance identity may only join the fixture's
+        // isolated referral graph. Conversely, a production account must
+        // never bind to a sandbox sponsor. This check precedes every nx_user
+        // and wallet write, so a rejected cross-environment request leaves no
+        // partially created account or funding surface behind.
+        if (sandbox == 1 && sponsor == null) {
+            return ApiResult.fail(422, "USER_REGISTRATION_SANDBOX_SPONSOR_REQUIRED");
+        }
+        if (sponsor != null && sandbox != sandboxOf(sponsor)) {
+            return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
+        }
 
         UserEntity user = new UserEntity();
         user.setCountryCode(countryCode);
         user.setPhone(phone);
+        user.setClientIp(registrationIp.trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         user.setNickname("Nexion " + phone.substring(Math.max(0, phone.length() - 4)));
         user.setReferralCode(nextReferralCode());
@@ -177,6 +202,7 @@ public class AppUserRegistrationService {
         user.setUserLevel("L1");
         user.setVRank("V0");
         user.setStatus("ACTIVE");
+        user.setSandbox(sandbox);
         user.setLanguage("en-US");
         user.setIsDeleted(0);
         try {
@@ -187,7 +213,7 @@ public class AppUserRegistrationService {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
         userMapper.resetLoginFailures(user.getId());
-        userMapper.ensureUserWallet(user.getId());
+        userMapper.ensureRegisteredUserWallet(user.getId(), sandbox);
         outboxService.publish(
                 "USER_REGISTRATION",
                 String.valueOf(user.getId()),
@@ -206,12 +232,38 @@ public class AppUserRegistrationService {
         return authService.issueRegisteredSession(user, clientAddress);
     }
 
-    private UserEntity findUser(String countryCode, String phone) {
+    private UserEntity findUser(String countryCode, String phone, int sandbox) {
         return userMapper.selectOne(new LambdaQueryWrapper<UserEntity>()
                 .in(UserEntity::getCountryCode, countryCode, countryCode.substring(1))
                 .eq(UserEntity::getPhone, phone)
+                .eq(UserEntity::getSandbox, sandbox)
                 .eq(UserEntity::getIsDeleted, 0)
                 .last("LIMIT 1"));
+    }
+
+    private int sandboxOf(UserEntity user) {
+        return user != null && Integer.valueOf(1).equals(user.getSandbox()) ? 1 : 0;
+    }
+
+    /**
+     * The server profile is the sole authority for registration isolation.
+     * Empty/default and explicit production are production writes; every
+     * non-production profile must be one exact allow-listed sandbox profile.
+     * This decision happens before the OTP compare-and-set or any other write.
+     */
+    private Integer sandboxForNewRegistration() {
+        String[] activeProfiles = environment.getActiveProfiles();
+        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(activeProfiles)) {
+            return 1;
+        }
+        if (activeProfiles == null || activeProfiles.length == 0) {
+            return 0;
+        }
+        if (activeProfiles.length == 1
+                && ("production".equals(activeProfiles[0]) || "default".equals(activeProfiles[0]))) {
+            return 0;
+        }
+        return null;
     }
 
     private String nextReferralCode() {

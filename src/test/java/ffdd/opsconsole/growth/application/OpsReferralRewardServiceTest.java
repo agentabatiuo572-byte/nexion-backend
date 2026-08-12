@@ -41,6 +41,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.mock.env.MockEnvironment;
 
 class OpsReferralRewardServiceTest {
     private final ReferralRewardMapper mapper = mock(ReferralRewardMapper.class);
@@ -52,8 +53,18 @@ class OpsReferralRewardServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy = mock(OpsReadTimeSeedPolicy.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
+    private final MockEnvironment environment = productionEnvironment();
+    private final H8AcceptanceSandboxCommandService sandboxCommands = mock(H8AcceptanceSandboxCommandService.class);
+    private final H8AcceptanceSandboxAuditService sandboxAudit = mock(H8AcceptanceSandboxAuditService.class);
     private final OpsReferralRewardService service = new OpsReferralRewardService(
-            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, earningsRelease);
+            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, earningsRelease, environment,
+            new H8AcceptanceSandboxRunScope(environment), sandboxCommands, sandboxAudit);
+
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("production");
+        return environment;
+    }
 
     @BeforeEach
     void setUp() {
@@ -61,6 +72,8 @@ class OpsReferralRewardServiceTest {
         when(mapper.lockRewardMutation()).thenReturn("H8_REWARD");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(Map.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+        when(sandboxCommands.execute(anyString(), anyString(), anyString(), any()))
+                .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(3)).get());
         when(config.activeValue("K.rewards.welcomeGift.usdtAmount")).thenReturn(Optional.of("5"));
         when(config.activeValue("K.rewards.welcomeGift.nexAmount")).thenReturn(Optional.of("20"));
         when(config.activeValue("K.rewards.welcomeGift.lockMode")).thenReturn(Optional.of("risk_bucket"));
@@ -98,6 +111,49 @@ class OpsReferralRewardServiceTest {
         } finally {
             A2ReplayContext.enterReplay();
         }
+    }
+
+    @Test
+    void strictSandboxProfileBlocksProductionSettlementBeforeAnyWriteOrAudit() {
+        environment.setActiveProfiles("acceptance");
+
+        assertThatThrownBy(() -> service.runSettlements("idem-ref-sandbox-block",
+                new ReferralSettlementRunRequest(10, "strict sandbox must not write production",
+                        "superadmin", 1L, 7, "not-used")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+
+        verify(mapper, never()).lockRewardMutation();
+        verify(audit, never()).recordRequiredInNewTransaction(any());
+    }
+
+    @Test
+    void acceptanceSandboxSettlementRequiresRunScopedFixtureId() {
+        environment.setActiveProfiles("acceptance");
+
+        assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-run-required",
+                new AcceptanceSandboxReferralSettlementRequest(null, 22L,
+                        "sandbox fixture needs a run id", "acceptance-runner")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_SANDBOX_RUN_ID_REQUIRED");
+
+        verify(mapper, never()).lockRewardMutation();
+    }
+
+    @Test
+    void acceptanceSandboxSettlementRejectsAnotherLegalRunBeforeIdempotencyOrAudit() {
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
+
+        assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-other-run",
+                new AcceptanceSandboxReferralSettlementRequest("RUN-H8-OTHER", 22L,
+                        "another legal run must not select fixtures", "acceptance-runner")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_SANDBOX_RUN_ID_MISMATCH");
+
+        verify(mapper, never()).lockRewardMutation();
+        verify(sandboxCommands, never()).execute(anyString(), anyString(), anyString(), any());
+        verify(sandboxAudit, never()).recordRejected(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -146,16 +202,18 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementUsesMockSourceAndNeverCallsProductionLedgerFacade() {
-        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), eq(22L)))
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
+        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSandboxSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                any(LocalDateTime.class))).thenReturn(1);
-        when(mapper.creditSandboxWallet(anyLong(), anyString(), any())).thenReturn(1);
-        when(mapper.insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
+                anyString(), any(LocalDateTime.class))).thenReturn(1);
+        when(mapper.insertSandboxLedger(anyString(), anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
 
         Map<String, Object> result = service.runAcceptanceSandboxSettlement("idem-h8-sandbox-1",
-                new AcceptanceSandboxReferralSettlementRequest(22L,
+                new AcceptanceSandboxReferralSettlementRequest("run-h8-acceptance",
+                        22L,
                         "acceptance fixture settlement", "acceptance-runner"));
 
         assertThat(result).containsEntry("settled", 1).containsEntry("source", "mock")
@@ -163,26 +221,30 @@ class OpsReferralRewardServiceTest {
                 .containsEntry("sourceType", "MOCK_REFERRAL");
         verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
                 any(), anyString(), anyString());
-        verify(mapper, times(3)).creditSandboxWallet(anyLong(), anyString(), any());
-        verify(mapper, times(3)).insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString());
+        verify(mapper, times(3)).insertSandboxLedger(anyString(), anyString(), anyLong(), anyString(), any(), anyString());
         verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
                 any(), anyString(), anyString());
+        verify(idempotency, never()).execute(eq("H8_ACCEPTANCE_SANDBOX_REFERRAL"), anyString(), anyString(), eq(Map.class), any());
+        verify(audit, never()).recordRequired(any());
+        verify(audit, never()).recordRequiredInNewTransaction(any());
         verify(outbox, never()).publish(anyString(), anyString(), anyString(), any());
     }
 
     @Test
     void acceptanceSandboxSettlementDoesNotDependOnProductionCoverage() {
-        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), eq(22L)))
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
+        when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSandboxSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                any(LocalDateTime.class))).thenReturn(1);
-        when(mapper.creditSandboxWallet(anyLong(), anyString(), any())).thenReturn(1);
-        when(mapper.insertSandboxLedger(anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
+                anyString(), any(LocalDateTime.class))).thenReturn(1);
+        when(mapper.insertSandboxLedger(anyString(), anyString(), anyLong(), anyString(), any(), anyString())).thenReturn(1);
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false));
 
         Map<String, Object> result = service.runAcceptanceSandboxSettlement("idem-h8-sandbox-no-b1",
-                new AcceptanceSandboxReferralSettlementRequest(22L,
+                new AcceptanceSandboxReferralSettlementRequest("run-h8-acceptance",
+                        22L,
                         "sandbox cannot consume production coverage", "acceptance-runner"));
 
         assertThat(result).containsEntry("settled", 1).containsEntry("sourceEnvironment", "SANDBOX");

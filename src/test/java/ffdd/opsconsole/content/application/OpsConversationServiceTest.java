@@ -80,7 +80,32 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
-                customerProfileRepository);
+                customerProfileRepository,
+                mock(ProductionSupportPathGuard.class));
+    }
+
+    @Test
+    void directOpsServiceGatewayFailsClosedBeforeAnyFormalConversationDependency() {
+        ConversationRepository conversations = mock(ConversationRepository.class);
+        SupportTicketRepository tickets = mock(SupportTicketRepository.class);
+        OpsSupportAgentService agents = mock(OpsSupportAgentService.class);
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        CustomerProfileRepository profiles = mock(CustomerProfileRepository.class);
+        ProductionSupportPathGuard productionGuard = mock(ProductionSupportPathGuard.class);
+        doThrow(new RuntimeException("SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionGuard).requireOpsWriteAllowed();
+        OpsConversationService direct = new OpsConversationService(
+                conversations, tickets, agents, config, audit, clock,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                mock(ffdd.opsconsole.user.application.OpsUserService.class),
+                mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
+                mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
+                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard);
+
+        assertThatThrownBy(direct::runTimeoutFallback).isInstanceOf(RuntimeException.class);
+
+        verifyNoInteractions(conversations, tickets, agents, config, audit, profiles);
     }
 
     @Test
@@ -866,7 +891,9 @@ class OpsConversationServiceTest {
         }
 
         @Override
-        public boolean markAgentMessagesReadThrough(String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now) {
+        public boolean markAgentMessagesReadThrough(
+                String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now,
+                String expectedStatus, Long expectedVersion) {
             receiptStatus = "read";
             return true;
         }

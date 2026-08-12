@@ -574,6 +574,25 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void routesCommerceAcceptanceSandboxThroughDeviceE4Authorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("device_e4_read", "device_e4_write");
+
+        filter.doFilter(
+                request("GET", "/api/admin/commerce/acceptance/sandbox-orders"),
+                new MockHttpServletResponse(),
+                mark(readInvoked));
+        filter.doFilter(
+                request("POST", "/api/admin/commerce/acceptance/sandbox-orders/CSO-1/callbacks"),
+                new MockHttpServletResponse(),
+                mark(writeInvoked));
+
+        assertThat(readInvoked).isTrue();
+        assertThat(writeInvoked).isTrue();
+    }
+
+    @Test
     void routesCanonicalF5CommissionReadsThroughNetworkAuthorities() throws Exception {
         AtomicBoolean overviewInvoked = new AtomicBoolean(false);
         AtomicBoolean anomaliesInvoked = new AtomicBoolean(false);

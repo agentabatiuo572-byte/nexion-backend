@@ -2,11 +2,14 @@ package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.content.application.LearningAcceptanceSandboxGate;
 import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nLearningStats;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
@@ -27,7 +30,8 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 class OpsI18nLearningControllerTest {
     private final OpsI18nLearningService service = mock(OpsI18nLearningService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
-    private final OpsI18nLearningController controller = new OpsI18nLearningController(service, idempotencyService);
+    private final LearningAcceptanceSandboxGate acceptanceGate = mock(LearningAcceptanceSandboxGate.class);
+    private final OpsI18nLearningController controller = new OpsI18nLearningController(service, idempotencyService, acceptanceGate);
 
     OpsI18nLearningControllerTest() {
         when(idempotencyService.execute(
@@ -102,6 +106,27 @@ class OpsI18nLearningControllerTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.eq(ApiResult.class),
                 org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any());
+    }
+
+    @Test
+    void strictAcceptanceProfileRejectsFormalI18nAndCourseMutationsBeforeIdempotencyOrServiceWrites() {
+        I18nActionRequest action = new I18nActionRequest("Marina K.", "课程动作");
+        doThrow(new IllegalStateException("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN"))
+                .when(acceptanceGate).requireProductionMutationAllowed();
+
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(
+                () -> controller.publishCourse("new-compute-guide", "idem-i7-pub", action)))
+                .hasMessage("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(
+                () -> controller.rescan("idem-i6-scan", action)))
+                .hasMessage("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
+
+        verify(idempotencyService, never()).execute(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(ApiResult.class),
+                org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any());
+        verify(service, never()).publishCourse("new-compute-guide", "idem-i7-pub", action);
+        verify(service, never()).rescan("idem-i6-scan", action);
     }
 
     @Test

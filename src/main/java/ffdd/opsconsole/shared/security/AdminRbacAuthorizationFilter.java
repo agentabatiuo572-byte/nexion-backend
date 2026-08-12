@@ -88,6 +88,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/treasury/**", "finance_"),
             rule("/api/admin/config/task-pricing", "device_"),
             rule("/api/admin/config/phone-tiers", "device_"),
+            // Commerce acceptance callbacks are the E4 sandbox operations
+            // surface even though their canonical route is not under /devices.
+            rule("/api/admin/commerce/**", "device_"),
             rule("/api/admin/devices/**", "device_"),
             rule("/api/admin/teams/**", "network_"),
             // F5's detailed audit/read and disposition endpoints are canonical root

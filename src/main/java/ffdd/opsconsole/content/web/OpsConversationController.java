@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.ConversationMessageEvent;
 import ffdd.opsconsole.content.application.OpsConversationService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
@@ -46,6 +47,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsConversationController {
     private final OpsConversationService conversationService;
+    private final ProductionSupportPathGuard productionPathGuard;
     /**
      * 服务内事件总线：各写端点调完 service 后用它发布 ConversationMessageEvent，
      * OpsConversationStreamController 通过 @EventListener 接收并 SSE 推送给在线坐席。
@@ -57,6 +59,7 @@ public class OpsConversationController {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> executeCommand(String scope, String idempotencyKey, String requestHash, java.util.function.Supplier<ApiResult<T>> action) {
         try {
+            productionPathGuard.requireOpsWriteAllowed();
             if (idempotencyKey == null || idempotencyKey.isBlank()) return action.get();
             return (ApiResult<T>) idempotencyService.execute(scope, idempotencyKey.trim(), requestHash, ApiResult.class, (java.util.function.Supplier) action);
         } catch (OpsConversationService.ConversationStateConflictException ignored) {

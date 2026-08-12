@@ -26,7 +26,7 @@ class AppReferralRewardControllerTest {
     void derivesUserScopeOnlyFromAuthenticatedUserSubject() {
         AppReferralRewardView view = new AppReferralRewardView(
                 "NEX-ABC", BigDecimal.TEN, 0, 0, 0, BigDecimal.ZERO, BigDecimal.ZERO,
-                List.of(), 20, "ledger", "PRODUCTION", List.of(), Instant.now());
+                List.of(), 20, "ledger", "PRODUCTION", null, List.of(), Instant.now());
         when(service.snapshot(42L, 999)).thenReturn(ApiResult.ok(view));
         UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken("42", "n/a", List.of());

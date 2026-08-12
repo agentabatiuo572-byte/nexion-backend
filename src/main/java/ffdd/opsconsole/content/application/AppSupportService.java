@@ -34,6 +34,8 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.context.ApplicationEventPublisher;
 
@@ -55,9 +57,11 @@ public class AppSupportService {
     private final AuditLogService auditLogService;
     private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     public ApiResult<PageResult<SupportTicketView>> tickets(
             Long userId, String status, Long pageNum, Long pageSize) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         String normalizedStatus = normalizeUpper(status);
         if (StringUtils.hasText(normalizedStatus) && !TICKET_STATUSES.contains(normalizedStatus)) {
@@ -70,6 +74,7 @@ public class AppSupportService {
     }
 
     public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         SupportTicketView ticket = ownedTicket(userId, ticketNo);
         if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
@@ -79,6 +84,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportTicketDetail> createTicket(
             Long userId, String idempotencyKey, CreateTicketRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !validCategory(request.category())
@@ -100,6 +106,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportTicketDetail> replyTicket(
             Long userId, String ticketNo, String idempotencyKey, ReplyRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !boundedText(request.body(), 1, 2000) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
@@ -122,6 +129,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<SupportTicketDetail> closeTicket(
             Long userId, String ticketNo, String idempotencyKey, CloseRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
@@ -142,6 +150,7 @@ public class AppSupportService {
 
     public ApiResult<PageResult<ContentConversationView>> conversations(
             Long userId, String status, Long pageNum, Long pageSize) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         String normalizedStatus = normalizeUpper(status);
         if (StringUtils.hasText(normalizedStatus) && !CONVERSATION_STATUSES.contains(normalizedStatus)) {
@@ -157,6 +166,7 @@ public class AppSupportService {
     }
 
     public ApiResult<ContentConversationDetail> conversation(Long userId, String conversationNo) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         ContentConversationView conversation = ownedConversation(userId, conversationNo);
         if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
@@ -166,20 +176,26 @@ public class AppSupportService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationDetail> markConversationRead(
-            Long userId, String conversationNo, Long lastSeenMessageId) {
+            Long userId, String conversationNo, Long lastSeenMessageId, String expectedStatus, Long expectedVersion) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
-        ContentConversationView conversation = ownedConversation(userId, conversationNo);
-        if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
+        ContentConversationView conversation = conversationRepository
+                .findByConversationNoForUpdate(safeNo(conversationNo)).orElse(null);
+        if (conversation == null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
+        if (!validExpectation(expectedStatus, expectedVersion)) return validation("CONVERSATION_READ_EXPECTATION_INVALID");
+        if (!matches(conversation.status(), conversation.version(), expectedStatus, expectedVersion)) return conversationConflict();
+        if ("CLOSED".equals(normalizeUpper(conversation.status()))) return invalidConversationState();
         if (lastSeenMessageId == null || lastSeenMessageId <= 0) return validation("LAST_SEEN_MESSAGE_ID_REQUIRED");
         List<ContentConversationMessageView> messages = conversationRepository.userVisibleMessages(conversation.conversationNo());
         boolean targetVisibleAgentMessage = messages.stream().anyMatch(message -> lastSeenMessageId.equals(message.id())
                 && "agent".equalsIgnoreCase(message.senderType()));
         if (!targetVisibleAgentMessage) return hiddenNotFound("CONVERSATION_AGENT_MESSAGE_NOT_FOUND");
         boolean changed = conversationRepository.markAgentMessagesReadThrough(
-                conversation.conversationNo(), lastSeenMessageId, "user:" + userId, LocalDateTime.now(clock));
+                conversation.conversationNo(), lastSeenMessageId, "user:" + userId, LocalDateTime.now(clock),
+                expectedStatus, expectedVersion);
         ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo());
         if (changed) {
-            eventPublisher.publishEvent(ConversationMessageEvent.builder()
+            publishAfterCommit(ConversationMessageEvent.builder()
                     .conversationNo(conversation.conversationNo()).messageId(lastSeenMessageId)
                     .eventType(ConversationMessageEvent.EventType.RECEIPT).senderType("USER")
                     .senderName("user:" + userId).body("read").ts(LocalDateTime.now(clock)).build());
@@ -190,6 +206,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationDetail> startConversation(
             Long userId, String idempotencyKey, StartConversationRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !CONVERSATION_TYPES.contains(normalizeUpper(request.conversationType()))
@@ -211,6 +228,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ContentConversationDetail> replyConversation(
             Long userId, String conversationNo, String idempotencyKey, ReplyRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !boundedText(request.body(), 1, 2000) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
@@ -235,6 +253,7 @@ public class AppSupportService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ConversationTicketResult> convertConversationToTicket(
             Long userId, String conversationNo, String idempotencyKey, ConvertToTicketRequest request) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !validCategory(request.category()) || !boundedText(request.title(), 1, 160)
@@ -263,7 +282,7 @@ public class AppSupportService {
             ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
             audit("APP_CONVERSATION_CONVERTED_TO_TICKET", "CONVERSATION", conversation.conversationNo(), userId,
                     Map.of("ticketNo", ticketNo, "idempotencyKey", idempotencyKey.trim()));
-            eventPublisher.publishEvent(ConversationMessageEvent.builder()
+            publishAfterCommit(ConversationMessageEvent.builder()
                     .conversationNo(updated.conversationNo()).eventType(ConversationMessageEvent.EventType.STATUS)
                     .senderType("SYSTEM").senderName("System").body("CONVERTED_TO_TICKET")
                     .ts(now).ownerAgentId(updated.ownerAgentId()).ownerAgentName(updated.ownerAgentName()).build());
@@ -274,6 +293,7 @@ public class AppSupportService {
     }
 
     public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category) {
+        productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         String normalizedLanguage = normalizeLanguage(language);
         String normalizedCategory = normalizeLower(category);
@@ -333,11 +353,25 @@ public class AppSupportService {
         var message = detail.messages().stream()
                 .filter(row -> "user".equalsIgnoreCase(row.senderType()) && body.equals(row.content()))
                 .reduce((left, right) -> right).orElse(null);
-        eventPublisher.publishEvent(ConversationMessageEvent.builder()
+        publishAfterCommit(ConversationMessageEvent.builder()
                 .conversationNo(conversation.conversationNo()).messageId(message == null ? null : message.id())
                 .eventType(type).senderType("USER").senderName("User").body(body)
                 .ts(message == null ? LocalDateTime.now(clock) : message.createdAt())
                 .ownerAgentId(conversation.ownerAgentId()).ownerAgentName(conversation.ownerAgentName()).build());
+    }
+
+    /** SSE is an observation of a durable commit, never a preview of an in-flight command. */
+    private void publishAfterCommit(ConversationMessageEvent event) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            eventPublisher.publishEvent(event);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventPublisher.publishEvent(event);
+            }
+        });
     }
 
     private void audit(String action, String resourceType, String resourceId, Long userId, Map<String, Object> detail) {

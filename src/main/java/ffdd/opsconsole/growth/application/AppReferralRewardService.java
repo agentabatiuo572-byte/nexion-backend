@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -26,12 +27,12 @@ public class AppReferralRewardService {
             "nx_user_wallet");
     private static final List<String> SANDBOX_FACT_SOURCES = List.of(
             "nx_h8_sandbox_referral_settlement",
-            "nx_h8_sandbox_referral_ledger",
-            "nx_user_wallet");
+            "nx_h8_sandbox_referral_ledger");
 
     private final ReferralRewardMapper mapper;
     private final OpsReferralRewardService rewardConfig;
     private final Clock clock;
+    private final Environment environment;
 
     public ApiResult<AppReferralRewardView> snapshot(Long userId, Integer requestedLimit) {
         if (userId == null || userId <= 0) throw new BizException(403, "USER_SUBJECT_REQUIRED");
@@ -40,23 +41,34 @@ public class AppReferralRewardService {
         if (account == null) throw new BizException(503, "H8_REWARD_ACCOUNT_ENVIRONMENT_INCONSISTENT");
 
         boolean sandbox = account.sandbox() != null && account.sandbox() == 1;
+        boolean strictSandboxProfile = H8AcceptanceSandboxProfileCondition
+                .isStrictIsolatedProfile(environment.getActiveProfiles());
+        if (strictSandboxProfile && !sandbox) {
+            throw new BizException(403, "H8_SANDBOX_ACCOUNT_REQUIRED");
+        }
+        if (!strictSandboxProfile && sandbox) {
+            throw new BizException(403, "H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
+        }
+        String runId = sandbox ? requireAcceptanceRunId() : null;
         String environment = sandbox ? "SANDBOX" : "PRODUCTION";
         String sourceType = sandbox ? "MOCK_REFERRAL" : "H8_REFERRAL";
         String source = sandbox ? "mock" : "ledger";
         ReferralRewardPublicConfigView config = rewardConfig.publicConfig();
         java.time.LocalDateTime effectiveAt = config.effectiveAt().atZone(ZoneOffset.UTC).toLocalDateTime();
-        long invitedCount = mapper.appInvitedCount(userId, effectiveAt, environment);
+        long invitedCount = sandbox
+                ? mapper.appSandboxInvitedCount(userId, effectiveAt, runId)
+                : mapper.appInvitedCount(userId, effectiveAt, environment);
         long pendingCount = sandbox
-                ? mapper.appSandboxPendingCount(userId, effectiveAt)
+                ? mapper.appSandboxPendingCount(userId, effectiveAt, runId)
                 : mapper.appPendingCount(userId, effectiveAt, environment);
         long positiveSettlements = sandbox
-                ? mapper.appSandboxPositiveSettlementCount(userId)
+                ? mapper.appSandboxPositiveSettlementCount(userId, runId)
                 : mapper.appPositiveSettlementCount(userId, environment);
         long settlementCount = sandbox
-                ? mapper.appSandboxSettlementCount(userId)
+                ? mapper.appSandboxSettlementCount(userId, runId)
                 : mapper.appSettlementCount(userId, environment);
         AppReferralLedgerSummary summary = sandbox
-                ? mapper.appVerifiedSandboxRewardSummary(userId)
+                ? mapper.appVerifiedSandboxRewardSummary(userId, runId)
                 : mapper.appVerifiedRewardSummary(userId, sourceType, environment);
         long verifiedCount = summary == null || summary.settledCount() == null ? 0 : summary.settledCount();
         if (positiveSettlements != verifiedCount) {
@@ -65,15 +77,26 @@ public class AppReferralRewardService {
         BigDecimal lifetime = summary == null || summary.lifetimeInviterNex() == null
                 ? BigDecimal.ZERO : summary.lifetimeInviterNex();
         List<AppReferralLedgerRow> ledgerRows = sandbox
-                ? mapper.appRecentVerifiedSandboxRewards(userId, limit)
+                ? mapper.appRecentVerifiedSandboxRewards(userId, runId, limit)
                 : mapper.appRecentVerifiedRewards(userId, sourceType, environment, limit);
         List<AppReferralRewardView.RewardLedgerItem> rewards = ledgerRows == null
                 ? List.of() : ledgerRows.stream().map(this::toView).toList();
         return ApiResult.ok(new AppReferralRewardView(
                 account.referralCode(), config.inviterReward().nexAmount(),
                 invitedCount, pendingCount, settlementCount, lifetime,
-                nz(account.walletNexAvailable()), rewards, limit, source, environment,
+                sandbox ? lifetime : nz(account.walletNexAvailable()), rewards, limit, source, environment, sandbox ? runId : null,
                 sandbox ? SANDBOX_FACT_SOURCES : PRODUCTION_FACT_SOURCES, clock.instant()));
+    }
+
+    private String requireAcceptanceRunId() {
+        if (!H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile(environment.getActiveProfiles())) {
+            throw new BizException(503, "H8_SANDBOX_PROFILE_REQUIRED");
+        }
+        String runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID");
+        if (runId == null || !runId.trim().matches("[A-Za-z0-9][A-Za-z0-9_-]{2,63}")) {
+            throw new BizException(503, "H8_SANDBOX_RUN_ID_REQUIRED");
+        }
+        return runId.trim();
     }
 
     private AppReferralRewardView.RewardLedgerItem toView(AppReferralLedgerRow row) {

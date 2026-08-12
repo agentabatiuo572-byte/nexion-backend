@@ -1,10 +1,12 @@
 package ffdd.opsconsole.content.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -12,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.OpsSessionTemplateService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.content.dto.SessionAdvisorPolicyUpdateRequest;
 import ffdd.opsconsole.content.dto.SessionCategoryToggleRequest;
 import ffdd.opsconsole.content.dto.SessionReplyTemplateCreateRequest;
@@ -34,11 +37,13 @@ class OpsSessionTemplateControllerTest {
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
+    private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
     private final OpsSessionTemplateController controller = new OpsSessionTemplateController(
             templateService,
             supportAgentService,
             idempotencyService,
-            auditLogService);
+            auditLogService,
+            productionPathGuard);
 
     @BeforeEach
     void setUp() {
@@ -198,5 +203,29 @@ class OpsSessionTemplateControllerTest {
 
         assertThat(result.getCode()).isEqualTo(409);
         verify(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void isolatedProfilesRejectEveryCommandGatewayBeforePermissionsIdempotencyAuditOrWrites() {
+        doThrow(new IllegalStateException("SUPPORT_PRODUCTION_PATH_FORBIDDEN"))
+                .when(productionPathGuard).requireOpsWriteAllowed();
+        SessionCategoryToggleRequest category = new SessionCategoryToggleRequest(false, "M5", "reason");
+        SessionAdvisorPolicyUpdateRequest workbench = new SessionAdvisorPolicyUpdateRequest("on", "M3", "reason");
+        SessionScriptCreateRequest script = new SessionScriptCreateRequest("title", "body", "/", "all", "draft", "M5", "reason");
+
+        assertThatThrownBy(() -> controller.updateCategory("advisor", "idem-category", category))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> controller.updateWorkbenchPolicy("timeoutFallback", "idem-workbench", workbench))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> controller.createScript("idem-script", script))
+                .isInstanceOf(IllegalStateException.class);
+
+        verify(supportAgentService, never()).canManageSupportSeats();
+        verify(supportAgentService, never()).canManageM5Content();
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+        verify(auditLogService, never()).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
+        verify(templateService, never()).updateCategory(anyString(), anyString(), any());
+        verify(templateService, never()).updateWorkbenchPolicy(anyString(), anyString(), any());
+        verify(templateService, never()).createScript(anyString(), any());
     }
 }

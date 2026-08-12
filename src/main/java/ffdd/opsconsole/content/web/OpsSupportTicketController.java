@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.application.OpsSupportTicketService;
 import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.application.ProductionSupportPathGuard;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.content.domain.SupportTicketDetail;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
@@ -40,6 +41,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsSupportTicketController {
     private final OpsSupportTicketService ticketService;
     private final OpsSupportAgentService supportAgentService;
+    private final ProductionSupportPathGuard productionPathGuard;
 
     // 工单总览 — M2 工单台 读
     @PreAuthorize("hasAuthority('service_m2_read')")
@@ -68,6 +70,7 @@ public class OpsSupportTicketController {
     public ApiResult<Map<String, Object>> updateLoadConfig(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportLoadConfigUpdateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_LOAD_MANAGEMENT_FORBIDDEN");
         }
@@ -80,6 +83,7 @@ public class OpsSupportTicketController {
     public ApiResult<Map<String, Object>> rebalanceLoad(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportLoadRebalanceRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         if (!supportAgentService.canManageSupportSeats()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "SUPPORT_LOAD_MANAGEMENT_FORBIDDEN");
         }
@@ -99,6 +103,7 @@ public class OpsSupportTicketController {
     public ApiResult<SupportTicketDetail> create(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketCreateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.create(idempotencyKey, request);
     }
 
@@ -116,6 +121,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketReplyRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.reply(ticketNo, idempotencyKey, request);
     }
 
@@ -126,6 +132,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketNoteRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.addInternalNote(ticketNo, idempotencyKey, request);
     }
 
@@ -136,6 +143,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketStatusRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.updateStatus(ticketNo, idempotencyKey, request);
     }
 
@@ -146,6 +154,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketPriorityRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.updatePriority(ticketNo, idempotencyKey, request);
     }
 
@@ -156,6 +165,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketAssigneeRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.assign(ticketNo, idempotencyKey, request);
     }
 
@@ -166,6 +176,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketArchiveRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.archive(ticketNo, idempotencyKey, request);
     }
 
@@ -176,6 +187,7 @@ public class OpsSupportTicketController {
             @PathVariable String ticketNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody SupportTicketEscalateRequest request) {
+        productionPathGuard.requireOpsWriteAllowed();
         return ticketService.escalate(ticketNo, idempotencyKey, request);
     }
 }

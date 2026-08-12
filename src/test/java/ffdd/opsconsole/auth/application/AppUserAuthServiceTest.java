@@ -22,6 +22,7 @@ import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
@@ -33,8 +34,13 @@ import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 class AppUserAuthServiceTest {
@@ -48,6 +54,7 @@ class AppUserAuthServiceTest {
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
     private final UserOtpDeliveryService otpDelivery = mock(UserOtpDeliveryService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final MockEnvironment environment = new MockEnvironment();
     private final AppUserAuthService service;
 
     AppUserAuthServiceTest() {
@@ -58,7 +65,7 @@ class AppUserAuthServiceTest {
         when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
         when(loginGuards.recordOtpSend(any(), any(), any(), any(Integer.class), any(), any(Integer.class))).thenReturn(1);
         service = new AppUserAuthService(
-                users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, otpDelivery, outbox);
+                users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, otpDelivery, outbox, environment);
     }
 
     @Test
@@ -70,9 +77,10 @@ class AppUserAuthServiceTest {
         user.setNickname("Nexion user");
         user.setStatus("ACTIVE");
         user.setIsDeleted(0);
+        user.setSandbox(0);
         user.setPasswordHash(passwords.encode("secret"));
         when(users.selectOne(any())).thenReturn(user);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("signed-token");
 
         var result = service.login(new UserLoginRequest("81", "9012345678", "secret"));
@@ -157,7 +165,7 @@ class AppUserAuthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(429);
         assertThat(result.getMessage()).isEqualTo("USER_LOGIN_TEMPORARILY_LOCKED");
-        verify(tokens, never()).createToken(any(), any(), any(), any(), any(), any());
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -239,7 +247,7 @@ class AppUserAuthServiceTest {
         when(users.selectOne(any())).thenReturn(user);
         when(configFacade.activeValue("auth.session.access_ttl_hours")).thenReturn(Optional.of("4"));
         when(configFacade.activeValue("auth.session.refresh_ttl_days")).thenReturn(Optional.of("30"));
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), eq(Duration.ofHours(4))))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), eq(Duration.ofHours(4)), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("configured-token");
 
         LocalDateTime before = LocalDateTime.now();
@@ -258,7 +266,7 @@ class AppUserAuthServiceTest {
         when(users.isPasswordResetRequired(42L)).thenReturn(true);
         when(users.updatePasswordHash(eq(42L), any())).thenReturn(1);
         when(users.clearPasswordResetRequired(42L)).thenReturn(1);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("reset-token");
 
         var result = service.completePasswordReset(new UserPasswordResetCompleteRequest(
@@ -280,7 +288,7 @@ class AppUserAuthServiceTest {
         when(users.isTwoFactorEnabled(42L)).thenReturn(true);
         String challengeNo = "OTP-0123456789abcdef0123456789abcdef";
         when(users.consumeValidLoginOtp(42L, challengeNo, "123456")).thenReturn(1);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("mfa-token");
 
         var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
@@ -310,7 +318,7 @@ class AppUserAuthServiceTest {
         UserEntity user = activeUser();
         when(users.selectOne(any())).thenReturn(user);
         when(users.consumeValidLoginOtp(eq(42L), any(), eq("123456"))).thenReturn(1);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("otp-login-token");
 
         var sent = service.beginOtpLogin(new UserOtpLoginRequest("+81", "9012345678"));
@@ -445,7 +453,7 @@ class AppUserAuthServiceTest {
     void refreshRotatesOpaqueTokenWithoutPersistingEitherRawSecret() {
         UserEntity user = activeUser();
         when(users.selectOne(any())).thenReturn(user);
-        when(tokens.createToken(eq(42L), eq("USER"), eq("9012345678"), eq(List.of()), any(), any(Duration.class)))
+        when(tokens.createUserToken(eq(42L), eq("9012345678"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("initial-token", "refreshed-token");
 
         var login = service.login(new UserLoginRequest("+81", "9012345678", "secret"));
@@ -510,6 +518,129 @@ class AppUserAuthServiceTest {
         verify(sessions).revokeRefreshChain("chain-42");
     }
 
+    @ParameterizedTest
+    @MethodSource("crossEnvironmentAccounts")
+    void passwordLoginRejectsBothCrossEnvironmentDirectionsBeforeTokenOrSession(String profile, int accountSandbox) {
+        environment.setActiveProfiles(profile);
+        UserEntity user = activeUser();
+        user.setSandbox(accountSandbox);
+        when(users.selectOne(any())).thenReturn(user);
+
+        var result = service.login(new UserLoginRequest("+81", "9012345678", "secret"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        assertThat(result.getData()).isNull();
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @MethodSource("crossEnvironmentAccounts")
+    void twoFactorCompletionRejectsBothCrossEnvironmentDirectionsBeforeOtpOrSession(String profile, int accountSandbox) {
+        environment.setActiveProfiles(profile);
+        UserEntity user = activeUser();
+        user.setSandbox(accountSandbox);
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.isTwoFactorEnabled(42L)).thenReturn(true);
+        String challengeNo = "OTP-0123456789abcdef0123456789abcdef";
+
+        var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
+                "+81", "9012345678", "secret", challengeNo, "123456"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        assertThat(result.getData()).isNull();
+        verify(users, never()).consumeValidLoginOtp(any(), any(), any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @MethodSource("crossEnvironmentAccounts")
+    void passwordlessOtpCompletionRejectsBothCrossEnvironmentDirectionsBeforeConsumingChallenge(String profile, int accountSandbox) {
+        environment.setActiveProfiles(profile);
+        UserEntity user = activeUser();
+        user.setSandbox(accountSandbox);
+        when(users.selectOne(any())).thenReturn(user);
+        String challengeNo = "LOGIN-0123456789abcdef0123456789abcdef";
+
+        var result = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
+                "+81", "9012345678", challengeNo, "123456"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        assertThat(result.getData()).isNull();
+        verify(users, never()).consumeValidLoginOtp(any(), any(), any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
+    }
+
+    @ParameterizedTest
+    @MethodSource("crossEnvironmentAccounts")
+    void refreshRejectsAndRevokesBothCrossEnvironmentDirections(String profile, int accountSandbox) {
+        environment.setActiveProfiles(profile);
+        UserEntity user = activeUser();
+        user.setSandbox(accountSandbox);
+        UserSessionEntity current = new UserSessionEntity();
+        current.setId(101L);
+        current.setUserId(42L);
+        current.setSessionChainId("environment-chain");
+        current.setExpiresAt(LocalDateTime.now().plusDays(1));
+        current.setLastActiveAt(LocalDateTime.now());
+        when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(users.selectById(42L)).thenReturn(user);
+
+        var result = service.refresh(new UserRefreshRequest("cross-environment-refresh"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_ENVIRONMENT_FORBIDDEN");
+        assertThat(result.getData()).isNull();
+        verify(sessions).revokeRefreshChain("environment-chain");
+        verify(sessions, never()).markRefreshRotated(any(), any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void passwordResetCompletionRejectsBeforeMutatingACrossEnvironmentAccount() {
+        environment.setActiveProfiles("acceptance");
+        UserEntity user = activeUser();
+        user.setSandbox(0);
+        when(users.selectOne(any())).thenReturn(user);
+        when(users.isPasswordResetRequired(42L)).thenReturn(true);
+
+        var result = service.completePasswordReset(new UserPasswordResetCompleteRequest(
+                "+81", "9012345678", "secret", "NewSecure@2026"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        verify(users, never()).updatePasswordHash(any(), any());
+        verify(users, never()).clearPasswordResetRequired(any());
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void mixedOrUnknownProfilesFailClosedBeforeAnySessionIssue() {
+        environment.setActiveProfiles("production", "acceptance");
+        UserEntity user = activeUser();
+        user.setSandbox(0);
+        when(users.selectOne(any())).thenReturn(user);
+
+        var result = service.login(new UserLoginRequest("+81", "9012345678", "secret"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("USER_AUTH_ENVIRONMENT_FORBIDDEN");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(tokens, never()).createUserToken(any(), any(), any(), any(), any(), any());
+    }
+
+    private static Stream<Arguments> crossEnvironmentAccounts() {
+        return Stream.of(
+                Arguments.of("production", 1),
+                Arguments.of("acceptance", 0));
+    }
+
     private UserEntity activeUser() {
         UserEntity user = new UserEntity();
         user.setId(42L);
@@ -517,6 +648,7 @@ class AppUserAuthServiceTest {
         user.setPhone("9012345678");
         user.setNickname("Nexion user");
         user.setStatus("ACTIVE");
+        user.setSandbox(0);
         user.setIsDeleted(0);
         user.setPasswordHash(passwords.encode("secret"));
         return user;
