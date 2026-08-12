@@ -51,4 +51,14 @@ class AppAcceptanceSandboxStartupMigrationContractTest {
         assertThat(schema).contains("uk_h8_sandbox_referral_run_invited (run_id, invited_user_id)")
                 .contains("uk_h8_sandbox_referral_ledger_fact (run_id, settlement_no, user_id, asset)");
     }
+
+    @Test
+    void readmeDoesNotPresentBaselineSchemaAsACompleteAcceptanceInstall() throws Exception {
+        String readme = Files.readString(Path.of("README.md"));
+
+        assertThat(readme)
+                .contains("scripts/schema.sql is only the baseline schema")
+                .contains("apply_startup_schema_migrations.ps1 is the canonical installer")
+                .contains("schema.sql plus seed.sql is not a complete acceptance database");
+    }
 }

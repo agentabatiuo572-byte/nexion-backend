@@ -80,6 +80,13 @@ if ([string]::IsNullOrWhiteSpace($env:MYSQL_PWD)) { throw 'Set MYSQL_PWD in the 
 & '<mysql-bin>\mysql.exe' -h 127.0.0.1 -P 3306 -u <mysql-user> -e "source D:/workspace/nexion-backend/scripts/schema.sql; source D:/workspace/nexion-backend/scripts/seed.sql;"
 ```
 
+`scripts/schema.sql is only the baseline schema`; it intentionally does not replace
+the dated forward migrations owned by the acceptance domains. Therefore
+`schema.sql plus seed.sql is not a complete acceptance database`. After installing
+the baseline, `apply_startup_schema_migrations.ps1 is the canonical installer` for
+the application revision and must be run before starting the backend. It is replay-safe
+for both a fresh baseline and an upgraded database.
+
 `scripts/seed.sql` is limited to the local system baseline: admin login, RBAC, navigation, and platform configuration. It does not create business records.
 
 The schema keeps existing business tables and adds the Ops Console tables needed by the monolith, such as user impersonation sessions, risk signals, weekly market curves, emergency gates, and BI reports.

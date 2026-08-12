@@ -290,7 +290,8 @@ public class OpsReferralRewardService {
             return response;
         } catch (RuntimeException ex) {
             sandboxAudit.recordRejected(runId, idempotencyKey,
-                    request == null ? null : request.operator(), request == null ? null : request.reason(), ex);
+                    actor(request == null ? null : request.operator()),
+                    request == null ? null : request.reason(), ex);
             throw ex;
         }
     }

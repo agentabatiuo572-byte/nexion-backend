@@ -39,6 +39,8 @@ import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.mock.env.MockEnvironment;
@@ -92,6 +94,7 @@ class OpsReferralRewardServiceTest {
     @AfterEach
     void tearDown() {
         A2ReplayContext.exitReplay();
+        SecurityContextHolder.clearContext();
     }
 
     @Test
@@ -154,6 +157,23 @@ class OpsReferralRewardServiceTest {
         verify(mapper, never()).lockRewardMutation();
         verify(sandboxCommands, never()).execute(anyString(), anyString(), anyString(), any());
         verify(sandboxAudit, never()).recordRejected(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void rejectedSandboxSettlementAuditsAuthenticatedActorInsteadOfSpoofedRequestOperator() {
+        environment.setActiveProfiles("acceptance");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken("812", null, List.of()));
+
+        assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-rejected-actor",
+                new AcceptanceSandboxReferralSettlementRequest("RUN-H8-SERVER", null,
+                        "invalid sandbox settlement is audited", "spoofed-operator")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_SANDBOX_INVITED_USER_REQUIRED");
+
+        verify(sandboxAudit).recordRejected(eq("RUN-H8-SERVER"), eq("idem-h8-rejected-actor"),
+                eq("admin:812"), eq("invalid sandbox settlement is audited"), any(RuntimeException.class));
     }
 
     @Test
