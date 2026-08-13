@@ -2,12 +2,14 @@ package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
+import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
 import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
+import ffdd.opsconsole.auth.dto.UserPasswordResetOtpCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
@@ -28,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppUserAuthController {
     private final AppUserAuthService authService;
     private final AppUserRegistrationService registrationService;
+    private final AppUserPasswordResetService passwordResetService;
 
     @PostMapping("/register/otp/send")
     public ApiResult<UserRegistrationOtpResponse> sendRegistrationOtp(
@@ -68,6 +71,20 @@ public class AppUserAuthController {
             @RequestBody(required = false) UserPasswordResetCompleteRequest request,
             HttpServletRequest servletRequest) {
         return authService.completePasswordReset(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/password-reset/otp/send")
+    public ApiResult<UserOtpLoginChallengeResponse> sendPasswordResetOtp(
+            @RequestBody(required = false) UserOtpLoginRequest request,
+            HttpServletRequest servletRequest) {
+        return passwordResetService.send(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/password-reset/otp/complete")
+    public ApiResult<Map<String, Object>> completePasswordResetOtp(
+            @RequestBody(required = false) UserPasswordResetOtpCompleteRequest request,
+            HttpServletRequest servletRequest) {
+        return passwordResetService.complete(request, servletRequest.getRemoteAddr());
     }
 
     @PostMapping("/login/2fa")

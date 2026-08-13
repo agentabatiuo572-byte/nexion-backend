@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -19,6 +20,7 @@ import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -188,6 +190,33 @@ class AppUserSecurityServiceTest {
         assertThat(result.twoFactorEnabled()).isTrue();
         verify(security).upsertTwoFactor(42L, true);
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void accountDeletionCreatesOneServerTrackedRequestAfterPasswordVerification() {
+        when(security.insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"))).thenReturn(1);
+        when(security.accountDeletionRequestForUpdate(42L, "delete-key")).thenReturn(Map.of(
+                "requestNo", "ADR-0123456789abcdef0123456789abcdef",
+                "status", "REQUESTED",
+                "requestedAt", LocalDateTime.now()));
+
+        Map<String, Object> result = service.requestAccountDeletion(
+                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "DELETE"));
+
+        assertThat(result).containsEntry("status", "REQUESTED");
+        verify(security).passwordHashForUpdate(42L);
+        verify(security).insertAccountDeletionRequest(any(), eq(42L), eq("delete-key"));
+        verify(audit).recordRequired(any());
+        verify(sessions, never()).revokeAllUserSessions(any());
+    }
+
+    @Test
+    void accountDeletionRejectsMissingExplicitConfirmationBeforePasswordRead() {
+        assertThatThrownBy(() -> service.requestAccountDeletion(
+                42L, "current", "delete-key", new AppAccountDeletionRequest("OldPassword1", "yes")))
+                .hasMessage("ACCOUNT_DELETION_CONFIRMATION_REQUIRED");
+
+        verify(security, never()).insertAccountDeletionRequest(any(), any(), any());
     }
 
     private UserSessionEntity session(String id, String device, String ip, LocalDateTime lastActiveAt) {

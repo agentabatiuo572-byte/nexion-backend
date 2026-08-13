@@ -88,6 +88,14 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Update("""
             UPDATE nx_user_otp_challenge
+               SET consumed_at=NOW(),updated_at=NOW()
+             WHERE user_id=#{userId} AND challenge_no LIKE 'RESET-%'
+               AND consumed_at IS NULL AND is_deleted=0
+            """)
+    int invalidateOpenPasswordResetChallenges(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_otp_challenge
                SET attempts=attempts+1,updated_at=NOW()
              WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
                AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0

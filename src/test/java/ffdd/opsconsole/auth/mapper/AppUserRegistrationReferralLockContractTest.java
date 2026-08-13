@@ -53,6 +53,26 @@ class AppUserRegistrationReferralLockContractTest {
     }
 
     @Test
+    void userSchemaAndStartupMigrationProvideTheRegistrationClientIpSelectedByMybatisPlus() throws Exception {
+        String schema = Files.readString(Path.of("scripts/schema.sql"));
+        String migration = Files.readString(Path.of(
+                "scripts/migrations/20260813_user_registration_client_ip.sql"));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+
+        int table = schema.indexOf("CREATE TABLE IF NOT EXISTS nx_user (");
+        assertThat(table).isGreaterThanOrEqualTo(0);
+        int nextTable = schema.indexOf("CREATE TABLE IF NOT EXISTS", table + 1);
+        String user = schema.substring(table, nextTable < 0 ? schema.length() : nextTable);
+        assertThat(user).contains("client_ip VARCHAR(64) NOT NULL");
+        assertThat(migration)
+                .contains("TABLE_NAME = 'nx_user'")
+                .contains("COLUMN_NAME = 'client_ip'")
+                .contains("ADD COLUMN client_ip VARCHAR(64) NOT NULL DEFAULT ''unknown'' AFTER phone")
+                .contains("MODIFY COLUMN client_ip VARCHAR(64) NOT NULL");
+        assertThat(startup).contains("20260813_user_registration_client_ip.sql");
+    }
+
+    @Test
     void registrationIdentityAndOtpAreScopedByServerOwnedEnvironment() throws Exception {
         String schema = Files.readString(Path.of("scripts/schema.sql"));
         String mapper = Files.readString(Path.of(

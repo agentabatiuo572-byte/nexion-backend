@@ -12,7 +12,6 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -30,7 +29,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppPayoutAddressService {
     private static final Set<String> NETWORKS = Set.of("USDT-TRC20", "USDT-BEP20", "USDT-ERC20");
-    private static final SecureRandom RANDOM = new SecureRandom();
     private final AppPayoutAddressMapper mapper;
     private final UserOtpDeliveryService otpDelivery;
     private final AuditLogService audit;
@@ -55,7 +53,7 @@ public class AppPayoutAddressService {
             throw new BizException(409, "PAYOUT_ADDRESS_PHONE_UNAVAILABLE");
         }
         String challengeNo = "PAYOUT-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String code = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
+        String code = otpDelivery.verificationCode();
         if (mapper.insertOtp(userId, challengeNo, code) != 1) throw new BizException(409, "PAYOUT_ADDRESS_OTP_CONFLICT");
         otpDelivery.deliver(contact.countryCode(), contact.phone(), challengeNo, code, 5);
         return ApiResult.ok(linked("challengeNo", challengeNo, "expiresInSeconds", 300));

@@ -61,6 +61,7 @@ class AppUserAuthServiceTest {
         properties.setTtlMinutes(120);
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(otpDelivery.available()).thenReturn(true);
+        when(otpDelivery.verificationCode()).thenReturn("123456");
         when(users.createLoginOtpChallenge(any(), any(), any(), any(Integer.class))).thenReturn(1);
         when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
         when(loginGuards.recordOtpSend(any(), any(), any(), any(Integer.class), any(), any(Integer.class))).thenReturn(1);

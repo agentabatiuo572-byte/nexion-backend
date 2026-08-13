@@ -14,7 +14,6 @@ import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
-import java.security.SecureRandom;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -49,7 +48,6 @@ public class AppUserRegistrationService {
     private final EventOutboxService outboxService;
     private final AppUserRegistrationTransactionExecutor transactionExecutor;
     private final Environment environment;
-    private final SecureRandom secureRandom = new SecureRandom();
 
     @PostConstruct
     void ensureSchema() {
@@ -82,7 +80,7 @@ public class AppUserRegistrationService {
         }
         mapper.invalidateActiveInEnvironment(countryCode, phone, audience.name());
         String challengeNo = "REG-" + UUID.randomUUID().toString().replace("-", "");
-        String code = String.format("%06d", secureRandom.nextInt(1_000_000));
+        String code = otpDeliveryService.verificationCode();
         if (mapper.insertChallengeInEnvironment(
                 challengeNo, countryCode, phone, clientIp, audience.name(), code, OTP_TTL_MINUTES) != 1) {
             throw new IllegalStateException("USER_REGISTRATION_OTP_CREATE_FAILED");
@@ -178,14 +176,10 @@ public class AppUserRegistrationService {
                 return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_STATE_CHANGED");
             }
         }
-        // A fixture-backed acceptance identity may only join the fixture's
-        // isolated referral graph. Conversely, a production account must
-        // never bind to a sandbox sponsor. This check precedes every nx_user
+        // A referral is optional. When supplied, it must stay inside the same
+        // production/sandbox identity graph. This check precedes every user
         // and wallet write, so a rejected cross-environment request leaves no
         // partially created account or funding surface behind.
-        if (sandbox == 1 && sponsor == null) {
-            return ApiResult.fail(422, "USER_REGISTRATION_SANDBOX_SPONSOR_REQUIRED");
-        }
         if (sponsor != null && sandbox != sandboxOf(sponsor)) {
             return ApiResult.fail(409, "USER_REGISTRATION_SPONSOR_ENVIRONMENT_MISMATCH");
         }

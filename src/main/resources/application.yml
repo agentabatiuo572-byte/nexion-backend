@@ -36,6 +36,27 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  auth:
+    user-otp:
+      # Local-only convenience. The fixed code is accepted only with one isolated
+      # acceptance/test/local-sandbox profile. Production/default, mixed and
+      # unknown profiles still require the real delivery webhook and fail closed.
+      local-fixed-code-enabled: ${NEXION_USER_OTP_LOCAL_FIXED_CODE_ENABLED:false}
+      delivery-url: ${NEXION_USER_OTP_DELIVERY_URL:}
+  nova:
+    ai:
+      # Local Ollama is opt-in. No cloud/provider account or credential is used.
+      mode: ${NEXION_NOVA_AI_MODE:DISABLED}
+      base-url: ${NEXION_NOVA_AI_BASE_URL:http://127.0.0.1:11434}
+      model: ${NEXION_NOVA_AI_MODEL:gemma4-e4b-ctx32k:latest}
+      connect-timeout-ms: ${NEXION_NOVA_AI_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${NEXION_NOVA_AI_READ_TIMEOUT_MS:120000}
+      max-input-chars: ${NEXION_NOVA_AI_MAX_INPUT_CHARS:2000}
+      max-history-messages: ${NEXION_NOVA_AI_MAX_HISTORY_MESSAGES:10}
+      max-output-chars: ${NEXION_NOVA_AI_MAX_OUTPUT_CHARS:8000}
+      max-output-tokens: ${NEXION_NOVA_AI_MAX_OUTPUT_TOKENS:512}
+      context-window: ${NEXION_NOVA_AI_CONTEXT_WINDOW:8192}
+      max-concurrent-requests: ${NEXION_NOVA_AI_MAX_CONCURRENT_REQUESTS:1}
   janus:
     executor:
       # Production applied proofs stay disabled until attested enrollment and native WebView handoff ship.

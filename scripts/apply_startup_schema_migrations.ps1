@@ -51,6 +51,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260810_cd_finance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260810_kl_janus_applied_proof.sql"),
   (Join-Path $root "scripts\migrations\20260812_auth_environment_identity_namespace.sql"),
+  (Join-Path $root "scripts\migrations\20260813_user_registration_client_ip.sql"),
   (Join-Path $root "scripts\migrations\20260811_f4_l6_acceptance_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_config_blocked_event_schema.sql"),
@@ -69,7 +70,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260812_l6_acceptance_sandbox_fact.sql"),
   (Join-Path $root "scripts\migrations\20260812_commerce_acceptance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260812_learning_acceptance_sandbox.sql"),
-  (Join-Path $root "scripts\migrations\20260812_support_acceptance_sandbox.sql")
+  (Join-Path $root "scripts\migrations\20260812_support_acceptance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260813_user_self_service.sql")
 )
 
 if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {

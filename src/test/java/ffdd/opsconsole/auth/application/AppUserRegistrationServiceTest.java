@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -59,6 +60,26 @@ class AppUserRegistrationServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
     }
 
+    @Test
+    void registrationOtpPersistsAndDeliversTheCodeSelectedByTheDeliveryAuthority() {
+        when(otpDeliveryService.available()).thenReturn(true);
+        when(otpDeliveryService.verificationCode()).thenReturn("123456");
+        when(mapper.insertChallengeInEnvironment(
+                any(), eq("+81"), eq("81987654321"), eq("127.0.0.3"),
+                eq("PRODUCTION"), eq("123456"), eq(5)))
+                .thenReturn(1);
+
+        var result = service.sendOtp(
+                new UserRegistrationOtpRequest("+81", "81987654321"), "127.0.0.3");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).insertChallengeInEnvironment(
+                any(), eq("+81"), eq("81987654321"), eq("127.0.0.3"),
+                eq("PRODUCTION"), eq("123456"), eq(5));
+        verify(otpDeliveryService).deliver(
+                eq("+81"), eq("81987654321"), any(), eq("123456"), eq(5));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = { "acceptance", "test", "local-sandbox" })
     void strictIsolatedProfileAtomicallyMarksTheNewUserAndWalletAsSandbox(String profile) {
@@ -79,19 +100,34 @@ class AppUserRegistrationServiceTest {
     }
 
     @Test
-    void sandboxRegistrationRequiresAPreProvisionedSandboxSponsorBeforeUserOrWalletWrites() {
+    void sandboxRegistrationWithoutSponsorCreatesAnIsolatedRootAccountAndWallet() {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
         prepareRegistrationPrerequisites("REG-H003", "81987654321", "127.0.0.3");
+        when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
+        doAnswer(invocation -> {
+            UserEntity user = invocation.getArgument(0);
+            user.setId(99L);
+            return 1;
+        }).when(userMapper).insert(any(UserEntity.class));
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3")))
+                .thenReturn(ApiResult.ok(new UserLoginResponse(
+                        "access", "Bearer", new UserLoginResponse.UserSession(
+                                99L, "+81", "81987654321", "Nexion 4321"))));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
                 "+81", "81987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
 
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_SANDBOX_SPONSOR_REQUIRED");
-        verify(userMapper, never()).insert(any(UserEntity.class));
-        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
-        verify(authService, never()).issueRegisteredSession(any(), any());
-        verify(outboxService, never()).publish(any(), any(), any(), any());
+        ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
+        verify(userMapper).insert(inserted.capture());
+        verify(userMapper).ensureRegisteredUserWallet(99L, 1);
+        verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3");
+        verify(outboxService).publish(
+                "USER_REGISTRATION", "99", "auth.register_completed", java.util.Map.of("userId", 99L));
+        verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());
+        assertThat(result.getCode()).isZero();
+        assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
+        assertThat(inserted.getValue().getSponsorUserId()).isNull();
+        assertThat(inserted.getValue().getSponsorCode()).isNull();
     }
 
     @Test

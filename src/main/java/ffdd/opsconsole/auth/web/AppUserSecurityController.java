@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserSecurityService;
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -59,6 +61,22 @@ public class AppUserSecurityController {
     public ApiResult<AppSecurityMutationResponse> revokeOtherSessions(Authentication authentication) {
         UserContext context = requireUser(authentication);
         return ApiResult.ok(securityService.revokeOtherSessions(context.userId(), context.sessionId()));
+    }
+
+    @GetMapping("/account-deletion")
+    public ApiResult<Map<String, Object>> accountDeletionStatus(Authentication authentication) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.accountDeletionStatus(context.userId(), context.sessionId()));
+    }
+
+    @PostMapping("/account-deletion")
+    public ApiResult<Map<String, Object>> requestAccountDeletion(
+            Authentication authentication,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody(required = false) AppAccountDeletionRequest request) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.requestAccountDeletion(
+                context.userId(), context.sessionId(), idempotencyKey, request));
     }
 
     private UserContext requireUser(Authentication authentication) {

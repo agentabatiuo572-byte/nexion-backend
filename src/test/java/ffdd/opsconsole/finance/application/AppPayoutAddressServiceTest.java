@@ -81,6 +81,7 @@ class AppPayoutAddressServiceTest {
         long userId = 9L;
         when(mapper.lockActiveUser(userId)).thenReturn(userId);
         when(otpDelivery.available()).thenReturn(true);
+        when(otpDelivery.verificationCode()).thenReturn("123456");
         when(mapper.recentOtpCount(userId)).thenReturn(0);
         when(mapper.todayOtpCount(userId)).thenReturn(0);
         when(mapper.userContact(userId)).thenReturn(new UserContact("+84", "900000000"));

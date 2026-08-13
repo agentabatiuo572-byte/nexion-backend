@@ -3,7 +3,10 @@ param(
   [int]$Port = 8110,
   [string]$LogDir = "",
   [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
-  [bool]$TemporarySuperadminMfaBypass = $false
+  [bool]$TemporarySuperadminMfaBypass = $false,
+  [bool]$EnableLocalNovaAi = $true,
+  [string]$NovaAiModel = "gemma4-e4b-ctx32k:latest",
+  [string]$SpringProfile = "local-sandbox"
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,7 +54,11 @@ try {
   $commands = @(
     ('cd /d "{0}"' -f $root.Path),
     ('set "SERVER_PORT={0}"' -f $Port),
+    ('set "SPRING_PROFILES_ACTIVE={0}"' -f $SpringProfile),
     'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
+    ('set "NEXION_NOVA_AI_MODE={0}"' -f $(if ($EnableLocalNovaAi) { "OLLAMA_LOCAL" } else { "DISABLED" })),
+    'set "NEXION_NOVA_AI_BASE_URL=http://127.0.0.1:11434"',
+    ('set "NEXION_NOVA_AI_MODEL={0}"' -f $NovaAiModel),
     ('set "NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS={0}"' -f $mfaBypassValue),
     ('call "{0}" spring-boot:run' -f $Maven)
   )

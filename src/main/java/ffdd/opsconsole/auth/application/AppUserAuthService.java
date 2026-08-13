@@ -173,7 +173,7 @@ public class AppUserAuthService {
                 && otpDeliveryService.available();
         if (!eligible) return ApiResult.ok(disposableOtpLoginChallenge(phone));
         String challengeNo = "LOGIN-" + UUID.randomUUID().toString().replace("-", "");
-        String code = String.format("%06d", secureRandom.nextInt(1_000_000));
+        String code = otpDeliveryService.verificationCode();
         int ttlMinutes = configInt("auth.risk.otp_ttl_minutes", 5, 1, 15);
         userMapper.invalidateOpenLoginOtpChallenges(user.getId());
         if (userMapper.createLoginOtpChallenge(user.getId(), challengeNo, code, ttlMinutes) != 1) {
@@ -339,7 +339,7 @@ public class AppUserAuthService {
             return ApiResult.fail(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
         String challengeNo = "OTP-" + UUID.randomUUID().toString().replace("-", "");
-        String code = String.format("%06d", secureRandom.nextInt(1_000_000));
+        String code = otpDeliveryService.verificationCode();
         int ttlMinutes = configInt("auth.risk.otp_ttl_minutes", 5, 1, 15);
         if (userMapper.createLoginOtpChallenge(user.getId(), challengeNo, code, ttlMinutes) != 1) {
             throw new IllegalStateException("USER_TWO_FACTOR_CHALLENGE_CREATE_FAILED");

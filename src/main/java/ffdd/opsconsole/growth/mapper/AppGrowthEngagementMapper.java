@@ -476,7 +476,14 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT r.milestone_id milestoneId,r.threshold_usdt thresholdUsdt,r.reward_nex rewardNex,
-                   CASE WHEN m.id IS NULL THEN 'PENDING' ELSE UPPER(m.status) END status,m.achieved_at achievedAt
+                   COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+                              WHERE e.user_id=#{userId} AND e.asset='USDT'
+                                AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0) lifetimeEarningsUsdt,
+                   CASE WHEN m.id IS NOT NULL THEN UPPER(m.status)
+                        WHEN r.threshold_usdt<=COALESCE((SELECT SUM(e.amount) FROM nx_earning_event e
+                                                         WHERE e.user_id=#{userId} AND e.asset='USDT'
+                                                           AND UPPER(e.status) IN ('POSTED','SUCCESS') AND e.is_deleted=0),0)
+                          THEN 'CLAIMABLE' ELSE 'LOCKED' END status,m.achieved_at achievedAt
               FROM nx_earning_milestone_rule r
               LEFT JOIN nx_earning_milestone m
                 ON m.user_id=#{userId} AND m.milestone_id=r.milestone_id AND m.is_deleted=0

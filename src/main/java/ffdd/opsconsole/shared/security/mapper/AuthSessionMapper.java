@@ -85,4 +85,11 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     int revokeOtherUserSessions(
             @Param("userId") Long userId,
             @Param("currentSessionId") String currentSessionId);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET revoked_at=COALESCE(revoked_at,NOW()),updated_at=NOW()
+             WHERE user_id=#{userId} AND is_deleted=0
+            """)
+    int revokeAllUserSessions(@Param("userId") Long userId);
 }

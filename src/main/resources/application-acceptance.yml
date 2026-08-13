@@ -1,6 +1,11 @@
 # Explicit non-production profile for H5 acceptance. This is a durable server
 # sandbox only: the runtime never contacts a payment or withdrawal provider.
 nexion:
+  auth:
+    user-otp:
+      # Acceptance-only fallback while no real SMS delivery webhook is configured.
+      # A configured delivery URL automatically takes authority and disables 123456.
+      local-fixed-code-enabled: true
   analytics:
     # Acceptance H5 facts are isolated from production BI aggregates. This is
     # server configuration, not a client-controlled payload field.

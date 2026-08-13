@@ -1,0 +1,5 @@
+# Explicit local development sandbox. Production/default never imports this file.
+nexion:
+  auth:
+    user-otp:
+      local-fixed-code-enabled: true

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
@@ -15,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -126,6 +128,46 @@ public class AppUserSecurityService {
         recordRequired(userId, enabled ? "USER_TWO_FACTOR_ENABLED" : "USER_TWO_FACTOR_DISABLED",
                 "USER_SECURITY", String.valueOf(userId), Map.of("twoFactorEnabled", enabled));
         return AppSecurityMutationResponse.twoFactor(enabled);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> accountDeletionStatus(Long userId, String currentSessionId) {
+        requireContext(userId, currentSessionId);
+        Map<String, Object> row = securityMapper.latestAccountDeletionRequest(userId);
+        return row == null ? Map.of("status", "NONE") : Map.copyOf(row);
+    }
+
+    @Transactional(noRollbackFor = PreWriteRejection.class)
+    public Map<String, Object> requestAccountDeletion(
+            Long userId,
+            String currentSessionId,
+            String idempotencyKey,
+            AppAccountDeletionRequest request) {
+        requireContext(userId, currentSessionId);
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > 160) {
+            throw new BizException(422, "IDEMPOTENCY_KEY_INVALID");
+        }
+        if (request == null || !"DELETE".equals(request.confirmation())) {
+            throw new BizException(422, "ACCOUNT_DELETION_CONFIRMATION_REQUIRED");
+        }
+        verifyCurrentPassword(userId, request.currentPassword(), "ACCOUNT_DELETION_REQUEST");
+        String requestNo = "ADR-" + UUID.randomUUID().toString().replace("-", "");
+        int inserted = securityMapper.insertAccountDeletionRequest(
+                requestNo, userId, idempotencyKey.trim());
+        Map<String, Object> authoritative = securityMapper.accountDeletionRequestForUpdate(
+                userId, idempotencyKey.trim());
+        if (authoritative == null && inserted == 0) {
+            authoritative = securityMapper.latestAccountDeletionRequest(userId);
+        }
+        if (authoritative == null) {
+            throw new IllegalStateException("ACCOUNT_DELETION_REQUEST_RESULT_UNKNOWN");
+        }
+        if (inserted == 1) {
+            recordRequired(userId, "USER_ACCOUNT_DELETION_REQUESTED", "USER_ACCOUNT_DELETION",
+                    String.valueOf(authoritative.get("requestNo")),
+                    Map.of("status", "REQUESTED", "currentSessionRevoked", false));
+        }
+        return Map.copyOf(authoritative);
     }
 
     private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, String currentSessionId) {
