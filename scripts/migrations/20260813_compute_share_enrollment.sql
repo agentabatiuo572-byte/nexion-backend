@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS nx_compute_share_enrollment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  enrollment_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  requested_gpu_model VARCHAR(128) NOT NULL,
+  pairing_code_hash CHAR(64) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  device_instance_no VARCHAR(64) NULL,
+  user_device_id BIGINT NULL,
+  expires_at DATETIME(6) NOT NULL,
+  claimed_at DATETIME(6) NULL,
+  row_version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_share_enrollment_no (enrollment_no),
+  UNIQUE KEY uk_compute_share_enrollment_device (device_instance_no),
+  KEY idx_compute_share_enrollment_user (user_id, status, expires_at),
+  KEY idx_compute_share_enrollment_device_id (user_device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

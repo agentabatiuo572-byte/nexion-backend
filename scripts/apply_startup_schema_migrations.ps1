@@ -71,6 +71,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260812_commerce_acceptance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260812_learning_acceptance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260812_support_acceptance_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260813_compute_share_enrollment.sql"),
+  (Join-Path $root "scripts\migrations\20260813_developer_access_request.sql"),
+  (Join-Path $root "scripts\migrations\20260814_team_ambassador_application.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_self_service.sql")
 )
 

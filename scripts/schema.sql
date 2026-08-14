@@ -190,6 +190,29 @@ CREATE TABLE IF NOT EXISTS nx_janus_command (
 
 -- Commands are also written to the existing nx_event_outbox in the same Spring transaction.
 
+CREATE TABLE IF NOT EXISTS nx_developer_access_request (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL,
+  user_id BIGINT NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  company VARCHAR(120) NOT NULL,
+  email VARCHAR(254) NOT NULL,
+  use_case TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(64) NOT NULL DEFAULT '',
+  reviewer VARCHAR(128) NULL,
+  review_reason VARCHAR(500) NULL,
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_developer_access_request_no (request_no),
+  UNIQUE KEY uk_developer_access_user_run_key (user_id,run_id,idempotency_key),
+  KEY idx_developer_access_user_time (user_id,created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_user_login_guard (
   login_key CHAR(64) PRIMARY KEY,
   user_id BIGINT NULL,
@@ -2431,6 +2454,27 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   KEY idx_user_device_active (user_id, activated_at, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_compute_share_enrollment (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  enrollment_no VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  requested_gpu_model VARCHAR(128) NOT NULL,
+  pairing_code_hash CHAR(64) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  device_instance_no VARCHAR(64) NULL,
+  user_device_id BIGINT NULL,
+  expires_at DATETIME(6) NOT NULL,
+  claimed_at DATETIME(6) NULL,
+  row_version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_compute_share_enrollment_no (enrollment_no),
+  UNIQUE KEY uk_compute_share_enrollment_device (device_instance_no),
+  KEY idx_compute_share_enrollment_user (user_id, status, expires_at),
+  KEY idx_compute_share_enrollment_device_id (user_device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_trial_claim (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
@@ -3116,14 +3160,20 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   requested_budget_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   kol_budget_pct DECIMAL(8,4) NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(64) NOT NULL DEFAULT '',
   reviewer VARCHAR(64) NULL,
   review_reason VARCHAR(255) NULL,
   reviewed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_ambassador_app_idempotency (user_id, source_environment, run_id, idempotency_key),
   KEY idx_ambassador_status_time (status, created_at),
-  KEY idx_ambassador_user (user_id, status)
+  KEY idx_ambassador_user (user_id, status),
+  KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'city') = 0,

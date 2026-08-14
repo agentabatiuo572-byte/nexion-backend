@@ -20,6 +20,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 public class AppCanonicalBoundaryController {
     private final AppCanonicalBoundaryService service;
     private final AppTrialLifecycleService trialLifecycleService;
+    private final AppBundleOrderService bundleOrderService;
 
     @GetMapping("/api/trial/eligibility")
     public ApiResult<Map<String, Object>> trialEligibility(
@@ -115,6 +116,15 @@ public class AppCanonicalBoundaryController {
                         request.quantity(), request.voucherId(), idempotencyKey);
     }
 
+    @PostMapping("/api/orders/bundle")
+    public ApiResult<Map<String, Object>> createBundleOrder(
+            @RequestBody BundleOrderCreateRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : bundleOrderService.create(userId, request == null ? null : request.productNos(), idempotencyKey);
+    }
+
     @GetMapping("/api/orders")
     public ApiResult<Map<String, Object>> orders(Authentication authentication) {
         Long userId = userId(authentication);
@@ -166,6 +176,9 @@ public class AppCanonicalBoundaryController {
 
     public record OrderCreateRequest(
             String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
+    }
+
+    public record BundleOrderCreateRequest(java.util.List<String> productNos) {
     }
 
     public record TrialChargeRequest(Boolean chargeSucceeded, BigDecimal chargeFailRate) {

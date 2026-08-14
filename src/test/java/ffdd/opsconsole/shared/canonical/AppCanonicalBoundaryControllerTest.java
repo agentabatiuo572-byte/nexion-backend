@@ -15,8 +15,9 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 class AppCanonicalBoundaryControllerTest {
     private final AppCanonicalBoundaryService service = mock(AppCanonicalBoundaryService.class);
     private final AppTrialLifecycleService trialLifecycleService = mock(AppTrialLifecycleService.class);
+    private final AppBundleOrderService bundleOrderService = mock(AppBundleOrderService.class);
     private final AppCanonicalBoundaryController controller =
-            new AppCanonicalBoundaryController(service, trialLifecycleService);
+            new AppCanonicalBoundaryController(service, trialLifecycleService, bundleOrderService);
 
     @Test
     void productionDevFlagLiteralOneIsForwardedAsTamperAttempt() {

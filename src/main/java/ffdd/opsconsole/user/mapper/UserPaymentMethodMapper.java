@@ -30,12 +30,12 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
                          OR (trial.payment_method_id IS NULL AND card.is_default = 1))
                      ORDER BY trial.claimed_at DESC, trial.id DESC LIMIT 1) AS trialRefId,
                    card.version, card.unbound_at AS unboundAt, card.psp_revoke_status AS pspRevokeStatus,
-                   revoke.command_no AS revokeCommandNo, revoke.attempts AS revokeAttempts,
-                   revoke.next_attempt_at AS revokeNextAttemptAt, revoke.deadline_at AS revokeDeadlineAt,
-                   revoke.last_error AS revokeLastError,card.source_environment AS sourceEnvironment
+                   revoke_cmd.command_no AS revokeCommandNo, revoke_cmd.attempts AS revokeAttempts,
+                   revoke_cmd.next_attempt_at AS revokeNextAttemptAt, revoke_cmd.deadline_at AS revokeDeadlineAt,
+                   revoke_cmd.last_error AS revokeLastError,card.source_environment AS sourceEnvironment
               FROM nx_wallet_bank_card card
-              LEFT JOIN nx_payment_method_revoke_command revoke ON revoke.payment_method_id=card.id
-                AND revoke.source_environment=card.source_environment
+              LEFT JOIN nx_payment_method_revoke_command revoke_cmd ON revoke_cmd.payment_method_id=card.id
+                AND revoke_cmd.source_environment=card.source_environment
              WHERE card.user_id = #{userId} AND card.id = #{methodId} AND card.is_deleted = 0
                AND card.source_environment=#{sourceEnvironment}
              LIMIT 1
@@ -63,12 +63,12 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
                          OR (trial.payment_method_id IS NULL AND card.is_default = 1))
                      ORDER BY trial.claimed_at DESC, trial.id DESC LIMIT 1) AS trialRefId,
                    card.version, card.unbound_at AS unboundAt, card.psp_revoke_status AS pspRevokeStatus,
-                   revoke.command_no AS revokeCommandNo, revoke.attempts AS revokeAttempts,
-                   revoke.next_attempt_at AS revokeNextAttemptAt, revoke.deadline_at AS revokeDeadlineAt,
-                   revoke.last_error AS revokeLastError,card.source_environment AS sourceEnvironment
+                   revoke_cmd.command_no AS revokeCommandNo, revoke_cmd.attempts AS revokeAttempts,
+                   revoke_cmd.next_attempt_at AS revokeNextAttemptAt, revoke_cmd.deadline_at AS revokeDeadlineAt,
+                   revoke_cmd.last_error AS revokeLastError,card.source_environment AS sourceEnvironment
               FROM nx_wallet_bank_card card
-              LEFT JOIN nx_payment_method_revoke_command revoke ON revoke.payment_method_id=card.id
-                AND revoke.source_environment=card.source_environment
+              LEFT JOIN nx_payment_method_revoke_command revoke_cmd ON revoke_cmd.payment_method_id=card.id
+                AND revoke_cmd.source_environment=card.source_environment
              WHERE card.user_id = #{userId} AND card.is_deleted = 0
                AND card.source_environment=#{sourceEnvironment}
              <if test="includeUnbound == false">AND card.status IN ('BOUND','ACTIVE')</if>
