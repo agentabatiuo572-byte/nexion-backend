@@ -216,6 +216,59 @@ public class AppTrialLifecycleService {
                 () -> redeemOnce(userId, true, "early"));
     }
 
+    /** Converts the reserved trial slot into one authoritative catalogue order. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> convert(Long userId, String productNo, String idempotencyKey) {
+        requireUser(userId);
+        String normalized = productNo == null ? "" : productNo.trim();
+        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey, normalized,
+                () -> convertOnce(userId, normalized));
+    }
+
+    private ApiResult<Map<String, Object>> convertOnce(Long userId, String productNo) {
+        if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
+        Map<String, String> policy = policyMap();
+        String configured = trialProductCode(policy);
+        boolean alias = "device-trial-standard".equals(configured) && "stellarbox-s1".equals(productNo);
+        if (configured == null || !(productNo.equals(configured) || alias)) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        }
+        TrialRow row = mapper.lockTrial(userId);
+        if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
+        LocalDateTime now = LocalDateTime.now();
+        if (row.expiresAt() == null || now.isAfter(row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7)))) {
+            return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(productNo);
+        if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0
+                || product.stock() == null || product.stock() < 1 || !StringUtils.hasText(product.name())) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        }
+        Settlement settlement = settlement(row, policy, false, now);
+        BigDecimal discount = settlement.offsetUsdt().min(product.priceUsdt()).setScale(6, RoundingMode.DOWN);
+        BigDecimal amount = product.priceUsdt().subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        if (mapper.decrementProductStock(product.id()) != 1) throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
+        if (mapper.insertConversionOrder(userId, orderNo, product.id(), product.priceUsdt(), discount, amount) != 1
+                || mapper.insertConversionOrderItem(orderNo, product.id(), product.productNo(), product.name(),
+                        product.priceUsdt()) != 1) {
+            throw new BizException(409, "TRIAL_CONVERSION_ORDER_CONFLICT");
+        }
+        String snapshot = "orderNo=" + orderNo + ",productNo=" + product.productNo()
+                + ",productPriceUsdt=" + product.priceUsdt() + ",discountUsdt=" + discount
+                + ",amountUsdt=" + amount + ",sourceEnvironment=PRODUCTION";
+        if (mapper.markTrialConverted(row.id(), row.version(), orderNo, now, snapshot) != 1) {
+            throw new BizException(409, "TRIAL_CONVERSION_CONFLICT");
+        }
+        Attribution attr = requireAttribution(userId);
+        Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
+                "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PENDING",
+                "orderStatus", "PENDING_PAYMENT", "sourceEnvironment", "PRODUCTION");
+        publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
+        record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
+        return ApiResult.ok(detail);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> charge(Long userId, String idempotencyKey) {
         requireUser(userId);

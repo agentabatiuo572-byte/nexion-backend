@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.mapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -17,6 +18,9 @@ public interface AppGrowthWheelMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    Long findActiveUser(@Param("userId") Long userId);
 
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H4_WHEEL_PAYOUT' FOR UPDATE")
     String lockWheelPayoutMutex();
@@ -33,6 +37,17 @@ public interface AppGrowthWheelMapper {
     WheelEvent lockOpenWheelEvent(@Param("eventCode") String eventCode);
 
     @Select("""
+            SELECT id eventId,quest_code eventCode
+              FROM nx_event_quest
+             WHERE quest_code=#{eventCode} AND LOWER(target_type)='wheel'
+               AND status=1 AND is_deleted=0
+               AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
+               AND (ends_at IS NULL OR ends_at>=UTC_TIMESTAMP())
+             LIMIT 1
+            """)
+    WheelEvent findOpenWheelEvent(@Param("eventCode") String eventCode);
+
+    @Select("""
             SELECT COUNT(1) FROM nx_growth_wheel_spin
              WHERE event_id=#{eventId} AND user_id=#{userId} AND spin_date=#{spinDate}
                AND source_type='DAILY' AND is_deleted=0
@@ -41,6 +56,12 @@ public interface AppGrowthWheelMapper {
             @Param("eventId") Long eventId,
             @Param("userId") Long userId,
             @Param("spinDate") LocalDate spinDate);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_spin_ticket
+             WHERE user_id=#{userId} AND status='AVAILABLE' AND is_deleted=0
+            """)
+    int countAvailableTickets(@Param("userId") Long userId);
 
     @Select("""
             SELECT ticket_id ticketId
@@ -71,6 +92,32 @@ public interface AppGrowthWheelMapper {
              ORDER BY sort_order,id FOR UPDATE
             """)
     List<WheelTier> lockActiveTiers();
+
+    @Select("""
+            SELECT id tierId,tier_name tierName,reward_name rewardName,
+                   probability_pct probabilityPct,real_outflow realOutflow,
+                   LOWER(reward_kind) rewardKind,reward_amount rewardAmount,
+                   voucher_id voucherId,daily_stock dailyStock
+              FROM nx_growth_wheel_tier
+             WHERE status=1 AND is_deleted=0
+             ORDER BY sort_order,id
+            """)
+    List<WheelTier> listActiveTiers();
+
+    @Select("""
+            SELECT spin_no spinId,spin_date spinDate,source_type sourceType,
+                   tier_id tierId,tier_name tierName,UPPER(reward_kind) rewardType,
+                   reward_amount rewardAmount,tier_name rewardName,
+                   downgraded,downgrade_reason downgradeReason,created_at awardedAt
+              FROM nx_growth_wheel_spin
+             WHERE user_id=#{userId} AND event_code=#{eventCode} AND is_deleted=0
+             ORDER BY created_at DESC,id DESC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> listWheelHistory(
+            @Param("userId") Long userId,
+            @Param("eventCode") String eventCode,
+            @Param("limit") int limit);
 
     @Select("""
             SELECT guard_value FROM nx_growth_wheel_guard

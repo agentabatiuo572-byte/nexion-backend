@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.application.AppTradeinService;
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
@@ -36,6 +37,24 @@ class AppTradeinControllerTest {
         var body = new AppTradeinSubmitRequest(11L, 22L);
         controller.submit(body, "idem", userAuth("7"));
         verify(service).submit(7L, "idem", body);
+    }
+
+    @Test
+    void eligibilityPassesAuthenticatedUserSubject() {
+        var body = new AppTradeinEligibilityRequest("stellarbox-pro-v2");
+
+        controller.eligibility(body, userAuth("7"));
+
+        verify(service).eligibility(7L, body);
+    }
+
+    @Test
+    void eligibilityRejectsAdminSubjectEvenWhenPrincipalIsNumeric() {
+        var auth = new UsernamePasswordAuthenticationToken("7", null, List.of());
+        auth.setDetails(Map.of("subjectType", "ADMIN"));
+
+        assertThat(controller.eligibility(new AppTradeinEligibilityRequest("stellarbox-pro-v2"), auth).getCode())
+                .isEqualTo(403);
     }
 
     @Test

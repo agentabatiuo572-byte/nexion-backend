@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,6 +53,70 @@ public class AppGrowthWheelService {
     private final EventOutboxService outboxService;
     private final EarningsReleaseService earningsReleaseService;
     private final Clock clock = Clock.systemUTC();
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> state(Long userId, String eventCode) {
+        if (userId == null || userId <= 0 || mapper.findActiveUser(userId) == null) {
+            throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
+        }
+        String code = reference(eventCode, "EVENT_CODE_REQUIRED");
+        WheelEvent event = mapper.findOpenWheelEvent(code);
+        if (event == null) return ApiResult.fail(409, "WHEEL_EVENT_NOT_OPEN");
+
+        LocalDate serverDate = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        boolean freeAvailable = "evt-spring-spin".equals(event.eventCode())
+                && mapper.countDailySpin(event.eventId(), userId, serverDate) == 0;
+        int bonusTickets = mapper.countAvailableTickets(userId);
+        List<WheelTier> tiers = mapper.listActiveTiers();
+        List<Map<String, Object>> segments = IntStream.range(0, tiers.size())
+                .mapToObj(index -> publicSegment(tiers.get(index), index))
+                .toList();
+        List<Map<String, Object>> history = mapper.listWheelHistory(userId, code, 20).stream()
+                .map(this::publicHistory)
+                .toList();
+        return ApiResult.ok(linked(
+                "eventCode", event.eventCode(),
+                "eventId", String.valueOf(event.eventId()),
+                "serverDate", serverDate.toString(),
+                "nextResetAtUtc", serverDate.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toString(),
+                "freeAvailable", freeAvailable,
+                "bonusTickets", bonusTickets,
+                "availableSpins", (freeAvailable ? 1 : 0) + bonusTickets,
+                "segments", segments,
+                "history", history,
+                "source", "nx_growth_wheel_tier + nx_growth_spin_ticket + nx_growth_wheel_spin"));
+    }
+
+    private Map<String, Object> publicSegment(WheelTier tier, int displayOrder) {
+        return linked(
+                "tierId", tier.tierName(),
+                "rewardType", tier.rewardKind().toUpperCase(Locale.ROOT),
+                "rewardAmount", tier.rewardAmount(),
+                "rewardName", StringUtils.hasText(tier.rewardName()) ? tier.rewardName() : tier.tierName(),
+                "realOutflow", Boolean.TRUE.equals(tier.realOutflow()),
+                "displayOrder", displayOrder);
+    }
+
+    private Map<String, Object> publicHistory(Map<String, Object> row) {
+        String rewardName = String.valueOf(row.getOrDefault("rewardName", row.get("tierName")));
+        return linked(
+                "spinId", row.get("spinId"),
+                "spinDate", row.get("spinDate"),
+                "sourceType", row.get("sourceType"),
+                "tierId", String.valueOf(row.getOrDefault("tierName", row.get("tierId"))),
+                "rewardType", String.valueOf(row.get("rewardType")).toUpperCase(Locale.ROOT),
+                "rewardAmount", row.get("rewardAmount"),
+                "rewardName", rewardName,
+                "downgraded", truthy(row.get("downgraded")),
+                "downgradeReason", row.getOrDefault("downgradeReason", "NONE"),
+                "awardedAt", row.get("awardedAt"));
+    }
+
+    private boolean truthy(Object value) {
+        if (value instanceof Boolean flag) return flag;
+        if (value instanceof Number number) return number.intValue() != 0;
+        return "true".equalsIgnoreCase(String.valueOf(value)) || "1".equals(String.valueOf(value));
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> spin(Long userId, String eventCode, String idempotencyKey) {

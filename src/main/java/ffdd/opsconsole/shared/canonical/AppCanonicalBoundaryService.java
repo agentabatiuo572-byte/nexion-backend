@@ -26,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -46,6 +47,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppCanonicalBoundaryService {
+    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int MAX_ACTIVE_DEVICES = 6;
@@ -67,6 +69,8 @@ public class AppCanonicalBoundaryService {
     private final CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper;
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
     private final CommerceAcceptanceRun commerceAcceptanceRun;
+    private final StorefrontProductReleasePolicy productReleasePolicy;
+    private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
 
     @PostConstruct
     void ensureOtpChallengeTable() {
@@ -217,6 +221,47 @@ public class AppCanonicalBoundaryService {
                 () -> deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey));
     }
 
+    @Transactional
+    public ApiResult<Map<String, Object>> deactivateAfterTask(
+            Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
+        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        return executeOnce("DEVICE_DEACTIVATE_AFTER_TASK", userId, idempotencyKey,
+                linked("deviceId", deviceId, "expectedVersion", expectedVersion),
+                () -> deactivateAfterTaskInternal(userId, deviceId, expectedVersion, idempotencyKey));
+    }
+
+    private ApiResult<Map<String, Object>> deactivateAfterTaskInternal(
+            Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
+        if (deviceId == null || deviceId <= 0) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
+        if (expectedVersion == null || expectedVersion < 0) return ApiResult.fail(422, "DEVICE_VERSION_REQUIRED");
+        CanonicalStateMapper.UserDeviceCommandRow device = mapper.lockDeviceForUserCommand(deviceId);
+        if (device == null) return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+        if (!userId.equals(device.userId()) || !"OWNED".equals(normalizeState(device.ownershipStatus(), ""))) {
+            return ApiResult.fail(403, "DEVICE_FORBIDDEN");
+        }
+        if ("DEACTIVATED".equals(normalizeState(device.status(), ""))) {
+            return ApiResult.ok(linked("deviceId", device.id(), "status", "DEACTIVATED",
+                    "rowVersion", device.rowVersion(), "alreadyDeactivated", true));
+        }
+        if (!"ACTIVE".equals(normalizeState(device.status(), ""))) return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
+        if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+        if (!mapper.hasActiveTask(userId, deviceId)) return deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey);
+        if (device.pendingDeactivate()) return ApiResult.ok(linked("deviceId", device.id(), "status", "PENDING_DEACTIVATE",
+                "rowVersion", device.rowVersion(), "alreadyPending", true));
+        if (mapper.markDevicePendingDeactivate(userId, deviceId, expectedVersion) != 1) {
+            throw new BizException(409, "DEVICE_VERSION_CONFLICT");
+        }
+        Map<String, Object> state = linked("deviceId", device.id(), "instanceNo", device.instanceNo(),
+                "status", "PENDING_DEACTIVATE", "rowVersion", device.rowVersion(), "pendingDeactivate", true);
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_DEVICE_DEACTIVATE_PENDING").resourceType("USER_DEVICE")
+                .resourceId(String.valueOf(device.id())).bizNo(device.instanceNo()).userId(userId)
+                .actorId(userId).actorType("USER").actorUsername("user:" + userId).method("POST")
+                .path("/api/device/" + device.id() + "/deactivate-after-task").result("SUCCESS")
+                .riskLevel("MEDIUM").detail(state).build());
+        return ApiResult.ok(state);
+    }
+
     private ApiResult<Map<String, Object>> deactivateDeviceInternal(
             Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
         if (deviceId == null || deviceId <= 0) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
@@ -285,8 +330,46 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(409, "CANONICAL_USER_PROFILE_UNAVAILABLE");
         }
         List<CanonicalStateMapper.OwnedDevice> rawDevices = mapper.ownedDevices(userId);
+        if (rawDevices != null) {
+            for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
+                try {
+                    validateDeviceSpec(device);
+                } catch (BizException invalid) {
+                    return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+                }
+            }
+        }
+        LocalDate today = LocalDate.now(SERVER_ZONE);
+        List<CanonicalStateMapper.DeviceRealizedToday> realizedRows = mapper.realizedToday(
+                userId, today.atStartOfDay(), today.plusDays(1).atStartOfDay());
+        if (realizedRows == null) return ApiResult.fail(503, "E3_REALIZED_EARNINGS_UNAVAILABLE");
+        Map<Long, CanonicalStateMapper.DeviceRealizedToday> realizedByDevice = new LinkedHashMap<>();
+        for (CanonicalStateMapper.DeviceRealizedToday row : realizedRows) {
+            if (row == null || row.deviceId() == null || row.deviceId() <= 0
+                    || row.todayEarningsUsdt() == null || row.todayEarningsUsdt().signum() < 0
+                    || row.todayEarningsNex() == null || row.todayEarningsNex().signum() < 0
+                    || realizedByDevice.put(row.deviceId(), row) != null) {
+                return ApiResult.fail(503, "E3_REALIZED_EARNINGS_INVALID");
+            }
+        }
         List<Map<String, Object>> devices = (rawDevices == null ? List.<CanonicalStateMapper.OwnedDevice>of() : rawDevices)
-                .stream().map(device -> projectE3Capacity(device, capacityConfig)).toList();
+                .stream().map(device -> {
+                    Map<String, Object> projection = projectE3Capacity(device, capacityConfig);
+                    CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
+                    projection.put("todayEarningsUsdt", realized == null
+                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                            : realized.todayEarningsUsdt().setScale(6, RoundingMode.HALF_UP));
+                    projection.put("todayEarningsNex", realized == null
+                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                            : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
+                    return projection;
+                }).toList();
+        BigDecimal realizedTodayUsdt = devices.stream()
+                .map(device -> (BigDecimal) device.get("todayEarningsUsdt"))
+                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal realizedTodayNex = devices.stream()
+                .map(device -> (BigDecimal) device.get("todayEarningsNex"))
+                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
         BigDecimal usdt = devices.stream()
                 .filter(device -> "ACTIVE".equalsIgnoreCase(String.valueOf(device.get("status"))))
                 .map(device -> (BigDecimal) device.get("dailyUsdt"))
@@ -298,14 +381,17 @@ public class AppCanonicalBoundaryService {
         return ApiResult.ok(linked(
                 "dailyUsdt", usdt,
                 "dailyNex", nex,
+                "realizedTodayUsdt", realizedTodayUsdt,
+                "realizedTodayNex", realizedTodayNex,
                 "walletUsdt", zero(profile.usdtAvailable()).setScale(6, RoundingMode.HALF_UP),
                 "walletNex", zero(profile.nexAvailable()).setScale(6, RoundingMode.HALF_UP),
                 "userJoinedAt", profile.joinedAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
                 "serverNow", java.time.Instant.now().toEpochMilli(),
+                "timezone", SERVER_ZONE.getId(),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()),
                 "devices", devices,
                 "capacitySchedule", capacityConfig,
-                "source", "nx_user_device + nx_compute_e3_config"));
+                "source", "nx_user_device + nx_compute_receipt + nx_compute_e3_config"));
     }
 
     private boolean validE3CapacityConfig(Map<String, String> config) {
@@ -338,6 +424,7 @@ public class AppCanonicalBoundaryService {
 
     private Map<String, Object> projectE3Capacity(
             CanonicalStateMapper.OwnedDevice device, Map<String, String> config) {
+        validateDeviceSpec(device);
         int ageMonths = device.purchasedAt() == null ? 0 : Math.max(0, Math.toIntExact(ChronoUnit.MONTHS.between(
                 device.purchasedAt(), LocalDateTime.now(ZoneId.of("Asia/Shanghai")))));
         String switchKey = e3CapacitySwitch(device);
@@ -354,6 +441,7 @@ public class AppCanonicalBoundaryService {
         BigDecimal dailyNex = zero(device.dailyNex()).multiply(multiplier).setScale(6, RoundingMode.HALF_UP);
         return linked(
                 "id", device.id(), "rowVersion", device.rowVersion(),
+                "pendingDeactivate", device.pendingDeactivate(),
                 "instanceNo", device.instanceNo(), "name", device.name(),
                 "deviceType", device.deviceType(), "productCode", device.productCode(), "status", device.status(),
                 "activatedAt", device.activatedAt(), "purchasedAt", device.purchasedAt(),
@@ -366,6 +454,21 @@ public class AppCanonicalBoundaryService {
                 "capacityConfigKey", switchKey,
                 "capacitySubsidized", capacitySubsidized,
                 "capacitySubsidyDays", subsidyDays);
+    }
+
+    private void validateDeviceSpec(CanonicalStateMapper.OwnedDevice device) {
+        if (device == null || device.id() == null || device.id() <= 0
+                || !StringUtils.hasText(device.name())
+                || !StringUtils.hasText(device.deviceType())
+                || !StringUtils.hasText(device.productCode())
+                || !StringUtils.hasText(device.gpuModel())
+                || device.vramTotalGb() == null || device.vramTotalGb() < 0
+                || device.basePowerW() == null || device.basePowerW().signum() < 0
+                || !StringUtils.hasText(device.location())
+                || device.dailyUsdt() == null || device.dailyUsdt().signum() < 0
+                || device.dailyNex() == null || device.dailyNex().signum() < 0) {
+            throw new BizException(409, "E3_DEVICE_SPEC_INCOMPLETE");
+        }
     }
 
     private String e3CapacitySwitch(CanonicalStateMapper.OwnedDevice device) {
@@ -536,12 +639,23 @@ public class AppCanonicalBoundaryService {
         return "placed";
     }
 
+    private boolean purchaseGateAllowed(String rawGate, CanonicalStateMapper.PurchaseFacts facts) {
+        if (!StringUtils.hasText(rawGate) || facts == null) return !StringUtils.hasText(rawGate);
+        StorefrontPurchaseGatePolicy.Decision decision = purchaseGatePolicy.evaluate(rawGate,
+                new StorefrontPurchaseGatePolicy.Facts(
+                        Math.max(0, facts.rank() == null ? 0 : facts.rank()),
+                        Math.max(0, facts.activeDirect() == null ? 0 : facts.activeDirect()),
+                        facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+        return decision.allowed();
+    }
+
     private String overlayPaymentStatus(String state, String fallback) {
         if (!StringUtils.hasText(state)) return normalizeState(fallback, "PENDING");
         return switch (state) {
             case "PAID", "ACTIVATED", "PROVISIONING_FAILED" -> "PAID";
             case "PAYMENT_FAILED" -> "FAILED";
             case "EXPIRED" -> "EXPIRED";
+            case "CANCELLED" -> "CANCELLED";
             case "REFUNDED" -> "REFUNDED";
             default -> normalizeState(fallback, "PENDING");
         };
@@ -552,7 +666,7 @@ public class AppCanonicalBoundaryService {
         return switch (state) {
             case "PAID" -> "PAID";
             case "ACTIVATED" -> "COMPLETED";
-            case "PAYMENT_FAILED", "EXPIRED", "PROVISIONING_FAILED", "REFUNDED" -> state;
+            case "PAYMENT_FAILED", "EXPIRED", "PROVISIONING_FAILED", "REFUNDED", "CANCELLED" -> state;
             default -> normalizeState(fallback, "PENDING_PAYMENT");
         };
     }
@@ -562,7 +676,7 @@ public class AppCanonicalBoundaryService {
         return switch (state) {
             case "PAID" -> "WAITING_PROVISIONING";
             case "ACTIVATED" -> "ACTIVATED";
-            case "PROVISIONING_FAILED", "REFUNDED" -> state;
+            case "PROVISIONING_FAILED", "REFUNDED", "CANCELLED" -> state;
             default -> normalizeState(fallback, "WAITING_PAYMENT");
         };
     }
@@ -606,10 +720,20 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(422, "ORDER_PRODUCT_OR_QUANTITY_INVALID");
         }
         CommerceAcceptanceSandboxMapper.SandboxCatalogProduct product = commerceAcceptanceSandboxMapper
-                .lockSandboxCatalogProduct(commerceAcceptanceRun.requireRunId(), validProductId ? productId : null, normalizedProductNo);
+                .lockSandboxCatalogProduct(
+                        commerceAcceptanceRun.requireRunId(), validProductId ? productId : null, normalizedProductNo, qty);
         if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0
                 || product.stock() == null || product.stock() < qty || product.version() == null) {
             return ApiResult.fail(409, "COMMERCE_SANDBOX_PRODUCT_NOT_AVAILABLE");
+        }
+        if (StringUtils.hasText(product.purchaseGateJson())
+                && !purchaseGateAllowed(product.purchaseGateJson(), mapper.purchaseFacts(userId))) {
+            return ApiResult.fail(409, "COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED");
+        }
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
+        if (!release.available()) {
+            return ApiResult.fail(409, "COMMERCE_SANDBOX_PRODUCT_NOT_RELEASED");
         }
         BigDecimal amount = product.priceUsdt().multiply(BigDecimal.valueOf(qty)).setScale(6, RoundingMode.DOWN);
         String orderNo = "CSO-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
@@ -646,6 +770,15 @@ public class AppCanonicalBoundaryService {
         CanonicalStateMapper.ProductStock product = mapper.lockProduct(validProductId ? productId : null, normalizedProductNo);
         if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0) {
             return ApiResult.fail(409, "PRODUCT_NOT_AVAILABLE");
+        }
+        if (StringUtils.hasText(product.purchaseGateJson())
+                && !purchaseGateAllowed(product.purchaseGateJson(), mapper.purchaseFacts(userId))) {
+            return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
+        }
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
+        if (!release.available()) {
+            return ApiResult.fail(409, "PRODUCT_NOT_RELEASED");
         }
         // A capacity quote is a UX aid, never the invariant.  The ordinary order
         // command is the last server-authoritative boundary before money/order

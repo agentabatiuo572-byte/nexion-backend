@@ -65,6 +65,13 @@ class PlatformGlobalRateLimitFilterTest {
     }
 
     @Test
+    void anonymousPublicReferralPreviewUsesTheGlobalGeneralBudget() throws Exception {
+        when(values.increment(any(String.class))).thenReturn(101L);
+
+        assertThat(execute("GET", "/api/public/referrals/AB12CD34/preview").getStatus()).isEqualTo(429);
+    }
+
+    @Test
     void legacyAuthRouteUsesTheIndependentAuthenticationBudget() throws Exception {
         when(values.increment(any(String.class))).thenAnswer(invocation ->
                 invocation.<String>getArgument(0).contains(":admin-auth:") ? 1L : 101L);

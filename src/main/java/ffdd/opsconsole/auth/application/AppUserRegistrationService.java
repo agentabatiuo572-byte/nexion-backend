@@ -5,6 +5,8 @@ import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
+import ffdd.opsconsole.growth.application.OpsReferralRewardService;
+import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -19,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.math.BigDecimal;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.PessimisticLockingFailureException;
@@ -48,6 +51,7 @@ public class AppUserRegistrationService {
     private final EventOutboxService outboxService;
     private final AppUserRegistrationTransactionExecutor transactionExecutor;
     private final Environment environment;
+    private final OpsReferralRewardService referralRewardService;
 
     @PostConstruct
     void ensureSchema() {
@@ -223,7 +227,10 @@ public class AppUserRegistrationService {
                             "sponsorUserId", sponsor.getId(),
                             "source", "nx_user.sponsor_user_id"));
         }
-        return authService.issueRegisteredSession(user, clientAddress);
+        ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress);
+        if (session.getData() == null || sponsor == null) return session;
+        return new ApiResult<>(session.getCode(), session.getMessage(),
+                session.getData().withRegistrationReceipt(registrationReceipt(sponsor, sandbox)));
     }
 
     private UserEntity findUser(String countryCode, String phone, int sandbox) {
@@ -265,6 +272,37 @@ public class AppUserRegistrationService {
                 .replace("-", "")
                 .substring(0, 12)
                 .toUpperCase(Locale.ROOT);
+    }
+
+    private UserLoginResponse.RegistrationReceipt registrationReceipt(UserEntity sponsor, int sandbox) {
+        String sourceEnvironment = sandbox == 1 ? "SANDBOX" : "PRODUCTION";
+        BigDecimal giftUsdt = null;
+        BigDecimal giftNex = null;
+        String status = "UNAVAILABLE";
+        if (referralRewardService != null) {
+            try {
+                ReferralRewardPublicConfigView config = referralRewardService.publicConfig();
+                if (config != null && config.welcomeGift() != null
+                        && config.welcomeGift().usdtAmount() != null
+                        && config.welcomeGift().nexAmount() != null) {
+                    giftUsdt = config.welcomeGift().usdtAmount();
+                    giftNex = config.welcomeGift().nexAmount();
+                    status = "PENDING_REVIEW";
+                }
+            } catch (RuntimeException ignored) {
+                // Registration remains committed; the UI must fail closed when the
+                // optional display projection is unavailable.
+            }
+        }
+        return new UserLoginResponse.RegistrationReceipt(
+                canonicalReferralCode(sponsor.getReferralCode()),
+                maskSponsorName(sponsor.getNickname()), sourceEnvironment, status, giftUsdt, giftNex);
+    }
+
+    private String maskSponsorName(String value) {
+        if (value == null || value.isBlank()) return "N•••";
+        int first = value.codePointAt(0);
+        return new String(Character.toChars(first)) + "•••";
     }
 
     /**

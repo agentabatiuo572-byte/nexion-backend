@@ -11,13 +11,15 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppBundleOrderMapper extends BaseMapper<Object> {
-    @Select("SELECT id,sandbox FROM nx_user WHERE id=#{userId} AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT id,sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 
     @Select("""
             <script>
-            SELECT id,product_no productNo,name,price_usdt priceUsdt,stock
-              FROM nx_product
+            SELECT p.id,p.product_no productNo,p.name,p.price_usdt priceUsdt,p.stock,
+                   (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson
+              FROM nx_product p
              WHERE is_deleted=0 AND COALESCE(store_visible,1)=1
                AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt > 0
                AND product_no IN
@@ -60,8 +62,20 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
             """)
     Attribution attribution(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) rank,
+                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
+                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
+                       AND child.status='ACTIVE' AND child.is_deleted=0) activeDirect,
+                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm WHERE tm.user_id=u.id AND tm.is_deleted=0) teamVolumeUsd
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+            """)
+    PurchaseFacts purchaseFacts(@Param("userId") Long userId);
+
     @Update("""
-            UPDATE nx_product SET stock=stock-1,sold_count=sold_count+1,updated_at=NOW()
+            UPDATE nx_product
+               SET stock=stock-1,sold_count=sold_count+1,
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE id=#{productId} AND is_deleted=0 AND stock>=1
             """)
     int decrementStock(@Param("productId") Long productId);
@@ -93,6 +107,11 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                          @Param("sortOrder") Integer sortOrder);
 
     record UserLock(Long id, boolean sandbox) { }
-    record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock) { }
+    record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock, String purchaseGateJson) {
+        public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock) {
+            this(id, productNo, name, priceUsdt, stock, null);
+        }
+    }
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }
+    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
 }

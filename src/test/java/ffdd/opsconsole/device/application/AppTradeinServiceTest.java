@@ -13,6 +13,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
@@ -22,6 +24,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.function.Supplier;
@@ -33,7 +36,8 @@ class AppTradeinServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
-    private final AppTradeinService service = new AppTradeinService(mapper, idempotency, outbox, audit);
+    private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
+    private final AppTradeinService service = new AppTradeinService(mapper, idempotency, outbox, audit, releasePolicy);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -57,6 +61,81 @@ class AppTradeinServiceTest {
         when(mapper.countActiveDevices(7L)).thenReturn(6);
         when(mapper.findCapacityReplacementSource(7L)).thenReturn(source());
         when(mapper.lockCapacityReplacementSource(7L)).thenReturn(source());
+        when(releasePolicy.evaluate(anyString(), anyString()))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+        when(releasePolicy.evaluate(anyString(), eq(null)))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+    }
+
+    @Test
+    void eligibilityReturnsOnlyServerFilteredOwnedSourcesAndStableDecision() {
+        when(mapper.listTradeinSourceCandidates(7L)).thenReturn(List.of(source(),
+                new AppTradeinMapper.SourceDevice(12L, 7L, "DEV-12", 5L, "SKU-OLD", "Old 2", "S1", "ACTIVE",
+                        new BigDecimal("500.00"))));
+
+        var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().eligible()).isTrue();
+        assertThat(result.getData().decisionCode()).isEqualTo("ELIGIBLE");
+        assertThat(result.getData().decisionSource()).isEqualTo("server");
+        assertThat(result.getData().sources()).extracting(AppTradeinEligibilityResponse.Source::sourceDeviceId)
+                .containsExactly(11L, 12L);
+        assertThat(result.getData().sources()).allMatch(AppTradeinEligibilityResponse.Source::eligible);
+    }
+
+    @Test
+    void eligibilityFailsClosedWhenTradeinIsDisabledWithoutReadingOwnedDevices() {
+        when(mapper.listTradeinConfig()).thenReturn(validConfig().stream()
+                .map(row -> "tradeinEnabled".equals(row.configKey()) ? row("tradeinEnabled", "false") : row)
+                .toList());
+
+        var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().eligible()).isFalse();
+        assertThat(result.getData().decisionCode()).isEqualTo("TRADEIN_DISABLED");
+        verify(mapper, never()).listTradeinSourceCandidates(any());
+    }
+
+    @Test
+    void eligibilityReportsReleaseAsStableTargetReason() {
+        when(releasePolicy.evaluate("SKU-NEW", null))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
+
+        var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().eligible()).isFalse();
+        assertThat(result.getData().decisionCode()).isEqualTo("TARGET_NOT_RELEASED");
+        verify(mapper, never()).listTradeinSourceCandidates(any());
+    }
+
+    @Test
+    void eligibilityReturnsStableReasonForAUserBelowTheConfiguredLevel() {
+        when(mapper.userLevel(7L)).thenReturn("L1");
+
+        var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getData().eligible()).isFalse();
+        assertThat(result.getData().decisionCode()).isEqualTo("TRADEIN_ELIGIBILITY_NOT_MET");
+        verify(mapper, never()).findTargetProduct(any(), any());
+        verify(mapper, never()).listTradeinSourceCandidates(any());
+    }
+
+    @Test
+    void eligibilityAnnotatesSourceSpecificHigherPriceAndMissingPaidPriceReasons() {
+        when(mapper.listTradeinSourceCandidates(7L)).thenReturn(List.of(
+                new AppTradeinMapper.SourceDevice(11L, 7L, "DEV-11", 5L, "SKU-OLD", "Old", "S1", "ACTIVE",
+                        new BigDecimal("1600.00")),
+                new AppTradeinMapper.SourceDevice(12L, 7L, "DEV-12", null, null, "Unknown", "S1", "ACTIVE", null)));
+
+        var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getData().eligible()).isFalse();
+        assertThat(result.getData().decisionCode()).isEqualTo("NO_ELIGIBLE_SOURCE");
+        assertThat(result.getData().sources()).extracting(AppTradeinEligibilityResponse.Source::reasonCode)
+                .containsExactly("HIGHER_PRICE_REQUIRED", "SOURCE_PAID_PRICE_UNAVAILABLE");
     }
 
     @Test
@@ -69,6 +148,29 @@ class AppTradeinServiceTest {
         assertThat(result.getData().discountUsdt()).isEqualByComparingTo("600.000000");
         assertThat(result.getData().payableUsdt()).isEqualByComparingTo("900.000000");
         assertThat(result.getData().discountToWallet()).isFalse();
+    }
+
+    @Test
+    void quoteFailsClosedWhenTheTargetIsNoLongerReleased() {
+        when(releasePolicy.evaluate("SKU-NEW", null))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
+
+        assertThatThrownBy(() -> service.quote(7L, new AppTradeinQuoteRequest(11L, 22L)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_TARGET_NOT_RELEASED");
+        verify(mapper, never()).walletBalanceUsdt(any());
+    }
+
+    @Test
+    void capacityQuoteFailsClosedWhenTheTargetIsNoLongerReleased() {
+        when(releasePolicy.evaluate("SKU-NEW", null))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
+
+        assertThatThrownBy(() -> service.capacityQuote(7L,
+                new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_TARGET_NOT_RELEASED");
+        verify(mapper, never()).walletBalanceUsdt(any());
     }
 
     @Test

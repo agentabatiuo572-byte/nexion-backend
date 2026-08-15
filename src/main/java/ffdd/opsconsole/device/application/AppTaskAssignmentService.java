@@ -196,7 +196,12 @@ public class AppTaskAssignmentService {
         if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         }
-        if ("PRODUCTION".equals(sourceEnvironment)) mapper.clearRuntimeTask(task.deviceId(), taskNo, now);
+        if ("PRODUCTION".equals(sourceEnvironment)) {
+            mapper.clearRuntimeTask(task.deviceId(), taskNo, now);
+            if (mapper.deactivatePendingDevice(userId, task.deviceId(), now) > 0) {
+                mapper.markRuntimeDeactivated(task.deviceId(), now);
+            }
+        }
         LocalDateTime lockUntil = now.plusMinutes(Math.max(0, task.taskLockMinutes()));
         mapper.upsertDeviceTaskLock(userId, task.deviceId(), sourceEnvironment, lockUntil, taskNo, now);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()

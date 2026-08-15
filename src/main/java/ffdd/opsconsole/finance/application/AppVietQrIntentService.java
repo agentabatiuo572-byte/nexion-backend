@@ -29,6 +29,8 @@ public class AppVietQrIntentService {
     private static final BigDecimal ABSOLUTE_MAX_DEPOSIT_USDT = new BigDecimal("10000.00");
     private static final int MAX_ACTIVE_INTENTS = 5;
     private static final int MAX_LIST_LIMIT = 50;
+    private static final BigDecimal VIETQR_FEE_VND = BigDecimal.ZERO;
+    private static final BigDecimal VIETQR_FEE_USDT = BigDecimal.ZERO;
 
     private final AppVietQrIntentMapper mapper;
     private final FinanceSensitiveDataCipher cipher;
@@ -44,6 +46,8 @@ public class AppVietQrIntentService {
         vietQr.put("toleranceVnd", decimal(config.get("toleranceVnd")));
         vietQr.put("graceMinutes", integer(config.get("graceMinutes")));
         vietQr.put("version", longValue(config.get("version")));
+        vietQr.put("feeVnd", VIETQR_FEE_VND);
+        vietQr.put("feeUsdt", VIETQR_FEE_USDT);
         return ApiResult.ok(Map.of("vietQr", vietQr));
     }
 
@@ -147,6 +151,25 @@ public class AppVietQrIntentService {
             items.add(toView(row));
         }
         return ApiResult.ok(Map.of("items", items));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> receipts(Long userId, Integer requestedLimit, Integer requestedOffset) {
+        requireUser(userId);
+        int limit = requestedLimit == null ? 20 : Math.max(1, Math.min(requestedLimit, MAX_LIST_LIMIT));
+        int offset = requestedOffset == null ? 0 : Math.max(0, requestedOffset);
+        List<Map<String, Object>> rows = safeList(mapper.listReceiptsForUser(userId, limit + 1, offset));
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            if (items.size() == limit) break;
+            items.add(toReceiptView(row));
+        }
+        Integer nextOffset = items.size() == limit && rows.size() > limit
+                ? offset + limit : null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("items", items);
+        result.put("nextOffset", nextOffset);
+        return ApiResult.ok(result);
     }
 
     @Transactional
@@ -253,12 +276,30 @@ public class AppVietQrIntentService {
                 "accountNumber", accountNumber,
                 "bankName", text(row.get("bankName"))));
         view.put("status", status.toLowerCase(Locale.ROOT));
-        view.put("expiresAt", isoInstant(row.get("expiresAt")));
+        putIfPresent(view, "expiresAt", row.get("expiresAt") == null ? null : isoInstant(row.get("expiresAt")));
         view.put("creditedUsdt", decimal(row.get("creditedUsdt")));
+        view.put("feeVnd", VIETQR_FEE_VND);
+        view.put("feeUsdt", VIETQR_FEE_USDT);
         view.put("version", longValue(row.get("version")));
         putIfPresent(view, "receivedVnd", row.get("receivedVnd"));
         if (row.get("matchedAt") != null) view.put("matchedAt", isoInstant(row.get("matchedAt")));
         if (row.get("createdAt") != null) view.put("createdAt", isoInstant(row.get("createdAt")));
+        return view;
+    }
+
+    private Map<String, Object> toReceiptView(Map<String, Object> row) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("receiptNo", text(row.get("reconciliationNo")));
+        view.put("intentNo", text(row.get("intentNo")));
+        view.put("viewType", text(row.get("viewType")));
+        view.put("status", text(row.get("status")));
+        putIfPresent(view, "payableVnd", row.get("payableVnd"));
+        putIfPresent(view, "receivedVnd", row.get("receivedVnd"));
+        view.put("lockedFxRate", decimal(row.get("lockedFxRate")));
+        view.put("creditedUsdt", decimal(row.get("creditedUsdt")));
+        if (row.get("expiresAt") != null) view.put("expiresAt", isoInstant(row.get("expiresAt")));
+        if (row.get("receivedAt") != null) view.put("receivedAt", isoInstant(row.get("receivedAt")));
+        view.put("createdAt", isoInstant(row.get("createdAt")));
         return view;
     }
 

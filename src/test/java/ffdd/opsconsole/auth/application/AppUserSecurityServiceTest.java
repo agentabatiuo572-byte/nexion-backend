@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -119,6 +120,24 @@ class AppUserSecurityServiceTest {
         assertThat(result.revokedSessionCount()).isEqualTo(3);
         verify(sessions).revokeOtherUserSessions(42L, "current");
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void cancellationIsScopedToTheAuthenticatedUserAndUsesVersionCas() {
+        when(security.latestAccountDeletionRequest(42L)).thenReturn(Map.of(
+                "requestNo", "ADR-0123456789abcdef0123456789abcdef",
+                "status", "IN_REVIEW", "version", 1L, "requestedAt", LocalDateTime.now()), Map.of(
+                "requestNo", "ADR-0123456789abcdef0123456789abcdef",
+                "status", "CANCELLED", "version", 2L, "requestedAt", LocalDateTime.now()));
+        when(security.transitionAccountDeletion("ADR-0123456789abcdef0123456789abcdef", "IN_REVIEW", "CANCELLED",
+                1L, "USER_REQUESTED_CANCEL", null)).thenReturn(1);
+        when(security.accountDeletionRequestForUpdate(42L, "cancel-key")).thenReturn(null);
+        Map<String, Object> result = service.cancelAccountDeletion(
+                42L, "current", "cancel-key", new AppAccountDeletionCancelRequest(1L, "USER_REQUESTED_CANCEL"));
+
+        assertThat(result).containsEntry("status", "CANCELLED");
+        verify(security).transitionAccountDeletion("ADR-0123456789abcdef0123456789abcdef", "IN_REVIEW", "CANCELLED",
+                1L, "USER_REQUESTED_CANCEL", null);
     }
 
     @Test

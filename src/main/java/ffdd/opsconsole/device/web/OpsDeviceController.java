@@ -104,27 +104,30 @@ public class OpsDeviceController {
     @PreAuthorize("hasAuthority('device_e1_write')")
     public ApiResult<DeviceSkuView> updateSku(
             @PathVariable String skuId,
+            @RequestHeader(value = OpsAdminApi.PRODUCT_REVISION_HEADER, required = false) String expectedUpdatedAt,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceSkuUpsertRequest request) {
-        return deviceService.updateSku(skuId, idempotencyKey, request);
+        return deviceService.updateSku(skuId, expectedUpdatedAt, idempotencyKey, request);
     }
 
     @PatchMapping("/skus/{skuId}/status")
     @PreAuthorize("hasAuthority('device_e1_write')")
     public ApiResult<DeviceSkuView> updateSkuStatus(
             @PathVariable String skuId,
+            @RequestHeader(value = OpsAdminApi.PRODUCT_REVISION_HEADER, required = false) String expectedUpdatedAt,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceSkuStatusRequest request) {
-        return deviceService.updateSkuStatus(skuId, idempotencyKey, request);
+        return deviceService.updateSkuStatus(skuId, expectedUpdatedAt, idempotencyKey, request);
     }
 
     @DeleteMapping("/skus/{skuId}")
     @PreAuthorize("hasAuthority('device_e1_write')")
     public ApiResult<Map<String, Object>> deleteSku(
             @PathVariable String skuId,
+            @RequestHeader(value = OpsAdminApi.PRODUCT_REVISION_HEADER, required = false) String expectedUpdatedAt,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody DeviceSkuStatusRequest request) {
-        return deviceService.deleteSku(skuId, idempotencyKey, request);
+        return deviceService.deleteSku(skuId, expectedUpdatedAt, idempotencyKey, request);
     }
 
     @GetMapping("/reviews")

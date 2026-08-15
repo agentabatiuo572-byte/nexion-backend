@@ -126,6 +126,32 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
+             ORDER BY d.id
+            """)
+    List<SourceDevice> listTradeinSourceCandidates(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo,
+                   COALESCE(d.product_id,p.id) AS productId,
+                   COALESCE(NULLIF(d.product_code,''),p.product_no) AS productNo,
+                   COALESCE(NULLIF(d.name,''),p.name) AS productName,
+                   COALESCE(NULLIF(d.product_tier,''),p.tier) AS productTier,
+                   d.status,
+                   COALESCE(NULLIF(CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity END,0),
+                            NULLIF(d.price_usdt_snapshot,0),p.price_usdt,0) AS actualPaidUsdt
+              FROM nx_user_device d
+              LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
+              LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+                                  AND o.payment_status='PAID' AND o.is_deleted=0
+             WHERE d.user_id=#{userId} AND d.is_deleted=0
+               AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               )
              ORDER BY COALESCE(d.daily_usdt,0), d.id
              LIMIT 1
             """)
@@ -164,21 +190,27 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
      * SKU from presenting a purchase CTA that the transaction service rejects.
      */
     @Select("""
-            SELECT product_no AS productNo, name, tier, price_usdt AS priceUsdt, stock,
-                   product_type AS deviceType, generation, gpu_model AS gpuModel,
-                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt,
-                   daily_nex AS dailyNex, tagline, badge, sold_count AS sold,
-                   unlock_phase AS unlockPhase, updated_at AS updatedAt
-              FROM nx_product
-             WHERE is_deleted=0 AND store_visible=1
-               AND UPPER(status) IN ('ACTIVE','ON_SALE')
-               AND price_usdt>0 AND stock>=1
-             ORDER BY store_featured DESC, sort_order ASC, id ASC
+            SELECT p.product_no AS productNo,p.name,p.tier,p.price_usdt AS priceUsdt,p.stock,
+                   p.product_type AS deviceType,p.generation,p.gpu_model AS gpuModel,
+                   p.vram_total_gb AS vramTotalGb,p.hashrate,p.estimated_daily_usdt AS dailyUsdt,
+                   p.daily_nex AS dailyNex,p.tagline,p.badge,p.sold_count AS sold,
+                   p.unlock_phase AS unlockPhase,p.updated_at AS updatedAt,
+                   s.power_text AS power,s.features_json AS featuresJson,
+                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
+                   s.ai_unlocks AS aiUnlocks,NULL AS purchaseGateJson
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted=0 AND p.store_visible=1
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND p.price_usdt>0 AND p.stock>=1
+             ORDER BY p.store_featured DESC,p.sort_order ASC,p.id ASC
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
 
     @Select("""
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
+                   unlock_phase AS unlockPhase,
                    product_type AS deviceType, generation, gpu_model AS gpuModel,
                    vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex
               FROM nx_product
@@ -193,6 +225,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
+                   unlock_phase AS unlockPhase,
                    product_type AS deviceType, generation, gpu_model AS gpuModel,
                    vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex
               FROM nx_product
@@ -239,7 +272,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
 
     @Update("""
             UPDATE nx_product
-               SET stock=stock-1, sold_count=sold_count+1, updated_at=NOW()
+               SET stock=stock-1, sold_count=sold_count+1,
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE id=#{productId} AND is_deleted=0 AND store_visible=1
                AND UPPER(status) IN ('ACTIVE','ON_SALE') AND stock>=1
             """)
@@ -350,15 +384,33 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
     }
 
     record TargetProduct(Long id, String productNo, String name, String tier, String status,
-                         BigDecimal priceUsdt, Integer stock, String deviceType, Integer generation,
+                         BigDecimal priceUsdt, Integer stock, String unlockPhase, String deviceType, Integer generation,
                          String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                          BigDecimal dailyUsdt, BigDecimal dailyNex) {
+        public TargetProduct(Long id, String productNo, String name, String tier, String status,
+                             BigDecimal priceUsdt, Integer stock, String deviceType, Integer generation,
+                             String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
+                             BigDecimal dailyUsdt, BigDecimal dailyNex) {
+            this(id, productNo, name, tier, status, priceUsdt, stock, null, deviceType, generation,
+                    gpuModel, vramTotalGb, hashrate, dailyUsdt, dailyNex);
+        }
     }
 
     record CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
                                 BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
-                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt) {
+                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                String power, String featuresJson, BigDecimal aiImageGenPerMin,
+                                BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
+                    hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt,
+                    null, null, null, null, null, null, null, null);
+        }
     }
 
     record PaidOrderWrite(Long userId, String orderNo, Long productId, String productNo, String productName,

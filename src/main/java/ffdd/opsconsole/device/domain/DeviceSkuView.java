@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.domain;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -43,5 +44,5 @@ public record DeviceSkuView(
         String tag,
         String status,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt) {
+        @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS") LocalDateTime updatedAt) {
 }

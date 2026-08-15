@@ -4,12 +4,15 @@ import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityResponse;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitResponse;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -50,6 +53,7 @@ public class AppTradeinService {
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService outboxService;
     private final AuditLogService auditLogService;
+    private final StorefrontProductReleasePolicy productReleasePolicy;
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinConfigResponse> config(Long userId) {
@@ -61,6 +65,50 @@ public class AppTradeinService {
         return ApiResult.ok(new AppTradeinConfigResponse(
                 policy.enabled(), policy.eligibility(), policy.cuts(), policy.credits(),
                 policy.requireHigherPrice(), policy.maxDevicesPerOrder(), "nx_compute_e3_config"));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AppTradeinEligibilityResponse> eligibility(
+            Long userId, AppTradeinEligibilityRequest request) {
+        requireUser(userId);
+        String targetProductNo = requireEligibilityTargetNo(request == null ? null : request.targetProductNo());
+        String userLevel = mapper.userLevel(userId);
+        if (!StringUtils.hasText(userLevel)) {
+            throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
+        }
+
+        TradeinPolicy policy = policy();
+        if (!policy.enabled()) {
+            return ApiResult.ok(eligibilityResponse(policy, false, "TRADEIN_DISABLED", null,
+                    targetProductNo, List.of()));
+        }
+        if (!isEligible(userLevel, policy.eligibility())) {
+            return ApiResult.ok(eligibilityResponse(policy, false, "TRADEIN_ELIGIBILITY_NOT_MET", null,
+                    targetProductNo, List.of()));
+        }
+
+        AppTradeinMapper.TargetProduct target = mapper.findTargetProduct(null, targetProductNo);
+        if (target == null || target.priceUsdt() == null || target.priceUsdt().signum() <= 0) {
+            return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_NOT_ACTIVE", null,
+                    targetProductNo, List.of()));
+        }
+        if (target.stock() == null || target.stock() < 1) {
+            return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_OUT_OF_STOCK", target,
+                    targetProductNo, List.of()));
+        }
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase());
+        if (release == null || !release.available()) {
+            return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_NOT_RELEASED", target,
+                    targetProductNo, List.of()));
+        }
+
+        List<AppTradeinMapper.SourceDevice> candidates = mapper.listTradeinSourceCandidates(userId);
+        List<AppTradeinEligibilityResponse.Source> sources = candidates == null ? List.of()
+                : candidates.stream().map(source -> eligibilitySource(source, target, policy)).toList();
+        boolean eligible = sources.stream().anyMatch(AppTradeinEligibilityResponse.Source::eligible);
+        return ApiResult.ok(eligibilityResponse(policy, eligible, eligible ? "ELIGIBLE" : "NO_ELIGIBLE_SOURCE",
+                target, targetProductNo, sources));
     }
 
     @Transactional(readOnly = true)
@@ -345,6 +393,7 @@ public class AppTradeinService {
                 || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
+        requireReleased(target);
         BigDecimal targetPrice = money(target.priceUsdt());
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         AppTradeinMapper.SourceDevice source = null;
@@ -388,6 +437,7 @@ public class AppTradeinService {
         if (target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_OUT_OF_STOCK");
         }
+        requireReleased(target);
 
         BigDecimal sourcePaid = money(source.actualPaidUsdt());
         BigDecimal targetPrice = money(target.priceUsdt());
@@ -409,6 +459,14 @@ public class AppTradeinService {
                 creditRate, discount, targetPrice, payable, wallet, shortfall,
                 shortfall.signum() == 0, false, "nx_compute_receipt + source paid price + nx_compute_e3_config");
         return new Evaluation(source, target, response);
+    }
+
+    private void requireReleased(AppTradeinMapper.TargetProduct target) {
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase());
+        if (release == null || !release.available()) {
+            throw new BizException(409, "TRADEIN_TARGET_NOT_RELEASED");
+        }
     }
 
     private TradeinPolicy policy() {
@@ -462,12 +520,63 @@ public class AppTradeinService {
     }
 
     private void requireEligibility(String userLevel, String eligibility) {
-        if ("全部用户".equals(eligibility)) return;
-        Matcher gate = LEVEL_GATE.matcher(eligibility);
-        Matcher actual = Pattern.compile("^L([1-9][0-9]*)$").matcher(StringUtils.hasText(userLevel) ? userLevel.trim() : "");
-        if (!gate.matches() || !actual.matches() || Integer.parseInt(actual.group(1)) < Integer.parseInt(gate.group(1))) {
+        if (!isEligible(userLevel, eligibility)) {
             throw new BizException(403, "TRADEIN_ELIGIBILITY_NOT_MET");
         }
+    }
+
+    private boolean isEligible(String userLevel, String eligibility) {
+        if ("全部用户".equals(eligibility)) return true;
+        Matcher gate = LEVEL_GATE.matcher(eligibility);
+        Matcher actual = Pattern.compile("^L([1-9][0-9]*)$").matcher(StringUtils.hasText(userLevel) ? userLevel.trim() : "");
+        return gate.matches() && actual.matches()
+                && Integer.parseInt(actual.group(1)) >= Integer.parseInt(gate.group(1));
+    }
+
+    private String requireEligibilityTargetNo(String targetProductNo) {
+        String normalized = normalizeProductNo(targetProductNo);
+        if (normalized == null || !normalized.matches("[A-Za-z0-9._:-]{1,64}")) {
+            throw new BizException(422, "TRADEIN_TARGET_REQUIRED");
+        }
+        return normalized;
+    }
+
+    private AppTradeinEligibilityResponse eligibilityResponse(
+            TradeinPolicy policy,
+            boolean eligible,
+            String decisionCode,
+            AppTradeinMapper.TargetProduct target,
+            String targetProductNo,
+            List<AppTradeinEligibilityResponse.Source> sources) {
+        return new AppTradeinEligibilityResponse(
+                policy.enabled(), eligible, decisionCode,
+                target == null ? null : target.id(),
+                target == null ? targetProductNo : target.productNo(),
+                target == null ? null : target.name(),
+                target == null ? null : money(target.priceUsdt()),
+                policy.requireHigherPrice(), policy.maxDevicesPerOrder(), sources, "server");
+    }
+
+    private AppTradeinEligibilityResponse.Source eligibilitySource(
+            AppTradeinMapper.SourceDevice source,
+            AppTradeinMapper.TargetProduct target,
+            TradeinPolicy policy) {
+        String reasonCode = "OK";
+        boolean eligible = true;
+        if (source == null || source.productId() == null || source.productId() <= 0
+                || source.actualPaidUsdt() == null || source.actualPaidUsdt().signum() <= 0) {
+            eligible = false;
+            reasonCode = "SOURCE_PAID_PRICE_UNAVAILABLE";
+        } else if (target.id().equals(source.productId())) {
+            eligible = false;
+            reasonCode = "TARGET_MUST_DIFFER";
+        } else if (policy.requireHigherPrice()
+                && money(target.priceUsdt()).compareTo(money(source.actualPaidUsdt())) <= 0) {
+            eligible = false;
+            reasonCode = "HIGHER_PRICE_REQUIRED";
+        }
+        return new AppTradeinEligibilityResponse.Source(
+                source == null ? null : source.id(), source == null ? null : source.productName(), eligible, reasonCode);
     }
 
     private BigDecimal decimal(Map<String, String> values, String key) {

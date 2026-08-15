@@ -750,10 +750,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (guard != null) {
             return guard;
         }
-        if (!A2ReplayContext.isReplaying()) {
-            if (lockMapper.countActiveByTarget("D", "withdrawal", withdrawalNo.trim()) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
+        if (isWithdrawalLockedByA2(withdrawalNo.trim())) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         ensureD2FallbackSeedData();
         return executeD2Review(withdrawalNo.trim(), idempotencyKey.trim(), request);
@@ -890,6 +888,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         List<Map<String, Object>> conflicts = new java.util.ArrayList<>();
         for (String rawId : request.withdrawalIds().stream().filter(StringUtils::hasText).distinct().toList()) {
             String withdrawalId = rawId.trim();
+            if (isWithdrawalLockedByA2(withdrawalId)) {
+                conflicts.add(Map.of("withdrawalId", withdrawalId, "reason", "OBJECT_LOCKED_BY_A2"));
+                continue;
+            }
             WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalId).orElse(null);
             if (order == null) {
                 conflicts.add(Map.of("withdrawalId", withdrawalId, "reason", "WITHDRAWAL_NOT_FOUND"));
@@ -922,6 +924,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                         "accepted", accepted, "rejected", rejected, "conflicts", conflicts,
                         "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
         return ApiResult.ok(data);
+    }
+
+    private boolean isWithdrawalLockedByA2(String withdrawalNo) {
+        return !A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("D", "withdrawal", withdrawalNo) > 0;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

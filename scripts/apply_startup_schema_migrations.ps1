@@ -114,6 +114,7 @@ if (-not $PSCmdlet.ShouldProcess("$($databaseUri.Host):$port/$database", "apply 
 }
 
 $previousMySqlPassword = $env:MYSQL_PWD
+Push-Location -LiteralPath $root.Path
 try {
   $env:MYSQL_PWD = $Password
   $sources = ($migrations | ForEach-Object { "source $($_.Replace('\', '/'));" }) -join " "
@@ -133,4 +134,5 @@ try {
   } else {
     $env:MYSQL_PWD = $previousMySqlPassword
   }
+  Pop-Location
 }

@@ -16,7 +16,8 @@ import org.junit.jupiter.api.Test;
 
 class OpsPlatformConfigControllerTest {
     private final OpsPlatformConfigService configService = mock(OpsPlatformConfigService.class);
-    private final OpsPlatformConfigController controller = new OpsPlatformConfigController(configService);
+    private final OpsPlatformConfigController controller = new OpsPlatformConfigController(
+            configService, mock(ffdd.opsconsole.platform.application.PlatformExperienceConfigService.class));
 
     @Test
     void overviewDelegatesToPlatformApplicationService() {

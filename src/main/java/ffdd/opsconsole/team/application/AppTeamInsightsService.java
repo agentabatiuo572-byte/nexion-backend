@@ -64,6 +64,27 @@ public class AppTeamInsightsService {
         return ApiResult.ok(result);
     }
 
+    /**
+     * Server-authoritative F2 projection.  The App receives the settlement
+     * cycle, source, layer and USDT/NEX split as stored facts; it must not
+     * reconstruct rewards from downline volume or client-side rate tables.
+     */
+    public ApiResult<Map<String, Object>> unilevel(Long userId, String requestedPeriod) {
+        String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
+        if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
+        Scope scope = scope(userId);
+        List<Map<String, Object>> events = mapper.unilevelEvents(userId, scope.sandbox(), period).stream()
+                .map(this::unilevel).toList();
+        Map<String, Object> direct = split(events, true);
+        Map<String, Object> extended = split(events, false);
+        Map<String, Object> result = provenance(scope);
+        result.put("period", period);
+        result.put("events", events);
+        result.put("split", Map.of("direct", direct, "extended", extended));
+        result.put("generatedAt", Instant.now().toString());
+        return ApiResult.ok(result);
+    }
+
     public ApiResult<Map<String, Object>> leadershipPool(Long userId) {
         Scope scope = scope(userId);
         var distribution = mapper.rankDistribution(scope.sandbox());
@@ -98,6 +119,40 @@ public class AppTeamInsightsService {
         item.put("unlockAt", row.unlockAt() == null ? row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli()
                 : row.unlockAt().toInstant(ZoneOffset.UTC).toEpochMilli());
         item.put("status", status(row.status())); return item;
+    }
+
+    private Map<String, Object> unilevel(AppTeamInsightsMapper.UnilevelRow row) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", "CM-" + row.id());
+        item.put("source", "network");
+        item.put("sourceUserId", row.sourceUserId() == null ? "system" : String.valueOf(row.sourceUserId()));
+        item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
+        item.put("cycle", row.cycle());
+        item.put("layer", row.layerNo());
+        item.put("orderId", row.orderNo());
+        item.put("orderAmountUSD", zero(row.orderAmountUsd()));
+        item.put("amountUSDT", zero(row.amountUsdt()));
+        item.put("amountNEX", zero(row.amountNex()));
+        item.put("currency", row.currency());
+        item.put("ts", row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli());
+        item.put("unlockAt", row.unlockAt() == null ? row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli()
+                : row.unlockAt().toInstant(ZoneOffset.UTC).toEpochMilli());
+        item.put("status", status(row.status()));
+        return item;
+    }
+
+    private Map<String, Object> split(List<Map<String, Object>> events, boolean direct) {
+        BigDecimal usdt = BigDecimal.ZERO;
+        BigDecimal nex = BigDecimal.ZERO;
+        int count = 0;
+        for (Map<String, Object> event : events) {
+            Object rawLayer = event.get("layer");
+            if (!(rawLayer instanceof Number layer) || (layer.intValue() == 1) != direct) continue;
+            usdt = usdt.add(zero((BigDecimal) event.get("amountUSDT")));
+            nex = nex.add(zero((BigDecimal) event.get("amountNEX")));
+            count++;
+        }
+        return Map.of("amountUSDT", usdt, "amountNEX", nex, "count", count);
     }
 
     private Scope scope(Long userId) {

@@ -29,6 +29,7 @@ import ffdd.opsconsole.finance.dto.WithdrawalLimitsUpdateRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
+import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -489,6 +490,40 @@ class OpsFinanceServiceTest {
                 .containsEntry("fromStatus", "REVIEWING")
                 .containsEntry("toStatus", "REVIEW_PASSED")
                 .containsEntry("idempotencyKey", "idem-review");
+    }
+
+    @Test
+    void batchReviewDoesNotBypassAnActiveA2WithdrawalLock() {
+        withdrawalRepository.order = withdrawal("WD-A2-LOCKED", "REVIEWING");
+        when(lockMapper.countActiveByTarget("D", "withdrawal", "WD-A2-LOCKED")).thenReturn(1);
+        WithdrawalBatchReviewRequest request = new WithdrawalBatchReviewRequest(
+                "APPROVE",
+                List.of("WD-A2-LOCKED"),
+                "superadmin",
+                "batch must respect A2 lock",
+                null,
+                null,
+                null,
+                null,
+                null);
+
+        ApiResult<Map<String, Object>> result = service.reviewWithdrawalsBatch("idem-batch-a2-lock", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("accepted")).isEqualTo(List.of());
+        assertThat(result.getData().get("conflicts")).isEqualTo(List.of(Map.of(
+                "withdrawalId", "WD-A2-LOCKED",
+                "reason", "OBJECT_LOCKED_BY_A2")));
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(eventOutboxService, org.mockito.Mockito.never()).publish(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyMap());
+        verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test

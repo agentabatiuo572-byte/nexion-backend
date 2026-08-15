@@ -303,6 +303,25 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             @Param("userId") Long userId,
             @Param("limit") int limit);
 
+    @Select("""
+            SELECT reconciliation_no AS reconciliationNo, intent_no AS intentNo,
+                   view_type AS viewType, status, payable_vnd AS payableVnd,
+                   received_vnd AS receivedVnd,
+                   locked_fx_rate_vnd_per_usdt AS lockedFxRate,
+                   credited_usdt AS creditedUsdt, expires_at AS expiresAt,
+                   received_at AS receivedAt, created_at AS createdAt
+              FROM nx_vietqr_reconciliation
+             WHERE user_id = #{userId}
+               AND view_type <> 'INFLIGHT'
+               AND is_deleted = 0
+             ORDER BY created_at DESC, id DESC
+             LIMIT #{limit} OFFSET #{offset}
+            """)
+    List<Map<String, Object>> listReceiptsForUser(
+            @Param("userId") Long userId,
+            @Param("limit") int limit,
+            @Param("offset") int offset);
+
     @Update("""
             UPDATE nx_vietqr_intent
                SET status = 'CANCELLED',

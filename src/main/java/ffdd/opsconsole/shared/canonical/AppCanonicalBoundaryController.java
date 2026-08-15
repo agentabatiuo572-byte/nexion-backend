@@ -75,6 +75,17 @@ public class AppCanonicalBoundaryController {
                 : service.deactivateDevice(userId, deviceId, request.expectedVersion(), idempotencyKey);
     }
 
+    @PostMapping("/api/device/{deviceId}/deactivate-after-task")
+    public ApiResult<Map<String, Object>> deactivateAfterTask(
+            @PathVariable Long deviceId,
+            @RequestBody DeviceDeactivateRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : service.deactivateAfterTask(userId, deviceId, request.expectedVersion(), idempotencyKey);
+    }
+
     @GetMapping("/api/devices/earnings")
     public ApiResult<Map<String, Object>> deviceEarnings(
             @RequestParam(name = "_devSeedLegacyDevice", defaultValue = "false") boolean seedLegacyDevice,

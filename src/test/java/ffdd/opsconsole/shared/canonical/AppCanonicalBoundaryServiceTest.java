@@ -45,10 +45,12 @@ class AppCanonicalBoundaryServiceTest {
     private final GrowthRhythmFacade growthRhythmFacade = mock(GrowthRhythmFacade.class);
     private final CommerceAcceptanceSandboxMapper commerceSandboxMapper = mock(CommerceAcceptanceSandboxMapper.class);
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard = mock(FundsSandboxProfileGuard.class);
+    private final StorefrontProductReleasePolicy productReleasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final AppCanonicalBoundaryService service =
             new AppCanonicalBoundaryService(
                     mapper, publisher, idempotency, outbox, growthLifecyclePublisher, growthRhythmFacade, audit,
-                    commerceSandboxMapper, fundsSandboxProfileGuard, new CommerceAcceptanceRun("test-run-0001"));
+                    commerceSandboxMapper, fundsSandboxProfileGuard, new CommerceAcceptanceRun("test-run-0001"),
+                    productReleasePolicy, new StorefrontPurchaseGatePolicy());
 
     AppCanonicalBoundaryServiceTest() {
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class),
@@ -57,6 +59,8 @@ class AppCanonicalBoundaryServiceTest {
         when(growthLifecyclePublisher.prepareVoucher(any(), any(), any(), any()))
                 .thenReturn(AppGrowthLifecyclePublisher.VoucherRedemption.none());
         when(growthRhythmFacade.snapshot()).thenReturn(h1Snapshot("P3"));
+        when(productReleasePolicy.evaluate(any(), any()))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.userCanonicalProfile(42L)).thenReturn(new CanonicalStateMapper.UserCanonicalProfile(
@@ -116,7 +120,7 @@ class AppCanonicalBoundaryServiceTest {
                 new BigDecimal("649"), new BigDecimal("12.5"))));
         when(mapper.consumeValidOtp(42L, "challenge-1", "123456")).thenReturn(1);
         when(mapper.lockProduct(8L, null)).thenReturn(
-                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
         when(mapper.decrementProductStock(8L, 1)).thenReturn(1);
         when(mapper.insertOrder(eq(42L), anyString(), eq(8L), eq(1),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class))).thenReturn(1);
@@ -171,7 +175,7 @@ class AppCanonicalBoundaryServiceTest {
     void ordinaryOrderCannotBypassServerCapacityReplacementAtTheActiveDeviceCap() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
-                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
         when(mapper.activeDeviceCount(42L)).thenReturn(6);
 
         var result = service.createOrder(42L, null, 8L, 1, "capacity-bypass-key");
@@ -188,7 +192,7 @@ class AppCanonicalBoundaryServiceTest {
     void ordinaryOrderReservesEveryRequestedAndAlreadyAcceptedDeviceSlot() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockProduct(8L, null)).thenReturn(
-                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4));
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
         when(mapper.activeDeviceCount(42L)).thenReturn(4);
         when(mapper.reservedDeviceOrderCount(42L)).thenReturn(1);
 
@@ -205,6 +209,21 @@ class AppCanonicalBoundaryServiceTest {
                 org.mockito.ArgumentMatchers.<java.util.function.Supplier<ffdd.opsconsole.shared.api.ApiResult>>any());
         serialization.verify(mapper).activeDeviceCount(42L);
         serialization.verify(mapper).reservedDeviceOrderCount(42L);
+    }
+
+    @Test
+    void ordinaryOrderCannotBypassTheServerReleaseGate() {
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, "52"));
+        when(productReleasePolicy.evaluate("BOX-8", "52")).thenReturn(
+                StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "52"));
+
+        var result = service.createOrder(42L, null, 8L, 1, "unreleased-product-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_NOT_RELEASED");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
     }
 
     @Test
@@ -236,7 +255,7 @@ class AppCanonicalBoundaryServiceTest {
     void acceptanceSandboxCheckoutCreatesOnlySandboxFactsAndNeverMutatesCanonicalCommerce() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
-        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null)).thenReturn(
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null, 1)).thenReturn(
                 new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
                         new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
                         BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now()));
@@ -266,10 +285,31 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void acceptanceSandboxCheckoutCannotBypassTheServerReleaseGate() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null, 1)).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
+                        new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
+                        BigDecimal.ZERO, "", null, "52", 7L, LocalDateTime.now()));
+        when(commerceSandboxMapper.claimOrderReceipt(any())).thenReturn(1);
+        when(commerceSandboxMapper.completeOrderReceipt(any())).thenReturn(1);
+        when(productReleasePolicy.evaluate("BOX-8", "52")).thenReturn(
+                StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "52"));
+
+        var result = service.createOrder(42L, null, 8L, 1, "sandbox-unreleased-product");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_PRODUCT_NOT_RELEASED");
+        verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
+        verify(commerceSandboxMapper, never()).insertSandboxOrder(any());
+    }
+
+    @Test
     void sandboxReceiptInsertRaceReReadsAndReturnsTheFirstFrozenResponse() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
-        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null)).thenReturn(
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null, 1)).thenReturn(
                 new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
                         new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
                         BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now()));
@@ -296,7 +336,7 @@ class AppCanonicalBoundaryServiceTest {
         sequence.verify(commerceSandboxMapper).findOrderReceipt("test-run-0001", 42L, "same-checkout-key");
         sequence.verify(commerceSandboxMapper).claimOrderReceipt(any());
         sequence.verify(commerceSandboxMapper).lockOrderReceipt("test-run-0001", 42L, "same-checkout-key");
-        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any());
+        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any(), any());
         verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
     }
 
@@ -320,7 +360,7 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("orderNo", "CSO-WINNER");
         verify(commerceSandboxMapper).claimOrderReceipt(any());
-        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any());
+        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(any(), any(), any(), any());
         verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
     }
 
@@ -443,6 +483,69 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("capacitySubsidized", false)
                 .containsEntry("capacitySubsidyDays", 30);
         assertThat(result.getData()).containsKey("capacitySchedule");
+    }
+
+    @Test
+    void projectsTodayReceiptEarningsWithServerTimezoneMetadata() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                9L, "DEV-9", "NexionBox S1", "BOX", "STELLARBOX-S1", "ACTIVE",
+                73L,
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5).minusMinutes(1),
+                new BigDecimal("100"), new BigDecimal("50"), "RTX 4090", 96,
+                new BigDecimal("1200"), "Singapore", new BigDecimal("649"), new BigDecimal("200"))));
+        when(mapper.realizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(new CanonicalStateMapper.DeviceRealizedToday(
+                        9L, new BigDecimal("1.250000"), new BigDecimal("2.500000"))));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getData())
+                .containsEntry("timezone", "Asia/Shanghai")
+                .containsEntry("realizedTodayUsdt", new BigDecimal("1.250000"))
+                .containsEntry("realizedTodayNex", new BigDecimal("2.500000"));
+        var device = (Map<?, ?>) ((List<?>) result.getData().get("devices")).get(0);
+        assertThat(device.get("todayEarningsUsdt")).isEqualTo(new BigDecimal("1.250000"));
+        assertThat(device.get("todayEarningsNex")).isEqualTo(new BigDecimal("2.500000"));
+    }
+
+    @Test
+    void failsClosedWhenADeviceSpecificationIsMissing() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                9L, "DEV-9", "NexionBox S1", "BOX", "STELLARBOX-S1", "ACTIVE",
+                73L,
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5),
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5),
+                new BigDecimal("100"), new BigDecimal("50"), null, null, null, null,
+                new BigDecimal("649"), new BigDecimal("200"))));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("E3_DEVICE_SPEC_INCOMPLETE");
+    }
+
+    @Test
+    void failsClosedWhenTheRealizedReceiptProjectionReturnsDuplicateDeviceRows() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                9L, "DEV-9", "NexionBox S1", "BOX", "STELLARBOX-S1", "ACTIVE",
+                73L,
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5),
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(5),
+                new BigDecimal("100"), new BigDecimal("50"), "RTX 4090", 96,
+                new BigDecimal("1200"), "Singapore", new BigDecimal("649"), new BigDecimal("200"))));
+        var duplicate = new CanonicalStateMapper.DeviceRealizedToday(
+                9L, new BigDecimal("1.250000"), new BigDecimal("2.500000"));
+        when(mapper.realizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(duplicate, duplicate));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("E3_REALIZED_EARNINGS_INVALID");
     }
 
     @Test

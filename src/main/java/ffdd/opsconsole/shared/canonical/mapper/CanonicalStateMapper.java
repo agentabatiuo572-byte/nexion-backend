@@ -63,6 +63,16 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     UserEventAttribution userEventAttribution(@Param("userId") Long userId);
 
     @Select("""
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS rank,
+                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
+                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
+                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm WHERE tm.user_id=u.id AND tm.is_deleted=0) AS teamVolumeUsd
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+            """)
+    PurchaseFacts purchaseFacts(@Param("userId") Long userId);
+
+    @Select("""
             SELECT COUNT(1)
              FROM nx_user_device
              WHERE user_id = #{userId} AND is_deleted = 0
@@ -115,13 +125,40 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Select("""
             SELECT id, user_id AS userId, instance_no AS instanceNo, status,
-                   ownership_status AS ownershipStatus, row_version AS rowVersion
+                   ownership_status AS ownershipStatus, row_version AS rowVersion,
+                   pending_deactivate AS pendingDeactivate
               FROM nx_user_device
              WHERE id = #{deviceId} AND is_deleted = 0
              LIMIT 1
              FOR UPDATE
             """)
     UserDeviceCommandRow lockDeviceForUserCommand(@Param("deviceId") Long deviceId);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_compute_task
+             WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0
+               AND UPPER(COALESCE(source_environment,'PRODUCTION'))='PRODUCTION'
+               AND UPPER(status) IN ('CLAIMED','RUNNING')
+            """)
+    boolean hasActiveTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Update("""
+            UPDATE nx_user_device SET pending_deactivate=1,updated_at=NOW()
+             WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status)='ACTIVE'
+               AND pending_deactivate=0 AND row_version=#{expectedVersion}
+            """)
+    int markDevicePendingDeactivate(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                    @Param("expectedVersion") Long expectedVersion);
+
+    @Update("""
+            UPDATE nx_user_device SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
+                   pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
+             WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status)='ACTIVE'
+               AND pending_deactivate=1
+            """)
+    int deactivatePendingDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Update("""
             UPDATE nx_user_device
@@ -167,6 +204,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     DeviceEarnings deviceEarnings(@Param("userId") Long userId);
 
     @Select("""
+            SELECT r.user_device_id AS deviceId,
+                   COALESCE(SUM(r.reward_usdt), 0) AS todayEarningsUsdt,
+                   COALESCE(SUM(r.reward_nex), 0) AS todayEarningsNex
+              FROM nx_compute_receipt r
+             WHERE r.user_id = #{userId} AND r.is_deleted = 0
+               AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
+               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.completed_at >= #{start}
+               AND r.completed_at < #{end}
+             GROUP BY r.user_device_id
+            """)
+    List<DeviceRealizedToday> realizedToday(
+            @Param("userId") Long userId,
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end);
+
+    @Select("""
             SELECT w.usdt_available AS usdtAvailable,
                    w.nex_available AS nexAvailable,
                    u.created_at AS joinedAt
@@ -185,6 +239,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.product_code AS productCode,
                    d.status,
                    d.row_version AS rowVersion,
+                   d.pending_deactivate AS pendingDeactivate,
                    d.activated_at AS activatedAt,
                    d.purchased_at AS purchasedAt,
                    d.daily_usdt AS dailyUsdt,
@@ -251,21 +306,24 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int incrementOtpFailure(@Param("userId") Long userId, @Param("challengeNo") String challengeNo);
 
     @Select("""
-            SELECT id, product_no AS productNo, price_usdt AS priceUsdt, stock
-              FROM nx_product
-             WHERE is_deleted = 0
-               AND ((#{productId} IS NOT NULL AND id = #{productId})
-                 OR (#{productNo} IS NOT NULL AND product_no = #{productNo}))
-               AND UPPER(status) IN ('ACTIVE', 'ON_SALE')
-               AND COALESCE(store_visible, 1) = 1
-               AND price_usdt > 0 AND stock >= 1
+            SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock, p.unlock_phase AS unlockPhase,
+                   (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS purchaseGateJson
+              FROM nx_product p
+             WHERE p.is_deleted = 0
+               AND ((#{productId} IS NOT NULL AND p.id = #{productId})
+                 OR (#{productNo} IS NOT NULL AND p.product_no = #{productNo}))
+               AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE')
+               AND COALESCE(p.store_visible, 1) = 1
+               AND p.price_usdt > 0 AND p.stock >= 1
              LIMIT 1 FOR UPDATE
             """)
     ProductStock lockProduct(@Param("productId") Long productId, @Param("productNo") String productNo);
 
     @Update("""
             UPDATE nx_product
-               SET stock = stock - #{quantity}, sold_count = sold_count + #{quantity}, updated_at = NOW()
+               SET stock = stock - #{quantity}, sold_count = sold_count + #{quantity},
+                   updated_at = GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE id = #{productId} AND is_deleted = 0 AND stock >= #{quantity}
             """)
     int decrementProductStock(@Param("productId") Long productId, @Param("quantity") Integer quantity);
@@ -407,6 +465,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     record DeviceEarnings(BigDecimal dailyUsdt, BigDecimal dailyNex) {
     }
 
+    record DeviceRealizedToday(Long deviceId, BigDecimal todayEarningsUsdt, BigDecimal todayEarningsNex) {
+    }
+
     record UserCanonicalProfile(BigDecimal usdtAvailable, BigDecimal nexAvailable, LocalDateTime joinedAt) {
     }
 
@@ -414,7 +475,12 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     }
 
     record UserDeviceCommandRow(
-            Long id, Long userId, String instanceNo, String status, String ownershipStatus, Long rowVersion) {
+            Long id, Long userId, String instanceNo, String status, String ownershipStatus, Long rowVersion,
+            boolean pendingDeactivate) {
+        public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
+                                    String ownershipStatus, Long rowVersion) {
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, false);
+        }
     }
 
     record OwnedDevice(
@@ -425,6 +491,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String productCode,
             String status,
             Long rowVersion,
+            boolean pendingDeactivate,
             LocalDateTime activatedAt,
             LocalDateTime purchasedAt,
             BigDecimal dailyUsdt,
@@ -437,19 +504,35 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             BigDecimal cumulativeOutputUsdt) {
         public OwnedDevice(
                 Long id, String instanceNo, String name, String deviceType, String productCode, String status,
+                Long rowVersion, LocalDateTime activatedAt, LocalDateTime purchasedAt,
+                BigDecimal dailyUsdt, BigDecimal dailyNex, String gpuModel, Integer vramTotalGb,
+                BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
+            this(id, instanceNo, name, deviceType, productCode, status, rowVersion, false, activatedAt, purchasedAt,
+                    dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
+                    actualPaidUsdt, cumulativeOutputUsdt);
+        }
+
+        public OwnedDevice(
+                Long id, String instanceNo, String name, String deviceType, String productCode, String status,
                 LocalDateTime activatedAt, LocalDateTime purchasedAt, BigDecimal dailyUsdt, BigDecimal dailyNex,
                 String gpuModel, Integer vramTotalGb, BigDecimal basePowerW, String location,
                 BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
-            this(id, instanceNo, name, deviceType, productCode, status, 0L, activatedAt, purchasedAt,
+            this(id, instanceNo, name, deviceType, productCode, status, 0L, false, activatedAt, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
                     actualPaidUsdt, cumulativeOutputUsdt);
         }
     }
 
-    record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock) {
+    record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock, String unlockPhase, String purchaseGateJson) {
+        public ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock, String unlockPhase) {
+            this(id, productNo, priceUsdt, stock, unlockPhase, null);
+        }
     }
 
     record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
+    }
+
+    record PurchaseFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) {
     }
 
     record UserOrder(

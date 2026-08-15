@@ -34,6 +34,7 @@ public class AppBundleOrderService {
     private final AdminIdempotencyService idempotency;
     private final EventOutboxService outbox;
     private final FundsSandboxProfileGuard profileGuard;
+    private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
 
     @Transactional
     public ApiResult<Map<String, Object>> create(Long userId, List<String> productNos, String idempotencyKey) {
@@ -56,6 +57,16 @@ public class AppBundleOrderService {
         if (products.stream().anyMatch(row -> row.stock() == null || row.stock() < 1
                 || row.priceUsdt() == null || row.priceUsdt().signum() <= 0 || !StringUtils.hasText(row.name()))) {
             return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
+        }
+        if (products.stream().anyMatch(row -> StringUtils.hasText(row.purchaseGateJson()))) {
+            AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
+            if (facts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_UNAVAILABLE");
+            StorefrontPurchaseGatePolicy.Facts gateFacts = new StorefrontPurchaseGatePolicy.Facts(
+                    Math.max(0, facts.rank() == null ? 0 : facts.rank()), Math.max(0, facts.activeDirect() == null ? 0 : facts.activeDirect()),
+                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd());
+            if (products.stream().anyMatch(row -> !purchaseGatePolicy.evaluate(row.purchaseGateJson(), gateFacts).allowed())) {
+                return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
+            }
         }
         int itemCount = products.size();
         int cap = Math.max(1, mapper.deviceSlotCap());

@@ -79,7 +79,24 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 .toList())
                 .containsExactly(
                         "id", "instanceNo", "name", "deviceType", "productCode", "status", "rowVersion",
-                        "activatedAt", "purchasedAt", "dailyUsdt", "dailyNex", "gpuModel", "vramTotalGb",
+                        "pendingDeactivate", "activatedAt", "purchasedAt", "dailyUsdt", "dailyNex", "gpuModel", "vramTotalGb",
                         "basePowerW", "location", "actualPaidUsdt", "cumulativeOutputUsdt");
+    }
+
+    @Test
+    void realizedTodayProjectionIsProductionOnlyAndGroupedPerDevice() throws Exception {
+        var method = CanonicalStateMapper.class.getMethod(
+                "realizedToday", Long.class, java.time.LocalDateTime.class, java.time.LocalDateTime.class);
+        String sql = String.join(" ", method.getAnnotation(Select.class).value())
+                .replaceAll("\\s+", " ");
+
+        assertThat(sql).contains(
+                "FROM nx_compute_receipt r",
+                "COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'",
+                "UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')",
+                "r.completed_at >= #{start}",
+                "r.completed_at < #{end}",
+                "GROUP BY r.user_device_id");
+        assertThat(sql).doesNotContain("nx_earning_event");
     }
 }

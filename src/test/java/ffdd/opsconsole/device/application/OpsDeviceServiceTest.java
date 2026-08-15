@@ -973,6 +973,39 @@ class OpsDeviceServiceTest {
                         "idem-sku",
                         skuRequest("stellarbox-test", "NexionBox Test", "pending", "Entry", "HK-1", 1, "active", ""))
                 .getMessage()).isEqualTo("SKU_UNLOCK_PHASE_INVALID");
+        assertThat(service.createSku(
+                        "idem-sku",
+                        withStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), "unlimited"))
+                .getMessage()).isEqualTo("SKU_STOCK_INVALID");
+        assertThat(service.createSku(
+                        "idem-sku",
+                        withStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), ""))
+                .getMessage()).isEqualTo("SKU_STOCK_INVALID");
+        assertThat(service.createSku(
+                        "idem-sku",
+                        withSoldAndStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), -1L, "10"))
+                .getMessage()).isEqualTo("SKU_SOLD_INVALID");
+        assertThat(service.createSku(
+                        "idem-sku",
+                        withSoldAndStock(
+                                skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                                (long) Integer.MAX_VALUE,
+                                "1"))
+                .getMessage()).isEqualTo("SKU_SOLD_INVALID");
+    }
+
+    @Test
+    void createSkuPersistsStructuredPurchaseGateForServerEnforcedCheckout() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        DeviceSkuUpsertRequest request = withPurchaseGate(
+                skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
+                        2, null, null, "all", null, null, null, true));
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-sku-gate", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.purchaseGate()).isEqualTo(request.purchaseGate());
     }
 
     @Test
@@ -996,12 +1029,64 @@ class OpsDeviceServiceTest {
                 objectKey,
                 "http://127.0.0.1:9000/nexion/" + objectKey + "?X-Amz-Signature=test");
 
-        ApiResult<DeviceSkuView> result = service.updateSku("stellarrack-p1", "idem-sku-media", request);
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1", catalogRepository.sku.updatedAt().toString(), "idem-sku-media", request);
 
         assertThat(assetId.length()).isGreaterThan(64);
         assertThat(result.getCode()).isZero();
         assertThat(catalogRepository.lastSkuRequest.imageAssetId()).isEqualTo(assetId);
         assertThat(catalogRepository.lastSkuRequest.imageObjectKey()).isEqualTo(objectKey);
+    }
+
+    @Test
+    void updateSkuRequiresTheRevisionReadByTheEditor() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        DeviceSkuUpsertRequest request = skuRequest("stellarrack-p1", "StellarRack P1", "on");
+
+        ApiResult<DeviceSkuView> missing = service.updateSku(
+                "stellarrack-p1", null, "idem-sku-version-missing", request);
+        ApiResult<DeviceSkuView> stale = service.updateSku(
+                "stellarrack-p1", "2026-06-16T23:59:59", "idem-sku-version-stale", request);
+
+        assertThat(missing.getCode()).isEqualTo(409);
+        assertThat(missing.getMessage()).isEqualTo("SKU_VERSION_REQUIRED");
+        assertThat(stale.getCode()).isEqualTo(409);
+        assertThat(stale.getMessage()).isEqualTo("SKU_VERSION_CONFLICT");
+    }
+
+    @Test
+    void updateSkuAcceptsTheLegacySpaceSeparatedRevisionDuringClientTransition() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        DeviceSkuUpsertRequest request = skuRequest("stellarrack-p1", "StellarRack P1", "on");
+        String legacyRevision = catalogRepository.sku.updatedAt().toString().replace('T', ' ');
+
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1", legacyRevision, "idem-sku-version-legacy-space", request);
+
+        assertThat(result.getCode()).isZero();
+    }
+
+    @Test
+    void statusAndDeleteRequireTheRevisionReadByTheOperator() {
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        DeviceSkuStatusRequest request = new DeviceSkuStatusRequest("off", "并发版本保护完整验证", "superadmin");
+
+        ApiResult<DeviceSkuView> missingStatusRevision = service.updateSkuStatus(
+                "stellarrack-p1", null, "idem-status-version-missing", request);
+        ApiResult<DeviceSkuView> staleStatusRevision = service.updateSkuStatus(
+                "stellarrack-p1", "2026-06-16T23:59:59", "idem-status-version-stale", request);
+        ApiResult<Map<String, Object>> staleDeleteRevision = service.deleteSku(
+                "stellarrack-p1", "2026-06-16T23:59:59", "idem-delete-version-stale", request);
+
+        assertThat(missingStatusRevision.getCode()).isEqualTo(409);
+        assertThat(missingStatusRevision.getMessage()).isEqualTo("SKU_VERSION_REQUIRED");
+        assertThat(staleStatusRevision.getCode()).isEqualTo(409);
+        assertThat(staleStatusRevision.getMessage()).isEqualTo("SKU_VERSION_CONFLICT");
+        assertThat(staleDeleteRevision.getCode()).isEqualTo(409);
+        assertThat(staleDeleteRevision.getMessage()).isEqualTo("SKU_VERSION_CONFLICT");
+        assertThat(catalogRepository.sku.status()).isEqualTo("on");
     }
 
     @Test
@@ -1218,7 +1303,8 @@ class OpsDeviceServiceTest {
         DeviceSkuUpsertRequest repriced = withPriceAndStatus(
                 skuRequest("stellarbox-test", "NexionBox Test", "on"), beforePrice.add(BigDecimal.ONE), "on");
 
-        ApiResult<DeviceSkuView> priceResult = service.updateSku("stellarbox-test", "idem-price-change", repriced);
+        ApiResult<DeviceSkuView> priceResult = service.updateSku(
+                "stellarbox-test", catalogRepository.sku.updatedAt().toString(), "idem-price-change", repriced);
         ApiResult<DeviceSkuView> offResult = service.updateSkuStatus(
                 "stellarbox-test", "idem-unlist", new DeviceSkuStatusRequest("off", "商品下架运营处理", "superadmin"));
 
@@ -1255,7 +1341,8 @@ class OpsDeviceServiceTest {
         DeviceSkuUpsertRequest forgedPrice = withOperator(
                 withPriceAndStatus(forgedCreate, forgedCreate.price().add(BigDecimal.ONE), "on"),
                 "forged-client");
-        ApiResult<DeviceSkuView> repriced = service.updateSku(skuId, "idem-actor-price", forgedPrice);
+        ApiResult<DeviceSkuView> repriced = service.updateSku(
+                skuId, catalogRepository.sku.updatedAt().toString(), "idem-actor-price", forgedPrice);
         ApiResult<DeviceSkuView> unlisted = service.updateSkuStatus(
                 skuId, "idem-actor-unlist",
                 new DeviceSkuStatusRequest("off", "可信主体执行商品下架", "forged-client"));
@@ -1299,7 +1386,8 @@ class OpsDeviceServiceTest {
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("E", "e1_sku_status", Map.of(
                         "skuId", "a2-actor-box",
-                        "status", "off")),
+                        "status", "off",
+                        "expectedUpdatedAt", "2026-06-17T00:00")),
                 new AuditReplayContext("stale-replay-actor", "A2 回放可信主体校验", "idem-a2-actor"));
 
         assertThat(result.getCode()).isZero();
@@ -1320,7 +1408,8 @@ class OpsDeviceServiceTest {
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("E", "e1_sku_status", Map.of(
                         "skuId", "a2-internal-box",
-                        "status", "off")),
+                        "status", "off",
+                        "expectedUpdatedAt", "2026-06-17T00:00")),
                 new AuditReplayContext("trusted-a2-executor", "内部回放可信主体回退", "idem-a2-internal"));
 
         assertThat(result.getCode()).isZero();
@@ -1863,6 +1952,37 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void cancelOrderReturnsReservedCanonicalStock() {
+        catalogRepository.order = order("OD-1", "placed");
+
+        ApiResult<DeviceOrderView> result = service.cancelOrder(
+                "OD-1",
+                "idem-order-cancel",
+                new DeviceOrderActionRequest(null, "customer request", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().state()).isEqualTo("cancelled");
+        assertThat(catalogRepository.rollbackOrderAssetsCalls).isEqualTo(1);
+    }
+
+    @Test
+    void paymentFailureAndExpiryReturnReservedCanonicalStock() {
+        for (String terminal : List.of("payment_failed", "expired")) {
+            catalogRepository.order = order("OD-" + terminal, "placed");
+            catalogRepository.rollbackOrderAssetsCalls = 0;
+
+            ApiResult<DeviceOrderView> result = service.terminalOrder(
+                    "OD-" + terminal,
+                    "idem-" + terminal,
+                    new DeviceOrderActionRequest(terminal, "payment did not complete", "superadmin"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData().state()).isEqualTo(terminal);
+            assertThat(catalogRepository.rollbackOrderAssetsCalls).isEqualTo(1);
+        }
+    }
+
+    @Test
     void refundOrderPostsD4ReversalLedgerAndAudits() {
         catalogRepository.order = order("OD-1", "paid");
 
@@ -2006,7 +2126,7 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void updateOrderStateRejectsFailedRetryToProvisioning() {
+    void updateOrderStateRejectsFailedProvisioningRetryWithoutAnE5RetryCommand() {
         catalogRepository.order = order("OD-1", "provisioning_failed");
 
         ApiResult<DeviceOrderView> result = service.updateOrderState(
@@ -2015,6 +2135,22 @@ class OpsDeviceServiceTest {
                 new DeviceOrderStateRequest("provisioning", "retry allocation", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(catalogRepository.order.state()).isEqualTo("provisioning_failed");
+        assertThat(catalogRepository.rollbackOrderAssetsCalls).isZero();
+    }
+
+    @Test
+    void refundOrderAllowsFailedProvisioningAndReturnsReservedAssets() {
+        catalogRepository.order = order("OD-1", "provisioning_failed");
+
+        ApiResult<DeviceOrderView> result = service.refundOrder(
+                "OD-1",
+                "idem-order-failed-refund",
+                new DeviceOrderActionRequest(null, "provisioning could not recover", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().state()).isEqualTo("refunded");
+        assertThat(catalogRepository.rollbackOrderAssetsCalls).isEqualTo(1);
     }
 
     @Test
@@ -2252,7 +2388,8 @@ class OpsDeviceServiceTest {
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("E", "e1_sku_status", Map.of(
                         "skuId", "stellarbox-test",
-                        "status", "off")),
+                        "status", "off",
+                        "expectedUpdatedAt", "2026-06-17T00:00")),
                 new AuditReplayContext("superadmin", "e1 replay sku status", "idem-replay-e1-sku-status"));
 
         assertThat(result.getCode()).isZero();
@@ -2638,6 +2775,42 @@ class OpsDeviceServiceTest {
                 source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), status, source.reason(), source.operator());
     }
 
+    private static DeviceSkuUpsertRequest withStock(DeviceSkuUpsertRequest source, String stock) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), stock, source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+    }
+
+    private static DeviceSkuUpsertRequest withSoldAndStock(
+            DeviceSkuUpsertRequest source, Long sold, String stock) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), sold, stock, source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+    }
+
+    private static DeviceSkuUpsertRequest withPurchaseGate(
+            DeviceSkuUpsertRequest source,
+            ffdd.opsconsole.device.domain.DevicePurchaseGateView purchaseGate) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), purchaseGate, source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+    }
+
     private static DeviceSkuUpsertRequest withOperator(DeviceSkuUpsertRequest source, String operator) {
         return new DeviceSkuUpsertRequest(
                 source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
@@ -2739,8 +2912,8 @@ class OpsDeviceServiceTest {
                 null,
                 "popular",
                 status,
-                null,
-                null);
+                LocalDateTime.of(2026, 6, 17, 0, 0),
+                LocalDateTime.of(2026, 6, 17, 0, 0));
     }
 
     private static DeviceGenerationGateView gate(
@@ -3067,6 +3240,7 @@ class OpsDeviceServiceTest {
         private DeviceOrderView order;
         private DeviceOrderFacts orderFacts;
         private List<DeviceOrderFundingView> orderFunding = List.of();
+        private int rollbackOrderAssetsCalls;
         private DeviceSkuUpsertRequest lastSkuRequest;
         private final Map<String, DevicePhaseView> phases = new LinkedHashMap<>();
         private final Map<String, DeviceGenerationGateView> generationGates = new LinkedHashMap<>();
@@ -3123,12 +3297,16 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public Optional<DeviceSkuView> updateSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
+        public Optional<DeviceSkuView> updateSku(
+                String skuId, DeviceSkuUpsertRequest request, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
             DeviceSkuView current = skus.get(skuId);
             if (current == null && sku != null && sku.skuId().equals(skuId)) {
                 current = sku;
             }
             if (current == null) {
+                return Optional.empty();
+            }
+            if (current.updatedAt() == null || !current.updatedAt().equals(expectedUpdatedAt)) {
                 return Optional.empty();
             }
             lastSkuRequest = request;
@@ -3138,12 +3316,16 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public Optional<DeviceSkuView> updateSkuStatus(String skuId, String status, LocalDateTime now) {
+        public Optional<DeviceSkuView> updateSkuStatus(
+                String skuId, String status, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
             DeviceSkuView current = skus.get(skuId);
             if (current == null && sku != null && sku.skuId().equals(skuId)) {
                 current = sku;
             }
             if (current == null) {
+                return Optional.empty();
+            }
+            if (current.updatedAt() == null || !current.updatedAt().equals(expectedUpdatedAt)) {
                 return Optional.empty();
             }
             sku = sku(current.skuId(), current.name(), status, current.unlockPhase(), current.aiUnlocks(), current.price());
@@ -3152,7 +3334,14 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public boolean softDeleteSku(String skuId, LocalDateTime now) {
+        public boolean softDeleteSku(String skuId, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
+            DeviceSkuView current = skus.get(skuId);
+            if (current == null && sku != null && sku.skuId().equals(skuId)) {
+                current = sku;
+            }
+            if (current == null || current.updatedAt() == null || !current.updatedAt().equals(expectedUpdatedAt)) {
+                return false;
+            }
             if (skus.remove(skuId) != null) {
                 if (sku != null && sku.skuId().equals(skuId)) {
                     sku = null;
@@ -3752,7 +3941,9 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public void rollbackOrderAssets(String orderNo, LocalDateTime now) {
+        public boolean rollbackOrderAssets(String orderNo, LocalDateTime now) {
+            rollbackOrderAssetsCalls++;
+            return true;
         }
     }
 

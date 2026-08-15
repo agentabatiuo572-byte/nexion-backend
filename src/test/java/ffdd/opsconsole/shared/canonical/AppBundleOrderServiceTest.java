@@ -40,7 +40,8 @@ class AppBundleOrderServiceTest {
         when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any())).thenReturn(1);
         when(mapper.insertBundleItem(anyString(), any(), anyInt())).thenReturn(1);
 
-        var result = new AppBundleOrderService(mapper, idempotency, outbox, guard)
+        var result = new AppBundleOrderService(mapper, idempotency, outbox, guard,
+                new StorefrontPurchaseGatePolicy())
                 .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), "bundle-key-1");
 
         assertThat(result.getCode()).isZero();
@@ -57,9 +58,29 @@ class AppBundleOrderServiceTest {
         FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(true);
         var result = new AppBundleOrderService(mapper, mock(AdminIdempotencyService.class),
-                mock(EventOutboxService.class), guard)
+                mock(EventOutboxService.class), guard, new StorefrontPurchaseGatePolicy())
                 .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), "bundle-key-1");
         assertThat(result.getMessage()).isEqualTo("BUNDLE_CHECKOUT_SANDBOX_UNSUPPORTED");
         verify(mapper, never()).lockUser(anyLong());
+    }
+
+    @Test
+    void bundleAppliesServerPurchaseGateToEveryLine() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(
+                new AppBundleOrderMapper.ProductRow(1L, "s1", "S1", new BigDecimal("100"), 2,
+                        "{\"rankMin\":3,\"mode\":\"all\",\"enforce\":true}"),
+                new AppBundleOrderMapper.ProductRow(2L, "pro", "Pro", new BigDecimal("200"), 2, null)));
+        when(mapper.purchaseFacts(7L)).thenReturn(new AppBundleOrderMapper.PurchaseFacts(2, 0, BigDecimal.ZERO));
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy())
+                .create(7L, List.of("s1", "pro"), "bundle-gate-key");
+        assertThat(result.getMessage()).isEqualTo("PURCHASE_GATE_BLOCKED");
+        verify(mapper, never()).decrementStock(anyLong());
     }
 }

@@ -2,6 +2,8 @@ package ffdd.opsconsole.device.web;
 
 import ffdd.opsconsole.device.application.AppTradeinService;
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
+import ffdd.opsconsole.device.dto.AppTradeinEligibilityResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
@@ -28,6 +30,15 @@ public class AppTradeinController {
     public ApiResult<AppTradeinConfigResponse> config(Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : tradeinService.config(userId);
+    }
+
+    @PostMapping("/api/app/trade-in/eligibility")
+    public ApiResult<AppTradeinEligibilityResponse> eligibility(
+            @RequestBody(required = false) AppTradeinEligibilityRequest request,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
+                : tradeinService.eligibility(userId, request);
     }
 
     @PostMapping({"/api/app/trade-in/quote", "/api/devices/replace/quote"})

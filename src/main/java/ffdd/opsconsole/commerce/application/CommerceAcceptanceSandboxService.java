@@ -37,7 +37,7 @@ import org.springframework.util.StringUtils;
 public class CommerceAcceptanceSandboxService {
     private static final Pattern EVENT_ID = Pattern.compile("[A-Za-z0-9._:-]{8,128}");
     private static final Set<String> EVENTS = Set.of(
-            "PAYMENT_SUCCEEDED", "PAYMENT_FAILED", "EXPIRED",
+            "PAYMENT_SUCCEEDED", "PAYMENT_FAILED", "EXPIRED", "USER_CANCELLED",
             "FULFILLMENT_SUCCEEDED", "FULFILLMENT_FAILED", "REFUNDED");
 
     private final CommerceAcceptanceSandboxMapper mapper;
@@ -118,7 +118,7 @@ public class CommerceAcceptanceSandboxService {
             if (mapper.releaseInventory(runId, sandbox.orderNo(), inventory.version()) != 1) {
                 throw new BizException(409, "COMMERCE_SANDBOX_INVENTORY_VERSION_CONFLICT");
             }
-            var catalog = mapper.lockSandboxCatalogProduct(runId, sandbox.productId(), null);
+            var catalog = mapper.lockSandboxCatalogProductForReturn(runId, sandbox.productId());
             if (catalog == null || catalog.version() == null
                     || mapper.returnSandboxCatalogStock(runId, sandbox.productId(), catalog.version(), sandbox.quantity()) != 1) {
                 throw new BizException(409, "COMMERCE_SANDBOX_CATALOG_VERSION_CONFLICT");
@@ -181,6 +181,8 @@ public class CommerceAcceptanceSandboxService {
                     new Transition("PAYMENT_FAILED", debited, true, false, !stockReturned, "FAILED", "PAYMENT_FAILED", "WAITING_PAYMENT"));
             case "EXPIRED" -> require(state, "PENDING_PAYMENT", event,
                     new Transition("EXPIRED", debited, true, false, !stockReturned, "EXPIRED", "EXPIRED", "WAITING_PAYMENT"));
+            case "USER_CANCELLED" -> require(state, "PENDING_PAYMENT", event,
+                    new Transition("CANCELLED", debited, true, false, !stockReturned, "CANCELLED", "CANCELLED", "WAITING_PAYMENT"));
             case "FULFILLMENT_SUCCEEDED" -> require(state, "PAID", event,
                     new Transition("ACTIVATED", true, stockReturned, false, false, "PAID", "COMPLETED", "ACTIVATED"));
             case "FULFILLMENT_FAILED" -> require(state, "PAID", event,
@@ -265,6 +267,7 @@ public class CommerceAcceptanceSandboxService {
             case "ACTIVATED" -> "activated";
             case "PAYMENT_FAILED" -> "payment_failed";
             case "EXPIRED" -> "expired";
+            case "CANCELLED" -> "cancelled";
             case "PROVISIONING_FAILED" -> "provisioning_failed";
             case "REFUNDED" -> "refunded";
             default -> "placed";

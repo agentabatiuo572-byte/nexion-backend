@@ -58,6 +58,53 @@ public interface AppTrialLifecycleMapper {
     TrialRow trial(@Param("userId") Long userId);
 
     @Select("""
+            SELECT id,product_no productNo,name,price_usdt priceUsdt,stock,unlock_phase unlockPhase
+              FROM nx_product
+             WHERE product_no=#{productNo} AND is_deleted=0
+               AND COALESCE(store_visible,1)=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0 AND stock>=1
+             LIMIT 1 FOR UPDATE
+            """)
+    ConversionProduct lockConversionProduct(@Param("productNo") String productNo);
+
+    @Update("""
+            UPDATE nx_product SET stock=stock-1,sold_count=sold_count+1,updated_at=NOW()
+             WHERE id=#{productId} AND is_deleted=0 AND stock>=1
+            """)
+    int decrementProductStock(@Param("productId") Long productId);
+
+    @Insert("""
+            INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,
+              subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
+              created_at,updated_at,is_deleted)
+            VALUES(#{userId},#{orderNo},#{productId},1,'TRIAL_CONVERT',1,
+              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',NOW(),NOW(),0)
+            """)
+    int insertConversionOrder(@Param("userId") Long userId, @Param("orderNo") String orderNo,
+                              @Param("productId") Long productId, @Param("subtotalUsdt") BigDecimal subtotalUsdt,
+                              @Param("discountUsdt") BigDecimal discountUsdt, @Param("amountUsdt") BigDecimal amountUsdt);
+
+    @Insert("""
+            INSERT INTO nx_order_item(order_no,product_id,product_no,product_name,quantity,
+              unit_price_usdt,line_amount_usdt,sort_order,created_at,updated_at,is_deleted)
+            VALUES(#{orderNo},#{productId},#{productNo},#{productName},1,#{unitPriceUsdt},#{unitPriceUsdt},0,NOW(),NOW(),0)
+            """)
+    int insertConversionOrderItem(@Param("orderNo") String orderNo, @Param("productId") Long productId,
+                                  @Param("productNo") String productNo, @Param("productName") String productName,
+                                  @Param("unitPriceUsdt") BigDecimal unitPriceUsdt);
+
+    @Update("""
+            UPDATE nx_trial_claim
+               SET status='REDEEMED',settlement_amount_usdt=#{amountUsdt},discount_usdt=#{discountUsdt},
+                   settled_at=#{now},closed_at=#{now},settlement_snapshot=#{snapshot},version=version+1,updated_at=NOW()
+             WHERE id=#{id} AND version=#{version} AND is_deleted=0
+               AND UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
+            """)
+    int markTrialConverted(@Param("id") Long id, @Param("version") long version,
+                           @Param("orderNo") String orderNo, @Param("now") LocalDateTime now,
+                           @Param("snapshot") String snapshot);
+
+    @Select("""
             SELECT policy_key policyKey,current_value currentValue
               FROM nx_growth_trial_policy WHERE is_deleted=0
             """)
@@ -310,6 +357,10 @@ public interface AppTrialLifecycleMapper {
             BigDecimal offsetCapUsdt, BigDecimal priceUsdt, LocalDateTime claimedAt, LocalDateTime expiresAt,
             BigDecimal shadowAccruedUsdt, BigDecimal shadowAccruedNex, BigDecimal remainderUsdt,
             BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version) {
+    }
+
+    record ConversionProduct(Long id, String productNo, String name, BigDecimal priceUsdt,
+                             Integer stock, String unlockPhase) {
     }
 
     record WalletRow(BigDecimal usdt, BigDecimal nex) {

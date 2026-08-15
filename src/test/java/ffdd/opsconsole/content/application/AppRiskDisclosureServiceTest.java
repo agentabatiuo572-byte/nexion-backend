@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppRiskDisclosureServiceTest {
     private final TrustDisclosureRepository repository = mock(TrustDisclosureRepository.class);
@@ -42,8 +43,10 @@ class AppRiskDisclosureServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final TamperDetectionPublisher tamperDetectionPublisher = mock(TamperDetectionPublisher.class);
     private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
+    private final MockEnvironment environment = new MockEnvironment();
     private final AppRiskDisclosureService service = new AppRiskDisclosureService(
-            repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher, eventOutboxService);
+            repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher,
+            eventOutboxService, environment);
 
     @BeforeEach
     void setUpPublishedVietnamDisclosure() {
@@ -126,12 +129,41 @@ class AppRiskDisclosureServiceTest {
     }
 
     @Test
+    void strictLocalSandboxUsesPersistedFixtureAndExplicitMockProvenance() {
+        MockEnvironment localSandbox = new MockEnvironment();
+        localSandbox.setActiveProfiles("local-sandbox");
+        AppRiskDisclosureService localSandboxService = new AppRiskDisclosureService(
+                repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher,
+                eventOutboxService, localSandbox);
+        when(ackMapper.isSandboxUser(42L)).thenReturn(1);
+        when(repository.listJurisdictions()).thenReturn(List.of(
+                new DisclosureJurisdictionView("LOCAL-SANDBOX", "本地沙箱风险披露", List.of("LOCAL-SANDBOX"),
+                        "v-local-1", "published", "2026-08-15", 0, 0, 0)));
+        when(repository.findDisclosureVersion("LOCAL-SANDBOX", "v-local-1")).thenReturn(Optional.of(
+                new DisclosureDraftView("v-local-1", "LOCAL-SANDBOX", "zh+vi+en", "2026-08-15", true,
+                        "sandbox", "sandbox", "sandbox", "published")));
+        when(repository.listChapters("LOCAL-SANDBOX", "v-local-1")).thenReturn(List.of(
+                new DisclosureChapterView("LOCAL-SANDBOX", "v-local-1", "01", "演示", "Demo", "Demo",
+                        "sandbox", "sandbox", "sandbox")));
+        when(ackMapper.findUserAck(42L, "LOCAL-SANDBOX")).thenReturn(null);
+        when(ackMapper.insertReadToken(anyString(), eq(42L), eq("LOCAL-SANDBOX"), eq("v-local-1"),
+                any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
+
+        var result = localSandboxService.current(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().source()).isEqualTo("mock");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(result.getData().jurisdiction()).isEqualTo("LOCAL-SANDBOX");
+    }
+
+    @Test
     void readTokenExpiryCarriesServerOffsetAndPreservesAbsoluteInstantForOtherTimeZones() throws Exception {
         Clock shanghaiClock = Clock.fixed(
                 Instant.parse("2026-07-22T05:00:00Z"), ZoneId.of("Asia/Shanghai"));
         AppRiskDisclosureService shanghaiService = new AppRiskDisclosureService(
                 repository, ackMapper, shanghaiClock, ackProperties, auditLogService,
-                tamperDetectionPublisher, eventOutboxService);
+                tamperDetectionPublisher, eventOutboxService, environment);
         when(ackMapper.findUserAck(42L, "SBV")).thenReturn(null);
 
         var result = shanghaiService.current(42L);

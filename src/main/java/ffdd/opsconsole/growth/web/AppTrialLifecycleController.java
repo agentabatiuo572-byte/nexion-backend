@@ -61,6 +61,16 @@ public class AppTrialLifecycleController {
         return userId == null ? forbidden() : service.redeemEarly(userId, idempotencyKey);
     }
 
+    @PostMapping("/convert")
+    public ApiResult<Map<String, Object>> convert(
+            @RequestBody(required = false) ConvertRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : service.convert(userId, request == null ? null : request.productNo(), idempotencyKey);
+    }
+
     private Long userId(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated() || authentication.getPrincipal() == null
                 || !(authentication.getDetails() instanceof Map<?, ?> details)
@@ -81,5 +91,8 @@ public class AppTrialLifecycleController {
     }
 
     public record CancelRequest(String reason) {
+    }
+
+    public record ConvertRequest(String productNo) {
     }
 }

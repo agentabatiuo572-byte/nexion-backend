@@ -2586,6 +2586,28 @@ public class OpsGrowthService implements AuditReplayable {
         return growthRows(mapper -> mapper.missionRows("DAY_ONE"));
     }
 
+    /** Strict H3 projection used by the public platform config; missing H3 data must fail closed. */
+    public ApiResult<HomeFeatureFlags> platformHomeFeatureFlags() {
+        if (questEventMapper.isEmpty()) {
+            return ApiResult.fail(503, "PLATFORM_HOME_FLAGS_UNAVAILABLE");
+        }
+        try {
+            List<Map<String, Object>> missions = questEventMapper.get().missionRows("DAY_ONE");
+            Map<String, Object> promo = questEventMapper.get().promoBanner();
+            if (missions == null || promo == null) {
+                return ApiResult.fail(503, "PLATFORM_HOME_FLAGS_UNAVAILABLE");
+            }
+            boolean newcomer = missions.stream().anyMatch(row -> "active".equalsIgnoreCase(stringValue(row.get("status"), "")));
+            boolean weekly = "active".equalsIgnoreCase(stringValue(promo.get("status"), ""));
+            return ApiResult.ok(new HomeFeatureFlags(newcomer, weekly));
+        } catch (RuntimeException ex) {
+            return ApiResult.fail(503, "PLATFORM_HOME_FLAGS_UNAVAILABLE");
+        }
+    }
+
+    public record HomeFeatureFlags(boolean homeNewcomerTasksEnabled, boolean homeWeeklyPromoEnabled) {
+    }
+
     private List<Map<String, Object>> dayOneStates() {
         return defaultDayOneStates();
     }

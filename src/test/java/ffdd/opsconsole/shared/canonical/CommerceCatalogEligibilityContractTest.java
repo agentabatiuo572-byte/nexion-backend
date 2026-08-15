@@ -13,7 +13,7 @@ class CommerceCatalogEligibilityContractTest {
         String order = Files.readString(Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"));
 
         assertThat(catalog).contains("store_visible=1", "UPPER(status) IN ('ACTIVE','ON_SALE')", "price_usdt>0", "stock>=1");
-        assertThat(order).contains("COALESCE(store_visible, 1) = 1", "UPPER(status) IN ('ACTIVE', 'ON_SALE')",
-                "price_usdt > 0 AND stock >= 1");
+        assertThat(order).contains("COALESCE(p.store_visible, 1) = 1", "UPPER(p.status) IN ('ACTIVE', 'ON_SALE')",
+                "p.price_usdt > 0 AND p.stock >= 1");
     }
 }

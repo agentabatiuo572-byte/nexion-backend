@@ -62,12 +62,25 @@ public class AppWithdrawalService {
     private final Environment environment;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
+        requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         return ApiResult.ok(linked("withdrawals", mapper.userWithdrawals(userId, 50),
-                "source", "nx_withdrawal_order"));
+                "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> get(Long userId, String withdrawalNo) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        if (!StringUtils.hasText(withdrawalNo)) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
+        Map<String, Object> row = mapper.userWithdrawal(userId, withdrawalNo.trim());
+        if (row == null) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
+        return ApiResult.ok(linked("withdrawal", row,
+                "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
     }
 
     public ApiResult<Map<String, Object>> policy(Long userId) {
+        requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         PolicySnapshot policy = currentPolicy();
         int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
@@ -235,7 +248,7 @@ public class AppWithdrawalService {
         BigDecimal strongReviewThreshold = strongReviewThreshold();
         boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean fastTrack = !strongReview && k4Score < riskFacts.k4BandLowMax()
+        boolean fastTrack = smallAmountEligible && !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
         String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
@@ -260,7 +273,8 @@ public class AppWithdrawalService {
                 k4Priority, riskDecision.action(), k4Score, riskFacts.k4ModelVersion(), riskFacts.k4AsOf(),
                 riskFacts.k4BandLowMax(), riskFacts.k4BandHighMin(), riskFacts.k4AutoEscalateScore(),
                 status, failureReason,
-                (frozen || delayed) ? "REVIEW_PENDING" : fastTrack ? "REVIEW_PASSED" : null);
+                (frozen || delayed) ? "REVIEW_PENDING"
+                        : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null);
         if (mapper.insertWithdrawal(write) != 1) throw new BizException(409, "WITHDRAWAL_CREATE_CONFLICT");
         if (riskDecision.held()) {
             withdrawalRiskRuleFacade.recordDecision(riskContext, riskDecision);

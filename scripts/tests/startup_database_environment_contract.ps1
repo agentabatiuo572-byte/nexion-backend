@@ -127,6 +127,16 @@ try {
     }
   }
 
+  $pushLocationIndex = $runnerSource.IndexOf('Push-Location -LiteralPath $root.Path')
+  $mysqlInvocationIndex = $runnerSource.IndexOf('& $MySql --default-character-set=utf8mb4')
+  $popLocationIndex = $runnerSource.LastIndexOf('Pop-Location')
+  if ($pushLocationIndex -lt 0 -or $mysqlInvocationIndex -lt 0 -or $popLocationIndex -lt 0) {
+    throw "Migration runner must execute MySQL from the repository root and restore the caller location."
+  }
+  if ($pushLocationIndex -gt $mysqlInvocationIndex -or $popLocationIndex -lt $mysqlInvocationIndex) {
+    throw "Migration runner location guard must wrap every relative SOURCE invocation."
+  }
+
   $start = Get-Content -LiteralPath $startScript -Raw
   foreach ($requiredFragment in @(
     "resolve_nexion_database_environment.ps1",

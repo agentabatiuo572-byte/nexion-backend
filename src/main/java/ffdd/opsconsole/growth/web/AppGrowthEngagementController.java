@@ -44,6 +44,13 @@ public class AppGrowthEngagementController {
         return userId == null ? forbidden() : service.eventState(userId);
     }
 
+    @GetMapping("/api/events/{eventCode}/spin/state")
+    public ApiResult<Map<String, Object>> wheelState(
+            @PathVariable String eventCode, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : wheelService.state(userId, eventCode);
+    }
+
     @GetMapping("/api/points/state")
     public ApiResult<Map<String, Object>> pointState(Authentication authentication) {
         Long userId = userId(authentication);

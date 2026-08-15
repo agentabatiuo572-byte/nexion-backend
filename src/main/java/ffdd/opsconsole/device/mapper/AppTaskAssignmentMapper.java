@@ -275,6 +275,21 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     int clearRuntimeTask(@Param("deviceId") Long deviceId, @Param("taskNo") String taskNo,
                          @Param("now") LocalDateTime now);
 
+    @Update("""
+            UPDATE nx_user_device SET status='DEACTIVATED',activated_at=NULL,deactivated_at=#{now},
+                   pending_deactivate=0,row_version=row_version+1,updated_at=#{now}
+             WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(status)='ACTIVE' AND pending_deactivate=1
+            """)
+    int deactivatePendingDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device_runtime SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',updated_at=#{now}
+             WHERE user_device_id=#{deviceId} AND is_deleted=0
+            """)
+    int markRuntimeDeactivated(@Param("deviceId") Long deviceId, @Param("now") LocalDateTime now);
+
     @Insert("""
             INSERT INTO nx_compute_device_task_lock(user_id, user_device_id, source_environment, lock_until, last_task_no,
               created_at, updated_at, is_deleted)

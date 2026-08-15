@@ -29,6 +29,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppPayoutAddressService {
     private static final Set<String> NETWORKS = Set.of("USDT-TRC20", "USDT-BEP20", "USDT-ERC20");
+    private static final int CHANGE_COOLDOWN_DAYS = 7;
+    private static final int EFFECTIVE_DELAY_HOURS = 24;
     private final AppPayoutAddressMapper mapper;
     private final UserOtpDeliveryService otpDelivery;
     private final AuditLogService audit;
@@ -39,7 +41,10 @@ public class AppPayoutAddressService {
     public ApiResult<Map<String, Object>> list(Long userId) {
         requireUser(userId);
         List<Map<String, Object>> rows = mapper.list(userId).stream().map(this::view).toList();
-        return ApiResult.ok(linked("addresses", rows, "serverCanonical", true));
+        return ApiResult.ok(linked("addresses", rows, "serverCanonical", true,
+                "changeCooldownDays", CHANGE_COOLDOWN_DAYS,
+                "effectiveDelayHours", EFFECTIVE_DELAY_HOURS,
+                "inFlightWithdrawalBlocked", true));
     }
 
     @Transactional
@@ -109,11 +114,17 @@ public class AppPayoutAddressService {
 
     private void requireUser(Long userId) {
         if (userId == null || mapper.activeUser(userId) == null) throw new BizException(401, "USER_AUTH_REQUIRED");
+        if (Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+            throw new BizException(403, "PAYOUT_ADDRESS_SANDBOX_USER_FORBIDDEN");
+        }
     }
 
     private void requireActiveUserLock(Long userId) {
         if (userId == null || mapper.lockActiveUser(userId) == null) {
             throw new BizException(401, "USER_AUTH_REQUIRED");
+        }
+        if (Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+            throw new BizException(403, "PAYOUT_ADDRESS_SANDBOX_USER_FORBIDDEN");
         }
     }
 

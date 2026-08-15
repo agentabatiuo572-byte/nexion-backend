@@ -63,6 +63,15 @@ public class AppVietQrIntentController {
         return userId == null ? forbidden() : service.get(userId, intentNo);
     }
 
+    @GetMapping("/deposits/vietqr/receipts")
+    public ApiResult<Map<String, Object>> receipts(
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) Integer offset,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.receipts(userId, limit, offset);
+    }
+
     @PostMapping("/deposits/vietqr/intents/{intentNo}/cancel")
     public ApiResult<Map<String, Object>> cancel(
             @PathVariable String intentNo,

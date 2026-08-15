@@ -23,11 +23,13 @@ public interface DeviceCatalogRepository {
 
     DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now);
 
-    Optional<DeviceSkuView> updateSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now);
+    Optional<DeviceSkuView> updateSku(
+            String skuId, DeviceSkuUpsertRequest request, LocalDateTime expectedUpdatedAt, LocalDateTime now);
 
-    Optional<DeviceSkuView> updateSkuStatus(String skuId, String status, LocalDateTime now);
+    Optional<DeviceSkuView> updateSkuStatus(
+            String skuId, String status, LocalDateTime expectedUpdatedAt, LocalDateTime now);
 
-    boolean softDeleteSku(String skuId, LocalDateTime now);
+    boolean softDeleteSku(String skuId, LocalDateTime expectedUpdatedAt, LocalDateTime now);
 
     PageResult<DeviceReviewView> pageReviews(DeviceReviewQueryRequest request);
 
@@ -95,7 +97,7 @@ public interface DeviceCatalogRepository {
             String idempotencyKey,
             LocalDateTime now);
 
-    void rollbackOrderAssets(String orderNo, LocalDateTime now);
+    boolean rollbackOrderAssets(String orderNo, LocalDateTime now);
 
     List<DevicePhaseView> listPhases(String scope, boolean includeArchived);
 

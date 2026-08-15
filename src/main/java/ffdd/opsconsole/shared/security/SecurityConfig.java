@@ -61,6 +61,7 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/referral-rewards").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/public/referrals/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()

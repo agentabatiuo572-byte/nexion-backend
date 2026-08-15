@@ -15,6 +15,7 @@ import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
@@ -48,6 +49,7 @@ class AppUserRegistrationServiceTest {
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final AppUserRegistrationTransactionExecutor transactionExecutor = mock(AppUserRegistrationTransactionExecutor.class);
     private final Environment environment = mock(Environment.class);
+    private final OpsReferralRewardService referralRewardService = mock(OpsReferralRewardService.class);
     private AppUserRegistrationService service;
 
     @BeforeEach
@@ -56,7 +58,7 @@ class AppUserRegistrationServiceTest {
                 .when(transactionExecutor).execute(any());
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
-                transactionExecutor, environment);
+                transactionExecutor, environment, referralRewardService);
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
     }
 
@@ -220,6 +222,7 @@ class AppUserRegistrationServiceTest {
     @Test
     void canonicalizesReferralCodeBeforeLockingSponsorAndPersistsTheSameAttribution() {
         UserEntity sponsor = user(41L, "NXAB12CD34EF");
+        sponsor.setNickname("Alice Example");
         prepareSuccessfulRegistration(sponsor);
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
@@ -236,6 +239,9 @@ class AppUserRegistrationServiceTest {
         assertThat(sponsorCode.getValue()).isEqualTo("NXAB12CD34EF");
         assertThat(inserted.getValue().getSponsorUserId()).isEqualTo(41L);
         assertThat(inserted.getValue().getSponsorCode()).isEqualTo("NXAB12CD34EF");
+        assertThat(result.getData().registrationReceipt().sponsorCode()).isEqualTo("NXAB12CD34EF");
+        assertThat(result.getData().registrationReceipt().sponsorDisplayName()).isEqualTo("A•••");
+        assertThat(result.getData().registrationReceipt().giftStatus()).isEqualTo("UNAVAILABLE");
     }
 
     @Test

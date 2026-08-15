@@ -111,7 +111,7 @@ class CommerceAcceptanceSandboxServiceTest {
         when(funds.creditWallet(RUN_ID, 41L, money("12"), 4L)).thenReturn(1);
         when(mapper.lockInventoryForOrder(RUN_ID, "ORD-SBX-2")).thenReturn(inventory("ORD-SBX-2", 4L, 0));
         when(mapper.releaseInventory(RUN_ID, "ORD-SBX-2", 4L)).thenReturn(1);
-        when(mapper.lockSandboxCatalogProduct(RUN_ID, 7L, null)).thenReturn(new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(
+        when(mapper.lockSandboxCatalogProductForReturn(RUN_ID, 7L)).thenReturn(new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(
                 7L, "SKU-7", "Sandbox", "Pro", money("12"), 0, 1, "gpu", 1,
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ZERO, "", null, null, 9L, null));
         when(mapper.returnSandboxCatalogStock(RUN_ID, 7L, 9L, 1)).thenReturn(1);

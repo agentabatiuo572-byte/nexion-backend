@@ -32,12 +32,15 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Repository;
 import org.springframework.util.StringUtils;
 
 @Repository
 @RequiredArgsConstructor
 public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
+    private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {
     };
 
@@ -47,6 +50,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     @PostConstruct
     void ensureSchema() {
         mapper.createSkuTable();
+        if (mapper.productUpdatedAtPrecision() < 6) {
+            mapper.widenProductUpdatedAtPrecision();
+        }
         if (mapper.countSkuPurchaseGateColumn() == 0) {
             mapper.addSkuPurchaseGateColumn();
         }
@@ -66,6 +72,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             mapper.addSkuImagePreviewUrlColumn();
         }
         mapper.widenSkuImagePreviewUrlColumn();
+        mapper.backfillProductsFromLegacySkus();
+        mapper.backfillProductUnlockPhasesFromSkuMetadata();
         mapper.createReviewTable();
         mapper.createTaskTable();
         if (mapper.countTaskExtensionColumn() == 0) {
@@ -117,25 +125,40 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     @Override
     public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
-        mapper.insertSku(skuWrite(skuId, request, now, now));
+        DeviceCatalogMapper.SkuWrite write = skuWrite(skuId, request, now, now);
+        mapper.insertSku(write);
+        mapper.upsertSkuMetadata(write);
         return findSku(skuId).orElseThrow();
     }
 
     @Override
-    public Optional<DeviceSkuView> updateSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
-        int updated = mapper.updateSku(skuWrite(skuId, request, null, now));
+    public Optional<DeviceSkuView> updateSku(
+            String skuId, DeviceSkuUpsertRequest request, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
+        DeviceCatalogMapper.SkuWrite write = skuWrite(skuId, request, null, now);
+        int updated = mapper.updateSku(write, expectedUpdatedAt);
+        if (updated > 0) {
+            mapper.upsertSkuMetadata(write);
+        }
         return updated == 0 ? Optional.empty() : findSku(skuId);
     }
 
     @Override
-    public Optional<DeviceSkuView> updateSkuStatus(String skuId, String status, LocalDateTime now) {
-        int updated = mapper.updateSkuStatus(skuId, status, now);
+    public Optional<DeviceSkuView> updateSkuStatus(
+            String skuId, String status, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
+        int updated = mapper.updateSkuStatus(skuId, status, expectedUpdatedAt, now);
+        if (updated > 0) {
+            mapper.updateSkuMetadataStatus(skuId, status, now);
+        }
         return updated == 0 ? Optional.empty() : findSku(skuId);
     }
 
     @Override
-    public boolean softDeleteSku(String skuId, LocalDateTime now) {
-        return mapper.softDeleteSku(skuId, now) > 0;
+    public boolean softDeleteSku(String skuId, LocalDateTime expectedUpdatedAt, LocalDateTime now) {
+        int deleted = mapper.softDeleteSku(skuId, expectedUpdatedAt, now);
+        if (deleted > 0) {
+            mapper.softDeleteSkuMetadata(skuId, now);
+        }
+        return deleted > 0;
     }
 
     @Override
@@ -328,9 +351,35 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
-    public void rollbackOrderAssets(String orderNo, LocalDateTime now) {
+    public boolean rollbackOrderAssets(String orderNo, LocalDateTime now) {
         mapper.rollbackOrderDevices(orderNo, now);
-        mapper.restockOrderProduct(orderNo, now);
+        DeviceCatalogMapper.OrderRestockPlan plan = mapper.orderRestockPlan(orderNo);
+        if (plan == null || plan.orderQuantity() == null || plan.orderQuantity() <= 0) {
+            return false;
+        }
+        String orderType = plan.orderType() == null
+                ? ""
+                : plan.orderType().trim().toUpperCase(java.util.Locale.ROOT);
+        long itemRows = plan.itemRows() == null ? 0L : plan.itemRows();
+        if (itemRows == 0L) {
+            return "SINGLE".equals(orderType) && mapper.restockOrderProduct(orderNo, now) == 1;
+        }
+        if (!java.util.Set.of("SINGLE", "BUNDLE", "TRADE_IN").contains(orderType)) {
+            return false;
+        }
+        long validItemQuantity = plan.validItemQuantity() == null ? 0L : plan.validItemQuantity();
+        long invalidItemRows = plan.invalidItemRows() == null ? 0L : plan.invalidItemRows();
+        long productGroups = plan.productGroups() == null ? 0L : plan.productGroups();
+        boolean complete = invalidItemRows == 0L
+                && validItemQuantity == plan.orderQuantity().longValue()
+                && productGroups > 0L;
+        if ("BUNDLE".equals(orderType) || "TRADE_IN".equals(orderType)) {
+            complete = complete
+                    && plan.itemCount() != null
+                    && plan.itemCount().longValue() == plan.orderQuantity().longValue()
+                    && itemRows == plan.itemCount().longValue();
+        }
+        return complete && mapper.restockOrderItemProducts(orderNo, now) == productGroups;
     }
 
     @Override
@@ -389,9 +438,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     public void backfillPhaseReferences(String scope, LocalDateTime now) {
         if (mapper.countPhaseIdColumn() > 0) {
             mapper.backfillSkuUnlockPhaseIdsByLegacyPhaseId(scope, now);
+            mapper.backfillProductUnlockPhasesByLegacyId(scope, now);
             mapper.backfillGenerationGatePhaseIdsByLegacyPhaseId(scope, now);
         }
         mapper.backfillSkuUnlockPhaseIdsByLabel(scope, now);
+        mapper.backfillProductUnlockPhasesByLabel(scope, now);
         mapper.backfillGenerationGatePhaseIdsByLabel(scope, now);
     }
 
@@ -531,8 +582,34 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 blankToNull(request.imagePreviewUrl()),
                 blankToNull(request.tag()),
                 skuStatus(request.status()),
+                firstDecimal(request.hashRate()),
+                firstInteger(request.vram()),
+                stockQuantity(request.stock()),
                 createdAt,
                 updatedAt);
+    }
+
+    private BigDecimal firstDecimal(String value) {
+        if (!StringUtils.hasText(value)) {
+            return BigDecimal.ZERO;
+        }
+        Matcher matcher = FIRST_DECIMAL.matcher(value.trim());
+        return matcher.find() ? new BigDecimal(matcher.group()) : BigDecimal.ZERO;
+    }
+
+    private Integer firstInteger(String value) {
+        BigDecimal parsed = firstDecimal(value);
+        if (parsed.signum() <= 0 || parsed.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0) {
+            return null;
+        }
+        return parsed.intValue();
+    }
+
+    private Integer stockQuantity(String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException("SKU_STOCK_REQUIRED");
+        }
+        return Integer.valueOf(value.trim());
     }
 
     private DeviceCatalogMapper.ReviewWrite reviewWrite(String reviewId, DeviceReviewUpsertRequest request,

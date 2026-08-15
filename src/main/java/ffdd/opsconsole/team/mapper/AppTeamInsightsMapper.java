@@ -49,6 +49,31 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
             """)
     List<CommissionRow> commissionEvents(@Param("userId") Long userId, @Param("limit") int limit);
 
+    /**
+     * F2 unilevel read model.  The user join is intentional: commission_event
+     * has no environment column, so the authenticated user's sandbox namespace
+     * is the authoritative isolation boundary for this projection.
+     */
+    @Select("""
+            SELECT ce.id,ce.source_user_id sourceUserId,COALESCE(ce.source_user_name,source.nickname) sourceUserName,
+                   ce.layer_no layerNo,ce.order_no orderNo,
+                   DATE_FORMAT(ce.created_at,'%x-W%v') cycle,
+                   ce.order_amount_usd orderAmountUsd,ce.amount_usdt amountUsdt,ce.amount_nex amountNex,
+                   ce.currency,ce.status,ce.created_at createdAt,ce.unlock_at unlockAt
+              FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
+              LEFT JOIN nx_user source ON source.id=ce.source_user_id AND source.sandbox=u.sandbox
+             WHERE ce.user_id=#{userId} AND ce.is_deleted=0
+               AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+               AND LOWER(ce.commission_type)='network'
+               AND (#{period}='all'
+                 OR (#{period}='today' AND ce.created_at>=CURDATE())
+                 OR (#{period}='week' AND ce.created_at>=DATE_SUB(CURDATE(),INTERVAL WEEKDAY(CURDATE()) DAY))
+                 OR (#{period}='month' AND ce.created_at>=DATE_FORMAT(CURDATE(),'%Y-%m-01')))
+             ORDER BY ce.created_at DESC,ce.id DESC LIMIT 500
+            """)
+    List<UnilevelRow> unilevelEvents(@Param("userId") Long userId, @Param("sandbox") Integer sandbox,
+                                     @Param("period") String period);
+
     @Select("""
             SELECT CAST(REPLACE(UPPER(u.v_rank),'V','') AS UNSIGNED) vRank,COUNT(*) people,
                    COALESCE(MAX(c.leadership_votes),0) votes
@@ -83,6 +108,9 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     record CommissionRow(Long id, String commissionType, Long sourceUserId, String sourceUserName,
                          Integer layerNo, String orderNo, BigDecimal orderAmountUsd, BigDecimal amountUsdt,
                          BigDecimal amountNex, String status, LocalDateTime createdAt, LocalDateTime unlockAt) { }
+    record UnilevelRow(Long id, Long sourceUserId, String sourceUserName, Integer layerNo, String orderNo,
+                       String cycle, BigDecimal orderAmountUsd, BigDecimal amountUsdt, BigDecimal amountNex,
+                       String currency, String status, LocalDateTime createdAt, LocalDateTime unlockAt) { }
     record RankDistributionRow(Integer vRank, Integer people, Integer votes) { }
     record LeadershipHistoryRow(String weekId, BigDecimal payoutUsdt) { }
 }

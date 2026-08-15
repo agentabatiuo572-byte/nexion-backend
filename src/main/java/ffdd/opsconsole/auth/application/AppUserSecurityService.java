@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
@@ -15,6 +16,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -134,7 +137,7 @@ public class AppUserSecurityService {
     public Map<String, Object> accountDeletionStatus(Long userId, String currentSessionId) {
         requireContext(userId, currentSessionId);
         Map<String, Object> row = securityMapper.latestAccountDeletionRequest(userId);
-        return row == null ? Map.of("status", "NONE") : Map.copyOf(row);
+        return row == null ? Map.of("status", "NONE") : immutableMap(row);
     }
 
     @Transactional(noRollbackFor = PreWriteRejection.class)
@@ -151,6 +154,11 @@ public class AppUserSecurityService {
             throw new BizException(422, "ACCOUNT_DELETION_CONFIRMATION_REQUIRED");
         }
         verifyCurrentPassword(userId, request.currentPassword(), "ACCOUNT_DELETION_REQUEST");
+        Map<String, Object> existing = securityMapper.latestAccountDeletionRequest(userId);
+        if (existing != null && Set.of("REQUESTED", "IN_REVIEW", "BLOCKED", "COMPLETED").contains(
+                String.valueOf(existing.get("status")))) {
+            return immutableMap(existing);
+        }
         String requestNo = "ADR-" + UUID.randomUUID().toString().replace("-", "");
         int inserted = securityMapper.insertAccountDeletionRequest(
                 requestNo, userId, idempotencyKey.trim());
@@ -167,7 +175,41 @@ public class AppUserSecurityService {
                     String.valueOf(authoritative.get("requestNo")),
                     Map.of("status", "REQUESTED", "currentSessionRevoked", false));
         }
-        return Map.copyOf(authoritative);
+        return immutableMap(authoritative);
+    }
+
+    @Transactional
+    public Map<String, Object> cancelAccountDeletion(
+            Long userId, String currentSessionId, String idempotencyKey, AppAccountDeletionCancelRequest request) {
+        requireContext(userId, currentSessionId);
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > 160) {
+            throw new BizException(422, "IDEMPOTENCY_KEY_INVALID");
+        }
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0) {
+            throw new BizException(422, "ACCOUNT_DELETION_VERSION_REQUIRED");
+        }
+        String reason = StringUtils.hasText(request.reason()) ? request.reason().trim() : "USER_REQUESTED_CANCEL";
+        if (reason.length() > 255) throw new BizException(422, "ACCOUNT_DELETION_REASON_INVALID");
+        Map<String, Object> current = securityMapper.latestAccountDeletionRequest(userId);
+        if (current == null) throw new BizException(404, "ACCOUNT_DELETION_REQUEST_NOT_FOUND");
+        String status = String.valueOf(current.get("status"));
+        if ("CANCELLED".equals(status)) return immutableMap(current);
+        AccountDeletionStateMachine.requireTransition(status, "CANCELLED", reason);
+        long version = ((Number) current.get("version")).longValue();
+        if (version != request.expectedVersion()) throw new BizException(409, "ACCOUNT_DELETION_VERSION_CONFLICT");
+        String requestNo = String.valueOf(current.get("requestNo"));
+        if (securityMapper.transitionAccountDeletion(requestNo, status, "CANCELLED", version, reason, null) != 1) {
+            throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");
+        }
+        Map<String, Object> updated = securityMapper.accountDeletionRequestForUpdate(userId, idempotencyKey.trim());
+        if (updated == null) updated = securityMapper.latestAccountDeletionRequest(userId);
+        recordRequired(userId, "USER_ACCOUNT_DELETION_CANCELLED", "USER_ACCOUNT_DELETION", requestNo,
+                Map.of("status", "CANCELLED", "reason", reason));
+        return immutableMap(updated);
+    }
+
+    private Map<String, Object> immutableMap(Map<String, Object> value) {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(value));
     }
 
     private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, String currentSessionId) {

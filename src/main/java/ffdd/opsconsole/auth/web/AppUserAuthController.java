@@ -3,8 +3,11 @@ package ffdd.opsconsole.auth.web;
 import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
+import ffdd.opsconsole.auth.application.AppUserOAuthService;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOAuthExchangeRequest;
+import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
 import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
@@ -31,6 +34,7 @@ public class AppUserAuthController {
     private final AppUserAuthService authService;
     private final AppUserRegistrationService registrationService;
     private final AppUserPasswordResetService passwordResetService;
+    private final AppUserOAuthService oauthService;
 
     @PostMapping("/register/otp/send")
     public ApiResult<UserRegistrationOtpResponse> sendRegistrationOtp(
@@ -50,6 +54,13 @@ public class AppUserAuthController {
     public ApiResult<UserLoginResponse> login(@RequestBody(required = false) UserLoginRequest request,
                                                HttpServletRequest servletRequest) {
         return authService.login(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/oauth/exchange")
+    public ApiResult<UserOAuthExchangeResponse> exchangeOAuth(
+            @RequestBody(required = false) UserOAuthExchangeRequest request,
+            HttpServletRequest servletRequest) {
+        return oauthService.exchange(request, servletRequest.getRemoteAddr());
     }
 
     @PostMapping("/login/otp/send")

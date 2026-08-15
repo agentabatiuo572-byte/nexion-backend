@@ -126,14 +126,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final Set<String> DATACENTER_STATUSES = Set.of("active", "maintenance", "disabled");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of(
             "payment_failed", "expired", "provisioning_failed", "chargeback");
-    private static final Set<String> ORDER_FINAL_STATES = Set.of(
-            "activated", "refunded", "cancelled", "payment_failed", "expired", "provisioning_failed", "chargeback");
-    private static final Set<String> ORDER_REFUNDABLE_STATES = Set.of("paid", "provisioning", "activated");
+    private static final Set<String> ORDER_STOCK_RELEASE_STATES = Set.of("payment_failed", "expired", "cancelled");
+    private static final Set<String> ORDER_REFUNDABLE_STATES = Set.of(
+            "paid", "provisioning", "provisioning_failed", "activated");
     private static final Set<String> ORDER_MAIN_STATES = Set.of("placed", "paid", "provisioning", "activated");
     private static final Map<String, Set<String>> ORDER_TRANSITIONS = Map.of(
             "placed", Set.of("paid", "payment_failed", "expired", "cancelled"),
             "paid", Set.of("provisioning", "refunded", "chargeback"),
             "provisioning", Set.of("activated", "provisioning_failed", "refunded"),
+            "provisioning_failed", Set.of("refunded"),
             "activated", Set.of("refunded"));
     private static final Set<String> TRADEIN_OPERATIONS = Set.of("recycle", "replace", "deactivate");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
@@ -255,6 +256,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .orElseGet(() -> ApiResult.fail(404, "SKU_NOT_FOUND"));
     }
 
+    @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
@@ -292,13 +294,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         });
     }
 
-    public ApiResult<DeviceSkuView> updateSku(String skuId, String idempotencyKey, DeviceSkuUpsertRequest request) {
+    @Transactional
+    public ApiResult<DeviceSkuView> updateSku(
+            String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
+        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
+        if (revision.error() != null) {
+            return ApiResult.fail(409, revision.error());
+        }
+        LocalDateTime expectedRevision = revision.value();
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request);
-        return e1Idempotent("E1_SKU_UPDATE", idempotencyKey, skuId, writeRequest, () -> {
+        return e1Idempotent("E1_SKU_UPDATE", idempotencyKey, skuId,
+                Map.of("request", writeRequest, "expectedUpdatedAt", expectedRevision.toString()), () -> {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -311,6 +321,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "SKU_NOT_FOUND");
         }
+        if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
         String nextStatus = normalizeSkuStatus(writeRequest.status());
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized, writeRequest.unlockPhase());
@@ -319,7 +332,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         LocalDateTime changedAt = LocalDateTime.now(clock);
-        DeviceSkuView updated = catalogRepository.updateSku(normalized, writeRequest, changedAt).orElse(before);
+        DeviceSkuView updated = catalogRepository.updateSku(normalized, writeRequest, expectedRevision, changedAt)
+                .orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
         if (!"on".equals(before.status()) && "on".equals(updated.status())) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_listed", e1SkuStatusEvent(
                     normalized, before.status(), updated.status(), writeRequest.operator(), writeRequest.reason()));
@@ -350,14 +367,32 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         });
     }
 
-    public ApiResult<DeviceSkuView> updateSkuStatus(String skuId, String idempotencyKey, DeviceSkuStatusRequest request) {
+    @Transactional
+    ApiResult<DeviceSkuView> updateSkuStatus(
+            String skuId, String idempotencyKey, DeviceSkuStatusRequest request) {
+        String revision = catalogRepository.findSku(normalizeId(skuId))
+                .map(DeviceSkuView::updatedAt)
+                .map(LocalDateTime::toString)
+                .orElse("");
+        return updateSkuStatus(skuId, revision, idempotencyKey, request);
+    }
+
+    @Transactional
+    public ApiResult<DeviceSkuView> updateSkuStatus(
+            String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuStatusRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
+        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
+        if (revision.error() != null) {
+            return ApiResult.fail(409, revision.error());
+        }
+        LocalDateTime expectedRevision = revision.value();
         DeviceSkuStatusRequest trustedRequest = new DeviceSkuStatusRequest(
                 request.status(), request.reason(), operator(request.operator()));
-        return e1Idempotent("E1_SKU_STATUS", idempotencyKey, skuId, trustedRequest, () -> {
+        return e1Idempotent("E1_SKU_STATUS", idempotencyKey, skuId,
+                Map.of("request", trustedRequest, "expectedUpdatedAt", expectedRevision.toString()), () -> {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -371,6 +406,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "SKU_NOT_FOUND");
         }
+        if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
         if (status.equals(before.status())) {
             return ApiResult.ok(before);
         }
@@ -380,7 +418,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return listingGuard;
             }
         }
-        DeviceSkuView updated = catalogRepository.updateSkuStatus(normalized, status, LocalDateTime.now(clock)).orElse(before);
+        DeviceSkuView updated = catalogRepository.updateSkuStatus(
+                normalized, status, expectedRevision, LocalDateTime.now(clock)).orElse(null);
+        if (updated == null) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
         if ("on".equals(status)) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_listed", e1SkuStatusEvent(
                     normalized, before.status(), updated.status(), trustedRequest.operator(), trustedRequest.reason()));
@@ -398,14 +440,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         });
     }
 
-    public ApiResult<Map<String, Object>> deleteSku(String skuId, String idempotencyKey, DeviceSkuStatusRequest request) {
+    @Transactional
+    public ApiResult<Map<String, Object>> deleteSku(
+            String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuStatusRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
+        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
+        if (revision.error() != null) {
+            return ApiResult.fail(409, revision.error());
+        }
+        LocalDateTime expectedRevision = revision.value();
         DeviceSkuStatusRequest trustedRequest = new DeviceSkuStatusRequest(
                 request.status(), request.reason(), operator(request.operator()));
-        return e1Idempotent("E1_SKU_DELETE", idempotencyKey, skuId, trustedRequest, () -> {
+        return e1Idempotent("E1_SKU_DELETE", idempotencyKey, skuId,
+                Map.of("request", trustedRequest, "expectedUpdatedAt", expectedRevision.toString()), () -> {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -415,7 +465,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "SKU_NOT_FOUND");
         }
-        catalogRepository.softDeleteSku(normalized, LocalDateTime.now(clock));
+        if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
+        if (!catalogRepository.softDeleteSku(normalized, expectedRevision, LocalDateTime.now(clock))) {
+            return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
         if ("on".equals(before.status())) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_unlisted", e1SkuStatusEvent(
                     normalized, before.status(), "deleted", trustedRequest.operator(), trustedRequest.reason()));
@@ -588,12 +643,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .map(ComputeConfigView.FlagView::enabled)
                 .findFirst().orElse(false);
         return ApiResult.ok(new PlatformComputeConfigView(
-                new PlatformComputeConfigView.FeatureFlags(enabled),
+                new PlatformComputeConfigView.FeatureFlags(enabled, false, false),
                 null,
                 new PlatformComputeConfigView.OnlineBonus(
                         coefficientValue(compute, "h5BaseFactor", "0.6"),
                         coefficientValue(compute, "continuityFullHours", "2")),
                 compute,
+                null,
                 LocalDateTime.now(clock).toString()));
     }
 
@@ -2697,6 +2753,21 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return null;
     }
 
+    private SkuRevision parseSkuRevision(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return new SkuRevision(null, "SKU_VERSION_REQUIRED");
+        }
+        try {
+            return new SkuRevision(LocalDateTime.parse(
+                    raw.trim().replace(' ', 'T'),
+                    java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME), null);
+        } catch (RuntimeException ex) {
+            return new SkuRevision(null, "SKU_VERSION_INVALID");
+        }
+    }
+
+    private record SkuRevision(LocalDateTime value, String error) { }
+
     private ApiResult<DeviceSkuView> requireSkuCommand(String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
@@ -2715,6 +2786,28 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!StringUtils.hasText(request.datacenter())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_DATACENTER_REQUIRED");
         }
+        if (!StringUtils.hasText(request.stock())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+        }
+        String stock = request.stock().trim();
+        if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+        }
+        long stockValue;
+        try {
+            stockValue = Long.parseLong(stock);
+            if (stockValue > Integer.MAX_VALUE) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+            }
+        } catch (NumberFormatException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+        }
+        long sold = request.sold() == null ? 0L : request.sold();
+        if (sold < 0 || sold > Integer.MAX_VALUE || sold + stockValue > Integer.MAX_VALUE) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_SOLD_INVALID");
+        }
+        ApiResult<DeviceSkuView> gateValidation = validatePurchaseGate(request.purchaseGate());
+        if (gateValidation != null) return gateValidation;
         if (request.generation() != null && (request.generation() < 1 || request.generation() > 3)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_GENERATION_INVALID");
         }
@@ -2731,6 +2824,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceSkuView> mediaGuard = requireSkuMediaFields(request);
         if (mediaGuard != null) {
             return mediaGuard;
+        }
+        return null;
+    }
+
+    private ApiResult<DeviceSkuView> validatePurchaseGate(DevicePurchaseGateView gate) {
+        if (gate == null) return null;
+        if (!"all".equals(gate.mode()) && !"either".equals(gate.mode())) {
+            return ApiResult.fail(422, "SKU_PURCHASE_GATE_MODE_INVALID");
+        }
+        if (gate.enforce() == null || (gate.rankMin() != null && (gate.rankMin() < 0 || gate.rankMin() > 12))
+                || (gate.activeDirectMin() != null && gate.activeDirectMin() < 0)
+                || (gate.teamVolumeMin() != null && gate.teamVolumeMin().signum() < 0)
+                || (gate.quotaCap() != null && gate.quotaCap() < 1)
+                || (gate.quotaSold() != null && gate.quotaSold() < 0)
+                || (gate.quotaCap() != null && gate.quotaSold() != null && gate.quotaSold() > gate.quotaCap())) {
+            return ApiResult.fail(422, "SKU_PURCHASE_GATE_INVALID");
+        }
+        if (gate.quotaPeriod() != null && !Set.of("month", "lifetime").contains(gate.quotaPeriod())) {
+            return ApiResult.fail(422, "SKU_PURCHASE_GATE_PERIOD_INVALID");
         }
         return null;
     }
@@ -2915,7 +3027,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     request.reason().trim(),
                     request.operator(),
                     idempotencyKey.trim());
-            catalogRepository.rollbackOrderAssets(normalizedOrderNo, now);
+            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
+                throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
+            }
+        } else if (ORDER_STOCK_RELEASE_STATES.contains(toState)) {
+            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
+                throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
+            }
         }
         catalogRepository.recordOrderHistory(normalizedOrderNo, fromState, toState, request.reason().trim(),
                 request.operator(), idempotencyKey.trim(), now);
@@ -4263,16 +4381,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return createSku(idem, buildSkuUpsertRequest(p, reason, operator));
             }
             case "e1_sku_update" -> {
-                return updateSku(str(p, "skuId"), idem, buildSkuUpsertRequest(p, reason, operator));
+                return updateSku(str(p, "skuId"), str(p, "expectedUpdatedAt"), idem,
+                        buildSkuUpsertRequest(p, reason, operator));
             }
             case "e1_sku_status" -> {
                 DeviceSkuStatusRequest req = new DeviceSkuStatusRequest(str(p, "status"), reason, operator);
-                return updateSkuStatus(str(p, "skuId"), idem, req);
+                return updateSkuStatus(str(p, "skuId"), str(p, "expectedUpdatedAt"), idem, req);
             }
             case "e1_sku_delete" -> {
                 // deleteSku 复用 DeviceSkuStatusRequest(仅消费 reason/operator,status 不读)
                 DeviceSkuStatusRequest req = new DeviceSkuStatusRequest(str(p, "status"), reason, operator);
-                return deleteSku(str(p, "skuId"), idem, req);
+                return deleteSku(str(p, "skuId"), str(p, "expectedUpdatedAt"), idem, req);
             }
             case "e1_review_create" -> {
                 DeviceReviewUpsertRequest req = new DeviceReviewUpsertRequest(

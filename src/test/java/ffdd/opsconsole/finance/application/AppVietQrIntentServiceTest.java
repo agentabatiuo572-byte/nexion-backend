@@ -87,7 +87,9 @@ class AppVietQrIntentServiceTest {
                 .containsEntry("fxRate", new BigDecimal("26390"))
                 .containsEntry("vndAmount", new BigDecimal("659750"))
                 .containsEntry("status", "awaiting_payment")
-                .containsEntry("version", 0L);
+                .containsEntry("version", 0L)
+                .containsEntry("feeVnd", BigDecimal.ZERO)
+                .containsEntry("feeUsdt", BigDecimal.ZERO);
         assertThat(result.getData().get("bankAccount"))
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
                 .containsEntry("accountNumber", "9704361234567890");
@@ -120,6 +122,33 @@ class AppVietQrIntentServiceTest {
                 .hasMessage("VIETQR_INTENT_NOT_FOUND")
                 .extracting("code")
                 .isEqualTo(404);
+    }
+
+    @Test
+    void receiptsReturnOnlySafeUserScopedSettlementFieldsAndCursor() {
+        Map<String, Object> receipt = Map.ofEntries(
+                        Map.entry("reconciliationNo", "VQR-REC-1"),
+                        Map.entry("intentNo", "VQR-1"),
+                        Map.entry("viewType", "MATCHED"),
+                        Map.entry("status", "COMPLETED"),
+                        Map.entry("payableVnd", new BigDecimal("659750")),
+                        Map.entry("receivedVnd", new BigDecimal("659750")),
+                        Map.entry("lockedFxRate", new BigDecimal("26390")),
+                        Map.entry("creditedUsdt", new BigDecimal("25.00")),
+                        Map.entry("expiresAt", LocalDateTime.of(2026, 7, 25, 0, 30)),
+                        Map.entry("receivedAt", LocalDateTime.of(2026, 7, 25, 0, 10)),
+                        Map.entry("createdAt", LocalDateTime.of(2026, 7, 25, 0, 0)));
+        when(mapper.listReceiptsForUser(41L, 21, 0)).thenReturn(List.of(receipt));
+
+        ApiResult<Map<String, Object>> result = service.receipts(41L, 20, 0);
+
+        assertThat(result.getData()).containsEntry("nextOffset", null);
+        assertThat(result.getData().get("items")).asList().singleElement()
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("receiptNo", "VQR-REC-1")
+                .containsEntry("intentNo", "VQR-1")
+                .doesNotContainKeys("paymentReference", "bankAccount", "evidenceRef");
+        verify(mapper).listReceiptsForUser(41L, 21, 0);
     }
 
     @Test

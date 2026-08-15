@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -22,13 +23,20 @@ public class AppWithdrawalController {
     @GetMapping
     public ApiResult<Map<String, Object>> list(Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.list(userId);
+        return userId == null ? unauthorized() : service.list(userId);
     }
 
     @GetMapping("/policy")
     public ApiResult<Map<String, Object>> policy(Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.policy(userId);
+        return userId == null ? unauthorized() : service.policy(userId);
+    }
+
+    @GetMapping("/{withdrawalNo}")
+    public ApiResult<Map<String, Object>> get(
+            @PathVariable String withdrawalNo, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? unauthorized() : service.get(userId, withdrawalNo);
     }
 
     @PostMapping
@@ -37,7 +45,7 @@ public class AppWithdrawalController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden()
+        return userId == null ? unauthorized()
                 : service.submit(userId, request.amount(), request.chain(), request.address(), request.policyVersion(),
                         Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey);
     }
@@ -54,8 +62,8 @@ public class AppWithdrawalController {
         }
     }
 
-    private ApiResult<Map<String, Object>> forbidden() {
-        return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+    private ApiResult<Map<String, Object>> unauthorized() {
+        return ApiResult.fail(401, "USER_AUTH_REQUIRED");
     }
 
     public record WithdrawalRequest(

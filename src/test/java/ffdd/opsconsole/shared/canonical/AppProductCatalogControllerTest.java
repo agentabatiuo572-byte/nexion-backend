@@ -19,13 +19,13 @@ class AppProductCatalogControllerTest {
     @Test
     void authenticatedUserReadsServerCanonicalCatalog() {
         when(service.catalog(42L)).thenReturn(ApiResult.ok(Map.of(
-                "source", "nx_admin_device_sku",
+                "source", "nx_product",
                 "products", List.of())));
 
         ApiResult<Map<String, Object>> result = controller.catalog(auth("42", "USER"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().get("source")).isEqualTo("nx_admin_device_sku");
+        assertThat(result.getData().get("source")).isEqualTo("nx_product");
         verify(service).catalog(42L);
     }
 

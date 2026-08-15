@@ -44,15 +44,15 @@ public interface TeamFulfillmentQueueMapper extends BaseMapper<Object> {
     int claimSkuFulfillment(@Param("id") Long id);
 
     @Update("""
-            UPDATE nx_admin_device_sku
-               SET stock_text = CAST(CAST(stock_text AS UNSIGNED) - 1 AS CHAR),
-                   sold = COALESCE(sold, 0) + 1,
-                   updated_at = NOW()
-             WHERE sku_id = #{skuId}
+            UPDATE nx_product
+               SET stock = stock - 1,
+                   sold_count = sold_count + 1,
+                   updated_at = GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
+             WHERE product_no = #{skuId}
                AND is_deleted = 0
-               AND LOWER(status) IN ('on', 'active', 'on_sale')
-               AND stock_text REGEXP '^[0-9]+$'
-               AND CAST(stock_text AS UNSIGNED) > 0
+               AND store_visible = 1
+               AND UPPER(status) IN ('ACTIVE', 'ON_SALE')
+               AND stock > 0
             """)
     int reserveSkuStock(@Param("skuId") String skuId);
 

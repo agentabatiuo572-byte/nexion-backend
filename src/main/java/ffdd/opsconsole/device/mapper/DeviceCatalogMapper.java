@@ -20,46 +20,62 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
+    String SKU_STATUS_SQL = """
+            CASE
+              WHEN LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale') THEN 'on'
+              WHEN LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('pending','draft') THEN 'pending'
+              WHEN UPPER(COALESCE(p.status,'')) IN ('ACTIVE','ON_SALE') THEN 'on'
+              WHEN UPPER(COALESCE(p.status,'')) IN ('PENDING','DRAFT') THEN 'pending'
+              ELSE 'off'
+            END
+            """;
+
+    /**
+     * Commerce identity, price, stock, sale state and earnings come only from
+     * nx_product.  nx_admin_device_sku is retained as a compatibility extension
+     * for E1-only presentation fields that are not purchase truth.
+     */
     String SKU_COLUMNS = """
-            sku_id AS skuId,
-            name,
-            tier,
-            tagline,
-            badge,
-            gpu,
-            vram,
-            hash_rate AS hashRate,
-            power_text AS power,
-            datacenter,
-            price,
-            daily_earn AS dailyEarn,
-            daily_earn_nex AS dailyEarnNex,
-            share_yield_min AS shareYieldMin,
-            share_yield_max AS shareYieldMax,
-            base_rate AS baseRate,
-            sold,
-            stock_text AS stock,
-            rating,
-            reviews,
-            ai_image_gen_per_min AS aiImageGenPerMin,
-            ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
-            ai_video_min_per_hour AS aiVideoMinPerHour,
-            ai_fine_tune_mins AS aiFineTuneMins,
-            ai_unlocks AS aiUnlocks,
-            features_json AS featuresJson,
-            generation,
-            lifecycle,
-            superseded_by AS supersededBy,
-            tradein_discount AS tradeinDiscount,
-            COALESCE(CAST(unlock_phase_id AS CHAR), unlock_phase) AS unlockPhase,
-            purchase_gate_json AS purchaseGateJson,
-            image_asset_id AS imageAssetId,
-            image_object_key AS imageObjectKey,
-            image_preview_url AS imagePreviewUrl,
-            tag,
-            status,
-            created_at AS createdAt,
-            updated_at AS updatedAt
+            p.product_no AS skuId,
+            p.name,
+            p.tier,
+            p.tagline,
+            p.badge,
+            p.gpu_model AS gpu,
+            COALESCE(NULLIF(s.vram,''), CASE WHEN p.vram_total_gb IS NULL THEN NULL ELSE CONCAT(p.vram_total_gb,'GB') END) AS vram,
+            COALESCE(NULLIF(s.hash_rate,''), CAST(p.hashrate AS CHAR)) AS hashRate,
+            s.power_text AS power,
+            s.datacenter,
+            p.price_usdt AS price,
+            p.estimated_daily_usdt AS dailyEarn,
+            p.daily_nex AS dailyEarnNex,
+            p.share_yield_min AS shareYieldMin,
+            p.share_yield_max AS shareYieldMax,
+            s.base_rate AS baseRate,
+            p.sold_count AS sold,
+            CAST(p.stock AS CHAR) AS stock,
+            p.rating_value AS rating,
+            p.review_count AS reviews,
+            s.ai_image_gen_per_min AS aiImageGenPerMin,
+            s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+            s.ai_video_min_per_hour AS aiVideoMinPerHour,
+            s.ai_fine_tune_mins AS aiFineTuneMins,
+            s.ai_unlocks AS aiUnlocks,
+            s.features_json AS featuresJson,
+            p.generation,
+            COALESCE(NULLIF(s.lifecycle,''),'active') AS lifecycle,
+            p.superseded_by_product_no AS supersededBy,
+            s.tradein_discount AS tradeinDiscount,
+            p.unlock_phase AS unlockPhase,
+            NULL AS purchaseGateJson,
+            s.image_asset_id AS imageAssetId,
+            s.image_object_key AS imageObjectKey,
+            COALESCE(NULLIF(s.image_preview_url,''),p.cover_url) AS imagePreviewUrl,
+            s.tag,
+            """ + SKU_STATUS_SQL + """
+             AS status,
+            p.created_at AS createdAt,
+            p.updated_at AS updatedAt
             """;
 
     String TASK_COLUMNS = """
@@ -227,6 +243,63 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createSkuTable();
+
+    @Select("""
+            SELECT COALESCE(DATETIME_PRECISION,0)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_product' AND COLUMN_NAME='updated_at'
+            """)
+    int productUpdatedAtPrecision();
+
+    @Update("ALTER TABLE nx_product MODIFY COLUMN updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)")
+    void widenProductUpdatedAtPrecision();
+
+    /** One-way compatibility migration: missing legacy E1 rows become canonical products; existing nx_product rows always win. */
+    @Insert("""
+            INSERT INTO nx_product (
+              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,
+              badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
+              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
+              created_at,updated_at,is_deleted
+            )
+            SELECT s.sku_id,s.name,CASE WHEN s.tier='Share' THEN 'SHARE' ELSE 'DEVICE' END,s.tier,
+                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'ON_SALE' WHEN LOWER(s.status)='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
+                   s.price,
+                   CASE WHEN TRIM(COALESCE(s.hash_rate,'')) REGEXP '^[0-9]+([.][0-9]+)?$'
+                              AND CHAR_LENGTH(SUBSTRING_INDEX(TRIM(s.hash_rate),'.',1)) <= 11
+                        THEN CAST(s.hash_rate AS DECIMAL(18,6)) ELSE 0 END,
+                   s.daily_earn,s.daily_earn_nex,
+                   CASE WHEN TRIM(COALESCE(s.stock_text,'')) REGEXP '^[0-9]+$'
+                              AND (CHAR_LENGTH(TRIM(s.stock_text)) < 10
+                                   OR (CHAR_LENGTH(TRIM(s.stock_text)) = 10 AND TRIM(s.stock_text) <= '2147483647'))
+                        THEN CAST(s.stock_text AS UNSIGNED) ELSE 0 END,
+                   s.badge,s.tagline,
+                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'on' ELSE LOWER(s.status) END,
+                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 1 ELSE 0 END,s.id,
+                   COALESCE(s.generation,1),s.gpu,
+                   CASE WHEN TRIM(COALESCE(s.vram,'')) REGEXP '^[0-9]+(GB|gb)?$'
+                              AND CHAR_LENGTH(REGEXP_SUBSTR(TRIM(s.vram),'^[0-9]+')) <= 3
+                        THEN CAST(REGEXP_SUBSTR(s.vram,'^[0-9]+') AS UNSIGNED) ELSE NULL END,
+                   s.share_yield_min,s.share_yield_max,s.superseded_by,
+                   COALESCE(CAST(s.unlock_phase_id AS CHAR),NULLIF(s.unlock_phase,'')),COALESCE(s.sold,0),COALESCE(s.rating,0),COALESCE(s.reviews,0),
+                   s.created_at,s.updated_at,0
+              FROM nx_admin_device_sku s
+             WHERE s.is_deleted=0
+               AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=s.sku_id)
+            """)
+    int backfillProductsFromLegacySkus();
+
+    /** Repairs only a missing canonical phase reference; existing nx_product values remain authoritative. */
+    @Update("""
+            UPDATE nx_product p
+              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no
+               SET p.unlock_phase=CAST(s.unlock_phase_id AS CHAR),
+                   p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND,s.updated_at)
+             WHERE p.is_deleted=0 AND s.is_deleted=0
+               AND (p.unlock_phase IS NULL OR p.unlock_phase='')
+               AND s.unlock_phase_id IS NOT NULL
+            """)
+    int backfillProductUnlockPhasesFromSkuMetadata();
 
     @Select("""
             SELECT COUNT(*)
@@ -581,10 +654,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Select("""
             SELECT COUNT(*)
-              FROM nx_admin_device_sku
-             WHERE (CAST(unlock_phase_id AS CHAR) = #{phaseId} OR unlock_phase = #{phaseId})
+              FROM nx_product
+             WHERE unlock_phase = #{phaseId}
                AND is_deleted = 0
-               AND status <> 'off'
+               AND store_visible = 1
             """)
     int countSkusByUnlockPhase(@Param("phaseId") String phaseId);
 
@@ -610,6 +683,16 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                AND nx_admin_device_sku.unlock_phase <> ''
             """)
     int backfillSkuUnlockPhaseIdsByLabel(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_product p
+              JOIN nx_admin_phase_config phase
+                ON phase.scope=#{scope} AND phase.is_deleted=0 AND phase.label=p.unlock_phase
+               SET p.unlock_phase=CAST(phase.id AS CHAR),
+                   p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
+             WHERE p.is_deleted=0 AND p.unlock_phase IS NOT NULL AND p.unlock_phase<>''
+            """)
+    int backfillProductUnlockPhasesByLabel(@Param("scope") String scope, @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_admin_device_generation_gate
@@ -640,6 +723,16 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     int backfillSkuUnlockPhaseIdsByLegacyPhaseId(@Param("scope") String scope, @Param("now") LocalDateTime now);
 
     @Update("""
+            UPDATE nx_product p
+              JOIN nx_admin_phase_config phase
+                ON phase.scope=#{scope} AND phase.is_deleted=0 AND phase.phase_id=p.unlock_phase
+               SET p.unlock_phase=CAST(phase.id AS CHAR),
+                   p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
+             WHERE p.is_deleted=0 AND p.unlock_phase IS NOT NULL AND p.unlock_phase<>''
+            """)
+    int backfillProductUnlockPhasesByLegacyId(@Param("scope") String scope, @Param("now") LocalDateTime now);
+
+    @Update("""
             UPDATE nx_admin_device_generation_gate
                JOIN nx_admin_phase_config p
                  ON p.scope = #{scope}
@@ -655,14 +748,17 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Select("""
             <script>
-            SELECT COUNT(*) FROM nx_admin_device_sku
-             WHERE is_deleted = 0
-             <if test='status != null and status != ""'>AND status = #{status}</if>
+            SELECT COUNT(*) FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted = 0
+             <if test='status != null and status != ""'>AND (
+            """ + SKU_STATUS_SQL + """
+             ) = #{status}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (sku_id LIKE CONCAT('%', #{keyword}, '%')
-                    OR name LIKE CONCAT('%', #{keyword}, '%')
-                    OR tagline LIKE CONCAT('%', #{keyword}, '%')
-                    OR gpu LIKE CONCAT('%', #{keyword}, '%'))
+               AND (p.product_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.name LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.tagline LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.gpu_model LIKE CONCAT('%', #{keyword}, '%'))
              </if>
             </script>
             """)
@@ -672,16 +768,21 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             <script>
             SELECT
             """ + SKU_COLUMNS + """
-              FROM nx_admin_device_sku
-             WHERE is_deleted = 0
-             <if test='status != null and status != ""'>AND status = #{status}</if>
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted = 0
+             <if test='status != null and status != ""'>AND (
+            """ + SKU_STATUS_SQL + """
+             ) = #{status}</if>
              <if test='keyword != null and keyword != ""'>
-               AND (sku_id LIKE CONCAT('%', #{keyword}, '%')
-                    OR name LIKE CONCAT('%', #{keyword}, '%')
-                    OR tagline LIKE CONCAT('%', #{keyword}, '%')
-                    OR gpu LIKE CONCAT('%', #{keyword}, '%'))
+               AND (p.product_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.name LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.tagline LIKE CONCAT('%', #{keyword}, '%')
+                    OR p.gpu_model LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-             ORDER BY FIELD(status,'on','pending','off'), updated_at DESC, id DESC
+             ORDER BY FIELD(
+            """ + SKU_STATUS_SQL + """
+             ,'on','pending','off'), p.updated_at DESC, p.id DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
@@ -691,8 +792,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT
             """ + SKU_COLUMNS + """
-              FROM nx_admin_device_sku
-             WHERE sku_id = #{skuId} AND is_deleted = 0
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.product_no = #{skuId} AND p.is_deleted = 0
              LIMIT 1
             """)
     SkuRow findSku(@Param("skuId") String skuId);
@@ -700,11 +802,32 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT
             """ + SKU_COLUMNS + """
-              FROM nx_admin_device_sku
-             WHERE ai_unlocks = #{taskId} AND is_deleted = 0
-             ORDER BY FIELD(status,'on','pending','off'), updated_at DESC, id DESC
+              FROM nx_product p
+              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE s.ai_unlocks = #{taskId} AND p.is_deleted = 0
+             ORDER BY FIELD(
+            """ + SKU_STATUS_SQL + """
+             ,'on','pending','off'), p.updated_at DESC, p.id DESC
             """)
     List<SkuRow> findSkusByAiUnlocks(@Param("taskId") String taskId);
+
+    @Insert("""
+            INSERT INTO nx_product (
+              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,
+              badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
+              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
+              created_at,updated_at,is_deleted
+            ) VALUES (
+              #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
+              CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
+              #{sku.price},#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},
+              #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
+              COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
+              #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),COALESCE(#{sku.sold},0),COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
+              #{sku.createdAt},#{sku.updatedAt},0
+            )
+            """)
+    int insertSku(@Param("sku") SkuWrite sku);
 
     @Insert("""
             INSERT INTO nx_admin_device_sku (
@@ -721,74 +844,69 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
-              #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},#{sku.createdAt},#{sku.updatedAt},0
+              #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},COALESCE(#{sku.createdAt},#{sku.updatedAt}),#{sku.updatedAt},0
             )
+            ON DUPLICATE KEY UPDATE
+              name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
+              hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),price=VALUES(price),
+              daily_earn=VALUES(daily_earn),daily_earn_nex=VALUES(daily_earn_nex),share_yield_min=VALUES(share_yield_min),
+              share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),sold=VALUES(sold),stock_text=VALUES(stock_text),
+              rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
+              ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
+              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),features_json=VALUES(features_json),
+              generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
+              tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
+              purchase_gate_json=VALUES(purchase_gate_json),image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
+              image_preview_url=VALUES(image_preview_url),tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
             """)
-    int insertSku(@Param("sku") SkuWrite sku);
+    int upsertSkuMetadata(@Param("sku") SkuWrite sku);
 
     @Update("""
-            UPDATE nx_admin_device_sku
-               SET name = #{sku.name},
-                   tier = #{sku.tier},
-                   tagline = #{sku.tagline},
-                   badge = #{sku.badge},
-                   gpu = #{sku.gpu},
-                   vram = #{sku.vram},
-                   hash_rate = #{sku.hashRate},
-                   power_text = #{sku.power},
-                   datacenter = #{sku.datacenter},
-                   price = #{sku.price},
-                   daily_earn = #{sku.dailyEarn},
-                   daily_earn_nex = #{sku.dailyEarnNex},
-                   share_yield_min = #{sku.shareYieldMin},
-                   share_yield_max = #{sku.shareYieldMax},
-                   base_rate = #{sku.baseRate},
-                   sold = #{sku.sold},
-                   stock_text = #{sku.stock},
-                   rating = #{sku.rating},
-                   reviews = #{sku.reviews},
-                   ai_image_gen_per_min = #{sku.aiImageGenPerMin},
-                   ai_llm_tokens_per_sec = #{sku.aiLlmTokensPerSec},
-                   ai_video_min_per_hour = #{sku.aiVideoMinPerHour},
-                   ai_fine_tune_mins = #{sku.aiFineTuneMins},
-                   ai_unlocks = #{sku.aiUnlocks},
-                   features_json = #{sku.featuresJson},
-                   generation = #{sku.generation},
-                   lifecycle = #{sku.lifecycle},
-                   superseded_by = #{sku.supersededBy},
-                   tradein_discount = #{sku.tradeinDiscount},
-                   unlock_phase = '',
-                   unlock_phase_id = #{sku.unlockPhaseId},
-                   purchase_gate_json = #{sku.purchaseGateJson},
-                   image_asset_id = #{sku.imageAssetId},
-                   image_object_key = #{sku.imageObjectKey},
-                   image_preview_url = #{sku.imagePreviewUrl},
-                   tag = #{sku.tag},
-                   status = #{sku.status},
-                   updated_at = #{sku.updatedAt}
-             WHERE sku_id = #{sku.skuId} AND is_deleted = 0
+            UPDATE nx_product
+               SET name=#{sku.name},product_type=CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,tier=#{sku.tier},
+                   status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
+                   price_usdt=#{sku.price},hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
+                   stock=#{sku.canonicalStock},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
+                   store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
+                   gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
+                   share_yield_max=#{sku.shareYieldMax},superseded_by_product_no=#{sku.supersededBy},
+                   unlock_phase=CAST(#{sku.unlockPhaseId} AS CHAR),sold_count=COALESCE(#{sku.sold},0),
+                   rating_value=COALESCE(#{sku.rating},0),review_count=COALESCE(#{sku.reviews},0),
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
+             WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
             """)
-    int updateSku(@Param("sku") SkuWrite sku);
+    int updateSku(@Param("sku") SkuWrite sku, @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt);
 
     @Update("""
-            UPDATE nx_admin_device_sku
-               SET status = #{status}, updated_at = #{now}
-             WHERE sku_id = #{skuId} AND is_deleted = 0
+            UPDATE nx_product
+               SET status=CASE WHEN #{status}='on' THEN 'ON_SALE' WHEN #{status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
+                   store_status=#{status},store_visible=CASE WHEN #{status}='on' THEN 1 ELSE 0 END,
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
+             WHERE product_no=#{skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
             """)
-    int updateSkuStatus(@Param("skuId") String skuId, @Param("status") String status, @Param("now") LocalDateTime now);
+    int updateSkuStatus(@Param("skuId") String skuId, @Param("status") String status,
+                        @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt, @Param("now") LocalDateTime now);
+
+    @Update("UPDATE nx_admin_device_sku SET status=#{status},updated_at=#{now} WHERE sku_id=#{skuId} AND is_deleted=0")
+    int updateSkuMetadataStatus(@Param("skuId") String skuId, @Param("status") String status, @Param("now") LocalDateTime now);
 
     @Update("""
-            UPDATE nx_admin_device_sku
-               SET is_deleted = 1, updated_at = #{now}
-             WHERE sku_id = #{skuId} AND is_deleted = 0
+            UPDATE nx_product
+               SET is_deleted=1,store_visible=0,store_status='off',status='OFF_SALE',
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
+             WHERE product_no=#{skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
             """)
-    int softDeleteSku(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
+    int softDeleteSku(@Param("skuId") String skuId, @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt,
+                      @Param("now") LocalDateTime now);
+
+    @Update("UPDATE nx_admin_device_sku SET is_deleted=1,status='off',updated_at=#{now} WHERE sku_id=#{skuId} AND is_deleted=0")
+    int softDeleteSkuMetadata(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
 
     @Select("""
             <script>
             SELECT COUNT(*)
               FROM nx_admin_device_review r
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id = r.sku_id AND s.is_deleted = 0
+              LEFT JOIN nx_product s ON s.product_no = r.sku_id AND s.is_deleted = 0
              WHERE r.is_deleted = 0
              <if test='skuId != null and skuId != ""'>AND r.sku_id = #{skuId}</if>
              <if test='status != null and status != ""'>AND r.status = #{status}</if>
@@ -817,7 +935,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    r.created_at AS createdAt,
                    r.updated_at AS updatedAt
               FROM nx_admin_device_review r
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id = r.sku_id AND s.is_deleted = 0
+              LEFT JOIN nx_product s ON s.product_no = r.sku_id AND s.is_deleted = 0
              WHERE r.is_deleted = 0
              <if test='skuId != null and skuId != ""'>AND r.sku_id = #{skuId}</if>
              <if test='status != null and status != ""'>AND r.status = #{status}</if>
@@ -848,7 +966,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    r.created_at AS createdAt,
                    r.updated_at AS updatedAt
               FROM nx_admin_device_review r
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id = r.sku_id AND s.is_deleted = 0
+              LEFT JOIN nx_product s ON s.product_no = r.sku_id AND s.is_deleted = 0
              WHERE r.review_id = #{reviewId} AND r.is_deleted = 0
              LIMIT 1
             """)
@@ -1261,13 +1379,91 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int rollbackOrderDevices(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT UPPER(o.order_type) orderType,
+                   o.quantity orderQuantity,
+                   o.item_count itemCount,
+                   COUNT(oi.id) itemRows,
+                   COALESCE(SUM(CASE WHEN oi.product_id IS NOT NULL AND oi.quantity>0
+                                     THEN oi.quantity ELSE 0 END),0) validItemQuantity,
+                   COALESCE(SUM(CASE WHEN oi.id IS NOT NULL
+                                          AND (oi.product_id IS NULL OR oi.quantity IS NULL OR oi.quantity<=0)
+                                     THEN 1 ELSE 0 END),0) invalidItemRows,
+                   COUNT(DISTINCT CASE WHEN oi.product_id IS NOT NULL AND oi.quantity>0
+                                       THEN oi.product_id END) productGroups
+              FROM nx_order o
+              LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
+             WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+             GROUP BY o.id,o.order_type,o.quantity,o.item_count
+            """)
+    OrderRestockPlan orderRestockPlan(@Param("orderNo") String orderNo);
+
     @Update("""
             UPDATE nx_product p
-              JOIN nx_order o ON o.product_id=p.id AND o.order_no=#{orderNo} AND o.is_deleted=0
-               SET p.stock=p.stock+o.quantity,p.sold_count=GREATEST(0,p.sold_count-o.quantity),p.updated_at=#{now}
-             WHERE p.is_deleted=0
+             JOIN (
+                    SELECT oi.product_id,SUM(oi.quantity) quantity
+                      FROM nx_order o
+                      JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
+                     WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+                       AND EXISTS (
+                             SELECT 1
+                               FROM nx_order complete_order
+                               JOIN nx_order_item complete_item
+                                 ON complete_item.order_no=complete_order.order_no
+                                AND complete_item.is_deleted=0
+                              WHERE complete_order.order_no=o.order_no AND complete_order.is_deleted=0
+                                AND complete_order.quantity>0
+                              GROUP BY complete_order.id,complete_order.order_type,
+                                       complete_order.quantity,complete_order.item_count
+                             HAVING SUM(CASE WHEN complete_item.product_id IS NOT NULL
+                                                  AND complete_item.quantity>0
+                                             THEN complete_item.quantity ELSE 0 END)=complete_order.quantity
+                                AND SUM(CASE WHEN complete_item.product_id IS NULL
+                                                  OR complete_item.quantity IS NULL
+                                                  OR complete_item.quantity<=0
+                                             THEN 1 ELSE 0 END)=0
+                                AND (
+                                      UPPER(complete_order.order_type)='SINGLE'
+                                      OR (
+                                           UPPER(complete_order.order_type) IN ('BUNDLE','TRADE_IN')
+                                           AND COUNT(complete_item.id)=complete_order.item_count
+                                           AND complete_order.item_count=complete_order.quantity
+                                         )
+                                    )
+                           )
+                     GROUP BY oi.product_id
+                    HAVING oi.product_id IS NOT NULL AND MIN(oi.quantity)>0
+                  ) items ON items.product_id=p.id
+               SET p.stock=p.stock+items.quantity,p.sold_count=p.sold_count-items.quantity,
+                   p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
+             WHERE p.sold_count>=items.quantity
+               AND p.stock<=2147483647-items.quantity
+            """)
+    int restockOrderItemProducts(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    /** Historical single-item orders may predate nx_order_item and use nx_order.product_id. */
+    @Update("""
+            UPDATE nx_product p
+             JOIN nx_order o ON o.product_id=p.id AND o.order_no=#{orderNo} AND o.is_deleted=0
+               SET p.stock=p.stock+o.quantity,p.sold_count=GREATEST(0,p.sold_count-o.quantity),
+                   p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
+             WHERE o.quantity>0 AND p.sold_count>=o.quantity
+               AND UPPER(o.order_type)='SINGLE'
+               AND NOT EXISTS (SELECT 1 FROM nx_order_item oi
+                                WHERE oi.order_no=o.order_no AND oi.is_deleted=0)
+               AND p.stock<=2147483647-o.quantity
             """)
     int restockOrderProduct(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    record OrderRestockPlan(
+            String orderType,
+            Integer orderQuantity,
+            Integer itemCount,
+            Long itemRows,
+            Long validItemQuantity,
+            Long invalidItemRows,
+            Long productGroups) {
+    }
 
     @Select("""
             <script>
@@ -1401,6 +1597,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String imagePreviewUrl,
             String tag,
             String status,
+            BigDecimal canonicalHashrate,
+            Integer canonicalVramGb,
+            Integer canonicalStock,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {
     }

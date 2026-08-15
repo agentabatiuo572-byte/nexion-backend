@@ -17,7 +17,11 @@ class UserSelfServiceMigrationContractTest {
                 .contains("CREATE TABLE IF NOT EXISTS nx_user_account_deletion_request")
                 .contains("UNIQUE KEY uk_user_account_deletion_no (request_no)")
                 .contains("UNIQUE KEY uk_user_account_deletion_idempotency (user_id,idempotency_key)")
-                .contains("CHECK (status IN ('REQUESTED','IN_REVIEW','BLOCKED','COMPLETED','CANCELLED'))");
+                .contains("CHECK (status IN ('REQUESTED','IN_REVIEW','BLOCKED','COMPLETED','CANCELLED'))")
+                .contains("COLUMN_NAME = 'version'")
+                .contains("COLUMN_NAME = 'reviewed_at'")
+                .contains("COLUMN_NAME = 'block_reason'")
+                .contains("DROP INDEX uk_user_account_deletion_user");
         assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_user_account_deletion_request");
         assertThat(runner).contains("20260813_user_self_service.sql");
     }

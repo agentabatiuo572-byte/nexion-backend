@@ -30,6 +30,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -46,6 +47,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     private final AuditLogService auditLogService;
     private final TamperDetectionPublisher tamperDetectionPublisher;
     private final EventOutboxService eventOutboxService;
+    private final Environment environment;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Transactional
@@ -150,7 +152,10 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                 && disclosure.version().equals(ack.getRequiredVersion());
         IssuedReadToken token = !acknowledged && issueReadToken
                 ? issueReadToken(userId, jurisdiction.code(), disclosure.version()) : null;
+        boolean localSandbox = isStrictLocalSandbox();
         return ApiResult.ok(new AppRiskDisclosureView(
+                localSandbox ? "mock" : "server",
+                localSandbox ? "SANDBOX" : "PRODUCTION",
                 jurisdiction.code(), jurisdiction.name(), disclosure.version(), disclosure.languageScope(),
                 disclosure.effectiveDate(), acknowledged, acknowledged ? ack.getAcknowledgedAt() : null,
                 repository.listChapters(jurisdiction.code(), disclosure.version()),
@@ -175,6 +180,18 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     }
 
     private JurisdictionResolution resolveJurisdiction(Long userId, String trustedIpCountry) {
+        if (isStrictLocalSandbox()) {
+            if (!Integer.valueOf(1).equals(ackMapper.isSandboxUser(userId))) {
+                return JurisdictionResolution.error(403, "RISK_DISCLOSURE_SANDBOX_USER_REQUIRED");
+            }
+            return repository.listJurisdictions().stream()
+                    .filter(row -> "LOCAL-SANDBOX".equalsIgnoreCase(row.code()))
+                    .filter(row -> "published".equalsIgnoreCase(row.status()))
+                    .findFirst()
+                    .map(row -> new JurisdictionResolution(row, null))
+                    .orElseGet(() -> JurisdictionResolution.error(
+                            404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED"));
+        }
         String ipCountry = CountryCodeNormalizer.normalize(trustedIpCountry);
         String profileCountry = CountryCodeNormalizer.normalize(ackMapper.findUserCountryCode(userId));
         String country = StringUtils.hasText(ipCountry) ? ipCountry : profileCountry;
@@ -199,6 +216,11 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         if (matches.isEmpty()) return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
         if (matches.size() > 1) return JurisdictionResolution.error(409, "RISK_DISCLOSURE_JURISDICTION_AMBIGUOUS");
         return new JurisdictionResolution(matches.get(0), null);
+    }
+
+    private boolean isStrictLocalSandbox() {
+        String[] active = environment == null ? new String[0] : environment.getActiveProfiles();
+        return active.length == 1 && "local-sandbox".equals(active[0]);
     }
 
     private IssuedReadToken issueReadToken(Long userId, String jurisdiction, String version) {

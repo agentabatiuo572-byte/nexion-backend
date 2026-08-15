@@ -6,6 +6,8 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 public record AppRiskDisclosureView(
+        String source,
+        String sourceEnvironment,
         String jurisdiction,
         String jurisdictionName,
         String version,

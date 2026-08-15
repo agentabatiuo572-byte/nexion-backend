@@ -52,33 +52,88 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     List<CatalogSeed> listEligibleCatalogSeeds();
 
     @Insert("""
-            INSERT IGNORE INTO nx_commerce_sandbox_catalog
+            INSERT INTO nx_commerce_sandbox_catalog
               (product_id,product_no,name,tier,price_usdt,stock,sold_count,device_type,generation,gpu_model,vram_total_gb,hashrate,
                daily_usdt,daily_nex,tagline,badge,unlock_phase,run_id,version,source,source_environment,created_at,updated_at,is_deleted)
             VALUES (#{productId},#{productNo},#{name},#{tier},#{priceUsdt},#{stock},#{sold},#{deviceType},#{generation},#{gpuModel},#{vramTotalGb},#{hashrate},
                     #{dailyUsdt},#{dailyNex},#{tagline},#{badge},#{unlockPhase},#{runId},0,'mock','SANDBOX',NOW(),NOW(),0)
+            ON DUPLICATE KEY UPDATE
+              product_no=VALUES(product_no),name=VALUES(name),tier=VALUES(tier),price_usdt=VALUES(price_usdt),
+              stock=IF(version=0,VALUES(stock),stock),sold_count=IF(version=0,VALUES(sold_count),sold_count),
+              device_type=VALUES(device_type),generation=VALUES(generation),gpu_model=VALUES(gpu_model),
+              vram_total_gb=VALUES(vram_total_gb),hashrate=VALUES(hashrate),daily_usdt=VALUES(daily_usdt),daily_nex=VALUES(daily_nex),
+              tagline=VALUES(tagline),badge=VALUES(badge),unlock_phase=VALUES(unlock_phase),updated_at=NOW(),is_deleted=0
             """)
-    int insertCatalogIfAbsent(CatalogSeed row);
+    int upsertCatalog(CatalogSeed row);
+
+    @Delete("""
+            DELETE FROM nx_commerce_sandbox_catalog
+             WHERE run_id=#{runId}
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_product p
+                  WHERE p.id=nx_commerce_sandbox_catalog.product_id AND p.is_deleted=0 AND p.store_visible=1
+                    AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=1 AND p.price_usdt>0
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM nx_commerce_sandbox_order o
+                  WHERE o.run_id=nx_commerce_sandbox_catalog.run_id
+                    AND o.product_id=nx_commerce_sandbox_catalog.product_id AND o.is_deleted=0
+               )
+            """)
+    int pruneCatalog(@Param("runId") String runId);
 
     @Select("""
-            SELECT product_id productId,product_no productNo,name,tier,price_usdt priceUsdt,stock,sold_count sold,
-                   gpu_model gpuModel,vram_total_gb vramTotalGb,hashrate,daily_usdt dailyUsdt,daily_nex dailyNex,
-                   tagline,badge,unlock_phase unlockPhase,version,updated_at updatedAt
-              FROM nx_commerce_sandbox_catalog
-             WHERE run_id=#{runId} AND is_deleted=0 AND stock>=1 AND price_usdt>0 AND source='mock' AND source_environment='SANDBOX'
-             ORDER BY product_id
+            SELECT c.product_id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,c.stock,c.sold_count sold,
+                   c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
+                   c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
+                   s.power_text AS power,s.features_json AS featuresJson,
+                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
+                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+              FROM nx_commerce_sandbox_catalog c
+              JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
+                               AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=1 AND p.price_usdt>0
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
+             WHERE c.run_id=#{runId} AND c.is_deleted=0 AND c.stock>=1 AND c.price_usdt>0
+               AND c.source='mock' AND c.source_environment='SANDBOX'
+             ORDER BY c.product_id
             """)
     List<SandboxCatalogProduct> listSandboxCatalog(@Param("runId") String runId);
 
     @Select("""
-            SELECT product_id productId,product_no productNo,name,tier,price_usdt priceUsdt,stock,sold_count sold,
-                   gpu_model gpuModel,vram_total_gb vramTotalGb,hashrate,daily_usdt dailyUsdt,daily_nex dailyNex,
-                   tagline,badge,unlock_phase unlockPhase,version,updated_at updatedAt
-              FROM nx_commerce_sandbox_catalog
-             WHERE run_id=#{runId} AND is_deleted=0 AND (product_id=#{productId} OR (#{productId} IS NULL AND product_no=#{productNo}))
-               AND source='mock' AND source_environment='SANDBOX' LIMIT 1 FOR UPDATE
+            SELECT c.product_id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,c.stock,c.sold_count sold,
+                   c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
+                   c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
+                   s.power_text AS power,s.features_json AS featuresJson,
+                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
+                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+              FROM nx_commerce_sandbox_catalog c
+              JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
+                               AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=#{quantity} AND p.price_usdt>0
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
+             WHERE c.run_id=#{runId} AND c.is_deleted=0 AND (c.product_id=#{productId} OR (#{productId} IS NULL AND c.product_no=#{productNo}))
+               AND c.source='mock' AND c.source_environment='SANDBOX' LIMIT 1 FOR UPDATE
             """)
-    SandboxCatalogProduct lockSandboxCatalogProduct(@Param("runId") String runId, @Param("productId") Long productId, @Param("productNo") String productNo);
+    SandboxCatalogProduct lockSandboxCatalogProduct(@Param("runId") String runId, @Param("productId") Long productId,
+                                                     @Param("productNo") String productNo, @Param("quantity") Integer quantity);
+
+    /** Refunds must be able to return isolated stock even after the canonical product was unlisted or deleted. */
+    @Select("""
+            SELECT c.product_id productId,c.product_no productNo,c.name,c.tier,c.price_usdt priceUsdt,c.stock,c.sold_count sold,
+                   c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
+                   c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
+                   s.power_text AS power,s.features_json AS featuresJson,
+                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
+                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+              FROM nx_commerce_sandbox_catalog c
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
+             WHERE c.run_id=#{runId} AND c.product_id=#{productId} AND c.is_deleted=0
+               AND c.source='mock' AND c.source_environment='SANDBOX' LIMIT 1 FOR UPDATE
+            """)
+    SandboxCatalogProduct lockSandboxCatalogProductForReturn(
+            @Param("runId") String runId, @Param("productId") Long productId);
 
     @Update("""
             UPDATE nx_commerce_sandbox_catalog SET stock=stock-#{quantity},sold_count=sold_count+#{quantity},version=version+1,updated_at=NOW()
@@ -201,7 +256,19 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     record SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                  Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
                                  BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
-                                 LocalDateTime updatedAt) { }
+                                 LocalDateTime updatedAt, String power, String featuresJson,
+                                 BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                                 BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
+                                 String aiUnlocks, String purchaseGateJson) {
+        public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                     Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
+                                     BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
+                                     LocalDateTime updatedAt) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt,
+                    null, null, null, null, null, null, null, null);
+        }
+    }
     record OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,
                       Long canonicalRevision, String runId) {
         public OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt, Long canonicalRevision) {

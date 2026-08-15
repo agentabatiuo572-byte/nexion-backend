@@ -3,6 +3,7 @@ package ffdd.opsconsole.auth.web;
 import ffdd.opsconsole.auth.application.AppUserSecurityService;
 import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
+import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
@@ -76,6 +77,16 @@ public class AppUserSecurityController {
             @RequestBody(required = false) AppAccountDeletionRequest request) {
         UserContext context = requireUser(authentication);
         return ApiResult.ok(securityService.requestAccountDeletion(
+                context.userId(), context.sessionId(), idempotencyKey, request));
+    }
+
+    @PostMapping("/account-deletion/cancel")
+    public ApiResult<Map<String, Object>> cancelAccountDeletion(
+            Authentication authentication,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody(required = false) AppAccountDeletionCancelRequest request) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.cancelAccountDeletion(
                 context.userId(), context.sessionId(), idempotencyKey, request));
     }
 

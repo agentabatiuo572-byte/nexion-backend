@@ -58,6 +58,9 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
     @Select("SELECT UPPER(country_code) FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1")
     String findUserCountryCode(@Param("userId") Long userId);
 
+    @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    Integer isSandboxUser(@Param("userId") Long userId);
+
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item
                               WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
