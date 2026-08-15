@@ -14,7 +14,7 @@ import org.apache.ibatis.annotations.Update;
 /** Commerce-owned state only; FundsSandboxMapper owns all isolated wallet and ledger mutations. */
 @Mapper
 public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
-    @Select("SELECT COUNT(1) FROM nx_user WHERE id=#{userId} AND sandbox=1 AND is_deleted=0")
+    @Select("SELECT COUNT(1) FROM nx_user WHERE id=#{userId} AND sandbox=1 AND status='ACTIVE' AND is_deleted=0")
     boolean isSandboxUser(@Param("userId") Long userId);
 
     @Select("SELECT request_hash requestHash,result_json resultJson FROM nx_commerce_sandbox_order_receipt WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{key} AND is_deleted=0 LIMIT 1 FOR UPDATE")
@@ -43,26 +43,29 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     /** The source is read only to populate a one-way isolated catalogue snapshot. */
     @Select("""
-            SELECT id productId,product_no productNo,name,tier,price_usdt priceUsdt,stock,sold_count sold,
-                   product_type deviceType,generation,gpu_model gpuModel,vram_total_gb vramTotalGb,hashrate,
-                   estimated_daily_usdt dailyUsdt,daily_nex dailyNex,tagline,badge,unlock_phase unlockPhase
-              FROM nx_product WHERE is_deleted=0 AND UPPER(status) IN ('ACTIVE','ON_SALE') AND store_visible=1
-               AND stock>=1 AND price_usdt>0
+            SELECT p.id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,p.stock,p.sold_count sold,
+                   p.product_type deviceType,p.generation,p.gpu_model gpuModel,p.vram_total_gb vramTotalGb,p.hashrate,
+                   p.estimated_daily_usdt dailyUsdt,p.daily_nex dailyNex,p.tagline,p.badge,p.unlock_phase unlockPhase,
+                   s.purchase_gate_json purchaseGateJson
+              FROM nx_product p LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted=0 AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.store_visible=1
+               AND p.stock>=1 AND p.price_usdt>0
             """)
     List<CatalogSeed> listEligibleCatalogSeeds();
 
     @Insert("""
             INSERT INTO nx_commerce_sandbox_catalog
-              (product_id,product_no,name,tier,price_usdt,stock,sold_count,device_type,generation,gpu_model,vram_total_gb,hashrate,
-               daily_usdt,daily_nex,tagline,badge,unlock_phase,run_id,version,source,source_environment,created_at,updated_at,is_deleted)
+               (product_id,product_no,name,tier,price_usdt,stock,sold_count,device_type,generation,gpu_model,vram_total_gb,hashrate,
+               daily_usdt,daily_nex,tagline,badge,unlock_phase,purchase_gate_json,run_id,version,source,source_environment,created_at,updated_at,is_deleted)
             VALUES (#{productId},#{productNo},#{name},#{tier},#{priceUsdt},#{stock},#{sold},#{deviceType},#{generation},#{gpuModel},#{vramTotalGb},#{hashrate},
-                    #{dailyUsdt},#{dailyNex},#{tagline},#{badge},#{unlockPhase},#{runId},0,'mock','SANDBOX',NOW(),NOW(),0)
+                    #{dailyUsdt},#{dailyNex},#{tagline},#{badge},#{unlockPhase},#{purchaseGateJson},#{runId},0,'mock','SANDBOX',NOW(),NOW(),0)
             ON DUPLICATE KEY UPDATE
               product_no=VALUES(product_no),name=VALUES(name),tier=VALUES(tier),price_usdt=VALUES(price_usdt),
               stock=IF(version=0,VALUES(stock),stock),sold_count=IF(version=0,VALUES(sold_count),sold_count),
               device_type=VALUES(device_type),generation=VALUES(generation),gpu_model=VALUES(gpu_model),
               vram_total_gb=VALUES(vram_total_gb),hashrate=VALUES(hashrate),daily_usdt=VALUES(daily_usdt),daily_nex=VALUES(daily_nex),
-              tagline=VALUES(tagline),badge=VALUES(badge),unlock_phase=VALUES(unlock_phase),updated_at=NOW(),is_deleted=0
+              tagline=VALUES(tagline),badge=VALUES(badge),unlock_phase=VALUES(unlock_phase),
+              purchase_gate_json=IF(version=0,VALUES(purchase_gate_json),purchase_gate_json),updated_at=NOW(),is_deleted=0
             """)
     int upsertCatalog(CatalogSeed row);
 
@@ -89,7 +92,7 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    s.power_text AS power,s.features_json AS featuresJson,
                    s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
                                AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=1 AND p.price_usdt>0
@@ -107,10 +110,11 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    s.power_text AS power,s.features_json AS featuresJson,
                    s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
-                               AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=#{quantity} AND p.price_usdt>0
+                               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+                               AND p.stock>=#{quantity} AND c.stock>=#{quantity} AND p.price_usdt>0
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
              WHERE c.run_id=#{runId} AND c.is_deleted=0 AND (c.product_id=#{productId} OR (#{productId} IS NULL AND c.product_no=#{productNo}))
                AND c.source='mock' AND c.source_environment='SANDBOX' LIMIT 1 FOR UPDATE
@@ -126,7 +130,7 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    s.power_text AS power,s.features_json AS featuresJson,
                    s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,s.purchase_gate_json AS purchaseGateJson
+                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
              WHERE c.run_id=#{runId} AND c.product_id=#{productId} AND c.is_deleted=0
@@ -143,6 +147,22 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     int reserveSandboxCatalogStock(@Param("runId") String runId, @Param("productId") Long productId, @Param("expectedVersion") Long expectedVersion,
                                    @Param("quantity") Integer quantity);
 
+    /** Isolated quota counter; it never mutates nx_admin_device_sku or nx_product. */
+    @Update("""
+            UPDATE nx_commerce_sandbox_catalog
+               SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
+                   updated_at=NOW()
+             WHERE run_id=#{runId} AND product_id=#{productId} AND is_deleted=0
+               AND source='mock' AND source_environment='SANDBOX' AND JSON_VALID(purchase_gate_json)=1
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+                   <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
+            """)
+    int consumeSandboxPurchaseQuota(@Param("runId") String runId, @Param("productId") Long productId,
+                                    @Param("quantity") Integer quantity);
+
     @Update("""
             UPDATE nx_commerce_sandbox_catalog SET stock=stock+#{quantity},sold_count=GREATEST(0,sold_count-#{quantity}),
                    version=version+1,updated_at=NOW()
@@ -154,9 +174,9 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT IGNORE INTO nx_commerce_sandbox_order
-              (order_no,user_id,product_id,quantity,amount_usdt,canonical_revision,version,state,wallet_debited,stock_returned,
+              (order_no,user_id,product_id,quantity,order_type,item_count,amount_usdt,canonical_revision,version,state,wallet_debited,stock_returned,
                run_id,source,source_environment,created_at,updated_at,is_deleted)
-            VALUES (#{orderNo},#{userId},#{productId},#{quantity},#{amountUsdt},#{canonicalRevision},0,'PENDING_PAYMENT',0,0,
+            VALUES (#{orderNo},#{userId},#{productId},#{quantity},#{orderType},#{itemCount},#{amountUsdt},#{canonicalRevision},0,'PENDING_PAYMENT',0,0,
                     #{runId},'mock','SANDBOX',NOW(),NOW(),0)
             """)
     int insertSandboxOrder(OrderWrite row);
@@ -172,6 +192,7 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT order_no orderNo,user_id userId,product_id productId,quantity,amount_usdt amountUsdt,
+                   order_type orderType,item_count itemCount,
                    version,state,wallet_debited walletDebited,stock_returned stockReturned
               FROM nx_commerce_sandbox_order
              WHERE run_id=#{runId} AND order_no=#{orderNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
@@ -182,9 +203,10 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             SELECT order_no orderNo,product_id productId,product_no productNo,unit_price_usdt unitPriceUsdt,
                    reserved_quantity reservedQuantity,released_quantity releasedQuantity,version
               FROM nx_commerce_sandbox_inventory
-             WHERE run_id=#{runId} AND order_no=#{orderNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
+             WHERE run_id=#{runId} AND order_no=#{orderNo} AND is_deleted=0
+             ORDER BY product_id FOR UPDATE
             """)
-    InventoryRow lockInventoryForOrder(@Param("runId") String runId, @Param("orderNo") String orderNo);
+    List<InventoryRow> lockInventoriesForOrder(@Param("runId") String runId, @Param("orderNo") String orderNo);
 
     @Update("""
             UPDATE nx_commerce_sandbox_order
@@ -199,9 +221,10 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             UPDATE nx_commerce_sandbox_inventory
                SET released_quantity=reserved_quantity,version=version+1,updated_at=NOW()
              WHERE run_id=#{runId} AND order_no=#{orderNo} AND version=#{expectedVersion} AND released_quantity=0
-               AND reserved_quantity > 0 AND is_deleted=0
+               AND product_id=#{productId} AND reserved_quantity > 0 AND is_deleted=0
             """)
-    int releaseInventory(@Param("runId") String runId, @Param("orderNo") String orderNo, @Param("expectedVersion") Long expectedVersion);
+    int releaseInventory(@Param("runId") String runId, @Param("orderNo") String orderNo,
+                         @Param("productId") Long productId, @Param("expectedVersion") Long expectedVersion);
 
     @Insert("""
             INSERT INTO nx_commerce_sandbox_callback_inbox
@@ -228,8 +251,10 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT o.order_no orderNo,o.product_id productId,i.product_no productNo,o.quantity,i.unit_price_usdt unitPriceUsdt,
-                   o.amount_usdt amountUsdt,o.state,o.version,o.created_at createdAt,o.updated_at updatedAt
+                   o.amount_usdt amountUsdt,o.state,o.version,o.created_at createdAt,o.updated_at updatedAt,
+                   o.order_type orderType,o.item_count itemCount
               FROM nx_commerce_sandbox_order o JOIN nx_commerce_sandbox_inventory i ON i.order_no=o.order_no AND i.run_id=o.run_id AND i.is_deleted=0
+                   AND i.product_id=o.product_id
              WHERE o.run_id=#{runId} AND o.user_id=#{userId} AND o.is_deleted=0 AND o.source='mock' AND o.source_environment='SANDBOX'
              ORDER BY o.created_at DESC
             """)
@@ -237,20 +262,29 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT o.order_no orderNo,o.product_id productId,i.product_no productNo,o.quantity,i.unit_price_usdt unitPriceUsdt,
-                   o.amount_usdt amountUsdt,o.state,o.version,o.created_at createdAt,o.updated_at updatedAt
+                   o.amount_usdt amountUsdt,o.state,o.version,o.created_at createdAt,o.updated_at updatedAt,
+                   o.order_type orderType,o.item_count itemCount
               FROM nx_commerce_sandbox_order o JOIN nx_commerce_sandbox_inventory i ON i.order_no=o.order_no AND i.run_id=o.run_id AND i.is_deleted=0
+                   AND i.product_id=o.product_id
              WHERE o.run_id=#{runId} AND o.is_deleted=0 AND o.source='mock' AND o.source_environment='SANDBOX' ORDER BY o.created_at DESC LIMIT #{limit}
             """)
     List<SandboxOrderView> listAllSandboxOrders(@Param("runId") String runId, @Param("limit") int limit);
 
     record CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
                        String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
-                       BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase, String runId) {
+                       BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase,
+                       String purchaseGateJson, String runId) {
         public CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
                            String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                            BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase) {
             this(productId, productNo, name, tier, priceUsdt, stock, sold, deviceType, generation, gpuModel, vramTotalGb, hashrate,
-                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, "test-run-0001");
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, null, "test-run-0001");
+        }
+        public CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
+                           String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
+                           BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase, String runId) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, deviceType, generation, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, null, runId);
         }
     }
     record SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
@@ -270,9 +304,13 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
         }
     }
     record OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,
-                      Long canonicalRevision, String runId) {
+                      Long canonicalRevision, String runId, String orderType, Integer itemCount) {
         public OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt, Long canonicalRevision) {
-            this(orderNo, userId, productId, quantity, amountUsdt, canonicalRevision, "test-run-0001");
+            this(orderNo, userId, productId, quantity, amountUsdt, canonicalRevision, "test-run-0001", "SINGLE", 1);
+        }
+        public OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,
+                          Long canonicalRevision, String runId) {
+            this(orderNo, userId, productId, quantity, amountUsdt, canonicalRevision, runId, "SINGLE", 1);
         }
     }
     record InventoryWrite(String orderNo, Long productId, String productNo, BigDecimal unitPriceUsdt,
@@ -282,7 +320,14 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
         }
     }
     record SandboxOrder(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,
-                        Long version, String state, boolean walletDebited, boolean stockReturned) { }
+                        Long version, String state, boolean walletDebited, boolean stockReturned,
+                        String orderType, Integer itemCount) {
+        public SandboxOrder(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,
+                            Long version, String state, boolean walletDebited, boolean stockReturned) {
+            this(orderNo, userId, productId, quantity, amountUsdt, version, state, walletDebited, stockReturned,
+                    "SINGLE", 1);
+        }
+    }
     record InventoryRow(String orderNo, Long productId, String productNo, BigDecimal unitPriceUsdt,
                         Integer reservedQuantity, Integer releasedQuantity, Long version) { }
     record CallbackWrite(String eventId, String orderNo, String targetStatus, Long expectedVersion,
@@ -302,5 +347,12 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     record SandboxAuditWrite(String runId, String eventId, String orderNo, String actor, String reason,
                             String event, boolean replay, String canonicalStatus, Long resultVersion, BigDecimal walletAfter) { }
     record SandboxOrderView(String orderNo, Long productId, String productNo, Integer quantity, BigDecimal unitPriceUsdt,
-                            BigDecimal amountUsdt, String state, Long version, LocalDateTime createdAt, LocalDateTime updatedAt) { }
+                            BigDecimal amountUsdt, String state, Long version, LocalDateTime createdAt, LocalDateTime updatedAt,
+                            String orderType, Integer itemCount) {
+        public SandboxOrderView(String orderNo, Long productId, String productNo, Integer quantity, BigDecimal unitPriceUsdt,
+                                BigDecimal amountUsdt, String state, Long version, LocalDateTime createdAt, LocalDateTime updatedAt) {
+            this(orderNo, productId, productNo, quantity, unitPriceUsdt, amountUsdt, state, version, createdAt, updatedAt,
+                    "SINGLE", 1);
+        }
+    }
 }

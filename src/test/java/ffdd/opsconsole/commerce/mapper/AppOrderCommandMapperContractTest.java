@@ -21,4 +21,11 @@ class AppOrderCommandMapperContractTest {
                 .contains("UPPER(payment_status)='PENDING'");
         assertThat(stock).contains("2147483647-#{quantity}").contains("sold_count >= #{quantity}");
     }
+
+    @Test
+    void orderLockReadsTheHeaderItemCountUsedBySnapshotValidation() throws Exception {
+        String order = ((Select) AppOrderCommandMapper.class.getMethod("lockOrder", String.class)
+                .getAnnotation(Select.class)).value()[0];
+        assertThat(order).contains("item_count itemCount");
+    }
 }

@@ -21,6 +21,7 @@ import java.util.UUID;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -79,8 +80,26 @@ public class AppUserOAuthService {
             identity.setUserId(user.getId());
             identity.setSourceEnvironment(sourceEnvironment);
             identity.setDisplayName(displayName(provider, request.displayName()));
-            identityMapper.insertIdentity(identity);
-            created = true;
+            try {
+                identityMapper.insertIdentity(identity);
+                created = true;
+            } catch (DuplicateKeyException duplicate) {
+                // Another transaction won the provider/subject unique key. The
+                // loser has already created a provisional sandbox user/wallet;
+                // reload the winner with a row lock, then tombstone only the
+                // losing rows before issuing the winner's real session.
+                UserOAuthIdentityEntity winner = identityMapper.findForUpdate(
+                        provider, subject, sourceEnvironment);
+                if (winner == null) throw duplicate;
+                int walletDeleted = userMapper.softDeleteSandboxOAuthWallet(user.getId());
+                int userDeleted = userMapper.softDeleteSandboxOAuthUser(user.getId());
+                if (walletDeleted != 1 || userDeleted != 1) {
+                    throw new IllegalStateException("OAUTH_CONFLICT_CLEANUP_FAILED");
+                }
+                identity = winner;
+                user = userMapper.selectById(identity.getUserId());
+                if (!isSandboxActive(user)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+            }
         }
         ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress);
         if (session.getCode() != 0 || session.getData() == null) {

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
   tagline VARCHAR(255) NULL,
   badge VARCHAR(128) NULL,
   unlock_phase VARCHAR(32) NULL,
+  purchase_gate_json TEXT NULL,
   run_id VARCHAR(96) NOT NULL,
   version BIGINT NOT NULL DEFAULT 0,
   source VARCHAR(16) NOT NULL DEFAULT 'mock',
@@ -40,12 +41,19 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
   CONSTRAINT chk_commerce_sandbox_catalog_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+             AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='purchase_gate_json')=0,
+  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN purchase_gate_json TEXT NULL AFTER unlock_phase','SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_order (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   order_no VARCHAR(96) NOT NULL,
   user_id BIGINT NOT NULL,
   product_id BIGINT NOT NULL,
   quantity INT NOT NULL,
+  order_type VARCHAR(16) NOT NULL DEFAULT 'SINGLE',
+  item_count INT NOT NULL DEFAULT 1,
   amount_usdt DECIMAL(18,6) NOT NULL,
   canonical_revision BIGINT NOT NULL,
   version BIGINT NOT NULL DEFAULT 0,
@@ -80,7 +88,7 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_inventory (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_commerce_sandbox_inventory_run_order (run_id,order_no),
+  UNIQUE KEY uk_commerce_sandbox_inventory_run_order_product (run_id,order_no,product_id),
   CONSTRAINT chk_commerce_sandbox_inventory_quantity CHECK (reserved_quantity > 0 AND released_quantity IN (0,reserved_quantity)),
   CONSTRAINT chk_commerce_sandbox_inventory_price CHECK (unit_price_usdt > 0),
   CONSTRAINT chk_commerce_sandbox_inventory_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
@@ -148,15 +156,18 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 -- Forward v1 -> run-scoped facts. This block deliberately follows every CREATE.
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='run_id')=0,'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN run_id VARCHAR(96) NOT NULL DEFAULT '''' AFTER unlock_phase','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_order' AND COLUMN_NAME='run_id')=0,'ALTER TABLE nx_commerce_sandbox_order ADD COLUMN run_id VARCHAR(96) NOT NULL DEFAULT '''' AFTER stock_returned','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_order' AND COLUMN_NAME='order_type')=0,'ALTER TABLE nx_commerce_sandbox_order ADD COLUMN order_type VARCHAR(16) NOT NULL DEFAULT ''SINGLE'' AFTER quantity','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_order' AND COLUMN_NAME='item_count')=0,'ALTER TABLE nx_commerce_sandbox_order ADD COLUMN item_count INT NOT NULL DEFAULT 1 AFTER order_type','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_inventory' AND COLUMN_NAME='run_id')=0,'ALTER TABLE nx_commerce_sandbox_inventory ADD COLUMN run_id VARCHAR(96) NOT NULL DEFAULT '''' AFTER version','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_callback_inbox' AND COLUMN_NAME='run_id')=0,'ALTER TABLE nx_commerce_sandbox_callback_inbox ADD COLUMN run_id VARCHAR(96) NOT NULL DEFAULT '''' AFTER wallet_after','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND INDEX_NAME='uk_commerce_sandbox_catalog_product')>0,'ALTER TABLE nx_commerce_sandbox_catalog DROP INDEX uk_commerce_sandbox_catalog_product','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND INDEX_NAME='uk_commerce_sandbox_catalog_no')>0,'ALTER TABLE nx_commerce_sandbox_catalog DROP INDEX uk_commerce_sandbox_catalog_no','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_order' AND INDEX_NAME='uk_commerce_sandbox_order_no')>0,'ALTER TABLE nx_commerce_sandbox_order DROP INDEX uk_commerce_sandbox_order_no','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_inventory' AND INDEX_NAME='uk_commerce_sandbox_inventory_order')>0,'ALTER TABLE nx_commerce_sandbox_inventory DROP INDEX uk_commerce_sandbox_inventory_order','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_inventory' AND INDEX_NAME='uk_commerce_sandbox_inventory_run_order')>0,'ALTER TABLE nx_commerce_sandbox_inventory DROP INDEX uk_commerce_sandbox_inventory_run_order','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_callback_inbox' AND INDEX_NAME='uk_commerce_sandbox_callback_event')>0,'ALTER TABLE nx_commerce_sandbox_callback_inbox DROP INDEX uk_commerce_sandbox_callback_event','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND INDEX_NAME='uk_commerce_sandbox_catalog_run_product')=0,'ALTER TABLE nx_commerce_sandbox_catalog ADD UNIQUE KEY uk_commerce_sandbox_catalog_run_product (run_id,product_id)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND INDEX_NAME='uk_commerce_sandbox_catalog_run_no')=0,'ALTER TABLE nx_commerce_sandbox_catalog ADD UNIQUE KEY uk_commerce_sandbox_catalog_run_no (run_id,product_no)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_order' AND INDEX_NAME='uk_commerce_sandbox_order_run_no')=0,'ALTER TABLE nx_commerce_sandbox_order ADD UNIQUE KEY uk_commerce_sandbox_order_run_no (run_id,order_no)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_inventory' AND INDEX_NAME='uk_commerce_sandbox_inventory_run_order')=0,'ALTER TABLE nx_commerce_sandbox_inventory ADD UNIQUE KEY uk_commerce_sandbox_inventory_run_order (run_id,order_no)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_inventory' AND INDEX_NAME='uk_commerce_sandbox_inventory_run_order_product')=0,'ALTER TABLE nx_commerce_sandbox_inventory ADD UNIQUE KEY uk_commerce_sandbox_inventory_run_order_product (run_id,order_no,product_id)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql=IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_callback_inbox' AND INDEX_NAME='uk_commerce_sandbox_callback_run_event')=0,'ALTER TABLE nx_commerce_sandbox_callback_inbox ADD UNIQUE KEY uk_commerce_sandbox_callback_run_event (run_id,event_id)','SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

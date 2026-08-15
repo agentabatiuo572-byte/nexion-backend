@@ -9,6 +9,7 @@ import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.finance.mapper.FundsSandboxMapper;
 import ffdd.opsconsole.finance.mapper.FundsSandboxMapper.LedgerWrite;
 import ffdd.opsconsole.finance.mapper.FundsSandboxMapper.WalletRow;
+import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -18,7 +19,9 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -46,6 +49,7 @@ public class CommerceAcceptanceSandboxService {
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
     private final Clock clock;
     private final CommerceAcceptanceRun acceptanceRun;
+    private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
 
     @Transactional(rollbackFor = Exception.class)
     public CallbackResult applyCallback(String orderNo, String eventId, String event, Long expectedVersion) {
@@ -93,6 +97,20 @@ public class CommerceAcceptanceSandboxService {
                 sandbox.amountUsdt());
         LocalDateTime now = LocalDateTime.now(clock);
         BigDecimal walletAfter = null;
+        List<InventoryRow> lockedInventories = null;
+        if ("PAYMENT_SUCCEEDED".equals(normalizedEvent)) {
+            lockedInventories = inventories(mapper.lockInventoriesForOrder(runId, sandbox.orderNo()), sandbox);
+            for (InventoryRow inventory : lockedInventories) {
+                var catalog = mapper.lockSandboxCatalogProductForReturn(runId, inventory.productId());
+                if (catalog == null || catalog.version() == null || !inventory.productId().equals(catalog.productId())) {
+                    throw new BizException(503, "COMMERCE_SANDBOX_CATALOG_UNAVAILABLE");
+                }
+                if (purchaseGatePolicy.hasQuota(catalog.purchaseGateJson())
+                        && mapper.consumeSandboxPurchaseQuota(runId, inventory.productId(), inventory.reservedQuantity()) != 1) {
+                    throw new BizException(409, "COMMERCE_SANDBOX_PURCHASE_GATE_SOLD_OUT");
+                }
+            }
+        }
         if (transition.debit(sandbox.amountUsdt())) {
             fundsMapper.insertWalletIfAbsent(runId, sandbox.userId());
             WalletRow wallet = wallet(fundsMapper.lockWallet(runId, sandbox.userId()));
@@ -114,14 +132,18 @@ public class CommerceAcceptanceSandboxService {
             ledger(runId, sandbox, "COMMERCE_REFUND_CREDIT", "IN", walletAfter, wallet.reservedUsdt(), now);
         }
         if (transition.returnStock()) {
-            InventoryRow inventory = inventory(mapper.lockInventoryForOrder(runId, sandbox.orderNo()), sandbox);
-            if (mapper.releaseInventory(runId, sandbox.orderNo(), inventory.version()) != 1) {
-                throw new BizException(409, "COMMERCE_SANDBOX_INVENTORY_VERSION_CONFLICT");
-            }
-            var catalog = mapper.lockSandboxCatalogProductForReturn(runId, sandbox.productId());
-            if (catalog == null || catalog.version() == null
-                    || mapper.returnSandboxCatalogStock(runId, sandbox.productId(), catalog.version(), sandbox.quantity()) != 1) {
-                throw new BizException(409, "COMMERCE_SANDBOX_CATALOG_VERSION_CONFLICT");
+            List<InventoryRow> inventories = lockedInventories == null
+                    ? inventories(mapper.lockInventoriesForOrder(runId, sandbox.orderNo()), sandbox)
+                    : lockedInventories;
+            for (InventoryRow inventory : inventories) {
+                if (mapper.releaseInventory(runId, sandbox.orderNo(), inventory.productId(), inventory.version()) != 1) {
+                    throw new BizException(409, "COMMERCE_SANDBOX_INVENTORY_VERSION_CONFLICT");
+                }
+                var catalog = mapper.lockSandboxCatalogProductForReturn(runId, inventory.productId());
+                if (catalog == null || catalog.version() == null
+                        || mapper.returnSandboxCatalogStock(runId, inventory.productId(), catalog.version(), inventory.reservedQuantity()) != 1) {
+                    throw new BizException(409, "COMMERCE_SANDBOX_CATALOG_VERSION_CONFLICT");
+                }
             }
         }
         boolean nextWalletDebited = transition.walletDebited() && sandbox.amountUsdt().signum() > 0;
@@ -221,15 +243,45 @@ public class CommerceAcceptanceSandboxService {
         return wallet;
     }
 
-    private InventoryRow inventory(InventoryRow inventory, SandboxOrder order) {
-        if (inventory == null || inventory.version() == null || inventory.productId() == null
-                || !inventory.productId().equals(order.productId()) || inventory.reservedQuantity() == null
-                || inventory.reservedQuantity() != order.quantity() || inventory.releasedQuantity() == null
-                || inventory.releasedQuantity() != 0 || inventory.unitPriceUsdt() == null
-                || inventory.unitPriceUsdt().signum() <= 0) {
+    private List<InventoryRow> inventories(List<InventoryRow> inventories, SandboxOrder order) {
+        int expectedItems = order.itemCount() == null ? 1 : order.itemCount();
+        String orderType = StringUtils.hasText(order.orderType()) ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
+        if (!("SINGLE".equals(orderType) || "BUNDLE".equals(orderType))
+                || inventories == null || expectedItems < 1 || inventories.size() != expectedItems
+                || "BUNDLE".equals(orderType) && (expectedItems < 2 || !Integer.valueOf(1).equals(order.quantity()))) {
             throw new BizException(503, "COMMERCE_SANDBOX_INVENTORY_UNAVAILABLE");
         }
-        return inventory;
+        Set<Long> productIds = new HashSet<>();
+        BigDecimal subtotal = BigDecimal.ZERO;
+        for (InventoryRow inventory : inventories) {
+            if (inventory == null || inventory.version() == null || inventory.productId() == null
+                    || !productIds.add(inventory.productId()) || inventory.reservedQuantity() == null
+                    || inventory.reservedQuantity() < 1 || inventory.releasedQuantity() == null
+                    || inventory.releasedQuantity() != 0 || inventory.unitPriceUsdt() == null
+                    || inventory.unitPriceUsdt().signum() <= 0
+                    || "BUNDLE".equals(orderType) && inventory.reservedQuantity() != 1) {
+                throw new BizException(503, "COMMERCE_SANDBOX_INVENTORY_UNAVAILABLE");
+            }
+            subtotal = subtotal.add(inventory.unitPriceUsdt().multiply(BigDecimal.valueOf(inventory.reservedQuantity())));
+        }
+        if (!productIds.contains(order.productId()) || expectedItems == 1
+                && !inventories.get(0).reservedQuantity().equals(order.quantity())) {
+            throw new BizException(503, "COMMERCE_SANDBOX_INVENTORY_UNAVAILABLE");
+        }
+        if ("BUNDLE".equals(orderType)) {
+            BigDecimal discount = subtotal.multiply(discountRate(expectedItems)).setScale(6, RoundingMode.DOWN);
+            BigDecimal expectedAmount = subtotal.subtract(discount).setScale(6, RoundingMode.DOWN);
+            if (money(order.amountUsdt()).compareTo(expectedAmount) != 0) {
+                throw new BizException(503, "COMMERCE_SANDBOX_INVENTORY_UNAVAILABLE");
+            }
+        }
+        return inventories;
+    }
+
+    private BigDecimal discountRate(int itemCount) {
+        if (itemCount >= 4) return new BigDecimal("0.12");
+        if (itemCount == 3) return new BigDecimal("0.08");
+        return new BigDecimal("0.05");
     }
 
     private void requireEnabled() {

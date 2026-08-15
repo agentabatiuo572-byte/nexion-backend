@@ -42,7 +42,8 @@ public class StorefrontPurchaseGatePolicy {
                     || !("month".equals(gate.path("quotaPeriod").asText()) || "lifetime".equals(gate.path("quotaPeriod").asText())))) {
                 return Decision.closed("PURCHASE_GATE_INVALID");
             }
-            if (gate.path("enforce").asBoolean() && cap != null && sold != null && sold >= cap) {
+            if (!gate.path("enforce").asBoolean()) return Decision.open();
+            if (cap != null && sold != null && sold >= cap) {
                 return Decision.closed("PURCHASE_GATE_SOLD_OUT");
             }
             boolean hasCondition = rank != null || direct != null || volume != null;
@@ -64,6 +65,19 @@ public class StorefrontPurchaseGatePolicy {
             return Decision.open();
         } catch (Exception ex) {
             return Decision.closed("PURCHASE_GATE_INVALID");
+        }
+    }
+
+    /** True only for a structurally valid, mutable quota pair. */
+    public boolean hasQuota(String raw) {
+        if (raw == null || raw.isBlank()) return false;
+        try {
+            JsonNode gate = objectMapper.readTree(raw);
+            return gate != null && gate.isObject()
+                    && gate.path("enforce").isBoolean() && gate.path("enforce").asBoolean()
+                    && integer(gate, "quotaCap") != null && integer(gate, "quotaSold") != null;
+        } catch (Exception ex) {
+            return false;
         }
     }
 

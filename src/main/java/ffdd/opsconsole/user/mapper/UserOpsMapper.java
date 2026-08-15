@@ -1493,6 +1493,24 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     int ensureRegisteredUserWallet(@Param("userId") Long userId, @Param("sandbox") int sandbox);
 
+    /**
+     * A losing concurrent OAuth creator must not leave a sandbox account or
+     * wallet behind after the identity unique key is won by another request.
+     */
+    @Update("""
+            UPDATE nx_user_wallet
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE user_id = #{userId} AND sandbox = 1 AND is_deleted = 0
+            """)
+    int softDeleteSandboxOAuthWallet(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user
+               SET is_deleted = 1, updated_at = NOW()
+             WHERE id = #{userId} AND sandbox = 1 AND is_deleted = 0
+            """)
+    int softDeleteSandboxOAuthUser(@Param("userId") Long userId);
+
     @Update("""
             <script>
             UPDATE nx_user_wallet

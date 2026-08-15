@@ -15,6 +15,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT order_no orderNo,user_id userId,product_id productId,quantity,order_type orderType,
+                   item_count itemCount,
                    payment_status paymentStatus,order_status orderStatus,activation_status activationStatus
               FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
@@ -44,8 +45,13 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             """)
     int cancelOrder(@Param("orderNo") String orderNo, @Param("userId") Long userId);
 
-    record OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType,
-                    String paymentStatus, String orderStatus, String activationStatus) { }
+    record OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType, Integer itemCount,
+                    String paymentStatus, String orderStatus, String activationStatus) {
+        public OrderRow(String orderNo, Long userId, Long productId, Integer quantity, String orderType,
+                        String paymentStatus, String orderStatus, String activationStatus) {
+            this(orderNo, userId, productId, quantity, orderType, null, paymentStatus, orderStatus, activationStatus);
+        }
+    }
     record ItemRow(String orderNo, Long productId, String productNo, Integer quantity) { }
     record ProductRow(Long id, Integer stock, Integer soldCount) { }
 }

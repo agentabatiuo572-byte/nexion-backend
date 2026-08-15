@@ -19,10 +19,17 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 class AppUserOAuthServiceTest {
@@ -116,6 +123,121 @@ class AppUserOAuthServiceTest {
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
         verify(identityMapper, never()).insertIdentity(any());
+    }
+
+    @Test
+    void duplicateIdentityInsertReloadsTheWinnerAndCleansTheLosersSandboxRows() {
+        var winnerIdentity = new ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity();
+        winnerIdentity.setUserId(302L);
+        winnerIdentity.setProvider("GOOGLE");
+        winnerIdentity.setExternalSubject("race-subject");
+        winnerIdentity.setSourceEnvironment("SANDBOX");
+        when(identityMapper.findForUpdate("GOOGLE", "race-subject", "SANDBOX"))
+                .thenReturn(null, winnerIdentity);
+        doAnswer(invocation -> {
+            UserEntity loser = invocation.getArgument(0);
+            loser.setId(303L);
+            return 1;
+        }).when(userMapper).insert(any(UserEntity.class));
+        doAnswer(invocation -> { throw new DuplicateKeyException("uk_oauth_identity"); })
+                .when(identityMapper).insertIdentity(any());
+        when(userMapper.softDeleteSandboxOAuthWallet(303L)).thenReturn(1);
+        when(userMapper.softDeleteSandboxOAuthUser(303L)).thenReturn(1);
+        UserEntity winner = new UserEntity();
+        winner.setId(302L);
+        winner.setSandbox(1);
+        winner.setIsDeleted(0);
+        winner.setStatus("ACTIVE");
+        winner.setCountryCode("+1");
+        winner.setPhone("900222222222");
+        winner.setNickname("Winner");
+        when(userMapper.selectById(302L)).thenReturn(winner);
+        when(authService.issueRegisteredSession(winner, "127.0.0.1"))
+                .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
+                        "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
+                                302L, "+1", "900222222222", "Winner"), "refresh")));
+
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
+                new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", "race-subject", "Race"),
+                "127.0.0.1");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().user().userId()).isEqualTo(302L);
+        verify(userMapper).softDeleteSandboxOAuthUser(303L);
+        verify(userMapper).softDeleteSandboxOAuthWallet(303L);
+        verify(authService).issueRegisteredSession(winner, "127.0.0.1");
+    }
+
+    @Test
+    void concurrentFirstLoginsConvergeOnOneIdentityAndOnlyTheLoserIsTombstoned() throws Exception {
+        var initialLookups = new CountDownLatch(2);
+        var lookupCount = new AtomicInteger();
+        var identityCreated = new AtomicBoolean();
+        var userSequence = new AtomicLong(400L);
+        var winnerIdentity = new ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity();
+        winnerIdentity.setProvider("APPLE");
+        winnerIdentity.setExternalSubject("parallel-subject");
+        winnerIdentity.setSourceEnvironment("SANDBOX");
+        UserEntity winner = new UserEntity();
+        winner.setSandbox(1);
+        winner.setIsDeleted(0);
+        winner.setStatus("ACTIVE");
+        winner.setCountryCode("+1");
+        winner.setPhone("900333333333");
+        winner.setNickname("Parallel Winner");
+
+        when(identityMapper.findForUpdate("APPLE", "parallel-subject", "SANDBOX"))
+                .thenAnswer(invocation -> {
+                    if (lookupCount.incrementAndGet() <= 2) {
+                        initialLookups.countDown();
+                        assertThat(initialLookups.await(5, TimeUnit.SECONDS)).isTrue();
+                        return null;
+                    }
+                    return identityCreated.get() ? winnerIdentity : null;
+                });
+        doAnswer(invocation -> {
+            UserEntity candidate = invocation.getArgument(0);
+            candidate.setId(userSequence.incrementAndGet());
+            if (winnerIdentity.getUserId() == null) {
+                winnerIdentity.setUserId(candidate.getId());
+                winner.setId(candidate.getId());
+            }
+            return 1;
+        }).when(userMapper).insert(any(UserEntity.class));
+        doAnswer(invocation -> {
+            if (identityCreated.compareAndSet(false, true)) return 1;
+            throw new DuplicateKeyException("uk_oauth_identity");
+        }).when(identityMapper).insertIdentity(any());
+        when(userMapper.softDeleteSandboxOAuthWallet(anyLong())).thenReturn(1);
+        when(userMapper.softDeleteSandboxOAuthUser(anyLong())).thenReturn(1);
+        when(userMapper.selectById(anyLong())).thenReturn(winner);
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+                .thenAnswer(invocation -> {
+                    UserEntity user = invocation.getArgument(0);
+                    return ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
+                            "access-" + user.getId(), "Bearer",
+                            new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
+                                    user.getId(), "+1", user.getPhone(), user.getNickname()), "refresh"));
+                });
+
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> service.exchange(
+                    new UserOAuthExchangeRequest("APPLE", "SANDBOX_MOCK", "parallel-subject", "Parallel"),
+                    "127.0.0.1"));
+            var second = executor.submit(() -> service.exchange(
+                    new UserOAuthExchangeRequest("APPLE", "SANDBOX_MOCK", "parallel-subject", "Parallel"),
+                    "127.0.0.1"));
+            assertThat(first.get(5, TimeUnit.SECONDS).getCode()).isZero();
+            assertThat(second.get(5, TimeUnit.SECONDS).getCode()).isZero();
+        } finally {
+            executor.shutdownNow();
+        }
+        // Two insert attempts are expected, but the mapper's unique key allows
+        // only the first one to persist; the second is the conflict path.
+        verify(identityMapper, org.mockito.Mockito.times(2)).insertIdentity(any());
+        verify(userMapper, org.mockito.Mockito.times(1)).softDeleteSandboxOAuthUser(anyLong());
+        verify(userMapper, org.mockito.Mockito.times(1)).softDeleteSandboxOAuthWallet(anyLong());
     }
 
     @Test

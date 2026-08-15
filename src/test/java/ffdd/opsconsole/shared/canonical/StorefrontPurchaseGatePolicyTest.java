@@ -25,4 +25,14 @@ class StorefrontPurchaseGatePolicyTest {
                 new StorefrontPurchaseGatePolicy.Facts(0, 0, BigDecimal.ZERO)).code())
                 .isEqualTo("PURCHASE_GATE_SOLD_OUT");
     }
+
+    @Test
+    void displayOnlyGateNeverBlocksOrConsumesQuotaAfterStructuralValidation() {
+        String gate = "{\"rankMin\":12,\"quotaCap\":1,\"quotaSold\":1,\"mode\":\"all\",\"enforce\":false}";
+        assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(0, 0, BigDecimal.ZERO)))
+                .isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+        assertThat(policy.hasQuota(gate)).isFalse();
+        assertThat(policy.evaluate("{\"mode\":\"all\",\"enforce\":false,\"unknown\":1}", null).code())
+                .isEqualTo("PURCHASE_GATE_INVALID");
+    }
 }

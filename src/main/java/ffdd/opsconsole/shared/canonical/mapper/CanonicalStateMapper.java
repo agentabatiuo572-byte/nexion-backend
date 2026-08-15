@@ -42,7 +42,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             """)
     String currentPhase();
 
-    @Select("SELECT id,sandbox FROM nx_user WHERE id = #{userId} AND is_deleted = 0 FOR UPDATE")
+    @Select("SELECT id,sandbox FROM nx_user WHERE id = #{userId} AND status='ACTIVE' AND is_deleted = 0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 
     record UserLock(Long id, boolean sandbox) { }

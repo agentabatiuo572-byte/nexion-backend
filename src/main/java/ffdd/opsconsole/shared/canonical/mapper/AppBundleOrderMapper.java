@@ -17,6 +17,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Select("""
             <script>
             SELECT p.id,p.product_no productNo,p.name,p.price_usdt priceUsdt,p.stock,
+                   p.unlock_phase unlockPhase,
                    (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
                      WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson
               FROM nx_product p
@@ -107,9 +108,14 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
                          @Param("sortOrder") Integer sortOrder);
 
     record UserLock(Long id, boolean sandbox) { }
-    record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock, String purchaseGateJson) {
+    record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
+                      String purchaseGateJson, String unlockPhase) {
         public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock) {
-            this(id, productNo, name, priceUsdt, stock, null);
+            this(id, productNo, name, priceUsdt, stock, null, null);
+        }
+        public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
+                          String purchaseGateJson) {
+            this(id, productNo, name, priceUsdt, stock, purchaseGateJson, null);
         }
     }
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }

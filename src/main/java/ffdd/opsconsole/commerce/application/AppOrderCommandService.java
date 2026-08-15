@@ -24,6 +24,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppOrderCommandService {
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private final AppOrderCommandMapper mapper;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
@@ -56,15 +57,12 @@ public class AppOrderCommandService {
         }
         List<AppOrderCommandMapper.ItemRow> items = mapper.lockItems(orderNo);
         List<AppOrderCommandMapper.ItemRow> effective = items == null ? List.of() : items;
-        if (effective.isEmpty()) {
-            if (!"SINGLE".equalsIgnoreCase(order.orderType()) || order.productId() == null || order.quantity() == null || order.quantity() < 1) {
-                throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
-            }
-            effective = List.of(new AppOrderCommandMapper.ItemRow(orderNo, order.productId(), null, order.quantity()));
-        }
-        int quantity = effective.stream().mapToInt(item -> item.quantity() == null ? 0 : item.quantity()).sum();
-        if (quantity != order.quantity() || order.productId() == null || !order.productId().equals(effective.get(0).productId())
-                || effective.stream().anyMatch(item -> item.productId() == null || item.quantity() == null || item.quantity() < 1)) {
+        String orderType = StringUtils.hasText(order.orderType()) ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
+        if ("BUNDLE".equals(orderType)) {
+            validateBundleSnapshot(order, effective);
+        } else if ("SINGLE".equals(orderType)) {
+            effective = validateSingleSnapshot(orderNo, order, effective);
+        } else {
             throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
         }
         for (AppOrderCommandMapper.ItemRow item : effective) {
@@ -89,13 +87,61 @@ public class AppOrderCommandService {
             return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
         }
         String runId = acceptanceRun.requireRunId();
+        String normalizedKey = key.trim();
+        if (normalizedKey.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            return ApiResult.fail(422, "IDEMPOTENCY_KEY_INVALID");
+        }
         var order = sandboxMapper.lockSandboxOrder(runId, orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
         if ("CANCELLED".equalsIgnoreCase(order.state())) return ApiResult.ok(Map.of("orderNo", orderNo, "orderStatus", "CANCELLED", "paymentStatus", "CANCELLED", "sourceEnvironment", "SANDBOX", "idempotent", true));
         if (!"PENDING_PAYMENT".equalsIgnoreCase(order.state())) return ApiResult.fail(409, "ORDER_NOT_CANCELLABLE");
-        String eventId = "USER-CANCEL-" + sha256(String.valueOf(key)).substring(0, 32).toUpperCase(Locale.ROOT);
+        // The callback inbox is the durable replay authority. Scope the event to
+        // the complete request identity so a key cannot collide across orders,
+        // users, or acceptance runs; the callback service serializes contenders
+        // on the sandbox order/version and replays the frozen first result.
+        String eventId = "USER-CANCEL-" + sha256(runId + "|" + userId + "|" + orderNo + "|" + normalizedKey)
+                .substring(0, 32).toUpperCase(Locale.ROOT);
         var result = sandboxService.applyCallback(orderNo, eventId, "USER_CANCELLED", order.version(), "user order cancellation", String.valueOf(userId));
         return ApiResult.ok(Map.of("orderNo", result.orderNo(), "orderStatus", "CANCELLED", "paymentStatus", "CANCELLED", "sourceEnvironment", "SANDBOX", "idempotent", false));
+    }
+
+    private List<AppOrderCommandMapper.ItemRow> validateSingleSnapshot(
+            String orderNo, AppOrderCommandMapper.OrderRow order, List<AppOrderCommandMapper.ItemRow> items) {
+        if (order.productId() == null || order.quantity() == null || order.quantity() < 1
+                || order.itemCount() != null && !order.itemCount().equals(order.quantity())) {
+            throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+        }
+        if (items.isEmpty()) {
+            return List.of(new AppOrderCommandMapper.ItemRow(orderNo, order.productId(), null, order.quantity()));
+        }
+        if (items.size() != 1) throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+        AppOrderCommandMapper.ItemRow item = items.get(0);
+        if (item.productId() == null || !order.productId().equals(item.productId())
+                || item.quantity() == null || !order.quantity().equals(item.quantity())) {
+            throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+        }
+        return items;
+    }
+
+    private void validateBundleSnapshot(AppOrderCommandMapper.OrderRow order,
+                                        List<AppOrderCommandMapper.ItemRow> items) {
+        if (order.itemCount() == null || order.itemCount() < 2 || order.quantity() == null
+                || order.quantity() != order.itemCount() || items.size() != order.itemCount()
+                || order.productId() == null || items.isEmpty()) {
+            throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+        }
+        java.util.Set<Long> productIds = new java.util.HashSet<>();
+        int quantity = 0;
+        for (int index = 0; index < items.size(); index++) {
+            AppOrderCommandMapper.ItemRow item = items.get(index);
+            if (item.productId() == null || item.quantity() == null || item.quantity() != 1
+                    || !StringUtils.hasText(item.productNo()) || !productIds.add(item.productId())
+                    || index == 0 && !order.productId().equals(item.productId())) {
+                throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+            }
+            quantity += item.quantity();
+        }
+        if (quantity != order.quantity()) throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

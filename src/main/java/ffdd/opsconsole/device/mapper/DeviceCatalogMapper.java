@@ -32,8 +32,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     /**
      * Commerce identity, price, stock, sale state and earnings come only from
-     * nx_product.  nx_admin_device_sku is retained as a compatibility extension
-     * for E1-only presentation fields that are not purchase truth.
+     * nx_product. nx_admin_device_sku retains E1 extensions, including the
+     * server-enforced purchase gate that must round-trip through ordinary edits.
      */
     String SKU_COLUMNS = """
             p.product_no AS skuId,
@@ -67,7 +67,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             p.superseded_by_product_no AS supersededBy,
             s.tradein_discount AS tradeinDiscount,
             p.unlock_phase AS unlockPhase,
-            NULL AS purchaseGateJson,
+            s.purchase_gate_json AS purchaseGateJson,
             s.image_asset_id AS imageAssetId,
             s.image_object_key AS imageObjectKey,
             COALESCE(NULLIF(s.image_preview_url,''),p.cover_url) AS imagePreviewUrl,
