@@ -15,9 +15,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -28,6 +31,9 @@ public class GrowthPublicStatsService {
     public static final String VALUES_KEY = "growth.public_stats.values";
     public static final String VERSION_KEY = "growth.public_stats.version";
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
+    private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("test", "acceptance", "local-sandbox");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("production", "default");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
 
     private final PlatformConfigFacade config;
@@ -35,11 +41,23 @@ public class GrowthPublicStatsService {
     private final AuditLogService audit;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final Environment environment;
+
+    private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
 
     public ApiResult<Map<String, Object>> overview() {
-        Optional<Long> version = readVersion(false);
-        Optional<Map<String, Object>> values = readValues();
-        Optional<BigDecimal> dailyUsd = decimalConfig(DAILY_USD_KEY);
+        String runtimeError = runtimeError();
+        if (runtimeError != null) {
+            return ApiResult.fail(503, runtimeError);
+        }
+        return overview(runtimeScope());
+    }
+
+    private ApiResult<Map<String, Object>> overview(RuntimeScope scope) {
+        Optional<Long> version = readVersion(scope, false);
+        Optional<Map<String, Object>> values = readValues(scope);
+        Optional<BigDecimal> dailyUsd = scope.sandbox()
+                ? Optional.of(SANDBOX_DAILY_USD) : decimalConfig(DAILY_USD_KEY);
         if (version.isEmpty() || values.isEmpty() || dailyUsd.isEmpty()) {
             return ApiResult.fail(503, "H9_CONFIG_UNAVAILABLE");
         }
@@ -47,21 +65,65 @@ public class GrowthPublicStatsService {
         if (validationError != null) {
             return ApiResult.fail(503, "H9_CONFIG_INVALID");
         }
-        return ApiResult.ok(response(version.get(), values.get(), dailyUsd.get()));
+        long realUserCount = scope.sandbox() ? 0L : users.countUsers();
+        return ApiResult.ok(response(version.get(), values.get(), dailyUsd.get(), realUserCount));
     }
 
     /** Safe public projection. A missing/invalid aggregate remains unavailable rather than falling back. */
     public ApiResult<Map<String, Object>> publicProjection() {
-        ApiResult<Map<String, Object>> result = overview();
+        String runtimeError = runtimeError();
+        if (runtimeError != null) {
+            return ApiResult.fail(503, runtimeError);
+        }
+        RuntimeScope scope = runtimeScope();
+        ApiResult<Map<String, Object>> result = overview(scope);
         if (result.getCode() != 0) {
             return result;
         }
         Map<String, Object> projection = new LinkedHashMap<>();
+        projection.put("serverCanonical", true);
+        projection.put("source", scope.sandbox() ? "mock" : "server:nx_config_item,nx_user");
+        projection.put("sourceEnvironment", scope.sandbox() ? "SANDBOX" : "PRODUCTION");
+        projection.put("runId", scope.runId());
         projection.put("version", result.getData().get("version"));
         projection.put("values", result.getData().get("values"));
         projection.put("realUserCount", result.getData().get("realUserCount"));
         projection.put("effectiveAt", result.getData().get("effectiveAt"));
         return ApiResult.ok(projection);
+    }
+
+    private String runtimeError() {
+        String[] profiles = environment.getActiveProfiles();
+        boolean sandbox = isStrictProfile(profiles, SANDBOX_PROFILES, false);
+        boolean production = isStrictProfile(profiles, PRODUCTION_PROFILES, true);
+        if (!sandbox && !production) {
+            return "H9_PROFILE_INVALID";
+        }
+        if (sandbox && !acceptanceRunId().matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}")) {
+            return "H9_SANDBOX_RUN_ID_REQUIRED";
+        }
+        return null;
+    }
+
+    private RuntimeScope runtimeScope() {
+        boolean sandbox = isStrictProfile(environment.getActiveProfiles(), SANDBOX_PROFILES, false);
+        String runId = sandbox ? acceptanceRunId() : "";
+        return sandbox
+                ? new RuntimeScope(true, runId, "h9.sb." + runId + ".v", "h9.sb." + runId + ".data")
+                : new RuntimeScope(false, "", VERSION_KEY, VALUES_KEY);
+    }
+
+    private String acceptanceRunId() {
+        return environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+    }
+
+    private static boolean isStrictProfile(String[] activeProfiles, Set<String> allowed, boolean allowEmpty) {
+        if (activeProfiles == null || activeProfiles.length == 0) {
+            return allowEmpty;
+        }
+        return activeProfiles.length == 1
+                && activeProfiles[0] != null
+                && allowed.contains(activeProfiles[0].trim().toLowerCase(Locale.ROOT));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -70,15 +132,21 @@ public class GrowthPublicStatsService {
         if (requestError != null) {
             return ApiResult.fail(422, requestError);
         }
-        Optional<Long> lockedVersion = readVersion(true);
+        String runtimeError = runtimeError();
+        if (runtimeError != null) {
+            return ApiResult.fail(503, runtimeError);
+        }
+        RuntimeScope scope = runtimeScope();
+        Optional<Long> lockedVersion = readVersion(scope, true);
         if (lockedVersion.isEmpty()) {
             return ApiResult.fail(503, "H9_CONFIG_UNAVAILABLE");
         }
         if (!lockedVersion.get().equals(request.expectedVersion())) {
             return ApiResult.fail(409, "H9_CONFIG_VERSION_CONFLICT");
         }
-        Optional<Map<String, Object>> beforeOptional = readValues();
-        Optional<BigDecimal> dailyUsd = decimalConfig(DAILY_USD_KEY);
+        Optional<Map<String, Object>> beforeOptional = readValues(scope);
+        Optional<BigDecimal> dailyUsd = scope.sandbox()
+                ? Optional.of(SANDBOX_DAILY_USD) : decimalConfig(DAILY_USD_KEY);
         if (beforeOptional.isEmpty() || dailyUsd.isEmpty() || validateStored(beforeOptional.get()) != null) {
             return ApiResult.fail(503, "H9_CONFIG_UNAVAILABLE");
         }
@@ -91,17 +159,17 @@ public class GrowthPublicStatsService {
         Map<String, Object> nextValues = requestValues(request, anchor, now);
         long nextVersion = lockedVersion.get() + 1L;
         try {
-            config.upsertAdminValue(VALUES_KEY, objectMapper.writeValueAsString(nextValues), "JSON", "growth",
-                    "H9 public stats aggregate");
+            config.upsertAdminValue(scope.valuesKey(), objectMapper.writeValueAsString(nextValues), "JSON",
+                    scope.sandbox() ? "growth_sandbox" : "growth", "H9 public stats aggregate");
         } catch (Exception ex) {
             throw new IllegalStateException("H9_CONFIG_SERIALIZATION_FAILED", ex);
         }
-        config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER", "growth",
-                "H9 public stats aggregate version");
+        config.upsertAdminValue(scope.versionKey(), String.valueOf(nextVersion), "NUMBER",
+                scope.sandbox() ? "growth_sandbox" : "growth", "H9 public stats aggregate version");
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("GROWTH_H9_PUBLIC_STATS_UPDATED")
                 .resourceType("GROWTH_PUBLIC_STATS")
-                .resourceId("H9")
+                .resourceId(scope.sandbox() ? "H9:" + scope.runId() : "H9")
                 .actorUsername(AdminActorResolver.resolve(request.operator()))
                 .riskLevel("HIGH")
                 .detail(Map.of(
@@ -109,19 +177,22 @@ public class GrowthPublicStatsService {
                         "after", nextValues,
                         "expectedVersion", request.expectedVersion(),
                         "newVersion", nextVersion,
+                        "sourceEnvironment", scope.sandbox() ? "SANDBOX" : "PRODUCTION",
+                        "runId", scope.runId(),
                         "reason", request.reason().trim(),
                         "idempotencyKey", idempotencyKey.trim()))
                 .build());
-        return ApiResult.ok(response(nextVersion, nextValues, dailyUsd.get()));
+        return ApiResult.ok(response(nextVersion, nextValues, dailyUsd.get(), scope.sandbox() ? 0L : users.countUsers()));
     }
 
-    private Map<String, Object> response(long version, Map<String, Object> values, BigDecimal dailyUsd) {
+    private Map<String, Object> response(
+            long version, Map<String, Object> values, BigDecimal dailyUsd, long realUserCount) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("version", version);
         data.put("values", values);
         data.put("defaults", defaultValues(longValue(values.get("registeredUsersAnchorAt"))));
         data.put("publishedDailyUsdPerDevice", dailyUsd);
-        data.put("realUserCount", users.countUsers());
+        data.put("realUserCount", realUserCount);
         data.put("effectiveAt", Instant.ofEpochMilli(longValue(values.get("effectiveAt"))).toString());
         return data;
     }
@@ -237,18 +308,19 @@ public class GrowthPublicStatsService {
         return true;
     }
 
-    private Optional<Long> readVersion(boolean lock) {
+    private Optional<Long> readVersion(RuntimeScope scope, boolean lock) {
         try {
-            Optional<String> raw = lock ? config.activeValueForUpdate(VERSION_KEY) : config.activeValue(VERSION_KEY);
+            Optional<String> raw = lock
+                    ? config.activeValueForUpdate(scope.versionKey()) : config.activeValue(scope.versionKey());
             return raw.map(Long::parseLong).filter(value -> value >= 0);
         } catch (RuntimeException ex) {
             return Optional.empty();
         }
     }
 
-    private Optional<Map<String, Object>> readValues() {
+    private Optional<Map<String, Object>> readValues(RuntimeScope scope) {
         try {
-            return config.activeValue(VALUES_KEY).map(value -> {
+            return config.activeValue(scope.valuesKey()).map(value -> {
                 try {
                     return objectMapper.readValue(value, MAP_TYPE);
                 } catch (Exception ex) {

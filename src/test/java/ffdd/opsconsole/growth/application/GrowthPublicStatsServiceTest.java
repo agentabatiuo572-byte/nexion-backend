@@ -2,7 +2,9 @@ package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,17 +23,20 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class GrowthPublicStatsServiceTest {
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-07T10:15:30Z"), ZoneOffset.UTC);
+    private final MockEnvironment environment = new MockEnvironment();
     private final GrowthPublicStatsService service = new GrowthPublicStatsService(
-            config, users, audit, new ObjectMapper(), clock);
+            config, users, audit, new ObjectMapper(), clock, environment);
 
     @BeforeEach
     void setUp() {
+        clearInvocations(config, users, audit);
         when(config.activeValue("growth.public_stats.version")).thenReturn(Optional.of("3"));
         when(config.activeValue("growth.public_stats.values")).thenReturn(Optional.of("""
                 {"fleetDevices":12000,"onlineRatePct":80,"onlineJitter":20,
@@ -57,6 +62,120 @@ class GrowthPublicStatsServiceTest {
                 .containsEntry("fleetDevices", 12000);
         assertThat((Map<String, Object>) result.getData().get("defaults"))
                 .containsEntry("registeredUsersAnchorAt", 1786097730000L);
+    }
+
+    @Test
+    void publicProjectionCarriesExactProductionProvenance() {
+        ApiResult<Map<String, Object>> result = service.publicProjection();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "server:nx_config_item,nx_user")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+    }
+
+    @Test
+    void sandboxProjectionIsBoundToTheAcceptanceRun() {
+        stubSandbox("home-public-stats-20260819", 12000);
+        MockEnvironment sandbox = new MockEnvironment()
+                .withProperty("NEXION_ACCEPTANCE_RUN_ID", "home-public-stats-20260819");
+        sandbox.setActiveProfiles("acceptance");
+        GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
+                config, users, audit, new ObjectMapper(), clock, sandbox);
+
+        ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "home-public-stats-20260819")
+                .containsEntry("realUserCount", 0L);
+        verify(config, never()).activeValue("growth.public_stats.values");
+        verify(users, never()).countUsers();
+    }
+
+    @Test
+    void sandboxRunsReadOnlyTheirNamespacedSnapshots() {
+        stubSandbox("home-public-stats-run-a", 12000);
+        stubSandbox("home-public-stats-run-b", 31000);
+
+        ApiResult<Map<String, Object>> runA = sandboxService("home-public-stats-run-a").publicProjection();
+        ApiResult<Map<String, Object>> runB = sandboxService("home-public-stats-run-b").publicProjection();
+
+        assertThat((Map<String, Object>) runA.getData().get("values")).containsEntry("fleetDevices", 12000);
+        assertThat((Map<String, Object>) runB.getData().get("values")).containsEntry("fleetDevices", 31000);
+        verify(config, never()).activeValue("growth.public_stats.values");
+        verify(config, never()).activeValue("growth.public_stats.version");
+        verify(users, never()).countUsers();
+    }
+
+    @Test
+    void sandboxUpdateWritesOnlyTheCurrentRunSnapshot() {
+        String runId = "home-public-stats-update-run";
+        stubSandbox(runId, 12000);
+        when(config.activeValueForUpdate("h9.sb." + runId + ".v")).thenReturn(Optional.of("3"));
+
+        ApiResult<Map<String, Object>> result = sandboxService(runId).update(validRequest(3L), "h9-sandbox-save");
+
+        assertThat(result.getCode()).isZero();
+        verify(config).upsertAdminValue(
+                org.mockito.ArgumentMatchers.eq("h9.sb." + runId + ".data"),
+                anyString(), org.mockito.ArgumentMatchers.eq("JSON"),
+                org.mockito.ArgumentMatchers.eq("growth_sandbox"), anyString());
+        verify(config).upsertAdminValue(
+                "h9.sb." + runId + ".v", "4", "NUMBER", "growth_sandbox",
+                "H9 public stats aggregate version");
+        verify(config, never()).upsertAdminValue(
+                org.mockito.ArgumentMatchers.eq("growth.public_stats.values"),
+                anyString(), anyString(), anyString(), anyString());
+        verify(config, never()).upsertAdminValue(
+                org.mockito.ArgumentMatchers.eq("growth.public_stats.version"),
+                anyString(), anyString(), anyString(), anyString());
+        verify(users, never()).countUsers();
+    }
+
+    @Test
+    void sandboxProjectionFailsClosedWhenTheRunHasNoSnapshot() {
+        ApiResult<Map<String, Object>> result = sandboxService("home-public-stats-missing").publicProjection();
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("H9_CONFIG_UNAVAILABLE");
+        verify(config, never()).activeValue("growth.public_stats.values");
+        verify(users, never()).countUsers();
+    }
+
+    @Test
+    void sandboxProjectionFailsClosedWithoutAValidRun() {
+        MockEnvironment sandbox = new MockEnvironment();
+        sandbox.setActiveProfiles("acceptance");
+        GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
+                config, users, audit, new ObjectMapper(), clock, sandbox);
+
+        ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("H9_SANDBOX_RUN_ID_REQUIRED");
+        verify(config, never()).activeValue(anyString());
+        verify(users, never()).countUsers();
+    }
+
+    @Test
+    void publicProjectionFailsClosedBeforeReadingOnMixedProfiles() {
+        MockEnvironment mixed = new MockEnvironment();
+        mixed.setActiveProfiles("acceptance", "production");
+        GrowthPublicStatsService mixedService = new GrowthPublicStatsService(
+                config, users, audit, new ObjectMapper(), clock, mixed);
+
+        ApiResult<Map<String, Object>> result = mixedService.publicProjection();
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("H9_PROFILE_INVALID");
+        verify(config, never()).activeValue(anyString());
+        verify(users, never()).countUsers();
     }
 
     @Test
@@ -156,5 +275,21 @@ class GrowthPublicStatsServiceTest {
                         new GrowthPublicStatsUpdateRequest.PercentileBand(new BigDecimal("10"), new BigDecimal("40")),
                         new GrowthPublicStatsUpdateRequest.PercentileBand(new BigDecimal("20"), new BigDecimal("100"))),
                 version, "update public stats", "superadmin");
+    }
+
+    private GrowthPublicStatsService sandboxService(String runId) {
+        MockEnvironment sandbox = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", runId);
+        sandbox.setActiveProfiles("acceptance");
+        return new GrowthPublicStatsService(config, users, audit, new ObjectMapper(), clock, sandbox);
+    }
+
+    private void stubSandbox(String runId, int fleetDevices) {
+        when(config.activeValue("h9.sb." + runId + ".v")).thenReturn(Optional.of("3"));
+        when(config.activeValue("h9.sb." + runId + ".data")).thenReturn(Optional.of("""
+                {"fleetDevices":%d,"onlineRatePct":80,"onlineJitter":20,
+                 "registeredUsersBase":5000,"registeredUsersMonthlyGrowthPct":5,
+                 "registeredUsersAnchorAt":1786097730000,"effectiveAt":1786097730000,"virtualUserCount":100,
+                 "hashratePercentileTable":[{"tops":10,"cumPct":40},{"tops":20,"cumPct":100}]}
+                """.formatted(fleetDevices)));
     }
 }
