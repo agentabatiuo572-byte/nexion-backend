@@ -1,7 +1,6 @@
 -- I2 Nova non-social producer closure.
 -- One receipt fence is shared by all nine business-event adapters.
 
-USE nexion;
 
 CREATE TABLE IF NOT EXISTS nx_nova_business_event_receipt (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

@@ -46,11 +46,13 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260809_m5_content_rbac_closure.sql"),
   (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql"),
   (Join-Path $root "scripts\migrations\20260810_e18_task_assignment_runtime.sql"),
+  (Join-Path $root "scripts\migrations\20260819_compute_sandbox_reward_run_scope.sql"),
   (Join-Path $root "scripts\migrations\20260810_f5_commission_reissue_atomicity.sql"),
   (Join-Path $root "scripts\migrations\20260810_ab_pending_closure.sql"),
   (Join-Path $root "scripts\migrations\20260810_cd_finance_sandbox.sql"),
   (Join-Path $root "scripts\migrations\20260810_kl_janus_applied_proof.sql"),
   (Join-Path $root "scripts\migrations\20260812_auth_environment_identity_namespace.sql"),
+  (Join-Path $root "scripts\migrations\20260816_oauth_sandbox_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_registration_client_ip.sql"),
   (Join-Path $root "scripts\migrations\20260811_f4_l6_acceptance_schema.sql"),
   (Join-Path $root "scripts\migrations\20260811_f15_leadership_pool_authoritative_config.sql"),
@@ -74,7 +76,31 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260813_compute_share_enrollment.sql"),
   (Join-Path $root "scripts\migrations\20260813_developer_access_request.sql"),
   (Join-Path $root "scripts\migrations\20260814_team_ambassador_application.sql"),
-  (Join-Path $root "scripts\migrations\20260813_user_self_service.sql")
+  (Join-Path $root "scripts\migrations\20260816_team_ambassador_policy.sql"),
+  (Join-Path $root "scripts\migrations\20260813_user_self_service.sql"),
+  (Join-Path $root "scripts\migrations\20260816_withdrawal_attempt_authority.sql"),
+  (Join-Path $root "scripts\migrations\20260816_developer_api_keys_webhooks.sql"),
+  (Join-Path $root "scripts\migrations\20260816_onboarding_calibration_authority.sql"),
+  (Join-Path $root "scripts\migrations\20260817_onboarding_phone_activation.sql"),
+  # H4 local-sandbox wheel facts are physically isolated and must exist before
+  # the local-sandbox application runner allows the process to accept traffic.
+  (Join-Path $root "scripts\migrations\20260815_h4_wheel_local_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260816_store_product_notification.sql"),
+  (Join-Path $root "scripts\migrations\20260816_growth_quest_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260816_payout_address_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260816_payment_method_run_scope.sql"),
+  (Join-Path $root "scripts\migrations\20260817_p2_product_specifications.sql"),
+  (Join-Path $root "scripts\migrations\20260817_notification_preferences.sql"),
+  (Join-Path $root "scripts\migrations\20260817_g1_g7_market_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260817_market_app_sandbox_run_scope.sql"),
+  (Join-Path $root "scripts\migrations\20260817_developer_access_governance.sql"),
+  (Join-Path $root "scripts\migrations\20260817_legal_terms_versioned.sql"),
+  (Join-Path $root "scripts\migrations\20260817_h7_voucher_cadence.sql"),
+  (Join-Path $root "scripts\migrations\20260818_h7_voucher_cadence_sandbox.sql"),
+  (Join-Path $root "scripts\migrations\20260817_genesis_holder_policy.sql"),
+  (Join-Path $root "scripts\migrations\20260820_home_grid_datacenter_metadata.sql"),
+  (Join-Path $root "scripts\migrations\20260820_e2_task_price_history.sql"),
+  (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql")
 )
 
 if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {

@@ -36,29 +36,40 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  developer:
+    webhooks:
+      # Production must explicitly configure exact hosts or parent domains.
+      allowed-hosts: ${NEXION_DEVELOPER_WEBHOOK_ALLOWED_HOSTS:}
+      allow-loopback: ${NEXION_DEVELOPER_WEBHOOK_ALLOW_LOOPBACK:false}
   auth:
     user-otp:
-      # Local-only convenience. The fixed code is accepted only with one isolated
-      # acceptance/test/local-sandbox profile. Production/default, mixed and
-      # unknown profiles still require the real delivery webhook and fail closed.
+      # Local-only convenience. The fixed code is enabled by application-dev.yml.
+      # Production and unknown profiles require real delivery and fail closed.
       local-fixed-code-enabled: ${NEXION_USER_OTP_LOCAL_FIXED_CODE_ENABLED:false}
       delivery-url: ${NEXION_USER_OTP_DELIVERY_URL:}
   nova:
     ai:
-      # Local Ollama is opt-in. No cloud/provider account or credential is used.
+      # Local RAG is opt-in and uses loopback Qdrant + Ollama only.
       mode: ${NEXION_NOVA_AI_MODE:DISABLED}
-      base-url: ${NEXION_NOVA_AI_BASE_URL:http://127.0.0.1:11434}
+      rag-base-url: ${NEXION_NOVA_AI_RAG_BASE_URL:http://127.0.0.1:8010}
+      rag-collection: ${NEXION_NOVA_AI_RAG_COLLECTION:customer_support_knowledge_prd_v2_20260814}
       model: ${NEXION_NOVA_AI_MODEL:gemma4-e4b-ctx32k:latest}
       connect-timeout-ms: ${NEXION_NOVA_AI_CONNECT_TIMEOUT_MS:2000}
       read-timeout-ms: ${NEXION_NOVA_AI_READ_TIMEOUT_MS:120000}
       max-input-chars: ${NEXION_NOVA_AI_MAX_INPUT_CHARS:2000}
       max-history-messages: ${NEXION_NOVA_AI_MAX_HISTORY_MESSAGES:10}
       max-output-chars: ${NEXION_NOVA_AI_MAX_OUTPUT_CHARS:8000}
-      max-output-tokens: ${NEXION_NOVA_AI_MAX_OUTPUT_TOKENS:512}
-      context-window: ${NEXION_NOVA_AI_CONTEXT_WINDOW:8192}
+      max-output-tokens: ${NEXION_NOVA_AI_MAX_OUTPUT_TOKENS:1024}
       max-concurrent-requests: ${NEXION_NOVA_AI_MAX_CONCURRENT_REQUESTS:1}
   janus:
     executor:
+      # The simulated executor is enabled only by the dev profile.
+      mode: ${NEXION_JANUS_EXECUTOR_MODE:PRODUCTION}
+      sandbox-targets: ${NEXION_JANUS_SANDBOX_TARGETS:}
+      # Short-lived, server-issued Sandbox credential. Each re-enrollment rotates and invalidates the prior token.
+      sandbox-enrollment-ttl-ms: ${NEXION_JANUS_SANDBOX_ENROLLMENT_TTL_MS:900000}
+      production-keys: ${NEXION_JANUS_PRODUCTION_KEYS:}
+      max-skew-ms: ${NEXION_JANUS_MAX_SKEW_MS:120000}
       # Production applied proofs stay disabled until attested enrollment and native WebView handoff ship.
       production-applied-enabled: ${NEXION_JANUS_PRODUCTION_APPLIED_ENABLED:false}
     remote-target:
@@ -75,7 +86,7 @@ nexion:
         read-timeout-ms: ${NEXION_K3_ADDRESS_REPUTATION_READ_TIMEOUT_MS:1500}
   finance:
     funds-sandbox:
-      # Server-persistent fake funds are acceptance/test only. Production stays disabled.
+      # Server-persistent development funds are enabled only by the dev profile.
       mode: ${NEXION_FUNDS_SANDBOX_MODE:DISABLED}
     payment-method-provider:
       mode: ${NEXION_PAYMENT_METHOD_PROVIDER_MODE:DISABLED}

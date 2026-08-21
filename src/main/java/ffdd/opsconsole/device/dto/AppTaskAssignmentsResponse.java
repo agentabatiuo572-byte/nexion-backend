@@ -6,5 +6,8 @@ import java.util.List;
 public record AppTaskAssignmentsResponse(
         LocalDateTime serverNow,
         List<AppTaskDeviceState> devices,
-        String source) {
+        String source,
+        String sourceEnvironment,
+        String runId,
+        boolean serverCanonical) {
 }

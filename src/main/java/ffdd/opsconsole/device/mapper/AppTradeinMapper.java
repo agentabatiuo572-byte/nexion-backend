@@ -26,7 +26,10 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
             """)
     List<ConfigRow> listTradeinConfig();
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    Integer activeUserEnvironment(@Param("userId") Long userId);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND sandbox=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
     @Select("""
@@ -41,6 +44,44 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("SELECT user_level FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0")
     String userLevel(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
+                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
+                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
+                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                     ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
+                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamVolumeUsd
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+            """)
+    PurchaseGateFacts purchaseGateFacts(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT s.purchase_gate_json FROM nx_admin_device_sku s
+             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1
+            """)
+    String purchaseGateJson(@Param("productNo") String productNo);
+
+    /**
+     * Atomically reserves a production purchase-gate quota unit.  The cap and
+     * sold counter are read from the same canonical JSON row, so concurrent
+     * trade-ins (including different entry keys) cannot oversell it.
+     */
+    @Update("""
+            UPDATE nx_admin_device_sku
+               SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
+                   updated_at=NOW()
+             WHERE sku_id=#{productNo} AND is_deleted=0
+               AND JSON_VALID(purchase_gate_json)=1
+               AND JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.enforce'))='true'
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+                   <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
+            """)
+    int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);
 
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item
@@ -195,7 +236,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                    p.vram_total_gb AS vramTotalGb,p.hashrate,p.estimated_daily_usdt AS dailyUsdt,
                    p.daily_nex AS dailyNex,p.tagline,p.badge,p.sold_count AS sold,
                    p.unlock_phase AS unlockPhase,p.updated_at AS updatedAt,
-                   s.power_text AS power,s.features_json AS featuresJson,
+                   s.power_text AS power,s.datacenter AS datacenter,s.uptime AS uptime,s.warranty AS warranty,
+                   s.phone_daily_earn AS phoneDailyEarn,s.phone_daily_earn_nex AS phoneDailyEarnNex,s.features_json AS featuresJson,
                    s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
                    s.ai_unlocks AS aiUnlocks,NULL AS purchaseGateJson
@@ -379,6 +421,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
     record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
     }
 
+    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
+
     record SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                         String productName, String productTier, String status, BigDecimal actualPaidUsdt) {
     }
@@ -400,16 +444,45 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
                                 BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
                                 String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
-                                String power, String featuresJson, BigDecimal aiImageGenPerMin,
+                                String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
                                 BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+        /** Compatibility constructor for callers compiled against the pre-datacenter projection. */
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String datacenter, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
+                    hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter,
+                    null, null, null, null, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour,
+                    aiFineTuneMins, aiUnlocks, purchaseGateJson);
+        }
+
+        /** Compatibility constructor for callers compiled against the pre-P2 projection. */
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
+                    hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt,
+                    power, null, null, null, null, null, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour,
+                    aiFineTuneMins, aiUnlocks, purchaseGateJson);
+        }
+
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                     String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
                                     BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
                                     String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt) {
             this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
                     hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
     }
 

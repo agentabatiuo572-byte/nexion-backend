@@ -8,6 +8,24 @@ import org.junit.jupiter.api.Test;
 
 class AppTradeinEligibilityMapperSqlContractTest {
     @Test
+    void tradeinUserEnvironmentAndWriteLockAreProductionOnly() throws Exception {
+        Method environment = AppTradeinMapper.class.getMethod("activeUserEnvironment", Long.class);
+        String environmentSql = String.join(" ", environment.getAnnotation(Select.class).value());
+        assertThat(environmentSql)
+                .contains("SELECT sandbox")
+                .contains("status='ACTIVE'")
+                .contains("is_deleted=0");
+
+        Method lock = AppTradeinMapper.class.getMethod("lockActiveUser", Long.class);
+        String lockSql = String.join(" ", lock.getAnnotation(Select.class).value());
+        assertThat(lockSql)
+                .contains("status='ACTIVE'")
+                .contains("is_deleted=0")
+                .contains("sandbox=0")
+                .contains("FOR UPDATE");
+    }
+
+    @Test
     void sourceEligibilityQueryIsOwnedActiveAndTaskFree() throws Exception {
         Method method = AppTradeinMapper.class.getMethod("listTradeinSourceCandidates", Long.class);
         String sql = String.join(" ", method.getAnnotation(Select.class).value());

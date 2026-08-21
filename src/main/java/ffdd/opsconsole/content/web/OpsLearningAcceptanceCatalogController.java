@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Administrative CRUD for isolated, run-scoped acceptance course definitions. */
 @RestController
-@Profile({"acceptance", "test", "local-sandbox"})
+@Profile({"dev", "test"})
 @RequestMapping("/api/admin/content/learning-acceptance/catalog")
 @RequiredArgsConstructor
 public class OpsLearningAcceptanceCatalogController {

@@ -9,11 +9,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
-/** Prevents the Janus fixture executor from being enabled outside isolated acceptance profiles. */
+/** Prevents the Janus fixture executor from being enabled outside isolated development profiles. */
 @Component
 @RequiredArgsConstructor
 public class JanusSandboxProfileGuard {
-    private static final Set<String> ALLOWED_SANDBOX_PROFILES = Set.of("test", "acceptance");
+    private static final Set<String> ALLOWED_SANDBOX_PROFILES = Set.of("dev", "test");
 
     private final Environment environment;
     @Value("${nexion.janus.executor.mode:PRODUCTION}")
@@ -23,7 +23,7 @@ public class JanusSandboxProfileGuard {
     public void validateProfileBoundary() {
         if (!"SANDBOX".equals(executionEnvironment())) return;
         Set<String> active = new HashSet<>(Arrays.asList(environment.getActiveProfiles()));
-        if (active.isEmpty() || !ALLOWED_SANDBOX_PROFILES.containsAll(active)) {
+        if (active.size() != 1 || !ALLOWED_SANDBOX_PROFILES.containsAll(active)) {
             throw new IllegalStateException("JANUS_SANDBOX_PROFILE_FORBIDDEN");
         }
     }

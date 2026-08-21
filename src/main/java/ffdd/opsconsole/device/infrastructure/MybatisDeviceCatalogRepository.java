@@ -13,6 +13,7 @@ import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
+import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
@@ -56,6 +57,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         if (mapper.countSkuPurchaseGateColumn() == 0) {
             mapper.addSkuPurchaseGateColumn();
         }
+        mapper.seedGen2PurchaseGatesIfMissing();
         mapper.widenSkuUnlockPhaseColumn();
         if (mapper.countSkuUnlockPhaseIdColumn() == 0) {
             mapper.addSkuUnlockPhaseIdColumn();
@@ -295,8 +297,27 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 dailyNex,
                 before.status(),
                 before.createdAt(),
-                now));
+                now), request.expectedRevision());
         return updated == 0 ? Optional.empty() : findPhoneTierReward(tier);
+    }
+
+    @Override
+    public List<OnboardingYieldComparisonView> listOnboardingYieldComparisons() {
+        return mapper.listOnboardingYieldComparisons();
+    }
+
+    @Override
+    public Optional<OnboardingYieldComparisonView> findOnboardingYieldComparison(String configKey) {
+        return Optional.ofNullable(mapper.findOnboardingYieldComparison(configKey));
+    }
+
+    @Override
+    public Optional<OnboardingYieldComparisonView> updateOnboardingYieldComparison(
+            String configKey, String label, BigDecimal dailyUsdt, BigDecimal dailyNex,
+            Long expectedRevision, LocalDateTime now) {
+        int updated = mapper.updateOnboardingYieldComparison(
+                configKey, label, dailyUsdt, dailyNex, expectedRevision, now);
+        return updated == 0 ? Optional.empty() : findOnboardingYieldComparison(configKey);
     }
 
     @Override
@@ -511,6 +532,10 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.hashRate(),
                 row.power(),
                 row.datacenter(),
+                row.uptime(),
+                row.warranty(),
+                row.phoneDailyEarn(),
+                row.phoneDailyEarnNex(),
                 row.price(),
                 row.dailyEarn(),
                 row.dailyEarnNex(),
@@ -555,6 +580,10 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 blankToNull(request.hashRate()),
                 blankToNull(request.power()),
                 blankToNull(request.datacenter()),
+                blankToNull(request.uptime()),
+                blankToNull(request.warranty()),
+                request.phoneDailyEarn(),
+                request.phoneDailyEarnNex(),
                 valueOrZero(request.price()),
                 valueOrZero(request.dailyEarn()),
                 valueOrZero(request.dailyEarnNex()),

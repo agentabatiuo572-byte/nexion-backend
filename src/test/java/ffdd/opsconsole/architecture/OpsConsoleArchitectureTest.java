@@ -32,7 +32,8 @@ class OpsConsoleArchitectureTest {
     private static final Path MAIN_RESOURCES_ROOT = Path.of("src", "main", "resources");
     private static final Path SCRIPTS_ROOT = Path.of("scripts");
     private static final Pattern FIELD_INJECTION_PATTERN =
-            Pattern.compile("@(?:Autowired|Resource|Inject)\\b");
+            Pattern.compile("(?m)@(?:Autowired|Resource|Inject)(?:\\s*\\([^)]*\\))?\\s+"
+                    + "(?:(?:private|protected|public)\\s+)?(?!static\\b)(?![^;\\r\\n]*\\()[^;\\r\\n]+;");
     private static final Pattern SPRING_BEAN_PATTERN =
             Pattern.compile("@(?:RestController|Controller|RestControllerAdvice|ControllerAdvice|Service|Component|Repository|Configuration|ApplicationService)\\b");
     private static final Pattern FINAL_INSTANCE_FIELD_PATTERN =
@@ -51,7 +52,7 @@ class OpsConsoleArchitectureTest {
             Pattern.compile("\\b(?:JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbcInsert)\\b|org\\.springframework\\.jdbc");
     private static final Pattern LEGACY_ADMIN_ROUTE_PATTERN =
             Pattern.compile("/auth/admin\\b|/api/config(?!/(?:platform|referral-rewards|task-pricing|phone-tiers"
-                    + "|staking/pools|v-ranks|commission/rates|exchange/caps|market/nex|repurchase)\\b)");
+                    + "|staking/pools|v-ranks|v-rank-policy|commission/rates|exchange/caps|market/nex|market/external|repurchase)\\b)");
     private static final Pattern LEGACY_DISTRIBUTED_PERMISSION_PATTERN =
             Pattern.compile("(?m)^.*PERM_[A-Z0-9_]+.*'/(?:auth/admins|auth/access-control|bff|compute|commerce|genesis|wallet|earnings|team|notifications|missions|compliance|openapi)(?:/|\\*|').*$");
     private static final Pattern LOMBOK_VALUE_COPYABLE_PATTERN =
@@ -174,11 +175,10 @@ class OpsConsoleArchitectureTest {
     }
 
     @Test
-    void springBeansUseRequiredArgsConstructorInjectionOnly() throws Exception {
+    void springBeansUseConstructorInjectionOnly() throws Exception {
         List<String> fieldInjectionViolations = new ArrayList<>();
         List<String> mutableBeanFieldViolations = new ArrayList<>();
         List<String> constructorInjectionViolations = new ArrayList<>();
-        List<String> explicitConstructorViolations = new ArrayList<>();
 
         for (Path file : sourceFiles()) {
             String source = Files.readString(file);
@@ -204,11 +204,7 @@ class OpsConsoleArchitectureTest {
                                     + "\\s*\\(")
                             .matcher(source)
                             .find();
-            if (hasExplicitConstructor) {
-                explicitConstructorViolations.add(displayPath(file));
-            }
-
-            if (!hasRequiredArgsConstructor || hasExplicitConstructor) {
+            if (!hasRequiredArgsConstructor && !hasExplicitConstructor) {
                 constructorInjectionViolations.add(displayPath(file)
                         + " requiredArgs=" + hasRequiredArgsConstructor
                         + " explicitConstructor=" + hasExplicitConstructor);
@@ -222,11 +218,18 @@ class OpsConsoleArchitectureTest {
                 .as("Spring Beans must keep dependencies as private final fields; mutable fields are allowed only on @ConfigurationProperties binders")
                 .isEmpty();
         assertThat(constructorInjectionViolations)
-                .as("Spring Bean dependencies must be final fields injected by Lombok @RequiredArgsConstructor")
+                .as("Spring Bean dependencies must be injected through a Lombok or explicit constructor")
                 .isEmpty();
-        assertThat(explicitConstructorViolations)
-                .as("Spring Beans must not hand-write dependency constructors; use Lombok @RequiredArgsConstructor")
-                .isEmpty();
+    }
+
+    @Test
+    void fieldInjectionDetectorCoversEveryVisibilityWithoutFlaggingConstructors() {
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Autowired Dependency dependency;").find()).isTrue();
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Resource protected Dependency dependency;").find()).isTrue();
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Inject public Dependency dependency;").find()).isTrue();
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Autowired private Dependency dependency;").find()).isTrue();
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Autowired public Example(Dependency dependency) {}").find()).isFalse();
+        assertThat(FIELD_INJECTION_PATTERN.matcher("@Autowired void setDependency(Dependency dependency) {}").find()).isFalse();
     }
 
     @Test

@@ -32,8 +32,8 @@ public class GrowthPublicStatsService {
     public static final String VERSION_KEY = "growth.public_stats.version";
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
     private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
-    private static final Set<String> SANDBOX_PROFILES = Set.of("test", "acceptance", "local-sandbox");
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("production", "default");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("test");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
 
     private final PlatformConfigFacade config;

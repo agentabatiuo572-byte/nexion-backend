@@ -1,0 +1,77 @@
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+# The fixed development Passkey account is loopback-only. Never let Tomcat
+# rewrite a LAN peer into 127.0.0.1 from caller-controlled forwarding headers.
+server:
+  forward-headers-strategy: none
+
+# Local development is the only runtime allowed to enable simulated providers.
+# Secrets still come from process environment variables and never from this file.
+nexion:
+  developer:
+    webhooks:
+      allow-loopback: true
+  wheel:
+    sandbox:
+      run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+  auth:
+    user-otp:
+      local-fixed-code-enabled: true
+    development-passkey-account:
+      country-code: "+86"
+      phone: "18708173775"
+  home:
+    development-settlement:
+      enabled: true
+  finance:
+    funds-sandbox:
+      mode: LOCAL_SANDBOX
+    payment-method-provider:
+      mode: LOCAL_SANDBOX
+  exchange:
+    sandbox:
+      initial-usdt: 1000
+      initial-nex: 0
+      current-price: 0.125
+      cost-basis: 0.085
+      sparkline: 0.113,0.117,0.121,0.125,0.129,0.126,0.125
+      user-daily-cap-usdt: 50
+      platform-daily-cap-usdt: 20000
+      fee-pct: 0
+      fee-min-usdt: 0.50
+      min-usdt: 1
+      min-nex: 10
+  genesis:
+    sandbox:
+      initial-usdt: 1000
+      price-usdt: 10
+  compute-task:
+    executor:
+      mode: SANDBOX
+  janus:
+    executor:
+      mode: SANDBOX
+      sandbox-targets: ${NEXION_JANUS_SANDBOX_TARGETS:approved}
+  geo-block:
+    allow-loopback-without-country: true
+  analytics:
+    source-environment: SANDBOX
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+  support:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+    acceptance-sandbox:
+      mode: ENABLED
+  learning:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+  commerce:
+    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+  market:
+    g2-acceptance-sandbox:
+      mode: ENABLED
+  acceptance:
+    f2:
+      coverage-override-enabled: ${NEXION_ACCEPTANCE_F2_COVERAGE_OVERRIDE:true}
+      coverage-override-run-id: ${NEXION_ACCEPTANCE_F2_COVERAGE_OVERRIDE_RUN_ID:${NEXION_ACCEPTANCE_RUN_ID:}}

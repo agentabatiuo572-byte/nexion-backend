@@ -1,4 +1,3 @@
-USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 -- The old seed value sold_supply=847 had no orders or holdings behind it.  The

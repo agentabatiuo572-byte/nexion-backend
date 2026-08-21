@@ -1,4 +1,3 @@
-USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 -- E6 exact split: Growth can propose the forward-spec flag only; coefficients

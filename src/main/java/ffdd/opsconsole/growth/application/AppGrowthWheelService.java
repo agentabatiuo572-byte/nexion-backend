@@ -54,8 +54,14 @@ public class AppGrowthWheelService {
     private final EarningsReleaseService earningsReleaseService;
     private final Clock clock = Clock.systemUTC();
 
-    @Transactional(readOnly = true)
+    private final AppGrowthWheelSandboxService sandboxService;
+
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> state(Long userId, String eventCode) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.state(userId, eventCode);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         if (userId == null || userId <= 0 || mapper.findActiveUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
@@ -84,7 +90,8 @@ public class AppGrowthWheelService {
                 "availableSpins", (freeAvailable ? 1 : 0) + bonusTickets,
                 "segments", segments,
                 "history", history,
-                "source", "nx_growth_wheel_tier + nx_growth_spin_ticket + nx_growth_wheel_spin"));
+                "source", "nx_growth_wheel_tier + nx_growth_spin_ticket + nx_growth_wheel_spin",
+                "sourceEnvironment", "PRODUCTION"));
     }
 
     private Map<String, Object> publicSegment(WheelTier tier, int displayOrder) {
@@ -120,6 +127,10 @@ public class AppGrowthWheelService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> spin(Long userId, String eventCode, String idempotencyKey) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.spin(userId, eventCode, idempotencyKey);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         if (userId == null || userId <= 0 || mapper.lockActiveUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
@@ -202,7 +213,8 @@ public class AppGrowthWheelService {
                 "sourceType", sourceType, "tierId", selected.tierName(),
                 "rewardType", selected.rewardKind().toUpperCase(Locale.ROOT),
                 "rewardAmount", selected.rewardAmount(), "rewardName", selected.rewardName(),
-                "downgraded", downgraded, "downgradeReason", downgradeReason));
+                "downgraded", downgraded, "downgradeReason", downgradeReason,
+                "source", "server", "sourceEnvironment", "PRODUCTION"));
     }
 
     private void validateTiers(List<WheelTier> tiers) {

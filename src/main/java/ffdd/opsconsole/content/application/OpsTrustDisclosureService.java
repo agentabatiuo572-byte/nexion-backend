@@ -28,6 +28,7 @@ import ffdd.opsconsole.content.dto.TrustSectionDraftRequest;
 import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.content.dto.LearningRewardUpdateRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
@@ -62,6 +63,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.core.env.Environment;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -95,7 +97,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             "^v[1-9][0-9]{0,8}(?:\\.[0-9]{1,8})*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern JURISDICTION_CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_-]{1,15}$");
     private static final Pattern TRUST_FIELD_KEY_PATTERN = Pattern.compile("^[A-Za-z][A-Za-z0-9._-]{0,63}$");
-    private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](zh|vi)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LOCALIZED_TRUST_FIELD_PATTERN = Pattern.compile("^(.+?)[._-](zh|vi|en)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern ACCEPTANCE_RUN_ID_PATTERN = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$");
     private static final Pattern LINK_LIKE_PATTERN = Pattern.compile(
             "^\\s*(?:[A-Za-z][A-Za-z0-9+.-]*:|/)|href\\s*=", Pattern.CASE_INSENSITIVE);
     private static final Pattern ENCODED_UNSAFE_LINK_PATTERN = Pattern.compile(
@@ -112,6 +115,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             "/pages/trust/nex", "/pages/market/market");
     private static final Set<String> APP_TRUST_SECTION_KEYS = Set.of(
             "financials", "leadership", "nexnarrative", "compliancebadges", "auditsreserves", "listings");
+    private static final List<String> APP_PUBLISHED_TRUST_SECTION_KEYS = List.of(
+            "financials", "leadership", "nexNarrative", "complianceBadges", "auditsReserves", "listings");
     private static final Set<String> DATA_SOURCE_REQUIRED_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory");
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
@@ -129,27 +134,62 @@ public class OpsTrustDisclosureService implements AuditReplayable {
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService eventOutboxService;
 
+    /** Environment is a regular framework dependency; constructor injection keeps
+     * the isolated-runtime decision immutable for this service instance. */
+    private final Environment environment;
+
     public ApiResult<TrustDisclosureOverview> overview() {
         return ApiResult.ok(authorizedOverview(currentOverview()));
     }
 
     public ApiResult<AppTrustSectionsView> publishedSections() {
-        List<AppTrustSectionsView.Section> sections = trustDisclosureRepository.listTrustSections().stream()
-                .filter(section -> "published".equalsIgnoreCase(section.status()))
-                .filter(section -> APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(section.key())))
-                .map(section -> {
-                    TrustSectionVersionView version = findSectionVersion(section.key(), section.version());
-                    List<AppTrustSectionsView.Field> fields = version == null ? List.of() : version.fields().stream()
-                            .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(), field.value()))
-                            .toList();
-                    return new AppTrustSectionsView.Section(section.key(), section.version(), section.desc(), section.struct(), fields);
-                })
-                .toList();
-        return ApiResult.ok(new AppTrustSectionsView(sections));
+        if (isTrustSandboxRuntime()) {
+            String runId = trustSandboxRunId();
+            if (runId == null) return ApiResult.fail(503, "TRUST_SECTION_SANDBOX_RUN_ID_REQUIRED");
+            return ApiResult.ok(sandboxPublishedTrustSections(runId));
+        }
+
+        Map<String, TrustSectionView> published = new LinkedHashMap<>();
+        for (TrustSectionView section : trustDisclosureRepository.listTrustSections()) {
+            if (section == null || !"published".equalsIgnoreCase(section.status())) continue;
+            if (!APP_PUBLISHED_TRUST_SECTION_KEYS.contains(section.key())) continue;
+            if (published.putIfAbsent(section.key(), section) != null) return invalidPublishedTrustSnapshot();
+        }
+        if (!published.keySet().equals(Set.copyOf(APP_PUBLISHED_TRUST_SECTION_KEYS))) return invalidPublishedTrustSnapshot();
+
+        List<AppTrustSectionsView.Section> sections = new ArrayList<>();
+        for (String sectionKey : APP_PUBLISHED_TRUST_SECTION_KEYS) {
+            TrustSectionView section = published.get(sectionKey);
+            TrustSectionVersionView version = findSectionVersion(section.key(), section.version());
+            if (version == null || !"published".equalsIgnoreCase(version.status())
+                    || !section.key().equals(version.sectionKey())
+                    || !trimToEmpty(version.version()).equals(trimToEmpty(section.version()))
+                    || !StringUtils.hasText(version.description()) || !StringUtils.hasText(version.structure())
+                    || !validPublishedTrustFields(version.fields())) {
+                return invalidPublishedTrustSnapshot();
+            }
+            List<AppTrustSectionsView.Field> fields = version.fields().stream()
+                    .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(), field.value()))
+                    .toList();
+            sections.add(new AppTrustSectionsView.Section(
+                    section.key(), version.version(), version.description(), version.structure(), fields));
+        }
+
+        return ApiResult.ok(new AppTrustSectionsView(
+                true, "nx_trust_section_version:published", "PRODUCTION", "", sections));
+    }
+
+    private ApiResult<AppTrustSectionsView> invalidPublishedTrustSnapshot() {
+        return ApiResult.fail(503, "TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
     }
 
     @Transactional
     public ApiResult<Void> recordSectionView(String sectionKey, String locale) {
+        if (isTrustSandboxRuntime()) {
+            if (trustSandboxRunId() == null) return ApiResult.fail(503, "TRUST_SECTION_SANDBOX_RUN_ID_REQUIRED");
+            return APP_PUBLISHED_TRUST_SECTION_KEYS.contains(trimToEmpty(sectionKey))
+                    ? ApiResult.ok(null) : ApiResult.fail(404, "TRUST_SECTION_NOT_FOUND");
+        }
         TrustSectionView section = findSection(sectionKey);
         if (section == null || !"published".equalsIgnoreCase(section.status())
                 || !APP_TRUST_SECTION_KEYS.contains(normalizeSectionKey(section.key()))) {
@@ -161,6 +201,77 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 "sectionKey", section.key(),
                 "locale", normalizedLocale));
         return ApiResult.ok(null);
+    }
+
+    private boolean isTrustSandboxRuntime() {
+        return environment != null
+                && !FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles())
+                && FundsSandboxProfileGuard.isStrictIsolatedProfile(environment.getActiveProfiles());
+    }
+
+    private String trustSandboxRunId() {
+        if (!isTrustSandboxRuntime()) return "";
+        String runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+        return ACCEPTANCE_RUN_ID_PATTERN.matcher(runId).matches() ? runId : null;
+    }
+
+    private AppTrustSectionsView sandboxPublishedTrustSections(String runId) {
+        return new AppTrustSectionsView(true, "mock", "SANDBOX", runId, List.of(
+                sandboxTrustSection("financials", "Run-scoped financial snapshot", "Metric cards", List.of(
+                        trustField("tvlOnChain", "TVL on-chain", "$128.4M"),
+                        trustField("mrrValue", "Monthly recurring revenue", "$4.2M"),
+                        trustField("activeAccountsValue", "Active accounts", "18,420"),
+                        trustField("devicesOnlineValue", "Active nodes", "72,640"),
+                        trustField("payoutsProcessedValue", "Payouts processed", "$31.7M"),
+                        trustField("footnote.zh", "中文说明", "隔离 Sandbox 的服务器测试快照"),
+                        trustField("footnote.vi", "Ghi chú", "Ảnh chụp thử nghiệm máy chủ Sandbox biệt lập"),
+                        trustField("footnote.en", "Footnote", "Server-owned snapshot for the isolated Sandbox"))),
+                sandboxTrustSection("leadership", "Run-scoped leadership disclosure", "Verified people", List.of(
+                        trustField("leader1Name", "Name", "NexGrid Sandbox Team"),
+                        trustField("leader1Role.zh", "角色", "Sandbox 运营团队"),
+                        trustField("leader1Role.vi", "Vai trò", "Nhóm vận hành Sandbox"),
+                        trustField("leader1Role.en", "Role", "Sandbox operations team"),
+                        trustField("leader1Previous.zh", "说明", "仅用于隔离验收"),
+                        trustField("leader1Previous.vi", "Ghi chú", "Chỉ dùng để kiểm thử biệt lập"),
+                        trustField("leader1Previous.en", "Note", "For isolated acceptance only"),
+                        trustField("leader1Url", "Profile", ""))),
+                sandboxTrustSection("nexNarrative", "Run-scoped NEX narrative", "Hero copy", List.of(
+                        trustField("hero.zh", "主标题", "算力需求支持的 NEX"),
+                        trustField("hero.vi", "Tiêu đề", "NEX được hỗ trợ bởi nhu cầu tính toán"),
+                        trustField("hero.en", "Headline", "NEX backed by compute demand"),
+                        trustField("subhero.zh", "副标题", "数据来自当前隔离运行"),
+                        trustField("subhero.vi", "Phụ đề", "Dữ liệu thuộc lượt chạy biệt lập hiện tại"),
+                        trustField("subhero.en", "Subhead", "Data belongs to the current isolated run"))),
+                sandboxTrustSection("complianceBadges", "Run-scoped compliance material", "Badge cards", List.of(
+                        trustField("badge1Label.zh", "徽章", "Sandbox 合规演示"),
+                        trustField("badge1Label.vi", "Huy hiệu", "Bản demo tuân thủ Sandbox"),
+                        trustField("badge1Label.en", "Badge", "Sandbox compliance demo"),
+                        trustField("badge1Body.zh", "说明", "非生产资质，仅用于验收"),
+                        trustField("badge1Body.vi", "Mô tả", "Không phải chứng nhận sản xuất; chỉ dùng để kiểm thử"),
+                        trustField("badge1Body.en", "Description", "Not a production credential; acceptance only"))),
+                sandboxTrustSection("auditsReserves", "Run-scoped audit material", "Document list", List.of(
+                        trustField("document1Primary.zh", "文档", "Sandbox 储备审计报告"),
+                        trustField("document1Primary.vi", "Tài liệu", "Báo cáo kiểm toán dự trữ Sandbox"),
+                        trustField("document1Primary.en", "Document", "Sandbox reserve audit report"),
+                        trustField("document1Secondary.zh", "说明", "服务器持有的隔离测试资料"),
+                        trustField("document1Secondary.vi", "Mô tả", "Tài liệu thử nghiệm biệt lập do máy chủ quản lý"),
+                        trustField("document1Secondary.en", "Description", "Server-owned isolated test material"),
+                        trustField("document1Url", "Document URL", ""))),
+                sandboxTrustSection("listings", "Run-scoped listing status", "Listing rows", List.of(
+                        trustField("listing1Exchange", "Exchange", "Sandbox Exchange"),
+                        trustField("listing1State.zh", "状态", "隔离演示"),
+                        trustField("listing1State.vi", "Trạng thái", "Bản demo biệt lập"),
+                        trustField("listing1State.en", "State", "Isolated demo"),
+                        trustField("listing1Url", "Listing URL", "")))));
+    }
+
+    private AppTrustSectionsView.Section sandboxTrustSection(
+            String sectionKey, String description, String structure, List<AppTrustSectionsView.Field> fields) {
+        return new AppTrustSectionsView.Section(sectionKey, "v1", description, structure, fields);
+    }
+
+    private AppTrustSectionsView.Field trustField(String key, String label, String value) {
+        return new AppTrustSectionsView.Field(key, label, value);
     }
 
     @Transactional
@@ -206,8 +317,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         ApiResult<Void> schemaGuard = requireFixedSectionFieldSchema(current, version.fields() == null ? null
                 : version.fields().stream().map(TrustSectionVersionView.Field::key).toList());
         if (schemaGuard != null) return fail(schemaGuard);
-        if (!hasCompleteChineseVietnameseFields(version.fields())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
+        if (!hasCompleteLocalizedFields(version.fields())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
         }
         String actor = authenticatedOperator();
         TrustSectionView updated = trustDisclosureRepository.publishTrustSectionVersion(current.key(), version.version(), actor, now());
@@ -1272,7 +1383,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                         "I", "disclosure_jurisdiction", trimToEmpty(jurisdiction)) > 0;
     }
 
-    private boolean hasCompleteChineseVietnameseFields(List<TrustSectionVersionView.Field> fields) {
+    private boolean hasCompleteLocalizedFields(List<TrustSectionVersionView.Field> fields) {
         Map<String, Set<String>> languagesByFamily = new LinkedHashMap<>();
         for (TrustSectionVersionView.Field field : fields) {
             if (field == null || !StringUtils.hasText(field.key())) continue;
@@ -1287,7 +1398,28 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             }
         }
         return !languagesByFamily.isEmpty()
-                && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi")));
+                && languagesByFamily.values().stream().allMatch(languages -> languages.containsAll(Set.of("zh", "vi", "en")));
+    }
+
+    private boolean validPublishedTrustFields(List<TrustSectionVersionView.Field> fields) {
+        if (fields == null || fields.isEmpty() || fields.size() > MAX_TRUST_SECTION_FIELDS) return false;
+        Set<String> keys = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (TrustSectionVersionView.Field field : fields) {
+            boolean linkField = field != null && isLinkField(field.key());
+            if (field == null || !StringUtils.hasText(field.key())
+                    || !TRUST_FIELD_KEY_PATTERN.matcher(field.key().trim()).matches()
+                    || !StringUtils.hasText(field.label()) || field.value() == null
+                    || (!linkField && !StringUtils.hasText(field.value()))
+                    || !keys.add(field.key().trim()) || containsUnsafeText(field.key(), field.label())) {
+                return false;
+            }
+            if (linkField) {
+                if (!field.value().isEmpty() && !isSafeTrustSectionLink(field.value())) return false;
+            } else if (containsUnsafeText(field.value()) || LINK_LIKE_PATTERN.matcher(field.value()).find()) {
+                return false;
+            }
+        }
+        return hasCompleteLocalizedFields(fields);
     }
 
     private boolean isSensitivePublishSection(TrustSectionView section) {

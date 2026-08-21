@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
 /**
@@ -25,6 +27,7 @@ import org.springframework.util.StringUtils;
  */
 @ApplicationService
 @RequiredArgsConstructor
+@Slf4j
 public class AppProductCatalogService {
     private static final Set<String> TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
 
@@ -40,11 +43,15 @@ public class AppProductCatalogService {
     }
 
     public ApiResult<Map<String, Object>> catalog(Long userId) {
-        if (fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
+        boolean developmentRuntime = fundsSandboxProfileGuard.isStrictDevelopmentRuntime();
+        if (!developmentRuntime && fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
             if (userId == null || !commerceAcceptanceSandboxMapper.isSandboxUser(userId)) {
                 return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
             }
             return sandboxCatalog();
+        }
+        if (!developmentRuntime && !fundsSandboxProfileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
         try {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
@@ -59,6 +66,7 @@ public class AppProductCatalogService {
             }
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("source", "nx_product");
+            response.put("serverCanonical", true);
             response.put("revision", revision == null ? null : revision.toString());
             response.put("products", products);
             return ApiResult.ok(response);
@@ -74,7 +82,10 @@ public class AppProductCatalogService {
             if (seeds == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
             for (CommerceAcceptanceSandboxMapper.CatalogSeed seed : seeds) commerceAcceptanceSandboxMapper.upsertCatalog(new CommerceAcceptanceSandboxMapper.CatalogSeed(
                     seed.productId(), seed.productNo(), seed.name(), seed.tier(), seed.priceUsdt(), seed.stock(), seed.sold(), seed.deviceType(),
-                    seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(), seed.purchaseGateJson(), runId));
+                    seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(),
+                    seed.power(), seed.datacenter(), seed.uptime(), seed.warranty(), seed.phoneDailyEarn(), seed.phoneDailyEarnNex(),
+                    seed.featuresJson(), seed.aiImageGenPerMin(), seed.aiLlmTokensPerSec(), seed.aiVideoMinPerHour(),
+                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), runId));
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
@@ -83,8 +94,10 @@ public class AppProductCatalogService {
                     .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
             return ApiResult.ok(Map.of("source", "mock", "catalogSource", "nx_commerce_sandbox_catalog",
                     "revision", revision == null ? "" : revision.toString(), "products", products,
-                    "sourceEnvironment", "SANDBOX", "runId", runId));
+                    "sourceEnvironment", "SANDBOX", "runId", runId, "serverCanonical", true));
         } catch (RuntimeException ex) {
+            log.warn("Sandbox storefront catalogue projection failed: type={}, message={}",
+                    ex.getClass().getSimpleName(), ex.getMessage(), ex);
             return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
         }
     }
@@ -93,8 +106,9 @@ public class AppProductCatalogService {
         return product(new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
                 target.priceUsdt(), target.stock(), target.productNo(), 0, target.gpuModel(), target.vramTotalGb(),
                 target.hashrate(), target.dailyUsdt(), target.dailyNex(), target.tagline(), target.badge(), target.sold(),
-                target.unlockPhase(), target.updatedAt(), target.power(), target.featuresJson(), target.aiImageGenPerMin(),
-                target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
+                target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
+                target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
+                target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
                 target.purchaseGateJson()), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
     }
 
@@ -123,10 +137,20 @@ public class AppProductCatalogService {
         item.put("tier", target.tier());
         item.put("tagline", text(target.tagline()));
         item.put("badge", nullableText(target.badge()));
-        item.put("gpu", text(target.gpuModel()));
-        item.put("vram", target.vramTotalGb() == null ? "" : target.vramTotalGb() + "GB");
+        boolean specsComplete = StringUtils.hasText(target.gpuModel())
+                && target.vramTotalGb() != null && target.vramTotalGb() > 0
+                && StringUtils.hasText(target.power())
+                && StringUtils.hasText(target.datacenter());
+        item.put("gpu", display(target.gpuModel()));
+        item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
+                ? "unavailable" : target.vramTotalGb() + "GB");
         item.put("hashRate", decimalText(target.hashrate()));
-        item.put("power", text(target.power()));
+        item.put("power", display(target.power()));
+        item.put("datacenter", display(target.datacenter()));
+        item.put("uptime", DeviceSkuSpecifications.display(target.uptime()));
+        item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
+        item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
+        item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "NEX/day"));
         item.put("dailyEarn", target.dailyUsdt());
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("price", target.priceUsdt());
@@ -135,7 +159,10 @@ public class AppProductCatalogService {
         item.put("features", features(target.featuresJson()));
         item.put("ai", ai(target));
         item.put("status", "active");
-        item.put("available", release.available());
+        item.put("available", release.available() && specsComplete);
+        // Preserve the release policy's server decision verbatim. Specification
+        // certification is an independent fail-closed purchase gate and must
+        // never hide an E1 phase decision from the App/PC projections.
         item.put("releaseState", release.reason());
         item.put("releasePhaseId", nullableText(release.releasePhaseId()));
         // E1 database ids and H1 P1-P6 codes are different namespaces. Never
@@ -144,6 +171,8 @@ public class AppProductCatalogService {
         // Historical client-only gates are deliberately not projected until every quote/order
         // path enforces the same eligibility and quota rules on the server.
         item.put("purchaseGate", null);
+        item.put("purchaseBlocked", !specsComplete);
+        item.put("purchaseBlockedReason", specsComplete ? null : "PRODUCT_SPECS_UNAVAILABLE");
         return item;
     }
 
@@ -188,6 +217,10 @@ public class AppProductCatalogService {
 
     private String text(String value) {
         return value == null ? "" : value;
+    }
+
+    private String display(String value) {
+        return StringUtils.hasText(value) ? value.trim() : "unavailable";
     }
 
     private String nullableText(String value) {

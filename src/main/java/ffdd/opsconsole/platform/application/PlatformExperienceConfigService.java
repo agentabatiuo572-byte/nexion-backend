@@ -15,6 +15,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.growth.application.OpsGrowthService;
 import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -22,7 +23,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -38,21 +38,27 @@ public class PlatformExperienceConfigService {
     private static final Set<String> CHANNEL_KEYS = Set.of(
             "zalo", "telegram", "whatsapp", "messenger", "sms", "x", "copy", "poster", "system");
     private static final Set<String> INTENT_TYPES = Set.of("web", "scheme", "copy", "poster", "system");
-    private static final Set<String> SOURCES = Set.of("official", "mock", "unavailable");
+    private static final Set<String> SOURCES = Set.of("official", "unavailable");
 
     private final PlatformConfigFacade config;
     private final ObjectMapper objectMapper;
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
-    private final Environment environment;
+    private final OpsGrowthService growthService;
 
     public ApiResult<PlatformExperienceConfigView> overview() {
         long version = readVersion(false).orElse(0L);
         Optional<PlatformComputeConfigView.ShareConfig> share = readShare(false);
+        ApiResult<OpsGrowthService.HomeFeatureFlags> homeFlags = growthService.platformHomeFeatureFlags();
+        if (homeFlags.getCode() != 0 || homeFlags.getData() == null) {
+            return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
+        }
         return ApiResult.ok(new PlatformExperienceConfigView(
                 version,
                 share.orElseGet(this::unavailableShare),
                 share.isPresent(),
+                homeFlags.getData().homeNewcomerTasksEnabled(),
+                homeFlags.getData().homeWeeklyPromoEnabled(),
                 share.map(value -> List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY)).orElse(List.of()),
@@ -61,17 +67,10 @@ public class PlatformExperienceConfigService {
 
     public ApiResult<PlatformComputeConfigView.ShareConfig> publicConfig() {
         Optional<PlatformComputeConfigView.ShareConfig> share = readShare(false);
-        if (share.isEmpty()) {
-            return ApiResult.fail(503, "PLATFORM_EXPERIENCE_CONFIG_UNAVAILABLE");
-        }
-        PlatformComputeConfigView.AppDownload download = share.get().appDownload();
-        if ("mock".equals(download.source()) && isProduction()) {
-            return ApiResult.fail(503, "PLATFORM_EXPERIENCE_MOCK_SOURCE_FORBIDDEN");
-        }
-        if (!"official".equals(download.source()) && !"mock".equals(download.source())) {
-            return ApiResult.fail(503, "PLATFORM_EXPERIENCE_INSTALLER_UNAVAILABLE");
-        }
-        return ApiResult.ok(share.get());
+        // A missing/invalid A3 projection is a normal unavailable state for
+        // App/H5. Return an explicit backend-owned unavailable payload so the
+        // clients render a closed state; never synthesize a download URL.
+        return ApiResult.ok(share.orElseGet(this::unavailableShare));
     }
 
     @Transactional
@@ -95,6 +94,10 @@ public class PlatformExperienceConfigService {
         long current = readVersion(true).orElse(0L);
         if (request.expectedVersion() == null || request.expectedVersion() != current) {
             return ApiResult.fail(409, "PLATFORM_EXPERIENCE_VERSION_CONFLICT");
+        }
+        ApiResult<OpsGrowthService.HomeFeatureFlags> homeFlags = growthService.platformHomeFeatureFlags();
+        if (homeFlags.getCode() != 0 || homeFlags.getData() == null) {
+            return ApiResult.fail(homeFlags.getCode(), homeFlags.getMessage());
         }
         PlatformComputeConfigView.ShareConfig next = toShare(request);
         String before = readShare(true).map(this::json).orElse("<unavailable>");
@@ -120,6 +123,8 @@ public class PlatformExperienceConfigService {
                 .build());
         return ApiResult.ok(new PlatformExperienceConfigView(
                 current + 1, next, true,
+                homeFlags.getData().homeNewcomerTasksEnabled(),
+                homeFlags.getData().homeWeeklyPromoEnabled(),
                 List.of("nx_config_item:" + BASE_URL_KEY,
                         "nx_config_item:" + CHANNELS_KEY,
                         "nx_config_item:" + APP_DOWNLOAD_KEY),
@@ -156,10 +161,14 @@ public class PlatformExperienceConfigService {
         AppDownloadRequest download = request.appDownload();
         String source = trim(download.source());
         if (!SOURCES.contains(source)) return "PLATFORM_EXPERIENCE_SOURCE_INVALID";
-        if ("mock".equals(source) && isProduction()) return "PLATFORM_EXPERIENCE_MOCK_SOURCE_FORBIDDEN";
         String officialUrl = trim(download.officialUrl());
-        if (!"unavailable".equals(source) && !validUrl(officialUrl, "mock".equals(source))) {
+        if (!"unavailable".equals(source) && !validUrl(officialUrl, false)) {
             return "PLATFORM_EXPERIENCE_OFFICIAL_URL_INVALID";
+        }
+        if (!"unavailable".equals(source)) {
+            if (StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false)) return "PLATFORM_EXPERIENCE_IOS_URL_INVALID";
+            if (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false)) return "PLATFORM_EXPERIENCE_ANDROID_URL_INVALID";
+            if (StringUtils.hasText(download.apkUrl()) && !validUrl(download.apkUrl(), false)) return "PLATFORM_EXPERIENCE_APK_URL_INVALID";
         }
         if (!"unavailable".equals(source)) {
             if (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
@@ -179,15 +188,17 @@ public class PlatformExperienceConfigService {
                 .toList();
         AppDownloadRequest download = request.appDownload();
         Map<String, String> notes = download.releaseNotes() == null ? Map.of() : Map.copyOf(download.releaseNotes());
+        boolean available = "official".equals(trim(download.source()));
         return new PlatformComputeConfigView.ShareConfig(
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
                 new PlatformComputeConfigView.AppDownload(
-                        trim(download.officialUrl()) == null ? "" : trim(download.officialUrl()),
-                        trim(download.iosUrl()) == null ? "" : trim(download.iosUrl()),
-                        trim(download.androidUrl()) == null ? "" : trim(download.androidUrl()),
-                        trim(download.apkUrl()) == null ? "" : trim(download.apkUrl()),
-                        trim(download.version()) == null ? "" : trim(download.version()), notes,
-                        trim(download.source())));
+                        available && trim(download.officialUrl()) != null ? trim(download.officialUrl()) : "",
+                        available && trim(download.iosUrl()) != null ? trim(download.iosUrl()) : "",
+                        available && trim(download.androidUrl()) != null ? trim(download.androidUrl()) : "",
+                        available && trim(download.apkUrl()) != null ? trim(download.apkUrl()) : "",
+                        available && trim(download.version()) != null ? trim(download.version()) : "",
+                        available ? notes : Map.of("zh", "", "en", ""),
+                        available ? "official" : "unavailable"));
     }
 
     private Optional<PlatformComputeConfigView.ShareConfig> readShare(boolean lock) {
@@ -244,11 +255,19 @@ public class PlatformExperienceConfigService {
         PlatformComputeConfigView.AppDownload download = share.appDownload();
         if (download == null || !SOURCES.contains(download.source())) return false;
         if (!"unavailable".equals(download.source())
-                && !validUrl(download.officialUrl(), "mock".equals(download.source()))) return false;
+                && !validUrl(download.officialUrl(), false)) return false;
+        if (!"unavailable".equals(download.source())
+                && ((StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false))
+                || (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false))
+                || (StringUtils.hasText(download.apkUrl()) && !validUrl(download.apkUrl(), false)))) return false;
         if (!"unavailable".equals(download.source())
                 && (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
                 || !StringUtils.hasText(download.releaseNotes().get("zh"))
                 || !StringUtils.hasText(download.releaseNotes().get("en")))) return false;
+        if ("unavailable".equals(download.source())
+                && (StringUtils.hasText(download.officialUrl()) || StringUtils.hasText(download.iosUrl())
+                || StringUtils.hasText(download.androidUrl()) || StringUtils.hasText(download.apkUrl())
+                || StringUtils.hasText(download.version()))) return false;
         return true;
     }
 
@@ -266,13 +285,6 @@ public class PlatformExperienceConfigService {
 
     private boolean hasPlaceholder(String value) {
         return value != null && (value.contains("{link}") || value.contains("{text}"));
-    }
-
-    private boolean isProduction() {
-        for (String profile : environment.getActiveProfiles()) {
-            if ("prod".equalsIgnoreCase(profile) || "production".equalsIgnoreCase(profile)) return true;
-        }
-        return false;
     }
 
     private String requestHash(PlatformExperienceConfigUpdateRequest request) {

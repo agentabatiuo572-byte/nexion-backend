@@ -256,7 +256,9 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    END, 512),
                    NULL, NULLIF(#{ctaHref}, ''),
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
-              FROM nx_user u
+               FROM nx_user u
+              LEFT JOIN nx_user_preference pref
+                ON pref.user_id = u.id AND pref.is_deleted = 0
               JOIN nx_nova_social_event e
                 ON e.id = #{eventId}
                AND e.is_deleted = 0
@@ -270,8 +272,9 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                 ON t.channel_key = c.channel_key
                AND t.is_deleted = 0
                AND t.status = 'PUBLISHED'
-             WHERE u.is_deleted = 0
-               AND UPPER(u.status) = 'ACTIVE'
+              WHERE u.is_deleted = 0
+                AND UPPER(u.status) = 'ACTIVE'
+                AND COALESCE(pref.notify_system, 1) = 1
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_notification previous
@@ -312,7 +315,9 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    END, 512),
                    NULL, NULLIF(#{ctaHref}, ''),
                    0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
-              FROM nx_user u
+               FROM nx_user u
+              LEFT JOIN nx_user_preference pref
+                ON pref.user_id = u.id AND pref.is_deleted = 0
               JOIN nx_nova_channel c
                 ON c.channel_key = #{channel}
                AND c.is_deleted = 0
@@ -321,9 +326,16 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                 ON t.channel_key = c.channel_key
                AND t.is_deleted = 0
                AND t.status = 'PUBLISHED'
-             WHERE u.is_deleted = 0
-               AND UPPER(u.status) = 'ACTIVE'
-               AND (#{userId} IS NULL OR u.id = #{userId})
+              WHERE u.is_deleted = 0
+                AND UPPER(u.status) = 'ACTIVE'
+                AND (#{userId} IS NULL OR u.id = #{userId})
+                AND COALESCE(CASE LOWER(#{notificationType})
+                    WHEN 'commission' THEN pref.notify_commission
+                    WHEN 'team' THEN pref.notify_team
+                    WHEN 'staking' THEN pref.notify_staking
+                    WHEN 'market' THEN pref.notify_market
+                    WHEN 'genesis' THEN pref.notify_genesis
+                    ELSE pref.notify_system END, 1) = 1
                AND NOT EXISTS (
                    SELECT 1
                      FROM nx_notification previous
@@ -362,11 +374,20 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                              WHEN LOWER(COALESCE(u.language, '')) LIKE 'zh%' THEN #{bodyZh}
                              ELSE #{bodyEn} END, 512),
                    NULL, NULLIF(#{ctaHref}, ''), 0, 'QUEUED', 0, #{now}, #{now}, #{now}, 0
-              FROM nx_user u
+               FROM nx_user u
+              LEFT JOIN nx_user_preference pref
+                ON pref.user_id = u.id AND pref.is_deleted = 0
               JOIN nx_nova_channel c ON c.channel_key = #{channel} AND c.is_deleted = 0 AND c.enabled = 1
               JOIN nx_nova_template t ON t.channel_key = c.channel_key AND t.is_deleted = 0 AND t.status = 'PUBLISHED'
-             WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
-               AND u.id > #{afterUserId} AND NOT (u.id > #{upperUserId})
+              WHERE u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
+                AND u.id > #{afterUserId} AND NOT (u.id > #{upperUserId})
+                AND COALESCE(CASE LOWER(#{notificationType})
+                    WHEN 'commission' THEN pref.notify_commission
+                    WHEN 'team' THEN pref.notify_team
+                    WHEN 'staking' THEN pref.notify_staking
+                    WHEN 'market' THEN pref.notify_market
+                    WHEN 'genesis' THEN pref.notify_genesis
+                    ELSE pref.notify_system END, 1) = 1
                AND NOT EXISTS (
                    SELECT 1 FROM nx_notification previous
                     WHERE previous.user_id = u.id AND previous.is_deleted = 0
@@ -384,14 +405,23 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
             @Param("cooldownSince") LocalDateTime cooldownSince, @Param("now") LocalDateTime now);
 
     @Update("""
-            UPDATE nx_notification
-               SET push_status = 'DELIVERED',
-                   pushed_at = #{now},
-                   next_push_at = NULL,
-                   updated_at = #{now}
-             WHERE biz_no = #{bizNo}
-               AND push_status = 'QUEUED'
-               AND is_deleted = 0
+            UPDATE nx_notification n
+            LEFT JOIN nx_user_preference pref
+              ON pref.user_id = n.user_id AND pref.is_deleted = 0
+               SET n.push_status = 'DELIVERED',
+                   n.pushed_at = #{now},
+                   n.next_push_at = NULL,
+                   n.updated_at = #{now}
+             WHERE n.biz_no = #{bizNo}
+                AND n.push_status = 'QUEUED'
+                AND n.is_deleted = 0
+                AND COALESCE(CASE LOWER(n.type)
+                    WHEN 'commission' THEN pref.notify_commission
+                    WHEN 'team' THEN pref.notify_team
+                    WHEN 'staking' THEN pref.notify_staking
+                    WHEN 'market' THEN pref.notify_market
+                    WHEN 'genesis' THEN pref.notify_genesis
+                    ELSE pref.notify_system END, 1) = 1
             """)
     int markNotificationsDelivered(@Param("bizNo") String bizNo, @Param("now") LocalDateTime now);
 
@@ -402,10 +432,19 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
                    GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, #{now}), 0) accountAgeMonths,
                    DATE_FORMAT(u.created_at, '%x-W%v') cohort
              FROM nx_notification n
-              JOIN nx_user u ON u.id = n.user_id AND u.is_deleted = 0
+               JOIN nx_user u ON u.id = n.user_id AND u.is_deleted = 0
+               LEFT JOIN nx_user_preference pref
+                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
              WHERE n.biz_no = #{bizNo}
                AND n.push_status = 'DELIVERED'
-               AND n.is_deleted = 0
+                AND n.is_deleted = 0
+                AND COALESCE(CASE LOWER(n.type)
+                    WHEN 'commission' THEN pref.notify_commission
+                    WHEN 'team' THEN pref.notify_team
+                    WHEN 'staking' THEN pref.notify_staking
+                    WHEN 'market' THEN pref.notify_market
+                    WHEN 'genesis' THEN pref.notify_genesis
+                    ELSE pref.notify_system END, 1) = 1
              ORDER BY n.id
             """)
     List<NotificationEventFact> notificationFacts(

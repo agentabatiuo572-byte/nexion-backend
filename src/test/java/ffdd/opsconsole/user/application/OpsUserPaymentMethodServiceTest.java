@@ -35,8 +35,21 @@ class OpsUserPaymentMethodServiceTest {
     @BeforeEach
     void executeIdempotentAction() {
         when(sandboxGuard.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(sandboxGuard.isStrictProductionProfile()).thenReturn(true);
+        when(mapper.activeUserEnvironment(any())).thenReturn(0);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(Map.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void rejectsProductionUserWhenSandboxProfileIsActive() {
+        when(sandboxGuard.sourceEnvironment()).thenReturn("SANDBOX");
+        when(mapper.activeUserEnvironment(42L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.list(42L, false, 1, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("PAYMENT_METHOD_USER_ENVIRONMENT_MISMATCH");
+        verify(mapper, never()).listMethods(eq(42L), eq(false), eq("SANDBOX"), eq(0), eq(10));
     }
 
     @Test
@@ -85,18 +98,13 @@ class OpsUserPaymentMethodServiceTest {
     void explicitSandboxRevocationIsConfirmedAndMarkedMock() {
         providerProperties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
         when(sandboxGuard.sourceEnvironment()).thenReturn("SANDBOX");
-        when(mapper.findMethod(42L, 8L, "SANDBOX")).thenReturn(new UserPaymentMethodMapper.PaymentMethodRow(
-                8L, 42L, "tok_0123456789abcdef01234567", "VISA", "4242", "12/29", "LOCAL_SANDBOX",
-                true, "BOUND", false, null, 3L, null, null,
-                null, null, null, null, null, "SANDBOX"));
-        when(mapper.unbind(42L, 8L, 3L, "user requested card removal", "superadmin", "CONFIRMED", "SANDBOX")).thenReturn(1);
-        when(mapper.insertRevokeCommand(anyString(), eq(8L), eq(42L), anyString(), eq("CONFIRMED"), eq("mock"), eq("SANDBOX"), any(), any(), any())).thenReturn(1);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
 
-        Map<String, Object> result = service.unbind(42L, 8L, "idem-sandbox-revoke",
-                new UserPaymentMethodCommandRequest("user requested card removal", 3L, "superadmin"));
-
-        assertThat(result).containsEntry("providerRevocation", "CONFIRMED")
-                .containsEntry("source", "mock").containsEntry("sandbox", true);
+        assertThatThrownBy(() -> service.unbind(42L, 8L, "idem-sandbox-revoke",
+                new UserPaymentMethodCommandRequest("user requested card removal", 3L, "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("PAYMENT_METHOD_SANDBOX_UNAVAILABLE");
+        verify(mapper, never()).findMethod(eq(42L), eq(8L), eq("SANDBOX"));
     }
 
     @Test

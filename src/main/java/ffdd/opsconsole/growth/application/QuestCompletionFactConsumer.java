@@ -27,11 +27,12 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class QuestCompletionFactConsumer {
     private static final Set<String> TRUSTED_PRODUCERS = Set.of(
-            "ORDER", "REFERRAL", "LEARNING", "DEVICE", "COMMISSION", "SYSTEM");
+            "ORDER", "REFERRAL", "LEARNING", "DEVICE", "COMMISSION", "SYSTEM", "SHARE");
 
     private final QuestCompletionFactMapper mapper;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+    private final AppGrowthWheelSandboxService sandboxService;
 
     @Transactional(rollbackFor = Exception.class)
     public CompletionResult consume(QuestCompletionCommand command) {
@@ -43,6 +44,14 @@ public class QuestCompletionFactConsumer {
         }
         String eventId = reference(command.eventId(), 96, "QUEST_COMPLETION_EVENT_ID_INVALID");
         String questCode = reference(command.questCode(), 64, "QUEST_CODE_REQUIRED");
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) {
+                AppGrowthWheelSandboxService.QuestCompletionResult result =
+                        sandboxService.completeQuest(command.userId(), questCode);
+                return new CompletionResult(result.questCode(), result.status(), result.replay());
+            }
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         Long userId = command.userId();
         if (userId == null || userId <= 0 || mapper.lockActiveUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
@@ -50,6 +59,16 @@ public class QuestCompletionFactConsumer {
         MissionDefinition mission = mapper.lockMission(questCode);
         if (mission == null) throw new BizException(409, "QUEST_NOT_CONFIGURED");
 
+        String currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId());
+        if (currentStatus != null && Set.of("COMPLETED", "CLAIMABLE", "CLAIMED")
+                .contains(currentStatus.trim().toUpperCase(Locale.ROOT))) {
+            if ("SHARE".equals(producer)
+                    && mapper.lockFactForUserMission(producer, eventId, userId,
+                            mission.missionId(), questCode) == null) {
+                throw new BizException(429, "SHARE_EVENT_RATE_LIMITED");
+            }
+            return new CompletionResult(questCode, currentStatus.trim().toUpperCase(Locale.ROOT), true);
+        }
         String payloadHash = sha256(producer + "|" + eventId + "|" + userId + "|"
                 + mission.missionId() + "|" + questCode);
         if (mapper.insertFact(producer, eventId, payloadHash, userId, mission.missionId(), questCode) == 0) {
@@ -59,7 +78,7 @@ public class QuestCompletionFactConsumer {
             }
             return new CompletionResult(questCode, "COMPLETED", true);
         }
-        String currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId());
+        currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId());
         if (currentStatus != null && Set.of("COMPLETED", "CLAIMABLE", "CLAIMED")
                 .contains(currentStatus.trim().toUpperCase(Locale.ROOT))) {
             return new CompletionResult(questCode, currentStatus.trim().toUpperCase(Locale.ROOT), true);

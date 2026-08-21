@@ -54,17 +54,17 @@ class AppAmbassadorApplicationServiceTest {
         var mapper = mock(AppAmbassadorApplicationMapper.class);
         var inserted = new AtomicReference<AppAmbassadorApplicationMapper.ApplicationWrite>();
         when(mapper.lockUser(7L)).thenReturn(new AppAmbassadorApplicationMapper.UserScope(1, "V6", "Alice", "Tokyo"));
-        when(mapper.findByKey(7L, "SANDBOX", "run-1", "amb-key")).thenAnswer(ignored -> inserted.get() == null
+        when(mapper.findByKey(7L, "SANDBOX", "sandbox-run-20260816", "amb-key")).thenAnswer(ignored -> inserted.get() == null
                 ? null : row(inserted.get()));
         when(mapper.insertApplication(any())).thenAnswer(invocation -> { inserted.set(invocation.getArgument(0)); return 1; });
-        var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
-        environment.setActiveProfiles("local-sandbox");
+        var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
+        environment.setActiveProfiles("dev");
 
         var result = new AppAmbassadorApplicationService(mapper, environment).submit(
                 7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX").containsEntry("runId", "run-1");
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX").containsEntry("runId", "sandbox-run-20260816");
         assertThat(inserted.get().sourceEnvironment()).isEqualTo("SANDBOX");
     }
 

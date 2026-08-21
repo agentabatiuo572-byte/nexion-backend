@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.outbox;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -69,11 +70,13 @@ public class EventOutboxDispatchScheduler {
 
     private final EventOutboxService outboxService;
     private final ApplicationEventPublisher eventPublisher;
+    private final AtomicLong lastHeartbeatNanos = new AtomicLong();
 
     @Scheduled(
             fixedDelayString = "${nexion.outbox.dispatch-delay-ms:1000}",
             initialDelayString = "${nexion.outbox.dispatch-initial-delay-ms:1000}")
     public void dispatchPending() {
+        logHeartbeat();
         // Only dispatch event types that have a synchronous, durable consumer.
         // Publishing an unknown Spring event succeeds even when it has no listener;
         // selecting all event types here would therefore falsely mark them PUBLISHED.
@@ -92,23 +95,44 @@ public class EventOutboxDispatchScheduler {
         supportedEventTypes.addAll(D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
         supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
-        for (String eventType : supportedEventTypes) {
+        int scanned = 0;
+        int published = 0;
+        int failed = 0;
+        for (String eventType : supportedEventTypes.stream().distinct().toList()) {
             List<EventOutboxMessage> pending = outboxService.listPendingByEventType(eventType, BATCH_SIZE);
             if (pending == null || pending.isEmpty()) {
                 continue;
             }
+            scanned += pending.size();
+            log.info("event-outbox dispatch batch eventType={} pending={}", eventType, pending.size());
             for (EventOutboxMessage message : pending) {
                 try {
                     outboxService.assertDispatchAllowed(message);
                     eventPublisher.publishEvent(message);
                     if (!outboxService.markPublished(message.getEventId())) {
                         log.warn("Outbox message was delivered but status was not updated eventId={}", message.getEventId());
+                    } else {
+                        published++;
                     }
                 } catch (RuntimeException ex) {
+                    failed++;
                     outboxService.markFailed(message.getEventId(), ex.getMessage());
                     log.warn("Outbox delivery failed eventId={}, eventType={}, error={}",
                             message.getEventId(), message.getEventType(), ex.getMessage());
                 }
+            }
+        }
+        if (scanned > 0 || failed > 0) {
+            log.info("event-outbox dispatch tick scanned={} published={} failed={}", scanned, published, failed);
+        }
+    }
+
+    private void logHeartbeat() {
+        long now = System.nanoTime();
+        long previous = lastHeartbeatNanos.get();
+        if (previous == 0 || now - previous >= 30_000_000_000L) {
+            if (lastHeartbeatNanos.compareAndSet(previous, now)) {
+                log.info("event-outbox dispatcher heartbeat scheduled=true");
             }
         }
     }

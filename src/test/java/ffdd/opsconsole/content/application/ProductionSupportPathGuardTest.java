@@ -17,7 +17,7 @@ class ProductionSupportPathGuardTest {
 
     @Test
     void acceptanceProfileCannotReachAProductionSupportPath() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         assertThatThrownBy(() -> guard.requireAllowed(7L)).hasMessageContaining("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
     }
 
@@ -37,13 +37,13 @@ class ProductionSupportPathGuardTest {
 
     @Test
     void isolatedProfilesRejectOfficialOpsSupportWritesBeforeTheirServices() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"local-sandbox"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         assertThatThrownBy(guard::requireOpsWriteAllowed).hasMessageContaining("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
     }
 
     @Test
     void onlyDefaultOrExplicitProductionCanRunSharedSupportAutomation() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance", "production"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev", "prod"});
         assertThat(guard.productionSupportAutomationAllowed()).isFalse();
         when(environment.getActiveProfiles()).thenReturn(new String[] {"unknown"});
         assertThat(guard.productionSupportAutomationAllowed()).isFalse();

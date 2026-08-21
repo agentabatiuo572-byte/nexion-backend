@@ -8,7 +8,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -26,12 +26,6 @@ public class JanusAppliedProofVerifier {
     private final JanusTakeoverMapper mapper;
     @Value("${nexion.janus.executor.mode:PRODUCTION}")
     private final String mode;
-    @Value("${nexion.janus.executor.sandbox-token:}")
-    private final String sandboxToken;
-    @Value("${nexion.janus.executor.sandbox-users:}")
-    private final String sandboxUsers;
-    @Value("${nexion.janus.executor.sandbox-devices:}")
-    private final String sandboxDevices;
     @Value("${nexion.janus.executor.sandbox-targets:}")
     private final String sandboxTargets;
     @Value("${nexion.janus.executor.production-keys:}")
@@ -40,6 +34,7 @@ public class JanusAppliedProofVerifier {
     private final long maxSkewMs;
     @Value("${nexion.janus.executor.production-applied-enabled:false}")
     private final boolean productionAppliedEnabled;
+    private final Optional<JanusSandboxEnrollmentService> sandboxEnrollmentService;
 
     public Verification verify(long userId, String sid, Map<String,Object> row,
                                JanusTakeoverProgressRequest request) {
@@ -68,10 +63,11 @@ public class JanusAppliedProofVerifier {
         }
         String canonical = canonical(userId, sid, request);
         if ("SANDBOX".equals(proofMode)) {
+            JanusSandboxEnrollmentService enrollment = sandboxEnrollmentService.orElse(null);
+            boolean enrolled = enrollment != null && enrollment.verify(userId, request.deviceId(), signature);
+            boolean targetAllowed = enrolled && enrollment.allowsTarget(target(request));
             if (!"SANDBOX".equals(upper(mode)) || !"sandbox".equals(executorId)
-                    || trim(sandboxToken).isEmpty() || !constantTime(trim(sandboxToken), signature)
-                    || !parseLongs(sandboxUsers).contains(userId) || !parseSet(sandboxDevices).contains(trim(request.deviceId()))
-                    || !parseSet(sandboxTargets).contains(target(request))) {
+                    || !enrolled || !targetAllowed) {
                 return rejected("JANUS_SANDBOX_PROOF_ISOLATION_MISMATCH");
             }
             if (!trim(request.handoffReceipt()).startsWith("sandbox:v1:")) {
@@ -144,8 +140,6 @@ public class JanusAppliedProofVerifier {
         catch (Exception ex) { throw new IllegalStateException("JANUS_PROOF_HASH_FAILED", ex); }
     }
     private static String proofId(String proofHash) { return "JAP-" + proofHash.substring(0, 24).toUpperCase(); }
-    private static Set<String> parseSet(String value) { return java.util.Arrays.stream(value.split(",")).map(String::trim).filter(v -> !v.isEmpty()).collect(java.util.stream.Collectors.toUnmodifiableSet()); }
-    private static Set<Long> parseLongs(String value) { return parseSet(value).stream().map(Long::valueOf).collect(java.util.stream.Collectors.toUnmodifiableSet()); }
     private static Map<String,ProductionExecutor> parseExecutors(String value) {
         Map<String,ProductionExecutor> out = new LinkedHashMap<>();
         for (String item : value.split(",")) { String[] bits = item.trim().split(":", 3); if (bits.length != 3) continue;

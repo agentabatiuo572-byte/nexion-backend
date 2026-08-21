@@ -35,4 +35,25 @@ class StorefrontPurchaseGatePolicyTest {
         assertThat(policy.evaluate("{\"mode\":\"all\",\"enforce\":false,\"unknown\":1}", null).code())
                 .isEqualTo("PURCHASE_GATE_INVALID");
     }
+
+    @Test
+    void negativeRankOrDirectMinimumFailsClosedAndQuotaProbeCannotBypassStructure() {
+        assertThat(policy.evaluate("{\"rankMin\":-1,\"mode\":\"all\",\"enforce\":true}",
+                new StorefrontPurchaseGatePolicy.Facts(99, 99, BigDecimal.ZERO)).code())
+                .isEqualTo("PURCHASE_GATE_INVALID");
+        assertThat(policy.evaluate("{\"activeDirectMin\":-1,\"mode\":\"all\",\"enforce\":true}",
+                new StorefrontPurchaseGatePolicy.Facts(99, 99, BigDecimal.ZERO)).code())
+                .isEqualTo("PURCHASE_GATE_INVALID");
+        assertThat(policy.hasQuota("{\"rankMin\":-1,\"quotaCap\":2,\"quotaSold\":0,\"mode\":\"all\",\"enforce\":true}"))
+                .isFalse();
+    }
+
+    @Test
+    void unsupportedMonthlyQuotaFailsClosedUntilAperiodicCounterExists() {
+        String monthGate = "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":2,"
+                + "\"quotaSold\":0,\"quotaPeriod\":\"month\"}";
+        assertThat(policy.evaluate(monthGate, new StorefrontPurchaseGatePolicy.Facts(0, 0, BigDecimal.ZERO)).code())
+                .isEqualTo("PURCHASE_GATE_INVALID");
+        assertThat(policy.hasQuota(monthGate)).isFalse();
+    }
 }

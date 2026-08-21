@@ -7,7 +7,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 
 /** Registers the L6 fixture writer only in one explicitly isolated runtime profile. */
 final class BehaviorAnalyticsFixtureProfileCondition implements Condition {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "acceptance", "local-sandbox");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("dev", "test");
 
     static boolean isStrictIsolatedProfile(String... activeProfiles) {
         return activeProfiles != null

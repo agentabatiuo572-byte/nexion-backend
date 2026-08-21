@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.shared.exception.BizException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
@@ -24,9 +25,8 @@ public class LearningAcceptanceSandboxGate {
             }
             return;
         }
-        if (activeProfiles != null && activeProfiles.length > 0
-                && !(activeProfiles.length == 1 && "production".equals(activeProfiles[0]))) {
-            throw new IllegalStateException("LEARNING_ACCEPTANCE_PROFILE_INVALID");
+        if (!FundsSandboxProfileGuard.isStrictProductionProfile(activeProfiles)) {
+            throw new BizException(503, "LEARNING_ACCEPTANCE_PROFILE_INVALID");
         }
         if ("SANDBOX".equals(sourceEnvironment)) {
             throw new IllegalStateException("LEARNING_ACCEPTANCE_SANDBOX_PROFILE_FORBIDDEN");
@@ -43,9 +43,8 @@ public class LearningAcceptanceSandboxGate {
         if (FundsSandboxProfileGuard.isStrictIsolatedProfile(activeProfiles)) {
             throw new IllegalStateException("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
         }
-        if (activeProfiles != null && activeProfiles.length > 0
-                && !(activeProfiles.length == 1 && "production".equals(activeProfiles[0]))) {
-            throw new IllegalStateException("LEARNING_ACCEPTANCE_PROFILE_INVALID");
+        if (!FundsSandboxProfileGuard.isStrictProductionProfile(activeProfiles)) {
+            throw new BizException(503, "LEARNING_ACCEPTANCE_PROFILE_INVALID");
         }
     }
 }

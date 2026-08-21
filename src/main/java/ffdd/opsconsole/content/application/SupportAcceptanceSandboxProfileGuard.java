@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
  * production-adjacent and is never permitted to select sandbox tables.
  */
 @Component
-@Profile({"acceptance", "test", "local-sandbox"})
+@Profile({"dev", "test"})
 @RequiredArgsConstructor
 public class SupportAcceptanceSandboxProfileGuard {
     private final Environment environment;
@@ -24,7 +24,7 @@ public class SupportAcceptanceSandboxProfileGuard {
     public boolean available() {
         String[] active = environment.getActiveProfiles();
         return "ENABLED".equalsIgnoreCase(mode == null ? "" : mode.trim())
-                && active.length == 1 && ("acceptance".equals(active[0]) || "test".equals(active[0]) || "local-sandbox".equals(active[0]));
+                && active.length == 1 && ("dev".equals(active[0]) || "test".equals(active[0]) || "dev".equals(active[0]));
     }
 
     public void requireAvailable() {

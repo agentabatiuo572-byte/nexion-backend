@@ -9,8 +9,8 @@ import org.springframework.core.io.ClassPathResource;
 
 class LocalSandboxConfigurationTest {
     @Test
-    void localSandboxMapsOneAcceptanceRunAcrossSandboxDomainsAndEnablesSupport() throws IOException {
-        String yaml = resource("application-local-sandbox.yml");
+    void developmentMapsOneAcceptanceRunAcrossInternalSandboxDomainsAndEnablesSupport() throws IOException {
+        String yaml = resource("application-dev.yml");
 
         assertThat(yaml)
                 .contains("source-environment: SANDBOX")
@@ -22,17 +22,19 @@ class LocalSandboxConfigurationTest {
     }
 
     @Test
-    void localSandboxDoesNotImplicitlyEnableFundsSandbox() throws IOException {
-        String yaml = resource("application-local-sandbox.yml");
+    void developmentEnablesInternalFundsSandboxWhileDefaultsStayFailClosed() throws IOException {
+        String yaml = resource("application-dev.yml");
         String defaults = resource("application.yml");
 
-        assertThat(yaml).doesNotContain("funds-sandbox:", "mode: LOCAL_SANDBOX");
+        assertThat(yaml).contains("funds-sandbox:", "mode: LOCAL_SANDBOX")
+                .contains("payment-method-provider:", "mode: LOCAL_SANDBOX")
+                .contains("compute-task:", "executor:", "mode: SANDBOX");
         assertThat(defaults).contains("mode: ${NEXION_FUNDS_SANDBOX_MODE:DISABLED}");
     }
 
     @Test
-    void localSandboxRunIdMappingsHaveAnEmptyFailClosedDefault() throws IOException {
-        String yaml = resource("application-local-sandbox.yml");
+    void developmentRunIdMappingsHaveAnEmptyFailClosedDefault() throws IOException {
+        String yaml = resource("application-dev.yml");
 
         String mapping = "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}";
         int occurrences = 0;

@@ -18,8 +18,24 @@ class AppHomeOverviewMapperSqlContractTest {
         assertTrue(grid.contains("u.sandbox = #{sandbox}"));
         assertTrue(devices.contains("u.sandbox = #{sandbox}"));
         assertTrue(devices.contains("SHA2("));
+        assertTrue(devices.contains("dc.display_name AS name"));
+        assertTrue(devices.contains("dc.location AS city"));
         assertTrue(!devices.contains("u.email"));
         assertTrue(!devices.contains("u.phone"));
+        assertTrue(!devices.contains("Pocket Studios"));
+        assertTrue(!devices.contains("Helix Labs"));
+        assertTrue(!devices.contains("Echo Earbuds"));
+    }
+
+    @Test
+    void sandboxHomeUsesOnlyRunScopedDevicesAndNeverConsumesLegacyRewardRows() throws Exception {
+        String devices = select("sandboxActiveDevices");
+        assertTrue(devices.contains("d.user_id = #{userId}"));
+        assertTrue(devices.contains("d.source_environment = 'SANDBOX'"));
+        assertTrue(devices.contains("d.run_id = #{runId}"));
+        assertTrue(java.util.Arrays.stream(AppHomeOverviewMapper.class.getDeclaredMethods())
+                .noneMatch(method -> method.getName().equals("sandboxEarnings")
+                        || method.getName().equals("sandboxEarningsLedger")));
     }
 
     private String select(String name) throws Exception {

@@ -21,12 +21,14 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
                    COALESCE(dc.dispatch_paused, 0) AS dispatchPaused
               FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
               LEFT JOIN nx_compute_dc_ops_state dc
                 ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
              WHERE d.id = #{deviceId} AND d.user_id = #{userId}
-               AND d.is_deleted = 0 AND UPPER(d.ownership_status) = 'OWNED'
+               AND d.is_deleted = 0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND UPPER(d.ownership_status) = 'OWNED'
              LIMIT 1 FOR UPDATE
             """)
     DeviceRow lockOwnedDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -38,15 +40,30 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.online_status AS onlineStatus, r.paused_reason AS pausedReason,
                    COALESCE(dc.dispatch_paused, 0) AS dispatchPaused
               FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_user_device_runtime r
                 ON r.user_device_id = d.id AND r.is_deleted = 0
               LEFT JOIN nx_compute_dc_ops_state dc
                 ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
+               AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
              ORDER BY d.id
             """)
     List<DeviceRow> ownedDevices(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT d.id, d.instance_no AS instanceNo, d.device_type AS deviceType,
+                   d.product_tier AS productTier, d.name, d.status, d.activated_at AS activatedAt,
+                   d.vram_total_gb AS vramTotalGb, d.dc_location AS dcLocation,
+                   NULL AS onlineStatus, NULL AS pausedReason, 0 AS dispatchPaused
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+             WHERE d.user_id=#{userId} AND d.source_environment='SANDBOX' AND d.run_id=#{runId}
+               AND d.is_deleted=0 AND UPPER(d.ownership_status)='OWNED'
+             ORDER BY d.id
+            """)
+    List<DeviceRow> sandboxOwnedDevices(@Param("userId") Long userId, @Param("runId") String runId);
 
     @Select("""
             SELECT task_id AS taskId, name, task_class AS taskClass, model_name AS modelName,
@@ -69,9 +86,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
             SELECT lock_until AS lockUntil, last_task_no AS lastTaskNo
-              FROM nx_compute_device_task_lock
+             FROM nx_compute_device_task_lock
              WHERE user_device_id = #{deviceId} AND user_id = #{userId}
-               AND source_environment = #{sourceEnvironment} AND is_deleted = 0
+               AND source_environment = 'PRODUCTION' AND source_environment = #{sourceEnvironment} AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
              LIMIT 1 FOR UPDATE
             """)
     DeviceLockRow lockDeviceTaskLock(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
@@ -79,9 +98,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
             SELECT lock_until AS lockUntil, last_task_no AS lastTaskNo
-              FROM nx_compute_device_task_lock
+             FROM nx_compute_device_task_lock
              WHERE user_device_id = #{deviceId} AND user_id = #{userId}
-               AND source_environment = #{sourceEnvironment} AND is_deleted = 0
+               AND source_environment = 'PRODUCTION' AND source_environment = #{sourceEnvironment} AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
              LIMIT 1
             """)
     DeviceLockRow deviceTaskLock(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
@@ -96,10 +117,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
                    t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
               FROM nx_compute_task t
+              JOIN nx_user u ON u.id = t.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
              WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId}
-               AND t.source_environment = #{sourceEnvironment}
+               AND t.source_environment = 'PRODUCTION' AND t.source_environment = #{sourceEnvironment}
                AND t.is_deleted = 0 AND UPPER(t.status) IN ('CLAIMED','RUNNING')
              ORDER BY t.created_at DESC LIMIT 1 FOR UPDATE
             """)
@@ -115,9 +137,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
                    t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
               FROM nx_compute_task t
+              JOIN nx_user u ON u.id = t.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
-             WHERE t.user_id = #{userId} AND t.source_environment = #{sourceEnvironment} AND t.is_deleted = 0
+             WHERE t.user_id = #{userId} AND t.source_environment = 'PRODUCTION'
+               AND t.source_environment = #{sourceEnvironment} AND t.is_deleted = 0
              ORDER BY t.created_at DESC, t.id DESC LIMIT 100
             """)
     List<AssignmentRow> assignments(@Param("userId") Long userId,
@@ -132,14 +156,19 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
                    t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
               FROM nx_compute_task t
+              JOIN nx_user u ON u.id = t.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
              WHERE t.task_no = #{taskNo} AND t.user_id = #{userId}
-               AND t.source_environment = #{sourceEnvironment} AND t.is_deleted = 0
+               AND t.source_environment = 'PRODUCTION' AND t.source_environment = #{sourceEnvironment}
+               AND t.is_deleted = 0
              LIMIT 1 FOR UPDATE
             """)
     AssignmentRow lockAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
                                  @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0 LIMIT 1")
+    UserScope userScope(@Param("userId") Long userId);
 
     @Insert("""
             INSERT INTO nx_compute_task(
@@ -148,10 +177,24 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               source_environment, client_name, status,
               started_at, worker_ack_at, lease_expires_at, attempt_count, max_attempts,
               created_at, updated_at, is_deleted)
-            VALUES(#{taskNo}, #{userId}, #{deviceId}, #{task.taskClass}, #{task.taskId}, #{task.name},
+            SELECT #{taskNo}, #{userId}, #{deviceId}, #{task.taskClass}, #{task.taskId}, #{task.name},
               #{task.modelName}, #{rewardUsdt}, #{requiredSeconds}, #{taskLockMinutes}, #{completionNonce},
-              #{proofExpiresAt}, #{sourceEnvironment}, 'Nexion App',
-              'RUNNING', #{now}, #{now}, #{leaseExpiresAt}, 1, 3, #{now}, #{now}, 0)
+              #{proofExpiresAt}, 'PRODUCTION', 'Nexion App',
+              'RUNNING', #{now}, #{now}, #{leaseExpiresAt}, 1, 3, #{now}, #{now}, 0
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+               AND EXISTS (SELECT 1 FROM nx_user_device d
+                            WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+                               AND d.source_environment='PRODUCTION' AND d.run_id=''
+                               AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
+                               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                                WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
+                                                  AND oc.activation_status='ACTIVE'
+                                                  AND oc.source_environment='PRODUCTION' AND oc.run_id=''
+                                                  AND oc.is_deleted=0)))
             """)
     int insertAssignment(@Param("taskNo") String taskNo, @Param("userId") Long userId,
                          @Param("deviceId") Long deviceId, @Param("task") TaskConfigRow task,
@@ -167,19 +210,28 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, active_task_no, client_name,
               heartbeat_at, created_at, updated_at, is_deleted)
-            VALUES(#{deviceId}, 'ONLINE', #{taskNo}, 'Nexion App', #{now}, #{now}, #{now}, 0)
+            SELECT d.id, 'ONLINE', #{taskNo}, 'Nexion App', #{now}, #{now}, #{now}, 0
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE'
+                AND u.is_deleted = 0 AND u.sandbox = 0
+             WHERE d.id = #{deviceId} AND d.user_id = #{userId} AND d.is_deleted = 0
+               AND d.source_environment='PRODUCTION' AND d.run_id=''
             ON DUPLICATE KEY UPDATE active_task_no = VALUES(active_task_no), client_name = VALUES(client_name),
               heartbeat_at = VALUES(heartbeat_at), updated_at = VALUES(updated_at), is_deleted = 0
             """)
     int bindRuntimeTask(@Param("deviceId") Long deviceId, @Param("taskNo") String taskNo,
+                        @Param("userId") Long userId,
                         @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_compute_task SET status = 'COMPLETED', completed_at = #{now},
                    proof_consumed_at = #{now}, updated_at = #{now}
              WHERE task_no = #{taskNo} AND user_id = #{userId}
-               AND source_environment = #{sourceEnvironment} AND UPPER(status) IN ('CLAIMED','RUNNING')
+               AND source_environment = #{sourceEnvironment} AND source_environment = 'PRODUCTION'
+               AND UPPER(status) IN ('CLAIMED','RUNNING')
                AND completion_nonce = #{proofNonce} AND proof_consumed_at IS NULL AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
             """)
     int completeAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
                            @Param("proofNonce") String proofNonce,
@@ -190,9 +242,11 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             UPDATE nx_compute_task
                SET status = 'EXPIRED', last_error = 'LEASE_EXPIRED', updated_at = #{now}
              WHERE task_no = #{taskNo} AND user_id = #{userId}
-               AND source_environment = #{sourceEnvironment}
+               AND source_environment = #{sourceEnvironment} AND source_environment = 'PRODUCTION'
                AND UPPER(status) IN ('CLAIMED','RUNNING') AND lease_expires_at <= #{now}
                AND proof_consumed_at IS NULL AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
             """)
     int expireAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
                          @Param("sourceEnvironment") String sourceEnvironment,
@@ -202,9 +256,23 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             INSERT INTO nx_compute_receipt(user_id, user_device_id, task_no, receipt_no, task_type,
               client_name, reward_usdt, reward_nex, earning_status, source_environment, proof_hash, completed_at,
               created_at, updated_at, is_deleted)
-            VALUES(#{userId}, #{deviceId}, #{task.taskNo}, #{receiptNo}, #{task.taskClass},
-              #{task.clientName}, #{task.rewardUsdt}, 0, #{earningStatus}, #{sourceEnvironment},
-              #{proofHash}, #{now}, #{now}, #{now}, 0)
+            SELECT #{userId}, #{deviceId}, #{task.taskNo}, #{receiptNo}, #{task.taskClass},
+              #{task.clientName}, #{task.rewardUsdt}, 0, #{earningStatus}, 'PRODUCTION',
+              #{proofHash}, #{now}, #{now}, #{now}, 0
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+               AND EXISTS (SELECT 1 FROM nx_user_device d
+                            WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+                               AND d.source_environment='PRODUCTION' AND d.run_id=''
+                               AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
+                               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                                WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
+                                                  AND oc.activation_status='ACTIVE'
+                                                  AND oc.source_environment='PRODUCTION' AND oc.run_id=''
+                                                  AND oc.is_deleted=0)))
             """)
     int insertReceipt(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                       @Param("task") AssignmentRow task, @Param("receiptNo") String receiptNo,
@@ -217,44 +285,83 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                SET usdt_available = usdt_available + #{amount}, lifetime_earned = lifetime_earned + #{amount},
                    version = version + 1, updated_at = #{now}
              WHERE user_id = #{userId} AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
+               AND EXISTS (SELECT 1 FROM nx_user_device d
+                            WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+                               AND d.source_environment='PRODUCTION' AND d.run_id=''
+                               AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
+                               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                                WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
+                                                  AND oc.activation_status='ACTIVE'
+                                                  AND oc.source_environment='PRODUCTION' AND oc.run_id=''
+                                                  AND oc.is_deleted=0)))
             """)
-    int creditWallet(@Param("userId") Long userId, @Param("amount") BigDecimal amount,
+    int creditWallet(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                     @Param("amount") BigDecimal amount,
                      @Param("now") LocalDateTime now);
 
-    @Select("SELECT usdt_available FROM nx_user_wallet WHERE user_id = #{userId} AND is_deleted = 0 LIMIT 1")
+    @Select("SELECT w.usdt_available FROM nx_user_wallet w JOIN nx_user u ON u.id = w.user_id "
+            + "AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0 "
+            + "WHERE w.user_id = #{userId} AND w.is_deleted = 0 LIMIT 1")
     BigDecimal walletUsdt(@Param("userId") Long userId);
 
     @Insert("""
             INSERT INTO nx_wallet_ledger(user_id, biz_no, biz_type, asset, direction, amount,
               balance_after, status, remark, created_at, updated_at, is_deleted)
-            VALUES(#{userId}, #{taskNo}, 'COMPUTE_TASK_REWARD', 'USDT', 'IN', #{amount},
-              #{balanceAfter}, 'SUCCESS', 'server-authoritative compute task reward', #{now}, #{now}, 0)
+            SELECT #{userId}, #{taskNo}, 'COMPUTE_TASK_REWARD', 'USDT', 'IN', #{amount},
+              #{balanceAfter}, 'SUCCESS', 'server-authoritative compute task reward', #{now}, #{now}, 0
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+               AND EXISTS (SELECT 1 FROM nx_user_device d
+                            WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+                               AND d.source_environment='PRODUCTION' AND d.run_id=''
+                               AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
+                               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                                WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
+                                                  AND oc.activation_status='ACTIVE'
+                                                  AND oc.source_environment='PRODUCTION' AND oc.run_id=''
+                                                  AND oc.is_deleted=0)))
             """)
-    int insertWalletLedger(@Param("userId") Long userId, @Param("taskNo") String taskNo,
+    int insertWalletLedger(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                           @Param("taskNo") String taskNo,
                            @Param("amount") BigDecimal amount, @Param("balanceAfter") BigDecimal balanceAfter,
                            @Param("now") LocalDateTime now);
 
     @Insert("""
             INSERT INTO nx_earning_event(event_no, user_id, user_device_id, receipt_no, asset, amount,
               status, wallet_posted_at, created_at, updated_at, is_deleted)
-            VALUES(#{eventNo}, #{userId}, #{deviceId}, #{receiptNo}, 'USDT', #{amount},
-              'POSTED', #{now}, #{now}, #{now}, 0)
+            SELECT #{eventNo}, #{userId}, #{deviceId}, #{receiptNo}, 'USDT', #{amount},
+              'POSTED', #{now}, #{now}, #{now}, 0
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+               AND EXISTS (SELECT 1 FROM nx_user_device d
+                            WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+                               AND d.source_environment='PRODUCTION' AND d.run_id=''
+                               AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
+                               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                                WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
+                                                  AND oc.activation_status='ACTIVE'
+                                                  AND oc.source_environment='PRODUCTION' AND oc.run_id=''
+                                                  AND oc.is_deleted=0)))
             """)
     int insertEarningEvent(@Param("eventNo") String eventNo, @Param("userId") Long userId,
                            @Param("deviceId") Long deviceId, @Param("receiptNo") String receiptNo,
                            @Param("amount") BigDecimal amount, @Param("now") LocalDateTime now);
 
-    @Insert("""
-            INSERT INTO nx_compute_sandbox_reward(task_no, user_id, user_device_id, source_environment, receipt_no,
-              simulated_reward_usdt, proof_hash, created_at)
-            VALUES(#{taskNo}, #{userId}, #{deviceId}, 'SANDBOX', #{receiptNo}, #{amount}, #{proofHash}, #{now})
-            """)
-    int insertSandboxReward(@Param("taskNo") String taskNo, @Param("userId") Long userId,
-                            @Param("deviceId") Long deviceId, @Param("receiptNo") String receiptNo,
-                            @Param("amount") BigDecimal amount, @Param("proofHash") String proofHash,
-                            @Param("now") LocalDateTime now);
-
-    @Select("SELECT instance_no FROM nx_user_device WHERE id = #{deviceId} AND user_id = #{userId} AND is_deleted = 0 LIMIT 1")
+    @Select("SELECT d.instance_no FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id "
+            + "AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0 "
+            + "WHERE d.id = #{deviceId} AND d.user_id = #{userId} AND d.source_environment='PRODUCTION' "
+            + "AND d.run_id='' AND d.is_deleted = 0 LIMIT 1")
     String deviceInstanceNo(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("""
@@ -262,6 +369,9 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    d.vram_total_gb AS deviceVram
               FROM nx_admin_device_task c
               JOIN nx_user_device d ON d.id = #{deviceId} AND d.user_id = #{userId} AND d.is_deleted = 0
+                AND d.source_environment='PRODUCTION' AND d.run_id=''
+              JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE'
+                AND u.is_deleted = 0 AND u.sandbox = 0
              WHERE c.task_id = #{taskId} AND c.is_deleted = 0
              LIMIT 1
             """)
@@ -271,15 +381,22 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Update("""
             UPDATE nx_user_device_runtime SET active_task_no = NULL, updated_at = #{now}
              WHERE user_device_id = #{deviceId} AND active_task_no = #{taskNo} AND is_deleted = 0
+               AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+                           WHERE d.id = #{deviceId} AND d.user_id = #{userId}
+                             AND d.source_environment='PRODUCTION' AND d.run_id='')
             """)
-    int clearRuntimeTask(@Param("deviceId") Long deviceId, @Param("taskNo") String taskNo,
+    int clearRuntimeTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId, @Param("taskNo") String taskNo,
                          @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_user_device SET status='DEACTIVATED',activated_at=NULL,deactivated_at=#{now},
                    pending_deactivate=0,row_version=row_version+1,updated_at=#{now}
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
+               AND source_environment='PRODUCTION' AND run_id=''
                AND UPPER(status)='ACTIVE' AND pending_deactivate=1
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
             """)
     int deactivatePendingDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                 @Param("now") LocalDateTime now);
@@ -287,13 +404,20 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Update("""
             UPDATE nx_user_device_runtime SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',updated_at=#{now}
              WHERE user_device_id=#{deviceId} AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id
+                            AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+                           WHERE d.id = #{deviceId} AND d.user_id = #{userId}
+                             AND d.source_environment='PRODUCTION' AND d.run_id='')
             """)
-    int markRuntimeDeactivated(@Param("deviceId") Long deviceId, @Param("now") LocalDateTime now);
+    int markRuntimeDeactivated(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                               @Param("now") LocalDateTime now);
 
     @Insert("""
             INSERT INTO nx_compute_device_task_lock(user_id, user_device_id, source_environment, lock_until, last_task_no,
               created_at, updated_at, is_deleted)
-            VALUES(#{userId}, #{deviceId}, #{sourceEnvironment}, #{lockUntil}, #{taskNo}, #{now}, #{now}, 0)
+            SELECT #{userId}, #{deviceId}, 'PRODUCTION', #{lockUntil}, #{taskNo}, #{now}, #{now}, 0
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
             ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), lock_until = VALUES(lock_until),
               last_task_no = VALUES(last_task_no), updated_at = VALUES(updated_at), is_deleted = 0
             """)
@@ -308,7 +432,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) AS accountAgeMonths,
                    DATE_FORMAT(u.created_at, '%x-W%v') AS cohort
               FROM nx_user u
-             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0
+             WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
             """)
     UserEventAttribution userEventAttribution(@Param("userId") Long userId);
 
@@ -320,6 +444,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                          String status, String killInit) {}
     record ConfigRow(String configKey, String configValue) {}
     record DeviceLockRow(LocalDateTime lockUntil, String lastTaskNo) {}
+    record UserScope(Integer sandbox) {}
     record AssignmentRow(String taskNo, Long deviceId, String taskId, String taskName, String taskClass,
                          String modelName, String clientName, String status, BigDecimal rewardUsdt,
                          Integer requiredSeconds, Integer taskLockMinutes, LocalDateTime startedAt,

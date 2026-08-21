@@ -34,6 +34,7 @@ public class FundsSandboxService {
     private static final Pattern EVM_ADDRESS = Pattern.compile("(?i)^0x[0-9a-f]{40}$");
     private static final BigDecimal MAX_AMOUNT = new BigDecimal("1000000.000000");
     private static final BigDecimal SANDBOX_WITHDRAWAL_MIN_AMOUNT = new BigDecimal("1.000000");
+    private static final int SANDBOX_WITHDRAWAL_DAILY_LIMIT = 10;
 
     private final FundsSandboxMapper mapper;
     private final FundsSandboxProperties properties;
@@ -117,23 +118,38 @@ public class FundsSandboxService {
         WalletRow wallet = requireWallet(mapper.lockWallet(runId, userId));
         replay = mapper.lockOrderByIdempotency(runId, userId, key);
         if (replay != null) return replay(replay, requestHash);
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<Long> dailyWithdrawalIds = mapper.lockWithdrawalOrderIdsSince(
+                runId, userId, now.toLocalDate().atStartOfDay());
+        if (dailyWithdrawalIds == null || dailyWithdrawalIds.size() >= SANDBOX_WITHDRAWAL_DAILY_LIMIT) {
+            throw new BizException(409, "FUNDS_SANDBOX_WITHDRAWAL_DAILY_LIMIT");
+        }
         if (wallet.availableUsdt().compareTo(normalizedAmount) < 0) {
             throw new BizException(409, "FUNDS_SANDBOX_INSUFFICIENT_BALANCE");
         }
 
-        LocalDateTime now = LocalDateTime.now(clock);
         String orderNo = stableNo("SBX-WD-", runId + "|" + userId + "|" + key + "|" + requestHash);
         OrderWrite write = new OrderWrite(orderNo, userId, "WITHDRAWAL", normalizedChannel,
                 normalizedAmount, address, "SUBMITTED", "mock", "SANDBOX", runId, key, requestHash, 0L, now);
         if (mapper.insertOrder(write) != 1) throw new BizException(409, "FUNDS_SANDBOX_ORDER_CONFLICT");
-        if (mapper.reserveWallet(runId, userId, normalizedAmount, wallet.version()) != 1) {
+
+        String eventId = stableNo("SBX-CB-", runId + "|" + orderNo + "|CONFIRMED");
+        CallbackWrite callback = new CallbackWrite(eventId, userId, orderNo, "CONFIRMED",
+                hash(runId + "|" + orderNo + "|CONFIRMED|0"), now);
+        if (mapper.insertCallback(runId, callback) != 1) throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_CONFLICT");
+        if (mapper.transitionOrder(runId, orderNo, userId, "SUBMITTED", "CONFIRMED", 0L) != 1) {
+            throw new BizException(409, "FUNDS_SANDBOX_ORDER_VERSION_CONFLICT");
+        }
+        if (mapper.debitWallet(runId, userId, normalizedAmount, wallet.version()) != 1) {
             throw new BizException(409, "FUNDS_SANDBOX_WALLET_VERSION_CONFLICT");
         }
         WalletRow after = new WalletRow(userId, wallet.availableUsdt().subtract(normalizedAmount),
-                wallet.reservedUsdt().add(normalizedAmount), wallet.version() + 1);
-        insertLedger(runId, userId, orderNo, "WITHDRAWAL_RESERVE", "RESERVE", normalizedAmount, after, now);
-        // No ETA, timer or client-owned completion. Only applyCallback may enter a terminal state.
-        return view(write, "SUBMITTED", 0L, null, after);
+                wallet.reservedUsdt(), wallet.version() + 1);
+        insertLedger(runId, userId, orderNo, "WITHDRAWAL_DEBIT", "OUT", normalizedAmount, after, now);
+        if (mapper.markCallbackProcessed(runId, eventId, "PROCESSED") != 1) {
+            throw new BizException(409, "FUNDS_SANDBOX_CALLBACK_STATE_CONFLICT");
+        }
+        return view(write, "CONFIRMED", 1L, now, after);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -253,7 +269,7 @@ public class FundsSandboxService {
     private WithdrawalPolicyView withdrawalPolicy() {
         return new WithdrawalPolicyView(
                 SANDBOX_WITHDRAWAL_MIN_AMOUNT,
-                10,
+                SANDBOX_WITHDRAWAL_DAILY_LIMIT,
                 BigDecimal.ONE,
                 BigDecimal.ZERO,
                 1,

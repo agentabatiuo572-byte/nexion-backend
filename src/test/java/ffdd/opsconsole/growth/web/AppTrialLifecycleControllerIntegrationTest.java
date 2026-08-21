@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
+import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -17,6 +19,7 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 
 class AppTrialLifecycleControllerIntegrationTest {
@@ -53,7 +56,35 @@ class AppTrialLifecycleControllerIntegrationTest {
         verifyNoInteractions(mapper);
     }
 
+    @Test
+    void strictSandboxRuntimeDoesNotFallBackToCanonicalTrialService() {
+        AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+
+        assertThatThrownBy(() -> controller(mapper, null, environment).state(auth("42", "USER")))
+                .hasMessageContaining("TRIAL_SANDBOX_UNAVAILABLE");
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void unknownRuntimeDoesNotFallBackToCanonicalTrialService() {
+        AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev", "prod");
+
+        assertThatThrownBy(() -> controller(mapper, null, environment).state(auth("42", "USER")))
+                .hasMessageContaining("TRIAL_RUNTIME_PROFILE_UNSUPPORTED");
+        verifyNoInteractions(mapper);
+    }
+
     private AppTrialLifecycleController controller(AppTrialLifecycleMapper mapper) {
+        return controller(mapper, null, null);
+    }
+
+    private AppTrialLifecycleController controller(AppTrialLifecycleMapper mapper,
+                                                   CommerceSandboxTrialService sandboxService,
+                                                   MockEnvironment environment) {
         AppTrialLifecycleService service = new AppTrialLifecycleService(
                 mapper,
                 mock(EarningsReleaseService.class),
@@ -61,7 +92,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                 mock(TreasuryCoverageFacade.class),
                 mock(AuditLogService.class),
                 mock(EventOutboxService.class));
-        return new AppTrialLifecycleController(service);
+        return new AppTrialLifecycleController(service, sandboxService, environment);
     }
 
     private UsernamePasswordAuthenticationToken auth(String id, String subjectType) {

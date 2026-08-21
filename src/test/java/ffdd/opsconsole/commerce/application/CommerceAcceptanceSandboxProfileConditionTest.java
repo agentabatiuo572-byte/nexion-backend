@@ -6,12 +6,12 @@ import org.junit.jupiter.api.Test;
 class CommerceAcceptanceSandboxProfileConditionTest {
     @Test
     void callbackSurfaceExistsOnlyForExactlyOneIsolatedProfile() {
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("acceptance")).isTrue();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("dev")).isTrue();
         assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("test")).isTrue();
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("production")).isFalse();
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("acceptance", "dev")).isFalse();
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("LOCAL_SANDBOX", "acceptance")).isTrue();
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("DISABLED", "acceptance")).isFalse();
-        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("LOCAL_SANDBOX", "acceptance", "dev")).isFalse();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("prod")).isFalse();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isStrictIsolatedProfile("dev", "dev")).isFalse();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("LOCAL_SANDBOX", "dev")).isTrue();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("DISABLED", "dev")).isFalse();
+        assertThat(CommerceAcceptanceSandboxProfileCondition.isEnabled("LOCAL_SANDBOX", "dev", "dev")).isFalse();
     }
 }

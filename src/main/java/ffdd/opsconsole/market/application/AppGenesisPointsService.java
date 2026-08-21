@@ -19,20 +19,23 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class AppGenesisPointsService {
     private static final int POINTS_PER_HOLDING = 1_000;
-    private static final Set<String> ISOLATED_PROFILES = Set.of("acceptance", "test", "local-sandbox");
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("production", "default");
+    private static final Set<String> ISOLATED_PROFILES = Set.of("dev", "test");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
     private final AppGenesisPointsMapper mapper;
     private final Environment environment;
 
     public ApiResult<Map<String, Object>> projection(Long userId) {
         Scope scope = scope(userId);
-        List<AppGenesisPointsMapper.PointsRow> source = mapper.leaderboard(scope.sandbox());
+        List<AppGenesisPointsMapper.PointsRow> source = scope.sandbox()==1
+                ? mapper.sandboxLeaderboard(scope.runId()) : mapper.leaderboard(0);
         if (source == null) source = List.of();
         List<Map<String, Object>> rows = new java.util.ArrayList<>();
-        AppGenesisPointsMapper.PointsRow currentSource = mapper.currentUser(userId, scope.sandbox());
+        AppGenesisPointsMapper.PointsRow currentSource = scope.sandbox()==1
+                ? mapper.sandboxCurrentUser(userId,scope.runId()) : mapper.currentUser(userId,0);
         int currentHoldings = currentSource == null ? 0 : Math.max(0, safeLong(currentSource.holdings()));
         int currentPoints = Math.multiplyExact(currentHoldings, POINTS_PER_HOLDING);
-        Integer rankSource = currentSource == null ? null : mapper.currentRank(userId, scope.sandbox());
+        Integer rankSource = currentSource == null ? null : scope.sandbox()==1
+                ? mapper.sandboxCurrentRank(userId,scope.runId()) : mapper.currentRank(userId,0);
         Integer currentRank = rankSource == null || rankSource < 1 ? null : rankSource;
         for (int i = 0; i < source.size(); i++) {
             AppGenesisPointsMapper.PointsRow row = source.get(i);
@@ -55,7 +58,8 @@ public class AppGenesisPointsService {
         current.put("points", currentPoints);
         current.put("holdings", currentHoldings);
         return ApiResult.ok(new LinkedHashMap<>(Map.of(
-                "source", "nx_genesis_holding",
+                "serverCanonical", true,
+                "source", scope.sandbox()==1 ? "mock" : "nx_genesis_holding",
                 "sourceEnvironment", scope.sourceEnvironment(),
                 "runId", scope.runId(),
                 "pointsPerHolding", POINTS_PER_HOLDING,
@@ -77,7 +81,7 @@ public class AppGenesisPointsService {
         if (production && user.sandbox() != 0) throw new BizException(403, "GENESIS_PRODUCTION_USER_REQUIRED");
         if (isolated) {
             String runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
-            if (!runId.matches("[A-Za-z0-9][A-Za-z0-9._-]{2,63}")) throw new BizException(503, "GENESIS_RUN_ID_REQUIRED");
+            if (!runId.matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}")) throw new BizException(503, "GENESIS_RUN_ID_REQUIRED");
             return new Scope(1, "SANDBOX", runId);
         }
         return new Scope(0, "PRODUCTION", "");

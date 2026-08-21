@@ -34,11 +34,11 @@ public interface AppGenesisMapper {
             """)
     SeriesRow lockActiveSeries();
 
-    @Select("SELECT COUNT(*) FROM nx_genesis_holding WHERE series_code=#{seriesCode} AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0 WHERE h.series_code=#{seriesCode} AND h.is_deleted=0")
     long holdingCount(@Param("seriesCode") String seriesCode);
 
     /** Current locking read used after the series-row mutex; avoids REPEATABLE READ stale snapshots. */
-    @Select("SELECT COUNT(*) FROM nx_genesis_holding WHERE series_code=#{seriesCode} AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT COUNT(*) FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0 WHERE h.series_code=#{seriesCode} AND h.is_deleted=0 FOR UPDATE")
     long lockHoldingCount(@Param("seriesCode") String seriesCode);
 
     @Update("""
@@ -49,6 +49,9 @@ public interface AppGenesisMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND UPPER(status)='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
+
+    @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND UPPER(status)='ACTIVE' AND is_deleted=0 LIMIT 1")
+    Integer userSandbox(@Param("userId") Long userId);
 
     @Select("""
             SELECT u.id AS userId,
@@ -68,7 +71,8 @@ public interface AppGenesisMapper {
                    GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) AS accountAgeMonths,
                    DATE_FORMAT(u.created_at,'%x-W%v') AS cohort
               FROM nx_user u
-             WHERE u.id=#{userId} AND UPPER(u.status)='ACTIVE' AND u.is_deleted=0 LIMIT 1
+             WHERE u.id=#{userId} AND UPPER(u.status)='ACTIVE' AND u.is_deleted=0
+               AND COALESCE(u.sandbox,0)=0 LIMIT 1
             """)
     UserPolicyRow userPolicy(@Param("userId") Long userId);
 
@@ -78,6 +82,32 @@ public interface AppGenesisMapper {
                AND UPPER(status) IN ('ACTIVE','LISTED')
             """)
     long userHoldingCount(@Param("userId") Long userId, @Param("seriesCode") String seriesCode);
+
+    @Select("""
+            SELECT COUNT(*) + 1
+              FROM (SELECT h.user_id, COUNT(*) AS holdings
+                      FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id
+                       AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+                     WHERE h.series_code=#{seriesCode} AND h.is_deleted=0
+                       AND UPPER(h.status) IN ('ACTIVE','LISTED')
+                     GROUP BY h.user_id) ranked
+              JOIN (SELECT COUNT(*) AS holdings
+                      FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id
+                       AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+                     WHERE h.user_id=#{userId} AND h.series_code=#{seriesCode} AND h.is_deleted=0
+                       AND UPPER(h.status) IN ('ACTIVE','LISTED')) mine
+                ON ranked.holdings > mine.holdings
+            """)
+    Integer currentPriorityRank(@Param("userId") Long userId, @Param("seriesCode") String seriesCode);
+
+    @Select("""
+            SELECT COUNT(DISTINCT h.user_id)
+              FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id
+               AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE h.series_code=#{seriesCode} AND h.is_deleted=0
+               AND UPPER(h.status) IN ('ACTIVE','LISTED')
+            """)
+    long activeHolderCount(@Param("seriesCode") String seriesCode);
 
     @Select("""
             SELECT COUNT(*) FROM nx_emergency_geo_country_policy
@@ -92,21 +122,23 @@ public interface AppGenesisMapper {
             """)
     String controlValue(@Param("settingKey") String settingKey);
 
-    @Select("SELECT usdt_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    @Select("SELECT w.usdt_available FROM nx_user_wallet w JOIN nx_user u ON u.id=w.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0 WHERE w.user_id=#{userId} AND w.is_deleted=0 LIMIT 1 FOR UPDATE")
     BigDecimal lockWallet(@Param("userId") Long userId);
 
-    @Select("SELECT usdt_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
+    @Select("SELECT w.usdt_available FROM nx_user_wallet w JOIN nx_user u ON u.id=w.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0 WHERE w.user_id=#{userId} AND w.is_deleted=0 LIMIT 1")
     BigDecimal wallet(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_user_wallet SET usdt_available=usdt_available-#{amount},version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND is_deleted=0 AND usdt_available>=#{amount}
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0)
             """)
     int debitWallet(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
 
     @Update("""
             UPDATE nx_user_wallet SET usdt_available=usdt_available+#{amount},version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0)
             """)
     int creditWallet(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
 
@@ -133,20 +165,21 @@ public interface AppGenesisMapper {
     int insertHolding(HoldingWrite row);
 
     @Select("""
-            SELECT id,holding_no AS holdingNo,user_id AS userId,order_no AS orderNo,series_code AS seriesCode,
-                   acquired_price_usdt AS acquiredPriceUsdt,UPPER(status) AS status,
-                   listing_price_usdt AS listingPriceUsdt,acquired_at AS acquiredAt,listed_at AS listedAt
-              FROM nx_genesis_holding
-             WHERE user_id=#{userId} AND is_deleted=0 ORDER BY acquired_at DESC,id DESC
+            SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.order_no AS orderNo,h.series_code AS seriesCode,
+                   h.acquired_price_usdt AS acquiredPriceUsdt,UPPER(h.status) AS status,
+                   h.listing_price_usdt AS listingPriceUsdt,h.acquired_at AS acquiredAt,h.listed_at AS listedAt
+              FROM nx_genesis_holding h
+             WHERE h.user_id=#{userId} AND h.is_deleted=0 ORDER BY h.acquired_at DESC,h.id DESC
             """)
     List<HoldingRow> holdings(@Param("userId") Long userId);
 
     @Select("""
-            SELECT id,holding_no AS holdingNo,user_id AS userId,order_no AS orderNo,series_code AS seriesCode,
-                   acquired_price_usdt AS acquiredPriceUsdt,UPPER(status) AS status,
-                   listing_price_usdt AS listingPriceUsdt,acquired_at AS acquiredAt,listed_at AS listedAt
-              FROM nx_genesis_holding
-             WHERE holding_no=#{holdingNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
+            SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.order_no AS orderNo,h.series_code AS seriesCode,
+                   h.acquired_price_usdt AS acquiredPriceUsdt,UPPER(h.status) AS status,
+                   h.listing_price_usdt AS listingPriceUsdt,h.acquired_at AS acquiredAt,h.listed_at AS listedAt
+              FROM nx_genesis_holding h
+              JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
+             WHERE h.holding_no=#{holdingNo} AND h.is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     HoldingRow lockHolding(@Param("holdingNo") String holdingNo);
 
@@ -168,6 +201,8 @@ public interface AppGenesisMapper {
                SET user_id=#{buyerUserId},order_no=#{orderNo},acquired_price_usdt=#{price},status='ACTIVE',
                    acquired_at=#{acquiredAt},listing_price_usdt=NULL,listed_at=NULL,updated_at=NOW()
              WHERE id=#{id} AND user_id=#{sellerUserId} AND is_deleted=0 AND UPPER(status)='LISTED'
+               AND EXISTS (SELECT 1 FROM nx_user s WHERE s.id=#{sellerUserId} AND COALESCE(s.sandbox,0)=0 AND s.is_deleted=0)
+               AND EXISTS (SELECT 1 FROM nx_user b WHERE b.id=#{buyerUserId} AND COALESCE(b.sandbox,0)=0 AND b.is_deleted=0)
             """)
     int transferHolding(@Param("id") Long id, @Param("sellerUserId") Long sellerUserId,
                         @Param("buyerUserId") Long buyerUserId, @Param("orderNo") String orderNo,
@@ -176,18 +211,36 @@ public interface AppGenesisMapper {
     @Select("""
             SELECT h.holding_no AS holdingNo,h.series_code AS seriesCode,h.listing_price_usdt AS askPriceUsdt,
                    h.listed_at AS listedAt,CONCAT('usr_',RIGHT(UPPER(HEX(h.user_id)),4)) AS seller
-              FROM nx_genesis_holding h
+              FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0
              WHERE h.is_deleted=0 AND UPPER(h.status)='LISTED' AND h.listing_price_usdt>0
              ORDER BY h.listing_price_usdt,h.listed_at,h.id LIMIT 100
             """)
     List<ListingRow> listings();
 
     @Select("""
-            SELECT order_no AS orderNo,order_type AS orderType,quantity,unit_price_usdt AS unitPriceUsdt,
+            SELECT
+              (SELECT MIN(h.listing_price_usdt) FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0
+                WHERE h.is_deleted=0 AND UPPER(h.status)='LISTED' AND h.listing_price_usdt>0) AS floorUsdt,
+              (SELECT COALESCE(SUM(o.amount_usdt),0) FROM nx_genesis_order o JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
+                WHERE o.is_deleted=0 AND UPPER(o.status)='COMPLETED'
+                  AND UPPER(o.order_type)='SECONDARY' AND o.completed_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR)) AS volume24hUsdt,
+              (SELECT COUNT(DISTINCT h.user_id) FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0
+                WHERE h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','LISTED')) AS owners,
+              (SELECT o.unit_price_usdt FROM nx_genesis_order o JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
+                WHERE o.is_deleted=0 AND UPPER(o.status)='COMPLETED' AND UPPER(o.order_type)='SECONDARY'
+                ORDER BY o.completed_at DESC,o.id DESC LIMIT 1) AS lastSaleUsdt,
+              (SELECT MIN(h.listing_price_usdt) FROM nx_genesis_holding h JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0
+                WHERE h.is_deleted=0 AND UPPER(h.status)='LISTED' AND h.listing_price_usdt>0
+                  AND h.listed_at < DATE_SUB(NOW(),INTERVAL 7 DAY)) AS floor7dUsdt
+            """)
+    SecondaryStatsRow secondaryStats();
+
+    @Select("""
+            SELECT CONCAT('tx_',LEFT(SHA2(order_no,256),16)) AS orderNo,order_type AS orderType,quantity,unit_price_usdt AS unitPriceUsdt,
                    amount_usdt AS amountUsdt,royalty_usdt AS royaltyUsdt,completed_at AS completedAt
-              FROM nx_genesis_order
-             WHERE is_deleted=0 AND UPPER(status)='COMPLETED'
-             ORDER BY completed_at DESC,id DESC LIMIT 100
+              FROM nx_genesis_order o JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
+             WHERE o.is_deleted=0 AND UPPER(o.status)='COMPLETED'
+             ORDER BY o.completed_at DESC,o.id DESC LIMIT 100
             """)
     List<TransactionRow> transactions();
 
@@ -195,17 +248,19 @@ public interface AppGenesisMapper {
             SELECT i.batch_no AS batchNo,i.holding_no AS holdingNo,i.amount_usdt AS amountUsdt,
                    UPPER(i.status) AS status,i.paid_at AS paidAt
               FROM nx_genesis_emission_item i
+              JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
              WHERE i.user_id=#{userId} AND i.is_deleted=0 ORDER BY i.created_at DESC,i.id DESC LIMIT 100
             """)
     List<EmissionRow> emissions(@Param("userId") Long userId);
 
     @Select("""
-            SELECT id,holding_no AS holdingNo,user_id AS userId,order_no AS orderNo,series_code AS seriesCode,
-                   acquired_price_usdt AS acquiredPriceUsdt,UPPER(status) AS status,
-                   listing_price_usdt AS listingPriceUsdt,acquired_at AS acquiredAt,listed_at AS listedAt
-              FROM nx_genesis_holding
-             WHERE is_deleted=0 AND UPPER(status) IN ('ACTIVE','LISTED')
-             ORDER BY id FOR UPDATE
+            SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.order_no AS orderNo,h.series_code AS seriesCode,
+                   h.acquired_price_usdt AS acquiredPriceUsdt,UPPER(h.status) AS status,
+                   h.listing_price_usdt AS listingPriceUsdt,h.acquired_at AS acquiredAt,h.listed_at AS listedAt
+              FROM nx_genesis_holding h
+              JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
+             WHERE h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','LISTED')
+             ORDER BY h.id FOR UPDATE
             """)
     List<HoldingRow> lockEmissionHoldings();
 
@@ -228,7 +283,9 @@ public interface AppGenesisMapper {
     @Insert("""
             INSERT IGNORE INTO nx_genesis_emission_item
               (batch_no,holding_no,user_id,amount_usdt,status,created_at,updated_at,is_deleted)
-            VALUES (#{batchNo},#{holdingNo},#{userId},#{amountUsdt},'PENDING',NOW(),NOW(),0)
+            SELECT #{batchNo},#{holdingNo},#{userId},#{amountUsdt},'PENDING',NOW(),NOW(),0
+             WHERE EXISTS (SELECT 1 FROM nx_user u
+                            WHERE u.id=#{userId} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int insertEmissionItem(EmissionItemWrite row);
 
@@ -236,14 +293,17 @@ public interface AppGenesisMapper {
             SELECT i.id,i.batch_no AS batchNo,i.holding_no AS holdingNo,i.user_id AS userId,
                    i.amount_usdt AS amountUsdt,UPPER(i.status) AS status
               FROM nx_genesis_emission_item i
+              JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
              WHERE i.batch_no=#{batchNo} AND i.is_deleted=0 AND UPPER(i.status) IN ('PENDING','FAILED')
              ORDER BY i.id FOR UPDATE
             """)
     List<EmissionItemRow> lockPendingEmissionItems(@Param("batchNo") String batchNo);
 
     @Update("""
-            UPDATE nx_genesis_emission_item SET status='PAID',paid_at=#{paidAt},updated_at=NOW()
-             WHERE id=#{id} AND is_deleted=0 AND UPPER(status) IN ('PENDING','FAILED')
+            UPDATE nx_genesis_emission_item i SET status='PAID',paid_at=#{paidAt},updated_at=NOW()
+             WHERE i.id=#{id} AND i.is_deleted=0 AND UPPER(i.status) IN ('PENDING','FAILED')
+               AND EXISTS (SELECT 1 FROM nx_user u
+                            WHERE u.id=i.user_id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int markEmissionPaid(@Param("id") Long id,@Param("paidAt") LocalDateTime paidAt);
 
@@ -256,8 +316,9 @@ public interface AppGenesisMapper {
     @Insert("""
             INSERT INTO nx_wallet_ledger
               (user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,updated_at,is_deleted)
-            VALUES
-              (#{userId},#{bizNo},#{bizType},'USDT',#{direction},#{amount},#{balanceAfter},'SUCCESS',#{remark},NOW(),NOW(),0)
+            SELECT #{userId},#{bizNo},#{bizType},'USDT',#{direction},#{amount},#{balanceAfter},'SUCCESS',#{remark},NOW(),NOW(),0
+             WHERE EXISTS (SELECT 1 FROM nx_user u
+                            WHERE u.id=#{userId} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int insertLedger(LedgerWrite row);
 
@@ -276,6 +337,8 @@ public interface AppGenesisMapper {
     record ListingRow(String holdingNo,String seriesCode,BigDecimal askPriceUsdt,LocalDateTime listedAt,String seller) {}
     record TransactionRow(String orderNo,String orderType,Integer quantity,BigDecimal unitPriceUsdt,
                           BigDecimal amountUsdt,BigDecimal royaltyUsdt,LocalDateTime completedAt) {}
+    record SecondaryStatsRow(BigDecimal floorUsdt,BigDecimal volume24hUsdt,Long owners,
+                             BigDecimal lastSaleUsdt,BigDecimal floor7dUsdt) {}
     record EmissionRow(String batchNo,String holdingNo,BigDecimal amountUsdt,String status,LocalDateTime paidAt) {}
     record EmissionBatchWrite(String batchNo,LocalDateTime snapshotAt,BigDecimal dailyRatePct,Integer holderCount,
                               BigDecimal totalAmountUsdt,String operator,String reason,String decisionRef) {}

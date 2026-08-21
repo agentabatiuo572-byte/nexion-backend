@@ -667,6 +667,33 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void routesDeveloperAccessGovernanceThroughDeveloperAuthorities() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
+        authenticate("developer_access_read");
+        filter.doFilter(request("GET", "/api/admin/developer/access-requests"),
+                new MockHttpServletResponse(), mark(readInvoked));
+        assertThat(readInvoked).isTrue();
+
+        SecurityContextHolder.clearContext();
+        AtomicBoolean writeInvoked = new AtomicBoolean(false);
+        authenticate("developer_access_approve");
+        filter.doFilter(request("POST", "/api/admin/developer/access-requests/DEV-AAAAAAAAAAAAAAAA/approve"),
+                new MockHttpServletResponse(), mark(writeInvoked));
+        assertThat(writeInvoked).isTrue();
+    }
+
+    @Test
+    void permitsDeveloperGovernanceForServerRecognizedSuperAdminScope() throws Exception {
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        authenticate("ROLE_SUPER_ADMIN");
+
+        filter.doFilter(request("GET", "/api/admin/developer/access-requests"),
+                new MockHttpServletResponse(), mark(invoked));
+
+        assertThat(invoked).isTrue();
+    }
+
+    @Test
     void permitsStakingPoolRestoreWithOnlyJ1ResumeAuthority() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         authenticate("emergency_j1_gate_resume");

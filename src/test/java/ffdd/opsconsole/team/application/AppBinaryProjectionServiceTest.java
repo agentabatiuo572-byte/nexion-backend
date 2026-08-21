@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppBinaryProjectionServiceTest {
     private BinaryCommissionSettlementMapper mapper;
@@ -33,7 +34,10 @@ class AppBinaryProjectionServiceTest {
         config = mock(PlatformConfigFacade.class);
         coverage = mock(TreasuryCoverageFacade.class);
         service = new AppBinaryProjectionService(
-                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage);
+                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage,
+                new MockEnvironment()
+                        .withProperty("spring.profiles.active", "dev")
+                        .withProperty("NEXION_ACCEPTANCE_RUN_ID", "binary-run-20260819"));
         seed("team.ui.F.binary.threshold", "1000");
         seed("team.ui.F.binary.matchRate", "13%");
         seed("team.ui.F.binary.paused", "false");
@@ -77,7 +81,10 @@ class AppBinaryProjectionServiceTest {
 
         Map<String, Object> result = service.snapshot(41L);
 
-        assertThat(result.get("source")).isEqualTo("server-canonical F3 paid orders + assignments + H1");
+        assertThat(result.get("source")).isEqualTo("server");
+        assertThat(result.get("serverCanonical")).isEqualTo(true);
+        assertThat(result.get("sourceEnvironment")).isEqualTo("SANDBOX");
+        assertThat(result.get("runId")).isEqualTo("binary-run-20260819");
         assertThat((BigDecimal) result.get("trackA")).isEqualByComparingTo("1000");
         assertThat((BigDecimal) result.get("trackB")).isEqualByComparingTo("2000");
         assertThat((BigDecimal) result.get("matchRate")).isEqualByComparingTo("0.13");

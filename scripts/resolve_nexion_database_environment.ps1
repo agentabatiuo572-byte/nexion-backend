@@ -1,3 +1,7 @@
+param(
+  [switch]$RequireExplicit
+)
+
 $ErrorActionPreference = "Stop"
 
 $defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
@@ -52,6 +56,12 @@ if ($nexionPresent -and $springPresent) {
 }
 
 if ($nexionPresent) {
+  $nexionComplete = (Test-EnvironmentValuePresent $nexionUrl) -and
+    (Test-EnvironmentValuePresent $nexionUsername) -and
+    (Test-EnvironmentValuePresent $nexionPassword)
+  if ($RequireExplicit -and -not $nexionComplete) {
+    throw "Production requires NEXION_DB_URL, NEXION_DB_USERNAME, and NEXION_DB_PASSWORD as one complete bundle."
+  }
   [pscustomobject]@{
     Source = "NEXION_DB"
     JdbcUrl = $(if (Test-EnvironmentValuePresent $nexionUrl) { $nexionUrl } else { $defaultJdbcUrl })
@@ -69,6 +79,10 @@ if ($springPresent) {
     Password = $springPassword
   }
   return
+}
+
+if ($RequireExplicit) {
+  throw "Production requires one complete database environment bundle; loopback defaults are forbidden."
 }
 
 [pscustomobject]@{

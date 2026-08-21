@@ -958,6 +958,8 @@ CREATE TABLE IF NOT EXISTS nx_wallet_bank_card (
   country_code VARCHAR(8) NULL,
   status VARCHAR(32) NOT NULL,
   is_default TINYINT NOT NULL DEFAULT 0,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(64) NOT NULL DEFAULT '',
   psp_revoke_status VARCHAR(24) NULL,
   unbound_reason VARCHAR(500) NULL,
   unbound_by VARCHAR(96) NULL,
@@ -967,7 +969,7 @@ CREATE TABLE IF NOT EXISTS nx_wallet_bank_card (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_wallet_card_token (card_token),
+  UNIQUE KEY uk_wallet_card_scope_token (source_environment, run_id, card_token),
   KEY idx_wallet_card_user (user_id, status, is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -1122,6 +1124,7 @@ CREATE TABLE IF NOT EXISTS nx_withdrawal_order (
   amount DECIMAL(18,6) NOT NULL,
   fee DECIMAL(18,6) NOT NULL DEFAULT 0,
   target_address VARCHAR(128) NOT NULL,
+  d2_idempotency_key VARCHAR(128) NULL,
   risk_decision_id BIGINT NULL,
   chain_tx_hash VARCHAR(128) NULL,
   status VARCHAR(32) NOT NULL,
@@ -1177,6 +1180,16 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'failure_reason') = 0,
   'ALTER TABLE nx_withdrawal_order ADD COLUMN failure_reason VARCHAR(255) NULL AFTER failed_at',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND COLUMN_NAME = 'd2_idempotency_key') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD COLUMN d2_idempotency_key VARCHAR(128) NULL AFTER target_address',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_withdrawal_order' AND INDEX_NAME = 'uk_withdrawal_d2_idempotency') = 0,
+  'ALTER TABLE nx_withdrawal_order ADD UNIQUE KEY uk_withdrawal_d2_idempotency (user_id,d2_idempotency_key)',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -2456,6 +2469,8 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   price_usdt_snapshot DECIMAL(18,6) NOT NULL DEFAULT 0,
   ownership_status VARCHAR(32) NOT NULL DEFAULT 'OWNED',
   source_channel VARCHAR(32) NOT NULL DEFAULT 'ORDER',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(96) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
   hashrate DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
@@ -2471,11 +2486,31 @@ CREATE TABLE IF NOT EXISTS nx_user_device (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_user_device_instance_no (instance_no),
   KEY idx_user_device_user (user_id),
+  KEY idx_user_device_scope (user_id, source_environment, run_id, is_deleted),
   KEY idx_user_device_product_code (product_code),
   KEY idx_user_device_ownership (ownership_status, created_at),
   KEY idx_user_device_order (source_order_no),
   KEY idx_user_device_status (status, last_seen_at),
-  KEY idx_user_device_active (user_id, activated_at, status)
+  KEY idx_user_device_active (user_id, activated_at, status),
+  CONSTRAINT chk_user_device_environment CHECK (source_environment IN ('PRODUCTION','SANDBOX')),
+  CONSTRAINT chk_user_device_scope CHECK (
+    (source_environment='PRODUCTION' AND run_id='') OR
+    (source_environment='SANDBOX' AND CHAR_LENGTH(run_id) BETWEEN 8 AND 96)
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_withdrawal_attempt_control (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  withdrawal_no VARCHAR(96) NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE KEY uk_withdrawal_attempt_user_key (user_id,idempotency_key),
+  KEY idx_withdrawal_attempt_status (status,updated_at),
+  CONSTRAINT chk_withdrawal_attempt_status CHECK (status IN ('ACTIVE','COMMITTED','ABANDONED'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_compute_share_enrollment (
@@ -3030,6 +3065,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_sandbox_reward (
   user_id BIGINT NOT NULL,
   user_device_id BIGINT NOT NULL,
   source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  run_id VARCHAR(96) NOT NULL,
   receipt_no VARCHAR(96) NOT NULL,
   simulated_reward_usdt DECIMAL(18,6) NOT NULL,
   proof_hash CHAR(64) NOT NULL,
@@ -3199,6 +3235,89 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user (user_id, status),
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Canonical E5 metadata for phone/onboarding devices. The App reads these
+-- database fields through /api/app/home/overview; it never embeds display data.
+INSERT INTO nx_compute_datacenter(
+  dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted
+) VALUES(
+  'User device', 'Global Mobile Compute', 'Global', 'NexGrid Mobile Network',
+  'active', 10, 'system:home-grid-metadata', 0
+)
+ON DUPLICATE KEY UPDATE
+  updated_at = IF(is_deleted = 0 AND (
+    region_label IS NULL OR TRIM(region_label)='' OR
+    location IS NULL OR TRIM(location)='' OR
+    display_name IS NULL OR TRIM(display_name)='' OR
+    status IS NULL OR TRIM(status)=''
+  ), NOW(), updated_at),
+  region_label = IF(is_deleted = 0 AND (region_label IS NULL OR TRIM(region_label)=''), VALUES(region_label), region_label),
+  location = IF(is_deleted = 0 AND (location IS NULL OR TRIM(location)=''), VALUES(location), location),
+  display_name = IF(is_deleted = 0 AND (display_name IS NULL OR TRIM(display_name)=''), VALUES(display_name), display_name),
+  status = IF(is_deleted = 0 AND (status IS NULL OR TRIM(status)=''), VALUES(status), status);
+
+CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  sku_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  tier VARCHAR(32) NULL,
+  tagline VARCHAR(255) NULL,
+  badge VARCHAR(64) NULL,
+  gpu VARCHAR(128) NULL,
+  vram VARCHAR(64) NULL,
+  hash_rate VARCHAR(64) NULL,
+  power_text VARCHAR(64) NULL,
+  datacenter VARCHAR(128) NULL,
+  uptime VARCHAR(64) NULL,
+  warranty VARCHAR(128) NULL,
+  phone_daily_earn DECIMAL(18,6) NULL,
+  phone_daily_earn_nex DECIMAL(18,6) NULL,
+  price DECIMAL(18,4) NOT NULL DEFAULT 0,
+  daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
+  daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
+  share_yield_min DECIMAL(9,4) NULL,
+  share_yield_max DECIMAL(9,4) NULL,
+  base_rate VARCHAR(128) NULL,
+  sold BIGINT NULL,
+  stock_text VARCHAR(32) NOT NULL DEFAULT '0',
+  rating DECIMAL(4,2) NULL,
+  reviews BIGINT NULL,
+  ai_image_gen_per_min BIGINT NULL,
+  ai_llm_tokens_per_sec BIGINT NULL,
+  ai_video_min_per_hour BIGINT NULL,
+  ai_fine_tune_mins BIGINT NULL,
+  ai_unlocks VARCHAR(255) NULL,
+  features_json TEXT NULL,
+  generation INT NULL,
+  lifecycle VARCHAR(32) NULL,
+  superseded_by VARCHAR(64) NULL,
+  tradein_discount DECIMAL(18,4) NULL,
+  unlock_phase VARCHAR(32) NOT NULL DEFAULT '',
+  unlock_phase_id BIGINT NULL,
+  purchase_gate_json TEXT NULL,
+  image_asset_id VARCHAR(512) NULL,
+  image_object_key VARCHAR(255) NULL,
+  image_preview_url TEXT NULL,
+  tag VARCHAR(32) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_admin_device_sku (sku_id),
+  KEY idx_admin_device_sku_status (status,is_deleted),
+  KEY idx_admin_device_sku_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Gen-2 uses the same server-owned structured gate in read, quote and every
+-- order/replace command. Preserve any rule already edited in E1.
+UPDATE nx_admin_device_sku
+   SET purchase_gate_json = CASE sku_id
+         WHEN 'stellarbox-pro-v2' THEN '{"rankMin":2,"mode":"all","enforce":true}'
+         WHEN 'stellarrack-p2' THEN '{"rankMin":4,"mode":"all","enforce":true}'
+         ELSE purchase_gate_json END,
+       updated_at = NOW()
+ WHERE sku_id IN ('stellarbox-pro-v2','stellarrack-p2')
+   AND is_deleted=0 AND (purchase_gate_json IS NULL OR TRIM(purchase_gate_json)='');
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_team_ambassador_application' AND COLUMN_NAME = 'city') = 0,
   'ALTER TABLE nx_team_ambassador_application ADD COLUMN city VARCHAR(64) NULL AFTER region',
@@ -3496,6 +3615,79 @@ CREATE TABLE IF NOT EXISTS nx_commission_operation (
   UNIQUE KEY uk_commission_operation_no (operation_no),
   KEY idx_commission_operation_source (source_commission_id, operation_type),
   KEY idx_commission_operation_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- H4 local-sandbox wheel facts. Production wheel tables and ledgers are not
+-- used by the local-sandbox profile.
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_scope (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_growth_wheel_sandbox_scope (run_id,user_id),
+  CONSTRAINT chk_growth_wheel_sandbox_scope_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_tier (
+  tier_id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL,
+  tier_name VARCHAR(128) NOT NULL, reward_name VARCHAR(128) NOT NULL,
+  probability_pct DECIMAL(8,4) NOT NULL DEFAULT 0, reward_kind VARCHAR(32) NOT NULL, reward_amount DECIMAL(18,6) NOT NULL DEFAULT 0,
+  real_outflow TINYINT NOT NULL DEFAULT 0, daily_stock INT NOT NULL DEFAULT 0, sort_order INT NOT NULL DEFAULT 100,
+  status TINYINT NOT NULL DEFAULT 1, is_deleted TINYINT NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_growth_wheel_sandbox_tier (run_id,user_id,tier_name),
+  KEY idx_growth_wheel_sandbox_tier_scope (run_id,user_id,status,is_deleted),
+  CONSTRAINT chk_growth_wheel_sandbox_tier_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_guard (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL, guard_key VARCHAR(64) NOT NULL,
+  guard_value VARCHAR(255) NOT NULL DEFAULT '', status TINYINT NOT NULL DEFAULT 1, is_deleted TINYINT NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_growth_wheel_sandbox_guard (run_id,user_id,guard_key),
+  KEY idx_growth_wheel_sandbox_guard_scope (run_id,user_id,status,is_deleted),
+  CONSTRAINT chk_growth_wheel_sandbox_guard_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_ticket (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL, ticket_id VARCHAR(96) NOT NULL,
+  source_type VARCHAR(32) NOT NULL, source_id VARCHAR(96) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'AVAILABLE',
+  used_event_code VARCHAR(64) NULL, spin_date DATE NULL, used_at DATETIME NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_growth_wheel_sandbox_ticket_id (ticket_id),
+  UNIQUE KEY uk_growth_wheel_sandbox_ticket_source (run_id,user_id,source_type,source_id),
+  KEY idx_growth_wheel_sandbox_ticket_scope (run_id,user_id,status,created_at),
+  CONSTRAINT chk_growth_wheel_sandbox_ticket_source CHECK (source='mock' AND source_environment='SANDBOX'),
+  CONSTRAINT chk_growth_wheel_sandbox_ticket_kind CHECK (source_type='DAILY_MILESTONE')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_spin (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL, spin_no VARCHAR(96) NOT NULL,
+  event_code VARCHAR(64) NOT NULL, spin_date DATE NOT NULL, source_type VARCHAR(16) NOT NULL, source_id VARCHAR(96) NOT NULL,
+  tier_id BIGINT NOT NULL, tier_name VARCHAR(128) NOT NULL, reward_name VARCHAR(128) NOT NULL, reward_kind VARCHAR(32) NOT NULL,
+  reward_amount DECIMAL(18,6) NOT NULL, real_outflow TINYINT NOT NULL DEFAULT 0, downgraded TINYINT NOT NULL DEFAULT 0,
+  downgrade_reason VARCHAR(64) NOT NULL DEFAULT 'NONE', source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_growth_wheel_sandbox_spin_no (spin_no),
+  UNIQUE KEY uk_growth_wheel_sandbox_spin_source (run_id,user_id,event_code,spin_date,source_type,source_id),
+  KEY idx_growth_wheel_sandbox_spin_scope (run_id,user_id,event_code,created_at),
+  CONSTRAINT chk_growth_wheel_sandbox_spin_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_reward_ledger (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL, biz_no VARCHAR(128) NOT NULL,
+  asset VARCHAR(32) NOT NULL, amount DECIMAL(24,8) NOT NULL, balance_after DECIMAL(24,8) NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'POSTED',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_growth_wheel_sandbox_reward (run_id,user_id,biz_no,asset),
+  KEY idx_growth_wheel_sandbox_reward_scope (run_id,user_id,asset,created_at),
+  CONSTRAINT chk_growth_wheel_sandbox_reward_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+CREATE TABLE IF NOT EXISTS nx_growth_wheel_sandbox_command (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY, run_id VARCHAR(96) NOT NULL, user_id BIGINT NOT NULL, operation VARCHAR(48) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL, request_hash CHAR(64) NOT NULL, spin_no VARCHAR(96) NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock', source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_growth_wheel_sandbox_command (run_id,user_id,operation,idempotency_key),
+  KEY idx_growth_wheel_sandbox_command_scope (run_id,user_id,created_at),
+  CONSTRAINT chk_growth_wheel_sandbox_command_source CHECK (source='mock' AND source_environment='SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_commission_user_suspension (
@@ -4020,6 +4212,64 @@ CREATE TABLE IF NOT EXISTS nx_user_payout_address_history (
   KEY idx_user_payout_address_history (user_id, network, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Explicit local-sandbox payout-address facts. Production remains isolated in
+-- nx_user_payout_address / nx_user_payout_address_history above.
+CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  network VARCHAR(32) NOT NULL,
+  address VARCHAR(255) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  effective_at DATETIME NOT NULL,
+  next_change_allowed_at DATETIME NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_payout_address_sandbox_scope (run_id,user_id,network),
+  KEY idx_user_payout_address_sandbox_scope (run_id,user_id,status,is_deleted),
+  CONSTRAINT chk_user_payout_address_sandbox_network CHECK (network IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')),
+  CONSTRAINT chk_user_payout_address_sandbox_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_history (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  network VARCHAR(32) NOT NULL,
+  previous_address VARCHAR(255) NULL,
+  new_address VARCHAR(255) NOT NULL,
+  change_type VARCHAR(16) NOT NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_user_payout_address_sandbox_history_scope (run_id,user_id,network,created_at),
+  CONSTRAINT chk_user_payout_address_sandbox_history_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  challenge_no VARCHAR(96) NOT NULL,
+  code_hash CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  consumed_at DATETIME NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_user_payout_address_sandbox_otp (run_id,user_id,challenge_no),
+  KEY idx_user_payout_address_sandbox_otp_scope (run_id,user_id,created_at),
+  CONSTRAINT chk_user_payout_address_sandbox_otp_no CHECK (challenge_no LIKE 'PAYOUT-%'),
+  CONSTRAINT chk_user_payout_address_sandbox_otp_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
   'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
@@ -4350,6 +4600,16 @@ VALUES
   ('admin.a4.event.kpi.day0','90 秒','STRING','admin_a4_event','ADMIN','A4 PRD default',1,0),
   ('admin.a4.event.kpi.event_retention','13 个月','STRING','admin_a4_event','ADMIN','A4 PRD minimum',1,0),
   ('admin.a4.event.kpi.sampling','浏览/会话 10% · 资金/风控/转化 100%','STRING','admin_a4_event','ADMIN','A4 authoritative runtime sampling',1,0);
+
+INSERT IGNORE INTO nx_config_item
+  (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
+VALUES
+  ('market.genesis.ops.holder.allocationNexPerHolding','80000','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder reserved allocation per active Genesis holding',1,0),
+  ('market.genesis.ops.holder.priorityTop1Percent','1','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder priority top one percent threshold',1,0),
+  ('market.genesis.ops.holder.priorityTop3Percent','3','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder priority top three percent threshold',1,0),
+  ('market.genesis.ops.holder.priorityTop5Percent','5','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder priority top five percent threshold',1,0),
+  ('market.genesis.ops.holder.policyVersion','genesis-holder-v1','STRING','MARKET_GENESIS_OPS','ADMIN','G4 holder projection policy version',1,0),
+  ('market.genesis.ops.holder.effectiveAt','2026-08-17T00:00:00Z','STRING','MARKET_GENESIS_OPS','ADMIN','G4 holder projection policy UTC effective time',1,0);
 
 CREATE TABLE IF NOT EXISTS nx_admin_third_batch_record (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -6230,6 +6490,18 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
   tagline VARCHAR(255) NULL,
   badge VARCHAR(128) NULL,
   unlock_phase VARCHAR(32) NULL,
+  power_text VARCHAR(64) NULL,
+  datacenter VARCHAR(128) NULL,
+  uptime VARCHAR(64) NULL,
+  warranty VARCHAR(128) NULL,
+  phone_daily_earn DECIMAL(18,6) NULL,
+  phone_daily_earn_nex DECIMAL(18,6) NULL,
+  features_json TEXT NULL,
+  ai_image_gen_per_min DECIMAL(18,6) NULL,
+  ai_llm_tokens_per_sec DECIMAL(18,6) NULL,
+  ai_video_min_per_hour DECIMAL(18,6) NULL,
+  ai_fine_tune_mins DECIMAL(18,6) NULL,
+  ai_unlocks VARCHAR(255) NULL,
   purchase_gate_json TEXT NULL,
   run_id VARCHAR(96) NOT NULL,
   version BIGINT NOT NULL DEFAULT 0,
@@ -6338,6 +6610,83 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_audit (
   strict_profile TINYINT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_commerce_sandbox_audit_run_order (run_id,order_no,created_at),
   CONSTRAINT chk_commerce_sandbox_audit_source CHECK (source='mock' AND source_environment='SANDBOX' AND strict_profile=1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_developer_api_key (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  key_id VARCHAR(64) NOT NULL,
+  user_id BIGINT NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  key_hash CHAR(64) NOT NULL,
+  key_prefix VARCHAR(32) NOT NULL,
+  key_last4 CHAR(4) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(64) NOT NULL DEFAULT '',
+  last_used_at DATETIME NULL,
+  revoked_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_developer_api_key_id (key_id),
+  UNIQUE KEY uk_developer_api_key_idem (user_id,source_environment,run_id,idempotency_key),
+  UNIQUE KEY uk_developer_api_key_hash (key_hash),
+  KEY idx_developer_api_key_owner (user_id,source_environment,run_id,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_developer_webhook (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  name VARCHAR(100) NOT NULL,
+  url VARCHAR(2048) NOT NULL,
+  events_json JSON NOT NULL,
+  secret_hash CHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  delivery_status VARCHAR(32) NOT NULL DEFAULT 'NOT_DELIVERED',
+  version BIGINT NOT NULL DEFAULT 0,
+  secret_rotation_key VARCHAR(128) NULL,
+  secret_rotation_hash CHAR(64) NULL,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_developer_webhook_idem (user_id,source_environment,run_id,idempotency_key),
+  KEY idx_developer_webhook_owner (user_id,source_environment,run_id,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_trial_claim (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  claim_no VARCHAR(96) NOT NULL,
+  product_no VARCHAR(96) NOT NULL,
+  device_name VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  claimed_at DATETIME NOT NULL,
+  expires_at DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  shadow_daily_usdt DECIMAL(18,6) NOT NULL,
+  shadow_daily_nex DECIMAL(18,6) NOT NULL,
+  offset_cap_usdt DECIMAL(18,6) NOT NULL,
+  price_usdt DECIMAL(18,6) NOT NULL,
+  order_no VARCHAR(96) NULL,
+  payment_no VARCHAR(96) NULL,
+  discount_usdt DECIMAL(18,6) NULL,
+  amount_usdt DECIMAL(18,6) NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_trial_run_user (run_id,user_id),
+  UNIQUE KEY uk_commerce_sandbox_trial_run_claim (run_id,claim_no),
+  CONSTRAINT chk_commerce_sandbox_trial_source CHECK (source='mock' AND source_environment='SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Learning Acceptance Sandbox facts. Published course content remains shared read-only;
@@ -6592,3 +6941,143 @@ CREATE TABLE IF NOT EXISTS nx_support_acceptance_sandbox_idempotency (
   KEY idx_support_acceptance_command_account (account_id, run_id, updated_at),
   CONSTRAINT chk_support_acceptance_command_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- Server-authoritative phone onboarding configuration and per-user result.
+CREATE TABLE IF NOT EXISTS nx_onboarding_phone_tier_config (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  tier INT NOT NULL,
+  name VARCHAR(64) NOT NULL,
+  tops_min INT NOT NULL,
+  tops_max INT NOT NULL,
+  base_rate_usdt DECIMAL(18,6) NOT NULL,
+  base_rate_nex DECIMAL(18,6) NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  active TINYINT NOT NULL DEFAULT 1,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE KEY uk_onboarding_phone_tier (tier),
+  KEY idx_onboarding_phone_tier_active (active,is_deleted,tier),
+  CONSTRAINT chk_onboarding_phone_tier_range CHECK (tier BETWEEN 1 AND 5 AND tops_min >= 1 AND tops_max >= tops_min),
+  CONSTRAINT chk_onboarding_phone_tier_rate CHECK (base_rate_usdt > 0 AND base_rate_nex > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_onboarding_phone_tier_config
+  (tier,name,tops_min,tops_max,base_rate_usdt,base_rate_nex,revision,active,is_deleted)
+VALUES
+  (1,'Tier 1',8,18,0.040000,6.000000,1,1,0),
+  (2,'Tier 2',19,24,0.050000,8.000000,1,1,0),
+  (3,'Tier 3',25,34,0.060000,10.000000,1,1,0),
+  (4,'Tier 4',35,46,0.080000,13.000000,1,1,0),
+  (5,'Tier 5',47,58,0.095000,16.000000,1,1,0)
+ON DUPLICATE KEY UPDATE tier=tier;
+
+CREATE TABLE IF NOT EXISTS nx_onboarding_yield_comparison_config (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  config_key VARCHAR(64) NOT NULL,
+  label VARCHAR(128) NOT NULL,
+  daily_usdt DECIMAL(18,6) NOT NULL,
+  daily_nex DECIMAL(18,6) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  revision BIGINT NOT NULL DEFAULT 1,
+  active TINYINT NOT NULL DEFAULT 1,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE KEY uk_onboarding_yield_comparison_key (config_key),
+  KEY idx_onboarding_yield_comparison_active (active,is_deleted,sort_order),
+  CONSTRAINT chk_onboarding_yield_comparison_rate CHECK (daily_usdt > 0 AND daily_nex > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO nx_onboarding_yield_comparison_config
+  (config_key,label,daily_usdt,daily_nex,sort_order,revision,active,is_deleted)
+VALUES
+  ('phone','手机',0.060000,10.000000,1,1,1,0),
+  ('s1','NexionBox S1',1.200000,65.000000,2,1,1,0),
+  ('pro','NexionBox Pro',4.800000,260.000000,3,1,1,0),
+  ('rack','StellarRack',18.000000,980.000000,4,1,1,0)
+ON DUPLICATE KEY UPDATE config_key=config_key;
+
+CREATE TABLE IF NOT EXISTS nx_onboarding_calibration (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  device_id VARCHAR(128) NOT NULL,
+  user_device_id BIGINT NULL,
+  signal_json JSON NOT NULL,
+  derived_json JSON NOT NULL,
+  comparison_json JSON NOT NULL,
+  source VARCHAR(32) NOT NULL DEFAULT 'server',
+  server_canonical TINYINT NOT NULL DEFAULT 1,
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(96) NOT NULL DEFAULT '',
+  config_revision BIGINT NOT NULL,
+  row_version BIGINT NOT NULL DEFAULT 0,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  activation_status VARCHAR(16) NOT NULL DEFAULT 'CALIBRATED',
+  activation_idempotency_key VARCHAR(128) NULL,
+  activation_request_hash CHAR(64) NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_onboarding_calibration_scope (user_id,source_environment,run_id,device_id),
+  UNIQUE KEY uk_onboarding_calibration_idem_scope (user_id,source_environment,run_id,device_id,idempotency_key),
+  KEY idx_onboarding_calibration_user_scope (user_id,source_environment,run_id,updated_at),
+  KEY idx_onboarding_calibration_user_device (user_device_id,activation_status),
+  CONSTRAINT chk_onboarding_calibration_source CHECK (source='server' AND server_canonical=1),
+  CONSTRAINT chk_onboarding_calibration_activation CHECK (activation_status IN ('CALIBRATED','ACTIVE','DEFERRED')),
+  CONSTRAINT chk_onboarding_calibration_environment CHECK (
+    source_environment IN ('PRODUCTION','SANDBOX')
+    AND ((source_environment='PRODUCTION' AND run_id='') OR (source_environment='SANDBOX' AND run_id <> ''))
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Account-scoped storefront release notification subscriptions.
+CREATE TABLE IF NOT EXISTS nx_product_notification_subscription (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  product_no VARCHAR(64) NOT NULL,
+  release_state VARCHAR(96) NOT NULL,
+  release_phase_id VARCHAR(64) NULL,
+  revision VARCHAR(64) NOT NULL,
+  source VARCHAR(64) NOT NULL DEFAULT 'nx_product',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
+  run_id VARCHAR(96) NOT NULL DEFAULT '',
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  active_subscription_key VARCHAR(256)
+    GENERATED ALWAYS AS (CASE WHEN status = 'ACTIVE' AND is_deleted = 0
+                              THEN CONCAT(user_id, ':', source_environment, ':', run_id, ':', product_no) ELSE NULL END) STORED,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_product_notification_active (active_subscription_key),
+  KEY idx_product_notification_user (user_id,source_environment,run_id,status,updated_at),
+  KEY idx_product_notification_product (product_no,source_environment,run_id,status,updated_at),
+  CONSTRAINT chk_product_notification_environment CHECK (source_environment IN ('PRODUCTION','SANDBOX')),
+  CONSTRAINT chk_product_notification_run CHECK ((source_environment='PRODUCTION' AND run_id='') OR (source_environment='SANDBOX' AND run_id <> ''))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Local sandbox quest progress. Weekly definitions may mirror PC-managed
+-- nx_mission configuration; nx_user_mission is never read or written.
+CREATE TABLE IF NOT EXISTS nx_growth_quest_sandbox (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  quest_code VARCHAR(64) NOT NULL,
+  quest_name VARCHAR(128) NOT NULL,
+  layer VARCHAR(32) NOT NULL,
+  reward_nex DECIMAL(18,6) NOT NULL,
+  mission_status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  claim_idempotency_key VARCHAR(128) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  source VARCHAR(32) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_growth_quest_sandbox_scope (run_id,user_id,quest_code),
+  KEY idx_growth_quest_sandbox_user (run_id,user_id,source_environment,mission_status),
+  CONSTRAINT chk_growth_quest_sandbox_source CHECK (source='mock' AND source_environment='SANDBOX'),
+  CONSTRAINT chk_growth_quest_sandbox_status CHECK (mission_status IN ('PENDING','COMPLETED','CLAIMABLE','CLAIMED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

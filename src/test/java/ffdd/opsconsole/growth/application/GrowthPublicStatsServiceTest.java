@@ -81,7 +81,7 @@ class GrowthPublicStatsServiceTest {
         stubSandbox("home-public-stats-20260819", 12000);
         MockEnvironment sandbox = new MockEnvironment()
                 .withProperty("NEXION_ACCEPTANCE_RUN_ID", "home-public-stats-20260819");
-        sandbox.setActiveProfiles("acceptance");
+        sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
                 config, users, audit, new ObjectMapper(), clock, sandbox);
 
@@ -96,6 +96,25 @@ class GrowthPublicStatsServiceTest {
                 .containsEntry("realUserCount", 0L);
         verify(config, never()).activeValue("growth.public_stats.values");
         verify(users, never()).countUsers();
+    }
+
+    @Test
+    void developmentProfileReadsCanonicalPcConfigurationWithoutAcceptanceRun() {
+        MockEnvironment development = new MockEnvironment();
+        development.setActiveProfiles("dev");
+        GrowthPublicStatsService developmentService = new GrowthPublicStatsService(
+                config, users, audit, new ObjectMapper(), clock, development);
+
+        ApiResult<Map<String, Object>> result = developmentService.publicProjection();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("source", "server:nx_config_item,nx_user")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("realUserCount", 4321L);
+        verify(config).activeValue("growth.public_stats.values");
+        verify(users).countUsers();
     }
 
     @Test
@@ -151,7 +170,7 @@ class GrowthPublicStatsServiceTest {
     @Test
     void sandboxProjectionFailsClosedWithoutAValidRun() {
         MockEnvironment sandbox = new MockEnvironment();
-        sandbox.setActiveProfiles("acceptance");
+        sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
                 config, users, audit, new ObjectMapper(), clock, sandbox);
 
@@ -166,7 +185,7 @@ class GrowthPublicStatsServiceTest {
     @Test
     void publicProjectionFailsClosedBeforeReadingOnMixedProfiles() {
         MockEnvironment mixed = new MockEnvironment();
-        mixed.setActiveProfiles("acceptance", "production");
+        mixed.setActiveProfiles("dev", "prod");
         GrowthPublicStatsService mixedService = new GrowthPublicStatsService(
                 config, users, audit, new ObjectMapper(), clock, mixed);
 
@@ -279,7 +298,7 @@ class GrowthPublicStatsServiceTest {
 
     private GrowthPublicStatsService sandboxService(String runId) {
         MockEnvironment sandbox = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", runId);
-        sandbox.setActiveProfiles("acceptance");
+        sandbox.setActiveProfiles("test");
         return new GrowthPublicStatsService(config, users, audit, new ObjectMapper(), clock, sandbox);
     }
 

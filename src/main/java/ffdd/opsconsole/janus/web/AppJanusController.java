@@ -94,7 +94,7 @@ public class AppJanusController {
         data.put("leaseExpiresAt", lease.leaseExpiresAt());
         String commandDigest=commandDigest(data, commandId, version, lease);
         data.put("commandDigest", commandDigest);
-        data.put("commandAuthorization", claimVerifier.authorizeCommand(executorId.trim(),deviceId.trim(),commandDigest));
+        data.put("commandAuthorization", claimVerifier.authorizeCommand(userId,executorId.trim(),deviceId.trim(),commandDigest));
         return ApiResult.ok(data);
     }
 

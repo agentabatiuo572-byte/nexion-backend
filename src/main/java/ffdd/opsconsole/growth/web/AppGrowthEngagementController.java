@@ -58,9 +58,20 @@ public class AppGrowthEngagementController {
     }
 
     @GetMapping("/api/vouchers")
-    public ApiResult<Map<String, Object>> voucherState(Authentication authentication) {
+    public ApiResult<Map<String, Object>> voucherState(
+            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.voucherState(userId);
+        return userId == null ? forbidden() : service.voucherState(userId, runId);
+    }
+
+    @PostMapping("/api/vouchers/{voucherId}/popup-seen")
+    public ApiResult<Map<String, Object>> voucherPopupSeen(
+            @PathVariable String voucherId,
+            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.markVoucherPopupSeen(userId, voucherId, runId);
     }
 
     @PostMapping("/api/quests/{questCode}/claim")
@@ -70,6 +81,15 @@ public class AppGrowthEngagementController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.claimQuest(userId, questCode, idempotencyKey);
+    }
+
+    @PostMapping("/api/share/event")
+    public ApiResult<Map<String, Object>> recordShareEvent(
+            @RequestBody(required = false) AppGrowthEngagementService.ShareEventRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.recordShareEvent(userId, request, idempotencyKey);
     }
 
     @PostMapping("/api/events/{eventCode}/join")
@@ -148,10 +168,12 @@ public class AppGrowthEngagementController {
             @PathVariable String voucherId,
             @RequestBody(required = false) VoucherClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
             Authentication authentication) {
         Long userId = userId(authentication);
         String surface = request == null ? null : request.surface();
-        return userId == null ? forbidden() : service.claimVoucher(userId, voucherId, surface, idempotencyKey);
+        return userId == null ? forbidden()
+                : service.claimVoucher(userId, voucherId, surface, idempotencyKey, runId);
     }
 
     private Long userId(Authentication authentication) {

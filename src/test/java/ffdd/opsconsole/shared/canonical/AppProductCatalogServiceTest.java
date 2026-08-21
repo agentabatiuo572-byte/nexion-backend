@@ -28,6 +28,7 @@ class AppProductCatalogServiceTest {
     AppProductCatalogServiceTest() {
         when(releasePolicy.evaluate(any(), any()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
     }
 
     @Test
@@ -38,6 +39,7 @@ class AppProductCatalogServiceTest {
         Map<String, Object> data = service.catalog().getData();
 
         assertThat(data.get("source")).isEqualTo("nx_product");
+        assertThat(data.get("serverCanonical")).isEqualTo(true);
         assertThat((List<?>) data.get("products")).singleElement().satisfies(item -> {
             Map<?, ?> product = (Map<?, ?>) item;
             assertThat(product.get("id")).isEqualTo("stellarbox-pro-v2");
@@ -79,6 +81,20 @@ class AppProductCatalogServiceTest {
     }
 
     @Test
+    void developmentRuntimeUsesTheSameCanonicalE1CatalogAsPc() {
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
+                "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 8)));
+
+        var result = service.catalog(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("source", "nx_product");
+        org.mockito.Mockito.verifyNoInteractions(sandboxMapper);
+    }
+
+    @Test
     void sandboxUserReceivesOnlyTheIsolatedCatalogSnapshot() {
         when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(sandboxMapper.isSandboxUser(42L)).thenReturn(true);
@@ -86,7 +102,8 @@ class AppProductCatalogServiceTest {
         when(sandboxMapper.listSandboxCatalog("test-run-0001")).thenReturn(List.of(new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(
                 8L, "stellarbox-pro-v2", "NexionBox Pro v2", "Pro", new BigDecimal("2639"), 3, 2,
                 "RTX 5090", 256, new BigDecimal("20"), new BigDecimal("2"), new BigDecimal("2"),
-                "", null, null, 0L, null)));
+                "", null, null, 0L, null, "250W", "Tokyo DC", "[]",
+                null, null, null, null, null, null)));
 
         Map<String, Object> data = service.catalog(42L).getData();
 
@@ -94,8 +111,14 @@ class AppProductCatalogServiceTest {
         assertThat(data.get("catalogSource")).isEqualTo("nx_commerce_sandbox_catalog");
         assertThat(data.get("sourceEnvironment")).isEqualTo("SANDBOX");
         assertThat(data.get("runId")).isEqualTo("test-run-0001");
-        assertThat((List<?>) data.get("products")).singleElement().satisfies(item ->
-                assertThat(((Map<?, ?>) item).get("id")).isEqualTo("stellarbox-pro-v2"));
+        assertThat(data.get("serverCanonical")).isEqualTo(true);
+        assertThat((List<?>) data.get("products")).singleElement().satisfies(item -> {
+            Map<?, ?> product = (Map<?, ?>) item;
+            assertThat(product.get("id")).isEqualTo("stellarbox-pro-v2");
+            assertThat(product.get("datacenter")).isEqualTo("Tokyo DC");
+            assertThat(product.get("available")).isEqualTo(true);
+            assertThat(product.get("purchaseBlocked")).isEqualTo(false);
+        });
         verify(sandboxMapper).pruneCatalog("test-run-0001");
         org.mockito.Mockito.verifyNoInteractions(mapper);
     }
@@ -118,6 +141,22 @@ class AppProductCatalogServiceTest {
         Map<String, Object> ai = (Map<String, Object>) product.get("ai");
         assertThat(ai).containsEntry("unlocks", "Flagship AI");
         assertThat(product).containsEntry("purchaseGate", null);
+    }
+
+    @Test
+    void catalogProjectsProductSpecsAndUsesUnavailableForMissingValues() {
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
+                "sku-spec", "Spec SKU", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                "GPU", 32, new BigDecimal("1"), new BigDecimal("2"), new BigDecimal("3"),
+                null, null, 0, null, null, "700W", "Tokyo DC", "99.9%", "36 months",
+                new BigDecimal("0.06"), new BigDecimal("12"), "[]", null, null, null, null, null, null)));
+
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog().getData().get("products")).get(0);
+
+        assertThat(product).containsEntry("uptime", "99.9%")
+                .containsEntry("warranty", "36 months")
+                .containsEntry("phoneDailyEarn", "0.06 USDT/day")
+                .containsEntry("phoneDailyEarnNEX", "12 NEX/day");
     }
 
     @Test
@@ -149,11 +188,24 @@ class AppProductCatalogServiceTest {
         org.mockito.Mockito.verifyNoInteractions(mapper);
     }
 
+    @Test
+    void isolatedProfileWithoutSandboxRailFailsClosedBeforeReadingProductionCatalog() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+
+        var result = service.catalog(42L);
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_UNAVAILABLE");
+        org.mockito.Mockito.verifyNoInteractions(mapper);
+    }
+
     private AppTradeinMapper.CatalogTargetProduct target(
             String productNo, String name, String tier, BigDecimal price, int stock) {
         return new AppTradeinMapper.CatalogTargetProduct(
                 productNo, name, tier, price, stock, "SERVER", 2,
                 "RTX 5090", 256, new BigDecimal("20"), new BigDecimal("2"), new BigDecimal("2"),
-                null, null, 0, null, null);
+                null, null, 0, null, null, "2200W", "Singapore", null,
+                null, null, null, null, null, null);
     }
 }

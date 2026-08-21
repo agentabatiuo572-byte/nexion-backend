@@ -8,8 +8,11 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserPaymentMethodMapper extends BaseMapper<Object> {
-    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE id = #{userId} AND is_deleted = 0")
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0")
     boolean userExists(@Param("userId") Long userId);
+
+    @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0 LIMIT 1")
+    Integer activeUserEnvironment(@Param("userId") Long userId);
 
     @Select("""
             SELECT card.id, card.user_id AS userId, card.card_token AS cardToken, card.brand, card.last4,
@@ -204,8 +207,13 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
             INSERT IGNORE INTO nx_notification (
               biz_no, user_id, type, priority, title, body, cta_label, cta_href,
               read_flag, push_status, push_attempts, next_push_at, created_at, updated_at, is_deleted
-            ) VALUES (#{bizNo}, #{userId}, 'PAYMENT_METHOD', 'high', #{title}, #{body},
-                      '查看支付方式', #{href}, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0)
+            ) SELECT #{bizNo}, u.id, 'PAYMENT_METHOD', 'high', #{title}, #{body},
+                      '查看支付方式', #{href}, 0, 'PENDING', 0, NOW(), NOW(), NOW(), 0
+                FROM nx_user u
+               LEFT JOIN nx_user_preference pref
+                 ON pref.user_id = u.id AND pref.is_deleted = 0
+               WHERE u.id = #{userId} AND u.is_deleted = 0
+                 AND COALESCE(pref.notify_system, 1) = 1
             """)
     int queueNotification(@Param("userId") Long userId, @Param("bizNo") String bizNo,
                           @Param("title") String title, @Param("body") String body,

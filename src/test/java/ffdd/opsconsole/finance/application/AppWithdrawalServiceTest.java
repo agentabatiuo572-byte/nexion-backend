@@ -17,6 +17,7 @@ import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalAttemptRow;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -24,13 +25,16 @@ import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +42,7 @@ import org.springframework.mock.env.MockEnvironment;
 import org.mockito.ArgumentCaptor;
 
 class AppWithdrawalServiceTest {
+    private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final GrowthRhythmFacade rhythmFacade = mock(GrowthRhythmFacade.class);
@@ -52,14 +57,15 @@ class AppWithdrawalServiceTest {
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         return environment;
     }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
-        environment.setActiveProfiles("production");
+        attempts.clear();
+        environment.setActiveProfiles("prod");
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.findActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
@@ -94,6 +100,32 @@ class AppWithdrawalServiceTest {
         when(rhythmFacade.snapshot()).thenReturn(rhythm);
         when(mapper.reserveFunds(eq(7L), any(), any(), eq(3L))).thenReturn(1);
         when(mapper.insertWithdrawal(any())).thenReturn(1);
+        when(mapper.insertWithdrawalAttempt(eq(7L), anyString(), anyString(), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    String hash = invocation.getArgument(2);
+                    String status = invocation.getArgument(3);
+                    return attempts.putIfAbsent(key, new WithdrawalAttemptRow(7L, key, hash, status, null)) == null ? 1 : 0;
+                });
+        when(mapper.lockWithdrawalAttempt(eq(7L), anyString()))
+                .thenAnswer(invocation -> attempts.get(invocation.getArgument(1, String.class)));
+        when(mapper.commitWithdrawalAttempt(eq(7L), anyString(), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    WithdrawalAttemptRow row = attempts.get(key);
+                    if (row == null || "ABANDONED".equals(row.status())) return 0;
+                    attempts.put(key, new WithdrawalAttemptRow(7L, key, row.requestHash(), "COMMITTED",
+                            invocation.getArgument(2)));
+                    return 1;
+                });
+        when(mapper.abandonWithdrawalAttempt(eq(7L), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    WithdrawalAttemptRow row = attempts.get(key);
+                    if (row == null || !"ACTIVE".equals(row.status())) return 0;
+                    attempts.put(key, new WithdrawalAttemptRow(7L, key, row.requestHash(), "ABANDONED", null));
+                    return 1;
+                });
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 1, "2026-W30"));
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, java.util.List.of()));
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
@@ -143,6 +175,7 @@ class AppWithdrawalServiceTest {
         assertThat(write.getValue().networkFee()).isEqualByComparingTo("1.000000");
         assertThat(write.getValue().policyVersion()).isNotBlank();
         assertThat(write.getValue().useNexFeeOffset()).isFalse();
+        assertThat(write.getValue().idempotencyKey()).isEqualTo("wd-1");
         assertThat(write.getValue().holdUntil()).isAfter(java.time.LocalDateTime.now().plusDays(29));
         verify(outbox).publishUserEvent(eq("WITHDRAWAL"), anyString(), eq("withdraw.submitted"), eq(7L),
                 eq("P2"), eq(1), eq("2026-W30"), any());
@@ -168,6 +201,78 @@ class AppWithdrawalServiceTest {
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-threshold-missing"))
                 .hasMessage("A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
         verify(mapper, never()).reserveFunds(eq(7L), any(), any(), anyLong());
+    }
+
+    @Test
+    void staleRequestedPolicyVersionFailsBeforeAddressOrFundsMutation() {
+        ApiResult<java.util.Map<String, Object>> result = service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "stale-policy", false,
+                "wd-stale-policy");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_POLICY_VERSION_CONFLICT");
+        verify(mapper, never()).lockPayoutAddress(any(), anyString());
+        verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+    }
+
+    @Test
+    void abandonedAmbiguousAttemptBecomesAServerTombstoneAndCannotLaterSubmit() {
+        String hash = service.withdrawalAttemptHashForTest(7L, new BigDecimal("25"), "USDT-TRC20",
+                "TR7NHqExampleAddress", "d5-v1", false);
+        when(mapper.insertWithdrawalAttempt(7L, "withdrawal:unknown-1", hash, "ABANDONED")).thenReturn(1);
+        when(mapper.lockWithdrawalAttempt(7L, "withdrawal:unknown-1"))
+                .thenReturn(new WithdrawalAttemptRow(7L, "withdrawal:unknown-1", hash, "ABANDONED", null));
+
+        var abandoned = service.abandonAttempt(7L, "withdrawal:unknown-1", new BigDecimal("25"),
+                "USDT-TRC20", "TR7NHqExampleAddress", "d5-v1", false);
+        var submit = service.submit(7L, new BigDecimal("25"), "USDT-TRC20", "TR7NHqExampleAddress",
+                "d5-v1", false, "withdrawal:unknown-1");
+
+        assertThat(abandoned.getData()).containsEntry("state", "ABANDONED");
+        assertThat(submit.getCode()).isEqualTo(409);
+        assertThat(submit.getMessage()).isEqualTo("WITHDRAWAL_ATTEMPT_ABANDONED");
+        verify(idempotency, never()).execute(anyString(), eq("withdrawal:unknown-1"), anyString(),
+                eq(ApiResult.class), any());
+        verify(mapper, never()).reserveFunds(eq(7L), any(), any(), anyLong());
+    }
+
+    @Test
+    void abandonReconcilesAuthoritativeWithdrawalWhenOuterAttemptCommitWasLost() {
+        String key = "withdrawal:outer-commit-lost";
+        String hash = service.withdrawalAttemptHashForTest(7L, new BigDecimal("25"), "USDT-TRC20",
+                "TR7NHqExampleAddress", "d5-v1", false);
+        when(mapper.insertWithdrawalAttempt(7L, key, hash, "ABANDONED")).thenReturn(0);
+        when(mapper.lockWithdrawalAttempt(7L, key))
+                .thenReturn(new WithdrawalAttemptRow(7L, key, hash, "ACTIVE", null));
+        when(mapper.findWithdrawalNoByIdempotencyKey(7L, key)).thenReturn("WD-REAL");
+        when(mapper.userWithdrawal(7L, "WD-REAL"))
+                .thenReturn(Map.of("withdrawalNo", "WD-REAL", "status", "REVIEW_PENDING"));
+        when(mapper.commitWithdrawalAttempt(7L, key, "WD-REAL")).thenReturn(1);
+
+        var result = service.abandonAttempt(7L, key, new BigDecimal("25"), "USDT-TRC20",
+                "TR7NHqExampleAddress", "d5-v1", false);
+
+        assertThat(result.getCode()).isEqualTo(0);
+        assertThat(result.getData()).containsEntry("state", "COMMITTED")
+                .containsEntry("withdrawalNo", "WD-REAL");
+        verify(mapper, never()).abandonWithdrawalAttempt(eq(7L), eq(key));
+    }
+
+    @Test
+    void abandonRefusesToTreatAuthoritativeReadbackFailureAsAbandoned() {
+        String key = "withdrawal:readback-fails";
+        String hash = service.withdrawalAttemptHashForTest(7L, new BigDecimal("25"), "USDT-TRC20",
+                "TR7NHqExampleAddress", "d5-v1", false);
+        when(mapper.insertWithdrawalAttempt(7L, key, hash, "ABANDONED")).thenReturn(0);
+        when(mapper.lockWithdrawalAttempt(7L, key))
+                .thenReturn(new WithdrawalAttemptRow(7L, key, hash, "ACTIVE", null));
+        when(mapper.findWithdrawalNoByIdempotencyKey(7L, key)).thenReturn("WD-REAL");
+
+        assertThatThrownBy(() -> service.abandonAttempt(7L, key, new BigDecimal("25"), "USDT-TRC20",
+                "TR7NHqExampleAddress", "d5-v1", false))
+                .isInstanceOf(BizException.class)
+                .hasMessage("WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+        verify(mapper, never()).abandonWithdrawalAttempt(eq(7L), eq(key));
     }
 
     @Test
@@ -242,13 +347,20 @@ class AppWithdrawalServiceTest {
 
     @Test
     void strictAcceptanceProfileRejectsProductionWithdrawalBeforeAnyMapperOrSideEffect() {
-        for (String strictProfile : java.util.List.of("acceptance", "test", "local-sandbox")) {
+        for (String strictProfile : java.util.List.of("dev", "test", "dev")) {
             environment.setActiveProfiles(strictProfile);
             assertThatThrownBy(() -> service.submit(
                     7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-" + strictProfile))
                     .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                    .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
                     .hasMessage("WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
         }
+        environment.setActiveProfiles("default", "prod");
+        assertThatThrownBy(() -> service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-mixed-profile"))
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
+                .hasMessage("WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
 
         verify(mapper, never()).lockActiveUser(anyLong());
         verify(mapper, never()).lockPayoutAddress(anyLong(), anyString());
@@ -280,8 +392,8 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
-    void defaultProfileAlsoRefusesSandboxUserBeforeAnyFinancialInteraction() {
-        environment.setActiveProfiles();
+    void productionProfileRefusesSandboxUserBeforeAnyFinancialInteraction() {
+        environment.setActiveProfiles("prod");
         when(mapper.isSandboxUser(7L)).thenReturn(1);
 
         assertThatThrownBy(() -> service.submit(
@@ -293,6 +405,17 @@ class AppWithdrawalServiceTest {
         verify(mapper, never()).reserveFunds(anyLong(), any(), any(), anyLong());
         verify(mapper, never()).insertWithdrawal(any());
         verify(ledger, never()).postLedgerEntry(anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void legacyDefaultProfileIsRejected() {
+        environment.setActiveProfiles("default");
+
+        assertThatThrownBy(() -> service.submit(
+                7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-explicit-default"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
+        verify(mapper, never()).reserveFunds(anyLong(), any(), any(), anyLong());
     }
 
     @Test

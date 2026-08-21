@@ -26,6 +26,9 @@ public class AppExchangeController {
     @GetMapping("/api/market/nex")
     public ApiResult<Map<String,Object>> marketAlias() { return service.market(); }
 
+    @GetMapping("/api/config/market/external")
+    public ApiResult<Map<String,Object>> externalMarket() { return service.externalMarket(); }
+
     @GetMapping("/api/exchange")
     public ApiResult<Map<String,Object>> state(Authentication authentication) {
         Long userId = userId(authentication);

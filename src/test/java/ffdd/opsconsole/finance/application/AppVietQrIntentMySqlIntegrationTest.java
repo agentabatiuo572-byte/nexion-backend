@@ -83,7 +83,8 @@ class AppVietQrIntentMySqlIntegrationTest {
                 AppVietQrIntentService service = new AppVietQrIntentService(
                         session.getMapper(AppVietQrIntentMapper.class),
                         cipher,
-                        Clock.system(ZoneId.of("Asia/Shanghai")));
+                        Clock.system(ZoneId.of("Asia/Shanghai")),
+                        new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"));
                 String createKey = "mysql-create-" + suffix;
 
                 ApiResult<Map<String, Object>> created =

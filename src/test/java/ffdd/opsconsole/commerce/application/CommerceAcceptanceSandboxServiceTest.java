@@ -36,7 +36,7 @@ class CommerceAcceptanceSandboxServiceTest {
     private final FundsSandboxProfileGuard fundsGuard = mock(FundsSandboxProfileGuard.class);
     private final CommerceAcceptanceSandboxService service = new CommerceAcceptanceSandboxService(
             mapper, funds, fundsGuard, Clock.fixed(Instant.parse("2026-08-12T00:00:00Z"), ZoneOffset.UTC),
-            new CommerceAcceptanceRun(RUN_ID), new StorefrontPurchaseGatePolicy());
+            new CommerceAcceptanceRun(RUN_ID), new StorefrontPurchaseGatePolicy(), null);
 
     CommerceAcceptanceSandboxServiceTest() {
         when(fundsGuard.isLocalSandboxEnabled()).thenReturn(true);
@@ -113,7 +113,7 @@ class CommerceAcceptanceSandboxServiceTest {
         when(mapper.findCallback(RUN_ID, "evt-quota-sold-out")).thenReturn(null);
         when(mapper.lockInventoriesForOrder(RUN_ID, "ORD-SBX-QUOTA"))
                 .thenReturn(java.util.List.of(inventory("ORD-SBX-QUOTA", 0L, 0)));
-        when(mapper.lockSandboxCatalogProductForReturn(RUN_ID, 7L)).thenReturn(catalogWithGate(7L, 9L,
+        when(mapper.lockSandboxCatalogProduct(RUN_ID, 7L, "SKU-7", 1)).thenReturn(catalogWithGate(7L, 9L,
                 "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}"));
         when(mapper.consumeSandboxPurchaseQuota(RUN_ID, 7L, 1)).thenReturn(0);
 
@@ -122,6 +122,26 @@ class CommerceAcceptanceSandboxServiceTest {
                 .isInstanceOf(BizException.class).hasMessage("COMMERCE_SANDBOX_PURCHASE_GATE_SOLD_OUT");
         verify(funds, never()).lockWallet(any(), any());
         verify(funds, never()).reserveWallet(any(), any(), any(), any());
+    }
+
+    @Test
+    void paymentSuccessRechecksCurrentPurchaseGateBeforeWalletMutation() {
+        SandboxOrder sandbox = sandbox("ORD-SBX-GATE", 0L, "PENDING_PAYMENT", false, false);
+        when(mapper.lockSandboxOrder(RUN_ID, "ORD-SBX-GATE")).thenReturn(sandbox);
+        when(mapper.findCallback(RUN_ID, "evt-gate-blocked")).thenReturn(null);
+        when(mapper.lockInventoriesForOrder(RUN_ID, "ORD-SBX-GATE"))
+                .thenReturn(List.of(inventory("ORD-SBX-GATE", 0L, 0)));
+        when(mapper.lockSandboxCatalogProduct(RUN_ID, 7L, "SKU-7", 1)).thenReturn(catalogWithGate(7L, 9L,
+                "{\"rankMin\":2,\"mode\":\"all\",\"enforce\":true}"));
+        when(mapper.purchaseGateFacts(41L))
+                .thenReturn(new CommerceAcceptanceSandboxMapper.PurchaseGateFacts(1, 0, BigDecimal.ZERO));
+
+        assertThatThrownBy(() -> service.applyCallback(
+                "ORD-SBX-GATE", "evt-gate-blocked", "PAYMENT_SUCCEEDED", 0L))
+                .isInstanceOf(BizException.class).hasMessage("COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED");
+        verify(funds, never()).lockWallet(any(), any());
+        verify(funds, never()).reserveWallet(any(), any(), any(), any());
+        verify(mapper, never()).consumeSandboxPurchaseQuota(any(), any(), any());
     }
 
     @Test
@@ -228,19 +248,41 @@ class CommerceAcceptanceSandboxServiceTest {
     }
 
     @Test
-    void sameEventReplayReturnsThePersistedFirstResponseWithoutReadingCurrentSandboxState() {
+    void sameEventReplayReturnsThePersistedFirstResponseAfterRevalidatingCurrentSandboxIdentity() {
         when(mapper.findCallback(RUN_ID, "evt-replayed")).thenReturn(
                 new CommerceAcceptanceSandboxMapper.Callback("evt-replayed", "ORD-SBX-4", "PAYMENT_SUCCEEDED", 0L,
                         hash("ORD-SBX-4|PAYMENT_SUCCEEDED|0"), "paid", 1L, money("8")));
+        when(mapper.lockSandboxOrder(RUN_ID, "ORD-SBX-4"))
+                .thenReturn(sandbox("ORD-SBX-4", 1L, "PAID", true, false));
 
         var result = service.applyCallback("ORD-SBX-4", "evt-replayed", "PAYMENT_SUCCEEDED", 0L);
 
         assertThat(result.canonicalStatus()).isEqualTo("paid");
         assertThat(result.version()).isEqualTo(1L);
         assertThat(result.walletAfter()).isEqualByComparingTo("8.000000");
-        verify(mapper, never()).lockSandboxOrder(any(), any());
+        verify(mapper).lockSandboxOrder(RUN_ID, "ORD-SBX-4");
         verify(funds, never()).lockWallet(any(), any());
         verify(funds, never()).insertLedger(any(), any());
+    }
+
+    @Test
+    void sameEventReplayRejectsAnAccountThatIsNoLongerSandboxWithoutSuccessAuditOrMutation() {
+        when(mapper.findCallback(RUN_ID, "evt-replay-env-drift")).thenReturn(
+                new CommerceAcceptanceSandboxMapper.Callback("evt-replay-env-drift", "ORD-SBX-REPLAY-ENV",
+                        "PAYMENT_SUCCEEDED", 0L, hash("ORD-SBX-REPLAY-ENV|PAYMENT_SUCCEEDED|0"),
+                        "paid", 1L, money("8")));
+        when(mapper.lockSandboxOrder(RUN_ID, "ORD-SBX-REPLAY-ENV"))
+                .thenReturn(sandbox("ORD-SBX-REPLAY-ENV", 1L, "PAID", true, false));
+        when(funds.isSandboxUser(41L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.applyCallback(
+                "ORD-SBX-REPLAY-ENV", "evt-replay-env-drift", "PAYMENT_SUCCEEDED", 0L))
+                .isInstanceOf(BizException.class).hasMessage("COMMERCE_SANDBOX_USER_REQUIRED");
+
+        verify(mapper, never()).insertAudit(any());
+        verify(funds, never()).lockWallet(any(), any());
+        verify(funds, never()).insertLedger(any(), any());
+        verify(mapper, never()).transitionSandboxOrder(any(), any(), anyLong(), any(), any(), anyBoolean(), anyBoolean());
     }
 
     @Test
@@ -277,6 +319,22 @@ class CommerceAcceptanceSandboxServiceTest {
         verify(funds, never()).lockWallet(any(), any());
         verify(funds, never()).insertLedger(any(), any());
         verify(mapper, never()).releaseInventory(any(), any(), any(), any());
+    }
+
+    @Test
+    void callbackRejectsAUserThatIsNoLongerSandboxBeforeAnyFundsOrInventoryMutation() {
+        when(mapper.findCallback(RUN_ID, "evt-env-drift")).thenReturn(null);
+        when(mapper.lockSandboxOrder(RUN_ID, "ORD-SBX-ENV"))
+                .thenReturn(sandbox("ORD-SBX-ENV", 0L, "PENDING_PAYMENT", false, false));
+        when(funds.isSandboxUser(41L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.applyCallback("ORD-SBX-ENV", "evt-env-drift", "PAYMENT_SUCCEEDED", 0L))
+                .isInstanceOf(BizException.class).hasMessage("COMMERCE_SANDBOX_USER_REQUIRED");
+
+        verify(funds, never()).lockWallet(any(), any());
+        verify(funds, never()).insertLedger(any(), any());
+        verify(mapper, never()).lockInventoriesForOrder(any(), any());
+        verify(mapper, never()).transitionSandboxOrder(any(), any(), anyLong(), any(), any(), anyBoolean(), anyBoolean());
     }
 
     @Test
@@ -345,7 +403,7 @@ class CommerceAcceptanceSandboxServiceTest {
 
     private void allowPaymentWithoutQuota(String orderNo) {
         when(mapper.lockInventoriesForOrder(RUN_ID, orderNo)).thenReturn(java.util.List.of(inventory(orderNo, 0L, 0)));
-        when(mapper.lockSandboxCatalogProductForReturn(RUN_ID, 7L)).thenReturn(catalog(7L, 9L));
+        when(mapper.lockSandboxCatalogProduct(RUN_ID, 7L, "SKU-7", 1)).thenReturn(catalog(7L, 9L));
     }
 
     private static BigDecimal money(String value) { return new BigDecimal(value).setScale(6); }

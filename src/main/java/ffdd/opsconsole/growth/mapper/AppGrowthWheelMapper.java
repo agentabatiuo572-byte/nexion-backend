@@ -16,10 +16,12 @@ import org.apache.ibatis.annotations.Update;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppGrowthWheelMapper {
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=0 LIMIT 1")
     Long findActiveUser(@Param("userId") Long userId);
 
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H4_WHEEL_PAYOUT' FOR UPDATE")

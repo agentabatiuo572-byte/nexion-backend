@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.application;
 
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.janus.application.JanusSandboxEnrollmentService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -14,7 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.regex.Pattern;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import jakarta.annotation.PostConstruct;
@@ -27,20 +28,18 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class ComputeTaskProofVerifier {
+    private static final Set<String> SANDBOX_PROFILES = Set.of("DEV", "TEST");
+    private static final Pattern EXECUTOR_ID = Pattern.compile("^[A-Za-z0-9._:-]{3,128}$");
+
     @Value("${nexion.compute-task.executor.mode:PRODUCTION}")
     private final String mode;
     @Value("${nexion.compute-task.executor.production-keys:}")
     private final String productionKeys;
-    @Value("${nexion.compute-task.executor.sandbox-token:}")
-    private final String sandboxToken;
-    @Value("${nexion.compute-task.executor.sandbox-users:}")
-    private final String sandboxUsers;
-    @Value("${nexion.compute-task.executor.sandbox-devices:}")
-    private final String sandboxDevices;
     @Value("${nexion.compute-task.executor.max-skew-ms:120000}")
     private final long maxSkewMs;
     private final Clock clock;
     private final Environment environment;
+    private final JanusSandboxEnrollmentService sandboxEnrollmentService;
 
     @PostConstruct
     void validateProfile() {
@@ -51,8 +50,6 @@ public class ComputeTaskProofVerifier {
                                String expectedNonce, LocalDateTime proofExpiresAt,
                                AppTaskCompleteRequest request) {
         Map<String, Executor> productionExecutors = parseExecutors(productionKeys);
-        Set<Long> allowedSandboxUsers = parseLongs(sandboxUsers);
-        Set<String> allowedSandboxDevices = parseSet(sandboxDevices);
         if (request == null || !hex64(request.resultHash()) || !hex64(request.proofNonce())
                 || !constantTime(expectedNonce, trim(request.proofNonce()))
                 || request.proofTimestamp() == null || trim(request.executorId()).isEmpty()
@@ -77,12 +74,11 @@ public class ComputeTaskProofVerifier {
             return new Verification(false, sha256(canonical + "\n" + trim(request.proofSignature())));
         }
         if ("SANDBOX".equals(proofMode)) {
-            if (!"SANDBOX".equals(mode) || sandboxToken.isEmpty()
-                    || !allowedSandboxUsers.contains(userId) || !allowedSandboxDevices.contains(deviceInstanceNo)
-                    || !constantTime(trim(sandboxToken), trim(request.proofSignature()))) {
+            if (!"SANDBOX".equals(mode) || !"sandbox".equals(trim(request.executorId()))
+                    || !sandboxEnrollmentService.verify(userId, deviceInstanceNo, trim(request.proofSignature()))) {
                 throw untrusted("TASK_ASSIGNMENT_SANDBOX_ISOLATION_MISMATCH");
             }
-            return new Verification(true, sha256(canonical + "\nSANDBOX"));
+            return new Verification(true, sha256(canonical + "\n" + trim(request.proofSignature())));
         }
         throw untrusted("TASK_ASSIGNMENT_PROOF_MODE_INVALID");
     }
@@ -90,10 +86,11 @@ public class ComputeTaskProofVerifier {
     public String sourceEnvironment() { return "SANDBOX".equals(mode) ? "SANDBOX" : "PRODUCTION"; }
 
     static void requireSandboxProfile(String mode, String... activeProfiles) {
-        if ("SANDBOX".equals(upper(mode)) && Arrays.stream(activeProfiles == null ? new String[0] : activeProfiles)
-                .map(ComputeTaskProofVerifier::upper)
-                .noneMatch(profile -> profile.equals("TEST") || profile.equals("ACCEPTANCE")
-                        || profile.equals("LOCAL-SANDBOX"))) {
+        String[] normalized = Arrays.stream(activeProfiles == null ? new String[0] : activeProfiles)
+                .map(ComputeTaskProofVerifier::upper).filter(profile -> !profile.isEmpty()).distinct()
+                .toArray(String[]::new);
+        if ("SANDBOX".equals(upper(mode))
+                && (normalized.length != 1 || !SANDBOX_PROFILES.contains(normalized[0]))) {
             throw new IllegalStateException("TASK_ASSIGNMENT_SANDBOX_PROFILE_REQUIRED");
         }
     }
@@ -110,20 +107,17 @@ public class ComputeTaskProofVerifier {
         for (String item : trim(source).split(",")) {
             String[] parts = item.trim().split(":", 3);
             if (parts.length != 3) continue;
-            try { result.put(parts[0], new Executor(parts[1], Base64.getDecoder().decode(parts[2]))); }
+            try {
+                byte[] key = Base64.getDecoder().decode(parts[2]);
+                if (!EXECUTOR_ID.matcher(parts[0]).matches() || !EXECUTOR_ID.matcher(parts[1]).matches()
+                        || key.length < 32) continue;
+                result.put(parts[0], new Executor(parts[1], key));
+            }
             catch (IllegalArgumentException ignored) { }
         }
         return Map.copyOf(result);
     }
 
-    private static Set<String> parseSet(String value) {
-        return Arrays.stream(trim(value).split(",")).map(String::trim).filter(item -> !item.isEmpty())
-                .collect(Collectors.toUnmodifiableSet());
-    }
-    private static Set<Long> parseLongs(String value) {
-        try { return parseSet(value).stream().map(Long::valueOf).collect(Collectors.toUnmodifiableSet()); }
-        catch (NumberFormatException ex) { return Set.of(); }
-    }
     private static String hmac(byte[] key, String value) {
         try { Mac mac = Mac.getInstance("HmacSHA256"); mac.init(new SecretKeySpec(key, "HmacSHA256"));
             return HexFormat.of().formatHex(mac.doFinal(value.getBytes(StandardCharsets.UTF_8))); }

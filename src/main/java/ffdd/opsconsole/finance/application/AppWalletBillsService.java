@@ -18,11 +18,29 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppWalletBillsService {
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("production", "default");
-    private static final Set<String> ISOLATED_PROFILES = Set.of("acceptance", "test", "local-sandbox");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
+    private static final Set<String> ISOLATED_PROFILES = Set.of("dev", "test");
     private final AppWalletBillsMapper mapper;
     private final Environment environment;
 
+    public ApiResult<Map<String, Object>> list(Long userId, int page, int pageSize) {
+        requireProductionUser(userId);
+        int safePage = Math.max(1, page);
+        int safeSize = Math.min(100, Math.max(1, pageSize));
+        long total = mapper.count(userId);
+        List<Map<String, Object>> bills = mapper.rows(userId, safeSize, (safePage - 1) * safeSize).stream().map(this::bill).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", "server");
+        result.put("sourceEnvironment", "PRODUCTION");
+        result.put("bills", bills);
+        result.put("page", safePage);
+        result.put("pageSize", safeSize);
+        result.put("total", total);
+        result.put("nextPage", safePage * safeSize < total ? safePage + 1 : null);
+        return ApiResult.ok(result);
+    }
+
+    /** Compatibility overload for callers using the original bounded ledger contract. */
     public ApiResult<Map<String, Object>> list(Long userId) {
         requireProductionUser(userId);
         List<Map<String, Object>> bills = mapper.rows(userId, 200).stream().map(this::bill).toList();

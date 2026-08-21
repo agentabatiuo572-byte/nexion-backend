@@ -21,6 +21,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -818,6 +819,71 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void activeWeeklyMissionPublishesTheHomeWeeklyCardEvenWhenPromoIsPaused() {
+        missionRows.put("DAY_ONE", List.of(row("id", 1, "status", "active")));
+        missionRows.put("WEEKLY_T1", List.of(row("id", 2, "status", "active")));
+        missionRows.put("WEEKLY_T2", List.of(row("id", 3, "status", "paused")));
+        promoBanner.putAll(row("status", "paused"));
+
+        ApiResult<OpsGrowthService.HomeFeatureFlags> result = service.platformHomeFeatureFlags();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().homeNewcomerTasksEnabled()).isTrue();
+        assertThat(result.getData().homeWeeklyPromoEnabled()).isTrue();
+    }
+
+    @Test
+    void activeTierTwoMissionAlsoPublishesTheHomeWeeklyCard() {
+        missionRows.put("DAY_ONE", List.of(row("id", 1, "status", "active")));
+        missionRows.put("WEEKLY_T1", List.of(row("id", 2, "status", "paused")));
+        missionRows.put("WEEKLY_T2", List.of(row("id", 3, "status", "active")));
+        promoBanner.putAll(row("status", "paused"));
+
+        ApiResult<OpsGrowthService.HomeFeatureFlags> result = service.platformHomeFeatureFlags();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().homeWeeklyPromoEnabled()).isTrue();
+    }
+
+    @Test
+    void missingWeeklyProjectionFailsClosed() {
+        missionRows.put("DAY_ONE", List.of(row("id", 1, "status", "active")));
+        when(questEventMapper.missionRows("WEEKLY_T1")).thenReturn(null);
+        promoBanner.putAll(row("status", "paused"));
+
+        ApiResult<OpsGrowthService.HomeFeatureFlags> result = service.platformHomeFeatureFlags();
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("PLATFORM_HOME_FLAGS_UNAVAILABLE");
+    }
+
+    @Test
+    void weeklyMissionCannotReuseSandboxDayOneQuestCode() {
+        var result = service.createMission(
+                "reserved-weekly-code-key",
+                new GrowthMissionRequest(
+                        "visit_store", "Conflicting weekly task", "WEEKLY_T1", 0,
+                        "prevent sandbox progress collision", "tester"));
+
+        assertThat(result.getMessage()).isEqualTo("MISSION_CODE_RESERVED_FOR_DAY_ONE");
+        verify(questEventMapper, never()).insertMission(
+                anyString(), anyString(), anyString(), anyInt(), anyInt(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void pausedWeeklyMissionsAndPausedPromoKeepTheHomeWeeklyCardClosed() {
+        missionRows.put("DAY_ONE", List.of(row("id", 1, "status", "active")));
+        missionRows.put("WEEKLY_T1", List.of(row("id", 2, "status", "paused")));
+        missionRows.put("WEEKLY_T2", List.of());
+        promoBanner.putAll(row("status", "paused"));
+
+        ApiResult<OpsGrowthService.HomeFeatureFlags> result = service.platformHomeFeatureFlags();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().homeWeeklyPromoEnabled()).isFalse();
+    }
+
+    @Test
     void pausedPromoRemainsEditableAndStatusActivationIsAudited() {
         when(questEventMapper.lockPromoBanner()).thenReturn(row(
                 "id", 31L,
@@ -1501,6 +1567,7 @@ class OpsGrowthServiceTest {
         when(voucherMapper.insertVoucher(anyString(), anyString(), anyString(), any(BigDecimal.class),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class), anyString(),
                 anyString(), anyLong(), anyLong(), anyString(), anyBoolean(),
+                anyLong(), anyLong(), anyLong(), anyBoolean(),
                 anyBoolean(), anyBoolean(), anyBoolean(), anyLong(), anyString(), anyString())).thenReturn(1);
         when(voucherMapper.updateStatus(anyString(), anyString(), anyLong(), anyString())).thenReturn(1);
         when(voucherMapper.softDelete(anyString(), anyLong(), anyString())).thenReturn(1);
@@ -1532,7 +1599,11 @@ class OpsGrowthServiceTest {
                 1L,
                 "active",
                 "create voucher",
-                "superadmin");
+                "superadmin",
+                1300L,
+                24L,
+                1L,
+                true);
         ApiResult<Map<String, Object>> created = h7Service.createVoucher("idem-h7-create", request);
         assertThat(created.getCode()).as(created.getMessage()).isZero();
         assertThat(created.getData().get("vouchers").toString()).contains("vc-test-25");

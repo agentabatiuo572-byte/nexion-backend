@@ -83,6 +83,12 @@ class AppLearningServiceTest {
         assertThat(result.getData().courses()).hasSize(1);
         assertThat(result.getData().courses().get(0).title()).isEqualTo("Khóa học thử nghiệm");
         assertThat(result.getData().earnedNex()).isEqualByComparingTo("20");
+        assertThat(result.getData().serverCanonical()).isTrue();
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().courses().get(0).serverCanonical()).isTrue();
+        assertThat(result.getData().courses().get(0).sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().courses().get(0).runId()).isEmpty();
     }
 
     @Test
@@ -114,6 +120,9 @@ class AppLearningServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().progress()).isEqualTo(50);
+        assertThat(result.getData().serverCanonical()).isTrue();
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(result.getData().runId()).isEqualTo("test-learning-run");
         verify(mapper, never()).findProgress(42L, "test-course", "v2");
     }
 
@@ -268,6 +277,9 @@ class AppLearningServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().rewardGranted()).isTrue();
         assertThat(result.getData().rewardNex()).isEqualByComparingTo("20.000000");
+        assertThat(result.getData().serverCanonical()).isTrue();
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(result.getData().runId()).isEqualTo("test-learning-run");
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
         verify(ledger, never()).postLedgerEntry(
                 anyString(), anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());

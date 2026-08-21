@@ -1,7 +1,9 @@
 package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -29,6 +31,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.core.env.Environment;
 
 class G4AdminCommandServiceTest {
     private final OpsNexMarketService market = mock(OpsNexMarketService.class);
@@ -38,15 +41,47 @@ class G4AdminCommandServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
+    private final Environment environment = mock(Environment.class);
     private final G4AdminCommandService service = new G4AdminCommandService(
             market, mapper, config, idempotency, outbox, audit,
-            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC), earningsRelease);
+            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC), earningsRelease, environment);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void sandboxUnknownAndMixedRuntimeRejectEmissionBeforeIdempotencyOrAnyGenesisLock() {
+        for (String[] profiles : List.of(
+                new String[] {"dev"},
+                new String[] {"qa"},
+                new String[] {"prod", "dev"})) {
+            when(environment.getActiveProfiles()).thenReturn(profiles);
+
+            assertThatThrownBy(() -> service.rerunEmission("g4-runtime-" + profiles.length, "20260722",
+                    request("runtime fence", "FIN-RUNTIME")))
+                    .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                    .hasMessageMatching("G4_GENESIS_EMISSION_(SANDBOX_UNAVAILABLE|RUNTIME_UNSUPPORTED)");
+        }
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verifyNoGenesisEmissionInteraction();
+    }
+
+    @Test
+    void disabledGenesisKillSwitchRejectsBeforeBatchOrLedgerWrite() {
+        when(config.activeValue("growth.phase.genesis_emissions_open")).thenReturn(Optional.of("1"));
+        when(config.activeValue("killswitch.genesis")).thenReturn(Optional.of("disabled"));
+
+        assertThatThrownBy(() -> service.rerunEmission("g4-kill-switch", "20260722",
+                request("kill switch fence", "FIN-KILL")))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("G4_GENESIS_KILLSWITCH_CLOSED");
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verifyNoGenesisEmissionInteraction();
     }
 
     @Test
@@ -120,5 +155,17 @@ class G4AdminCommandServiceTest {
 
     private NexMarketValueUpdateRequest request(String reason, String decisionRef) {
         return new NexMarketValueUpdateRequest("2.5", reason, "superadmin", decisionRef, null, null);
+    }
+
+    private void verifyNoGenesisEmissionInteraction() {
+        verify(mapper, never()).lockActiveSeries();
+        verify(mapper, never()).lockEmissionBatch(anyString());
+        verify(mapper, never()).lockEmissionHoldings();
+        verify(mapper, never()).insertEmissionBatch(any());
+        verify(mapper, never()).insertEmissionItem(any());
+        verify(mapper, never()).lockPendingEmissionItems(anyString());
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).insertLedger(any());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
     }
 }

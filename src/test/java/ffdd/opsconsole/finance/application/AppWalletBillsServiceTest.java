@@ -23,7 +23,7 @@ class AppWalletBillsServiceTest {
         when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
                 11L, "WD-1", "WITHDRAWAL", "USDT", "OUT", new BigDecimal("12.5"),
                 new BigDecimal("87.5"), "SUCCESS", "withdrawal", LocalDateTime.of(2026, 8, 14, 9, 0))));
-        var service = new AppWalletBillsService(mapper, environment("production"));
+        var service = new AppWalletBillsService(mapper, environment("prod"));
 
         var result = service.list(7L).getData();
 
@@ -36,7 +36,7 @@ class AppWalletBillsServiceTest {
     void isolatedProfileFailsBeforeReadingProductionLedger() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(1));
-        var service = new AppWalletBillsService(mapper, environment("acceptance"));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
 
         assertThatThrownBy(() -> service.list(7L)).isInstanceOf(BizException.class)
                 .hasMessageContaining("WALLET_PRODUCTION_BILLS_FORBIDDEN");

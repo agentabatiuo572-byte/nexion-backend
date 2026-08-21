@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
@@ -26,16 +27,20 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppVietQrIntentServiceTest {
     private static final Clock CLOCK =
             Clock.fixed(Instant.parse("2026-07-25T00:00:00Z"), ZoneOffset.UTC);
     private final AppVietQrIntentMapper mapper = mock(AppVietQrIntentMapper.class);
     private final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
-    private final AppVietQrIntentService service = new AppVietQrIntentService(mapper, cipher, CLOCK);
+    private final MockEnvironment environment = new MockEnvironment();
+    private AppVietQrIntentService service;
 
     @BeforeEach
     void setUp() {
+        environment.setActiveProfiles("prod");
+        service = new AppVietQrIntentService(mapper, cipher, CLOCK, environment);
         when(mapper.lockActiveUserForIntentCreation(41L)).thenReturn(41L);
         when(mapper.findVietQrConfig()).thenReturn(Map.of(
                 "toleranceVnd", new BigDecimal("1000"),
@@ -50,6 +55,73 @@ class AppVietQrIntentServiceTest {
                 "version", 7L));
         when(cipher.decrypt("ciphertext", "account-hash"))
                 .thenReturn("9704361234567890");
+    }
+
+    @Test
+    void explicitSandboxFailsClosedBeforeReadingProductionPaymentTables() {
+        environment.setActiveProfiles("dev");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "payment-run-1");
+
+        assertThatThrownBy(service::paymentConfig)
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_SANDBOX_CONFIG_UNAVAILABLE")
+                .extracting("code")
+                .isEqualTo(503);
+        assertThatThrownBy(() -> service.fxQuote("VND", "USDT"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_SANDBOX_CONFIG_UNAVAILABLE")
+                .extracting("code")
+                .isEqualTo(503);
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void explicitSandboxRequiresADeclaredRunBeforeCheckingRunScopedConfig() {
+        environment.setActiveProfiles("dev");
+
+        assertThatThrownBy(service::paymentConfig)
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_SANDBOX_RUN_ID_REQUIRED")
+                .extracting("code")
+                .isEqualTo(503);
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void unknownOrMixedProfilesFailClosedBeforeReadingProductionPaymentTables() {
+        for (String[] profiles : List.of(
+                new String[] { "prod", "dev" },
+                new String[] { "payment-unknown" })) {
+            environment.setActiveProfiles(profiles);
+
+            assertThatThrownBy(service::paymentConfig)
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("VIETQR_RUNTIME_PROFILE_INVALID")
+                    .extracting("code")
+                    .isEqualTo(503);
+            assertThatThrownBy(() -> service.fxQuote("VND", "USDT"))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("VIETQR_RUNTIME_PROFILE_INVALID")
+                    .extracting("code")
+                    .isEqualTo(503);
+        }
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void productionPaymentSnapshotsCarryTheirEnvironmentAndSourceProof() {
+        when(mapper.countAvailableBankAccounts()).thenReturn(1L);
+
+        assertThat(service.paymentConfig().getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_vietqr_config")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        assertThat(service.fxQuote("VND", "USDT").getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_finance_fx_quote_config")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
     }
 
     @Test

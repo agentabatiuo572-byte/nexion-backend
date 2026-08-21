@@ -25,9 +25,11 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.function.Supplier;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,11 +39,15 @@ class AppTradeinServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
-    private final AppTradeinService service = new AppTradeinService(mapper, idempotency, outbox, audit, releasePolicy);
+    private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
+    private final AppTradeinService service = new AppTradeinService(
+            mapper, idempotency, outbox, audit, releasePolicy, sandboxGuard);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(mapper.listTradeinConfig()).thenReturn(validConfig());
@@ -52,6 +58,7 @@ class AppTradeinServiceTest {
         when(mapper.lockTargetProduct(22L, null)).thenReturn(target());
         when(mapper.lockTargetProduct(null, "stellarbox-pro-v2")).thenReturn(target());
         when(mapper.userLevel(7L)).thenReturn("L4");
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.cumulativeDeviceOutputUsdt(11L)).thenReturn(new BigDecimal("400.00"));
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("1000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("1000.00"));
@@ -65,6 +72,87 @@ class AppTradeinServiceTest {
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         when(releasePolicy.evaluate(anyString(), eq(null)))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+    }
+
+    @Test
+    void submitFailsClosedBeforeProductionStateIsReadInLocalSandbox() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+
+        assertThatThrownBy(() -> service.submit(7L, "tradein-sandbox-1",
+                new AppTradeinSubmitRequest(11L, 22L, null,
+                        new BigDecimal("799.00"), new BigDecimal("400.00"))))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
+
+        verify(mapper, never()).lockActiveUser(any());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void capacityReplacementFailsClosedBeforeProductionStateIsReadInLocalSandbox() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+
+        assertThatThrownBy(() -> service.capacityReplace(7L, "capacity-sandbox-1",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("799.00"))))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
+
+        verify(mapper, never()).lockActiveUser(any());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void writesFailClosedBeforeProductionStateIsReadInANonProductionRuntimeWithoutSandboxRail() {
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+
+        assertThatThrownBy(() -> service.submit(7L, "tradein-mixed-1",
+                new AppTradeinSubmitRequest(11L, 22L)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_RUNTIME_UNAVAILABLE");
+        assertThatThrownBy(() -> service.capacityReplace(7L, "capacity-mixed-1",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("799.00"))))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_RUNTIME_UNAVAILABLE");
+
+        verify(mapper, never()).activeUserEnvironment(any());
+        verify(mapper, never()).lockActiveUser(any());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).insertPaidOrder(any());
+    }
+
+    @Test
+    void sandboxUserIsRejectedByEveryTradeinReadEntryOutsideLocalSandbox() {
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+
+        assertSandboxTradeinUnavailable(() -> service.config(7L));
+        assertSandboxTradeinUnavailable(() -> service.eligibility(7L,
+                new AppTradeinEligibilityRequest("stellarbox-pro-v2")));
+        assertSandboxTradeinUnavailable(() -> service.quote(7L,
+                new AppTradeinQuoteRequest(11L, 22L)));
+        assertSandboxTradeinUnavailable(() -> service.capacityQuote(7L,
+                new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2")));
+
+        verify(mapper, never()).userLevel(7L);
+        verify(mapper, never()).listTradeinConfig();
+        verify(mapper, never()).listTradeinSourceCandidates(7L);
+        verify(mapper, never()).findSourceDevice(any(), any());
+        verify(mapper, never()).findTargetProduct(any(), any());
+    }
+
+    @Test
+    void sandboxUserIsRejectedByBothTradeinWriteEntriesBeforeIdempotencyOutsideLocalSandbox() {
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+
+        assertSandboxTradeinUnavailable(() -> service.submit(7L, "tradein-sandbox-2",
+                new AppTradeinSubmitRequest(11L, 22L)));
+        assertSandboxTradeinUnavailable(() -> service.capacityReplace(7L, "capacity-sandbox-2",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("799.00"))));
+
+        verify(mapper, never()).lockActiveUser(7L);
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).insertPaidOrder(any());
     }
 
     @Test
@@ -209,6 +297,9 @@ class AppTradeinServiceTest {
 
     @Test
     void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers() {
+        when(mapper.purchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
         when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
         when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
@@ -230,6 +321,7 @@ class AppTradeinServiceTest {
         verify(mapper).insertTradeinApplication(any());
         verify(mapper).insertPaidOrder(any());
         verify(mapper).insertPaidOrderItem(any());
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
         verify(outbox, times(3)).publishUserEvent(
                 anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit).recordRequiredForTrustedActor(any());
@@ -319,6 +411,9 @@ class AppTradeinServiceTest {
 
     @Test
     void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit() {
+        when(mapper.purchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
@@ -341,6 +436,7 @@ class AppTradeinServiceTest {
         verify(mapper).moveSourceDeviceToInventory(7L, 11L);
         verify(mapper).insertPaidOrder(any());
         verify(mapper).insertTradeinApplication(any());
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
         verify(mapper, never()).recycleSourceDevice(7L, 11L);
         verify(idempotency).execute(eq("APP:E3_CAPACITY_REPLACE:USER:7"), eq("cap-idem-7"),
                 anyString(), eq(ApiResult.class), any());
@@ -359,6 +455,36 @@ class AppTradeinServiceTest {
         verify(mapper, never()).debitWalletUsdt(any(), any());
     }
 
+    @Test
+    void negativePurchaseGateFactsFailClosedInsteadOfBecomingA500() {
+        when(mapper.purchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"rankMin\":1}");
+        when(mapper.purchaseGateFacts(7L))
+                .thenReturn(new AppTradeinMapper.PurchaseGateFacts(-1, 0, BigDecimal.ZERO));
+
+        assertThatThrownBy(() -> service.submit(7L, "idem-negative-facts",
+                new AppTradeinSubmitRequest(11L, 22L)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("PURCHASE_GATE_FACTS_INVALID");
+        verify(mapper, never()).consumePurchaseQuota(anyString(), any());
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+    }
+
+    @Test
+    void quotaCasFailureBlocksSettlementBeforeWalletDebit() {
+        when(mapper.purchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.submit(7L, "idem-quota-race",
+                new AppTradeinSubmitRequest(11L, 22L)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("PURCHASE_GATE_SOLD_OUT");
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).insertPaidOrder(any());
+    }
+
     private List<AppTradeinMapper.ConfigRow> validConfig() {
         return List.of(
                 row("tradeinEnabled", "true"), row("eligibility", "L2+ 持有者"),
@@ -372,6 +498,12 @@ class AppTradeinServiceTest {
 
     private AppTradeinMapper.ConfigRow row(String key, String value) {
         return new AppTradeinMapper.ConfigRow(key, value);
+    }
+
+    private void assertSandboxTradeinUnavailable(ThrowingCallable action) {
+        assertThatThrownBy(action)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_SANDBOX_UNAVAILABLE");
     }
 
     private AppTradeinMapper.SourceDevice source() {

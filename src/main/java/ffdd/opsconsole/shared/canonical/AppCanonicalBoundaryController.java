@@ -1,5 +1,7 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
@@ -21,13 +23,27 @@ public class AppCanonicalBoundaryController {
     private final AppCanonicalBoundaryService service;
     private final AppTrialLifecycleService trialLifecycleService;
     private final AppBundleOrderService bundleOrderService;
+    private final CommerceSandboxTrialService sandboxTrialService;
+    private final FundsSandboxProfileGuard profileGuard;
+
+    @GetMapping("/api/store/purchase-eligibility")
+    public ApiResult<Map<String, Object>> purchaseEligibility(
+            @RequestParam String productNo, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.purchaseEligibility(userId, productNo);
+    }
 
     @GetMapping("/api/trial/eligibility")
     public ApiResult<Map<String, Object>> trialEligibility(
             @RequestParam(required = false) String clientStatus, Authentication authentication) {
         Long userId = userId(authentication);
         if (userId == null) return forbidden();
-        ApiResult<Map<String, Object>> result = trialLifecycleService.state(userId);
+        boolean sandboxRuntime = sandboxTrialService != null && sandboxTrialService.enabled();
+        if (!sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "TRIAL_RUNTIME_UNAVAILABLE");
+        }
+        ApiResult<Map<String, Object>> result = sandboxRuntime
+                ? sandboxTrialService.state(userId) : trialLifecycleService.state(userId);
         if (clientStatus != null && result.getData() != null) {
             String serverState = String.valueOf(result.getData().get("state"));
             if (!serverState.equalsIgnoreCase(clientStatus.trim())) {
@@ -149,6 +165,12 @@ public class AppCanonicalBoundaryController {
             Authentication authentication) {
         Long userId = userId(authentication);
         if (userId == null) return forbidden();
+        if (sandboxTrialService != null && sandboxTrialService.enabled()) {
+            return ApiResult.fail(503, "TRIAL_CHARGE_SANDBOX_UNAVAILABLE");
+        }
+        if (!profileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "TRIAL_RUNTIME_UNAVAILABLE");
+        }
         TrialChargeRequest body = request == null ? new TrialChargeRequest(null, null) : request;
         if (body.chargeSucceeded() != null || body.chargeFailRate() != null) {
             // Keep the canonical rejection behind the same persistent idempotency scope as the

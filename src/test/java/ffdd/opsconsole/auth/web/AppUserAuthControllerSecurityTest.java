@@ -1,0 +1,147 @@
+package ffdd.opsconsole.auth.web;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import ffdd.opsconsole.auth.application.AppUserAuthService;
+import ffdd.opsconsole.auth.application.AppUserOAuthService;
+import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
+import ffdd.opsconsole.auth.application.AppUserRegistrationService;
+import ffdd.opsconsole.auth.application.OAuthSandboxChallengeService;
+import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOAuthExchangeRequest;
+import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
+import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeRequest;
+import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
+import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
+import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
+import ffdd.opsconsole.shared.security.SecurityConfig;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+
+@WebMvcTest(AppUserAuthController.class)
+@ActiveProfiles("dev")
+@Import(SecurityConfig.class)
+@ContextConfiguration(classes = {AppUserAuthController.class, SecurityConfig.class})
+class AppUserAuthControllerSecurityTest {
+    @Autowired
+    private MockMvc mockMvc;
+
+    @MockBean
+    private AppUserAuthService authService;
+
+    @MockBean
+    private AppUserRegistrationService registrationService;
+
+    @MockBean
+    private AppUserPasswordResetService passwordResetService;
+
+    @MockBean
+    private AppUserOAuthService oauthService;
+
+    @MockBean
+    private OAuthSandboxChallengeService oauthSandboxChallengeService;
+
+    @MockBean
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @MockBean
+    private AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
+
+    @BeforeEach
+    void continueAuthenticationFilters() throws Exception {
+        doAnswer(invocation -> {
+            var chain = invocation.getArgument(2, jakarta.servlet.FilterChain.class);
+            chain.doFilter(invocation.getArgument(0), invocation.getArgument(1));
+            return null;
+        }).when(jwtAuthenticationFilter).doFilter(any(), any(), any());
+        doAnswer(invocation -> {
+            var chain = invocation.getArgument(2, jakarta.servlet.FilterChain.class);
+            chain.doFilter(invocation.getArgument(0), invocation.getArgument(1));
+            return null;
+        }).when(adminRbacAuthorizationFilter).doFilter(any(), any(), any());
+    }
+
+    @Test
+    void anonymousOAuthExchangeReachesService() throws Exception {
+        UserOAuthExchangeRequest request = new UserOAuthExchangeRequest(
+                "PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
+                "OAUTH-11111111111111111111111111111111");
+        when(oauthService.exchange(eq(request), eq("127.0.0.1"),
+                eq("http://127.0.0.1:5173"))).thenReturn(ApiResult.ok(
+                new UserOAuthExchangeResponse(
+                        "access", "Bearer",
+                        new UserLoginResponse.UserSession(301L, "+1", "900123456789", "Passkey User"),
+                        "refresh", "mock", true)));
+
+        mockMvc.perform(post("/auth/users/oauth/exchange")
+                        .with(req -> {
+                            req.setRemoteAddr("127.0.0.1");
+                            return req;
+                        })
+                        .header("Origin", "http://127.0.0.1:5173")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"provider\":\"PASSKEY\",\"mode\":\"SANDBOX_MOCK\","
+                                + "\"challengeNo\":\"OAUTH-11111111111111111111111111111111\","
+                                + "\"displayName\":\"Passkey User\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.accessToken").value("access"));
+
+        verify(oauthService).exchange(eq(request), eq("127.0.0.1"),
+                eq("http://127.0.0.1:5173"));
+    }
+
+    @Test
+    void anonymousOAuthSandboxChallengeReachesOnlyTheDedicatedService() throws Exception {
+        var request = new UserOAuthSandboxChallengeRequest("TELEGRAM");
+        when(oauthSandboxChallengeService.issue(
+                request, "127.0.0.1", "http://127.0.0.1:5173")).thenReturn(ApiResult.ok(
+                new UserOAuthSandboxChallengeResponse("OAUTH-22222222222222222222222222222222", 300)));
+
+        mockMvc.perform(post("/auth/users/oauth/sandbox/challenge")
+                        .with(req -> {
+                            req.setRemoteAddr("127.0.0.1");
+                            return req;
+                        })
+                        .header("Origin", "http://127.0.0.1:5173")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"provider\":\"TELEGRAM\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.expiresInSec").value(300));
+
+        verify(oauthSandboxChallengeService).issue(
+                request, "127.0.0.1", "http://127.0.0.1:5173");
+    }
+
+    @Test
+    void anonymousOnlyExactExchangeRouteIsPublic() throws Exception {
+        mockMvc.perform(post("/auth/users/oauth/exchange/other")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+
+        mockMvc.perform(post("/auth/users/password-reset/otp/send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+    }
+}

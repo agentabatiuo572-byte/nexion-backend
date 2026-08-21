@@ -25,7 +25,7 @@ public class AppTrustSectionController {
     }
 
     @PostMapping("/{sectionKey}/view")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("isAuthenticated()")
     public ApiResult<Void> recordSectionView(
             @PathVariable String sectionKey,
             @RequestBody(required = false) TrustSectionViewEventRequest request) {

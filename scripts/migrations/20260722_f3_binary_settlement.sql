@@ -1,5 +1,4 @@
 -- F3 binary settlement: explicit immutable leg ownership, paid-order facts and a daily mutex.
-USE nexion;
 SET NAMES utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_binary_leg_assignment (

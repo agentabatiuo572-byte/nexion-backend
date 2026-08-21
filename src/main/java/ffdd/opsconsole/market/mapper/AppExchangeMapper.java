@@ -16,37 +16,43 @@ public interface AppExchangeMapper {
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='G2_EXCHANGE_EXECUTION' FOR UPDATE")
     String lockExchangeExecutionMutex();
 
-    @Select("SELECT CONCAT('U', IF(id<100000000,LPAD(id,8,'0'),CAST(id AS CHAR))) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT CONCAT('U', IF(id<100000000,LPAD(id,8,'0'),CAST(id AS CHAR))) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND COALESCE(sandbox,0)=0 FOR UPDATE")
     String lockActiveUserNo(@Param("userId") Long userId);
+
+    @Select("SELECT COALESCE(sandbox,0) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    Integer userSandbox(@Param("userId") Long userId);
 
     @Select("""
             SELECT w.usdt_available AS usdtAvailable,w.nex_available AS nexAvailable,
                    UPPER(COALESCE(u.country_code,'')) AS countryCode
               FROM nx_user u
-              JOIN nx_user_wallet w ON w.user_id=u.id AND w.is_deleted=0
-             WHERE u.id=#{userId} AND u.is_deleted=0 LIMIT 1 FOR UPDATE
+              JOIN nx_user_wallet w ON w.user_id=u.id AND w.is_deleted=0 AND COALESCE(w.sandbox,0)=0
+             WHERE u.id=#{userId} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0 LIMIT 1 FOR UPDATE
             """)
     WalletGateRow lockWalletGate(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE(SUM(CASE WHEN UPPER(to_asset)='USDT' THEN to_amount ELSE from_amount END),0)
-              FROM nx_exchange_order
-             WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(status) IN ('COMPLETED','SUCCESS')
-               AND created_at>=CURRENT_DATE
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS')
+               AND o.created_at>=CURRENT_DATE
             """)
     BigDecimal userTodayUsdt(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE(SUM(CASE WHEN UPPER(to_asset)='USDT' THEN to_amount ELSE from_amount END),0)
-              FROM nx_exchange_order
-             WHERE is_deleted=0 AND UPPER(status) IN ('COMPLETED','SUCCESS') AND created_at>=CURRENT_DATE
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS') AND o.created_at>=CURRENT_DATE
             """)
     BigDecimal platformTodayUsdt();
 
     @Select("""
             SELECT COALESCE(SUM(CASE WHEN UPPER(to_asset)='USDT' THEN to_amount ELSE from_amount END),0)
-              FROM nx_exchange_order
-             WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(status) IN ('COMPLETED','SUCCESS')
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS')
             """)
     BigDecimal userLifetimeUsdt(@Param("userId") Long userId);
 
@@ -65,24 +71,48 @@ public interface AppExchangeMapper {
     @Select("""
             SELECT price_usdt FROM nx_price_index
              WHERE metric_code IN ('NEX','NEX_USDT') AND status='ACTIVE' AND is_deleted=0
+               AND sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE)
+               AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
              ORDER BY sampled_at DESC,id DESC LIMIT 1
             """)
     BigDecimal currentPrice();
 
     @Select("""
             SELECT price_usdt AS priceUsdt,sampled_at AS sampledAt
-              FROM nx_price_index
+             FROM nx_price_index
              WHERE metric_code IN ('NEX','NEX_USDT') AND status='ACTIVE' AND is_deleted=0
                AND sampled_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR)
+               AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
              ORDER BY sampled_at,id LIMIT 200
             """)
     List<MarketPoint> recentMarketPoints();
+
+    @Select("""
+            SELECT metricCode,metricLabel,priceUsdt,deltaPercent,volume24hUsdt,sparkline,sampledAt
+              FROM (
+                    SELECT metric_code AS metricCode,metric_label AS metricLabel,
+                           price_usdt AS priceUsdt,delta_percent AS deltaPercent,
+                           volume_24h_usdt AS volume24hUsdt,CAST(sparkline AS CHAR) AS sparkline,
+                           sampled_at AS sampledAt,
+                           ROW_NUMBER() OVER (PARTITION BY metric_code ORDER BY sampled_at DESC,id DESC) AS rowNo
+                      FROM nx_price_index
+                     WHERE metric_code IN ('EXT_RNDR_USDT','EXT_TAO_USDT','EXT_AKT_USDT','EXT_FIL_USDT','EXT_GRT_USDT')
+                       AND status='ACTIVE' AND is_deleted=0
+                       AND sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE)
+                       AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
+                   ) latest
+             WHERE rowNo=1
+             ORDER BY metricCode
+            """)
+    List<ExternalMarketPoint> latestExternalMarketPoints();
 
     @Update("""
             UPDATE nx_user_wallet
                SET usdt_available=usdt_available+#{usdtDelta},nex_available=nex_available+#{nexDelta},
                    version=version+1,updated_at=NOW()
-             WHERE user_id=#{userId} AND is_deleted=0
+             WHERE user_id=#{userId} AND is_deleted=0 AND COALESCE(nx_user_wallet.sandbox,0)=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_user_wallet.user_id
+                           AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
                AND usdt_available+#{usdtDelta}>=0 AND nex_available+#{nexDelta}>=0
             """)
     int applyWalletDelta(@Param("userId") Long userId,@Param("usdtDelta") BigDecimal usdtDelta,
@@ -91,14 +121,18 @@ public interface AppExchangeMapper {
     @Insert("""
             INSERT INTO nx_exchange_order
               (user_id,exchange_no,from_asset,to_asset,from_amount,to_amount,rate,status,created_at,updated_at,is_deleted)
-            VALUES(#{userId},#{exchangeNo},#{fromAsset},#{toAsset},#{fromAmount},#{toAmount},#{rate},#{status},NOW(),NOW(),0)
+            SELECT #{userId},#{exchangeNo},#{fromAsset},#{toAsset},#{fromAmount},#{toAmount},#{rate},#{status},NOW(),NOW(),0
+              FROM nx_user u
+             WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
             """)
     int insertOrder(ExchangeWrite row);
 
     @Insert("""
             INSERT INTO nx_wallet_ledger
               (user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,updated_at,is_deleted)
-            VALUES(#{userId},#{bizNo},'EXCHANGE_SWAP',#{asset},#{direction},#{amount},#{balanceAfter},'SUCCESS',#{remark},NOW(),NOW(),0)
+            SELECT #{userId},#{bizNo},'EXCHANGE_SWAP',#{asset},#{direction},#{amount},#{balanceAfter},'SUCCESS',#{remark},NOW(),NOW(),0
+              FROM nx_user u
+             WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
             """)
     int insertLedger(LedgerWrite row);
 
@@ -167,24 +201,30 @@ public interface AppExchangeMapper {
             SELECT exchange_no AS exchangeNo,from_asset AS fromAsset,to_asset AS toAsset,
                    from_amount AS fromAmount,to_amount AS toAmount,rate,UPPER(status) AS status,
                    created_at AS createdAt
-              FROM nx_exchange_order WHERE user_id=#{userId} AND is_deleted=0
-             ORDER BY created_at DESC,id DESC LIMIT 50
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0
+             ORDER BY o.created_at DESC,o.id DESC LIMIT 50
             """)
     List<ExchangeRow> userOrders(@Param("userId") Long userId);
 
     @Select("""
             SELECT user_id AS userId,exchange_no AS exchangeNo,UPPER(from_asset) AS fromAsset,from_amount AS fromAmount
-              FROM nx_exchange_order WHERE UPPER(status)='QUEUED' AND is_deleted=0
-             ORDER BY created_at,id LIMIT #{limit} FOR UPDATE SKIP LOCKED
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE UPPER(o.status)='QUEUED' AND o.is_deleted=0
+             ORDER BY o.created_at,o.id LIMIT #{limit} FOR UPDATE SKIP LOCKED
             """)
     List<QueuedRow> lockQueuedBatch(@Param("limit") int limit);
 
-    @Select("SELECT COUNT(1) FROM nx_exchange_order WHERE UPPER(status)='QUEUED' AND is_deleted=0")
+    @Select("SELECT COUNT(1) FROM nx_exchange_order o JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0 WHERE UPPER(o.status)='QUEUED' AND o.is_deleted=0")
     int countQueued();
 
     @Update("""
             UPDATE nx_exchange_order SET to_amount=#{toAmount},rate=#{rate},status='COMPLETED',updated_at=NOW()
              WHERE exchange_no=#{exchangeNo} AND UPPER(status)='QUEUED' AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_exchange_order.user_id
+                           AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int completeQueued(@Param("exchangeNo") String exchangeNo,@Param("toAmount") BigDecimal toAmount,
                        @Param("rate") BigDecimal rate);
@@ -192,12 +232,16 @@ public interface AppExchangeMapper {
     @Update("""
             UPDATE nx_exchange_order SET status='CANCELLED',updated_at=NOW()
              WHERE exchange_no=#{exchangeNo} AND UPPER(status)='QUEUED' AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_exchange_order.user_id
+                           AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int cancelQueuedBySystem(@Param("exchangeNo") String exchangeNo);
 
     @Update("""
             UPDATE nx_exchange_order SET status='CANCELLED',updated_at=NOW()
              WHERE user_id=#{userId} AND exchange_no=#{exchangeNo} AND UPPER(status)='QUEUED' AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_exchange_order.user_id
+                           AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
     int cancelOwnQueued(@Param("userId") Long userId,@Param("exchangeNo") String exchangeNo);
 
@@ -207,6 +251,7 @@ public interface AppExchangeMapper {
                    GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) AS accountAgeMonths,
                    DATE_FORMAT(u.created_at,'%x-W%v') AS cohort
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+               AND COALESCE(u.sandbox,0)=0
             """)
     UserAttribution userAttribution(@Param("userId") Long userId);
 
@@ -230,4 +275,7 @@ public interface AppExchangeMapper {
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}
     record UserAttribution(String phase,Integer accountAgeMonths,String cohort) {}
     record MarketPoint(BigDecimal priceUsdt,LocalDateTime sampledAt) {}
+    record ExternalMarketPoint(String metricCode,String metricLabel,BigDecimal priceUsdt,
+                               BigDecimal deltaPercent,BigDecimal volume24hUsdt,
+                               String sparkline,LocalDateTime sampledAt) {}
 }

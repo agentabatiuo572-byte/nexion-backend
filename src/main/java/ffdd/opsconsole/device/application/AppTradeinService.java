@@ -11,8 +11,10 @@ import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitResponse;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -54,10 +56,12 @@ public class AppTradeinService {
     private final EventOutboxService outboxService;
     private final AuditLogService auditLogService;
     private final StorefrontProductReleasePolicy productReleasePolicy;
+    private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
+    private final StorefrontPurchaseGatePolicy purchaseGatePolicy = new StorefrontPurchaseGatePolicy();
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinConfigResponse> config(Long userId) {
-        requireUser(userId);
+        requireProductionTradeinUser(userId);
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
@@ -70,7 +74,7 @@ public class AppTradeinService {
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinEligibilityResponse> eligibility(
             Long userId, AppTradeinEligibilityRequest request) {
-        requireUser(userId);
+        requireProductionTradeinUser(userId);
         String targetProductNo = requireEligibilityTargetNo(request == null ? null : request.targetProductNo());
         String userLevel = mapper.userLevel(userId);
         if (!StringUtils.hasText(userLevel)) {
@@ -96,6 +100,11 @@ public class AppTradeinService {
             return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_OUT_OF_STOCK", target,
                     targetProductNo, List.of()));
         }
+        StorefrontPurchaseGatePolicy.Decision purchaseDecision = purchaseDecision(userId, target.productNo());
+        if (!purchaseDecision.allowed()) {
+            return ApiResult.ok(eligibilityResponse(policy, false, purchaseDecision.code(), target,
+                    targetProductNo, List.of()));
+        }
         StorefrontProductReleasePolicy.Decision release =
                 productReleasePolicy.evaluate(target.productNo(), target.unlockPhase());
         if (release == null || !release.available()) {
@@ -113,7 +122,7 @@ public class AppTradeinService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinQuoteResponse> quote(Long userId, AppTradeinQuoteRequest request) {
-        requireUser(userId);
+        requireProductionTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
         Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), false);
@@ -123,7 +132,7 @@ public class AppTradeinService {
     @Transactional(readOnly = true)
     public ApiResult<AppCapacityReplaceQuoteResponse> capacityQuote(
             Long userId, AppCapacityReplaceQuoteRequest request) {
-        requireUser(userId);
+        requireProductionTradeinUser(userId);
         String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
@@ -134,7 +143,8 @@ public class AppTradeinService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTradeinSubmitResponse> capacityReplace(
             Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
-        requireUser(userId);
+        requireProductionTradeinAvailable();
+        requireProductionTradeinUser(userId);
         if (request == null || request.sourceDeviceId() == null || request.sourceDeviceId() <= 0) {
             throw new BizException(422, "CAPACITY_REPLACEMENT_SOURCE_REQUIRED");
         }
@@ -151,7 +161,8 @@ public class AppTradeinService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTradeinSubmitResponse> submit(
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
-        requireUser(userId);
+        requireProductionTradeinAvailable();
+        requireProductionTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
         if (mapper.lockActiveUser(userId) == null) {
@@ -178,6 +189,7 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
 
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "TIN-" + nonce;
@@ -309,6 +321,7 @@ public class AppTradeinService {
         if (target == null || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
+        reservePurchaseQuotaAtSettlement(userId, target.productNo());
 
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "CPR-" + nonce;
@@ -394,6 +407,7 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
         requireReleased(target);
+        requirePurchaseEligibility(userId, target.productNo());
         BigDecimal targetPrice = money(target.priceUsdt());
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         AppTradeinMapper.SourceDevice source = null;
@@ -438,6 +452,7 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_OUT_OF_STOCK");
         }
         requireReleased(target);
+        requirePurchaseEligibility(userId, target.productNo());
 
         BigDecimal sourcePaid = money(source.actualPaidUsdt());
         BigDecimal targetPrice = money(target.priceUsdt());
@@ -466,6 +481,40 @@ public class AppTradeinService {
                 productReleasePolicy.evaluate(target.productNo(), target.unlockPhase());
         if (release == null || !release.available()) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_RELEASED");
+        }
+    }
+
+    private void requirePurchaseEligibility(Long userId, String productNo) {
+        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, productNo);
+        if (!decision.allowed()) throw new BizException(403, decision.code());
+    }
+
+    private void reservePurchaseQuotaAtSettlement(Long userId, String productNo) {
+        String raw = mapper.purchaseGateJson(productNo);
+        if (!StringUtils.hasText(raw)) return;
+        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, productNo, raw);
+        if (!decision.allowed()) throw new BizException(403, decision.code());
+        if (purchaseGatePolicy.hasQuota(raw) && mapper.consumePurchaseQuota(productNo, 1) != 1) {
+            throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+        }
+    }
+
+    private StorefrontPurchaseGatePolicy.Decision purchaseDecision(Long userId, String productNo) {
+        String raw = mapper.purchaseGateJson(productNo);
+        if (!StringUtils.hasText(raw)) return StorefrontPurchaseGatePolicy.Decision.open();
+        return purchaseDecision(userId, productNo, raw);
+    }
+
+    private StorefrontPurchaseGatePolicy.Decision purchaseDecision(
+            Long userId, String productNo, String raw) {
+        AppTradeinMapper.PurchaseGateFacts facts = mapper.purchaseGateFacts(userId);
+        try {
+            return purchaseGatePolicy.evaluate(raw, facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+                    facts.rank() == null ? 0 : facts.rank(),
+                    facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+        } catch (IllegalArgumentException ex) {
+            return StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
         }
     }
 
@@ -603,8 +652,26 @@ public class AppTradeinService {
         return true;
     }
 
-    private void requireUser(Long userId) {
+    private void requireProductionTradeinUser(Long userId) {
         if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        Integer sandbox = mapper.activeUserEnvironment(userId);
+        if (sandbox == null) throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
+        if (sandbox != 0) throw new BizException(409, "TRADEIN_SANDBOX_UNAVAILABLE");
+    }
+
+    /**
+     * Trade-in settlement still writes the canonical wallet, stock and device
+     * tables. It must never be reachable while the isolated commerce wallet is
+     * enabled; the local sandbox has its own order/payment rail and no trade-in
+     * production fallback.
+     */
+    private void requireProductionTradeinAvailable() {
+        if (fundsSandboxProfileGuard == null || fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
+            throw new BizException(409, "TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
+        }
+        if (!fundsSandboxProfileGuard.isStrictProductionRuntime()) {
+            throw new BizException(503, "TRADEIN_RUNTIME_UNAVAILABLE");
+        }
     }
 
     private void requireRequest(Long sourceDeviceId, Long targetProductId, String targetProductNo) {

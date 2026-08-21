@@ -10,7 +10,7 @@ class JanusSandboxProfileGuardTest {
     @Test
     void productionProfileRejectsSandboxExecutorModeAtStartup() {
         JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(
-                new MockEnvironment().withProperty("spring.profiles.active", "production"), "SANDBOX");
+                new MockEnvironment().withProperty("spring.profiles.active", "prod"), "SANDBOX");
 
         assertThatThrownBy(guard::validateProfileBoundary)
                 .isInstanceOf(IllegalStateException.class)
@@ -18,9 +18,9 @@ class JanusSandboxProfileGuardTest {
     }
 
     @Test
-    void acceptanceProfileExposesExplicitSandboxMarker() {
+    void developmentProfileExposesExplicitSandboxMarker() {
         JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(
-                new MockEnvironment().withProperty("spring.profiles.active", "acceptance"), "SANDBOX");
+                new MockEnvironment().withProperty("spring.profiles.active", "dev"), "SANDBOX");
 
         guard.validateProfileBoundary();
 
@@ -28,9 +28,30 @@ class JanusSandboxProfileGuardTest {
     }
 
     @Test
+    void legacyLocalSandboxProfileIsRejected() {
+        JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(
+                new MockEnvironment().withProperty("spring.profiles.active", "local-sandbox"), "SANDBOX");
+
+        assertThatThrownBy(guard::validateProfileBoundary)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("JANUS_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
+    void multipleSandboxProfilesAreRejected() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("test", "dev");
+        JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(environment, "SANDBOX");
+
+        assertThatThrownBy(guard::validateProfileBoundary)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("JANUS_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
     void productionModeRemainsProductionInEveryProfile() {
         JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(
-                new MockEnvironment().withProperty("spring.profiles.active", "production"), "PRODUCTION");
+                new MockEnvironment().withProperty("spring.profiles.active", "prod"), "PRODUCTION");
 
         guard.validateProfileBoundary();
 

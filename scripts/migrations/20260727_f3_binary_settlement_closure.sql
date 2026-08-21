@@ -1,6 +1,5 @@
 -- F3 closure: complete fail-closed policy seeds and register the authoritative
 -- commission.paid payload produced in the same transaction as D4/A2 writes.
-USE nexion;
 SET NAMES utf8mb4;
 
 -- Immutable per-pair consumption cursor. A successful "每次对碰清零" settlement

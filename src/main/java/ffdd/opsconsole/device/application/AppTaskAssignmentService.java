@@ -11,6 +11,7 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ConfigRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceLockRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -32,7 +33,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -41,19 +44,30 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppTaskAssignmentService {
     private static final int LEASE_HOURS = 24;
+    private static final String PROVENANCE_SOURCE = "server";
+    private static final String PROVENANCE_ENVIRONMENT = "PRODUCTION";
+    private static final String PROVENANCE_RUN_ID = "";
+    private static final Pattern SANDBOX_RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
+    private static final String LEGACY_UNSCOPED_RUN_ID = "LEGACY_UNSCOPED";
 
     private final AppTaskAssignmentMapper mapper;
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService outboxService;
     private final AuditLogService auditLogService;
     private final ComputeTaskProofVerifier proofVerifier;
+    private final Environment environment;
     private final Clock clock;
 
     @Transactional(readOnly = true)
     public ApiResult<AppTaskAssignmentsResponse> assignments(Long userId) {
         requireUser(userId);
+        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(
+                environment == null ? new String[0] : environment.getActiveProfiles())) {
+            return sandboxAssignments(userId);
+        }
+        RuntimeScope runtime = requireProductionRuntime(userId);
         LocalDateTime now = now();
-        String sourceEnvironment = proofVerifier.sourceEnvironment();
+        String sourceEnvironment = runtime.sourceEnvironment();
         List<AssignmentRow> rows = safe(mapper.assignments(userId, sourceEnvironment));
         List<AppTaskDeviceState> devices = safe(mapper.ownedDevices(userId)).stream().map(device -> {
             DeviceLockRow lock = mapper.deviceTaskLock(userId, device.id(), sourceEnvironment);
@@ -68,35 +82,60 @@ public class AppTaskAssignmentService {
                     lock == null ? null : lock.lockUntil(), current, recent);
         }).toList();
         return ApiResult.ok(new AppTaskAssignmentsResponse(now, devices,
-                "nx_compute_task + nx_compute_receipt + nx_compute_device_task_lock"));
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+    }
+
+    private ApiResult<AppTaskAssignmentsResponse> sandboxAssignments(Long userId) {
+        AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);
+        if (user == null || user.sandbox() == null || user.sandbox() != 1) {
+            throw new BizException(403, "TASK_ASSIGNMENT_SANDBOX_USER_REQUIRED");
+        }
+        String runId = sandboxRunId();
+        List<AppTaskDeviceState> devices = safe(mapper.sandboxOwnedDevices(userId, runId)).stream()
+                .map(device -> new AppTaskDeviceState(device.id(), device.instanceNo(), device.deviceType(),
+                        null, null, List.of()))
+                .toList();
+        return ApiResult.ok(new AppTaskAssignmentsResponse(now(), devices,
+                PROVENANCE_SOURCE, "SANDBOX", runId, true));
+    }
+
+    private String sandboxRunId() {
+        String runId = environment == null ? "" : environment.getProperty("nexion.wheel.sandbox.run-id",
+                environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""));
+        runId = value(runId);
+        if (!SANDBOX_RUN_ID.matcher(runId).matches() || LEGACY_UNSCOPED_RUN_ID.equalsIgnoreCase(runId)) {
+            throw new BizException(503, "TASK_ASSIGNMENT_SANDBOX_RUN_ID_REQUIRED");
+        }
+        return runId;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTaskAssignmentView> claim(Long userId, String idempotencyKey, AppTaskClaimRequest request) {
         requireUser(userId);
+        RuntimeScope runtime = requireProductionRuntime(userId);
         Long deviceId = request == null ? null : request.deviceId();
         if (deviceId == null || deviceId <= 0) throw new BizException(422, "TASK_ASSIGNMENT_DEVICE_REQUIRED");
-        return executeOnce("APP:E18_TASK_CLAIM:" + proofVerifier.sourceEnvironment() + ":USER:" + userId, idempotencyKey,
-                sha256(String.valueOf(deviceId)), () -> claimInternal(userId, deviceId));
+        return executeOnce("APP:E18_TASK_CLAIM:" + runtime.sourceEnvironment() + ":USER:" + userId, idempotencyKey,
+                sha256(String.valueOf(deviceId)), () -> claimInternal(userId, deviceId, runtime.sourceEnvironment()));
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTaskAssignmentView> complete(
             Long userId, String taskNo, String idempotencyKey, AppTaskCompleteRequest request) {
         requireUser(userId);
+        RuntimeScope runtime = requireProductionRuntime(userId);
         if (!StringUtils.hasText(taskNo) || !taskNo.trim().matches("[A-Za-z0-9._:-]{1,96}")) {
             throw new BizException(422, "TASK_ASSIGNMENT_TASK_NO_INVALID");
         }
         String normalizedTaskNo = taskNo.trim();
-        return executeOnce("APP:E18_TASK_COMPLETE:" + proofVerifier.sourceEnvironment()
+        return executeOnce("APP:E18_TASK_COMPLETE:" + runtime.sourceEnvironment()
                         + ":USER:" + userId + ":TASK:" + normalizedTaskNo,
                 idempotencyKey, sha256(normalizedTaskNo + ":" + String.valueOf(request)),
-                () -> completeInternal(userId, normalizedTaskNo, request));
+                () -> completeInternal(userId, normalizedTaskNo, request, runtime.sourceEnvironment()));
     }
 
-    private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId) {
+    private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment) {
         LocalDateTime now = now();
-        String sourceEnvironment = proofVerifier.sourceEnvironment();
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
         validateDevice(device);
         DeviceLockRow lock = mapper.lockDeviceTaskLock(userId, deviceId, sourceEnvironment);
@@ -108,7 +147,7 @@ public class AppTaskAssignmentService {
             if (mapper.expireAssignment(userId, existing.taskNo(), sourceEnvironment, now) != 1) {
                 throw new BizException(409, "TASK_ASSIGNMENT_EXPIRY_CONFLICT");
             }
-            if ("PRODUCTION".equals(sourceEnvironment)) mapper.clearRuntimeTask(deviceId, existing.taskNo(), now);
+            if ("PRODUCTION".equals(sourceEnvironment)) mapper.clearRuntimeTask(userId, deviceId, existing.taskNo(), now);
             existing = null;
         }
         if (existing != null) return ApiResult.ok(view(existing));
@@ -126,10 +165,11 @@ public class AppTaskAssignmentService {
                 now, leaseExpiresAt) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_CREATE_CONFLICT");
         }
-        if ("PRODUCTION".equals(sourceEnvironment)) mapper.bindRuntimeTask(deviceId, taskNo, now);
+        if ("PRODUCTION".equals(sourceEnvironment)) mapper.bindRuntimeTask(deviceId, taskNo, userId, now);
         AppTaskAssignmentView result = new AppTaskAssignmentView(taskNo, deviceId, task.taskId(), task.name(),
                 task.taskClass(), task.modelName(), "Nexion App", "RUNNING", reward, requiredSeconds,
-                now, now.plusSeconds(requiredSeconds), null, null, completionNonce, leaseExpiresAt);
+                now, now.plusSeconds(requiredSeconds), null, null, completionNonce, leaseExpiresAt,
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_CLAIMED").resourceType("COMPUTE_TASK").resourceId(taskNo)
                 .bizNo(taskNo).userId(userId).actorType("USER").actorId(userId)
@@ -137,7 +177,7 @@ public class AppTaskAssignmentService {
                 .detail(linked("deviceId", deviceId, "taskId", task.taskId(), "rewardUsdt", reward,
                         "requiredSeconds", requiredSeconds, "taskLockMinutes", taskLockMinutes))
                 .build());
-        if ("PRODUCTION".equals(proofVerifier.sourceEnvironment())) {
+        if ("PRODUCTION".equals(sourceEnvironment)) {
             outboxService.publish("COMPUTE_TASK", taskNo, "TASK_ASSIGNMENT_CLAIMED",
                     linked("userId", userId, "deviceId", deviceId, "taskId", task.taskId()));
         }
@@ -145,13 +185,14 @@ public class AppTaskAssignmentService {
     }
 
     private ApiResult<AppTaskAssignmentView> completeInternal(
-            Long userId, String taskNo, AppTaskCompleteRequest request) {
+            Long userId, String taskNo, AppTaskCompleteRequest request, String sourceEnvironment) {
         LocalDateTime now = now();
-        String sourceEnvironment = proofVerifier.sourceEnvironment();
         AssignmentRow task = mapper.lockAssignment(userId, taskNo, sourceEnvironment);
         if (task == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
         if (completed(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         if (!active(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_STATE_INVALID");
+        DeviceRow activeBinding = mapper.lockOwnedDevice(userId, task.deviceId());
+        validateDevice(activeBinding);
         LocalDateTime completableAt = task.startedAt().plusSeconds(task.requiredSeconds());
         if (now.isBefore(completableAt)) throw new BizException(409, "TASK_ASSIGNMENT_NOT_COMPLETEABLE_UNTIL:" + completableAt);
         if (task.leaseExpiresAt() != null && now.isAfter(task.leaseExpiresAt())) {
@@ -170,36 +211,31 @@ public class AppTaskAssignmentService {
         if (!StringUtils.hasText(deviceInstanceNo)) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_BINDING_MISSING");
         ComputeTaskProofVerifier.Verification proof = proofVerifier.verify(userId, taskNo, task.deviceId(),
                 deviceInstanceNo, task.completionNonce(), task.proofExpiresAt(), request);
+        if (proof.sandbox() || !"PRODUCTION".equals(sourceEnvironment)) {
+            throw new BizException(503, "TASK_ASSIGNMENT_PROOF_ENVIRONMENT_INVALID");
+        }
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
-                proof.sandbox() ? "SANDBOX" : "CREDITED",
-                proof.sandbox() ? "SANDBOX" : "PRODUCTION", now) != 1) {
+                "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
         }
-        if (proof.sandbox()) {
-            if (mapper.insertSandboxReward(taskNo, userId, task.deviceId(), receiptNo,
-                    task.rewardUsdt(), proof.proofHash(), now) != 1) {
-                throw new BizException(409, "TASK_ASSIGNMENT_SANDBOX_LEDGER_CONFLICT");
-            }
-        } else {
-            if (mapper.creditWallet(userId, task.rewardUsdt(), now) != 1) {
-                throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
-            }
-            BigDecimal balanceAfter = mapper.walletUsdt(userId);
-            if (balanceAfter == null
-                    || mapper.insertWalletLedger(userId, taskNo, task.rewardUsdt(), balanceAfter, now) != 1
-                    || mapper.insertEarningEvent("EARN-" + taskNo, userId, task.deviceId(), receiptNo,
-                        task.rewardUsdt(), now) != 1) {
-                throw new BizException(409, "TASK_ASSIGNMENT_SETTLEMENT_CONFLICT");
-            }
+        if (mapper.creditWallet(userId, task.deviceId(), task.rewardUsdt(), now) != 1) {
+            throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
+        }
+        BigDecimal balanceAfter = mapper.walletUsdt(userId);
+        if (balanceAfter == null
+                || mapper.insertWalletLedger(userId, task.deviceId(), taskNo, task.rewardUsdt(), balanceAfter, now) != 1
+                || mapper.insertEarningEvent("EARN-" + taskNo, userId, task.deviceId(), receiptNo,
+                    task.rewardUsdt(), now) != 1) {
+            throw new BizException(409, "TASK_ASSIGNMENT_SETTLEMENT_CONFLICT");
         }
         if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         }
         if ("PRODUCTION".equals(sourceEnvironment)) {
-            mapper.clearRuntimeTask(task.deviceId(), taskNo, now);
+            mapper.clearRuntimeTask(userId, task.deviceId(), taskNo, now);
             if (mapper.deactivatePendingDevice(userId, task.deviceId(), now) > 0) {
-                mapper.markRuntimeDeactivated(task.deviceId(), now);
+                mapper.markRuntimeDeactivated(userId, task.deviceId(), now);
             }
         }
         LocalDateTime lockUntil = now.plusMinutes(Math.max(0, task.taskLockMinutes()));
@@ -225,7 +261,7 @@ public class AppTaskAssignmentService {
         return ApiResult.ok(new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
                 task.taskName(), task.taskClass(), task.modelName(), task.clientName(), "COMPLETED",
                 task.rewardUsdt(), task.requiredSeconds(), task.startedAt(), completableAt, now, receiptNo,
-                null, null));
+                null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
     }
 
     private void validateDevice(DeviceRow device) {
@@ -283,7 +319,8 @@ public class AppTaskAssignmentService {
                 row.taskClass(), row.modelName(), row.clientName(), row.status(), row.rewardUsdt(),
                 row.requiredSeconds(), row.startedAt(), completableAt, row.completedAt(), row.receiptNo(),
                 active(row.status()) ? row.completionNonce() : null,
-                active(row.status()) ? row.proofExpiresAt() : null);
+                active(row.status()) ? row.proofExpiresAt() : null,
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
     }
 
     private int requiredSeconds(String taskClass) {
@@ -310,6 +347,19 @@ public class AppTaskAssignmentService {
     private boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
     private LocalDateTime now() { return LocalDateTime.now(clock).withNano(0); }
     private void requireUser(Long userId) { if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED"); }
+    private RuntimeScope requireProductionRuntime(Long userId) {
+        ProductionDeviceRuntimeGate.requireProduction(environment, "TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);
+        if (user == null || user.sandbox() == null) throw new BizException(403, "TASK_ASSIGNMENT_USER_REQUIRED");
+        if (user.sandbox() != 0) throw new BizException(403, "TASK_ASSIGNMENT_PRODUCTION_USER_REQUIRED");
+        String sourceEnvironment = value(proofVerifier.sourceEnvironment()).toUpperCase(Locale.ROOT);
+        if (!"PRODUCTION".equals(sourceEnvironment)) {
+            throw new BizException(503, "TASK_ASSIGNMENT_SOURCE_ENVIRONMENT_INVALID");
+        }
+        return new RuntimeScope(sourceEnvironment);
+    }
+
+    private record RuntimeScope(String sourceEnvironment) { }
     private static String value(String value) { return value == null ? "" : value.trim(); }
     private static <T> List<T> safe(List<T> values) { return values == null ? List.of() : values; }
 

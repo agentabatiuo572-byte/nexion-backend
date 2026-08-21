@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.Map;
 import java.util.Locale;
+import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -75,7 +76,11 @@ public class AppNotificationService {
             return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         }
         var facts = repository.lockUnreadNotificationEventFacts(userId);
-        int updated = repository.markAllNotificationsRead(userId);
+        if (facts.isEmpty()) return ApiResult.ok(0);
+        List<Long> notificationIds = facts.stream()
+                .map(NotificationEventFact::notificationId)
+                .toList();
+        int updated = repository.markAllNotificationsRead(userId, notificationIds);
         if (updated != facts.size()) {
             throw new IllegalStateException("NOTIFICATION_READ_FACT_MISMATCH");
         }

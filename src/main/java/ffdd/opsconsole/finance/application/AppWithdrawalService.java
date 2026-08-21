@@ -26,6 +26,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -110,6 +112,76 @@ public class AppWithdrawalService {
                 "gateSource", "J1", "source", "D5+H1"));
     }
 
+    /** Read-only server risk/policy snapshot. It never reserves funds or records a decision. */
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> eligibility(Long userId, BigDecimal amount, String chain, String address,
+                                                      String requestedPolicyVersion) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        BigDecimal requested = money(amount);
+        String normalizedChain = normalizeChain(chain);
+        String normalizedAddress = normalizeAddress(address);
+        PolicySnapshot policy = currentPolicy();
+        if (!policy.enabledNetworks().contains(normalizedChain)) {
+            return ApiResult.ok(linked("canSubmit", false, "maxWithdrawableUsdt", BigDecimal.ZERO,
+                    "route", "reject", "riskReasons", List.of("network-disabled"),
+                    "fastLaneApplied", false, "waivedGates", List.of(), "dailyLimitReached", false,
+                    "dailyCountResetAt", nextPlatformDayReset(), "configVersion", policy.policyVersion()));
+        }
+        WalletRow wallet = mapper.walletForEligibility(userId);
+        if (wallet == null || wallet.usdtAvailable() == null) throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
+        BigDecimal max = safe(wallet.usdtAvailable()).multiply(requiredDecimal("withdrawal.max_balance_pct"))
+                .setScale(6, RoundingMode.DOWN);
+        int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
+        boolean dailyLimitReached = mapper.countLast24Hours(userId) >= dailyLimit;
+        WithdrawalRiskFacts facts = mapper.withdrawalRiskFacts(userId, normalizedAddress);
+        if (facts == null || facts.k4RiskScore() == null || !StringUtils.hasText(facts.k4ModelVersion())
+                || facts.k4AsOf() == null || !validK4Thresholds(facts)) {
+            throw new BizException(503, "K3_WITHDRAWAL_FACTS_UNAVAILABLE");
+        }
+        WithdrawalRiskDecision decision;
+        try {
+            decision = withdrawalRiskRuleFacade.evaluate(new WithdrawalRiskContext(
+                    userId, "ELIGIBILITY-" + hash(userId + "|" + requested + "|" + normalizedAddress), facts.userNo(),
+                    requested, facts.withdrawalCount24h() + 1, facts.withdrawalSum24h().add(requested),
+                    facts.accountAgeDays(), facts.addressReputation(), normalizedChain, normalizedAddress, null));
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "K3_WITHDRAWAL_DECISION_UNAVAILABLE");
+        }
+        int score = facts.k4RiskScore();
+        BigDecimal strongThreshold = strongReviewThreshold();
+        boolean strong = requested.compareTo(strongThreshold) >= 0;
+        boolean small = requested.compareTo(policy.smallAmountThresholdUsd()) <= 0;
+        boolean fast = small && !strong && score < facts.k4BandLowMax() && "pass".equals(decision.action());
+        String route = strong ? "manual" : toClientRiskRoute(finalRiskRoute(score, facts, decision));
+        List<String> reasons = new java.util.ArrayList<>();
+        if (decision.held()) reasons.add("K3_ROUTE:" + decision.action());
+        if (score >= facts.k4AutoEscalateScore()) reasons.add("K4_ESCALATED:" + score);
+        else if (score >= facts.k4BandHighMin()) reasons.add("K4_HIGH_PRIORITY:" + score);
+        else if (score >= facts.k4BandLowMax()) reasons.add("K4_MANUAL:" + score);
+        if (strong) reasons.add("A3_STRONG_REVIEW_THRESHOLD");
+        List<String> waived = fast ? List.of("new-address-hold", "first-withdrawal-review") : List.of();
+        boolean canSubmit = requested.compareTo(MIN_WITHDRAWAL) >= 0 && requested.compareTo(max) <= 0
+                && !dailyLimitReached && withdrawGateEnabled();
+        return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
+                "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
+                "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", nextPlatformDayReset(),
+                "configVersion", policy.policyVersion()));
+    }
+
+    private long nextPlatformDayReset() {
+        return ZonedDateTime.now(ZoneId.of("Asia/Ho_Chi_Minh")).plusDays(1).toLocalDate()
+                .atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh")).toInstant().toEpochMilli();
+    }
+
+    private String toClientRiskRoute(String route) {
+        return switch (route == null ? "manual" : route) {
+            case "fast-pass", "pass" -> "pass";
+            case "high-manual", "escalated-manual", "manual" -> "manual";
+            default -> route;
+        };
+    }
+
     @Transactional(rollbackFor = Exception.class)
     @SuppressWarnings({"rawtypes", "unchecked"})
     @Deprecated
@@ -130,21 +202,100 @@ public class AppWithdrawalService {
         BigDecimal normalizedAmount = money(amount);
         String normalizedChain = normalizeChain(chain);
         String normalizedAddress = normalizeAddress(address);
-        String requestHash = hash(userId + "|" + normalizedAmount + "|" + normalizedChain + "|"
-                + normalizedAddress + "|" + policyVersion + "|" + useNexFeeOffset);
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                "USER_WITHDRAWAL_SUBMIT", requireKey(idempotencyKey), requestHash, ApiResult.class,
+        String requestHash = withdrawalAttemptHash(userId, normalizedAmount, normalizedChain, normalizedAddress,
+                policyVersion, useNexFeeOffset);
+        String key = requireKey(idempotencyKey);
+        mapper.insertWithdrawalAttempt(userId, key, requestHash, "ACTIVE");
+        AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
+        if (attempt == null || !requestHash.equals(attempt.requestHash())) {
+            return ApiResult.fail(409, "WITHDRAWAL_ATTEMPT_PAYLOAD_CONFLICT");
+        }
+        if ("ABANDONED".equals(attempt.status())) {
+            return ApiResult.fail(409, "WITHDRAWAL_ATTEMPT_ABANDONED");
+        }
+        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
+                "USER_WITHDRAWAL_SUBMIT", key, requestHash, ApiResult.class,
                 () -> submitOnce(userId, normalizedAmount, normalizedChain, normalizedAddress,
-                        policyVersion, useNexFeeOffset));
+                        policyVersion, useNexFeeOffset, key));
+        if (result.getCode() == 0 && result.getData() != null
+                && StringUtils.hasText(String.valueOf(result.getData().get("withdrawalNo")))) {
+            String withdrawalNo = String.valueOf(result.getData().get("withdrawalNo"));
+            if (mapper.commitWithdrawalAttempt(userId, key, withdrawalNo) != 1) {
+                throw new BizException(409, "WITHDRAWAL_ATTEMPT_COMMIT_CONFLICT");
+            }
+        }
+        return result;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> abandonAttempt(
+            Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
+            String policyVersion, boolean useNexFeeOffset) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        BigDecimal normalizedAmount = money(amount);
+        String normalizedChain = normalizeChain(chain);
+        String normalizedAddress = normalizeAddress(address);
+        String key = requireKey(idempotencyKey);
+        String requestHash = withdrawalAttemptHash(userId, normalizedAmount, normalizedChain, normalizedAddress,
+                policyVersion, useNexFeeOffset);
+        mapper.insertWithdrawalAttempt(userId, key, requestHash, "ABANDONED");
+        AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
+        if (attempt == null || !requestHash.equals(attempt.requestHash())) {
+            return ApiResult.fail(409, "WITHDRAWAL_ATTEMPT_PAYLOAD_CONFLICT");
+        }
+        // The attempt row is only a coordination fence. The idempotency
+        // executor commits the canonical order in its own transaction, so a
+        // rolled-back outer transaction can leave this row ACTIVE. Never write
+        // ABANDONED until the canonical order lookup is empty.
+        String authoritativeWithdrawalNo = mapper.findWithdrawalNoByIdempotencyKey(userId, key);
+        if (StringUtils.hasText(authoritativeWithdrawalNo)) {
+            Map<String, Object> withdrawal = mapper.userWithdrawal(userId, authoritativeWithdrawalNo);
+            if (withdrawal == null || mapper.commitWithdrawalAttempt(userId, key, authoritativeWithdrawalNo) != 1) {
+                throw new BizException(503, "WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+            }
+            return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", authoritativeWithdrawalNo,
+                    "withdrawal", withdrawal));
+        }
+        if ("COMMITTED".equals(attempt.status())) {
+            if (!StringUtils.hasText(attempt.withdrawalNo())) {
+                throw new BizException(503, "WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+            }
+            Map<String, Object> withdrawal = mapper.userWithdrawal(userId, attempt.withdrawalNo());
+            if (withdrawal == null) throw new BizException(503, "WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+            return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", attempt.withdrawalNo(),
+                    "withdrawal", withdrawal));
+        }
+        if ("ACTIVE".equals(attempt.status()) && mapper.abandonWithdrawalAttempt(userId, key) != 1) {
+            throw new BizException(409, "WITHDRAWAL_ATTEMPT_ABANDON_CONFLICT");
+        }
+        return ApiResult.ok(linked("state", "ABANDONED", "withdrawal", null));
+    }
+
+    private String withdrawalAttemptHash(Long userId, BigDecimal amount, String chain, String address,
+                                         String policyVersion, boolean useNexFeeOffset) {
+        return hash(userId + "|" + amount + "|" + chain + "|" + address + "|" + policyVersion + "|"
+                + useNexFeeOffset);
+    }
+
+    String withdrawalAttemptHashForTest(Long userId, BigDecimal amount, String chain, String address,
+                                        String policyVersion, boolean useNexFeeOffset) {
+        return withdrawalAttemptHash(userId, money(amount), normalizeChain(chain), normalizeAddress(address),
+                policyVersion, useNexFeeOffset);
     }
 
     private ApiResult<Map<String, Object>> submitOnce(
             Long userId, BigDecimal amount, String chain, String address, String requestedPolicyVersion,
-            boolean useNexFeeOffset) {
+            boolean useNexFeeOffset, String idempotencyKey) {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
         PolicySnapshot policy = currentPolicy();
+        if (!StringUtils.hasText(requestedPolicyVersion)
+                || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
+            return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
+                    Map.of("policyVersion", policy.policyVersion()));
+        }
         PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_REQUIRED");
@@ -154,11 +305,6 @@ public class AppWithdrawalService {
         }
         if (!payoutAddressMatches(chain, address, payoutAddress.address())) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_MISMATCH");
-        }
-        if (!StringUtils.hasText(requestedPolicyVersion)
-                || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
-            return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
-                    Map.of("policyVersion", policy.policyVersion()));
         }
         if (!policy.enabledNetworks().contains(chain)) return ApiResult.fail(409, "WITHDRAWAL_NETWORK_DISABLED");
 
@@ -266,7 +412,7 @@ public class AppWithdrawalService {
                 BigDecimal.ZERO, networkFee, networkFee, networkFee,
                 penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
-                policy.policyVersion(), useNexFeeOffset,
+                policy.policyVersion(), useNexFeeOffset, idempotencyKey,
                 frozen ? "K3_RULE_FREEZE"
                         : delayed ? "K3_RULE_DELAY" : fastTrack ? "H1_PHASE_COOLDOWN" : null,
                 "H1:M" + rhythm.currentMonth() + ":" + rhythm.currentPhase(),
@@ -357,7 +503,7 @@ public class AppWithdrawalService {
      */
     private void requireProductionWithdrawalSubject(Long userId) {
         if (!isProductionOrDefaultProfile(environment.getActiveProfiles())) {
-            throw new BizException(409, "WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
+            throw new BizException(503, "WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
         }
         if (userId == null || userId <= 0) return;
         if (Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
@@ -366,8 +512,7 @@ public class AppWithdrawalService {
     }
 
     private boolean isProductionOrDefaultProfile(String... profiles) {
-        return profiles != null && (profiles.length == 0
-                || (profiles.length == 1 && "production".equals(profiles[0])));
+        return FundsSandboxProfileGuard.isStrictProductionProfile(profiles);
     }
 
     private BigDecimal strongReviewThreshold() {

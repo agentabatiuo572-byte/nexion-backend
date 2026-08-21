@@ -29,14 +29,14 @@ class AppComputeShareEnrollmentServiceTest {
     private final AdminIdempotencyService idempotency = org.mockito.Mockito.mock(AdminIdempotencyService.class);
     private final AuditLogService audit = org.mockito.Mockito.mock(AuditLogService.class);
     private final EventOutboxService outbox = org.mockito.Mockito.mock(EventOutboxService.class);
-    private final MockEnvironment environment = new MockEnvironment().withProperty("spring.profiles.active", "production");
+    private final MockEnvironment environment = new MockEnvironment().withProperty("spring.profiles.active", "prod");
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-13T00:00:00Z"), ZoneOffset.UTC);
     private final AppComputeShareEnrollmentService service = new AppComputeShareEnrollmentService(
             mapper, config, idempotency, audit, outbox, environment, clock);
 
     @BeforeEach
     void setUp() {
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         when(mapper.isProductionUser(42L)).thenReturn(1);
         when(mapper.lockProductionUser(42L)).thenReturn(42L);
         when(config.activeValue("E.compute.computeShareEnabled")).thenReturn(Optional.of("on"));
@@ -65,7 +65,7 @@ class AppComputeShareEnrollmentServiceTest {
 
     @Test
     void sandboxOrDisabledProfileCannotTouchProductionEnrollmentTables() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         assertThat(service.create(42L, "NVIDIA RTX 4070", "pair-key-2").getMessage())
                 .isEqualTo("COMPUTE_SHARE_PRODUCTION_ENROLLMENT_FORBIDDEN");
 

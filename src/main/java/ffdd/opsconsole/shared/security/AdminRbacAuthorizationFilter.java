@@ -88,10 +88,14 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/treasury/**", "finance_"),
             rule("/api/admin/config/task-pricing", "device_"),
             rule("/api/admin/config/phone-tiers", "device_"),
+            rule("/api/admin/config/phone-tiers/comparison", "device_"),
             // Commerce acceptance callbacks are the E4 sandbox operations
             // surface even though their canonical route is not under /devices.
             rule("/api/admin/commerce/**", "device_"),
             rule("/api/admin/devices/**", "device_"),
+            // Developer access requests are a global governance surface. Exact operation
+            // permissions are enforced again by @PreAuthorize on the controller.
+            rule("/api/admin/developer/**", "developer_"),
             rule("/api/admin/teams/**", "network_"),
             // F5's detailed audit/read and disposition endpoints are canonical root
             // commission routes (PRD §F5), rather than children of /teams.
@@ -298,6 +302,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             }
             if (domainPrefix == null) {
                 return false;
+            }
+            if ("developer_".equals(domainPrefix) && actualAuthorities.contains("ROLE_SUPER_ADMIN")) {
+                return true;
             }
             return actualAuthorities.stream().anyMatch(authority -> authority.startsWith(domainPrefix)
                     && (read ? authority.endsWith("_read") : !authority.endsWith("_read")));

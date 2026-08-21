@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class CregisSandboxProfileGuard implements InitializingBean {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "acceptance");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "dev");
     private final CregisProperties properties;
     private final Environment environment;
 

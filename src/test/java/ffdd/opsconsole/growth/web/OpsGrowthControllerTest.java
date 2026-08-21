@@ -348,7 +348,11 @@ class OpsGrowthControllerTest {
                 1L,
                 "active",
                 "create",
-                "superadmin");
+                "superadmin",
+                1300L,
+                24L,
+                1L,
+                true);
         GrowthConfigUpdateRequest status = new GrowthConfigUpdateRequest("status", "paused", "pause", "superadmin", "1");
         GrowthConfigUpdateRequest delete = new GrowthConfigUpdateRequest("delete", "delete", "delete", "superadmin", "1");
         when(growthService.createVoucher("idem-create", voucher)).thenReturn(ApiResult.ok(Map.of("ok", true)));

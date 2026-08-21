@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * are intentionally separate from production AppSupportController routes.
  */
 @RestController
-@Profile({"acceptance", "test", "local-sandbox"})
+@Profile({"dev", "test"})
 @RequestMapping("/api/app/support/acceptance")
 @RequiredArgsConstructor
 public class SupportAcceptanceSandboxController {

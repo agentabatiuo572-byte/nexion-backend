@@ -26,9 +26,11 @@ import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
+import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
@@ -63,6 +65,7 @@ import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceTradeinActionRequest;
 import ffdd.opsconsole.device.dto.E2PhoneTierConfigUpdateRequest;
+import ffdd.opsconsole.device.dto.E2YieldComparisonUpdateRequest;
 import ffdd.opsconsole.device.dto.E2TaskPricingUpdateRequest;
 import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -207,6 +210,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService outboxService;
+    private final E2TaskPriceHistoryService taskPriceHistoryService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
@@ -1039,18 +1043,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (tier == null || tier < 1 || tier > 5) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_INVALID");
         }
+        if (request == null || request.expectedRevision() == null || request.expectedRevision() < 1) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_REVISION_REQUIRED");
+        }
         if ((request.dailyUsdt() == null || request.dailyUsdt().compareTo(BigDecimal.ZERO) <= 0)
                 && (request.dailyNex() == null || request.dailyNex().compareTo(BigDecimal.ZERO) <= 0)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_REWARD_REQUIRED");
         }
-        if (request.dailyUsdt() != null && request.dailyUsdt().compareTo(BigDecimal.ZERO) <= 0) {
+        if (request.dailyUsdt() != null && !validPositiveDecimal18x6(request.dailyUsdt())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_USDT_INVALID");
         }
-        if (request.dailyNex() != null && request.dailyNex().compareTo(BigDecimal.ZERO) <= 0) {
+        if (request.dailyNex() != null && !validPositiveDecimal18x6(request.dailyNex())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_NEX_INVALID");
         }
         DevicePhoneTierRewardUpdateRequest trusted = new DevicePhoneTierRewardUpdateRequest(
-                request.dailyUsdt(), request.dailyNex(), request.reason().trim(), operator(request.operator()));
+                request.dailyUsdt(), request.dailyNex(), request.expectedRevision(),
+                request.reason().trim(), operator(request.operator()));
         return deviceIdempotent("E2_PHONE_TIER_UPDATE", idempotencyKey, String.valueOf(tier), trusted, () -> {
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "phone_tier", String.valueOf(tier)) > 0) {
@@ -1074,7 +1082,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             DevicePhoneTierRewardView updated = catalogRepository
                     .updatePhoneTierReward(tier, trusted, LocalDateTime.now(clock))
-                    .orElse(before);
+                    .orElse(null);
+            if (updated == null) return ApiResult.fail(409, "PHONE_TIER_VERSION_CONFLICT");
             auditRequired("E2_PHONE_TIER_REWARD_CHANGED", "PHONE_TIER_REWARD", String.valueOf(tier),
                     trusted.operator(), detail(
                             "tier", tier,
@@ -1100,7 +1109,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
-            DeviceTaskView created = catalogRepository.createTask(taskId, trusted, LocalDateTime.now(clock));
+            LocalDateTime now = LocalDateTime.now(clock);
+            DeviceTaskView created = catalogRepository.createTask(taskId, trusted, now);
+            taskPriceHistoryService.recordCurrentPrice(
+                    created.taskId(), E2TaskPriceHistoryService.SOURCE_PC_CREATE, now);
             auditRequired("E2_TASK_CREATED", "DEVICE_TASK", created.taskId(), trusted.operator(), detail(
                     "taskId", created.taskId(), "name", created.name(), "price", created.price(),
                     "taskClass", created.taskClass(), "model", created.model(),
@@ -1127,7 +1139,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "TASK_NOT_FOUND");
             }
-            DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, LocalDateTime.now(clock)).orElse(before);
+            LocalDateTime now = LocalDateTime.now(clock);
+            DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, now).orElse(before);
+            if (before.price() != null && updated.price() != null
+                    && before.price().compareTo(updated.price()) != 0) {
+                taskPriceHistoryService.recordCurrentPrice(
+                        normalized, E2TaskPriceHistoryService.SOURCE_PC_UPDATE, now);
+            }
             auditRequired("E2_TASK_UPDATED", "DEVICE_TASK", normalized, trusted.operator(), detail(
                 "taskId", normalized,
                 "beforeName", before.name(),
@@ -1174,7 +1192,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
-        DeviceTaskView updated = catalogRepository.updateTaskPrice(normalized, trusted.price(), LocalDateTime.now(clock)).orElse(before);
+        LocalDateTime now = LocalDateTime.now(clock);
+        DeviceTaskView updated = catalogRepository.updateTaskPrice(normalized, trusted.price(), now).orElse(before);
+        if (before.price() != null && updated.price() != null
+                && before.price().compareTo(updated.price()) != 0) {
+            taskPriceHistoryService.recordCurrentPrice(
+                    normalized, E2TaskPriceHistoryService.SOURCE_PC_PRICE, now);
+        }
         auditRequired("E2_TASK_PRICE_CHANGED", "DEVICE_TASK", normalized, trusted.operator(), detail(
                 "taskId", normalized,
                 "beforePrice", before.price(),
@@ -1761,12 +1785,28 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e2PhoneTiers() {
-        List<Map<String, Object>> rows = catalogRepository.listPhoneTierRewards().stream()
+        List<DevicePhoneTierRewardView> phoneTiers = catalogRepository.listPhoneTierRewards();
+        List<OnboardingYieldComparisonView> yieldComparisons = catalogRepository.listOnboardingYieldComparisons();
+        List<Map<String, Object>> rows = phoneTiers.stream()
                 .map(tier -> detail("tier", tier.tier(), "name", tier.name(),
                         "baseRateUsdt", tier.dailyUsdt(), "baseRateNex", tier.dailyNex(),
-                        "effectiveAt", tier.updatedAt()))
+                        "revision", tier.revision(), "effectiveAt", tier.updatedAt()))
                 .toList();
-        return ApiResult.ok(detail("tiers", rows, "sources", List.of("nx_admin_phone_tier_reward")));
+        List<Map<String, Object>> comparisons = yieldComparisons.stream()
+                .map(row -> detail("configKey", row.configKey(), "label", row.label(),
+                        "dailyUsdt", row.dailyUsdt(), "dailyNex", row.dailyNex(),
+                        "sortOrder", row.sortOrder(), "revision", row.revision(),
+                        "updatedAt", row.updatedAt()))
+                .toList();
+        long configRevision = yieldComparisons.stream()
+                .map(OnboardingYieldComparisonView::revision)
+                .filter(java.util.Objects::nonNull)
+                .mapToLong(Long::longValue).max().orElse(0L);
+        configRevision = Math.max(configRevision, phoneTiers.stream()
+                .map(DevicePhoneTierRewardView::revision).filter(java.util.Objects::nonNull)
+                .mapToLong(Long::longValue).max().orElse(0L));
+        return ApiResult.ok(detail("tiers", rows, "comparisons", comparisons, "configRevision", configRevision,
+                "sources", List.of("nx_onboarding_phone_tier_config", "nx_onboarding_yield_comparison_config")));
     }
 
     public ApiResult<Map<String, Object>> updateE2PhoneTier(
@@ -1776,11 +1816,54 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         ApiResult<DevicePhoneTierRewardView> result = updatePhoneTierReward(request.tier(), idempotencyKey,
                 new DevicePhoneTierRewardUpdateRequest(request.baseRateUsdt(), request.baseRateNex(),
-                        request.reason(), request.operator()));
+                        request.expectedRevision(), request.reason(), request.operator()));
         if (result.getCode() != 0) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }
         return ApiResult.ok(detail("effectiveAt", result.getData().updatedAt(), "phoneTiers", e2PhoneTiers().getData()));
+    }
+
+    public ApiResult<Map<String, Object>> updateE2YieldComparison(
+            String idempotencyKey, E2YieldComparisonUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireE1Command(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request == null || !StringUtils.hasText(request.configKey()) || !StringUtils.hasText(request.label())
+                || request.dailyUsdt() == null || request.dailyUsdt().signum() <= 0
+                || request.dailyNex() == null || request.dailyNex().signum() <= 0
+                || request.expectedRevision() == null || request.expectedRevision() < 1
+                || !validPositiveDecimal18x6(request.dailyUsdt())
+                || !validPositiveDecimal18x6(request.dailyNex())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ONBOARDING_YIELD_COMPARISON_INVALID");
+        }
+        String configKey = request.configKey().trim();
+        E2YieldComparisonUpdateRequest trusted = new E2YieldComparisonUpdateRequest(
+                configKey, request.label().trim(), request.dailyUsdt(), request.dailyNex(),
+                request.expectedRevision(), request.reason().trim(), operator(request.operator()));
+        return deviceIdempotent("E2_ONBOARDING_YIELD_COMPARISON_UPDATE", idempotencyKey, configKey, trusted, () -> {
+            if (!A2ReplayContext.isReplaying()
+                    && lockMapper.countActiveByTarget("E", "onboarding_yield_comparison", configKey) > 0) {
+                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+            }
+            OnboardingYieldComparisonView before = catalogRepository.findOnboardingYieldComparison(configKey).orElse(null);
+            if (before == null) {
+                return ApiResult.fail(404, "ONBOARDING_YIELD_COMPARISON_NOT_FOUND");
+            }
+            if ((trusted.dailyUsdt().compareTo(before.dailyUsdt()) > 0
+                    || trusted.dailyNex().compareTo(before.dailyNex()) > 0) && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+            }
+            OnboardingYieldComparisonView updated = catalogRepository.updateOnboardingYieldComparison(
+                    configKey, trusted.label(), trusted.dailyUsdt(), trusted.dailyNex(),
+                    trusted.expectedRevision(), LocalDateTime.now(clock)).orElse(null);
+            if (updated == null) return ApiResult.fail(409, "ONBOARDING_YIELD_COMPARISON_VERSION_CONFLICT");
+            auditRequired("E2_ONBOARDING_YIELD_COMPARISON_CHANGED", "ONBOARDING_YIELD_COMPARISON", configKey,
+                    trusted.operator(), detail("configKey", configKey, "before", before, "after", updated,
+                            "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim()));
+            return ApiResult.ok(detail("effectiveAt", updated.updatedAt(), "phoneTiers", e2PhoneTiers().getData()));
+        });
     }
 
     @Transactional
@@ -2779,6 +2862,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request.price() == null || request.price().compareTo(BigDecimal.ZERO) <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_PRICE_REQUIRED");
         }
+        if (request.phoneDailyEarn() != null) {
+            String error = DeviceSkuSpecifications.validatePhoneDailyEarn(request.phoneDailyEarn());
+            if (error != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), error);
+        }
+        if (request.phoneDailyEarnNex() != null) {
+            String error = DeviceSkuSpecifications.validatePhoneDailyEarn(request.phoneDailyEarnNex());
+            if (error != null) return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_PHONE_DAILY_EARN_NEX_INVALID");
+        }
+        if (request.uptime() != null && request.uptime().length() > 64) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UPTIME_INVALID");
+        }
+        if (request.warranty() != null && request.warranty().length() > 128) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_WARRANTY_INVALID");
+        }
         String tier = normalizeExact(request.tier());
         if (!SKU_TIERS.contains(tier)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_TIER_INVALID");
@@ -2834,14 +2931,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(422, "SKU_PURCHASE_GATE_MODE_INVALID");
         }
         if (gate.enforce() == null || (gate.rankMin() != null && (gate.rankMin() < 0 || gate.rankMin() > 12))
-                || (gate.activeDirectMin() != null && gate.activeDirectMin() < 0)
+                || (gate.activeDirectMin() != null
+                && (gate.activeDirectMin() < 0 || gate.activeDirectMin() > 1_000_000))
                 || (gate.teamVolumeMin() != null && gate.teamVolumeMin().signum() < 0)
                 || (gate.quotaCap() != null && gate.quotaCap() < 1)
                 || (gate.quotaSold() != null && gate.quotaSold() < 0)
+                || (gate.quotaCap() == null) != (gate.quotaSold() == null)
                 || (gate.quotaCap() != null && gate.quotaSold() != null && gate.quotaSold() > gate.quotaCap())) {
             return ApiResult.fail(422, "SKU_PURCHASE_GATE_INVALID");
         }
-        if (gate.quotaPeriod() != null && !Set.of("month", "lifetime").contains(gate.quotaPeriod())) {
+        // Monthly usage has no authoritative period-keyed counter yet.  Do
+        // not accept it as lifetime quota under a different label.
+        if (gate.quotaPeriod() != null && !Set.of("lifetime").contains(gate.quotaPeriod())) {
             return ApiResult.fail(422, "SKU_PURCHASE_GATE_PERIOD_INVALID");
         }
         return null;
@@ -2874,6 +2975,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.hashRate(),
                 request.power(),
                 request.datacenter(),
+                request.uptime(),
+                request.warranty(),
+                request.phoneDailyEarn(),
+                request.phoneDailyEarnNex(),
                 request.price(),
                 request.dailyEarn(),
                 request.dailyEarnNex(),
@@ -4104,6 +4209,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return true;
     }
 
+    private boolean validPositiveDecimal18x6(BigDecimal value) {
+        if (value == null || value.signum() <= 0) return false;
+        BigDecimal normalized = value.stripTrailingZeros();
+        int scale = Math.max(0, normalized.scale());
+        int integerDigits = normalized.precision() - normalized.scale();
+        return scale <= 6 && integerDigits <= 12;
+    }
+
     private boolean coverageBelowRedline() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
@@ -4455,8 +4568,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return updateE1EarlyAccess(idem, req);
             }
             case "e2_phone_tier" -> {
+                if (StringUtils.hasText(str(p, "configKey"))) {
+                    E2YieldComparisonUpdateRequest req = new E2YieldComparisonUpdateRequest(
+                            str(p, "configKey"), str(p, "label"), decimal(p, "dailyUsdt"), decimal(p, "dailyNex"),
+                            longVal(p, "expectedRevision"), reason, operator);
+                    return updateE2YieldComparison(idem, req);
+                }
                 DevicePhoneTierRewardUpdateRequest req = new DevicePhoneTierRewardUpdateRequest(
-                        decimal(p, "dailyUsdt"), decimal(p, "dailyNex"), reason, operator);
+                        decimal(p, "dailyUsdt"), decimal(p, "dailyNex"),
+                        longVal(p, "expectedRevision"), reason, operator);
                 return updatePhoneTierReward(intVal(p, "tier"), idem, req);
             }
             case "e2_task_create" -> {
@@ -4590,6 +4710,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return new DeviceSkuUpsertRequest(
                 str(p, "skuId"), str(p, "name"), str(p, "tier"), str(p, "tagline"), str(p, "badge"),
                 str(p, "gpu"), str(p, "vram"), str(p, "hashRate"), str(p, "power"), str(p, "datacenter"),
+                str(p, "uptime"), str(p, "warranty"), decimal(p, "phoneDailyEarn"), decimal(p, "phoneDailyEarnNex"),
                 decimal(p, "price"), decimal(p, "dailyEarn"), decimal(p, "dailyEarnNex"),
                 decimal(p, "shareYieldMin"), decimal(p, "shareYieldMax"), str(p, "baseRate"),
                 longVal(p, "sold"), str(p, "stock"), decimal(p, "rating"), longVal(p, "reviews"),

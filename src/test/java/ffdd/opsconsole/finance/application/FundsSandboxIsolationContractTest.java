@@ -38,4 +38,18 @@ class FundsSandboxIsolationContractTest {
                 .doesNotContain("nx_user_wallet")
                 .doesNotContain("nx_withdrawal_order");
     }
+
+    @Test
+    void dailyWithdrawalQuotaUsesACurrentLockingReadAfterTheWalletMutex() throws Exception {
+        String service = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/finance/application/FundsSandboxService.java"));
+        String mapper = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/finance/mapper/FundsSandboxMapper.java"));
+
+        assertThat(service.indexOf("lockWallet(runId, userId)"))
+                .isLessThan(service.indexOf("lockWithdrawalOrderIdsSince"));
+        assertThat(mapper)
+                .contains("List<Long> lockWithdrawalOrderIdsSince")
+                .contains("FOR UPDATE");
+    }
 }

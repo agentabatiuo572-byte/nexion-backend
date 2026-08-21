@@ -22,9 +22,11 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(OpsFinanceController.class)
+@ActiveProfiles("dev")
 @Import({SecurityConfig.class, D2WithdrawalAuthorization.class, D5WithdrawalAuthorization.class})
 @ContextConfiguration(classes = {
         OpsFinanceController.class,

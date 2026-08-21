@@ -37,7 +37,7 @@ class BehaviorAnalyticsFixtureSafetyGuardTest {
     @Test
     void disabledFixtureDoesNotRestrictNormalApplicationProfiles() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production", "acceptance");
+        environment.setActiveProfiles("prod", "dev");
 
         assertThatCode(() -> new BehaviorAnalyticsFixtureSafetyGuard(false, environment).afterPropertiesSet())
                 .doesNotThrowAnyException();
@@ -49,7 +49,7 @@ class BehaviorAnalyticsFixtureSafetyGuardTest {
                 .withBean(BehaviorAnalyticsFixtureSafetyGuard.class)
                 .withPropertyValues("nexion.analytics.fixture.enabled=true")
                 .withInitializer(context -> context.getEnvironment()
-                        .setActiveProfiles("production", "acceptance"))
+                        .setActiveProfiles("prod", "dev"))
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -59,19 +59,19 @@ class BehaviorAnalyticsFixtureSafetyGuardTest {
     }
 
     private static Stream<String> allowedProfileSets() {
-        return Stream.of("test", "acceptance", "local-sandbox");
+        return Stream.of("test", "dev", "dev");
     }
 
     private static Stream<Arguments> forbiddenProfileSets() {
         return Stream.of(
                 Arguments.of("none", new String[0]),
-                Arguments.of("production", new String[]{"production"}),
+                Arguments.of("prod", new String[]{"prod"}),
                 Arguments.of("unknown", new String[]{"development"}),
-                Arguments.of("production+acceptance", new String[]{"production", "acceptance"}),
-                Arguments.of("production+test", new String[]{"production", "test"}),
-                Arguments.of("production+local-sandbox", new String[]{"production", "local-sandbox"}),
-                Arguments.of("test+acceptance", new String[]{"test", "acceptance"}),
-                Arguments.of("acceptance+unknown", new String[]{"acceptance", "development"}),
-                Arguments.of("local-sandbox+unknown", new String[]{"local-sandbox", "development"}));
+                Arguments.of("production+acceptance", new String[]{"prod", "dev"}),
+                Arguments.of("production+test", new String[]{"prod", "test"}),
+                Arguments.of("production+local-sandbox", new String[]{"prod", "dev"}),
+                Arguments.of("test+acceptance", new String[]{"test", "dev"}),
+                Arguments.of("acceptance+unknown", new String[]{"dev", "development"}),
+                Arguments.of("local-sandbox+unknown", new String[]{"dev", "development"}));
     }
 }

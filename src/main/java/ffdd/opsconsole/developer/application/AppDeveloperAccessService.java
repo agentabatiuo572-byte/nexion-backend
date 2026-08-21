@@ -106,8 +106,8 @@ public class AppDeveloperAccessService {
         java.util.Set<String> active = java.util.Arrays.stream(profiles == null ? new String[0] : profiles)
                 .map(value -> value.trim().toLowerCase()).filter(value -> !value.isBlank())
                 .collect(java.util.stream.Collectors.toSet());
-        boolean isolated = active.size() == 1 && java.util.Set.of("acceptance", "test", "local-sandbox").contains(active.iterator().next());
-        boolean production = active.isEmpty() || (active.size() == 1 && java.util.Set.of("production", "default").contains(active.iterator().next()));
+        boolean isolated = active.size() == 1 && java.util.Set.of("dev", "test").contains(active.iterator().next());
+        boolean production = active.isEmpty() || (active.size() == 1 && java.util.Set.of("prod").contains(active.iterator().next()));
         if (!isolated && !production) throw new BizException(503, "DEVELOPER_ACCESS_PROFILE_INVALID");
         if (isolated && sandbox != 1) throw new BizException(403, "DEVELOPER_ACCESS_SANDBOX_USER_REQUIRED");
         if (production && sandbox != 0) throw new BizException(403, "DEVELOPER_ACCESS_PRODUCTION_USER_REQUIRED");

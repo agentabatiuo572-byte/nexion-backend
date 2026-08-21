@@ -20,24 +20,62 @@ class PurchaseGateAtomicityContractTest {
     }
 
     @Test
-    void quotaSoldChangesOnlyAtSandboxPaymentAndUsesAnAtomicGuard() throws Exception {
+    void canonicalAndSandboxQuotaSoldUseLifetimeAtomicGuards() throws Exception {
         String mapper = Files.readString(ROOT.resolve(
                 "ffdd/opsconsole/commerce/mapper/CommerceAcceptanceSandboxMapper.java"));
         assertThat(mapper).contains("consumeSandboxPurchaseQuota")
                 .contains("JSON_SET")
                 .contains("quotaSold")
                 .contains("quotaCap")
+                .contains("quotaPeriod")
+                .contains("c.purchase_gate_json")
+                .doesNotContain("JSON_EXTRACT(s.purchase_gate_json,'$.quotaCap')")
                 .contains("<=");
         String callback = Files.readString(ROOT.resolve(
                 "ffdd/opsconsole/commerce/application/CommerceAcceptanceSandboxService.java"));
         assertThat(callback).contains("PAYMENT_SUCCEEDED")
                 .contains("consumeSandboxPurchaseQuota");
+        String canonical = Files.readString(ROOT.resolve(
+                "ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"));
+        assertThat(canonical).contains("consumePurchaseQuota")
+                .contains("UPDATE nx_admin_device_sku")
+                .contains("JSON_SET")
+                .contains("quotaSold")
+                .contains("quotaCap")
+                .contains("quotaPeriod")
+                .contains("<=");
+        String bundle = Files.readString(ROOT.resolve(
+                "ffdd/opsconsole/shared/canonical/mapper/AppBundleOrderMapper.java"));
+        assertThat(bundle).contains("consumePurchaseQuota")
+                .contains("UPDATE nx_admin_device_sku")
+                .contains("JSON_SET")
+                .contains("quotaSold")
+                .contains("quotaCap")
+                .contains("quotaPeriod")
+                .contains("<=");
         assertThat(Files.readString(ROOT.resolve(
                 "ffdd/opsconsole/shared/canonical/AppCanonicalBoundaryService.java")))
-                .doesNotContain("consumePurchaseQuota");
+                .contains("reserveCanonicalPurchaseQuota")
+                .contains("consumePurchaseQuota");
         assertThat(Files.readString(ROOT.resolve(
                 "ffdd/opsconsole/shared/canonical/AppBundleOrderService.java")))
-                .doesNotContain("consumePurchaseQuota");
+                .contains("reserveCanonicalPurchaseQuota")
+                .contains("consumePurchaseQuota");
+    }
+
+    @Test
+    void purchaseFactsEscapesTheMysqlRankKeyword() throws Exception {
+        for (String mapper : java.util.List.of(
+                "ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java",
+                "ffdd/opsconsole/shared/canonical/mapper/AppBundleOrderMapper.java",
+                "ffdd/opsconsole/device/mapper/AppTradeinMapper.java",
+                "ffdd/opsconsole/commerce/mapper/CommerceAcceptanceSandboxMapper.java")) {
+            String source = Files.readString(ROOT.resolve(mapper));
+            assertThat(source)
+                    .contains("AS `rank`")
+                    .doesNotContain("AS rank,")
+                    .doesNotContain("UNSIGNED) rank,");
+        }
     }
 
     @Test

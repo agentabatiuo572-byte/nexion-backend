@@ -12,6 +12,10 @@ final class DatabaseEnvironmentResolver {
     private DatabaseEnvironmentResolver() {}
 
     static ResolvedDatabase resolve(Map<String, String> environment) {
+        return resolve(environment, false);
+    }
+
+    static ResolvedDatabase resolve(Map<String, String> environment, boolean requireExplicitBundle) {
         String nexionUrl = environment.get("NEXION_DB_URL");
         String nexionUsername = environment.get("NEXION_DB_USERNAME");
         String nexionPassword = environment.get("NEXION_DB_PASSWORD");
@@ -21,15 +25,26 @@ final class DatabaseEnvironmentResolver {
 
         boolean nexionPresent = present(nexionUrl) || present(nexionUsername) || present(nexionPassword);
         boolean springPresent = present(springUrl) || present(springUsername) || present(springPassword);
+        boolean nexionComplete = present(nexionUrl) && present(nexionUsername) && present(nexionPassword);
+        boolean springComplete = present(springUrl) && present(springUsername) && present(springPassword);
 
-        if (springPresent && !(present(springUrl) && present(springUsername) && present(springPassword))) {
+        if (requireExplicitBundle && nexionPresent && !nexionComplete) {
+            throw new IllegalStateException("Production requires NEXION_DB_URL, NEXION_DB_USERNAME, and "
+                    + "NEXION_DB_PASSWORD as one complete bundle.");
+        }
+        if (requireExplicitBundle && !nexionPresent && !springPresent) {
+            throw new IllegalStateException("Production requires one complete database environment bundle; "
+                    + "loopback defaults are forbidden.");
+        }
+
+        if (springPresent && !springComplete) {
             throw new IllegalStateException("SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, and "
                     + "SPRING_DATASOURCE_PASSWORD must be supplied as one complete bundle; "
                     + "cross-bundle assembly is forbidden.");
         }
 
         if (nexionPresent && springPresent) {
-            if (!(present(nexionUrl) && present(nexionUsername) && present(nexionPassword))) {
+            if (!nexionComplete) {
                 throw new IllegalStateException("NEXION_DB_URL, NEXION_DB_USERNAME, and NEXION_DB_PASSWORD "
                         + "must be supplied as one complete bundle when legacy SPRING_DATASOURCE_* variables "
                         + "are also present; cross-bundle assembly is forbidden.");

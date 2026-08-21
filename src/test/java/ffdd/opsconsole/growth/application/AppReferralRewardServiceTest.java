@@ -31,13 +31,13 @@ class AppReferralRewardServiceTest {
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         return environment;
     }
 
     @BeforeEach
     void setUp() {
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "");
         when(config.publicConfig()).thenReturn(new ReferralRewardPublicConfigView(
                 new ReferralRewardPublicConfigView.WelcomeGift("risk_bucket", BigDecimal.ZERO, BigDecimal.ZERO),
@@ -109,7 +109,7 @@ class AppReferralRewardServiceTest {
 
     @Test
     void sandboxUsesExplicitMockSourceAndCannotReadProductionFacts() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
         when(mapper.appReferralAccount(11L)).thenReturn(
                 new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, new BigDecimal("999")));
@@ -148,7 +148,7 @@ class AppReferralRewardServiceTest {
         assertThatThrownBy(() -> service.snapshot(11L, 10))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         assertThatThrownBy(() -> service.snapshot(11L, 10))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_SANDBOX_RUN_ID_REQUIRED");
@@ -156,7 +156,7 @@ class AppReferralRewardServiceTest {
 
     @Test
     void strictSandboxProfileRejectsProductionAccountBeforeAnyProductionProjectionRead() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
         when(mapper.appReferralAccount(11L)).thenReturn(
                 new ReferralRewardMapper.AppReferralAccount("NEX-PROD", 0, new BigDecimal("120")));
@@ -197,5 +197,18 @@ class AppReferralRewardServiceTest {
         assertThatThrownBy(() -> service.snapshot(11L, 10))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_ACCOUNT_ENVIRONMENT_INCONSISTENT");
+    }
+
+    @Test
+    void unknownOrMixedRuntimeFailsClosedBeforeProductionProjectionRead() {
+        environment.setActiveProfiles("dev", "prod");
+
+        assertThatThrownBy(() -> service.snapshot(11L, 10))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("H8_REWARD_RUNTIME_PROFILE_UNSUPPORTED");
+        verify(mapper, never()).appInvitedCount(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString());
+        verify(mapper, never()).appVerifiedRewardSummary(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
     }
 }

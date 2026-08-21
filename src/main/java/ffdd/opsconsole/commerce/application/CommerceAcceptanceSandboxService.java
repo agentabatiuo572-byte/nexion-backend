@@ -10,6 +10,7 @@ import ffdd.opsconsole.finance.mapper.FundsSandboxMapper;
 import ffdd.opsconsole.finance.mapper.FundsSandboxMapper.LedgerWrite;
 import ffdd.opsconsole.finance.mapper.FundsSandboxMapper.WalletRow;
 import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -50,6 +51,7 @@ public class CommerceAcceptanceSandboxService {
     private final Clock clock;
     private final CommerceAcceptanceRun acceptanceRun;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
+    private final StorefrontProductReleasePolicy releasePolicy;
 
     @Transactional(rollbackFor = Exception.class)
     public CallbackResult applyCallback(String orderNo, String eventId, String event, Long expectedVersion) {
@@ -71,7 +73,16 @@ public class CommerceAcceptanceSandboxService {
         String normalizedActor = requireText(actor, 128, "COMMERCE_SANDBOX_CALLBACK_ACTOR_REQUIRED");
         String requestHash = sha256(normalizedOrderNo + "|" + normalizedEvent + "|" + expectedVersion);
         Callback replay = mapper.findCallback(runId, normalizedEventId);
-        if (replay != null) return replay(replay, requestHash, normalizedReason, normalizedActor);
+        if (replay != null) {
+            SandboxOrder replayOrder = mapper.lockSandboxOrder(runId, replay.orderNo());
+            if (replayOrder == null || replayOrder.userId() == null) {
+                throw new BizException(503, "COMMERCE_SANDBOX_ORDER_UNAVAILABLE");
+            }
+            if (!Integer.valueOf(1).equals(fundsMapper.isSandboxUser(replayOrder.userId()))) {
+                throw new BizException(403, "COMMERCE_SANDBOX_USER_REQUIRED");
+            }
+            return replay(replay, requestHash, normalizedReason, normalizedActor);
+        }
 
         // A callback is never an admission path: only the sandbox checkout can create
         // an isolated order/inventory snapshot. This rejects arbitrary production order numbers.
@@ -81,7 +92,7 @@ public class CommerceAcceptanceSandboxService {
                 || sandbox.quantity() < 1 || money(sandbox.amountUsdt()).signum() < 0) {
             throw new BizException(503, "COMMERCE_SANDBOX_ORDER_UNAVAILABLE");
         }
-        if (fundsMapper.isSandboxUser(sandbox.userId()) == null) {
+        if (!Integer.valueOf(1).equals(fundsMapper.isSandboxUser(sandbox.userId()))) {
             throw new BizException(403, "COMMERCE_SANDBOX_USER_REQUIRED");
         }
         // A locking/current read is required here. Under MySQL REPEATABLE_READ a
@@ -101,9 +112,36 @@ public class CommerceAcceptanceSandboxService {
         if ("PAYMENT_SUCCEEDED".equals(normalizedEvent)) {
             lockedInventories = inventories(mapper.lockInventoriesForOrder(runId, sandbox.orderNo()), sandbox);
             for (InventoryRow inventory : lockedInventories) {
-                var catalog = mapper.lockSandboxCatalogProductForReturn(runId, inventory.productId());
-                if (catalog == null || catalog.version() == null || !inventory.productId().equals(catalog.productId())) {
+                // Re-read canonical product + current E1 release and purchase gate at
+                // the payment boundary. The sandbox snapshot is only stock/quota state;
+                // it cannot authorize a stale or newly locked SKU.
+                var catalog = mapper.lockSandboxCatalogProduct(runId, inventory.productId(), inventory.productNo(),
+                        inventory.reservedQuantity());
+                if (catalog == null || catalog.version() == null || !inventory.productId().equals(catalog.productId())
+                        || !StringUtils.hasText(catalog.productNo()) || !catalog.productNo().equals(inventory.productNo())) {
                     throw new BizException(503, "COMMERCE_SANDBOX_CATALOG_UNAVAILABLE");
+                }
+                if (releasePolicy != null && !releasePolicy.evaluate(catalog.productNo(), catalog.unlockPhase()).available()) {
+                    throw new BizException(409, "COMMERCE_SANDBOX_PRODUCT_NOT_RELEASED");
+                }
+                StorefrontPurchaseGatePolicy.Facts facts = null;
+                var gateFacts = mapper.purchaseGateFacts(sandbox.userId());
+                if (gateFacts != null) {
+                    try {
+                        facts = new StorefrontPurchaseGatePolicy.Facts(
+                                gateFacts.rank() == null ? 0 : gateFacts.rank(),
+                                gateFacts.activeDirect() == null ? 0 : gateFacts.activeDirect(),
+                                gateFacts.teamVolumeUsd() == null ? BigDecimal.ZERO : gateFacts.teamVolumeUsd());
+                    } catch (IllegalArgumentException ex) {
+                        throw new BizException(503, "COMMERCE_SANDBOX_PURCHASE_GATE_FACTS_UNAVAILABLE");
+                    }
+                }
+                var gateDecision = purchaseGatePolicy.evaluate(catalog.purchaseGateJson(), facts);
+                if (!gateDecision.allowed()) {
+                    String code = "PURCHASE_GATE_SOLD_OUT".equals(gateDecision.code())
+                            ? "COMMERCE_SANDBOX_PURCHASE_GATE_SOLD_OUT"
+                            : "COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED";
+                    throw new BizException(409, code);
                 }
                 if (purchaseGatePolicy.hasQuota(catalog.purchaseGateJson())
                         && mapper.consumeSandboxPurchaseQuota(runId, inventory.productId(), inventory.reservedQuantity()) != 1) {
@@ -246,7 +284,7 @@ public class CommerceAcceptanceSandboxService {
     private List<InventoryRow> inventories(List<InventoryRow> inventories, SandboxOrder order) {
         int expectedItems = order.itemCount() == null ? 1 : order.itemCount();
         String orderType = StringUtils.hasText(order.orderType()) ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
-        if (!("SINGLE".equals(orderType) || "BUNDLE".equals(orderType))
+        if (!("SINGLE".equals(orderType) || "BUNDLE".equals(orderType) || "TRIAL_CONVERT".equals(orderType))
                 || inventories == null || expectedItems < 1 || inventories.size() != expectedItems
                 || "BUNDLE".equals(orderType) && (expectedItems < 2 || !Integer.valueOf(1).equals(order.quantity()))) {
             throw new BizException(503, "COMMERCE_SANDBOX_INVENTORY_UNAVAILABLE");

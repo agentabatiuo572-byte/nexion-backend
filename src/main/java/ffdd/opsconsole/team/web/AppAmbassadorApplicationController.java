@@ -2,6 +2,7 @@ package ffdd.opsconsole.team.web;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.team.application.AppAmbassadorApplicationService;
+import ffdd.opsconsole.team.application.AppAmbassadorPolicyService;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Map;
@@ -19,6 +20,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppAmbassadorApplicationController {
     private final AppAmbassadorApplicationService service;
+    private final AppAmbassadorPolicyService policyService;
+
+    @GetMapping("/policy")
+    public ApiResult<Map<String, Object>> policy(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : policyService.policy(userId);
+    }
 
     @PostMapping
     public ApiResult<Map<String, Object>> submit(@RequestBody(required = false) Request request,

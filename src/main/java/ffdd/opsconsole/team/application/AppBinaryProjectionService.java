@@ -3,6 +3,7 @@ package ffdd.opsconsole.team.application;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.AppBinaryCommissionEventRow;
 import ffdd.opsconsole.team.mapper.BinaryCommissionSettlementMapper.PaidOrderVolumeCandidate;
@@ -20,7 +21,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -32,14 +35,25 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppBinaryProjectionService {
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
+    private static final Pattern RUN_ID = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$");
 
     private final BinaryCommissionSettlementMapper mapper;
     private final PlatformConfigFacade configFacade;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final TreasuryCoverageFacade coverageFacade;
+    private final Environment environment;
 
     public Map<String, Object> snapshot(Long userId) {
         if (userId == null || userId <= 0) throw new IllegalArgumentException("F3_APP_USER_REQUIRED");
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
+                .orElseThrow(() -> new IllegalStateException("F3_APP_PROFILE_INVALID"));
+        String runId = null;
+        if (audience == UserAuthEnvironment.SANDBOX) {
+            runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+            if (!RUN_ID.matcher(runId).matches()) {
+                throw new IllegalStateException("F3_APP_RUN_ID_REQUIRED");
+            }
+        }
         LocalDate today = LocalDate.now();
         LocalDateTime monthStart = today.withDayOfMonth(1).atStartOfDay();
         LocalDateTime windowEnd = today.plusDays(1).atStartOfDay();
@@ -98,7 +112,10 @@ public class AppBinaryProjectionService {
         BigDecimal estimate = money(trackA.min(trackB).multiply(matchRate)).min(periodCap);
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("source", "server-canonical F3 paid orders + assignments + H1");
+        result.put("source", "server");
+        result.put("serverCanonical", true);
+        result.put("sourceEnvironment", audience.name());
+        result.put("runId", runId);
         result.put("asOfDate", today);
         result.put("trackA", trackA);
         result.put("trackB", trackB);

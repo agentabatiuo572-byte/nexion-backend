@@ -34,13 +34,18 @@ public class OpsGenesisSimulationService {
     private static final Set<String> BOOLEAN_KEYS = Set.of(
             "eligibility.enabled", "presale.enabled", "presale.showCountdown");
     private static final Set<String> DECIMAL_KEYS = Set.of("presale.unitPrice");
+    private static final Set<String> HOLDER_DECIMAL_KEYS = Set.of("holder.allocationNexPerHolding");
     private static final Set<String> INTEGER_KEYS = Set.of(
-            "eligibility.maxPerUser", "eligibility.minAccountAgeDays", "presale.maxPerUser");
-    private static final Set<String> INSTANT_KEYS = Set.of("presale.startAt", "presale.endAt");
+            "eligibility.maxPerUser", "eligibility.minAccountAgeDays", "presale.maxPerUser",
+            "holder.priorityTop1Percent", "holder.priorityTop3Percent", "holder.priorityTop5Percent");
+    private static final Set<String> INSTANT_KEYS = Set.of("presale.startAt", "presale.endAt", "holder.effectiveAt");
+    private static final Set<String> TEXT_KEYS = Set.of("holder.policyVersion");
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "eligibility.enabled", "eligibility.maxPerUser", "eligibility.minAccountAgeDays",
             "presale.enabled", "presale.showCountdown", "presale.unitPrice", "presale.maxPerUser",
-            "presale.startAt", "presale.endAt");
+            "presale.startAt", "presale.endAt", "holder.allocationNexPerHolding",
+            "holder.priorityTop1Percent", "holder.priorityTop3Percent", "holder.priorityTop5Percent",
+            "holder.policyVersion", "holder.effectiveAt");
 
     private final GenesisSimulationMapper mapper;
     private final PlatformConfigFacade config;
@@ -141,7 +146,7 @@ public class OpsGenesisSimulationService {
                 if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) throw new IllegalArgumentException();
                 return value.toLowerCase(Locale.ROOT);
             }
-            if (DECIMAL_KEYS.contains(key)) {
+            if (DECIMAL_KEYS.contains(key) || HOLDER_DECIMAL_KEYS.contains(key)) {
                 BigDecimal decimal = new BigDecimal(value);
                 if (decimal.signum() < 0 || decimal.scale() > 6
                         || decimal.compareTo(new BigDecimal("999999999999.999999")) > 0) throw new IllegalArgumentException();
@@ -150,6 +155,9 @@ public class OpsGenesisSimulationService {
             if (INTEGER_KEYS.contains(key)) {
                 int integer = Integer.parseInt(value);
                 if (integer < 0 || integer > 1000000) throw new IllegalArgumentException();
+                if (key.startsWith("holder.priorityTop") && (integer < 1 || integer > 100)) {
+                    throw new IllegalArgumentException();
+                }
                 return String.valueOf(integer);
             }
             if (INSTANT_KEYS.contains(key)) {
@@ -162,7 +170,7 @@ public class OpsGenesisSimulationService {
     }
 
     private void validatePresaleWindow(String key, String value) {
-        if (!INSTANT_KEYS.contains(key)) return;
+        if (!Set.of("presale.startAt", "presale.endAt").contains(key)) return;
         Instant candidate = Instant.parse(value);
         String otherKey = "presale.startAt".equals(key) ? "presale.endAt" : "presale.startAt";
         String otherRaw = config.activeValue(PREFIX + otherKey).orElse(null);

@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.application;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
+import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -22,8 +23,10 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -40,6 +43,7 @@ public class G4AdminCommandService {
     private final AuditLogService audit;
     private final Clock clock;
     private final EarningsReleaseService earningsReleaseService;
+    private final Environment environment;
 
     @Transactional
     public ApiResult<Map<String,Object>> updateParam(String key,String idem,NexMarketValueUpdateRequest request){
@@ -75,6 +79,8 @@ public class G4AdminCommandService {
         requireDecision(request.decisionRef());
         String normalized=batchNo==null?"":batchNo.trim();
         if(!normalized.matches("[A-Za-z0-9-]{3,32}")) throw new BizException(422,"G4_GENESIS_BATCH_NO_INVALID");
+        requireProductionRuntime();
+        if (!genesisKillSwitchOpen()) throw new BizException(409,"G4_GENESIS_KILLSWITCH_CLOSED");
         return once("EMISSION:"+normalized,idem,request,()->rerunInternal(idem,normalized,request));
     }
 
@@ -138,6 +144,31 @@ public class G4AdminCommandService {
         Map<String,Object> response=marketService.genesisOverview().getData();
         response.put("updated",event);
         return ApiResult.ok(response);
+    }
+
+    /** Genesis emission is a production-only ledger operation until a run-scoped sandbox ledger exists. */
+    private void requireProductionRuntime() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        if (ffdd.opsconsole.finance.application.FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)) {
+            throw new BizException(503,"G4_GENESIS_EMISSION_SANDBOX_UNAVAILABLE");
+        }
+        if (profiles == null || profiles.length == 0
+                || (profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0]))) {
+            return;
+        }
+        throw new BizException(503,"G4_GENESIS_EMISSION_RUNTIME_UNSUPPORTED");
+    }
+
+    private boolean genesisKillSwitchOpen() {
+        Optional<String> primary = value("killswitch.genesis");
+        Optional<String> legacy = value("J.killswitch.genesis")
+                .or(() -> value("emergency.killswitch.genesis"));
+        return KillSwitchState.enabled(primary, legacy);
+    }
+
+    private Optional<String> value(String key) {
+        Optional<String> value = config.activeValue(key);
+        return value == null ? Optional.empty() : value;
     }
 
     private ApiResult<Map<String,Object>> replayedBatch(String batchNo,AppGenesisMapper.EmissionBatchRow existing){

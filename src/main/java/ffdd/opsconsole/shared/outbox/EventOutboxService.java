@@ -159,7 +159,8 @@ public class EventOutboxService {
         return mapper.listPending(normalizeLimit(limit));
     }
 
-    void assertDispatchAllowed(EventOutboxMessage message) {
+    /** Shared by specialized dispatchers that isolate a bounded event family from the broad scan. */
+    public void assertDispatchAllowed(EventOutboxMessage message) {
         if (message != null && Boolean.TRUE.equals(message.getAnalyticsEvent())) {
             enforceLifecycle(message.getEventName(), message.getAggregateType(), message.getAggregateId());
         }
@@ -189,6 +190,14 @@ public class EventOutboxService {
 
     public List<EventOutboxMessage> listPendingByEventType(String eventType, int limit) {
         return mapper.listPendingByEventType(eventType, normalizeLimit(limit));
+    }
+
+    /**
+     * Reads one canonical family after a durable-scan cursor. Canonical producers are allowed to use a
+     * transport event_type alias while event_name remains the canonical contract, so both columns are matched.
+     */
+    public List<EventOutboxMessage> listPendingByCanonicalType(String canonicalType, long afterId, int limit) {
+        return mapper.listPendingByCanonicalType(canonicalType, Math.max(0L, afterId), normalizeLimit(limit));
     }
 
     public List<EventOutboxMessage> listByAggregate(String aggregateType, String aggregateId, int limit) {

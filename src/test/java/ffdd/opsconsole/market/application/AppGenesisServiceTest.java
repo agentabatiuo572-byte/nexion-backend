@@ -14,18 +14,22 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppGenesisServiceTest {
     private final AppGenesisMapper mapper=mock(AppGenesisMapper.class);
@@ -34,8 +38,10 @@ class AppGenesisServiceTest {
     private final EventOutboxService outbox=mock(EventOutboxService.class);
     private final AuditLogService audit=mock(AuditLogService.class);
     private final GenesisCatalogService catalog=mock(GenesisCatalogService.class);
+    private final MockEnvironment environment = new MockEnvironment();
     private final AppGenesisService service=new AppGenesisService(mapper,config,idempotency,outbox,audit,
-            Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC),catalog);
+            Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC),catalog,environment,
+            Optional.empty());
 
     @BeforeEach
     @SuppressWarnings({"rawtypes","unchecked"})
@@ -56,6 +62,7 @@ class AppGenesisServiceTest {
         when(mapper.holdingCount("genesis-main")).thenReturn(0L);
         when(mapper.lockHoldingCount("genesis-main")).thenReturn(0L);
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.userSandbox(anyLong())).thenReturn(0);
         when(mapper.userPolicy(42L)).thenReturn(new AppGenesisMapper.UserPolicyRow(
                 42L,"VN","P1",120,4,"2026-W30"));
         when(mapper.lockWallet(42L)).thenReturn(new BigDecimal("20000"));
@@ -87,6 +94,65 @@ class AppGenesisServiceTest {
     }
 
     @Test
+    void eligibilityProjectsCanonicalHolderAllocationPriorityAndProvenance() {
+        when(mapper.userHoldingCount(42L, "genesis-main")).thenReturn(2L);
+        when(mapper.currentPriorityRank(42L, "genesis-main")).thenReturn(2);
+        when(mapper.activeHolderCount("genesis-main")).thenReturn(100L);
+        when(config.activeValue("market.genesis.ops.holder.allocationNexPerHolding")).thenReturn(Optional.of("125.50"));
+        when(config.activeValue("market.genesis.ops.holder.priorityTop1Percent")).thenReturn(Optional.of("1"));
+        when(config.activeValue("market.genesis.ops.holder.priorityTop3Percent")).thenReturn(Optional.of("3"));
+        when(config.activeValue("market.genesis.ops.holder.priorityTop5Percent")).thenReturn(Optional.of("5"));
+        when(config.activeValue("market.genesis.ops.holder.policyVersion")).thenReturn(Optional.of("genesis-holder-v2"));
+        when(config.activeValue("market.genesis.ops.holder.effectiveAt")).thenReturn(Optional.of("2026-07-01T00:00:00Z"));
+
+        Map<String, Object> data = service.eligibility(42L).getData();
+        assertThat(data).containsEntry("reservedAllocation", new BigDecimal("251.00"))
+                .containsEntry("reservedAllocationUnit", "NEX")
+                .containsEntry("priorityRank", 2)
+                .containsEntry("priorityTier", "TOP_3")
+                .containsEntry("policyVersion", "genesis-holder-v2")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsKey("effectiveAt")
+                .containsKey("asOf")
+                .containsKey("serverTime")
+                .containsKey("provenance");
+        assertThat(data.get("qualificationReasonCodes").toString()).contains("HOLDINGS_CONFIRMED");
+    }
+
+    @Test
+    void missingOrWithdrawnHolderPolicyIsExplicitAndNeverLocallyEstimated() {
+        when(mapper.userHoldingCount(42L, "genesis-main")).thenReturn(2L);
+        Map<String, Object> data = service.eligibility(42L).getData();
+        assertThat(data).containsEntry("status", "CONFIG_UNAVAILABLE")
+                .containsEntry("reservedAllocation", null)
+                .containsEntry("priorityRank", null)
+                .containsEntry("priorityTier", "NONE")
+                .containsEntry("reservedAllocationUnit", "NEX");
+    }
+
+    @Test
+    void publicStateExposesCanonicalSecondaryStatsAndNeverRawOrderNumbers() {
+        when(mapper.secondaryStats()).thenReturn(new AppGenesisMapper.SecondaryStatsRow(
+                new BigDecimal("25000"), new BigDecimal("1200"), 17L,
+                new BigDecimal("24800"), new BigDecimal("20000")));
+        when(mapper.transactions()).thenReturn(List.of(new AppGenesisMapper.TransactionRow(
+                "tx_deadbeef", "SECONDARY", 1, new BigDecimal("24800"),
+                new BigDecimal("24800"), new BigDecimal("620"),
+                LocalDateTime.of(2026, 7, 22, 3, 0))));
+
+        var data = service.state().getData();
+        assertThat(data.get("marketStats")).isInstanceOf(Map.class);
+        @SuppressWarnings("unchecked")
+        var stats = (Map<String, Object>) data.get("marketStats");
+        assertThat(stats).containsEntry("owners", 17L)
+                .containsEntry("floorDeltaPct", new BigDecimal("25.0000"));
+        @SuppressWarnings("unchecked")
+        var transactions = (List<AppGenesisMapper.TransactionRow>) data.get("transactions");
+        assertThat(transactions.get(0).orderNo()).isEqualTo("tx_deadbeef");
+    }
+
+    @Test
     void purchaseAtomicallyCreatesOrderHoldingLedgerAuditAndEvent(){
         var result=service.purchase(42L,"purchase-1",new AppGenesisService.PurchaseRequest(1));
         assertThat(result.getCode()).isZero();
@@ -109,6 +175,30 @@ class AppGenesisServiceTest {
     }
 
     @Test
+    void j1PauseIsProjectedByEligibilityAsAClosedFailSafeGate(){
+        when(mapper.controlValue("killswitch.genesis")).thenReturn("disabled");
+
+        @SuppressWarnings("unchecked")
+        var eligibility = (java.util.Map<String, Object>) service.eligibility(42L).getData();
+        assertThat(eligibility).containsEntry("eligible", false)
+                .containsEntry("halted", true)
+                .containsEntry("serverCanonical", true);
+    }
+
+    @Test
+    void publicStateProjectsTheCanonicalJ1KillSwitchWithRevisionAndSource(){
+        when(mapper.controlValue("killswitch.genesis")).thenReturn("disabled");
+        when(mapper.controlValue("emergency.killswitch.genesis.lastChange")).thenReturn("rev-17");
+
+        var data = service.state().getData();
+
+        assertThat(data).containsEntry("serverCanonical", true)
+                .containsEntry("halted", true)
+                .containsEntry("revision", "rev-17")
+                .containsEntry("source", "nx_emergency_control_setting:killswitch.genesis");
+    }
+
+    @Test
     void missingSalePolicyRemainsViewableButFailsClosedForMutation() {
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
 
@@ -124,6 +214,51 @@ class AppGenesisServiceTest {
     }
 
     @Test
+    void isolatedGenesisAccountFailsClosedBeforeAnyProductionTableAccess() {
+        environment.setActiveProfiles("dev");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-genesis-1");
+        when(mapper.userSandbox(42L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.purchase(42L, "sandbox-genesis",
+                new AppGenesisService.PurchaseRequest(1)))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(503);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
+                });
+        verify(mapper, never()).lockActiveSeries();
+        verify(mapper, never()).debitWallet(any(), any());
+    }
+
+    @Test
+    void developmentPublicStateUsesPcCanonicalConfigWhileUserReadsRemainIsolated() {
+        environment.setActiveProfiles("dev");
+        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-genesis-1");
+        when(mapper.userSandbox(42L)).thenReturn(1);
+        clearInvocations(mapper, catalog, config);
+
+        var state = service.state();
+        var account = service.account(42L);
+        var eligibility = service.eligibility(42L);
+
+        assertThat(state.getCode()).isZero();
+        assertThat(state.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        assertThat(account.getCode()).isZero();
+        assertThat(account.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "run-genesis-1");
+        assertThat(eligibility.getCode()).isZero();
+        assertThat(eligibility.getData()).containsEntry("eligible", false)
+                .containsEntry("halted", true)
+                .containsEntry("serverCanonical", true);
+        verify(mapper, org.mockito.Mockito.times(2)).userSandbox(42L);
+        verify(mapper).activeSeries();
+        verify(mapper, never()).holdings(anyLong());
+        verify(mapper, never()).wallet(anyLong());
+    }
+
+    @Test
     void finalSlotUsesCurrentLockingHoldingCountBeforeAnyWalletMutation(){
         when(mapper.lockHoldingCount("genesis-main")).thenReturn(1000L);
 
@@ -131,6 +266,21 @@ class AppGenesisServiceTest {
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_SOLD_OUT");
 
         verify(mapper,never()).debitWallet(any(),any());
+    }
+
+    @Test
+    void nullSeriesSupplyFailsClosedWithoutUnboxingOrWalletMutation() {
+        when(mapper.lockActiveSeries()).thenReturn(new AppGenesisMapper.SeriesRow(
+                1L, "genesis-main", "Genesis Node", null, new BigDecimal("9999"), 250,
+                new BigDecimal("0.1"), "ACTIVE"));
+
+        assertThatThrownBy(() -> service.purchase(42L, "purchase-null-supply",
+                new AppGenesisService.PurchaseRequest(1)))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(503);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_SERIES_INVALID");
+                });
+        verify(mapper, never()).debitWallet(any(), any());
     }
 
     @Test
@@ -151,6 +301,24 @@ class AppGenesisServiceTest {
         verify(mapper,never()).insertLedger(any());
         verify(outbox,never()).publishUserEvent(anyString(),anyString(),anyString(),any(),anyString(),any(),anyString(),any());
         verify(audit,never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void secondaryPurchaseRejectsSellerFromAnotherEnvironmentBeforeWalletMutation() {
+        when(mapper.lockHolding("sandbox-holding")).thenReturn(new AppGenesisMapper.HoldingRow(
+                9L, "sandbox-holding", 99L, "sandbox-order", "genesis-main",
+                new BigDecimal("100"), "LISTED", new BigDecimal("120"),
+                LocalDateTime.now(), LocalDateTime.now()));
+        when(mapper.userSandbox(99L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.buyListing(42L, "sandbox-holding", "secondary-env-boundary"))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(403);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_SELLER_ENVIRONMENT_MISMATCH");
+                });
+        verify(mapper, never()).debitWallet(any(), any());
+        verify(mapper, never()).creditWallet(any(), any());
+        verify(mapper, never()).transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any());
     }
 
     @Test
@@ -263,6 +431,20 @@ class AppGenesisServiceTest {
         assertThat(publicSale).isEqualTo(accountSale)
                 .containsEntry("maxPerUser",3)
                 .containsEntry("serverCanonical",true);
+    }
+
+    @Test
+    void inviteRedeemReceiptCarriesCanonicalEnvironmentProvenance(){
+        when(catalog.redeem(42L,"NEXGRID-OG-1234567890ABCDEF"))
+                .thenReturn(ApiResult.ok(Map.of("code","NEXGRID-OG-1234567890ABCDEF","status","used")));
+
+        var data=service.redeemInvite(42L,"invite-1","NEXGRID-OG-1234567890ABCDEF").getData();
+
+        assertThat(data)
+                .containsEntry("serverCanonical",true)
+                .containsEntry("sourceEnvironment","PRODUCTION")
+                .containsEntry("runId","")
+                .containsEntry("source","nx_genesis_invite_code");
     }
 
     private AppGenesisMapper.SeriesRow series(){

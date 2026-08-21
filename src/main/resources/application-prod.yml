@@ -1,0 +1,50 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${NEXION_DB_URL}
+    username: ${NEXION_DB_USERNAME}
+    password: ${NEXION_DB_PASSWORD}
+  data:
+    redis:
+      host: ${NEXION_REDIS_HOST}
+      port: ${NEXION_REDIS_PORT}
+      password: ${NEXION_REDIS_PASSWORD}
+
+# Production is explicit and fail-closed. Provider credentials and endpoints
+# are injected by the deployment environment; no local simulator is enabled.
+nexion:
+  developer:
+    webhooks:
+      allow-loopback: false
+  auth:
+    user-otp:
+      local-fixed-code-enabled: false
+  finance:
+    funds-sandbox:
+      mode: DISABLED
+    payment-method-provider:
+      mode: ${NEXION_PAYMENT_METHOD_PROVIDER_MODE:DISABLED}
+    payout-vnd-provider:
+      mode: ${NEXION_PAYOUT_VND_PROVIDER_MODE:DISABLED}
+    cregis:
+      mode: ${NEXION_CREGIS_MODE:DISABLED}
+  janus:
+    executor:
+      mode: PRODUCTION
+  geo-block:
+    allow-loopback-without-country: false
+    trusted-proxy-addresses: ${NEXION_GEO_TRUSTED_PROXIES}
+  storage:
+    endpoint: ${NEXION_MINIO_ENDPOINT}
+    access-key: ${NEXION_MINIO_ACCESS_KEY}
+    secret-key: ${NEXION_MINIO_SECRET_KEY}
+  analytics:
+    source-environment: PRODUCTION
+  support:
+    acceptance-sandbox:
+      mode: DISABLED
+  market:
+    g2-acceptance-sandbox:
+      mode: DISABLED

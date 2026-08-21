@@ -35,7 +35,7 @@ class AppGrowthWheelServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AppGrowthWheelService service =
-            new AppGrowthWheelService(mapper, voucher, coverage, idempotency, audit, outbox, null);
+            new AppGrowthWheelService(mapper, voucher, coverage, idempotency, audit, outbox, null, null);
 
     @BeforeEach
     void setUp() {

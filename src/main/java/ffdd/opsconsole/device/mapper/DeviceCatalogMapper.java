@@ -8,6 +8,7 @@ import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
+import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.infrastructure.DeviceSkuEntity;
@@ -20,6 +21,18 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
+    String PHONE_TIER_COLUMNS = """
+            tier,
+            name,
+            '' AS note,
+            base_rate_usdt AS dailyUsdt,
+            base_rate_nex AS dailyNex,
+            CASE WHEN active=1 THEN 'active' ELSE 'inactive' END AS status,
+            created_at AS createdAt,
+            updated_at AS updatedAt,
+            revision
+            """;
+
     String SKU_STATUS_SQL = """
             CASE
               WHEN LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale') THEN 'on'
@@ -46,6 +59,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             COALESCE(NULLIF(s.hash_rate,''), CAST(p.hashrate AS CHAR)) AS hashRate,
             s.power_text AS power,
             s.datacenter,
+            s.uptime AS uptime,
+            s.warranty AS warranty,
+            s.phone_daily_earn AS phoneDailyEarn,
+            s.phone_daily_earn_nex AS phoneDailyEarnNex,
             p.price_usdt AS price,
             p.estimated_daily_usdt AS dailyEarn,
             p.daily_nex AS dailyEarnNex,
@@ -92,17 +109,6 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             max_reward AS maxReward,
             min_vram AS minVram,
             kill_init AS killInit,
-            created_at AS createdAt,
-            updated_at AS updatedAt
-            """;
-
-    String PHONE_TIER_COLUMNS = """
-            tier,
-            name,
-            note,
-            daily_usdt AS dailyUsdt,
-            daily_nex AS dailyNex,
-            status,
             created_at AS createdAt,
             updated_at AS updatedAt
             """;
@@ -206,6 +212,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               hash_rate VARCHAR(64) DEFAULT NULL,
               power_text VARCHAR(64) DEFAULT NULL,
               datacenter VARCHAR(128) DEFAULT NULL,
+              uptime VARCHAR(64) DEFAULT NULL,
+              warranty VARCHAR(128) DEFAULT NULL,
+              phone_daily_earn DECIMAL(18,6) DEFAULT NULL,
+              phone_daily_earn_nex DECIMAL(18,6) DEFAULT NULL,
               price DECIMAL(18,4) NOT NULL DEFAULT 0,
               daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
               daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
@@ -313,6 +323,18 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN purchase_gate_json TEXT NULL AFTER unlock_phase")
     void addSkuPurchaseGateColumn();
 
+    @Update("""
+            UPDATE nx_admin_device_sku
+               SET purchase_gate_json=CASE sku_id
+                     WHEN 'stellarbox-pro-v2' THEN '{"rankMin":2,"mode":"all","enforce":true}'
+                     WHEN 'stellarrack-p2' THEN '{"rankMin":4,"mode":"all","enforce":true}'
+                     ELSE purchase_gate_json END,
+                   updated_at=NOW()
+             WHERE sku_id IN ('stellarbox-pro-v2','stellarrack-p2')
+               AND is_deleted=0 AND (purchase_gate_json IS NULL OR TRIM(purchase_gate_json)='')
+            """)
+    int seedGen2PurchaseGatesIfMissing();
+
     @Update("ALTER TABLE nx_admin_device_sku MODIFY COLUMN unlock_phase VARCHAR(32) NOT NULL DEFAULT ''")
     void widenSkuUnlockPhaseColumn();
 
@@ -418,6 +440,130 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createTaskTable();
+
+    @Select("""
+            SELECT
+              (SELECT COUNT(*)
+                 FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                  AND TABLE_TYPE = 'BASE TABLE') AS tableCount,
+              (SELECT COUNT(*)
+                 FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                  AND (
+                    (COLUMN_NAME = 'id' AND DATA_TYPE = 'bigint' AND IS_NULLABLE = 'NO'
+                      AND COLUMN_KEY = 'PRI' AND EXTRA LIKE '%auto_increment%') OR
+                    (COLUMN_NAME = 'task_id' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 64 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'task_class' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 64 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'price' AND DATA_TYPE = 'decimal' AND NUMERIC_PRECISION = 18 AND NUMERIC_SCALE = 8 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'unit_text' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 32 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'source_type' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 32 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'sample_key' AND DATA_TYPE = 'varchar' AND CHARACTER_MAXIMUM_LENGTH = 128 AND IS_NULLABLE = 'YES') OR
+                    (COLUMN_NAME = 'observed_at' AND DATA_TYPE = 'datetime' AND DATETIME_PRECISION = 3 AND IS_NULLABLE = 'NO') OR
+                    (COLUMN_NAME = 'created_at' AND DATA_TYPE = 'datetime' AND DATETIME_PRECISION = 3 AND IS_NULLABLE = 'NO')
+                  )) AS columnCount,
+              (SELECT COUNT(*) FROM (
+                 SELECT INDEX_NAME
+                   FROM information_schema.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                    AND INDEX_NAME = 'uk_admin_task_price_history_sample'
+                  GROUP BY INDEX_NAME
+                 HAVING MAX(NON_UNIQUE) = 0
+                    AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) = 'task_id,sample_key'
+               ) unique_index_shape) AS uniqueIndexCount,
+              (SELECT COUNT(*) FROM (
+                 SELECT INDEX_NAME
+                   FROM information_schema.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                    AND INDEX_NAME = 'idx_admin_task_price_history_observed_at'
+                  GROUP BY INDEX_NAME
+                 HAVING MAX(NON_UNIQUE) = 1
+                    AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) = 'observed_at'
+               ) observed_index_shape) AS observedIndexCount,
+              (SELECT COUNT(*) FROM (
+                 SELECT INDEX_NAME
+                   FROM information_schema.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                    AND INDEX_NAME = 'idx_admin_task_price_history_task_time'
+                  GROUP BY INDEX_NAME
+                 HAVING MAX(NON_UNIQUE) = 1
+                    AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) = 'task_id,observed_at'
+               ) task_time_index_shape) AS taskTimeIndexCount,
+              (SELECT COUNT(*) FROM (
+                 SELECT INDEX_NAME
+                   FROM information_schema.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'nx_admin_device_task_price_history'
+                    AND INDEX_NAME = 'idx_admin_task_price_history_class_time'
+                  GROUP BY INDEX_NAME
+                 HAVING MAX(NON_UNIQUE) = 1
+                    AND GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) = 'task_class,observed_at'
+               ) class_time_index_shape) AS classTimeIndexCount
+            """)
+    TaskPriceHistorySchemaRow taskPriceHistorySchema();
+
+    @Select("""
+            SELECT task_id AS taskId,
+                   task_class AS taskClass,
+                   price,
+                   unit_text AS unit
+              FROM nx_admin_device_task
+             WHERE is_deleted = 0
+               AND LOWER(TRIM(status)) = 'active'
+               AND price > 0
+             ORDER BY id
+            """)
+    List<TaskPriceSeedRow> activeTaskPriceSeeds();
+
+    @Insert("""
+            INSERT INTO nx_admin_device_task_price_history (
+              task_id, task_class, price, unit_text, source_type, sample_key, observed_at, created_at
+            ) VALUES (
+              #{taskId}, #{taskClass}, #{price}, #{unit}, #{sourceType}, #{sampleKey}, #{observedAt}, #{createdAt}
+            )
+            ON DUPLICATE KEY UPDATE sample_key = VALUES(sample_key)
+            """)
+    int insertTaskPriceHistory(@Param("taskId") String taskId,
+                               @Param("taskClass") String taskClass,
+                               @Param("price") BigDecimal price,
+                               @Param("unit") String unit,
+                               @Param("sourceType") String sourceType,
+                               @Param("sampleKey") String sampleKey,
+                               @Param("observedAt") LocalDateTime observedAt,
+                               @Param("createdAt") LocalDateTime createdAt);
+
+    @Insert("""
+            INSERT INTO nx_admin_device_task_price_history (
+              task_id, task_class, price, unit_text, source_type, sample_key, observed_at, created_at
+            )
+            SELECT task_id, task_class, price, unit_text, #{sourceType}, NULL, #{observedAt}, #{observedAt}
+              FROM nx_admin_device_task
+             WHERE task_id = #{taskId}
+               AND is_deleted = 0
+               AND price > 0
+            """)
+    int insertTaskPriceHistoryFromTask(@Param("taskId") String taskId,
+                                       @Param("sourceType") String sourceType,
+                                       @Param("observedAt") LocalDateTime observedAt);
+
+    @Insert("""
+            INSERT INTO nx_admin_device_task_price_history (
+              task_id, task_class, price, unit_text, source_type, sample_key, observed_at, created_at
+            )
+            SELECT task_id, task_class, price, unit_text, 'SCHEDULED_SNAPSHOT', #{sampleKey}, #{observedAt}, #{observedAt}
+              FROM nx_admin_device_task
+             WHERE is_deleted = 0
+               AND LOWER(TRIM(status)) = 'active'
+               AND price > 0
+            ON DUPLICATE KEY UPDATE sample_key = VALUES(sample_key)
+            """)
+    int snapshotActiveTaskPrices(@Param("observedAt") LocalDateTime observedAt,
+                                 @Param("sampleKey") String sampleKey);
 
     @Select("""
             SELECT COUNT(*)
@@ -831,7 +977,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_admin_device_sku (
-              sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,price,
+              sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
               ai_fine_tune_mins,ai_unlocks,features_json,generation,lifecycle,superseded_by,
@@ -839,7 +985,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
-              #{sku.power},#{sku.datacenter},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
+              #{sku.power},#{sku.datacenter},#{sku.uptime},#{sku.warranty},#{sku.phoneDailyEarn},#{sku.phoneDailyEarnNex},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
               #{sku.shareYieldMax},#{sku.baseRate},#{sku.sold},#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
@@ -848,7 +994,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             )
             ON DUPLICATE KEY UPDATE
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
-              hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),price=VALUES(price),
+              hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),
               daily_earn=VALUES(daily_earn),daily_earn_nex=VALUES(daily_earn_nex),share_yield_min=VALUES(share_yield_min),
               share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),sold=VALUES(sold),stock_text=VALUES(stock_text),
               rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
@@ -1175,7 +1321,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT
             """ + PHONE_TIER_COLUMNS + """
-              FROM nx_admin_phone_tier_reward
+              FROM nx_onboarding_phone_tier_config
              WHERE is_deleted = 0
              ORDER BY tier ASC
             """)
@@ -1184,30 +1330,64 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Select("""
             SELECT
             """ + PHONE_TIER_COLUMNS + """
-              FROM nx_admin_phone_tier_reward
-             WHERE tier = #{tier} AND is_deleted = 0
+              FROM nx_onboarding_phone_tier_config
+             WHERE tier = #{tier} AND active = 1 AND is_deleted = 0
              LIMIT 1
             """)
     DevicePhoneTierRewardView findPhoneTierReward(@Param("tier") Integer tier);
 
     @Insert("""
-            INSERT INTO nx_admin_phone_tier_reward (
-              tier, name, note, daily_usdt, daily_nex, status, created_at, updated_at, is_deleted
+            INSERT INTO nx_onboarding_phone_tier_config (
+              tier, name, tops_min, tops_max, base_rate_usdt, base_rate_nex, revision, active, is_deleted,
+              created_at, updated_at
             ) VALUES (
-              #{row.tier}, #{row.name}, #{row.note}, #{row.dailyUsdt}, #{row.dailyNex},
-              #{row.status}, #{row.createdAt}, #{row.updatedAt}, 0
+              #{row.tier}, #{row.name}, 1, 999999, #{row.dailyUsdt}, #{row.dailyNex},
+              1, 1, 0, #{row.createdAt}, #{row.updatedAt}
             )
             """)
     int insertPhoneTierReward(@Param("row") PhoneTierRewardWrite row);
 
     @Update("""
-            UPDATE nx_admin_phone_tier_reward
-               SET daily_usdt = #{row.dailyUsdt},
-                   daily_nex = #{row.dailyNex},
+            UPDATE nx_onboarding_phone_tier_config
+               SET base_rate_usdt = #{row.dailyUsdt},
+                   base_rate_nex = #{row.dailyNex},
+                   revision = revision + 1,
                    updated_at = #{row.updatedAt}
-             WHERE tier = #{row.tier} AND is_deleted = 0
+             WHERE tier = #{row.tier} AND active = 1 AND is_deleted = 0
+               AND revision = #{expectedRevision}
             """)
-    int updatePhoneTierReward(@Param("row") PhoneTierRewardWrite row);
+    int updatePhoneTierReward(@Param("row") PhoneTierRewardWrite row,
+                              @Param("expectedRevision") Long expectedRevision);
+
+    @Select("""
+            SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,
+                   sort_order sortOrder,revision,updated_at updatedAt
+              FROM nx_onboarding_yield_comparison_config
+             WHERE active=1 AND is_deleted=0 ORDER BY sort_order,config_key
+            """)
+    List<OnboardingYieldComparisonView> listOnboardingYieldComparisons();
+
+    @Select("""
+            SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,
+                   sort_order sortOrder,revision,updated_at updatedAt
+              FROM nx_onboarding_yield_comparison_config
+             WHERE config_key=#{configKey} AND active=1 AND is_deleted=0 LIMIT 1
+            """)
+    OnboardingYieldComparisonView findOnboardingYieldComparison(@Param("configKey") String configKey);
+
+    @Update("""
+            UPDATE nx_onboarding_yield_comparison_config
+               SET label=#{label},daily_usdt=#{dailyUsdt},daily_nex=#{dailyNex},
+                   revision=revision+1,updated_at=#{updatedAt}
+             WHERE config_key=#{configKey} AND active=1 AND is_deleted=0
+               AND revision=#{expectedRevision}
+            """)
+    int updateOnboardingYieldComparison(@Param("configKey") String configKey,
+                                        @Param("label") String label,
+                                        @Param("dailyUsdt") BigDecimal dailyUsdt,
+                                        @Param("dailyNex") BigDecimal dailyNex,
+                                        @Param("expectedRevision") Long expectedRevision,
+                                        @Param("updatedAt") LocalDateTime updatedAt);
 
     @Select("""
             <script>
@@ -1528,6 +1708,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String hashRate,
             String power,
             String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
             BigDecimal price,
             BigDecimal dailyEarn,
             BigDecimal dailyEarnNex,
@@ -1570,6 +1754,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String hashRate,
             String power,
             String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
             BigDecimal price,
             BigDecimal dailyEarn,
             BigDecimal dailyEarnNex,
@@ -1657,6 +1845,22 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String killInit,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {
+    }
+
+    record TaskPriceSeedRow(
+            String taskId,
+            String taskClass,
+            BigDecimal price,
+            String unit) {
+    }
+
+    record TaskPriceHistorySchemaRow(
+            long tableCount,
+            long columnCount,
+            long uniqueIndexCount,
+            long observedIndexCount,
+            long taskTimeIndexCount,
+            long classTimeIndexCount) {
     }
 
     record PhoneTierRewardWrite(

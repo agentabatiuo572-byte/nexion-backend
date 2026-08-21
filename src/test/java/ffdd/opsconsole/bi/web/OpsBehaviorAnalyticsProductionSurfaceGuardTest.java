@@ -14,7 +14,7 @@ class OpsBehaviorAnalyticsProductionSurfaceGuardTest {
     void acceptanceAdminCannotBypassTheSandboxObserverThroughProductionReadOrExportRoutes() {
         BehaviorAnalyticsService service = mock(BehaviorAnalyticsService.class);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         OpsBehaviorAnalyticsController controller = new OpsBehaviorAnalyticsController(service, environment);
 
         assertThat(org.assertj.core.api.Assertions.catchThrowable(() ->

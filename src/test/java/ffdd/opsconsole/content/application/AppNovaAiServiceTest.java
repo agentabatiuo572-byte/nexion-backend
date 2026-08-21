@@ -33,7 +33,7 @@ class AppNovaAiServiceTest {
     }
 
     @Test
-    void serverOwnsTheSafetyPromptAndOnlyKeepsBoundedUserAssistantHistory() {
+    void bindsServerOwnedSessionAndDoesNotForwardClientHistory() {
         properties.setMode(NovaAiProperties.Mode.OLLAMA_LOCAL);
         properties.setModel("gemma4-e4b-ctx32k:latest");
         properties.setMaxHistoryMessages(4);
@@ -50,16 +50,11 @@ class AppNovaAiServiceTest {
         assertThat(response.model()).isEqualTo("gemma4-e4b-ctx32k:latest");
         var request = ArgumentCaptor.forClass(NovaAiGateway.ChatRequest.class);
         verify(gateway).chat(request.capture());
-        assertThat(request.getValue().messages()).hasSize(6);
-        assertThat(request.getValue().messages().get(0).role()).isEqualTo("system");
-        assertThat(request.getValue().messages().get(0).content())
-                .contains("password", "OTP", "private key", "cannot access")
-                .contains("Simplified Chinese");
-        assertThat(request.getValue().messages().subList(1, 5))
+        assertThat(request.getValue().language()).isEqualTo("zh");
+        assertThat(request.getValue().sessionId()).isEqualTo("app-user-42");
+        assertThat(request.getValue().messages())
                 .extracting(NovaAiGateway.Message::content)
-                .containsExactly("turn-3", "turn-4", "turn-5", "turn-6");
-        assertThat(request.getValue().messages().get(request.getValue().messages().size() - 1).content())
-                .isEqualTo("current question");
+                .containsExactly("current question");
     }
 
     @Test

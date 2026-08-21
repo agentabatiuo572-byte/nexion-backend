@@ -118,6 +118,25 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     List<EventOutboxMessage> listPendingByEventType(@Param("eventType") String eventType, @Param("limit") int limit);
 
     @Select("""
+            <script>
+            SELECT
+            """ + MESSAGE_COLUMNS + """
+              FROM nx_event_outbox
+             WHERE is_deleted = 0
+               AND (LOWER(event_type) = LOWER(#{canonicalType})
+                    OR LOWER(event_name) = LOWER(#{canonicalType}))
+               AND status IN ('PENDING', 'FAILED')
+               AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
+               AND id &gt; #{afterId}
+             ORDER BY id ASC
+             LIMIT #{limit}
+            </script>
+            """)
+    List<EventOutboxMessage> listPendingByCanonicalType(@Param("canonicalType") String canonicalType,
+                                                        @Param("afterId") long afterId,
+                                                        @Param("limit") int limit);
+
+    @Select("""
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox

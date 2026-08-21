@@ -26,6 +26,7 @@ class AppOrderCommandServiceTest {
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
         when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
@@ -44,10 +45,34 @@ class AppOrderCommandServiceTest {
                 .cancel(7L, "BND-1", "cancel-key-1");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("orderNo", "BND-1").containsEntry("orderStatus", "CANCELLED");
+        assertThat(result.getData()).containsEntry("orderNo", "BND-1").containsEntry("orderStatus", "CANCELLED")
+                .containsEntry("serverCanonical", true).containsEntry("source", "server")
+                .containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
         verify(mapper).returnStock(1L, 1);
         verify(mapper).returnStock(2L, 1);
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void idempotentProductionCancelStillCarriesCanonicalProvenance() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-CANCELLED")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-CANCELLED", 7L, 1L, 1, "SINGLE", 1, "CANCELLED", "CANCELLED", "WAITING_PAYMENT"));
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null)
+                .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");
+
+        assertThat(result.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("source", "server").containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "").containsEntry("idempotent", true);
+        verify(mapper, never()).cancelOrder(anyString(), anyLong());
     }
 
     @Test
@@ -56,6 +81,7 @@ class AppOrderCommandServiceTest {
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
         when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
@@ -72,6 +98,7 @@ class AppOrderCommandServiceTest {
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
         when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
@@ -87,6 +114,23 @@ class AppOrderCommandServiceTest {
                 .hasMessageContaining("ORDER_ITEM_SNAPSHOT_CONFLICT");
         verify(mapper, never()).returnStock(anyLong(), anyInt());
         verify(mapper, never()).cancelOrder(anyString(), anyLong());
+    }
+
+    @Test
+    void nonProductionRuntimeWithoutSandboxRailRejectsCancelBeforeCanonicalReadsOrWrites() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var audit = mock(AuditLogService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(false);
+
+        var result = new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null)
+                .cancel(7L, "ORD-PRODUCTION", "mixed-cancel-key");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_UNAVAILABLE");
+        verifyNoInteractions(mapper, idempotency, audit);
     }
 
     @Test
@@ -109,10 +153,17 @@ class AppOrderCommandServiceTest {
         var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), mock(AdminIdempotencyService.class),
                 mock(AuditLogService.class), guard, mapper, sandboxService, run);
 
-        service.cancel(7L, "ORD-A", "same-key");
+        var first = service.cancel(7L, "ORD-A", "same-key");
         service.cancel(7L, "ORD-A", "same-key");
         service.cancel(7L, "ORD-B", "same-key");
-        service.cancel(8L, "ORD-A", "same-key");
+        var differentRun = service.cancel(8L, "ORD-A", "same-key");
+
+        assertThat(first.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("source", "mock").containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "run-20260815");
+        assertThat(differentRun.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("source", "mock").containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "run-20260816");
 
         var eventIds = ArgumentCaptor.forClass(String.class);
         verify(sandboxService, times(4)).applyCallback(anyString(), eventIds.capture(), eq("USER_CANCELLED"),
@@ -121,6 +172,30 @@ class AppOrderCommandServiceTest {
         assertThat(eventIds.getAllValues().get(0)).isNotEqualTo(eventIds.getAllValues().get(2));
         assertThat(eventIds.getAllValues().get(0)).isNotEqualTo(eventIds.getAllValues().get(3));
         assertThat(eventIds.getAllValues().get(0)).startsWith("USER-CANCEL-");
+    }
+
+    @Test
+    void idempotentSandboxCancelCarriesRunScopedCanonicalProvenance() {
+        var mapper = mock(CommerceAcceptanceSandboxMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var run = mock(CommerceAcceptanceRun.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.isSandboxUser(7L)).thenReturn(true);
+        when(run.requireRunId()).thenReturn("run-20260816");
+        when(mapper.lockSandboxOrder("run-20260816", "ORD-CANCELLED")).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxOrder("ORD-CANCELLED", 7L, 1L, 1,
+                        BigDecimal.ONE, 1L, "CANCELLED", false, false));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+                mock(AuditLogService.class), guard, mapper, mock(CommerceAcceptanceSandboxService.class), run)
+                .cancel(7L, "ORD-CANCELLED", "cancel-key-idempotent");
+
+        assertThat(result.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("source", "mock").containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "run-20260816").containsEntry("idempotent", true);
     }
 
     @Test
@@ -135,5 +210,135 @@ class AppOrderCommandServiceTest {
         assertThat(service.cancel(7L, "ORD-A", "x".repeat(129)).getMessage())
                 .isEqualTo("IDEMPOTENCY_KEY_INVALID");
         verify(mapper, never()).lockSandboxOrder(anyString(), anyString());
+    }
+
+    @Test
+    void sandboxPaymentUsesStablePaymentIdentityAndDelegatesAtomicDebitToSandboxCallback() {
+        var mapper = mock(CommerceAcceptanceSandboxMapper.class);
+        var sandboxService = mock(CommerceAcceptanceSandboxService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var run = mock(CommerceAcceptanceRun.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.isSandboxUser(7L)).thenReturn(true);
+        when(run.requireRunId()).thenReturn("run-20260815");
+        when(mapper.lockSandboxOrder("run-20260815", "CSO-1")).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxOrder("CSO-1", 7L, 1L, 1,
+                        new BigDecimal("12.000000"), 0L, "PENDING_PAYMENT", false, false));
+        when(sandboxService.applyCallback(eq("CSO-1"), startsWith("PAY-SBX-"), eq("PAYMENT_SUCCEEDED"),
+                eq(0L), anyString(), eq("7"))).thenReturn(
+                new CommerceAcceptanceSandboxService.CallbackResult("CSO-1", "PAYMENT_SUCCEEDED", "paid",
+                        1L, "mock", "SANDBOX", new BigDecimal("8.000000")));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+                mock(AuditLogService.class), guard, mapper, sandboxService, run);
+        var first = service.pay(7L, "CSO-1", "pay-key");
+        var second = service.pay(7L, "CSO-1", "pay-key");
+
+        assertThat(first.getData()).containsEntry("paymentStatus", "PAID")
+                .containsEntry("source", "mock").containsEntry("sourceEnvironment", "SANDBOX");
+        assertThat(first.getData().get("paymentNo")).isEqualTo(second.getData().get("paymentNo"));
+        verify(sandboxService, times(2)).applyCallback(eq("CSO-1"), startsWith("PAY-SBX-"),
+                eq("PAYMENT_SUCCEEDED"), eq(0L), anyString(), eq("7"));
+    }
+
+    @Test
+    void sandboxPaymentIdempotencyScopeAndHashCannotReplayAcrossRuns() {
+        var mapper = mock(CommerceAcceptanceSandboxMapper.class);
+        var sandboxService = mock(CommerceAcceptanceSandboxService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var run = mock(CommerceAcceptanceRun.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var scopes = new java.util.ArrayList<String>();
+        var hashes = new java.util.ArrayList<String>();
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.isSandboxUser(7L)).thenReturn(true);
+        when(run.requireRunId()).thenReturn("run-20260815", "run-20260816");
+        when(mapper.lockSandboxOrder(anyString(), eq("CSO-RUN"))).thenAnswer(invocation ->
+                new CommerceAcceptanceSandboxMapper.SandboxOrder("CSO-RUN", 7L, 1L, 1,
+                        new BigDecimal("12.000000"), 0L, "PENDING_PAYMENT", false, false));
+        when(sandboxService.applyCallback(eq("CSO-RUN"), startsWith("PAY-SBX-"), eq("PAYMENT_SUCCEEDED"),
+                eq(0L), anyString(), eq("7"))).thenAnswer(invocation ->
+                new CommerceAcceptanceSandboxService.CallbackResult("CSO-RUN", "PAYMENT_SUCCEEDED", "paid",
+                        1L, "mock", "SANDBOX", new BigDecimal("8.000000")));
+        doAnswer(invocation -> {
+            scopes.add(invocation.getArgument(0));
+            hashes.add(invocation.getArgument(2));
+            return ((Supplier<?>) invocation.getArgument(4)).get();
+        }).when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+                mock(AuditLogService.class), guard, mapper, sandboxService, run);
+        var first = service.pay(7L, "CSO-RUN", "same-payment-key");
+        var second = service.pay(7L, "CSO-RUN", "same-payment-key");
+
+        assertThat(first.getData()).containsEntry("runId", "run-20260815");
+        assertThat(second.getData()).containsEntry("runId", "run-20260816");
+        assertThat(scopes).containsExactly(
+                "APP:ORDER_PAYMENT:SANDBOX:run-20260815:USER:7",
+                "APP:ORDER_PAYMENT:SANDBOX:run-20260816:USER:7");
+        assertThat(hashes).hasSize(2).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void sandboxPaymentValidatesRunBeforeEnteringIdempotency() {
+        var mapper = mock(CommerceAcceptanceSandboxMapper.class);
+        var sandboxService = mock(CommerceAcceptanceSandboxService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var run = mock(CommerceAcceptanceRun.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.isSandboxUser(7L)).thenReturn(true);
+        when(run.requireRunId()).thenThrow(new ffdd.opsconsole.shared.exception.BizException(
+                503, "COMMERCE_SANDBOX_RUN_ID_REQUIRED"));
+
+        var service = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+                mock(AuditLogService.class), guard, mapper, sandboxService, run);
+
+        assertThatThrownBy(() -> service.pay(7L, "CSO-RUN", "payment-key"))
+                .hasMessageContaining("COMMERCE_SANDBOX_RUN_ID_REQUIRED");
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void sandboxPaymentFailsClosedWhenLegacyOrderVersionIsNull() {
+        var mapper = mock(CommerceAcceptanceSandboxMapper.class);
+        var sandboxService = mock(CommerceAcceptanceSandboxService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var run = mock(CommerceAcceptanceRun.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.isSandboxUser(7L)).thenReturn(true);
+        when(run.requireRunId()).thenReturn("run-20260815");
+        when(mapper.lockSandboxOrder("run-20260815", "CSO-LEGACY")).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxOrder("CSO-LEGACY", 7L, 1L, 1,
+                        new BigDecimal("12.000000"), null, "PENDING_PAYMENT", false, false));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mock(AppOrderCommandMapper.class), idempotency,
+                mock(AuditLogService.class), guard, mapper, sandboxService, run)
+                .pay(7L, "CSO-LEGACY", "pay-legacy");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_ORDER_UNAVAILABLE");
+        verify(sandboxService, never()).applyCallback(anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void productionPaymentFailsClosedWithoutReadingCanonicalOrderOrWallet() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        var service = new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class),
+                mock(AuditLogService.class), guard, null, null, null);
+
+        var result = service.pay(7L, "ORD-1", "pay-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("PAYMENT_PROVIDER_UNAVAILABLE");
+        verify(mapper, never()).lockOrder(anyString());
     }
 }

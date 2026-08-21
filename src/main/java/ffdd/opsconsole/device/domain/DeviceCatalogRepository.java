@@ -13,6 +13,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 
 public interface DeviceCatalogRepository {
     PageResult<DeviceSkuView> pageSkus(DeviceSkuQueryRequest request);
@@ -74,6 +75,20 @@ public interface DeviceCatalogRepository {
             Integer tier,
             DevicePhoneTierRewardUpdateRequest request,
             LocalDateTime now);
+
+    default List<OnboardingYieldComparisonView> listOnboardingYieldComparisons() {
+        return List.of();
+    }
+
+    default Optional<OnboardingYieldComparisonView> findOnboardingYieldComparison(String configKey) {
+        return Optional.empty();
+    }
+
+    default Optional<OnboardingYieldComparisonView> updateOnboardingYieldComparison(
+            String configKey, String label, BigDecimal dailyUsdt, BigDecimal dailyNex,
+            Long expectedRevision, LocalDateTime now) {
+        return Optional.empty();
+    }
 
     PageResult<DeviceOrderView> pageOrders(DeviceOrderQueryRequest request);
 

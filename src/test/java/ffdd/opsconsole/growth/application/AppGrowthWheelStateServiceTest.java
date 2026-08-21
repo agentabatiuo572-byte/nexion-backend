@@ -27,7 +27,7 @@ class AppGrowthWheelStateServiceTest {
     private final AppGrowthWheelService service = new AppGrowthWheelService(
             mapper, mock(VoucherGrantFacade.class), mock(TreasuryCoverageFacade.class),
             mock(AdminIdempotencyService.class), mock(AuditLogService.class),
-            mock(EventOutboxService.class), null);
+            mock(EventOutboxService.class), null, null);
 
     @Test
     void stateReturnsServerSegmentsTicketCountsAndHistoryWithoutProbabilityOrGuardFacts() {

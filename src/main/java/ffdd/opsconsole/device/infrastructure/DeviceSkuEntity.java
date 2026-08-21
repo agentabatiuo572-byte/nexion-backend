@@ -20,6 +20,10 @@ public class DeviceSkuEntity extends BaseEntity {
     private String hashRate;
     private String powerText;
     private String datacenter;
+    private String uptime;
+    private String warranty;
+    private BigDecimal phoneDailyEarn;
+    private BigDecimal phoneDailyEarnNex;
     private BigDecimal price;
     private BigDecimal dailyEarn;
     private BigDecimal dailyEarnNex;

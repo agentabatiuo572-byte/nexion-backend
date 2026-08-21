@@ -17,6 +17,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
+import org.springframework.mock.env.MockEnvironment;
 
 class JanusExecutorClaimVerifierTest {
     private static final long NOW = System.currentTimeMillis();
@@ -83,10 +84,61 @@ class JanusExecutorClaimVerifierTest {
                 .isNotEqualTo(authorization);
     }
 
+    @Test
+    void sandboxClaimRejectsMultipleActiveProfiles() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test", "dev"});
+        JanusExecutorClaimVerifier verifier = new JanusExecutorClaimVerifier(mapper, environment,
+                "SANDBOX", "", 120_000L, java.util.Optional.empty());
+
+        JanusExecutorClaimVerifier.Verification result = verifier.verify(42L,
+                claim("device-1", "sandbox", "sandbox-token"));
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.error()).isEqualTo("JANUS_SANDBOX_CLAIM_ISOLATION_MISMATCH");
+    }
+
+    @Test
+    void sandboxClaimRejectsTheFormerStaticFixtureTokenWithoutEnrollment() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        JanusExecutorClaimVerifier verifier = new JanusExecutorClaimVerifier(mapper, environment,
+                "SANDBOX", "", 120_000L, java.util.Optional.empty());
+
+        JanusExecutorClaimVerifier.Verification result = verifier.verify(42L,
+                claim("device-1", "sandbox", "sandbox-token"));
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.error()).isEqualTo("JANUS_SANDBOX_CLAIM_ISOLATION_MISMATCH");
+        verify(mapper, never()).claim(any(), any(), any(), any(), anyLong());
+    }
+
+    @Test
+    void sandboxClaimAcceptsServerEnrollmentForAUserNotPresentInStaticFixtures() {
+        var sandboxEnvironment = new MockEnvironment() {
+            @Override public String[] getActiveProfiles() { return new String[]{"dev"}; }
+        };
+        var enrollment = new JanusSandboxEnrollmentService(sandboxEnvironment, "SANDBOX", "approved",
+                60_000L, System::currentTimeMillis, new java.security.SecureRandom());
+        var issued = enrollment.issue(91L, "device-91");
+        JanusExecutorClaimVerifier verifier = new JanusExecutorClaimVerifier(mapper, sandboxEnvironment,
+                "SANDBOX", "", 120_000L, java.util.Optional.of(enrollment));
+        when(mapper.claim(any(), any(), any(), any(), anyLong())).thenReturn(1);
+        var signed = claim("device-91", "sandbox", issued.token());
+        String expectedHash;
+        try {
+            expectedHash = sha256(JanusExecutorClaimVerifier.canonical(91L, signed) + "\n" + issued.token());
+        } catch (Exception exception) {
+            throw new AssertionError(exception);
+        }
+        when(mapper.findClaimHash("sandbox", "a".repeat(32))).thenReturn(null, expectedHash);
+
+        assertThat(verifier.verify(91L, signed).accepted()).isTrue();
+        assertThat(verifier.verify(92L, signed).accepted()).isFalse();
+    }
+
     private JanusExecutorClaimVerifier verifier(String mode, String productionKeys) {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
-        return new JanusExecutorClaimVerifier(mapper, environment, mode, "sandbox-token", "42",
-                "device-1", productionKeys, 120_000L);
+        return new JanusExecutorClaimVerifier(mapper, environment, mode, productionKeys, 120_000L,
+                java.util.Optional.empty());
     }
 
     private JanusExecutorClaimVerifier.Claim claim(String deviceId, String executorId, String signature) {

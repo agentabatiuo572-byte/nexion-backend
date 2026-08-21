@@ -11,7 +11,7 @@ class CregisSandboxProfileGuardTest {
         CregisProperties properties = new CregisProperties();
         properties.setMode(CregisProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
 
         assertThatThrownBy(() -> new CregisSandboxProfileGuard(properties, environment).afterPropertiesSet())
                 .isInstanceOf(IllegalStateException.class)
@@ -23,7 +23,7 @@ class CregisSandboxProfileGuardTest {
         CregisProperties properties = new CregisProperties();
         properties.setMode(CregisProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production", "test");
+        environment.setActiveProfiles("prod", "test");
 
         assertThatThrownBy(() -> new CregisSandboxProfileGuard(properties, environment).afterPropertiesSet())
                 .isInstanceOf(IllegalStateException.class)

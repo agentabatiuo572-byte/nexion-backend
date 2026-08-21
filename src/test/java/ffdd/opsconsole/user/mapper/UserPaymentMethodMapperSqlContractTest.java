@@ -23,4 +23,16 @@ class UserPaymentMethodMapperSqlContractTest {
             assertThat(sql).doesNotContain("revoke.");
         }
     }
+
+    @Test
+    void adminUserBoundaryRequiresAnActiveAccountWithSandboxFlag() throws Exception {
+        Method method = Arrays.stream(UserPaymentMethodMapper.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("activeUserEnvironment"))
+                .findFirst().orElseThrow();
+        String sql = String.join("\n", method.getAnnotation(Select.class).value());
+
+        assertThat(sql).contains("status = 'ACTIVE'")
+                .contains("is_deleted = 0")
+                .contains("sandbox");
+    }
 }

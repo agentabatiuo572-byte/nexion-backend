@@ -33,6 +33,15 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void canonicalPendingScanUsesTypeAliasAndCursorContract() {
+        List<EventOutboxMessage> rows = List.of(new EventOutboxMessage());
+        when(mapper.listPendingByCanonicalType("order.completed", 41L, 25)).thenReturn(rows);
+
+        assertThat(service.listPendingByCanonicalType("order.completed", 41L, 25)).isSameAs(rows);
+        verify(mapper).listPendingByCanonicalType("order.completed", 41L, 25);
+    }
+
+    @Test
     void trustedClientSamplingIsStableAndDropsBeforeAnyDurableInsert() {
         when(mapper.findActiveSchema("app.page_viewed"))
                 .thenReturn(new EventOutboxMapper.SchemaGateRow("acquisition", 9, false));

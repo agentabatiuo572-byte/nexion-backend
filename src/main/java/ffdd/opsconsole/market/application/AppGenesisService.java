@@ -1,6 +1,7 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -22,9 +23,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -35,9 +38,11 @@ import org.springframework.util.StringUtils;
 public class AppGenesisService {
     private static final String KILL_KEY = "killswitch.genesis";
     private static final String LEGACY_KILL_KEY = "J.killswitch.genesis";
+    private static final String KILL_REVISION_KEY = "emergency.killswitch.genesis.lastChange";
     private static final String DISCLOSURE_KEY = "disclosure.gate.genesis";
     private static final String EMISSION_GATE_KEY = "growth.phase.genesis_emissions_open";
     private static final String SALE_PREFIX = "market.genesis.ops.";
+    private static final String HOLDER_PREFIX = SALE_PREFIX + "holder.";
 
     private final AppGenesisMapper mapper;
     private final PlatformConfigFacade config;
@@ -46,11 +51,25 @@ public class AppGenesisService {
     private final AuditLogService audit;
     private final Clock clock;
     private final GenesisCatalogService catalogService;
+    private final Environment environment;
+
+    /** Separate sandbox rail; production mapper is never reused for sandbox mutations. */
+    private final Optional<AppMarketSandboxService> sandbox;
 
     public ApiResult<Map<String, Object>> state() {
+        RuntimeMode mode = runtimeMode();
+        boolean developmentPublicRead = environment != null
+                && FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles());
+        if (mode == RuntimeMode.SANDBOX && !developmentPublicRead) {
+            return sandbox.isEmpty() ? ApiResult.ok(sandboxPublicState()) : sandbox.get().genesisState();
+        }
+        if (mode != RuntimeMode.PRODUCTION && !developmentPublicRead) {
+            throw new BizException(503, "GENESIS_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         AppGenesisMapper.SeriesRow series = requireSeries();
         long sold = mapper.holdingCount(series.seriesCode());
-        boolean marketEnabled = marketEnabled();
+        KillSwitchProjection killSwitch = killSwitchProjection();
+        boolean marketEnabled = marketEnabled(killSwitch.enabled());
         SalePolicy salePolicy = salePolicy(series);
         Map<String,Object> result=linked(
                 "series", seriesView(series, sold),
@@ -58,11 +77,18 @@ public class AppGenesisService {
                 "emission", linked("open", emissionOpen(), "owner", "H1", "dailyRatePct", nz(series.dailyEmissionRatePct())),
                 "sale", salePolicy.publicView(clock.instant()),
                 "listings", mapper.listings(), "transactions", mapper.transactions(),
+                "marketStats", statsView(),
                 "serverCanonical", true,
+                "halted", killSwitch.halted(),
+                "revision", killSwitch.revision(),
+                "source", killSwitch.source(), "sourceEnvironment", "PRODUCTION", "runId", "",
                 "sources", List.of("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order",
                         "nx_genesis_emission_batch", "nx_genesis_emission_item", "nx_wallet_ledger",
                         "nx_config_item:market.genesis.ops.*"));
         if(catalogService!=null) result.putAll(catalogService.publicState());
+        result.put("serverCanonical", true);
+        result.put("sourceEnvironment", "PRODUCTION");
+        result.put("runId", "");
         boolean tradeAvailable = marketEnabled && salePolicy.available()
                 && Boolean.TRUE.equals(result.get("catalogAvailable"));
         result.put("tradeAvailable", tradeAvailable);
@@ -76,24 +102,38 @@ public class AppGenesisService {
     }
 
     public ApiResult<Map<String, Object>> account(Long userId) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX) {
+            if (sandbox.isEmpty()) {
+                requireSandboxReadSubject(userId);
+                return ApiResult.ok(sandboxAccountState());
+            }
+            return sandbox.get().genesisAccount(userId);
+        }
+        requireGenesisSubject(userId);
         AppGenesisMapper.SeriesRow series = requireSeries();
         return ApiResult.ok(accountView(userId, series));
     }
 
     public ApiResult<Map<String, Object>> eligibility(Long userId) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX) {
+            if (sandbox.isPresent()) return sandbox.get().genesisEligibility(userId);
+            requireSandboxReadSubject(userId);
+            return ApiResult.ok(sandboxEligibility());
+        }
+        requireGenesisSubject(userId);
         AppGenesisMapper.SeriesRow series = requireSeries();
         return ApiResult.ok(eligibilityView(userId, series, salePolicy(series)));
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> purchase(Long userId, String idempotencyKey, PurchaseRequest request) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisPurchase(userId, idempotencyKey, request);
+        requireGenesisSubject(userId);
+        final String requestKey = requireIdempotencyKey(idempotencyKey);
         int quantity = request == null || request.quantity() == null ? 0 : request.quantity();
         if (quantity < 1 || quantity > 20) throw new BizException(422, "GENESIS_QUANTITY_INVALID");
-        return once("PRIMARY_PURCHASE", userId, idempotencyKey, quantity,
-                () -> purchaseInternal(userId, idempotencyKey, quantity));
+        return once("PRIMARY_PURCHASE", userId, requestKey, quantity,
+                () -> purchaseInternal(userId, requestKey, quantity));
     }
 
     private ApiResult<Map<String, Object>> purchaseInternal(Long userId, String idempotencyKey, int quantity) {
@@ -103,7 +143,9 @@ public class AppGenesisService {
         SalePolicy salePolicy = salePolicy(series);
         requireEligibleUser(userId, series, salePolicy, quantity);
         long sold = mapper.lockHoldingCount(series.seriesCode());
-        if (sold + quantity > series.totalSupply()) throw new BizException(409, "GENESIS_SOLD_OUT");
+        Integer totalSupply = series.totalSupply();
+        if (totalSupply == null || totalSupply < 0) throw new BizException(503, "GENESIS_SERIES_INVALID");
+        if (sold + quantity > (long) totalSupply) throw new BizException(409, "GENESIS_SOLD_OUT");
         if (mapper.updateSoldSupply(series.id(), sold + quantity) != 1) {
             throw new BizException(409, "GENESIS_SUPPLY_CONFLICT");
         }
@@ -148,15 +190,17 @@ public class AppGenesisService {
 
     @Transactional
     public ApiResult<Map<String, Object>> list(Long userId, String holdingNo, String idempotencyKey, ListingRequest request) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisList(userId, holdingNo, idempotencyKey, request);
+        requireGenesisSubject(userId);
+        final String requestKey = requireIdempotencyKey(idempotencyKey);
         String no = normalizeHoldingNo(holdingNo);
         BigDecimal price = request == null ? null : request.askPriceUsdt();
         if (price == null || price.signum() <= 0 || price.compareTo(new BigDecimal("100000000")) > 0) {
             throw new BizException(422, "GENESIS_LISTING_PRICE_INVALID");
         }
         BigDecimal normalizedPrice = money(price);
-        return once("LIST:" + no, userId, idempotencyKey, normalizedPrice,
-                () -> listInternal(userId, no, idempotencyKey, normalizedPrice));
+        return once("LIST:" + no, userId, requestKey, normalizedPrice,
+                () -> listInternal(userId, no, requestKey, normalizedPrice));
     }
 
     private ApiResult<Map<String, Object>> listInternal(Long userId, String holdingNo, String key, BigDecimal price) {
@@ -180,10 +224,12 @@ public class AppGenesisService {
 
     @Transactional
     public ApiResult<Map<String, Object>> cancel(Long userId, String holdingNo, String idempotencyKey) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisCancel(userId, holdingNo, idempotencyKey);
+        requireGenesisSubject(userId);
+        final String requestKey = requireIdempotencyKey(idempotencyKey);
         String no = normalizeHoldingNo(holdingNo);
-        return once("CANCEL_LIST:" + no, userId, idempotencyKey, no,
-                () -> cancelInternal(userId, no, idempotencyKey));
+        return once("CANCEL_LIST:" + no, userId, requestKey, no,
+                () -> cancelInternal(userId, no, requestKey));
     }
 
     private ApiResult<Map<String, Object>> cancelInternal(Long userId, String holdingNo, String key) {
@@ -202,10 +248,12 @@ public class AppGenesisService {
 
     @Transactional
     public ApiResult<Map<String, Object>> buyListing(Long userId, String holdingNo, String idempotencyKey) {
-        requireUser(userId);
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisBuy(userId, holdingNo, idempotencyKey);
+        requireGenesisSubject(userId);
+        final String requestKey = requireIdempotencyKey(idempotencyKey);
         String no = normalizeHoldingNo(holdingNo);
-        return once("SECONDARY_BUY:" + no, userId, idempotencyKey, no,
-                () -> buyListingInternal(userId, no, idempotencyKey));
+        return once("SECONDARY_BUY:" + no, userId, requestKey, no,
+                () -> buyListingInternal(userId, no, requestKey));
     }
 
     private ApiResult<Map<String, Object>> buyListingInternal(Long userId, String holdingNo, String key) {
@@ -215,6 +263,9 @@ public class AppGenesisService {
             throw new BizException(409, "GENESIS_LISTING_NOT_ACTIVE");
         }
         if (userId.equals(holding.userId())) throw new BizException(409, "GENESIS_SELF_TRADE_FORBIDDEN");
+        if (!Integer.valueOf(0).equals(mapper.userSandbox(holding.userId()))) {
+            throw new BizException(403, "GENESIS_SELLER_ENVIRONMENT_MISMATCH");
+        }
         AppGenesisMapper.SeriesRow series = mapper.lockActiveSeries();
         if (series == null || !series.seriesCode().equals(holding.seriesCode())) {
             throw new BizException(409, "GENESIS_SERIES_UNAVAILABLE");
@@ -250,7 +301,7 @@ public class AppGenesisService {
         }
         AppGenesisMapper.UserPolicyRow buyerPolicy = requirePolicy(userId);
         Map<String, Object> event = linked("orderNo", orderNo, "holdingNo", holdingNo,
-                "buyerUserId", userId, "sellerUserId", holding.userId(), "priceUsdt", price,
+                "priceUsdt", price,
                 "royaltyUsdt", royalty, "sellerNetUsdt", sellerNet);
         String receipt = publishUser("GENESIS_ORDER", orderNo, "genesis.secondary_traded", buyerPolicy, event);
         recordAudit("USER_GENESIS_SECONDARY_PURCHASED", "GENESIS_ORDER", orderNo, userId, key,
@@ -267,7 +318,8 @@ public class AppGenesisService {
                 "holdings", mapper.holdings(userId), "emissions", mapper.emissions(userId),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled(),
                 "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),
-                "eligibility", eligibilityView(userId, series, policy), "serverCanonical", true);
+                "eligibility", eligibilityView(userId, series, policy), "serverCanonical", true,
+                "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
     private Map<String, Object> seriesView(AppGenesisMapper.SeriesRow series, long sold) {
@@ -278,6 +330,23 @@ public class AppGenesisService {
                 "royaltyPct", BigDecimal.valueOf(series.royaltyBps() == null ? 0 : series.royaltyBps())
                         .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP),
                 "dailyEmissionRatePct", nz(series.dailyEmissionRatePct()));
+    }
+
+    private Map<String, Object> statsView() {
+        AppGenesisMapper.SecondaryStatsRow stats = mapper.secondaryStats();
+        if (stats == null) {
+            return linked("floorUsdt", null, "volume24hUsdt", null, "owners", null,
+                    "floorDeltaPct", null, "lastSaleUsdt", null);
+        }
+        BigDecimal floor = stats.floorUsdt();
+        BigDecimal prior = stats.floor7dUsdt();
+        BigDecimal delta = floor == null || prior == null || prior.signum() == 0
+                ? null : floor.subtract(prior).multiply(BigDecimal.valueOf(100))
+                        .divide(prior, 4, RoundingMode.HALF_UP);
+        return linked("floorUsdt", floor == null ? null : money(floor),
+                "volume24hUsdt", stats.volume24hUsdt() == null ? null : money(stats.volume24hUsdt()),
+                "owners", stats.owners(), "floorDeltaPct", delta,
+                "lastSaleUsdt", stats.lastSaleUsdt() == null ? null : money(stats.lastSaleUsdt()));
     }
 
     private void requireEligibleUser(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy salePolicy,
@@ -315,12 +384,89 @@ public class AppGenesisService {
         if (!policy.saleOpen(clock.instant())) reasons.add("PRESALE_NOT_OPEN");
         int max = policy.effectiveMaxPerUser();
         if (owned >= max) reasons.add("USER_CAP_REACHED");
-        return linked("eligible", reasons.isEmpty(), "reasons", reasons,
+        if (!marketEnabled()) reasons.add("MARKET_DISABLED");
+        Map<String, Object> result = linked("eligible", reasons.isEmpty() && marketEnabled(), "reasons", reasons,
                 "ownedCount", owned, "maxPerUser", max,
                 "remainingCap", Math.max(0L, (long) max - owned),
                 "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
                 "accountAgeDays", ageDays, "hasGenesisInvite", hasGenesisInvite,
-                "serverCanonical", true);
+                "mode", "any-of", "appliesTo", "both", "halted", !marketEnabled(),
+                "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "");
+        result.putAll(holderProjection(userId, series.seriesCode(), owned, reasons));
+        return result;
+    }
+
+    /**
+     * Holder facts are a projection of the same holding/eligibility tables used by
+     * the purchase gate. The app must never calculate an allocation or rank locally.
+     */
+    private Map<String, Object> holderProjection(Long userId, String seriesCode, long owned, List<String> baseReasons) {
+        Instant now = clock.instant();
+        List<String> qualificationCodes = new java.util.ArrayList<>(baseReasons);
+        if (owned > 0) qualificationCodes.add("HOLDINGS_CONFIRMED");
+        else qualificationCodes.add("NO_ACTIVE_HOLDINGS");
+        Map<String, Object> result = linked(
+                "reservedAllocation", null, "reservedAllocationUnit", "NEX",
+                "priorityRank", null, "priorityTier", "NONE",
+                "qualificationReasonCodes", qualificationCodes,
+                "policyVersion", null, "effectiveAt", null, "asOf", now.toString(),
+                "serverTime", now.toString(), "status", "CONFIG_UNAVAILABLE",
+                "provenance", linked("source", "nx_genesis_holding+nx_config_item",
+                        "environment", "PRODUCTION", "runId", ""));
+        try {
+            BigDecimal perHolding = requiredHolderDecimal("allocationNexPerHolding");
+            int top1 = requiredHolderInteger("priorityTop1Percent");
+            int top3 = requiredHolderInteger("priorityTop3Percent");
+            int top5 = requiredHolderInteger("priorityTop5Percent");
+            String version = requiredHolderText("policyVersion");
+            Instant effectiveAt = Instant.parse(requiredHolderText("effectiveAt"));
+            if (perHolding.signum() <= 0 || top1 <= 0 || top1 > top3 || top3 > top5 || top5 > 100) {
+                throw new IllegalArgumentException("holder policy bounds");
+            }
+            qualificationCodes.add(effectiveAt.isAfter(now) ? "POLICY_NOT_EFFECTIVE" : "POLICY_CONFIRMED");
+            Integer rank = mapper.currentPriorityRank(userId, seriesCode);
+            long holderCount = Math.max(0L, mapper.activeHolderCount(seriesCode));
+            String tier = priorityTier(rank, holderCount, top1, top3, top5);
+            String status = effectiveAt.isAfter(now) ? "NOT_EFFECTIVE"
+                    : baseReasons.isEmpty() && owned > 0 ? "READY" : "NOT_ELIGIBLE";
+            result.put("reservedAllocation", nexQuantity(perHolding.multiply(BigDecimal.valueOf(owned))));
+            result.put("priorityRank", rank == null || rank < 1 ? null : rank);
+            result.put("priorityTier", tier);
+            result.put("policyVersion", version);
+            result.put("effectiveAt", effectiveAt.toString());
+            result.put("status", status);
+        } catch (RuntimeException ignored) {
+            // Missing/withdrawn/malformed operator config is explicit, never a local fallback.
+        }
+        return result;
+    }
+
+    private String priorityTier(Integer rank, long holderCount, int top1, int top3, int top5) {
+        if (rank == null || rank < 1 || holderCount <= 0) return "NONE";
+        long one = Math.max(1L, (holderCount * top1 + 99L) / 100L);
+        long three = Math.max(one, (holderCount * top3 + 99L) / 100L);
+        long five = Math.max(three, (holderCount * top5 + 99L) / 100L);
+        if (rank <= one) return "TOP_1";
+        if (rank <= three) return "TOP_3";
+        if (rank <= five) return "TOP_5";
+        return "STANDARD";
+    }
+
+    private BigDecimal requiredHolderDecimal(String key) {
+        return config.activeValue(HOLDER_PREFIX + key).map(raw -> new BigDecimal(raw.trim())).orElseThrow();
+    }
+
+    private int requiredHolderInteger(String key) {
+        return config.activeValue(HOLDER_PREFIX + key).map(raw -> Integer.parseInt(raw.trim())).orElseThrow();
+    }
+
+    private String requiredHolderText(String key) {
+        return config.activeValue(HOLDER_PREFIX + key).filter(StringUtils::hasText).map(String::trim).orElseThrow();
+    }
+
+    /** NEX allocation is a user-facing token quantity; the public contract uses two decimals. */
+    private BigDecimal nexQuantity(BigDecimal value) {
+        return value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private SalePolicy salePolicy(AppGenesisMapper.SeriesRow series) {
@@ -393,18 +539,39 @@ public class AppGenesisService {
     }
 
     private boolean marketEnabled() {
+        return marketEnabled(killSwitchProjection().enabled());
+    }
+
+    private boolean marketEnabled(boolean killSwitchEnabled) {
         boolean disclosure = config.activeValue(DISCLOSURE_KEY).map(this::switchOn).orElse(false);
-        return catalogService != null && catalogService.marketOpen() && !disclosure && KillSwitchState.enabled(
-                java.util.Optional.ofNullable(mapper.controlValue(KILL_KEY)),
-                java.util.Optional.ofNullable(mapper.controlValue(LEGACY_KILL_KEY)));
+        return catalogService != null && catalogService.marketOpen() && !disclosure && killSwitchEnabled;
+    }
+
+    private KillSwitchProjection killSwitchProjection() {
+        String primary = mapper.controlValue(KILL_KEY);
+        String legacy = mapper.controlValue(LEGACY_KILL_KEY);
+        boolean enabled = KillSwitchState.enabled(
+                java.util.Optional.ofNullable(primary), java.util.Optional.ofNullable(legacy));
+        String revision = mapper.controlValue(KILL_REVISION_KEY);
+        return new KillSwitchProjection(!enabled,
+                StringUtils.hasText(revision) ? revision.trim() : "default",
+                "nx_emergency_control_setting:" + KILL_KEY, enabled);
     }
 
     public ApiResult<Map<String,Object>> redeemInvite(Long userId,String idempotencyKey,String code){
+        if(runtimeMode()==RuntimeMode.SANDBOX && sandbox.isPresent())
+            return sandbox.get().genesisRedeemInvite(userId,idempotencyKey,code);
         if(catalogService==null) throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");
-        requireUser(userId);
+        requireGenesisSubject(userId);
         String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
-        return once("INVITE_REDEEM", userId, idempotencyKey, normalized,
+        ApiResult<Map<String,Object>> result = once("INVITE_REDEEM", userId, idempotencyKey, normalized,
                 () -> catalogService.redeem(userId, normalized));
+        Map<String,Object> receipt = new LinkedHashMap<>(result.getData());
+        receipt.put("serverCanonical", true);
+        receipt.put("sourceEnvironment", "PRODUCTION");
+        receipt.put("runId", "");
+        receipt.put("source", "nx_genesis_invite_code");
+        return new ApiResult<>(result.getCode(), result.getMessage(), receipt);
     }
 
     private boolean emissionOpen() {
@@ -448,8 +615,126 @@ public class AppGenesisService {
         }
     }
 
-    private void requireUser(Long userId) {
+    private void requireGenesisSubject(Long userId) {
         if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        RuntimeMode mode = runtimeMode();
+        if (mode == RuntimeMode.SANDBOX) {
+            if (!Integer.valueOf(1).equals(mapper.userSandbox(userId))) {
+                throw new BizException(403, "GENESIS_SANDBOX_USER_REQUIRED");
+            }
+            // There are no Genesis sandbox tables. Never let an isolated user
+            // read or mutate the production wallet/holding/order rail.
+            throw new BizException(503, "GENESIS_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
+        }
+        if (mode != RuntimeMode.PRODUCTION) throw new BizException(503, "GENESIS_RUNTIME_PROFILE_UNSUPPORTED");
+        if (!Integer.valueOf(0).equals(mapper.userSandbox(userId))) {
+            throw new BizException(403, "GENESIS_PRODUCTION_USER_REQUIRED");
+        }
+    }
+
+    private void requireSandboxReadSubject(Long userId) {
+        if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        if (!Integer.valueOf(1).equals(mapper.userSandbox(userId))) {
+            throw new BizException(403, "GENESIS_SANDBOX_USER_REQUIRED");
+        }
+        sandboxRunId();
+    }
+
+    /**
+     * The local acceptance runtime intentionally has no Genesis wallet or
+     * holding rail.  Reads still return a complete server-owned projection so
+     * the App can render an honest HOLD state without inventing local catalog,
+     * market or eligibility facts.  Mutations remain fail-closed above.
+     */
+    private Map<String, Object> sandboxPublicState() {
+        String runId = sandboxRunId();
+        return linked(
+                "series", sandboxSeries(),
+                "market", linked("enabled", false, "restoreOwner", "J1", "internalP2POnly", true),
+                "emission", linked("open", false, "owner", "H1", "dailyRatePct", BigDecimal.ZERO),
+                "sale", sandboxSale(),
+                "listings", List.of(), "transactions", List.of(),
+                "marketStats", linked("floorUsdt", null, "volume24hUsdt", null,
+                        "owners", null, "floorDeltaPct", null, "lastSaleUsdt", null),
+                "serverCanonical", true, "halted", true,
+                "revision", "sandbox:" + runId,
+                "source", "mock:server-genesis-sandbox-hold",
+                "sourceEnvironment", "SANDBOX", "runId", runId,
+                "sources", List.of("server-sandbox-run:" + runId),
+                "tiers", List.of(), "tiersVersion", 1L,
+                "marketOpenState", "closed", "marketOpenStateVersion", 1L,
+                "closedNoticeKey", "GENESIS_SANDBOX_HOLD",
+                "catalogAvailable", false, "tradeAvailable", false,
+                "tradeBlockedReason", "GENESIS_SANDBOX_HOLD");
+    }
+
+    private Map<String, Object> sandboxAccountState() {
+        String runId = sandboxRunId();
+        return linked("series", sandboxSeries(), "holdings", List.of(), "emissions", List.of(),
+                "walletBalanceUsdt", BigDecimal.ZERO, "marketEnabled", false,
+                "emissionOpen", false, "sale", sandboxSale(),
+                "eligibility", sandboxEligibility(), "serverCanonical", true,
+                "source", "mock:server-genesis-sandbox-hold",
+                "sourceEnvironment", "SANDBOX", "runId", runId);
+    }
+
+    private Map<String, Object> sandboxEligibility() {
+        String runId = sandboxRunId();
+        return linked("eligible", false, "reasons", List.of("SANDBOX_HOLD"),
+                "ownedCount", 0L, "maxPerUser", 0, "remainingCap", 0L,
+                "minAccountAgeDays", 0, "accountAgeDays", 0,
+                "hasGenesisInvite", false, "mode", "any-of", "appliesTo", "both",
+                "halted", true, "serverCanonical", true,
+                "sourceEnvironment", "SANDBOX", "runId", runId);
+    }
+
+    private Map<String, Object> sandboxSeries() {
+        return linked("seriesCode", "GENESIS-SANDBOX-HOLD", "name", "Genesis Sandbox (HOLD)",
+                "totalSupply", 0L, "soldSupply", 0L, "remainingSupply", 0L,
+                "priceUsdt", BigDecimal.ONE.setScale(6), "royaltyPct", BigDecimal.ZERO,
+                "dailyEmissionRatePct", BigDecimal.ZERO);
+    }
+
+    private Map<String, Object> sandboxSale() {
+        return new SalePolicy(false, true, 0, 0, false, false,
+                BigDecimal.ONE.setScale(6), 0, null, null).publicView(clock.instant());
+    }
+
+    private String sandboxRunId() {
+        String runId = environment == null ? "" : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+        if (!runId.matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}")) {
+            throw new BizException(503, "GENESIS_SANDBOX_RUN_ID_REQUIRED");
+        }
+        return runId;
+    }
+
+    private void requireProductionRuntime() {
+        RuntimeMode mode = runtimeMode();
+        if (mode == RuntimeMode.SANDBOX) {
+            throw new BizException(503, "GENESIS_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
+        }
+        if (mode != RuntimeMode.PRODUCTION) {
+            throw new BizException(503, "GENESIS_RUNTIME_PROFILE_UNSUPPORTED");
+        }
+    }
+
+    private RuntimeMode runtimeMode() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)) return RuntimeMode.SANDBOX;
+        if (profiles == null || profiles.length == 0
+                || (profiles.length == 1 && "prod".equals(profiles[0]))) {
+            return RuntimeMode.PRODUCTION;
+        }
+        return RuntimeMode.UNKNOWN;
+    }
+
+    private enum RuntimeMode { PRODUCTION, SANDBOX, UNKNOWN }
+
+    private String requireIdempotencyKey(String value) {
+        if (!StringUtils.hasText(value) || value.trim().length() > 200) {
+            throw new BizException(422, "GENESIS_IDEMPOTENCY_KEY_REQUIRED");
+        }
+        return value.trim();
     }
 
     private String normalizeHoldingNo(String value) {
@@ -524,6 +809,8 @@ public class AppGenesisService {
             return view;
         }
     }
+
+    private record KillSwitchProjection(boolean halted, String revision, String source, boolean enabled) { }
 
     public record PurchaseRequest(Integer quantity) {}
     public record ListingRequest(BigDecimal askPriceUsdt) {}

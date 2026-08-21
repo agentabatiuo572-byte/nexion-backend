@@ -11,11 +11,11 @@ import org.springframework.stereotype.Component;
 
 /**
  * The fixture executor is deliberately unavailable unless the server was started as the single
- * {@code acceptance} profile with the explicit opt-in from application-acceptance.yml.  A mixed
+ * {@code dev} profile with the explicit opt-in from application-dev.yml. A mixed
  * profile must be treated as production-adjacent and is therefore closed, not "best effort".
  */
 @Component
-@Profile({"acceptance", "test"})
+@Profile({"dev", "test"})
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxProfileGuard {
     private final Environment environment;
@@ -25,7 +25,7 @@ public class G2AcceptanceSandboxProfileGuard {
     public boolean available() {
         String[] active = environment.getActiveProfiles();
         return "ENABLED".equalsIgnoreCase(mode == null ? "" : mode.trim())
-                && active.length == 1 && ("acceptance".equals(active[0]) || "test".equals(active[0]));
+                && active.length == 1 && ("dev".equals(active[0]) || "test".equals(active[0]));
     }
 
     public void requireAvailable() {

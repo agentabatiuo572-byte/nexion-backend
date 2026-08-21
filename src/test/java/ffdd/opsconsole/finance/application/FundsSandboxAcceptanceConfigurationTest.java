@@ -9,8 +9,8 @@ import org.springframework.core.io.ClassPathResource;
 
 class FundsSandboxAcceptanceConfigurationTest {
     @Test
-    void acceptanceProfileExplicitlyEnablesOnlyTheServerOwnedFundsSandbox() throws IOException {
-        ClassPathResource profile = new ClassPathResource("application-acceptance.yml");
+    void developmentProfileExplicitlyEnablesOnlyTheServerOwnedFundsSandbox() throws IOException {
+        ClassPathResource profile = new ClassPathResource("application-dev.yml");
 
         assertThat(profile.exists()).isTrue();
         String yaml = new String(profile.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

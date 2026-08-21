@@ -1,6 +1,7 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.market.mapper.AppExchangeMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -14,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,9 +29,11 @@ public class G2ExchangeQueueBatchService {
     private final PlatformConfigFacade config;
     private final EventOutboxService outbox;
     private final G2ExchangeFeeAllocationService feeAllocationService;
+    private final Environment environment;
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public Map<String,Object> process(int requestedLimit) {
+        requireProductionRuntime();
         int limit = Math.max(1,Math.min(requestedLimit,100));
         if (!EXCHANGE_EXECUTION_MUTEX.equals(mapper.lockExchangeExecutionMutex())) {
             throw new BizException(503,"G2_EXECUTION_MUTEX_UNAVAILABLE");
@@ -117,6 +121,19 @@ public class G2ExchangeQueueBatchService {
     private boolean swapEnabled() {
         return KillSwitchState.enabled(java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL)),
                 java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL_LEGACY)));
+    }
+    private void requireProductionRuntime() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        String[] normalized = profiles == null ? new String[0] : java.util.Arrays.stream(profiles)
+                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
+                .filter(value -> !value.isBlank()).toArray(String[]::new);
+        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(normalized)) {
+            throw new BizException(503,"EXCHANGE_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
+        }
+        if (normalized.length != 0 && !(normalized.length == 1
+                && java.util.Set.of("prod").contains(normalized[0]))) {
+            throw new BizException(503,"EXCHANGE_RUNTIME_PROFILE_UNSUPPORTED");
+        }
     }
     private Map<String,Object> item(String exchangeNo,String status,String orderStatus,String reasonCode,String reason) {
         return linked("exchangeNo",exchangeNo,"status",status,"orderStatus",orderStatus,"reasonCode",reasonCode,"reason",reason);

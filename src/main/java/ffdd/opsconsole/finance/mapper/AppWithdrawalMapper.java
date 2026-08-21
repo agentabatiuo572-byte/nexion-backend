@@ -16,6 +16,82 @@ import org.apache.ibatis.annotations.Update;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppWithdrawalMapper {
 
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_withdrawal_attempt_control (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              user_id BIGINT NOT NULL,
+              idempotency_key VARCHAR(128) NOT NULL,
+              request_hash CHAR(64) NOT NULL,
+              status VARCHAR(16) NOT NULL,
+              withdrawal_no VARCHAR(96) NULL,
+              created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+              updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+              UNIQUE KEY uk_withdrawal_attempt_user_key (user_id,idempotency_key),
+              KEY idx_withdrawal_attempt_status (status,updated_at),
+              CONSTRAINT chk_withdrawal_attempt_status CHECK (status IN ('ACTIVE','COMMITTED','ABANDONED'))
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createWithdrawalAttemptTable();
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM information_schema.TABLE_CONSTRAINTS
+             WHERE CONSTRAINT_SCHEMA=DATABASE()
+               AND TABLE_NAME='nx_withdrawal_attempt_control'
+               AND CONSTRAINT_NAME='chk_withdrawal_attempt_status'
+               AND CONSTRAINT_TYPE='CHECK'
+            """)
+    int withdrawalAttemptStatusCheckCount();
+
+    @Insert("""
+            INSERT IGNORE INTO nx_withdrawal_attempt_control
+              (user_id,idempotency_key,request_hash,status,created_at,updated_at)
+            VALUES (#{userId},#{idempotencyKey},#{requestHash},#{status},CURRENT_TIMESTAMP(6),CURRENT_TIMESTAMP(6))
+            """)
+    int insertWithdrawalAttempt(@Param("userId") Long userId,
+                                @Param("idempotencyKey") String idempotencyKey,
+                                @Param("requestHash") String requestHash,
+                                @Param("status") String status);
+
+    @Select("""
+            SELECT user_id AS userId,idempotency_key AS idempotencyKey,request_hash AS requestHash,
+                   status,withdrawal_no AS withdrawalNo
+              FROM nx_withdrawal_attempt_control
+             WHERE user_id=#{userId} AND idempotency_key=#{idempotencyKey}
+             LIMIT 1 FOR UPDATE
+            """)
+    WithdrawalAttemptRow lockWithdrawalAttempt(@Param("userId") Long userId,
+                                               @Param("idempotencyKey") String idempotencyKey);
+
+    @Select("""
+            SELECT withdrawal_no
+              FROM nx_withdrawal_order
+             WHERE user_id=#{userId} AND d2_idempotency_key=#{idempotencyKey} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    String findWithdrawalNoByIdempotencyKey(@Param("userId") Long userId,
+                                           @Param("idempotencyKey") String idempotencyKey);
+
+    @Update("""
+            UPDATE nx_withdrawal_attempt_control
+               SET status='ABANDONED',updated_at=CURRENT_TIMESTAMP(6)
+             WHERE user_id=#{userId} AND idempotency_key=#{idempotencyKey} AND status='ACTIVE'
+            """)
+    int abandonWithdrawalAttempt(@Param("userId") Long userId,
+                                 @Param("idempotencyKey") String idempotencyKey);
+
+    @Update("""
+            UPDATE nx_withdrawal_attempt_control
+               SET status='COMMITTED',withdrawal_no=#{withdrawalNo},updated_at=CURRENT_TIMESTAMP(6)
+             WHERE user_id=#{userId} AND idempotency_key=#{idempotencyKey}
+               AND ((status IN ('ACTIVE','ABANDONED'))
+                    OR (status='COMMITTED' AND withdrawal_no=#{withdrawalNo}))
+               AND (withdrawal_no IS NULL OR withdrawal_no=#{withdrawalNo})
+            """)
+    int commitWithdrawalAttempt(@Param("userId") Long userId,
+                                @Param("idempotencyKey") String idempotencyKey,
+                                @Param("withdrawalNo") String withdrawalNo);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
@@ -42,6 +118,14 @@ public interface AppWithdrawalMapper {
              LIMIT 1 FOR UPDATE
             """)
     WalletRow lockWallet(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT w.user_id userId,w.usdt_available usdtAvailable,w.nex_available nexAvailable,
+                   w.pending_withdraw pendingWithdraw,w.version
+              FROM nx_user_wallet w
+             WHERE w.user_id=#{userId} AND w.is_deleted=0 LIMIT 1
+            """)
+    WalletRow walletForEligibility(@Param("userId") Long userId);
 
     @Select("""
             SELECT network,address,effective_at effectiveAt,next_change_allowed_at nextChangeAllowedAt
@@ -119,7 +203,7 @@ public interface AppWithdrawalMapper {
 
     @Insert("""
             INSERT INTO nx_withdrawal_order
-              (user_id,withdrawal_no,asset,chain,amount,fee,target_address,status,
+               (user_id,withdrawal_no,asset,chain,amount,fee,target_address,status,d2_idempotency_key,
                d2_version,d2_hold_until,d5_payout_due_at,d2_penalty_fee_rate,d2_gross_fee,d2_nex_burned,
                d2_network_fee_rate,d2_network_fee_min,d2_network_fee_max,d2_network_fee,
                d2_nex_fee_offset_rate,d2_fee_waived,d2_actual_fee,d2_net_receive,
@@ -130,7 +214,7 @@ public interface AppWithdrawalMapper {
                failure_reason,d2_previous_status,
                created_at,updated_at,is_deleted)
             VALUES
-              (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},
+               (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},#{idempotencyKey},
                0,#{holdUntil},#{payoutDueAt},#{penaltyFeeRate},#{grossFee},#{nexBurned},
                #{networkFeeRate},#{networkFeeMin},#{networkFeeMax},#{networkFee},
                #{nexFeeOffsetRate},#{feeWaived},#{actualFee},#{netReceive},
@@ -147,7 +231,14 @@ public interface AppWithdrawalMapper {
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
+                   w.d2_network_fee networkConfirmUsd,0 penaltyFee,
                    w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
+                        WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
+                        WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                   'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
@@ -175,8 +266,15 @@ public interface AppWithdrawalMapper {
                    w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
+                   w.d2_network_fee networkConfirmUsd,0 penaltyFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
                    w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
+                        WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
+                        WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                   'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
@@ -215,6 +313,9 @@ public interface AppWithdrawalMapper {
     record PayoutAddressRow(String network, String address, LocalDateTime effectiveAt,
                             LocalDateTime nextChangeAllowedAt) { }
 
+    record WithdrawalAttemptRow(Long userId, String idempotencyKey, String requestHash,
+                                String status, String withdrawalNo) { }
+
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,
             LocalDateTime holdUntil, LocalDateTime payoutDueAt,
@@ -222,6 +323,7 @@ public interface AppWithdrawalMapper {
             BigDecimal penaltyFeeRate, BigDecimal grossFee,
             BigDecimal nexBurned, BigDecimal nexFeeOffsetRate, BigDecimal feeWaived,
             BigDecimal actualFee, BigDecimal netReceive, String policyVersion, Boolean useNexFeeOffset,
+            String idempotencyKey,
             String lifecycleOwner, String freezePeriod,
             String routingPriority, String k3RiskRoute,
             Integer k4RiskScore, String k4ModelVersion, LocalDateTime k4AsOf,

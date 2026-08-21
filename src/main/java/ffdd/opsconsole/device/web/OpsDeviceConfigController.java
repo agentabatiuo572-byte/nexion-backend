@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.dto.E2PhoneTierConfigUpdateRequest;
 import ffdd.opsconsole.device.dto.E2TaskPricingUpdateRequest;
+import ffdd.opsconsole.device.dto.E2YieldComparisonUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -48,5 +49,13 @@ public class OpsDeviceConfigController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody E2PhoneTierConfigUpdateRequest request) {
         return deviceService.updateE2PhoneTier(idempotencyKey, request);
+    }
+
+    @PutMapping("/phone-tiers/comparison")
+    @PreAuthorize("hasAuthority('device_e2_write')")
+    public ApiResult<Map<String, Object>> updateYieldComparison(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody E2YieldComparisonUpdateRequest request) {
+        return deviceService.updateE2YieldComparison(idempotencyKey, request);
     }
 }

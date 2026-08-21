@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS nx_compute_sandbox_reward (
   user_id BIGINT NOT NULL,
   user_device_id BIGINT NOT NULL,
   source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  run_id VARCHAR(96) NOT NULL,
   receipt_no VARCHAR(96) NOT NULL,
   simulated_reward_usdt DECIMAL(18,6) NOT NULL,
   proof_hash CHAR(64) NOT NULL,

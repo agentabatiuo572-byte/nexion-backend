@@ -54,6 +54,15 @@ public interface FundsSandboxMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_funds_sandbox_wallet
+               SET available_usdt=available_usdt-#{amount},version=version+1,updated_at=NOW()
+             WHERE run_id=#{runId} AND user_id=#{userId} AND version=#{expectedVersion}
+               AND available_usdt>=#{amount} AND is_deleted=0
+            """)
+    int debitWallet(@Param("runId") String runId, @Param("userId") Long userId, @Param("amount") BigDecimal amount,
+                    @Param("expectedVersion") Long expectedVersion);
+
+    @Update("""
+            UPDATE nx_funds_sandbox_wallet
                SET available_usdt=available_usdt-#{amount},reserved_usdt=reserved_usdt+#{amount},
                    version=version+1,updated_at=NOW()
              WHERE run_id=#{runId} AND user_id=#{userId} AND version=#{expectedVersion}
@@ -101,6 +110,23 @@ public interface FundsSandboxMapper extends BaseMapper<Object> {
             + " WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{idempotencyKey} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     OrderRow lockOrderByIdempotency(@Param("runId") String runId, @Param("userId") Long userId,
                                     @Param("idempotencyKey") String idempotencyKey);
+
+    /**
+     * Locking current read used after the per-user wallet mutex. A plain COUNT
+     * can stay on an older MySQL REPEATABLE READ snapshot when two withdrawals
+     * race at the daily limit, so return up to the quota-sized set of durable
+     * rows with FOR UPDATE instead.
+     */
+    @Select("""
+            SELECT id
+              FROM nx_funds_sandbox_order
+             WHERE run_id=#{runId} AND user_id=#{userId} AND kind='WITHDRAWAL'
+               AND status IN ('SUBMITTED','CONFIRMED') AND created_at>=#{since} AND is_deleted=0
+             ORDER BY id
+             LIMIT 10 FOR UPDATE
+            """)
+    List<Long> lockWithdrawalOrderIdsSince(@Param("runId") String runId, @Param("userId") Long userId,
+                                           @Param("since") LocalDateTime since);
 
     @Select("SELECT " + ORDER_COLUMNS + " FROM nx_funds_sandbox_order"
             + " WHERE run_id=#{runId} AND user_id=#{userId} AND order_no=#{orderNo} AND is_deleted=0 LIMIT 1")

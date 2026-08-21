@@ -120,11 +120,15 @@ The script registers a real owner user, prepares a compute device through Commer
 
 ## Webhook Verification
 
-Webhook deliveries are signed with the webhook subscription secret returned when the subscription is created.
+Webhook deliveries are signed with the webhook subscription secret returned once at creation. The secret is never
+returned by list/update/log endpoints. Delivery is a durable, idempotent outbox: a matching active endpoint is queued
+once per event id, then retried at 5s/10s/20s/40s (up to the configured attempt cap) before `DEAD`.
 
 Delivery headers:
 
-- `X-Nexion-Webhook-Id`
+- `X-Nexion-Webhook-Id` (the endpoint/subscription ID; stable across retries)
+- `X-Nexion-Delivery-Id` (the durable delivery ID; unique per queued event)
+- `X-Nexion-Event`
 - `X-Nexion-Event-Type`
 - `X-Nexion-Timestamp`
 - `X-Nexion-Signature`
@@ -134,6 +138,10 @@ Webhook string to sign:
 ```text
 webhookId + "\n" + eventType + "\n" + timestamp + "\n" + sha256(rawRequestBody)
 ```
+
+The production sender resolves the allowlisted host once, rejects private/link-local/metadata addresses,
+and connects directly to that validated address. HTTPS keeps the endpoint hostname for SNI and certificate
+hostname verification; redirects are not followed.
 
 Node.js/Express-style verification:
 
@@ -172,3 +180,21 @@ export function verifyNexionWebhook(headers, rawBody, webhookSecret) {
 ```
 
 Use the raw request body for verification. Parsing and re-stringifying JSON can change field order or formatting and will invalidate the signature.
+
+Runtime integration point: owning services first commit the canonical business fact and `nx_event_outbox` row in
+their existing transaction. `DeveloperWebhookCanonicalEventBridge` then consumes that durable outbox message and calls
+`DeveloperWebhookDeliveryService.enqueue(...)`; it does not create a second business fact. The canonical `event_id`
+is the delivery idempotency key, so dispatch retries cannot duplicate a matching endpoint row. The bridge accepts only
+these public projections and drops unknown/admin-only facts: `checkout.started`, `order.created`, `order.updated`,
+`order.paid`, and `order.refunded` -> `order.updated`; `checkout.completed` and `order.completed` ->
+`order.completed`; `task.completed` -> `compute.job.completed`; `task.failed` -> `compute.job.failed`;
+`earnings.credited` -> `earnings.updated`; `billing.invoice.created` unchanged; `market.curve_advanced` ->
+`market.updated`; and `account.updated` unchanged. Payload fields containing raw secrets,
+tokens, credentials, passwords, contact details, or private keys are removed before enqueue. The bridge resolves the
+user's current `PRODUCTION` or `SANDBOX` scope and rejects a payload whose `source_environment`/`run_id` does not
+match it. The worker is scheduled server-side and uses a real HTTPS transport with redirects disabled. Endpoint status
+and delivery/dead-letter history are exposed by `/api/app/developer/webhooks/{id}` and `/deliveries`.
+
+Required deployment settings are `NEXION_DEVELOPER_WEBHOOK_SECRET_KEY` (the key encrypting endpoint secrets at rest) and
+an exact `nexion.developer.webhooks.allowed-hosts` allowlist. Missing encryption configuration fails delivery closed;
+it never causes a plaintext secret fallback.

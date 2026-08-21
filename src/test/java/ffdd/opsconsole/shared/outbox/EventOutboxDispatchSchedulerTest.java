@@ -2,6 +2,7 @@ package ffdd.opsconsole.shared.outbox;
 
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -104,6 +105,19 @@ class EventOutboxDispatchSchedulerTest {
 
         verify(publisher).publishEvent(message);
         verify(service).markPublished("event-h3");
+    }
+
+    @Test
+    void developerWebhookCanonicalFactsAreIsolatedFromTheGlobalDispatcher() {
+        EventOutboxMessage message = message("event-webhook-order");
+        message.setEventType("order.completed");
+        when(service.listPendingByEventType("order.completed", 100)).thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(service, never()).listPendingByEventType("order.completed", 100);
+        verify(publisher, never()).publishEvent(message);
+        verify(service, never()).markPublished("event-webhook-order");
     }
 
     @Test

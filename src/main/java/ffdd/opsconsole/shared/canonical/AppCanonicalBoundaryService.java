@@ -33,12 +33,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.TransientDataAccessException;
@@ -51,6 +53,7 @@ public class AppCanonicalBoundaryService {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int MAX_ACTIVE_DEVICES = 6;
+    private static final Pattern SANDBOX_RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private static final Set<String> E3_CAPACITY_KEYS = Set.of(
             "capacityBand1DeltaPct", "capacityBand2DeltaPct", "capacityBand3DeltaPct",
             "stageEarlyEnd", "stageMidEnd", "cycleMonths", "capacityFloorPct", "capacitySubsidyDays",
@@ -71,6 +74,7 @@ public class AppCanonicalBoundaryService {
     private final CommerceAcceptanceRun commerceAcceptanceRun;
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final StorefrontPurchaseGatePolicy purchaseGatePolicy;
+    private final Environment environment;
 
     @PostConstruct
     void ensureOtpChallengeTable() {
@@ -156,7 +160,8 @@ public class AppCanonicalBoundaryService {
     @Transactional
     public ApiResult<Map<String, Object>> activateDevice(
             Long userId, Long deviceId, Long expectedVersion, Integer clientMaxDevices, String idempotencyKey) {
-        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        ApiResult<Map<String, Object>> gate = productionDeviceUserGate(userId);
+        if (gate != null) return gate;
         return executeOnce("DEVICE_ACTIVATE", userId, idempotencyKey,
                 linked("deviceId", deviceId, "expectedVersion", expectedVersion, "clientMaxDevices", clientMaxDevices),
                 () -> activateDeviceInternal(userId, deviceId, expectedVersion, clientMaxDevices, idempotencyKey));
@@ -215,7 +220,8 @@ public class AppCanonicalBoundaryService {
     @Transactional
     public ApiResult<Map<String, Object>> deactivateDevice(
             Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
-        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        ApiResult<Map<String, Object>> gate = productionDeviceUserGate(userId);
+        if (gate != null) return gate;
         return executeOnce("DEVICE_DEACTIVATE", userId, idempotencyKey,
                 linked("deviceId", deviceId, "expectedVersion", expectedVersion),
                 () -> deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey));
@@ -224,7 +230,8 @@ public class AppCanonicalBoundaryService {
     @Transactional
     public ApiResult<Map<String, Object>> deactivateAfterTask(
             Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
-        if (mapper.lockUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        ApiResult<Map<String, Object>> gate = productionDeviceUserGate(userId);
+        if (gate != null) return gate;
         return executeOnce("DEVICE_DEACTIVATE_AFTER_TASK", userId, idempotencyKey,
                 linked("deviceId", deviceId, "expectedVersion", expectedVersion),
                 () -> deactivateAfterTaskInternal(userId, deviceId, expectedVersion, idempotencyKey));
@@ -310,9 +317,16 @@ public class AppCanonicalBoundaryService {
 
     public ApiResult<Map<String, Object>> deviceEarnings(
             Long userId, boolean seedLegacyDevice, boolean fastForwardAll, BigDecimal bumpedEarningsTotal) {
+        boolean sandboxRuntime = isStrictSandboxRuntime();
+        String sourceEnvironment = sandboxRuntime ? "SANDBOX" : "PRODUCTION";
+        String runId = sandboxRuntime ? sandboxRunId() : "";
+        if (!sandboxRuntime) {
+            ApiResult<Map<String, Object>> gate = productionDeviceUserGate(userId);
+            if (gate != null) return gate;
+        }
         if (seedLegacyDevice || fastForwardAll || bumpedEarningsTotal != null) {
             return reject(userId, "dev_seed_state",
-                    "请求包含仅限开发环境的设备种子或收益快进字段，服务器拒绝修改设备年龄与收益",
+                    "客户端设备/收益造数参数不被服务端采信，服务端拒绝按客户端状态修改设备收益",
                     "/api/devices/earnings", "DEV_SEED_STATE_REJECTED");
         }
         List<CanonicalStateMapper.E3CapacityConfig> configRows = mapper.e3CapacityConfig();
@@ -325,11 +339,13 @@ public class AppCanonicalBoundaryService {
         if (!validE3CapacityConfig(capacityConfig)) {
             return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
         }
-        CanonicalStateMapper.UserCanonicalProfile profile = mapper.userCanonicalProfile(userId);
+        CanonicalStateMapper.UserCanonicalProfile profile = sandboxRuntime
+                ? mapper.sandboxUserCanonicalProfile(userId) : mapper.userCanonicalProfile(userId);
         if (profile == null || profile.joinedAt() == null) {
             return ApiResult.fail(409, "CANONICAL_USER_PROFILE_UNAVAILABLE");
         }
-        List<CanonicalStateMapper.OwnedDevice> rawDevices = mapper.ownedDevices(userId);
+        List<CanonicalStateMapper.OwnedDevice> rawDevices = sandboxRuntime
+                ? mapper.sandboxOwnedDevices(userId, runId) : mapper.ownedDevices(userId);
         if (rawDevices != null) {
             for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
                 try {
@@ -340,7 +356,7 @@ public class AppCanonicalBoundaryService {
             }
         }
         LocalDate today = LocalDate.now(SERVER_ZONE);
-        List<CanonicalStateMapper.DeviceRealizedToday> realizedRows = mapper.realizedToday(
+        List<CanonicalStateMapper.DeviceRealizedToday> realizedRows = sandboxRuntime ? List.of() : mapper.realizedToday(
                 userId, today.atStartOfDay(), today.plusDays(1).atStartOfDay());
         if (realizedRows == null) return ApiResult.fail(503, "E3_REALIZED_EARNINGS_UNAVAILABLE");
         Map<Long, CanonicalStateMapper.DeviceRealizedToday> realizedByDevice = new LinkedHashMap<>();
@@ -391,7 +407,40 @@ public class AppCanonicalBoundaryService {
                 "slotCap", Math.max(1, mapper.deviceSlotCap()),
                 "devices", devices,
                 "capacitySchedule", capacityConfig,
-                "source", "nx_user_device + nx_compute_receipt + nx_compute_e3_config"));
+                "source", "nx_user_device + nx_compute_receipt + nx_compute_e3_config",
+                "sourceEnvironment", sourceEnvironment,
+                "runId", runId,
+                "serverCanonical", true));
+    }
+
+    private boolean isStrictSandboxRuntime() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        return FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles);
+    }
+
+    private String sandboxRunId() {
+        String runId = environment == null ? "" : environment.getProperty("nexion.wheel.sandbox.run-id",
+                environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""));
+        runId = runId == null ? "" : runId.trim();
+        if (!SANDBOX_RUN_ID.matcher(runId).matches()) {
+            throw new BizException(503, "CANONICAL_DEVICE_SANDBOX_RUN_ID_REQUIRED");
+        }
+        return runId;
+    }
+
+    private ApiResult<Map<String, Object>> productionDeviceUserGate(Long userId) {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)) {
+            return ApiResult.fail(503, "CANONICAL_DEVICE_SANDBOX_UNAVAILABLE");
+        }
+        if (profiles != null && profiles.length > 0
+                && !(profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0]))) {
+            return ApiResult.fail(503, "CANONICAL_DEVICE_RUNTIME_UNSUPPORTED");
+        }
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        if (user.sandbox()) return ApiResult.fail(403, "CANONICAL_PRODUCTION_USER_REQUIRED");
+        return null;
     }
 
     private boolean validE3CapacityConfig(Map<String, String> config) {
@@ -444,7 +493,7 @@ public class AppCanonicalBoundaryService {
                 "pendingDeactivate", device.pendingDeactivate(),
                 "instanceNo", device.instanceNo(), "name", device.name(),
                 "deviceType", device.deviceType(), "productCode", device.productCode(), "status", device.status(),
-                "activatedAt", device.activatedAt(), "purchasedAt", device.purchasedAt(),
+                "activatedAt", epochMillis(device.activatedAt()), "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),
@@ -560,6 +609,9 @@ public class AppCanonicalBoundaryService {
                             "productNo", productNo, "quantity", quantity, "voucherId", voucherId),
                     () -> createSandboxOrderInternal(userId, clientOrderId, productId, productNo, quantity, voucherId));
         }
+        if (!fundsSandboxProfileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        }
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
         if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
@@ -575,8 +627,12 @@ public class AppCanonicalBoundaryService {
             String runId = commerceAcceptanceRun.requireRunId();
             List<CommerceAcceptanceSandboxMapper.SandboxOrderView> snapshots = commerceAcceptanceSandboxMapper.listSandboxOrders(runId, userId);
             List<Map<String, Object>> sandboxOrders = (snapshots == null ? List.<CommerceAcceptanceSandboxMapper.SandboxOrderView>of() : snapshots).stream()
-                    .map(this::projectSandboxOrder).toList();
-            return ApiResult.ok(linked("orders", sandboxOrders, "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
+                    .map(order -> projectSandboxOrder(order, runId, userId)).toList();
+            return ApiResult.ok(linked("orders", sandboxOrders, "source", "mock", "sourceEnvironment", "SANDBOX",
+                    "runId", runId, "serverCanonical", true));
+        }
+        if (!fundsSandboxProfileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -588,7 +644,8 @@ public class AppCanonicalBoundaryService {
                 : Map.of();
         List<Map<String, Object>> orders = (rows == null ? List.<CanonicalStateMapper.UserOrder>of() : rows)
                 .stream().map(row -> projectUserOrder(row, overlays.get(row.orderNo()))).toList();
-        return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION"));
+        return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION",
+                "runId", null, "serverCanonical", true));
     }
 
     private Map<String, Object> projectUserOrder(CanonicalStateMapper.UserOrder order,
@@ -640,13 +697,112 @@ public class AppCanonicalBoundaryService {
     }
 
     private boolean purchaseGateAllowed(String rawGate, CanonicalStateMapper.PurchaseFacts facts) {
-        if (!StringUtils.hasText(rawGate) || facts == null) return !StringUtils.hasText(rawGate);
-        StorefrontPurchaseGatePolicy.Decision decision = purchaseGatePolicy.evaluate(rawGate,
-                new StorefrontPurchaseGatePolicy.Facts(
-                        Math.max(0, facts.rank() == null ? 0 : facts.rank()),
-                        Math.max(0, facts.activeDirect() == null ? 0 : facts.activeDirect()),
-                        facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
-        return decision.allowed();
+        if (!StringUtils.hasText(rawGate)) return true;
+        try {
+            StorefrontPurchaseGatePolicy.Decision decision = purchaseGatePolicy.evaluate(rawGate,
+                    facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+                            facts.rank() == null ? 0 : facts.rank(),
+                            facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+            return decision.allowed();
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private void reserveCanonicalPurchaseQuota(Long userId, String productNo, int quantity) {
+        String rawGate = mapper.purchaseGateJson(productNo);
+        if (!StringUtils.hasText(rawGate)) return;
+        if (!purchaseGateAllowed(rawGate, mapper.purchaseFacts(userId))) {
+            throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+        }
+        if (purchaseGatePolicy.hasQuota(rawGate)
+                && mapper.consumePurchaseQuota(productNo, quantity) != 1) {
+            throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> purchaseEligibility(Long userId, String productNo) {
+        String normalized = StringUtils.hasText(productNo) ? productNo.trim() : "";
+        if (userId == null || userId <= 0 || !normalized.matches("[A-Za-z0-9._:-]{1,64}")) {
+            return ApiResult.fail(422, "PURCHASE_ELIGIBILITY_REQUEST_INVALID");
+        }
+        if (fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
+            return sandboxPurchaseEligibility(userId, normalized);
+        }
+        requireProductionPurchaseEligibilityUser(userId);
+        CanonicalStateMapper.ProductStock product = mapper.findPurchasableProduct(null, normalized);
+        if (product == null) return ApiResult.fail(404, "PRODUCT_NOT_AVAILABLE");
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
+        if (release == null || !release.available()) {
+            return ApiResult.ok(linked("productNo", product.productNo(), "eligible", false,
+                    "decisionCode", "PRODUCT_NOT_RELEASED",
+                    "evaluatedAt", System.currentTimeMillis(),
+                    "source", "nx_admin_device_sku.purchase_gate_json + nx_user",
+                    "sourceEnvironment", "PRODUCTION", "runId", null, "serverCanonical", true));
+        }
+        CanonicalStateMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
+        StorefrontPurchaseGatePolicy.Decision decision;
+        try {
+            decision = purchaseGatePolicy.evaluate(product.purchaseGateJson(),
+                    facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+                            facts.rank() == null ? 0 : facts.rank(),
+                            facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+        } catch (IllegalArgumentException ex) {
+            decision = StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
+        }
+        return ApiResult.ok(linked("productNo", product.productNo(), "eligible", decision.allowed(),
+                "decisionCode", decision.allowed() ? "ELIGIBLE" : decision.code(),
+                "evaluatedAt", System.currentTimeMillis(),
+                "source", "nx_admin_device_sku.purchase_gate_json + nx_user",
+                "sourceEnvironment", "PRODUCTION", "runId", null, "serverCanonical", true));
+    }
+
+    private ApiResult<Map<String, Object>> sandboxPurchaseEligibility(Long userId, String productNo) {
+        if (!commerceAcceptanceSandboxMapper.isSandboxUser(userId)) {
+            return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
+        }
+        String runId = commerceAcceptanceRun.requireRunId();
+        CommerceAcceptanceSandboxMapper.SandboxEligibilityProduct product =
+                commerceAcceptanceSandboxMapper.findSandboxEligibilityProduct(runId, productNo);
+        if (product == null) return ApiResult.fail(404, "PRODUCT_NOT_AVAILABLE");
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
+        if (release == null || !release.available()) {
+            return ApiResult.ok(linked("productNo", product.productNo(), "eligible", false,
+                    "decisionCode", "PRODUCT_NOT_RELEASED", "evaluatedAt", System.currentTimeMillis(),
+                    "source", "nx_admin_device_sku.purchase_gate_json + nx_user",
+                    "sourceEnvironment", "SANDBOX", "runId", runId, "serverCanonical", true));
+        }
+        CommerceAcceptanceSandboxMapper.PurchaseGateFacts facts =
+                commerceAcceptanceSandboxMapper.purchaseGateFacts(userId);
+        StorefrontPurchaseGatePolicy.Decision decision;
+        try {
+            decision = purchaseGatePolicy.evaluate(product.purchaseGateJson(),
+                    facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+                            facts.rank() == null ? 0 : facts.rank(),
+                            facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+        } catch (IllegalArgumentException ex) {
+            decision = StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
+        }
+        return ApiResult.ok(linked("productNo", product.productNo(), "eligible", decision.allowed(),
+                "decisionCode", decision.allowed() ? "ELIGIBLE" : decision.code(),
+                "evaluatedAt", System.currentTimeMillis(),
+                "source", "nx_admin_device_sku.purchase_gate_json + nx_user",
+                "sourceEnvironment", "SANDBOX", "runId", runId, "serverCanonical", true));
+    }
+
+    private void requireProductionPurchaseEligibilityUser(Long userId) {
+        if (!fundsSandboxProfileGuard.isStrictProductionRuntime()) {
+            throw new BizException(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        }
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) throw new BizException(404, "USER_NOT_FOUND");
+        if (user.sandbox()) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
     }
 
     private String overlayPaymentStatus(String state, String fallback) {
@@ -693,7 +849,8 @@ public class AppCanonicalBoundaryService {
         return fundsSandboxProfileGuard.isLocalSandboxEnabled();
     }
 
-    private Map<String, Object> projectSandboxOrder(CommerceAcceptanceSandboxMapper.SandboxOrderView order) {
+    private Map<String, Object> projectSandboxOrder(CommerceAcceptanceSandboxMapper.SandboxOrderView order,
+                                                    String runId, Long userId) {
         String state = normalizeState(order.state(), "PENDING_PAYMENT");
         String paymentStatus = overlayPaymentStatus(state, "PENDING");
         String orderStatus = overlayOrderStatus(state, "PENDING_PAYMENT");
@@ -704,10 +861,20 @@ public class AppCanonicalBoundaryService {
                 "paymentStatus", paymentStatus, "orderStatus", orderStatus, "activationStatus", activationStatus,
                 "canonicalStatus", canonicalOrderStatus(paymentStatus, orderStatus, activationStatus),
                 "orderType", normalizeState(order.orderType(), "SINGLE"), "itemCount", order.itemCount(),
+                "paymentNo", paidState(state) ? sandboxPaymentNo(runId, userId, order.orderNo()) : null,
                 "placedAt", epochMillis(order.createdAt()), "paidAt", "PAID".equals(paymentStatus) ? epochMillis(order.updatedAt()) : null,
                 "activatedAt", "ACTIVATED".equals(activationStatus) ? epochMillis(order.updatedAt()) : null,
                 "dataCenter", null, "tradeinNo", null, "sourceDeviceId", null, "targetDeviceId", null,
                 "targetDeviceInstanceNo", null);
+    }
+
+    private boolean paidState(String state) {
+        return Set.of("PAID", "ACTIVATED", "PROVISIONING_FAILED", "REFUNDED").contains(state);
+    }
+
+    private String sandboxPaymentNo(String runId, Long userId, String orderNo) {
+        return "PAY-SBX-" + sha256(runId + "|" + userId + "|" + orderNo)
+                .substring(0, 32).toUpperCase(Locale.ROOT);
     }
 
     private ApiResult<Map<String, Object>> createSandboxOrderInternal(
@@ -727,8 +894,12 @@ public class AppCanonicalBoundaryService {
                 || product.stock() == null || product.stock() < qty || product.version() == null) {
             return ApiResult.fail(409, "COMMERCE_SANDBOX_PRODUCT_NOT_AVAILABLE");
         }
+        CommerceAcceptanceSandboxMapper.PurchaseGateFacts sandboxFacts =
+                commerceAcceptanceSandboxMapper.purchaseGateFacts(userId);
         if (StringUtils.hasText(product.purchaseGateJson())
-                && !purchaseGateAllowed(product.purchaseGateJson(), mapper.purchaseFacts(userId))) {
+                && !purchaseGateAllowed(product.purchaseGateJson(), sandboxFacts == null ? null
+                        : new CanonicalStateMapper.PurchaseFacts(sandboxFacts.rank(), sandboxFacts.activeDirect(),
+                                sandboxFacts.teamVolumeUsd()))) {
             return ApiResult.fail(409, "COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED");
         }
         StorefrontProductReleasePolicy.Decision release =
@@ -796,6 +967,7 @@ public class AppCanonicalBoundaryService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        reserveCanonicalPurchaseQuota(userId, product.productNo(), qty);
         String orderNo = "ORD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         BigDecimal subtotal = product.priceUsdt().multiply(BigDecimal.valueOf(qty)).setScale(6, RoundingMode.DOWN);
         VoucherRedemption voucher = growthLifecyclePublisher.prepareVoucher(

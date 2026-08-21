@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -39,6 +40,8 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class AppGrowthEngagementServiceTest {
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -50,7 +53,8 @@ class AppGrowthEngagementServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AppGrowthEngagementService service =
-            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null);
+            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, null, null,
+                    java.util.Optional.empty(), null);
 
     @BeforeEach
     void setUp() {
@@ -66,6 +70,33 @@ class AppGrowthEngagementServiceTest {
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class),
                 org.mockito.ArgumentMatchers.<Supplier<ApiResult>>any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void unsupportedSandboxEngagementFailsClosedBeforeCanonicalEventRead() {
+        AppGrowthWheelSandboxService sandbox = mock(AppGrowthWheelSandboxService.class);
+        when(sandbox.enabled()).thenReturn(true);
+        AppGrowthEngagementService isolated = new AppGrowthEngagementService(
+                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null,
+                java.util.Optional.empty(), null);
+
+        assertThatThrownBy(() -> isolated.eventState(42L))
+                .hasMessageContaining("GROWTH_SANDBOX_SCOPE_UNAVAILABLE");
+        verify(mapper, never()).eventState(anyLong());
+    }
+
+    @Test
+    void unknownSandboxRuntimeFailsClosedBeforeCanonicalCheckInWrite() {
+        AppGrowthWheelSandboxService sandbox = mock(AppGrowthWheelSandboxService.class);
+        when(sandbox.unknownProfile()).thenReturn(true);
+        AppGrowthEngagementService isolated = new AppGrowthEngagementService(
+                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null,
+                java.util.Optional.empty(), null);
+
+        assertThatThrownBy(() -> isolated.checkIn(42L, "unknown-runtime-key"))
+                .hasMessageContaining("WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        verify(mapper, never()).lockActiveUser(anyLong());
+        verify(mapper, never()).insertCheckIn(anyLong(), any(), any(), anyInt(), any(), anyInt(), anyInt(), anyInt());
     }
 
     @Test
@@ -240,10 +271,30 @@ class AppGrowthEngagementServiceTest {
         var result = service.claimVoucher(42L, "V-1", "home", "voucher-key");
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
         verify(audit).recordRequired(any());
         verify(outbox).publishUserEvent(
                 eq("VOUCHER_GRANT"), eq("G-1"), eq("voucher.claimed"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void developmentAudienceCanClaimTheCanonicalVoucherWithTheFixedDevelopmentSession() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        ReflectionTestUtils.setField(service, "environment", environment);
+        when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
+        when(mapper.lockUserClaimableVoucher(eq("V-DEV"), eq("home"), anyLong()))
+                .thenReturn(new VoucherClaimDefinition("V-DEV", "all"));
+        when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-DEV", false));
+
+        var result = service.claimVoucher(42L, "V-DEV", "home", "voucher-dev-key");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).lockActiveSandboxUser(42L);
+        verify(mapper, never()).lockActiveUser(42L);
     }
 
     @Test
@@ -262,6 +313,7 @@ class AppGrowthEngagementServiceTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> row = ((List<Map<String, Object>>) result.getData().get("vouchers")).get(0);
 
+        assertThat(result.getData()).containsEntry("serverCanonical", true);
         assertThat(row).containsEntry("grantStatus", "EXPIRED");
         assertThat(row).containsEntry("claimable", false);
         assertThat(row).containsEntry("definitionDeleted", 1);

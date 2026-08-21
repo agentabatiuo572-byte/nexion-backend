@@ -19,5 +19,9 @@ public record AppTaskAssignmentView(
         LocalDateTime completedAt,
         String receiptNo,
         String proofNonce,
-        LocalDateTime proofExpiresAt) {
+        LocalDateTime proofExpiresAt,
+        String source,
+        String sourceEnvironment,
+        String runId,
+        boolean serverCanonical) {
 }

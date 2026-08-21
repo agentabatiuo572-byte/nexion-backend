@@ -26,4 +26,14 @@ class AppGrowthWheelMapperSqlContractTest {
                 "voucher_id voucherid",
                 "daily_stock dailystock");
     }
+
+    @Test
+    void productionUserLocksExcludeSandboxAccounts() throws Exception {
+        for (String methodName : new String[] {"lockActiveUser", "findActiveUser"}) {
+            Method method = AppGrowthWheelMapper.class.getMethod(methodName, Long.class);
+            String sql = String.join(" ", method.getAnnotation(Select.class).value())
+                    .replaceAll("\\s+", " ").toLowerCase();
+            assertThat(sql).contains("coalesce(sandbox,0)=0");
+        }
+    }
 }

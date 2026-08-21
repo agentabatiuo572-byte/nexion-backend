@@ -26,4 +26,14 @@ public class PayoutAddressOtpAttemptService {
         mapper.incrementOtpFailure(userId, challengeNo);
         return false;
     }
+
+    /** Sandbox OTPs are physically separate from nx_user_otp_challenge. */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean verifyAndConsumeSandbox(String runId, Long userId, String challengeNo, String code) {
+        if (mapper.consumeSandboxOtp(runId, userId, challengeNo, code) == 1) {
+            return true;
+        }
+        mapper.incrementSandboxOtpFailure(runId, userId, challengeNo);
+        return false;
+    }
 }

@@ -18,6 +18,7 @@ import java.util.Map;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class JanusAppliedProofVerifierTest {
     private static final long NOW=System.currentTimeMillis();
@@ -59,9 +60,22 @@ class JanusAppliedProofVerifierTest {
     }
 
     @Test
+    void sandboxProofRejectsTheFormerStaticFixtureTokenWithoutEnrollment() {
+        JanusAppliedProofVerifier verifier = new JanusAppliedProofVerifier(mapper, "SANDBOX", "approved",
+                "", 120_000L, true, java.util.Optional.empty());
+
+        JanusAppliedProofVerifier.Verification result = verifier.verify(
+                42L, "SID-1", Map.of(), request("SANDBOX", "sandbox", "sandbox-token", NOW));
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.error()).isEqualTo("JANUS_SANDBOX_PROOF_ISOLATION_MISMATCH");
+        verify(mapper, never()).claimAppliedProof(any(),any(),any(),any(),any(),anyLong(),any(),any(),any(),anyLong(),any(),any(),any(),any(),anyLong());
+    }
+
+    @Test
     void productionAppliedProofIsDisabledByDefaultUntilNativeHandoffAttestationShips() {
-        JanusAppliedProofVerifier disabled = new JanusAppliedProofVerifier(mapper,"PRODUCTION","sandbox-token",
-                "42","device-1","approved","",120_000L,false);
+        JanusAppliedProofVerifier disabled = new JanusAppliedProofVerifier(mapper,"PRODUCTION","approved",
+                "",120_000L,false, java.util.Optional.empty());
 
         JanusAppliedProofVerifier.Verification result=disabled.verify(42L,"SID-1",Map.of(),
                 request("PRODUCTION","executor-1","b".repeat(64),NOW));
@@ -91,14 +105,34 @@ class JanusAppliedProofVerifierTest {
         assertThat(result.accepted()).withFailMessage("reconciliation proof rejected: %s", result.error()).isTrue();
     }
 
+    @Test
+    void sandboxAppliedProofAcceptsTheSameServerEnrollmentAndRejectsAnotherUser() throws Exception {
+        var environment = new MockEnvironment() {
+            @Override public String[] getActiveProfiles() { return new String[]{"dev"}; }
+        };
+        var enrollment = new JanusSandboxEnrollmentService(environment, "SANDBOX", "approved",
+                60_000L, System::currentTimeMillis, new java.security.SecureRandom());
+        var issued = enrollment.issue(91L, "device-1");
+        var request = request("SANDBOX", "sandbox", issued.token(), NOW);
+        String proofHash = sha256(JanusAppliedProofVerifier.canonical(91L, "SID-1", request) + "\n" + issued.token());
+        when(mapper.findProofHash("sandbox", "a".repeat(32))).thenReturn(null, proofHash);
+        when(mapper.claimAppliedProof(any(),any(),any(),any(),any(),anyLong(),any(),any(),any(),anyLong(),any(),any(),any(),any(),anyLong())).thenReturn(1);
+        JanusAppliedProofVerifier verifier = new JanusAppliedProofVerifier(mapper, "SANDBOX", "approved",
+                "", 120_000L, true, java.util.Optional.of(enrollment));
+
+        assertThat(verifier.verify(91L, "SID-1", Map.of(), request).accepted()).isTrue();
+        assertThat(verifier.verify(92L, "SID-1", Map.of(), request).accepted()).isFalse();
+    }
+
     private JanusAppliedProofVerifier verifier(String mode,String keys){
-        return new JanusAppliedProofVerifier(mapper,mode,"sandbox-token","42","device-1","approved",
-                keys,120_000L,true);
+        return new JanusAppliedProofVerifier(mapper,mode,"approved",keys,120_000L,true,
+                java.util.Optional.empty());
     }
 
     private JanusTakeoverProgressRequest request(String mode,String executor,String signature,long timestamp){
+        String receipt="SANDBOX".equals(mode)?"sandbox:v1:receipt":"device:receipt";
         return new JanusTakeoverProgressRequest("device-1","cmd-1",3L,"e".repeat(64),1L,
-                "SUCCEEDED","approved",2,9L,3L,"app-1","device:receipt","cmd-1",3L,1L,
+                "SUCCEEDED","approved",2,9L,3L,"app-1",receipt,"cmd-1",3L,1L,
                 null,null,null,null,mode,executor,"a".repeat(32),timestamp,signature);
     }
 

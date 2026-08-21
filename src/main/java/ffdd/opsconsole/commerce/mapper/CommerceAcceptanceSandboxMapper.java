@@ -17,6 +17,18 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     @Select("SELECT COUNT(1) FROM nx_user WHERE id=#{userId} AND sandbox=1 AND status='ACTIVE' AND is_deleted=0")
     boolean isSandboxUser(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
+                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
+                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
+                       AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                     ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
+                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamVolumeUsd
+              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
+            """)
+    PurchaseGateFacts purchaseGateFacts(@Param("userId") Long userId);
+
     @Select("SELECT request_hash requestHash,result_json resultJson FROM nx_commerce_sandbox_order_receipt WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{key} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     SandboxOrderReceipt lockOrderReceipt(@Param("runId") String runId, @Param("userId") Long userId, @Param("key") String key);
 
@@ -46,7 +58,11 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             SELECT p.id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,p.stock,p.sold_count sold,
                    p.product_type deviceType,p.generation,p.gpu_model gpuModel,p.vram_total_gb vramTotalGb,p.hashrate,
                    p.estimated_daily_usdt dailyUsdt,p.daily_nex dailyNex,p.tagline,p.badge,p.unlock_phase unlockPhase,
-                   s.purchase_gate_json purchaseGateJson
+                   s.power_text power,s.datacenter,s.uptime,s.warranty,s.phone_daily_earn phoneDailyEarn,
+                   s.phone_daily_earn_nex phoneDailyEarnNex,s.features_json featuresJson,
+                   s.ai_image_gen_per_min aiImageGenPerMin,s.ai_llm_tokens_per_sec aiLlmTokensPerSec,
+                   s.ai_video_min_per_hour aiVideoMinPerHour,s.ai_fine_tune_mins aiFineTuneMins,
+                   s.ai_unlocks aiUnlocks,s.purchase_gate_json purchaseGateJson
               FROM nx_product p LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.store_visible=1
                AND p.stock>=1 AND p.price_usdt>0
@@ -56,16 +72,35 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_commerce_sandbox_catalog
                (product_id,product_no,name,tier,price_usdt,stock,sold_count,device_type,generation,gpu_model,vram_total_gb,hashrate,
-               daily_usdt,daily_nex,tagline,badge,unlock_phase,purchase_gate_json,run_id,version,source,source_environment,created_at,updated_at,is_deleted)
+               daily_usdt,daily_nex,tagline,badge,unlock_phase,power_text,datacenter,uptime,warranty,phone_daily_earn,
+               phone_daily_earn_nex,features_json,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
+               ai_fine_tune_mins,ai_unlocks,purchase_gate_json,run_id,version,source,source_environment,created_at,updated_at,is_deleted)
             VALUES (#{productId},#{productNo},#{name},#{tier},#{priceUsdt},#{stock},#{sold},#{deviceType},#{generation},#{gpuModel},#{vramTotalGb},#{hashrate},
-                    #{dailyUsdt},#{dailyNex},#{tagline},#{badge},#{unlockPhase},#{purchaseGateJson},#{runId},0,'mock','SANDBOX',NOW(),NOW(),0)
+                    #{dailyUsdt},#{dailyNex},#{tagline},#{badge},#{unlockPhase},#{power},#{datacenter},#{uptime},#{warranty},
+                    #{phoneDailyEarn},#{phoneDailyEarnNex},#{featuresJson},#{aiImageGenPerMin},#{aiLlmTokensPerSec},
+                    #{aiVideoMinPerHour},#{aiFineTuneMins},#{aiUnlocks},#{purchaseGateJson},#{runId},0,'mock','SANDBOX',NOW(),NOW(),0)
             ON DUPLICATE KEY UPDATE
               product_no=VALUES(product_no),name=VALUES(name),tier=VALUES(tier),price_usdt=VALUES(price_usdt),
               stock=IF(version=0,VALUES(stock),stock),sold_count=IF(version=0,VALUES(sold_count),sold_count),
               device_type=VALUES(device_type),generation=VALUES(generation),gpu_model=VALUES(gpu_model),
               vram_total_gb=VALUES(vram_total_gb),hashrate=VALUES(hashrate),daily_usdt=VALUES(daily_usdt),daily_nex=VALUES(daily_nex),
               tagline=VALUES(tagline),badge=VALUES(badge),unlock_phase=VALUES(unlock_phase),
-              purchase_gate_json=IF(version=0,VALUES(purchase_gate_json),purchase_gate_json),updated_at=NOW(),is_deleted=0
+              power_text=COALESCE(power_text,VALUES(power_text)),datacenter=COALESCE(datacenter,VALUES(datacenter)),
+              uptime=COALESCE(uptime,VALUES(uptime)),warranty=COALESCE(warranty,VALUES(warranty)),
+              phone_daily_earn=COALESCE(phone_daily_earn,VALUES(phone_daily_earn)),
+              phone_daily_earn_nex=COALESCE(phone_daily_earn_nex,VALUES(phone_daily_earn_nex)),
+              features_json=COALESCE(features_json,VALUES(features_json)),
+              ai_image_gen_per_min=COALESCE(ai_image_gen_per_min,VALUES(ai_image_gen_per_min)),
+              ai_llm_tokens_per_sec=COALESCE(ai_llm_tokens_per_sec,VALUES(ai_llm_tokens_per_sec)),
+              ai_video_min_per_hour=COALESCE(ai_video_min_per_hour,VALUES(ai_video_min_per_hour)),
+              ai_fine_tune_mins=COALESCE(ai_fine_tune_mins,VALUES(ai_fine_tune_mins)),
+              ai_unlocks=COALESCE(ai_unlocks,VALUES(ai_unlocks)),
+              purchase_gate_json=IF(JSON_VALID(purchase_gate_json)=1
+                    AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
+                    AND JSON_VALID(VALUES(purchase_gate_json))=1
+                    AND JSON_EXTRACT(VALUES(purchase_gate_json),'$.quotaSold') IS NOT NULL,
+                    JSON_SET(VALUES(purchase_gate_json),'$.quotaSold',JSON_EXTRACT(purchase_gate_json,'$.quotaSold')),
+                    VALUES(purchase_gate_json)),updated_at=NOW(),is_deleted=0
             """)
     int upsertCatalog(CatalogSeed row);
 
@@ -89,14 +124,14 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             SELECT c.product_id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,c.stock,c.sold_count sold,
                    c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
                    c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
-                   s.power_text AS power,s.features_json AS featuresJson,
-                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
-                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
+                   c.power_text AS power,c.datacenter,c.uptime,c.warranty,
+                   c.phone_daily_earn AS phoneDailyEarn,c.phone_daily_earn_nex AS phoneDailyEarnNex,c.features_json AS featuresJson,
+                   c.ai_image_gen_per_min AS aiImageGenPerMin,c.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   c.ai_video_min_per_hour AS aiVideoMinPerHour,c.ai_fine_tune_mins AS aiFineTuneMins,
+                   c.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
                                AND UPPER(p.status) IN ('ACTIVE','ON_SALE') AND p.stock>=1 AND p.price_usdt>0
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
              WHERE c.run_id=#{runId} AND c.is_deleted=0 AND c.stock>=1 AND c.price_usdt>0
                AND c.source='mock' AND c.source_environment='SANDBOX'
              ORDER BY c.product_id
@@ -104,18 +139,28 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     List<SandboxCatalogProduct> listSandboxCatalog(@Param("runId") String runId);
 
     @Select("""
+            SELECT c.product_no productNo,c.unlock_phase unlockPhase,c.purchase_gate_json purchaseGateJson
+              FROM nx_commerce_sandbox_catalog c
+             WHERE c.run_id=#{runId} AND c.product_no=#{productNo} AND c.is_deleted=0
+               AND c.stock>=1 AND c.price_usdt>0 AND c.source='mock' AND c.source_environment='SANDBOX'
+             LIMIT 1
+            """)
+    SandboxEligibilityProduct findSandboxEligibilityProduct(
+            @Param("runId") String runId, @Param("productNo") String productNo);
+
+    @Select("""
             SELECT c.product_id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,c.stock,c.sold_count sold,
                    c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
                    c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
-                   s.power_text AS power,s.features_json AS featuresJson,
-                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
-                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
+                   c.power_text AS power,c.datacenter,c.uptime,c.warranty,
+                   c.phone_daily_earn AS phoneDailyEarn,c.phone_daily_earn_nex AS phoneDailyEarnNex,c.features_json AS featuresJson,
+                   c.ai_image_gen_per_min AS aiImageGenPerMin,c.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   c.ai_video_min_per_hour AS aiVideoMinPerHour,c.ai_fine_tune_mins AS aiFineTuneMins,
+                   c.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
                                AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
                                AND p.stock>=#{quantity} AND c.stock>=#{quantity} AND p.price_usdt>0
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
              WHERE c.run_id=#{runId} AND c.is_deleted=0 AND (c.product_id=#{productId} OR (#{productId} IS NULL AND c.product_no=#{productNo}))
                AND c.source='mock' AND c.source_environment='SANDBOX' LIMIT 1 FOR UPDATE
             """)
@@ -127,12 +172,12 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             SELECT c.product_id productId,c.product_no productNo,c.name,c.tier,c.price_usdt priceUsdt,c.stock,c.sold_count sold,
                    c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
                    c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
-                   s.power_text AS power,s.features_json AS featuresJson,
-                   s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
-                   s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
+                   c.power_text AS power,c.datacenter,c.uptime,c.warranty,
+                   c.phone_daily_earn AS phoneDailyEarn,c.phone_daily_earn_nex AS phoneDailyEarnNex,c.features_json AS featuresJson,
+                   c.ai_image_gen_per_min AS aiImageGenPerMin,c.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
+                   c.ai_video_min_per_hour AS aiVideoMinPerHour,c.ai_fine_tune_mins AS aiFineTuneMins,
+                   c.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson
               FROM nx_commerce_sandbox_catalog c
-              LEFT JOIN nx_admin_device_sku s ON s.sku_id=c.product_no AND s.is_deleted=0
              WHERE c.run_id=#{runId} AND c.product_id=#{productId} AND c.is_deleted=0
                AND c.source='mock' AND c.source_environment='SANDBOX' LIMIT 1 FOR UPDATE
             """)
@@ -147,18 +192,22 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     int reserveSandboxCatalogStock(@Param("runId") String runId, @Param("productId") Long productId, @Param("expectedVersion") Long expectedVersion,
                                    @Param("quantity") Integer quantity);
 
-    /** Isolated quota counter; it never mutates nx_admin_device_sku or nx_product. */
+    /** Isolated sold counter and cap from the same run-scoped catalog snapshot. */
     @Update("""
-            UPDATE nx_commerce_sandbox_catalog
-               SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
-                   CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
-                   updated_at=NOW()
-             WHERE run_id=#{runId} AND product_id=#{productId} AND is_deleted=0
-               AND source='mock' AND source_environment='SANDBOX' AND JSON_VALID(purchase_gate_json)=1
-               AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
-               AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
-                   <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
+            UPDATE nx_commerce_sandbox_catalog c
+               SET c.purchase_gate_json=JSON_SET(c.purchase_gate_json,'$.quotaSold',
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(c.purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
+                   c.updated_at=NOW()
+             WHERE c.run_id=#{runId} AND c.product_id=#{productId} AND c.is_deleted=0
+               AND c.source='mock' AND c.source_environment='SANDBOX' AND JSON_VALID(c.purchase_gate_json)=1
+               AND JSON_UNQUOTE(JSON_EXTRACT(c.purchase_gate_json,'$.enforce'))='true'
+               AND (JSON_EXTRACT(c.purchase_gate_json,'$.quotaPeriod') IS NULL
+                    OR JSON_UNQUOTE(JSON_EXTRACT(c.purchase_gate_json,'$.quotaPeriod'))='lifetime')
+               AND JSON_EXTRACT(c.purchase_gate_json,'$.quotaSold') IS NOT NULL
+               AND JSON_EXTRACT(c.purchase_gate_json,'$.quotaCap') IS NOT NULL
+               AND #{quantity} > 0
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(c.purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+                   <= CAST(JSON_UNQUOTE(JSON_EXTRACT(c.purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
     int consumeSandboxPurchaseQuota(@Param("runId") String runId, @Param("productId") Long productId,
                                     @Param("quantity") Integer quantity);
@@ -192,8 +241,8 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT order_no orderNo,user_id userId,product_id productId,quantity,amount_usdt amountUsdt,
-                   order_type orderType,item_count itemCount,
-                   version,state,wallet_debited walletDebited,stock_returned stockReturned
+                   version,state,wallet_debited walletDebited,stock_returned stockReturned,
+                   order_type orderType,item_count itemCount
               FROM nx_commerce_sandbox_order
              WHERE run_id=#{runId} AND order_no=#{orderNo} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
@@ -273,34 +322,91 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
     record CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
                        String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                        BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase,
+                       String power, String datacenter, String uptime, String warranty,
+                       BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
+                       BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                       BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins, String aiUnlocks,
                        String purchaseGateJson, String runId) {
+        /**
+         * MyBatis constructs this projection before the acceptance run scope is known.
+         * The service copies the seed and attaches the validated runId before upsert.
+         */
+        public CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt,
+                           Integer stock, Integer sold, String deviceType, String generation, String gpuModel,
+                           Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex,
+                           String tagline, String badge, String unlockPhase, String power, String datacenter,
+                           String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex,
+                           String featuresJson, BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                           BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins, String aiUnlocks,
+                           String purchaseGateJson) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, deviceType, generation, gpuModel,
+                    vramTotalGb, hashrate, dailyUsdt, dailyNex, tagline, badge, unlockPhase, power, datacenter,
+                    uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin,
+                    aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, null);
+        }
+
         public CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
                            String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                            BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase) {
             this(productId, productNo, name, tier, priceUsdt, stock, sold, deviceType, generation, gpuModel, vramTotalGb, hashrate,
-                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, null, "test-run-0001");
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, "test-run-0001");
         }
         public CatalogSeed(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock, Integer sold,
                            String deviceType, String generation, String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                            BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline, String badge, String unlockPhase, String runId) {
             this(productId, productNo, name, tier, priceUsdt, stock, sold, deviceType, generation, gpuModel, vramTotalGb, hashrate,
-                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, null, runId);
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, runId);
         }
     }
+    record PurchaseGateFacts(Integer rank, Integer activeDirect, BigDecimal teamVolumeUsd) { }
+    record SandboxEligibilityProduct(String productNo, String unlockPhase, String purchaseGateJson) { }
     record SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                  Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
                                  BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
-                                 LocalDateTime updatedAt, String power, String featuresJson,
-                                 BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
-                                 BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
-                                 String aiUnlocks, String purchaseGateJson) {
+                                  LocalDateTime updatedAt, String power, String datacenter, String uptime, String warranty,
+                                  BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
+                                  BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                                  BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
+                                  String aiUnlocks, String purchaseGateJson) {
+        public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt,
+                                     Integer stock, Integer sold, String gpuModel, Integer vramTotalGb,
+                                     BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex,
+                                     String tagline, String badge, String unlockPhase, Long version,
+                                     LocalDateTime updatedAt, String power, String datacenter, String featuresJson,
+                                     BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                                     BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
+                                     String aiUnlocks, String purchaseGateJson) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt, power, datacenter,
+                    null, null, null, null, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson);
+        }
+
+        public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt,
+                                     Integer stock, Integer sold, String gpuModel, Integer vramTotalGb,
+                                     BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex,
+                                     String tagline, String badge, String unlockPhase, Long version,
+                                     LocalDateTime updatedAt, String power, String featuresJson,
+                                     BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
+                                     BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
+                                     String aiUnlocks, String purchaseGateJson) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt, power, null, null, null, null, null, featuresJson,
+                    aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks,
+                    purchaseGateJson);
+        }
+
         public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                      Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
                                      BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
                                      LocalDateTime updatedAt) {
             this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
                     dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
     }
     record OrderWrite(String orderNo, Long userId, Long productId, Integer quantity, BigDecimal amountUsdt,

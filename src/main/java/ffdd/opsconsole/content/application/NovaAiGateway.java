@@ -7,7 +7,7 @@ public interface NovaAiGateway {
 
     boolean available();
 
-    record ChatRequest(String model, List<Message> messages, int maxOutputTokens) {}
+    record ChatRequest(String model, String language, String sessionId, List<Message> messages, int maxOutputTokens) {}
 
     record Message(String role, String content) {}
 }

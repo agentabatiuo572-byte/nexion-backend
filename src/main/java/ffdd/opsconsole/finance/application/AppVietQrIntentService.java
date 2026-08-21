@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.application;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -35,9 +37,11 @@ public class AppVietQrIntentService {
     private final AppVietQrIntentMapper mapper;
     private final FinanceSensitiveDataCipher cipher;
     private final Clock clock;
+    private final Environment environment;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> paymentConfig() {
+        requirePaymentRuntime();
         Map<String, Object> config = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         Map<String, Object> vietQr = new LinkedHashMap<>();
         vietQr.put("enabled", mapper.countAvailableBankAccounts() > 0);
@@ -48,11 +52,15 @@ public class AppVietQrIntentService {
         vietQr.put("version", longValue(config.get("version")));
         vietQr.put("feeVnd", VIETQR_FEE_VND);
         vietQr.put("feeUsdt", VIETQR_FEE_USDT);
-        return ApiResult.ok(Map.of("vietQr", vietQr));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("vietQr", vietQr);
+        putProductionProvenance(result, "nx_vietqr_config");
+        return ApiResult.ok(result);
     }
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> fxQuote(String fiat, String asset) {
+        requirePaymentRuntime();
         if (!"VND".equalsIgnoreCase(clean(fiat)) || !"USDT".equalsIgnoreCase(clean(asset))) {
             throw new BizException(422, "FX_PAIR_NOT_SUPPORTED");
         }
@@ -66,12 +74,14 @@ public class AppVietQrIntentService {
         result.put("lockWindowMinutes", integer(config.get("lockWindowMinutes")));
         result.put("version", longValue(config.get("version")));
         result.put("asOf", Instant.now(clock).toString());
+        putProductionProvenance(result, "nx_finance_fx_quote_config");
         return ApiResult.ok(result);
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> create(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
+        requirePaymentRuntime();
         requireUser(userId);
         String key = commandKey(idempotencyKey);
         BigDecimal amount = depositAmount(requestedAmount);
@@ -132,6 +142,7 @@ public class AppVietQrIntentService {
 
     @Transactional
     public ApiResult<Map<String, Object>> get(Long userId, String intentNo) {
+        requirePaymentRuntime();
         requireUser(userId);
         String normalizedIntentNo = intentNo(intentNo);
         mapper.expireIntentForUser(userId, normalizedIntentNo);
@@ -142,6 +153,7 @@ public class AppVietQrIntentService {
 
     @Transactional
     public ApiResult<Map<String, Object>> list(Long userId, Integer requestedLimit) {
+        requirePaymentRuntime();
         requireUser(userId);
         int limit = requestedLimit == null ? 20 : Math.max(1, Math.min(requestedLimit, MAX_LIST_LIMIT));
         mapper.expireIntentsForUser(userId);
@@ -155,6 +167,7 @@ public class AppVietQrIntentService {
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> receipts(Long userId, Integer requestedLimit, Integer requestedOffset) {
+        requirePaymentRuntime();
         requireUser(userId);
         int limit = requestedLimit == null ? 20 : Math.max(1, Math.min(requestedLimit, MAX_LIST_LIMIT));
         int offset = requestedOffset == null ? 0 : Math.max(0, requestedOffset);
@@ -175,6 +188,7 @@ public class AppVietQrIntentService {
     @Transactional
     public ApiResult<Map<String, Object>> cancel(
             Long userId, String intentNo, String idempotencyKey, Long expectedVersion) {
+        requirePaymentRuntime();
         requireUser(userId);
         String normalizedIntentNo = intentNo(intentNo);
         String key = commandKey(idempotencyKey);
@@ -305,6 +319,33 @@ public class AppVietQrIntentService {
 
     private void putIfPresent(Map<String, Object> target, String key, Object value) {
         if (value != null) target.put(key, value);
+    }
+
+    private void putProductionProvenance(Map<String, Object> target, String source) {
+        target.put("serverCanonical", true);
+        target.put("source", source);
+        target.put("sourceEnvironment", "PRODUCTION");
+        target.put("runId", "");
+    }
+
+    /**
+     * VietQR config, FX quotes, bank accounts, and intents are currently
+     * backed only by the production payment tables.  A sandbox request must
+     * never silently reuse those rows; until a run-scoped payment projection
+     * exists it is an explicit 503.  Mixed/unknown profiles are rejected too,
+     * so a deployment cannot accidentally make a production table look like
+     * a sandbox source.
+     */
+    private void requirePaymentRuntime() {
+        java.util.Optional<UserAuthEnvironment> profile = UserAuthEnvironment.resolve(environment);
+        if (profile.isEmpty()) throw new BizException(503, "VIETQR_RUNTIME_PROFILE_INVALID");
+        if (profile.get() == UserAuthEnvironment.SANDBOX) {
+            String runId = environment == null ? null : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID");
+            if (runId == null || !runId.trim().matches("[A-Za-z0-9][A-Za-z0-9_-]{2,63}")) {
+                throw new BizException(503, "VIETQR_SANDBOX_RUN_ID_REQUIRED");
+            }
+            throw new BizException(503, "VIETQR_SANDBOX_CONFIG_UNAVAILABLE");
+        }
     }
 
     private String isoInstant(Object value) {

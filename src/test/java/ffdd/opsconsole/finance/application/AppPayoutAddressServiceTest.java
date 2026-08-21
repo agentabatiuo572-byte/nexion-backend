@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -33,11 +34,14 @@ class AppPayoutAddressServiceTest {
     @Mock private AuditLogService audit;
     @Mock private AdminIdempotencyService idempotency;
     @Mock private PayoutAddressOtpAttemptService otpAttempts;
+    @Mock private FundsSandboxProfileGuard sandboxProfile;
+    @Mock private FundsSandboxRunScope sandboxRun;
     @InjectMocks private AppPayoutAddressService service;
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void executeClaimedAction() {
+        lenient().when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         lenient().when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }
@@ -91,5 +95,53 @@ class AppPayoutAddressServiceTest {
 
         verify(mapper).lockActiveUser(userId);
         verify(otpDelivery).deliver(eq("+84"), eq("900000000"), anyString(), anyString(), eq(5));
+    }
+
+    @Test
+    void sandboxListUsesRunUserScopedTableAndEmitsMockProvenance() {
+        long userId = 11L;
+        String runId = "sandbox-run-11";
+        when(sandboxProfile.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxRun.requireRunId()).thenReturn(runId);
+        when(mapper.activeSandboxUser(userId)).thenReturn(userId);
+        when(mapper.sandboxList(runId, userId)).thenReturn(java.util.List.of(new PayoutAddressRow(
+                "USDT-TRC20", "T" + "A".repeat(33), "ACTIVE", LocalDateTime.now().plusHours(24),
+                LocalDateTime.now(), LocalDateTime.now().plusDays(7), 0L)));
+
+        ApiResult<java.util.Map<String, Object>> result = service.list(userId);
+
+        org.assertj.core.api.Assertions.assertThat(result.getData())
+                .containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", runId)
+                .containsEntry("serverCanonical", true);
+        verify(mapper).sandboxList(runId, userId);
+        verify(mapper, org.mockito.Mockito.never()).list(userId);
+    }
+
+    @Test
+    void sandboxWithoutServerRunIdFailsClosedBeforeReadingEitherAddressTable() {
+        long userId = 12L;
+        when(sandboxProfile.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxRun.requireRunId()).thenThrow(new BizException(503, "FUNDS_SANDBOX_RUN_ID_REQUIRED"));
+
+        assertThatThrownBy(() -> service.list(userId))
+                .isInstanceOf(BizException.class)
+                .hasMessage("FUNDS_SANDBOX_RUN_ID_REQUIRED");
+
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void unknownOrMixedRuntimeProfileFailsClosedBeforeReadingCanonicalAddressTable() {
+        long userId = 13L;
+        when(sandboxProfile.isLocalSandboxEnabled()).thenReturn(false);
+        when(sandboxProfile.isStrictIsolatedRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+
+        assertThatThrownBy(() -> service.list(userId))
+                .isInstanceOf(BizException.class)
+                .hasMessage("PAYOUT_ADDRESS_PROFILE_INVALID");
+        verifyNoInteractions(mapper);
     }
 }

@@ -220,7 +220,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
 
     private boolean isStrictLocalSandbox() {
         String[] active = environment == null ? new String[0] : environment.getActiveProfiles();
-        return active.length == 1 && "local-sandbox".equals(active[0]);
+        return active.length == 1 && "dev".equals(active[0]);
     }
 
     private IssuedReadToken issueReadToken(Long userId, String jurisdiction, String version) {

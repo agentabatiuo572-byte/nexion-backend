@@ -24,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class AppAmbassadorApplicationService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{2,63}");
+    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private static final Set<String> BUCKETS = Set.of("venue", "kol", "print", "dev");
     private final AppAmbassadorApplicationMapper mapper;
     private final Environment environment;
@@ -100,8 +100,8 @@ public class AppAmbassadorApplicationService {
         if (user == null || user.sandbox() == null) throw new BizException(403, "AMBASSADOR_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles() == null ? new String[0] : environment.getActiveProfiles())
                 .map(value -> value.trim().toLowerCase()).filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("acceptance", "test", "local-sandbox").contains(profiles.iterator().next());
-        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("production", "default").contains(profiles.iterator().next()));
+        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
+        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
         if (!isolated && !production) throw new BizException(503, "AMBASSADOR_PROFILE_INVALID");
         if (isolated && user.sandbox() != 1) throw new BizException(403, "AMBASSADOR_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "AMBASSADOR_PRODUCTION_USER_REQUIRED");

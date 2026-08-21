@@ -12,7 +12,7 @@ class PaymentMethodSandboxProfileGuardTest {
         PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
         properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         var guard = new PaymentMethodSandboxProfileGuard(properties, environment);
 
         assertThatThrownBy(guard::afterPropertiesSet)
@@ -21,11 +21,11 @@ class PaymentMethodSandboxProfileGuardTest {
     }
 
     @Test
-    void acceptanceProfileCanUseExplicitlyIsolatedSandbox() {
+    void developmentProfileCanUseExplicitlyIsolatedSandbox() {
         PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
         properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         var guard = new PaymentMethodSandboxProfileGuard(properties, environment);
 
         guard.afterPropertiesSet();
@@ -33,14 +33,51 @@ class PaymentMethodSandboxProfileGuardTest {
     }
 
     @Test
-    void productionCannotBeSmuggledAlongsideTestProfile() {
+    void legacyLocalSandboxProfileIsRejected() {
         PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
         properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production", "test");
+        environment.setActiveProfiles("local-sandbox");
+
+        var guard = new PaymentMethodSandboxProfileGuard(properties, environment);
+
+        assertThatThrownBy(guard::afterPropertiesSet)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("PAYMENT_METHOD_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
+    void multipleAllowedSandboxProfilesAreRejected() {
+        PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
+        properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev", "test");
 
         assertThatThrownBy(() -> new PaymentMethodSandboxProfileGuard(properties, environment).afterPropertiesSet())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("PAYMENT_METHOD_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
+    void productionCannotBeSmuggledAlongsideTestProfile() {
+        PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
+        properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod", "test");
+
+        assertThatThrownBy(() -> new PaymentMethodSandboxProfileGuard(properties, environment).afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("PAYMENT_METHOD_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
+    void unknownOrMixedProfilesAreNotCanonicalProduction() {
+        PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod", "test");
+        var guard = new PaymentMethodSandboxProfileGuard(properties, environment);
+
+        assertThat(guard.isStrictProductionProfile()).isFalse();
+        assertThat(guard.isStrictIsolatedProfile()).isFalse();
     }
 }

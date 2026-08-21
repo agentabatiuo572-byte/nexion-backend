@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.application;
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.market.mapper.AppStakingMapper;
+import ffdd.opsconsole.market.mapper.MarketSandboxMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -10,6 +11,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -25,14 +27,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 /** Server-authoritative user boundary for the four G1 USDT staking products. */
 @Service
-@RequiredArgsConstructor
 public class AppStakingService {
     private static final String STAKING_PREFIX = "G.staking.";
     private static final String STAKING_KILLSWITCH_KEY = "killswitch.staking";
@@ -45,17 +47,51 @@ public class AppStakingService {
     private final AuditLogService audit;
     private final EarningsReleaseService earningsReleaseService;
     private final Clock clock;
+    private final Environment environment;
+    private final MarketSandboxMapper sandboxMapper;
+
+    public AppStakingService(AppStakingMapper mapper, RiskDisclosureGateFacade disclosureGate,
+            PlatformConfigFacade config, AdminIdempotencyService idempotency, EventOutboxService outbox,
+            AuditLogService audit, EarningsReleaseService earningsReleaseService, Clock clock,
+            Environment environment) {
+        this(mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService, clock,
+                environment, null);
+    }
+
+    @Autowired
+    public AppStakingService(AppStakingMapper mapper, RiskDisclosureGateFacade disclosureGate,
+            PlatformConfigFacade config, AdminIdempotencyService idempotency, EventOutboxService outbox,
+            AuditLogService audit, EarningsReleaseService earningsReleaseService, Clock clock,
+            Environment environment, MarketSandboxMapper sandboxMapper) {
+        this.mapper = mapper;
+        this.disclosureGate = disclosureGate;
+        this.config = config;
+        this.idempotency = idempotency;
+        this.outbox = outbox;
+        this.audit = audit;
+        this.earningsReleaseService = earningsReleaseService;
+        this.clock = clock;
+        this.environment = environment;
+        this.sandboxMapper = sandboxMapper;
+    }
 
     public ApiResult<Map<String, Object>> pools() {
+        if (isSandbox() && !isDevelopmentRuntime()) return ApiResult.ok(linked("pools", sandboxPools(), "serverCanonical", true,
+                "source", "mock", "sourceEnvironment", "SANDBOX", "runId", sandboxRunId()));
+        requireCanonicalPoolRuntime();
         List<Map<String, Object>> rows = mapper.listCanonicalProducts().stream().map(this::poolView).toList();
         return ApiResult.ok(linked(
                 "pools", rows,
                 "serverCanonical", true,
-                "source", "nx_staking_product + nx_config_item + nx_emergency_control_setting"));
+                "source", "nx_staking_product + nx_config_item + nx_emergency_control_setting",
+                "sourceEnvironment", "PRODUCTION",
+                "runId", ""));
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> positions(Long userId) {
+        if (isSandbox()) return sandboxPositions(userId);
+        requireCanonicalProductionRuntime();
         requireUser(userId);
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         LocalDateTime now = LocalDateTime.now(clock);
@@ -65,6 +101,8 @@ public class AppStakingService {
 
     @Transactional
     public ApiResult<Map<String, Object>> open(Long userId, String idempotencyKey, OpenRequest request) {
+        if (isSandbox()) return sandboxOpen(userId, idempotencyKey, request);
+        requireCanonicalProductionRuntime();
         requireUser(userId);
         String tierKey = normalizeTier(request == null ? null : request.tierKey());
         BigDecimal requestedAmount = request == null ? null : request.amountUsdt();
@@ -141,6 +179,8 @@ public class AppStakingService {
 
     @Transactional
     public ApiResult<Map<String, Object>> claim(Long userId, String positionNo, String idempotencyKey) {
+        if (isSandbox()) return sandboxClaim(userId, positionNo, idempotencyKey);
+        requireCanonicalProductionRuntime();
         requireUser(userId);
         String normalizedPosition = normalizePosition(positionNo);
         return executeOnce("CLAIM:" + normalizedPosition, userId, idempotencyKey, normalizedPosition,
@@ -189,6 +229,8 @@ public class AppStakingService {
 
     @Transactional
     public ApiResult<Map<String, Object>> earlyWithdraw(Long userId, String positionNo, String idempotencyKey) {
+        if (isSandbox()) return sandboxEarlyWithdraw(userId, positionNo, idempotencyKey);
+        requireCanonicalProductionRuntime();
         requireUser(userId);
         String normalizedPosition = normalizePosition(positionNo);
         return executeOnce("EARLY_WITHDRAW:" + normalizedPosition, userId, idempotencyKey, normalizedPosition,
@@ -256,6 +298,182 @@ public class AppStakingService {
         return new PoolPolicy(apyPct, penaltyPct, minAmount, enabled && !killed && globalGateEnabled(), killed);
     }
 
+    private boolean isSandbox() {
+        return UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.SANDBOX;
+    }
+
+    private boolean isDevelopmentRuntime() {
+        String[] profiles = environment.getActiveProfiles();
+        return profiles.length == 1 && "dev".equalsIgnoreCase(profiles[0]);
+    }
+
+    private String sandboxRunId() {
+        String runId = environment.getProperty("nexion.commerce.acceptance-run-id",
+                environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""));
+        if (!StringUtils.hasText(runId) || !runId.trim().matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}")) {
+            throw new BizException(503, "STAKING_SANDBOX_RUN_ID_REQUIRED");
+        }
+        return runId.trim();
+    }
+
+    private ApiResult<Map<String, Object>> sandboxPositions(Long userId) {
+        requireUser(userId);
+        String runId = sandboxRunId();
+        requireSandboxMapper();
+        sandboxMapper.insertAccountIfAbsent("staking", runId, userId);
+        sandboxMapper.maturePositions("staking", runId, userId, LocalDateTime.now(clock));
+        return ApiResult.ok(sandboxResponse(runId, userId, null, null, null, null));
+    }
+
+    private ApiResult<Map<String, Object>> sandboxOpen(Long userId, String key, OpenRequest request) {
+        requireUser(userId);
+        String runId = sandboxRunId();
+        if (request == null || request.amountUsdt() == null || request.amountUsdt().signum() <= 0) {
+            throw new BizException(422, "STAKING_AMOUNT_INVALID");
+        }
+        String tier = normalizeTier(request.tierKey());
+        BigDecimal amount = money(request.amountUsdt());
+        String hash = sha256("OPEN|" + tier + "|" + amount.toPlainString());
+        String positionNo = "STK-SBX-" + sha256(runId + "|" + userId + "|" + key).substring(0, 24).toUpperCase(Locale.ROOT);
+        MarketSandboxMapper.IdempotencyRow replay = beginSandboxCommand(runId, userId, "OPEN", key, hash, positionNo);
+        if (replay != null) return ApiResult.ok(sandboxResponse(runId, userId, replay.resourceNo(), null, null, null));
+        sandboxMapper.insertAccountIfAbsent("staking", runId, userId);
+        MarketSandboxMapper.AccountRow account = sandboxMapper.lockAccount("staking", runId, userId);
+        if (account == null) throw new BizException(503, "STAKING_SANDBOX_ACCOUNT_UNAVAILABLE");
+        SandboxProduct product = sandboxProduct(tier);
+        if (!product.enabled()) throw new BizException(409, "STAKING_POOL_STOPPED");
+        if (amount.compareTo(product.minAmount()) < 0) throw new BizException(422, "STAKING_MIN_AMOUNT_NOT_MET");
+        if (account.walletUsdt().compareTo(amount) < 0) throw new BizException(409, "STAKING_WALLET_INSUFFICIENT");
+        LocalDateTime lockedAt = LocalDateTime.now(clock);
+        LocalDateTime unlockAt = lockedAt.plusDays(product.termDays());
+        BigDecimal interest = amount.multiply(product.apyPct()).multiply(BigDecimal.valueOf(product.termDays()))
+                .divide(BigDecimal.valueOf(36_500), 6, RoundingMode.HALF_UP);
+        if (sandboxMapper.updateWallet("staking", runId, userId, account.version(), amount.negate()) != 1) {
+            throw new BizException(409, "STAKING_SANDBOX_WALLET_CONFLICT");
+        }
+        if (sandboxMapper.insertPosition(new MarketSandboxMapper.PositionWrite("staking", runId, userId,
+                positionNo, product.code(), product.name(), amount, product.apyPct(), product.penaltyPct(),
+                product.termDays(), lockedAt, unlockAt, money(interest))) != 1) {
+            throw new BizException(409, "STAKING_SANDBOX_POSITION_CONFLICT");
+        }
+        Map<String, Object> data = sandboxResponse(runId, userId, positionNo, amount, null, null);
+        data.put("principalUsdt", amount);
+        return ApiResult.ok(data);
+    }
+
+    private ApiResult<Map<String, Object>> sandboxClaim(Long userId, String positionNo, String key) {
+        requireUser(userId);
+        String runId = sandboxRunId();
+        String normalized = normalizePosition(positionNo);
+        String hash = sha256("CLAIM|" + normalized);
+        MarketSandboxMapper.IdempotencyRow replay = beginSandboxCommand(runId, userId, "CLAIM", key, hash, normalized);
+        if (replay != null) return ApiResult.ok(sandboxResponse(runId, userId, replay.resourceNo(), null, null, null));
+        sandboxMapper.insertAccountIfAbsent("staking", runId, userId);
+        MarketSandboxMapper.AccountRow account = sandboxMapper.lockAccount("staking", runId, userId);
+        sandboxMapper.maturePositions("staking", runId, userId, LocalDateTime.now(clock));
+        MarketSandboxMapper.PositionRow position = sandboxMapper.lockPosition("staking", runId, userId, normalized);
+            if (position == null) throw new BizException(404, "STAKING_POSITION_NOT_FOUND");
+            if (!"MATURE_UNCLAIMED".equals(position.status())) throw new BizException(409, "STAKING_POSITION_NOT_CLAIMABLE");
+            BigDecimal credited = money(position.amountUsdt().add(position.interestUsdt()));
+        if (sandboxMapper.transitionPosition(position.id(), "staking", runId, userId, position.version(),
+                "MATURE_UNCLAIMED", "CLAIMED") != 1) throw new BizException(409, "STAKING_SANDBOX_STATE_CONFLICT");
+        if (account == null || sandboxMapper.updateWallet("staking", runId, userId, account.version(), credited) != 1) {
+            throw new BizException(409, "STAKING_SANDBOX_WALLET_CONFLICT");
+        }
+        Map<String, Object> data = sandboxResponse(runId, userId, normalized, null, credited, position.interestUsdt());
+        return ApiResult.ok(data);
+    }
+
+    private ApiResult<Map<String, Object>> sandboxEarlyWithdraw(Long userId, String positionNo, String key) {
+        requireUser(userId);
+        String runId = sandboxRunId();
+        String normalized = normalizePosition(positionNo);
+        String hash = sha256("EARLY|" + normalized);
+        MarketSandboxMapper.IdempotencyRow replay = beginSandboxCommand(runId, userId, "EARLY_WITHDRAW", key, hash, normalized);
+        if (replay != null) return ApiResult.ok(sandboxResponse(runId, userId, replay.resourceNo(), null, null, null));
+        sandboxMapper.insertAccountIfAbsent("staking", runId, userId);
+        MarketSandboxMapper.AccountRow account = sandboxMapper.lockAccount("staking", runId, userId);
+        MarketSandboxMapper.PositionRow position = sandboxMapper.lockPosition("staking", runId, userId, normalized);
+            if (position == null) throw new BizException(404, "STAKING_POSITION_NOT_FOUND");
+            if (!"ACTIVE".equals(position.status()) || !LocalDateTime.now(clock).isBefore(position.unlockAt())) {
+                throw new BizException(409, "STAKING_POSITION_NOT_EARLY_WITHDRAWABLE");
+            }
+            BigDecimal penalty = money(position.amountUsdt().multiply(position.penaltyPct())
+                    .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP));
+            BigDecimal credited = money(position.amountUsdt().subtract(penalty));
+        if (sandboxMapper.transitionPosition(position.id(), "staking", runId, userId, position.version(),
+                "ACTIVE", "EARLY_WITHDRAWN") != 1) throw new BizException(409, "STAKING_SANDBOX_STATE_CONFLICT");
+        if (account == null || sandboxMapper.updateWallet("staking", runId, userId, account.version(), credited) != 1) {
+            throw new BizException(409, "STAKING_SANDBOX_WALLET_CONFLICT");
+        }
+        Map<String, Object> data = sandboxResponse(runId, userId, normalized, null, credited, penalty);
+        return ApiResult.ok(data);
+    }
+    private Map<String, Object> sandboxResponse(String runId, Long userId, String focus, BigDecimal principal,
+            BigDecimal credited, BigDecimal detail) {
+        MarketSandboxMapper.AccountRow account = sandboxMapper.account("staking", runId, userId);
+        List<MarketSandboxMapper.PositionRow> rows = sandboxMapper.listPositions("staking", runId, userId);
+        Map<String, Object> result = linked("positions", rows.stream().map(this::sandboxPositionView).toList(),
+                "walletBalanceUsdt", money(account == null ? null : account.walletUsdt()),
+                "serverTime", LocalDateTime.now(clock), "serverCanonical", true, "source", "mock",
+                "sourceEnvironment", "SANDBOX", "runId", runId);
+        if (focus != null) result.put("positionNo", focus);
+        if (focus != null) rows.stream().filter(row -> focus.equals(row.positionNo())).findFirst()
+                .ifPresent(row -> result.put("position", sandboxPositionView(row)));
+        if (principal != null) result.put("principalUsdt", money(principal));
+        if (credited != null) result.put("creditedUsdt", money(credited));
+        if (detail != null) result.put("interestUsdt", money(detail));
+        return result;
+    }
+
+    private Map<String, Object> sandboxPositionView(MarketSandboxMapper.PositionRow row) {
+        return linked("positionNo", row.positionNo(), "tierKey", tierKey(row.productCode()),
+                "productCode", row.productCode(), "productName", row.productName(), "amountUsdt", money(row.amountUsdt()),
+                "apyPct", row.apyPct(), "penaltyPct", row.penaltyPct(), "termDays", row.termDays(),
+                "lockedAt", row.lockedAt(), "unlockAt", row.unlockAt(), "estimatedInterestUsdt", money(row.interestUsdt()),
+                "status", row.status());
+    }
+
+    private MarketSandboxMapper.IdempotencyRow beginSandboxCommand(String runId, Long userId, String operation,
+            String key, String hash, String resourceNo) {
+        requireSandboxMapper();
+        if (!StringUtils.hasText(key)) throw new BizException(422, "MARKET_SANDBOX_IDEMPOTENCY_KEY_REQUIRED");
+        MarketSandboxMapper.IdempotencyRow existing = sandboxMapper.findIdempotency("staking", runId, userId, operation, key.trim());
+        if (existing != null) {
+            if (!hash.equals(existing.requestHash())) throw new BizException(409, "MARKET_SANDBOX_IDEMPOTENCY_CONFLICT");
+            return existing;
+        }
+        if (sandboxMapper.insertIdempotency(new MarketSandboxMapper.IdempotencyWrite("staking", runId, userId,
+                operation, key.trim(), hash, resourceNo)) == 1) return null;
+        existing = sandboxMapper.findIdempotency("staking", runId, userId, operation, key.trim());
+        if (existing == null || !hash.equals(existing.requestHash())) throw new BizException(409, "MARKET_SANDBOX_IDEMPOTENCY_CONFLICT");
+        return existing;
+    }
+
+    private void requireSandboxMapper() {
+        if (sandboxMapper == null) throw new BizException(503, "STAKING_SANDBOX_SCHEMA_UNAVAILABLE");
+    }
+
+    private SandboxProduct sandboxProduct(String tier) {
+        return switch (tier) {
+            case "usdt30d" -> new SandboxProduct("USDT_30D", "USDT Staking 30D", 30, new BigDecimal("12"), new BigDecimal("10"), new BigDecimal("100"), true);
+            case "usdt90d" -> new SandboxProduct("USDT_90D", "USDT Staking 90D", 90, new BigDecimal("18"), new BigDecimal("12"), new BigDecimal("100"), true);
+            case "usdt180d" -> new SandboxProduct("USDT_180D", "USDT Staking 180D", 180, new BigDecimal("24"), new BigDecimal("15"), new BigDecimal("100"), true);
+            case "usdt365d" -> new SandboxProduct("USDT_365D", "USDT Staking 365D", 365, new BigDecimal("30"), new BigDecimal("20"), new BigDecimal("100"), true);
+            default -> throw new BizException(422, "STAKING_TIER_INVALID");
+        };
+    }
+
+    private List<Map<String, Object>> sandboxPools() {
+        return List.of("usdt30d", "usdt90d", "usdt180d", "usdt365d").stream().map(tier -> {
+            SandboxProduct p = sandboxProduct(tier);
+            return linked("poolId", List.of("usdt30d", "usdt90d", "usdt180d", "usdt365d").indexOf(tier) + 1,
+                    "tierKey", tier, "currency", "USDT", "termDays", p.termDays(),
+                    "apyPct", p.apyPct(), "penaltyPct", p.penaltyPct(), "minAmountUsdt", p.minAmount(),
+                    "enabled", true, "killed", false, "status", "ACTIVE");
+        }).toList();
+    }
+
     private boolean globalGateEnabled() {
         return KillSwitchState.enabled(
                 java.util.Optional.ofNullable(mapper.controlValue(STAKING_KILLSWITCH_KEY)),
@@ -283,7 +501,10 @@ public class AppStakingService {
                 "positions", mapper.listUserPositions(userId).stream().map(this::positionView).toList(),
                 "walletBalanceUsdt", money(mapper.walletBalance(userId)),
                 "serverTime", LocalDateTime.now(clock),
-                "serverCanonical", true);
+                "serverCanonical", true,
+                "source", "nx_staking_product + nx_config_item + nx_emergency_control_setting",
+                "sourceEnvironment", "PRODUCTION",
+                "runId", "");
         if (focus != null) response.put("position", positionView(focus));
         if (principal != null) response.put("principalUsdt", money(principal));
         if (interest != null) response.put("interestUsdt", money(interest));
@@ -367,6 +588,17 @@ public class AppStakingService {
         if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
     }
 
+    private void requireCanonicalProductionRuntime() {
+        if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION) {
+            throw new BizException(503, "STAKING_PROFILE_INVALID");
+        }
+    }
+
+    private void requireCanonicalPoolRuntime() {
+        if (isDevelopmentRuntime()) return;
+        requireCanonicalProductionRuntime();
+    }
+
     private String normalizeTier(String value) {
         String tier = StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT).replace("_", "") : "";
         if (!List.of("usdt30d", "usdt90d", "usdt180d", "usdt365d").contains(tier)) {
@@ -416,5 +648,9 @@ public class AppStakingService {
 
     private record PoolPolicy(
             BigDecimal apyPct, BigDecimal penaltyPct, BigDecimal minAmount, boolean enabled, boolean killed) {
+    }
+
+    private record SandboxProduct(String code, String name, int termDays, BigDecimal apyPct,
+                                  BigDecimal penaltyPct, BigDecimal minAmount, boolean enabled) {
     }
 }

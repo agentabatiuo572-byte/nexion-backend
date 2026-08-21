@@ -58,7 +58,8 @@ public class AppLearningService {
                 .toList();
         int completed = (int) courses.stream().filter(AppLearningCourseView::completed).count();
         BigDecimal earned = sandbox(sourceEnvironment) ? learningMapper.sumSandboxGrantedReward(sandboxRunId(), userId) : learningMapper.sumGrantedReward(userId);
-        return ApiResult.ok(new AppLearningOverview(courses, completed, courses.size(), nz(earned)));
+        return ApiResult.ok(new AppLearningOverview(courses, completed, courses.size(), nz(earned), true,
+                sourceEnvironment, sandbox(sourceEnvironment) ? sandboxRunId() : ""));
     }
 
     public ApiResult<AppLearningCourseView> course(Long userId, String courseId, String language) {
@@ -233,7 +234,8 @@ public class AppLearningService {
             }
         }
         return new AppLearningQuizResult(course.id(), course.version(), score, passed, passed, granted,
-                granted ? course.rewardNex() : BigDecimal.ZERO, attempts);
+                granted ? course.rewardNex() : BigDecimal.ZERO, attempts, true, sourceEnvironment,
+                sandbox(sourceEnvironment) ? sandboxRunId() : "");
     }
 
     private String lockedRewardEnvironment(Long userId) {
@@ -340,8 +342,8 @@ public class AppLearningService {
                 course.category(), course.format(), course.level(), course.duration(), course.rewardNex(), course.featured(),
                 course.version(), progressPct, progressPct >= 100, progress == null ? 0 : progress.attempts(),
                 progress == null ? 0 : progress.lastScore(), rewardGranted,
-                sandbox(sourceEnvironment) ? "mock" : "provider", sourceEnvironment,
-                sandbox(sourceEnvironment) ? sandboxRunId() : null,
+                true, sandbox(sourceEnvironment) ? "mock" : "provider", sourceEnvironment,
+                sandbox(sourceEnvironment) ? sandboxRunId() : "",
                 sandbox(sourceEnvironment) ? "ACCEPTANCE SANDBOX • NON-PRODUCTION" : "PRODUCTION LEARNING FACTS",
                 questions);
     }

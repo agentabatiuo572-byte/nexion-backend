@@ -1,4 +1,3 @@
-USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 -- G7 applies the H1 reinvest dial at open time. Register the persisted event

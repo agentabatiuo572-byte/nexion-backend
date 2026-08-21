@@ -1,4 +1,3 @@
-USE nexion;
 
 CREATE TABLE IF NOT EXISTS nx_disclosure_read_token (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

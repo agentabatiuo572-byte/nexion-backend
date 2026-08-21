@@ -33,6 +33,7 @@ public class OpsUserPaymentMethodService {
 
     public Map<String, Object> list(Long userId, boolean includeUnbound, int page, int pageSize) {
         requireUser(userId);
+        requireScopedRuntime();
         int safePage = Math.max(1, page);
         int safeSize = Math.min(50, Math.max(1, pageSize));
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
@@ -55,6 +56,8 @@ public class OpsUserPaymentMethodService {
     @Transactional
     public Map<String, Object> unbind(Long userId, Long methodId, String key, UserPaymentMethodCommandRequest request) {
         validateCommand(key, request, true);
+        requireUser(userId);
+        requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
         return idempotency.execute("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
@@ -64,6 +67,8 @@ public class OpsUserPaymentMethodService {
     @Transactional
     public Map<String, Object> notifyRebind(Long userId, Long methodId, String key, UserPaymentMethodCommandRequest request) {
         validateCommand(key, request, true);
+        requireUser(userId);
+        requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
         return idempotency.execute("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
@@ -167,8 +172,29 @@ public class OpsUserPaymentMethodService {
     }
 
     private void requireUser(Long userId) {
-        if (userId == null || !mapper.userExists(userId)) {
+        if (userId == null) {
             throw new BizException(404, "USER_NOT_FOUND");
+        }
+        Integer sandbox = mapper.activeUserEnvironment(userId);
+        if (sandbox == null) throw new BizException(404, "USER_NOT_FOUND");
+        boolean sandboxSource = "SANDBOX".equals(sandboxGuard.sourceEnvironment());
+        if ((sandboxSource && sandbox != 1) || (!sandboxSource && sandbox != 0)) {
+            throw new BizException(403, "PAYMENT_METHOD_USER_ENVIRONMENT_MISMATCH");
+        }
+    }
+
+    /**
+     * The legacy admin payment-method mapper predates the sandbox run
+     * dimension.  Refuse all sandbox/unknown-profile card reads and writes
+     * until they can be routed through run-scoped SQL; production remains
+     * available only under an explicitly canonical profile.
+     */
+    private void requireScopedRuntime() {
+        if ("SANDBOX".equals(sandboxGuard.sourceEnvironment())) {
+            throw new BizException(503, "PAYMENT_METHOD_SANDBOX_UNAVAILABLE");
+        }
+        if (!sandboxGuard.isStrictProductionProfile()) {
+            throw new BizException(503, "PAYMENT_METHOD_PROFILE_INVALID");
         }
     }
 

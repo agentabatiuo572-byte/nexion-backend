@@ -14,7 +14,6 @@ class AppStorefrontActivityMapperContractTest {
             if (select == null) continue;
             String sql = String.join("\n", select.value()).toLowerCase();
             assertThat(sql).doesNotContain("${")
-                    .doesNotContain("nx_commerce_sandbox")
                     .doesNotContain("nx_behavior_sandbox")
                     .doesNotContain("wallet_address")
                     .doesNotContain("order_no,")
@@ -44,5 +43,21 @@ class AppStorefrontActivityMapperContractTest {
         assertThat(sql)
                 .contains("status = 'ACTIVE'")
                 .contains("is_deleted = 0");
+    }
+
+    @Test
+    void sandboxSocialProofQueriesAreRunScopedAndCannotReadProductionOrders() throws Exception {
+        Method product = AppStorefrontActivityMapper.class.getMethod("sandboxProduct", String.class, String.class);
+        Method total = AppStorefrontActivityMapper.class.getMethod("sandboxSalesTotal", String.class, long.class);
+        Method window = AppStorefrontActivityMapper.class.getMethod(
+                "sandboxSalesSince", String.class, long.class, java.time.LocalDateTime.class);
+        for (Method method : new Method[] {product, total, window}) {
+            String sql = String.join("\n", method.getAnnotation(Select.class).value());
+            assertThat(sql).contains("nx_commerce_sandbox")
+                    .contains("run_id=#{runId}")
+                    .contains("source='mock'")
+                    .contains("source_environment='SANDBOX'")
+                    .doesNotContain("nx_order");
+        }
     }
 }

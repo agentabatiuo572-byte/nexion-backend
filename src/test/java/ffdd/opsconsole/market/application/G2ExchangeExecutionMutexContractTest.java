@@ -33,6 +33,22 @@ class G2ExchangeExecutionMutexContractTest {
                 .isLessThan(batch.indexOf("mapper.platformTodayUsdt()"));
     }
 
+    @Test
+    void exchangeSqlOnlyTouchesProductionUsersAndWallets() throws Exception {
+        String mapper = source("src/main/java/ffdd/opsconsole/market/mapper/AppExchangeMapper.java");
+
+        assertThat(mapper).contains(
+                "Integer userSandbox",
+                "COALESCE(sandbox,0)=0",
+                "COALESCE(u.sandbox,0)=0",
+                "COALESCE(w.sandbox,0)=0",
+                "COALESCE(nx_user_wallet.sandbox,0)=0",
+                "EXISTS (SELECT 1 FROM nx_user u",
+                "INSERT INTO nx_exchange_order",
+                "INSERT INTO nx_wallet_ledger",
+                "SELECT #{userId},#{exchangeNo}");
+    }
+
     private String source(String relative) throws Exception {
         return Files.readString(Path.of(relative));
     }

@@ -33,14 +33,16 @@ public class PayoutVndSandboxService {
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final Clock clock;
+    private final FundsSandboxRunScope runScope;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> orders(Long userId) {
         ApiResult<Map<String, Object>> gate = gate();
         if (gate != null) return gate;
+        String runId = runScope.requireRunId();
         if (userId == null || mapper.activeUser(userId) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
-        List<Map<String, Object>> rows = mapper.orders(userId);
-        return ApiResult.ok(Map.of("userId", userId, "orders", rows, "source", "mock", "sandbox", true));
+        List<Map<String, Object>> rows = mapper.orders(runId, userId);
+        return ApiResult.ok(Map.of("userId", userId, "runId", runId, "orders", rows, "source", "mock", "sandbox", true));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -51,26 +53,28 @@ public class PayoutVndSandboxService {
                 || request.amountVnd().compareTo(BigDecimal.ZERO) <= 0 || !text(request.bankCode(), 2, 20)
                 || !text(request.accountNo(), 4, 40) || !text(request.accountName(), 2, 80)
                 || !text(request.reason(), 8, 200)) return ApiResult.fail(422, "PAYOUT_VND_SANDBOX_REQUEST_INVALID");
+        String runId = runScope.requireRunId();
         String normalizedKey = requiredKey(key);
-        String canonical = request.userId() + "|" + request.amountVnd().stripTrailingZeros().toPlainString()
+        String canonical = runId + "|" + request.userId() + "|" + request.amountVnd().stripTrailingZeros().toPlainString()
                 + "|" + request.bankCode().trim().toUpperCase(Locale.ROOT) + "|" + request.accountNo().trim()
                 + "|" + request.accountName().trim() + "|" + request.reason().trim();
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute("FINANCE:D7:SANDBOX_CREATE",
-                normalizedKey, sha(canonical), ApiResult.class, () -> createOnce(normalizedKey, request));
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute("FINANCE:D7:SANDBOX_CREATE:" + runId,
+                normalizedKey, sha(canonical), ApiResult.class, () -> createOnce(runId, normalizedKey, request));
     }
 
     @Transactional(rollbackFor = Exception.class)
-    protected ApiResult<Map<String, Object>> createOnce(String key, PayoutVndSandboxCreateRequest request) {
+    protected ApiResult<Map<String, Object>> createOnce(String runId, String key, PayoutVndSandboxCreateRequest request) {
         if (mapper.activeUser(request.userId()) == null) return ApiResult.fail(404, "USER_NOT_FOUND");
-        String orderNo = "PVN-MOCK-" + sha(key).substring(0, 20).toUpperCase(Locale.ROOT);
+        String orderNo = "PVN-MOCK-" + sha(runId + "|" + key).substring(0, 20).toUpperCase(Locale.ROOT);
         LocalDateTime now = LocalDateTime.now(clock);
-        mapper.insertOrder(orderNo, request.userId(), request.amountVnd(), request.bankCode().trim().toUpperCase(Locale.ROOT),
+        mapper.insertOrder(orderNo, runId, request.userId(), request.amountVnd(), request.bankCode().trim().toUpperCase(Locale.ROOT),
                 mask(request.accountNo()), request.accountName().trim(), key, request.reason().trim(), now);
-        String eventId = "EV-" + sha(orderNo).substring(0, 20).toUpperCase(Locale.ROOT);
+        String eventId = "EV-" + sha(runId + "|" + orderNo).substring(0, 20).toUpperCase(Locale.ROOT);
         audit("D7_SANDBOX_PAYOUT_CREATED", orderNo, request.userId(), Map.of("source", "mock", "sandbox", true));
-        Map<String, Object> row = mapper.order(orderNo);
+        Map<String, Object> row = mapper.order(runId, orderNo);
         row.put("sandboxCallbackEventId", eventId);
         row.put("sandboxCallbackSignature", signature(eventId, orderNo, "COMPLETED"));
+        row.put("runId", runId);
         row.put("sandbox", true);
         return ApiResult.ok(row);
     }
@@ -87,25 +91,27 @@ public class PayoutVndSandboxService {
         if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII), request.signature().trim().getBytes(StandardCharsets.US_ASCII))) {
             return ApiResult.fail(401, "PAYOUT_VND_CALLBACK_SIGNATURE_INVALID");
         }
-        String hash = sha(request.eventId().trim() + "|" + request.orderNo().trim() + "|" + upper(request.status()));
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute("FINANCE:D7:SANDBOX_CALLBACK",
-                requiredKey(key), hash, ApiResult.class, () -> callbackOnce(request));
+        String runId = runScope.requireRunId();
+        String hash = sha(runId + "|" + request.eventId().trim() + "|" + request.orderNo().trim() + "|" + upper(request.status()));
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute("FINANCE:D7:SANDBOX_CALLBACK:" + runId,
+                requiredKey(key), hash, ApiResult.class, () -> callbackOnce(runId, request));
     }
 
     @Transactional(rollbackFor = Exception.class)
-    protected ApiResult<Map<String, Object>> callbackOnce(PayoutVndSandboxCallbackRequest request) {
-        Map<String, Object> before = mapper.order(request.orderNo().trim());
+    protected ApiResult<Map<String, Object>> callbackOnce(String runId, PayoutVndSandboxCallbackRequest request) {
+        Map<String, Object> before = mapper.order(runId, request.orderNo().trim());
         if (before == null) return ApiResult.fail(404, "PAYOUT_VND_ORDER_NOT_FOUND");
         String status = upper(request.status());
         if (!"PENDING".equals(String.valueOf(before.get("status")))) {
             return ApiResult.fail(409, "PAYOUT_VND_CALLBACK_REPLAY_CONFLICT");
         }
         LocalDateTime now = LocalDateTime.now(clock);
-        if (mapper.complete(request.orderNo().trim(), status, now) != 1
-                || mapper.insertLedger(request.eventId().trim(), request.orderNo().trim(), status, now) != 1) {
+        if (mapper.complete(runId, request.orderNo().trim(), status, now) != 1
+                || mapper.insertLedger(runId, request.eventId().trim(), request.orderNo().trim(), status, now) != 1) {
             throw new BizException(409, "PAYOUT_VND_CALLBACK_CONFLICT");
         }
-        Map<String, Object> row = mapper.order(request.orderNo().trim());
+        Map<String, Object> row = mapper.order(runId, request.orderNo().trim());
+        row.put("runId", runId);
         row.put("sandbox", true);
         audit("D7_SANDBOX_PAYOUT_" + status, request.orderNo().trim(), ((Number) row.get("userId")).longValue(),
                 Map.of("eventId", request.eventId().trim(), "source", "mock", "sandbox", true));

@@ -199,7 +199,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void trustedGatewayHeaderCannotInjectProductionUserIntoAcceptance() throws Exception {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         gatewayProperties.setHeaderAuthenticationEnabled(true);
         gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
         when(userMapper.selectById(1001L)).thenReturn(user(0));
@@ -229,7 +229,7 @@ class JwtAuthenticationFilterTest {
 
     @Test
     void rejectsProductionBearerAtAcceptanceBeforeSessionTouchOrControllerAuthentication() throws Exception {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
                 42L, "user-42", List.of(), "production-session", java.time.Duration.ofHours(1), UserAuthEnvironment.PRODUCTION));
 

@@ -64,7 +64,7 @@ class OpsReferralRewardServiceTest {
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         return environment;
     }
 
@@ -118,7 +118,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void strictSandboxProfileBlocksProductionSettlementBeforeAnyWriteOrAudit() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-sandbox-block",
                 new ReferralSettlementRunRequest(10, "strict sandbox must not write production",
@@ -132,7 +132,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementRequiresRunScopedFixtureId() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
 
         assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-run-required",
                 new AcceptanceSandboxReferralSettlementRequest(null, 22L,
@@ -145,7 +145,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementRejectsAnotherLegalRunBeforeIdempotencyOrAudit() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
 
         assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-other-run",
@@ -161,7 +161,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void rejectedSandboxSettlementAuditsAuthenticatedActorInsteadOfSpoofedRequestOperator() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken("812", null, List.of()));
@@ -222,7 +222,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementUsesMockSourceAndNeverCallsProductionLedgerFacade() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
         when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
@@ -252,7 +252,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementDoesNotDependOnProductionCoverage() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
         when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));

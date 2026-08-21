@@ -22,9 +22,11 @@ Legacy distributed service directories, the old `nexion-common` module, and the 
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1
 ```
 
-The local monolith launcher also enables Nova's local Ollama adapter by default. It expects
-Ollama on `http://127.0.0.1:11434` and defaults to `gemma4-e4b-ctx32k:latest`; no cloud AI
-account or API key is involved. Override the model or disable the adapter explicitly:
+The local monolith launcher enables Nova's local RAG adapter by default only for the `dev`
+profile; `prod` keeps it disabled unless the operator explicitly opts in. Nova calls the
+loopback RAG API on `http://127.0.0.1:8010`; that service retrieves the current PRD collection
+from Qdrant and answers with local Ollama/Gemma. No cloud AI account or API key is involved.
+Override the model or disable the adapter explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\start_ops_console_monolith.ps1 -NovaAiModel '<installed-model>'
@@ -33,7 +35,8 @@ powershell -ExecutionPolicy Bypass -File D:\workspace\nexion-backend\scripts\sta
 
 Direct Maven launches remain fail-closed (`NEXION_NOVA_AI_MODE=DISABLED`) unless the local
 operator explicitly sets `NEXION_NOVA_AI_MODE=OLLAMA_LOCAL`. The adapter accepts only a
-loopback Ollama URL and never forwards model reasoning or secrets to the App.
+loopback RAG URL, verifies the configured Qdrant collection and Gemma model, and never
+forwards model reasoning, retrieved source text, or secrets to the App.
 
 The startup script applies all required idempotent startup migrations before starting the
 backend. The migration runner and application use `NEXION_DB_URL`, `NEXION_DB_USERNAME`,

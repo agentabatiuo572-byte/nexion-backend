@@ -16,10 +16,16 @@ import org.apache.ibatis.annotations.Update;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppGrowthEngagementMapper {
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=1 FOR UPDATE")
+    Long lockActiveSandboxUser(@Param("userId") Long userId);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "LIMIT 1")
     Long findActiveUser(@Param("userId") Long userId);
 
     @Select("""
@@ -426,6 +432,7 @@ public interface AppGrowthEngagementMapper {
                    s.current_streak streak
               FROM nx_user_streak s
               JOIN nx_user u ON u.id=s.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+                                    AND COALESCE(u.sandbox,0)=0
              WHERE s.current_streak>0 AND s.is_deleted=0
              ORDER BY s.current_streak DESC,s.longest_streak DESC,s.user_id
              LIMIT 5
@@ -498,10 +505,16 @@ public interface AppGrowthEngagementMapper {
                    v.max_discount_usd maxDiscountUsd,v.applicable_skus applicableSkus,
                    v.audience,v.claim_surfaces claimSurfaces,v.start_at startAt,v.end_at endAt,
                    v.popup_enabled popupEnabled,v.stack_with_trial stackWithTrial,
+                   v.popup_delay_ms popupDelayMs,v.popup_cooldown_hours popupCooldownHours,
+                   v.popup_max_per_session popupMaxPerSession,v.popup_cadence_enabled popupCadenceEnabled,
+                   COALESCE(ps.last_seen_at,0) popupLastSeenAt,
+                   COALESCE(ps.session_count,0) popupSessionCount,
                    v.stack_with_others stackWithOthers,v.splittable,
                    v.status definitionStatus,v.is_deleted definitionDeleted,
                    g.grant_id grantId,COALESCE(g.status,'UNCLAIMED') grantStatus,g.used_order_no usedOrderNo
               FROM nx_growth_voucher v
+              LEFT JOIN nx_voucher_popup_state ps
+                ON ps.user_id=#{userId} AND ps.voucher_id=v.voucher_id
               LEFT JOIN nx_growth_voucher_grant g
                 ON g.id = (
                   SELECT gg.id
@@ -527,10 +540,115 @@ public interface AppGrowthEngagementMapper {
     List<Map<String, Object>> voucherState(
             @Param("userId") Long userId, @Param("nowMillis") long nowMillis);
 
+    /**
+     * Sandbox reads the operator-owned voucher definitions but joins only the
+     * run/user-scoped popup facts. No production grant or popup state is read.
+     */
+    @Select("""
+            SELECT v.voucher_id voucherId,v.voucher_name voucherName,v.voucher_type voucherType,
+                   v.amount_usd amountUsd,v.percent_value percentValue,v.min_purchase_usd minPurchaseUsd,
+                   v.max_discount_usd maxDiscountUsd,v.applicable_skus applicableSkus,
+                   v.audience,v.claim_surfaces claimSurfaces,v.start_at startAt,v.end_at endAt,
+                   v.popup_enabled popupEnabled,v.stack_with_trial stackWithTrial,
+                   v.popup_delay_ms popupDelayMs,v.popup_cooldown_hours popupCooldownHours,
+                   v.popup_max_per_session popupMaxPerSession,v.popup_cadence_enabled popupCadenceEnabled,
+                   COALESCE(ps.last_seen_at,0) popupLastSeenAt,
+                   COALESCE(ps.session_count,0) popupSessionCount,
+                   v.stack_with_others stackWithOthers,v.splittable,
+                   v.status definitionStatus,v.is_deleted definitionDeleted,
+                   COALESCE(ps.claim_status,'UNCLAIMED') grantStatus,ps.claim_id grantId,NULL usedOrderNo
+              FROM nx_growth_voucher v
+              LEFT JOIN nx_voucher_popup_sandbox_state ps
+                ON ps.run_id=#{runId} AND ps.user_id=#{userId} AND ps.voucher_id=v.voucher_id
+             WHERE v.is_deleted=0 AND LOWER(v.status)='active'
+               AND (v.start_at=0 OR v.start_at<=#{nowMillis})
+               AND (v.end_at=0 OR v.end_at>=#{nowMillis})
+             ORDER BY v.updated_at DESC,v.id DESC
+            """)
+    List<Map<String, Object>> voucherStateSandbox(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("nowMillis") long nowMillis);
+
+    @Select("""
+            SELECT v.voucher_id voucherId,v.audience
+              FROM nx_growth_voucher v
+             WHERE v.voucher_id=#{voucherId} AND v.is_deleted=0 AND LOWER(v.status)='active'
+               AND (v.start_at=0 OR v.start_at<=#{nowMillis})
+               AND (v.end_at=0 OR v.end_at>=#{nowMillis})
+               AND (v.claim_surfaces IS NULL OR JSON_LENGTH(v.claim_surfaces)=0
+                    OR JSON_CONTAINS(v.claim_surfaces,JSON_QUOTE(#{surface})))
+             LIMIT 1 FOR UPDATE
+            """)
+    VoucherClaimDefinition lockSandboxClaimableVoucher(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("voucherId") String voucherId,
+            @Param("surface") String surface,
+            @Param("nowMillis") long nowMillis);
+
+    @Select("""
+            SELECT claim_id grantId,claim_status grantStatus,claim_idempotency_key idempotencyKey
+              FROM nx_voucher_popup_sandbox_state
+             WHERE run_id=#{runId} AND user_id=#{userId} AND voucher_id=#{voucherId}
+             LIMIT 1 FOR UPDATE
+            """)
+    SandboxVoucherClaim lockSandboxVoucherClaim(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("voucherId") String voucherId);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_voucher_popup_sandbox_state
+              (run_id,user_id,voucher_id,last_seen_at,session_count,version,claim_status,claim_id,claim_idempotency_key)
+            VALUES (#{runId},#{userId},#{voucherId},0,0,0,'AVAILABLE',#{grantId},#{idempotencyKey})
+            """)
+    int insertSandboxVoucherClaim(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("voucherId") String voucherId,
+            @Param("grantId") String grantId,
+            @Param("idempotencyKey") String idempotencyKey,
+            @Param("nowMillis") long nowMillis);
+
+    @Update("""
+            UPDATE nx_voucher_popup_sandbox_state
+               SET claim_status='AVAILABLE',claim_id=#{grantId},claim_idempotency_key=#{idempotencyKey},
+                   version=version+1,updated_at=CURRENT_TIMESTAMP
+             WHERE run_id=#{runId} AND user_id=#{userId} AND voucher_id=#{voucherId}
+               AND UPPER(COALESCE(claim_status,'UNCLAIMED'))='UNCLAIMED'
+            """)
+    int claimExistingSandboxVoucher(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("voucherId") String voucherId,
+            @Param("grantId") String grantId,
+            @Param("idempotencyKey") String idempotencyKey);
+
+    @Insert("INSERT INTO nx_voucher_popup_state (user_id,voucher_id,last_seen_at,session_count,version) VALUES (#{userId},#{voucherId},#{nowMillis},1,0) "
+            + "ON DUPLICATE KEY UPDATE last_seen_at=#{nowMillis},session_count=session_count+1,version=version+1")
+    int markVoucherPopupSeen(@Param("userId") Long userId, @Param("voucherId") String voucherId, @Param("nowMillis") long nowMillis);
+
+    @Insert("INSERT INTO nx_voucher_popup_sandbox_state (run_id,user_id,voucher_id,last_seen_at,session_count,version) "
+            + "VALUES (#{runId},#{userId},#{voucherId},#{nowMillis},1,0) "
+            + "ON DUPLICATE KEY UPDATE last_seen_at=#{nowMillis},session_count=session_count+1,version=version+1")
+    int markVoucherPopupSeenSandbox(
+            @Param("runId") String runId,
+            @Param("userId") Long userId,
+            @Param("voucherId") String voucherId,
+            @Param("nowMillis") long nowMillis);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=1 LIMIT 1")
+    Long findSandboxUser(@Param("userId") Long userId);
+
     record Attribution(String phase, Integer accountAgeMonths, String cohort) {
     }
 
     record VoucherClaimDefinition(String voucherId, String audience) {
+    }
+
+    record SandboxVoucherClaim(String grantId, String grantStatus, String idempotencyKey) {
     }
 
     record QuestReward(

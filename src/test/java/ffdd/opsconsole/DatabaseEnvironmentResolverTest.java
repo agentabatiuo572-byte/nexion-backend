@@ -103,8 +103,49 @@ class DatabaseEnvironmentResolverTest {
     }
 
     @Test
+    void productionRequiresOneCompleteExplicitDatabaseBundle() {
+        assertThatThrownBy(() -> DatabaseEnvironmentResolver.resolve(Map.of(), true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Production")
+                .hasMessageContaining("complete database environment bundle");
+
+        assertThatThrownBy(() -> DatabaseEnvironmentResolver.resolve(Map.of(
+                        "NEXION_DB_PASSWORD", "partial"), true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("NEXION_DB_URL")
+                .hasMessageContaining("complete bundle");
+    }
+
+    @Test
+    void productionBootstrapCannotFallBackToTheLoopbackDatabase() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.profiles.active", "prod");
+
+        assertThatThrownBy(() -> new DatabaseEnvironmentPostProcessor()
+                        .applyAuthoritativePropertySource(environment, Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Production");
+    }
+
+    @Test
+    void duplicateProductionProfileCannotBypassExplicitDatabaseRequirement() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.profiles.active", "prod,prod");
+        environment.setActiveProfiles("prod", "prod");
+
+        assertThatThrownBy(() -> new DatabaseEnvironmentPostProcessor()
+                        .applyAuthoritativePropertySource(environment, Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RUNTIME_PROFILE_FORBIDDEN");
+        assertThat(environment.getPropertySources()
+                        .contains("nexionAuthoritativeDatabaseEnvironment"))
+                .isFalse();
+    }
+
+    @Test
     void applicationBootstrapAddsAuthoritativeDatasourcePropertiesWithoutJvmSystemProperties() {
         MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.profiles.active", "dev")
                 .withProperty("spring.datasource.url", "jdbc:mysql://legacy-binding:3306/wrong_contract")
                 .withProperty("spring.datasource.username", "wrong-user")
                 .withProperty("spring.datasource.password", "wrong-pass");

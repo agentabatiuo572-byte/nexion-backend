@@ -8,8 +8,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 /**
- * Read-only canonical storefront facts. This mapper intentionally has no
- * dependency on the sandbox commerce tables or the canonical catalog service.
+ * Read-only storefront facts. Production reads canonical commerce tables;
+ * explicit Sandbox reads only the current run-scoped commerce projection.
  */
 @Mapper
 public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
@@ -61,6 +61,18 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
     ProductRow product(@Param("productNo") String productNo);
 
     @Select("""
+            SELECT product_id id, name
+              FROM nx_commerce_sandbox_catalog
+             WHERE run_id=#{runId}
+               AND product_no=#{productNo}
+               AND is_deleted=0
+               AND source='mock'
+               AND source_environment='SANDBOX'
+             LIMIT 1
+            """)
+    ProductRow sandboxProduct(@Param("runId") String runId, @Param("productNo") String productNo);
+
+    @Select("""
             SELECT COALESCE(SUM(oi.quantity), 0)
               FROM nx_order_item oi
               JOIN nx_order o ON o.order_no = oi.order_no
@@ -93,6 +105,38 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
             @Param("productId") long productId,
             @Param("sandbox") boolean sandbox,
             @Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT COALESCE(SUM(i.reserved_quantity), 0)
+              FROM nx_commerce_sandbox_order o
+              JOIN nx_commerce_sandbox_inventory i
+                ON i.run_id=o.run_id AND i.order_no=o.order_no AND i.is_deleted=0
+               AND i.source='mock' AND i.source_environment='SANDBOX'
+             WHERE o.run_id=#{runId}
+               AND i.product_id=#{productId}
+               AND o.state IN ('PAID','ACTIVATED','PROVISIONING_FAILED')
+               AND o.is_deleted=0
+               AND o.source='mock'
+               AND o.source_environment='SANDBOX'
+            """)
+    Long sandboxSalesTotal(@Param("runId") String runId, @Param("productId") long productId);
+
+    @Select("""
+            SELECT COALESCE(SUM(i.reserved_quantity), 0)
+              FROM nx_commerce_sandbox_order o
+              JOIN nx_commerce_sandbox_inventory i
+                ON i.run_id=o.run_id AND i.order_no=o.order_no AND i.is_deleted=0
+               AND i.source='mock' AND i.source_environment='SANDBOX'
+             WHERE o.run_id=#{runId}
+               AND i.product_id=#{productId}
+               AND o.state IN ('PAID','ACTIVATED','PROVISIONING_FAILED')
+               AND o.created_at >= #{since}
+               AND o.is_deleted=0
+               AND o.source='mock'
+               AND o.source_environment='SANDBOX'
+            """)
+    Long sandboxSalesSince(@Param("runId") String runId, @Param("productId") long productId,
+                           @Param("since") LocalDateTime since);
 
     record UserEnvironmentRow(boolean sandbox) { }
 

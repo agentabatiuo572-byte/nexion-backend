@@ -3,6 +3,8 @@ package ffdd.opsconsole.content.web;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -25,9 +27,11 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(AppTrustSectionController.class)
+@ActiveProfiles("dev")
 @Import(SecurityConfig.class)
 @ContextConfiguration(classes = {AppTrustSectionController.class, SecurityConfig.class})
 class AppTrustSectionControllerSecurityTest {
@@ -74,15 +78,30 @@ class AppTrustSectionControllerSecurityTest {
         mockMvc.perform(get("/api/content/trust/sections/current"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.serverCanonical").value(true))
+                .andExpect(jsonPath("$.data.source").value("nx_trust_section_version:published"))
+                .andExpect(jsonPath("$.data.sourceEnvironment").value("PRODUCTION"))
+                .andExpect(jsonPath("$.data.runId").value(""))
                 .andExpect(jsonPath("$.data.sections[0].sectionKey").value("financials"))
                 .andExpect(jsonPath("$.data.sections[0].version").value("v1"));
     }
 
     @Test
-    void sectionViewEventIsPublicWithoutToken() throws Exception {
+    void sectionViewEventRequiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/content/trust/sections/leadership/view")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"locale\":\"vi\"}"))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(service);
+    }
+
+    @Test
+    void authenticatedSectionViewEventIsAccepted() throws Exception {
         when(service.recordSectionView("leadership", "vi")).thenReturn(ApiResult.ok(null));
 
         mockMvc.perform(post("/api/content/trust/sections/leadership/view")
+                        .with(user("1"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"locale\":\"vi\"}"))
                 .andExpect(status().isOk())

@@ -27,7 +27,7 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                       JOIN nx_user_device d ON d.is_deleted = 0
                       JOIN nx_user owner ON owner.id = d.user_id AND owner.is_deleted = 0
                      WHERE viewer.id = #{userId} AND viewer.is_deleted = 0
-                       AND owner.sandbox = viewer.sandbox
+                       AND viewer.sandbox = 0 AND owner.sandbox = 0
                        AND UPPER(d.ownership_status) = 'OWNED'
                        AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                        AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
@@ -42,9 +42,8 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                       JOIN nx_user_device d ON d.id = t.user_device_id AND d.is_deleted = 0
                       JOIN nx_user owner ON owner.id = d.user_id AND owner.is_deleted = 0
                       JOIN nx_user viewer ON viewer.id = #{userId} AND viewer.is_deleted = 0
-                     WHERE t.is_deleted = 0 AND owner.sandbox = viewer.sandbox
-                       AND ((viewer.sandbox = 1 AND COALESCE(t.source_environment, 'PRODUCTION') = 'SANDBOX')
-                         OR (viewer.sandbox = 0 AND COALESCE(t.source_environment, 'PRODUCTION') = 'PRODUCTION'))
+                     WHERE t.is_deleted = 0 AND viewer.sandbox = 0 AND owner.sandbox = 0
+                       AND COALESCE(t.source_environment, 'PRODUCTION') = 'PRODUCTION'
                      GROUP BY d.dc_location
               ) tasks ON tasks.dc_location = dc.dc_location
               LEFT JOIN (
@@ -53,23 +52,29 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                       JOIN nx_user owner ON owner.id = d.user_id AND owner.is_deleted = 0
                       JOIN nx_user viewer ON viewer.id = #{userId} AND viewer.is_deleted = 0
                       JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
-                     WHERE d.is_deleted = 0 AND owner.sandbox = viewer.sandbox
+                     WHERE d.is_deleted = 0 AND viewer.sandbox = 0 AND owner.sandbox = 0
                        AND r.latitude BETWEEN -90 AND 90 AND r.longitude BETWEEN -180 AND 180
                      GROUP BY d.dc_location
               ) geo ON geo.dc_location = dc.dc_location
               LEFT JOIN (
                     SELECT dc_location, COUNT(*) AS userDevices
-                      FROM nx_user_device
-                     WHERE user_id = #{userId} AND is_deleted = 0
-                       AND UPPER(ownership_status) = 'OWNED'
-                       AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                     GROUP BY dc_location
+                      FROM nx_user_device d
+                      JOIN nx_user viewer ON viewer.id = #{userId}
+                        AND viewer.status = 'ACTIVE' AND viewer.is_deleted = 0 AND viewer.sandbox = 0
+                     WHERE d.user_id = #{userId} AND d.is_deleted = 0 AND viewer.sandbox = 0
+                       AND UPPER(d.ownership_status) = 'OWNED'
+                       AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                     GROUP BY d.dc_location
               ) mine ON mine.dc_location = dc.dc_location
              WHERE dc.is_deleted = 0 AND LOWER(dc.status) = 'active'
              ORDER BY dc.sort_order, dc.dc_location
             """)
     List<RegionRow> regions(@Param("userId") Long userId);
 
+    @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0 LIMIT 1")
+    UserScope userScope(@Param("userId") Long userId);
+
+    record UserScope(Integer sandbox) { }
     record RegionRow(String id, String regionLabel, String location, String displayName,
                      Long activeNodes, Long activeJobs, Long jobsPerHour,
                      Double latitude, Double longitude, Integer userRegion) { }

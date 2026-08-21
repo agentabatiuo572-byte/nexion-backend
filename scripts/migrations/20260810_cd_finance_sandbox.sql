@@ -77,8 +77,14 @@ SET @payment_method_source_env_sql = IF(
   'SELECT 1','ALTER TABLE nx_wallet_bank_card ADD COLUMN source_environment VARCHAR(16) NOT NULL DEFAULT ''PRODUCTION'' AFTER is_default');
 PREPARE payment_method_source_env_stmt FROM @payment_method_source_env_sql; EXECUTE payment_method_source_env_stmt; DEALLOCATE PREPARE payment_method_source_env_stmt;
 
+SET @payment_method_version_sql = IF(
+  EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_wallet_bank_card' AND COLUMN_NAME='version'),
+  'SELECT 1','ALTER TABLE nx_wallet_bank_card ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER source_environment');
+PREPARE payment_method_version_stmt FROM @payment_method_version_sql; EXECUTE payment_method_version_stmt; DEALLOCATE PREPARE payment_method_version_stmt;
+
 CREATE TABLE IF NOT EXISTS nx_payout_vnd_sandbox_order (
   id BIGINT NOT NULL AUTO_INCREMENT,
+  run_id VARCHAR(64) NOT NULL,
   order_no VARCHAR(64) NOT NULL,
   user_id BIGINT NOT NULL,
   amount_vnd DECIMAL(24,2) NOT NULL,
@@ -92,13 +98,19 @@ CREATE TABLE IF NOT EXISTS nx_payout_vnd_sandbox_order (
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_payout_vnd_sandbox_order_no (order_no),
-  UNIQUE KEY uk_payout_vnd_sandbox_idem (idempotency_key),
-  KEY idx_payout_vnd_sandbox_user (user_id, id)
+  UNIQUE KEY uk_payout_vnd_sandbox_run_order (run_id, order_no),
+  UNIQUE KEY uk_payout_vnd_sandbox_run_idem (run_id, user_id, idempotency_key),
+  KEY idx_payout_vnd_sandbox_run_user (run_id, user_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @payout_vnd_order_run_sql = IF(
+  EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND COLUMN_NAME='run_id'),
+  'SELECT 1','ALTER TABLE nx_payout_vnd_sandbox_order ADD COLUMN run_id VARCHAR(64) NOT NULL DEFAULT ''legacy-run'' AFTER id');
+PREPARE payout_vnd_order_run_stmt FROM @payout_vnd_order_run_sql; EXECUTE payout_vnd_order_run_stmt; DEALLOCATE PREPARE payout_vnd_order_run_stmt;
 
 CREATE TABLE IF NOT EXISTS nx_payout_vnd_sandbox_ledger (
   id BIGINT NOT NULL AUTO_INCREMENT,
+  run_id VARCHAR(64) NOT NULL,
   event_id VARCHAR(80) NOT NULL,
   order_no VARCHAR(64) NOT NULL,
   user_id BIGINT NOT NULL,
@@ -108,10 +120,28 @@ CREATE TABLE IF NOT EXISTS nx_payout_vnd_sandbox_ledger (
   source VARCHAR(16) NOT NULL DEFAULT 'mock',
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_payout_vnd_sandbox_event (event_id),
-  UNIQUE KEY uk_payout_vnd_sandbox_ledger_order (order_no),
-  KEY idx_payout_vnd_sandbox_ledger_user (user_id, id)
+  UNIQUE KEY uk_payout_vnd_sandbox_run_event (run_id, event_id),
+  UNIQUE KEY uk_payout_vnd_sandbox_run_order_ledger (run_id, order_no),
+  KEY idx_payout_vnd_sandbox_ledger_run_user (run_id, user_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @payout_vnd_ledger_run_sql = IF(
+  EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND COLUMN_NAME='run_id'),
+  'SELECT 1','ALTER TABLE nx_payout_vnd_sandbox_ledger ADD COLUMN run_id VARCHAR(64) NOT NULL DEFAULT ''legacy-run'' AFTER id');
+PREPARE payout_vnd_ledger_run_stmt FROM @payout_vnd_ledger_run_sql; EXECUTE payout_vnd_ledger_run_stmt; DEALLOCATE PREPARE payout_vnd_ledger_run_stmt;
+
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='uk_payout_vnd_sandbox_order_no'), 'ALTER TABLE nx_payout_vnd_sandbox_order DROP INDEX uk_payout_vnd_sandbox_order_no', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='uk_payout_vnd_sandbox_idem'), 'ALTER TABLE nx_payout_vnd_sandbox_order DROP INDEX uk_payout_vnd_sandbox_idem', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='idx_payout_vnd_sandbox_user'), 'ALTER TABLE nx_payout_vnd_sandbox_order DROP INDEX idx_payout_vnd_sandbox_user', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='uk_payout_vnd_sandbox_run_order'), 'SELECT 1', 'ALTER TABLE nx_payout_vnd_sandbox_order ADD UNIQUE KEY uk_payout_vnd_sandbox_run_order (run_id, order_no)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='uk_payout_vnd_sandbox_run_idem'), 'SELECT 1', 'ALTER TABLE nx_payout_vnd_sandbox_order ADD UNIQUE KEY uk_payout_vnd_sandbox_run_idem (run_id, user_id, idempotency_key)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_order' AND INDEX_NAME='idx_payout_vnd_sandbox_run_user'), 'SELECT 1', 'CREATE INDEX idx_payout_vnd_sandbox_run_user ON nx_payout_vnd_sandbox_order(run_id, user_id, id)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='uk_payout_vnd_sandbox_event'), 'ALTER TABLE nx_payout_vnd_sandbox_ledger DROP INDEX uk_payout_vnd_sandbox_event', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='uk_payout_vnd_sandbox_ledger_order'), 'ALTER TABLE nx_payout_vnd_sandbox_ledger DROP INDEX uk_payout_vnd_sandbox_ledger_order', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='idx_payout_vnd_sandbox_ledger_user'), 'ALTER TABLE nx_payout_vnd_sandbox_ledger DROP INDEX idx_payout_vnd_sandbox_ledger_user', 'SELECT 1'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='uk_payout_vnd_sandbox_run_event'), 'SELECT 1', 'ALTER TABLE nx_payout_vnd_sandbox_ledger ADD UNIQUE KEY uk_payout_vnd_sandbox_run_event (run_id, event_id)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='uk_payout_vnd_sandbox_run_order_ledger'), 'SELECT 1', 'ALTER TABLE nx_payout_vnd_sandbox_ledger ADD UNIQUE KEY uk_payout_vnd_sandbox_run_order_ledger (run_id, order_no)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF(EXISTS(SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_payout_vnd_sandbox_ledger' AND INDEX_NAME='idx_payout_vnd_sandbox_ledger_run_user'), 'SELECT 1', 'CREATE INDEX idx_payout_vnd_sandbox_ledger_run_user ON nx_payout_vnd_sandbox_ledger(run_id, user_id, id)'); PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_payment_method_revoke_command (
   id BIGINT NOT NULL AUTO_INCREMENT,

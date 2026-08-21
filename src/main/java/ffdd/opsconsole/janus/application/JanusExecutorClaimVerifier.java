@@ -9,6 +9,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 import javax.crypto.Mac;
@@ -26,22 +27,17 @@ public class JanusExecutorClaimVerifier {
     private static final Pattern NONCE = Pattern.compile("^[A-Za-z0-9._:-]{32,128}$");
     private static final Pattern SIGNATURE = Pattern.compile("^[a-fA-F0-9]{64}$");
     private static final Pattern PATH = Pattern.compile("^/api/app/janus/[A-Za-z0-9/_?=&.:%-]+$");
-    private static final Set<String> SANDBOX_PROFILES = Set.of("test", "acceptance");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("dev", "test");
 
     private final JanusExecutorClaimNonceMapper mapper;
     private final Environment environment;
     @Value("${nexion.janus.executor.mode:PRODUCTION}")
     private final String mode;
-    @Value("${nexion.janus.executor.sandbox-token:}")
-    private final String sandboxToken;
-    @Value("${nexion.janus.executor.sandbox-users:}")
-    private final String sandboxUsers;
-    @Value("${nexion.janus.executor.sandbox-devices:}")
-    private final String sandboxDevices;
     @Value("${nexion.janus.executor.production-keys:}")
     private final String productionKeys;
     @Value("${nexion.janus.executor.max-skew-ms:120000}")
     private final long maxSkewMs;
+    private final Optional<JanusSandboxEnrollmentService> sandboxEnrollmentService;
 
     public Verification verify(long userId, Claim claim) {
         if (userId <= 0 || claim == null || !ID.matcher(trim(claim.deviceId())).matches()
@@ -58,11 +54,12 @@ public class JanusExecutorClaimVerifier {
         String normalizedMode = trim(mode).toUpperCase(java.util.Locale.ROOT);
         if ("SANDBOX".equals(normalizedMode)) {
             Set<String> active = new HashSet<>(Arrays.asList(environment.getActiveProfiles()));
-            if (active.isEmpty() || !SANDBOX_PROFILES.containsAll(active)
+            boolean enrolled = sandboxEnrollmentService
+                    .map(service -> service.verify(userId, claim.deviceId(), claim.signature()))
+                    .orElse(false);
+            if (active.size() != 1 || !SANDBOX_PROFILES.containsAll(active)
                     || !"sandbox".equals(claim.executorId())
-                    || !parseSet(sandboxUsers).contains(String.valueOf(userId))
-                    || !parseSet(sandboxDevices).contains(claim.deviceId())
-                    || trim(sandboxToken).isEmpty() || !constantTime(trim(sandboxToken), claim.signature())) {
+                    || !enrolled) {
                 return rejected("JANUS_SANDBOX_CLAIM_ISOLATION_MISMATCH");
             }
         } else if ("PRODUCTION".equals(normalizedMode)) {
@@ -98,6 +95,10 @@ public class JanusExecutorClaimVerifier {
 
     /** Creates a device-bound authorization for one immutable leased command handle. */
     public String authorizeCommand(String executorId, String deviceId, String commandDigest) {
+        return authorizeCommand(0L, executorId, deviceId, commandDigest);
+    }
+
+    public String authorizeCommand(long userId, String executorId, String deviceId, String commandDigest) {
         if (!SIGNATURE.matcher(trim(commandDigest)).matches()) {
             throw new IllegalStateException("JANUS_COMMAND_DIGEST_INVALID");
         }
@@ -111,8 +112,11 @@ public class JanusExecutorClaimVerifier {
             }
             return hmac(executor.key(), canonical);
         }
-        if ("SANDBOX".equals(normalizedMode) && !trim(sandboxToken).isEmpty()) {
-            return hmac(trim(sandboxToken).getBytes(StandardCharsets.UTF_8), canonical);
+        if ("SANDBOX".equals(normalizedMode)) {
+            byte[] enrolledKey = sandboxEnrollmentService
+                    .map(service -> service.commandAuthorizationKey(userId, deviceId))
+                    .orElseGet(() -> new byte[0]);
+            if (enrolledKey.length > 0) return hmac(enrolledKey, canonical);
         }
         throw new IllegalStateException("JANUS_COMMAND_AUTHORIZATION_UNAVAILABLE");
     }
@@ -137,11 +141,6 @@ public class JanusExecutorClaimVerifier {
             }
         }
         return Map.copyOf(result);
-    }
-
-    private static Set<String> parseSet(String value) {
-        return Arrays.stream(value.split(",")).map(String::trim).filter(item -> !item.isEmpty())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private static String hmac(byte[] key, String canonical) {

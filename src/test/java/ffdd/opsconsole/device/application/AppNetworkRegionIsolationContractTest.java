@@ -8,12 +8,14 @@ import org.junit.jupiter.api.Test;
 
 class AppNetworkRegionIsolationContractTest {
     @Test
-    void everyGlobalProjectionIsBoundToTheAuthenticatedUsersEnvironment() throws Exception {
+    void everyGlobalProjectionIsProductionOnlyUntilRunScopedDeviceProjectionExists() throws Exception {
         Select select = AppNetworkRegionMapper.class.getMethod("regions", Long.class).getAnnotation(Select.class);
         String sql = String.join(" ", select.value()).replaceAll("\\s+", " ");
-        assertThat(sql).contains("owner.sandbox = viewer.sandbox")
+        assertThat(sql).contains("owner.sandbox = 0")
+                .contains("viewer.sandbox = 0")
                 .contains("viewer.id = #{userId}")
-                .contains("viewer.sandbox = 1")
-                .contains("source_environment, 'PRODUCTION') = 'SANDBOX'");
+                .contains("COALESCE(t.source_environment, 'PRODUCTION') = 'PRODUCTION'")
+                .doesNotContain("viewer.sandbox = 1")
+                .doesNotContain("= 'SANDBOX'");
     }
 }

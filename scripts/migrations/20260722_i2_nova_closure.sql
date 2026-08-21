@@ -1,7 +1,6 @@
 -- I2 Nova closure: reconcile the server-owned cadence catalog to the PRD 10-key contract.
 -- Legacy rows are soft-deleted rather than destroyed so the cutover remains auditable.
 
-USE nexion;
 
 UPDATE nx_nova_template
    SET is_deleted = 1,

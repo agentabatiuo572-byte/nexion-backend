@@ -18,6 +18,7 @@ class AppTrialLifecycleMapperContractTest {
                 .contains("id=#{id} AND version=#{version}")
                 .contains("UPPER(status) IN ('CLAIMED','ACTIVE') AND expires_at<=#{now}")
                 .contains("COALESCE(source_environment,'PRODUCTION')='PRODUCTION'")
+                .contains("COALESCE(sandbox,0)=0")
                 .contains("client_request_no");
     }
 }

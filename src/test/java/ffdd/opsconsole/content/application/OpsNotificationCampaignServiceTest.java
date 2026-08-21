@@ -805,7 +805,7 @@ class OpsNotificationCampaignServiceTest {
         }
 
         @Override
-        public int markAllNotificationsRead(Long userId) {
+        public int markAllNotificationsRead(Long userId, List<Long> notificationIds) {
             return 0;
         }
 

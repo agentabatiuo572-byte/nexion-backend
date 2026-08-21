@@ -41,8 +41,14 @@ public class AppReferralRewardService {
         if (account == null) throw new BizException(503, "H8_REWARD_ACCOUNT_ENVIRONMENT_INCONSISTENT");
 
         boolean sandbox = account.sandbox() != null && account.sandbox() == 1;
+        String[] activeProfiles = environment.getActiveProfiles();
         boolean strictSandboxProfile = H8AcceptanceSandboxProfileCondition
-                .isStrictIsolatedProfile(environment.getActiveProfiles());
+                .isStrictIsolatedProfile(activeProfiles);
+        boolean productionProfile = activeProfiles == null || activeProfiles.length == 0
+                || activeProfiles.length == 1 && java.util.Set.of("prod").contains(activeProfiles[0]);
+        if (!strictSandboxProfile && !productionProfile) {
+            throw new BizException(503, "H8_REWARD_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         if (strictSandboxProfile && !sandbox) {
             throw new BizException(403, "H8_SANDBOX_ACCOUNT_REQUIRED");
         }

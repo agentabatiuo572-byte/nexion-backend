@@ -44,13 +44,13 @@ class BehaviorAnalyticsFixtureInitializerTest {
 
     @Test
     void initializerBeanIsRegisteredOnlyForOneStrictIsolatedProfile() {
-        for (String profile : new String[]{"test", "acceptance", "local-sandbox"}) {
+        for (String profile : new String[]{"test", "dev", "dev"}) {
             context(profile).run(context -> assertThat(context)
                     .hasSingleBean(BehaviorAnalyticsFixtureInitializer.class));
         }
 
         for (String profiles : new String[]{
-                "production", "development", "production,acceptance", "production,test",
+                "prod", "development", "production,acceptance", "production,test",
                 "test,acceptance", "acceptance,development", "local-sandbox,development"}) {
             context(profiles).run(context -> assertThat(context)
                     .doesNotHaveBean(BehaviorAnalyticsFixtureInitializer.class));

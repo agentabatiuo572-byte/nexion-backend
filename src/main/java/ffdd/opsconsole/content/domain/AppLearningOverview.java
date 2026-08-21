@@ -7,5 +7,8 @@ public record AppLearningOverview(
         List<AppLearningCourseView> courses,
         int completedCourses,
         int totalCourses,
-        BigDecimal earnedNex) {
+        BigDecimal earnedNex,
+        boolean serverCanonical,
+        String sourceEnvironment,
+        String runId) {
 }

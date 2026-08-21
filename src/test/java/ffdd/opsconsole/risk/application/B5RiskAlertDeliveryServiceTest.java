@@ -42,7 +42,7 @@ class B5RiskAlertDeliveryServiceTest {
 
     @Test
     void productionProfileCannotTurnSandboxConfigIntoDeliveredEmail() {
-        B5RiskAlertDeliveryService productionProfileService = service("production");
+        B5RiskAlertDeliveryService productionProfileService = service("prod");
         when(config.activeValue("risk.alert-subscription.subscriber")).thenReturn(Optional.of("risk-admin"));
         when(config.activeValue("risk.alert-subscription.channels")).thenReturn(Optional.of("email"));
         when(config.activeValue("risk.alert-subscription.email-mode")).thenReturn(Optional.of("sandbox"));

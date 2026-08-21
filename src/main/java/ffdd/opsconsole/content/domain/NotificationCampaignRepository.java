@@ -63,7 +63,7 @@ public interface NotificationCampaignRepository {
     boolean recordNotificationAction(
             Long userId, Long notificationId, String action, String route, String idempotencyKey);
 
-    int markAllNotificationsRead(Long userId);
+    int markAllNotificationsRead(Long userId, List<Long> notificationIds);
 
     int clearReadNotifications(Long userId);
 

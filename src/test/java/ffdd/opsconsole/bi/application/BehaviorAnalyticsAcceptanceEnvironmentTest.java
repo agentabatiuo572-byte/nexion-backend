@@ -31,7 +31,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
                         "/pages/index/index", "/pages/index/index", true));
         when(mapper.isSandboxUser(42L)).thenReturn(true);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), environment, "unit-test-pseudonym-secret", "unit-run");
         when(sandboxMapper.tryAcquireSessionLock(any())).thenReturn(1);
@@ -57,7 +57,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
                 .thenReturn(new BehaviorAnalyticsMapper.CatalogRow("/pages/index/index", "首页", 1,
                         "/pages/index/index", "/pages/index/index", true));
         MockEnvironment mixed = new MockEnvironment();
-        mixed.setActiveProfiles("acceptance", "production");
+        mixed.setActiveProfiles("dev", "prod");
         BehaviorAnalyticsService mixedService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), mixed, "unit-test-pseudonym-secret", "unit-run");
 
@@ -68,7 +68,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         verify(outbox, never()).publishTrustedClientAnalyticsEvent(any(), any(), any(), any());
 
         MockEnvironment acceptance = new MockEnvironment();
-        acceptance.setActiveProfiles("acceptance");
+        acceptance.setActiveProfiles("dev");
         BehaviorAnalyticsService accountMismatch = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(42L)).thenReturn(false);
@@ -76,7 +76,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_ACCOUNT_ENVIRONMENT_MISMATCH");
 
         MockEnvironment production = new MockEnvironment();
-        production.setActiveProfiles("production");
+        production.setActiveProfiles("prod");
         BehaviorAnalyticsService productionMismatch = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), production, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
@@ -96,7 +96,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
         BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
         BehaviorAnalyticsSandboxMapper sandboxMapper = mock(BehaviorAnalyticsSandboxMapper.class);
         MockEnvironment acceptance = new MockEnvironment();
-        acceptance.setActiveProfiles("acceptance");
+        acceptance.setActiveProfiles("dev");
         BehaviorAnalyticsService service = new BehaviorAnalyticsService(mapper, sandboxMapper, mock(EventOutboxService.class),
                 mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-l6-1");
         String actorHash = "a".repeat(64);
@@ -183,8 +183,8 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
 
     @Test
     void directProductionL6RoutesFailClosedInEveryIsolatedMixedOrUnknownProfileBeforeReadsAuditOrOutbox() {
-        for (String[] profiles : new String[][] { { "acceptance" }, { "test" }, { "local-sandbox" },
-                { "acceptance", "production" }, { "preview" } }) {
+        for (String[] profiles : new String[][] { { "dev" }, { "test" }, { "dev" },
+                { "dev", "prod" }, { "preview" } }) {
             BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
             BehaviorAnalyticsSandboxMapper sandboxMapper = mock(BehaviorAnalyticsSandboxMapper.class);
             EventOutboxService outbox = mock(EventOutboxService.class);
@@ -208,7 +208,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
 
     @Test
     void productionAndLegacyDefaultProfilesRetainTheProductionReadSurface() {
-        for (String[] profiles : new String[][] { { "production" }, {} }) {
+        for (String[] profiles : new String[][] { { "prod" }, {} }) {
             BehaviorAnalyticsMapper mapper = mock(BehaviorAnalyticsMapper.class);
             MockEnvironment environment = new MockEnvironment();
             environment.setActiveProfiles(profiles);
@@ -222,7 +222,7 @@ class BehaviorAnalyticsAcceptanceEnvironmentTest {
 
     private MockEnvironment acceptanceEnvironment() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         return environment;
     }
 

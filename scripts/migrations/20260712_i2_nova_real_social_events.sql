@@ -1,4 +1,3 @@
-USE nexion;
 
 CREATE TABLE IF NOT EXISTS nx_nova_social_distribution (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

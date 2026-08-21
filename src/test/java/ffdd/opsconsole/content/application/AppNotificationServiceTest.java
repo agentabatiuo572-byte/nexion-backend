@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -96,6 +97,52 @@ class AppNotificationServiceTest {
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void markAllReadUpdatesExactlyTheLockedPreferenceVisibleIds() {
+        var first = fact(false, "commission", "/pages/me/wallet-repurchase");
+        var second = new NotificationEventFact(100L, 7L, "system", "normal", "/pages/me/security", false, "P3", 4, "2026-W10");
+        when(repository.lockUnreadNotificationEventFacts(7L)).thenReturn(List.of(first, second));
+        when(repository.markAllNotificationsRead(7L, List.of(99L, 100L))).thenReturn(2);
+
+        var result = service.markAllRead(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isEqualTo(2);
+        verify(repository).markAllNotificationsRead(7L, List.of(99L, 100L));
+        verify(outbox, times(2)).publishUserEvent(
+                org.mockito.ArgumentMatchers.eq("NOTIFICATION"), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("notification.read"), org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq("P3"), org.mockito.ArgumentMatchers.eq(4),
+                org.mockito.ArgumentMatchers.eq("2026-W10"), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void markAllReadFailsClosedWhenFinalUpdateCountDiffersFromLockedIds() {
+        when(repository.lockUnreadNotificationEventFacts(7L)).thenReturn(List.of(fact(false, "system", "/pages/me/security")));
+        when(repository.markAllNotificationsRead(7L, List.of(99L))).thenReturn(0);
+
+        assertThatThrownBy(() -> service.markAllRead(7L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("NOTIFICATION_READ_FACT_MISMATCH");
+        verify(outbox, never()).publishUserEvent(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void markAllReadSkipsTheUpdateWhenNoPreferenceVisibleUnreadFactsExist() {
+        when(repository.lockUnreadNotificationEventFacts(7L)).thenReturn(List.of());
+
+        var result = service.markAllRead(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isZero();
+        verify(repository, never()).markAllNotificationsRead(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyList());
     }
 
     @Test

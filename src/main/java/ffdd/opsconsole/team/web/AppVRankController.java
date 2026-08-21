@@ -1,19 +1,25 @@
 package ffdd.opsconsole.team.web;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
+import ffdd.opsconsole.team.application.TeamSandboxFactGenerator;
+import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import java.util.regex.Pattern;
 
 /**
  * App 侧 V-Rank 单一事实源。
@@ -25,14 +31,28 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequiredArgsConstructor
 public class AppVRankController {
+    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final TeamCommissionRepository commissionRepository;
     private final VRankPerformanceRepository performanceRepository;
+    private final AppTeamInsightsMapper userMapper;
+    private final Environment environment;
 
     @GetMapping("/api/config/v-ranks")
     public ApiResult<Map<String, Object>> ranks() {
-        return ApiResult.ok(Map.of(
-                "source", "nx_v_rank_config + nx_v_rank_reward_rule + nx_commission_rule",
-                "ranks", rankRows()));
+        Scope scope = runtimeScope();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", "nx_v_rank_config + nx_v_rank_reward_rule + nx_commission_rule");
+        response.put("serverCanonical", true);
+        response.put("sourceEnvironment", scope.sourceEnvironment());
+        response.put("runId", scope.runId());
+        // Only expose rules that are enforced by the server engine itself. UI
+        // must not infer additional narrative/thresholds from local copy.
+        response.put("policySnapshot", Map.of(
+                "source", "VRankPromotionEngine",
+                "promotionMode", "STEPWISE",
+                "conditionSemantics", "POSITIVE_FIELDS_ONLY"));
+        response.put("ranks", rankRows());
+        return ApiResult.ok(response);
     }
 
     @GetMapping("/api/team/rank")
@@ -40,6 +60,10 @@ public class AppVRankController {
         Long userId = userId(authentication);
         if (userId == null) {
             return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        }
+        Scope scope = userScope(userId);
+        if (scope.sandbox() == 1) {
+            return ApiResult.ok(TeamSandboxFactGenerator.currentRank(scope.runId(), userId));
         }
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
         Map<String, Object> progress = new LinkedHashMap<>();
@@ -49,9 +73,40 @@ public class AppVRankController {
         progress.put("vDownlineCounts", snapshot.legCounts());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("source", "nx_team_member + server VRankPerformanceRepository");
+        response.put("serverCanonical", true);
+        response.put("sourceEnvironment", scope.sourceEnvironment());
+        response.put("runId", scope.runId());
         response.put("rankCode", commissionRepository.currentMemberVRank(userId));
         response.put("progress", progress);
         return ApiResult.ok(response);
+    }
+
+    private Scope userScope(Long userId) {
+        Scope runtime = runtimeScope();
+        AppTeamInsightsMapper.UserScope user = userMapper.userScope(userId);
+        if (user == null || user.sandbox() == null) {
+            throw new BizException(403, "V_RANK_USER_REQUIRED");
+        }
+        if (runtime.sandbox() == 1 && user.sandbox() != 1) {
+            throw new BizException(403, "V_RANK_SANDBOX_USER_REQUIRED");
+        }
+        if (runtime.sandbox() == 0 && user.sandbox() != 0) {
+            throw new BizException(403, "V_RANK_PRODUCTION_USER_REQUIRED");
+        }
+        return new Scope(user.sandbox(), runtime.sourceEnvironment(), runtime.runId());
+    }
+
+    private Scope runtimeScope() {
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
+                .orElseThrow(() -> new BizException(503, "V_RANK_PROFILE_INVALID"));
+        if (audience == UserAuthEnvironment.SANDBOX) {
+            String runId = environment == null ? "" : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+            if (!RUN_ID.matcher(runId).matches()) {
+                throw new BizException(503, "V_RANK_SANDBOX_RUN_ID_REQUIRED");
+            }
+            return new Scope(1, "SANDBOX", runId);
+        }
+        return new Scope(0, "PRODUCTION", "");
     }
 
     private List<Map<String, Object>> rankRows() {
@@ -143,4 +198,6 @@ public class AppVRankController {
             return null;
         }
     }
+
+    private record Scope(Integer sandbox, String sourceEnvironment, String runId) { }
 }

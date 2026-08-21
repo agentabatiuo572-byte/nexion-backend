@@ -17,6 +17,7 @@ import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WalletRow;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalWrite;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalAttemptRow;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppWithdrawalK3RoutingServiceTest {
+    private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final GrowthRhythmFacade rhythmFacade = mock(GrowthRhythmFacade.class);
@@ -57,13 +60,14 @@ class AppWithdrawalK3RoutingServiceTest {
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("production");
+        environment.setActiveProfiles("prod");
         return environment;
     }
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        attempts.clear();
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
                 "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
@@ -97,6 +101,24 @@ class AppWithdrawalK3RoutingServiceTest {
         when(rhythmFacade.snapshot()).thenReturn(rhythm);
         when(mapper.reserveFunds(eq(7L), any(), any(), eq(3L))).thenReturn(1);
         when(mapper.insertWithdrawal(any())).thenReturn(1);
+        when(mapper.insertWithdrawalAttempt(eq(7L), anyString(), anyString(), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    String hash = invocation.getArgument(2);
+                    String status = invocation.getArgument(3);
+                    return attempts.putIfAbsent(key, new WithdrawalAttemptRow(7L, key, hash, status, null)) == null ? 1 : 0;
+                });
+        when(mapper.lockWithdrawalAttempt(eq(7L), anyString()))
+                .thenAnswer(invocation -> attempts.get(invocation.getArgument(1, String.class)));
+        when(mapper.commitWithdrawalAttempt(eq(7L), anyString(), anyString()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    WithdrawalAttemptRow row = attempts.get(key);
+                    if (row == null || "ABANDONED".equals(row.status())) return 0;
+                    attempts.put(key, new WithdrawalAttemptRow(7L, key, row.requestHash(), "COMMITTED",
+                            invocation.getArgument(2)));
+                    return 1;
+                });
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 1, "2026-W30"));
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, List.of()));
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))

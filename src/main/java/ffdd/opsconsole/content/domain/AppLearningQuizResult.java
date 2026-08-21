@@ -10,5 +10,8 @@ public record AppLearningQuizResult(
         boolean completed,
         boolean rewardGranted,
         BigDecimal rewardNex,
-        int attempts) {
+        int attempts,
+        boolean serverCanonical,
+        String sourceEnvironment,
+        String runId) {
 }

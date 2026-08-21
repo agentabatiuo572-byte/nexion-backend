@@ -59,6 +59,40 @@ public interface AppGenesisPointsMapper extends BaseMapper<Object> {
             """)
     Integer currentRank(@Param("userId") Long userId, @Param("sandbox") Integer sandbox);
 
+    @Select("""
+            SELECT u.id AS userId,
+                   COALESCE(NULLIF(TRIM(u.nickname),''), CONCAT('User ', u.id)) AS nickname,
+                   COUNT(h.id) AS holdings
+              FROM nx_genesis_sandbox_holding h
+              JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+             WHERE h.run_id=#{runId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
+             GROUP BY u.id,u.nickname ORDER BY COUNT(h.id) DESC,u.id ASC LIMIT 100
+            """)
+    List<PointsRow> sandboxLeaderboard(@Param("runId") String runId);
+
+    @Select("""
+            SELECT u.id AS userId,
+                   COALESCE(NULLIF(TRIM(u.nickname),''), CONCAT('User ', u.id)) AS nickname,
+                   COUNT(h.id) AS holdings
+              FROM nx_genesis_sandbox_holding h
+              JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+             WHERE h.run_id=#{runId} AND u.id=#{userId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
+             GROUP BY u.id,u.nickname
+            """)
+    PointsRow sandboxCurrentUser(@Param("userId") Long userId,@Param("runId") String runId);
+
+    @Select("""
+            SELECT COUNT(*)+1 FROM (
+              SELECT u.id,COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
+              JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+              WHERE h.run_id=#{runId} AND UPPER(h.status) IN ('ACTIVE','LISTED') GROUP BY u.id
+            ) ranked JOIN (
+              SELECT COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
+              WHERE h.run_id=#{runId} AND h.user_id=#{userId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
+            ) mine ON ranked.holdings>mine.holdings OR (ranked.holdings=mine.holdings AND ranked.id<#{userId})
+            """)
+    Integer sandboxCurrentRank(@Param("userId") Long userId,@Param("runId") String runId);
+
     @Select("SELECT sandbox,v_rank AS vRank FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     UserScope userScope(@Param("userId") Long userId);
 

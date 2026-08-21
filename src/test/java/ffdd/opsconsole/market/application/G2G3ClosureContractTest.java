@@ -16,7 +16,7 @@ class G2G3ClosureContractTest {
         String controller = source("src/main/java/ffdd/opsconsole/market/web/AppExchangeController.java");
         String service = source("src/main/java/ffdd/opsconsole/market/application/AppExchangeService.java");
         String mapper = source("src/main/java/ffdd/opsconsole/market/mapper/AppExchangeMapper.java");
-        assertThat(controller).contains("/api/config/exchange/caps", "/api/config/market/nex", "/api/exchange");
+        assertThat(controller).contains("/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/exchange");
         assertThat(service).contains("@Transactional", "AdminIdempotencyService", "EventOutboxService",
                 "exchange.swapped", "applyWalletDelta", "insertLedger");
         assertThat(mapper).contains("FOR UPDATE",

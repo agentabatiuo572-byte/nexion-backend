@@ -2,7 +2,9 @@ package ffdd.opsconsole.commerce.application;
 
 import ffdd.opsconsole.commerce.mapper.AppStorefrontActivityMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -26,6 +28,8 @@ public class AppStorefrontActivityService {
     private static final List<Integer> WINDOWS = List.of(7, 30, 90);
 
     private final AppStorefrontActivityMapper mapper;
+    private final CommerceAcceptanceRun acceptanceRun;
+    private final FundsSandboxProfileGuard profileGuard;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> activity(Long userId, String cursor, Integer requestedLimit) {
@@ -37,11 +41,28 @@ public class AppStorefrontActivityService {
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(400, "STOREFRONT_ACTIVITY_CURSOR_INVALID");
         }
+        boolean sandboxRuntime = profileGuard.isLocalSandboxEnabled();
+        if (!sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "STOREFRONT_ACTIVITY_UNAVAILABLE");
+        }
         AppStorefrontActivityMapper.UserEnvironmentRow environment = mapper.userEnvironment(userId);
         if (environment == null) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        if (sandboxRuntime != environment.sandbox()) {
+            return ApiResult.fail(503, "STOREFRONT_ACTIVITY_UNAVAILABLE");
+        }
+        if (environment.sandbox()) {
+            try {
+                acceptanceRun.requireRunId();
+            } catch (BizException ex) {
+                return ApiResult.fail(ex.getCode(), ex.getMessage());
+            }
+            // There is no run-scoped activity projection yet. Do not leak the
+            // canonical nx_order feed into a Sandbox run.
+            return ApiResult.fail(503, "STOREFRONT_ACTIVITY_UNAVAILABLE");
+        }
 
         List<AppStorefrontActivityMapper.ActivityRow> rows = mapper.recentActivities(
-                environment.sandbox(), decoded.at(), decoded.id(), limit + 1);
+                false, decoded.at(), decoded.id(), limit + 1);
         if (rows == null) return ApiResult.fail(503, "STOREFRONT_ACTIVITY_UNAVAILABLE");
         boolean hasMore = rows.size() > limit;
         List<Map<String, Object>> items = new ArrayList<>();
@@ -49,7 +70,8 @@ public class AppStorefrontActivityService {
         String nextCursor = hasMore ? Cursor.encode(rows.get(limit - 1)) : null;
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("source", "nx_order/nx_order_item/nx_product");
-        response.put("sourceEnvironment", environment.sandbox() ? "SANDBOX" : "PRODUCTION");
+        response.put("sourceEnvironment", "PRODUCTION");
+        response.put("runId", "");
         response.put("items", items);
         response.put("nextCursor", nextCursor);
         return ApiResult.ok(response);
@@ -61,19 +83,50 @@ public class AppStorefrontActivityService {
         if (windowDays < 0 || productNo == null || !productNo.matches("[A-Za-z0-9._-]{1,64}")) {
             return ApiResult.fail(400, "STOREFRONT_SOCIAL_PROOF_REQUEST_INVALID");
         }
+        boolean sandboxRuntime = profileGuard.isLocalSandboxEnabled();
+        if (!sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
+        }
         AppStorefrontActivityMapper.UserEnvironmentRow environment = mapper.userEnvironment(userId);
         if (environment == null) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
-        AppStorefrontActivityMapper.ProductRow product = mapper.product(productNo);
-        if (product == null) return ApiResult.fail(404, "STOREFRONT_PRODUCT_NOT_FOUND");
+        if (sandboxRuntime != environment.sandbox()) {
+            return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
+        }
         LocalDateTime since = LocalDateTime.now().minusDays(windowDays);
-        Long cumulativeSales = mapper.salesTotal(product.id(), environment.sandbox());
-        Long windowSales = mapper.salesSince(product.id(), environment.sandbox(), since);
+        AppStorefrontActivityMapper.ProductRow product;
+        String source;
+        String sourceEnvironment;
+        String runId;
+        Long cumulativeSales;
+        Long windowSales;
+        if (environment.sandbox()) {
+            try {
+                runId = acceptanceRun.requireRunId();
+            } catch (BizException ex) {
+                return ApiResult.fail(ex.getCode(), ex.getMessage());
+            }
+            product = mapper.sandboxProduct(runId, productNo);
+            if (product == null) return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
+            cumulativeSales = mapper.sandboxSalesTotal(runId, product.id());
+            windowSales = mapper.sandboxSalesSince(runId, product.id(), since);
+            source = "nx_commerce_sandbox_catalog/nx_commerce_sandbox_order/nx_commerce_sandbox_inventory";
+            sourceEnvironment = "SANDBOX";
+        } else {
+            runId = "";
+            product = mapper.product(productNo);
+            if (product == null) return ApiResult.fail(404, "STOREFRONT_PRODUCT_NOT_FOUND");
+            cumulativeSales = mapper.salesTotal(product.id(), false);
+            windowSales = mapper.salesSince(product.id(), false, since);
+            source = "nx_product/nx_order/nx_order_item";
+            sourceEnvironment = "PRODUCTION";
+        }
         if (cumulativeSales == null || cumulativeSales < 0 || windowSales == null || windowSales < 0) {
             return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
         }
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("source", "nx_product/nx_order/nx_order_item");
-        response.put("sourceEnvironment", environment.sandbox() ? "SANDBOX" : "PRODUCTION");
+        response.put("source", source);
+        response.put("sourceEnvironment", sourceEnvironment);
+        response.put("runId", runId);
         response.put("productName", product.name());
         response.put("cumulativeSales", cumulativeSales);
         response.put("windowDays", windowDays);

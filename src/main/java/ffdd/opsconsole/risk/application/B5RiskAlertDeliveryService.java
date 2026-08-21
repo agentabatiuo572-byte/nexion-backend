@@ -118,7 +118,7 @@ public class B5RiskAlertDeliveryService {
     static boolean sandboxProfileAllowed(String profiles) {
         if (!StringUtils.hasText(profiles)) return false;
         return Arrays.stream(profiles.split(",")).map(String::trim)
-                .anyMatch(profile -> "test".equalsIgnoreCase(profile) || "acceptance".equalsIgnoreCase(profile));
+                .anyMatch(profile -> "test".equalsIgnoreCase(profile) || "dev".equalsIgnoreCase(profile));
     }
 
     HttpClient webhookHttpClient() {

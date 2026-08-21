@@ -32,8 +32,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class AppComputeShareEnrollmentService {
     private static final Duration ENROLLMENT_TTL = Duration.ofMinutes(10);
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("production", "default");
-    private static final Set<String> SANDBOX_PROFILES = Set.of("acceptance", "test", "local-sandbox");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("dev", "test");
 
     private final AppComputeShareEnrollmentMapper mapper;
     private final PlatformConfigFacade config;

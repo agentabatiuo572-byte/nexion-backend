@@ -10,6 +10,8 @@ import ffdd.opsconsole.janus.application.OpsJanusService;
 import ffdd.opsconsole.janus.application.JanusExecutorClaimVerifier;
 import ffdd.opsconsole.janus.application.JanusCommandLeaseService;
 import ffdd.opsconsole.janus.dto.JanusCommandAckRequest;
+import ffdd.opsconsole.janus.dto.JanusDeviceReportRequest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import java.util.LinkedHashMap;
@@ -91,7 +93,7 @@ class AppJanusControllerTest {
         when(leaseService.claim(eq("D-1"),eq("cmd-1"),eq(3L),eq("executor-1"),eq("a".repeat(32)),eq(null)))
                 .thenReturn(new JanusCommandLeaseService.Lease(true,null,"e".repeat(64),1L,
                         System.currentTimeMillis()+60_000));
-        when(verifier.authorizeCommand(eq("executor-1"),eq("D-1"),org.mockito.ArgumentMatchers.matches("[a-f0-9]{64}")))
+        when(verifier.authorizeCommand(eq(42L),eq("executor-1"),eq("D-1"),org.mockito.ArgumentMatchers.matches("[a-f0-9]{64}")))
                 .thenReturn("f".repeat(64));
 
         ApiResult<Map<String,Object>> result=controller.pending("D-1","executor-1","D-1","a".repeat(32),
@@ -115,6 +117,20 @@ class AppJanusControllerTest {
         row.put("sid","SID-1");
         assertThat(AppJanusController.commandDigest(row,"cmd-1",3L,
                 new JanusCommandLeaseService.Lease(true,null,"e".repeat(64),1L,10_001L))).isNotEqualTo(digest);
+    }
+
+    @Test
+    void reportBodyDigestMatchesTheNativeClientCanonicalJson() throws Exception {
+        long now=1_723_000_000_000L;String device="device-e2e-fixed";ObjectMapper mapper=new ObjectMapper();
+        JanusDeviceReportRequest request=new JanusDeviceReportRequest(
+                "executor-"+now+"-"+device,device,now,now,now,null,"official",null,null,null,
+                "android/e2e/test","android","e2e","test","native",null,null,null,null,
+                mapper.readTree("{\"appOpenCount\":1,\"sessionCount\":1,\"foregroundDurationSeconds\":0,\"repeatStreakDays\":1,\"benchmarkViewed\":false,\"optimizeDone\":false,\"marketViewed\":false,\"walletViewed\":false}"),
+                mapper.readTree("{\"isHeadless\":false,\"automationSignalCount\":0,\"fpBlocklistHit\":false,\"screenAnomaly\":false,\"timezoneMismatch\":false,\"languageMismatch\":false}"),
+                null,null,null,
+                mapper.readTree("{\"sessionId\":\"executor-session-1723000000000-device-e2e-fixed\",\"startedAt\":1723000000000,\"lastSeenAt\":1723000000000,\"foregroundDurationSeconds\":0}"),null);
+        assertThat(AppJanusController.bodyDigest(request))
+                .isEqualTo("0cde9cd7c772179808955b658394d2e158e1edad3d4706d6a0ddaa4eedc36176");
     }
 
     private static JanusExecutorClaimVerifier.Claim anyClaim() {

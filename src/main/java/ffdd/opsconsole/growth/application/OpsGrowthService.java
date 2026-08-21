@@ -54,6 +54,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -134,6 +135,8 @@ public class OpsGrowthService implements AuditReplayable {
             "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
+    private static final Set<String> SANDBOX_DAY_ONE_MISSION_CODES = Set.of(
+            "bind_bank_card", "visit_earn", "visit_store", "view_product_roi", "setup_profile", "invite_friend");
 
     private final PlatformConfigFacade configFacade;
     private final EmergencyControlRepository emergencyRepository;
@@ -845,6 +848,10 @@ public class OpsGrowthService implements AuditReplayable {
             String type = normalizePlainText(request.missionType(), 32).toUpperCase(Locale.ROOT);
             if (!Set.of("DAY_ONE", "WEEKLY_T1", "WEEKLY_T2").contains(type)) {
                 throw new IllegalArgumentException("MISSION_TYPE_UNSUPPORTED");
+            }
+            if (type.startsWith("WEEKLY_")
+                    && SANDBOX_DAY_ONE_MISSION_CODES.contains(code.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException("MISSION_CODE_RESERVED_FOR_DAY_ONE");
             }
             int rewardPoints = request.rewardPoints() == null ? 0 : request.rewardPoints();
             if (rewardPoints < 0) {
@@ -2251,6 +2258,7 @@ public class OpsGrowthService implements AuditReplayable {
                 "popup", rows.stream()
                         .filter(voucher -> "active".equals(voucher.get("status")))
                         .filter(voucher -> Boolean.TRUE.equals(voucher.get("popupEnabled")))
+                        .filter(voucher -> Boolean.TRUE.equals(voucher.get("popupCadenceEnabled")))
                         .count()));
         response.put("sources", List.of(
                 "nx_growth_voucher",
@@ -2289,6 +2297,10 @@ public class OpsGrowthService implements AuditReplayable {
                     longValue(next.get("endAt")),
                     toJsonString(normalizeStringList(castStringList(next.get("claimSurfaces")), 8, 20)),
                     Boolean.TRUE.equals(next.get("popupEnabled")),
+                    longValue(next.get("popupDelayMs")),
+                    longValue(next.get("popupCooldownHours")),
+                    longValue(next.get("popupMaxPerSession")),
+                    Boolean.TRUE.equals(next.get("popupCadenceEnabled")),
                     Boolean.TRUE.equals(next.get("stackWithTrial")),
                     Boolean.TRUE.equals(next.get("stackWithOthers")),
                     Boolean.TRUE.equals(next.get("splittable")),
@@ -2340,6 +2352,10 @@ public class OpsGrowthService implements AuditReplayable {
                     longValue(next.get("endAt")),
                     toJsonString(normalizeStringList(castStringList(next.get("claimSurfaces")), 8, 20)),
                     Boolean.TRUE.equals(next.get("popupEnabled")),
+                    longValue(next.get("popupDelayMs")),
+                    longValue(next.get("popupCooldownHours")),
+                    longValue(next.get("popupMaxPerSession")),
+                    Boolean.TRUE.equals(next.get("popupCadenceEnabled")),
                     Boolean.TRUE.equals(next.get("stackWithTrial")),
                     Boolean.TRUE.equals(next.get("stackWithOthers")),
                     Boolean.TRUE.equals(next.get("splittable")),
@@ -2593,12 +2609,16 @@ public class OpsGrowthService implements AuditReplayable {
         }
         try {
             List<Map<String, Object>> missions = questEventMapper.get().missionRows("DAY_ONE");
+            List<Map<String, Object>> weeklyTier1 = questEventMapper.get().missionRows("WEEKLY_T1");
+            List<Map<String, Object>> weeklyTier2 = questEventMapper.get().missionRows("WEEKLY_T2");
             Map<String, Object> promo = questEventMapper.get().promoBanner();
-            if (missions == null || promo == null) {
+            if (missions == null || weeklyTier1 == null || weeklyTier2 == null || promo == null) {
                 return ApiResult.fail(503, "PLATFORM_HOME_FLAGS_UNAVAILABLE");
             }
             boolean newcomer = missions.stream().anyMatch(row -> "active".equalsIgnoreCase(stringValue(row.get("status"), "")));
-            boolean weekly = "active".equalsIgnoreCase(stringValue(promo.get("status"), ""));
+            boolean weeklyMission = Stream.concat(weeklyTier1.stream(), weeklyTier2.stream())
+                    .anyMatch(row -> "active".equalsIgnoreCase(stringValue(row.get("status"), "")));
+            boolean weekly = weeklyMission || "active".equalsIgnoreCase(stringValue(promo.get("status"), ""));
             return ApiResult.ok(new HomeFeatureFlags(newcomer, weekly));
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "PLATFORM_HOME_FLAGS_UNAVAILABLE");
@@ -3643,6 +3663,10 @@ public class OpsGrowthService implements AuditReplayable {
         voucher.put("endAt", longValue(row.get("endAt")));
         voucher.put("claimSurfaces", parseJsonStringList(row.get("claimSurfacesJson")));
         voucher.put("popupEnabled", truthy(row.get("popupEnabled")));
+        voucher.put("popupDelayMs", longValue(row.get("popupDelayMs")));
+        voucher.put("popupCooldownHours", longValue(row.get("popupCooldownHours")));
+        voucher.put("popupMaxPerSession", longValue(row.get("popupMaxPerSession")));
+        voucher.put("popupCadenceEnabled", truthy(row.get("popupCadenceEnabled")));
         voucher.put("stackWithTrial", truthy(row.get("stackWithTrial")));
         voucher.put("stackWithOthers", truthy(row.get("stackWithOthers")));
         voucher.put("splittable", truthy(row.get("splittable")));
@@ -3753,6 +3777,22 @@ public class OpsGrowthService implements AuditReplayable {
         voucher.put("endAt", endAt);
         voucher.put("claimSurfaces", claimSurfaces);
         voucher.put("popupEnabled", Boolean.TRUE.equals(request.popupEnabled()));
+        long popupDelayMs = request.popupDelayMs() == null ? 1300L : request.popupDelayMs();
+        long popupCooldownHours = request.popupCooldownHours() == null ? 24L : request.popupCooldownHours();
+        long popupMaxPerSession = request.popupMaxPerSession() == null ? 1L : request.popupMaxPerSession();
+        if (popupDelayMs < 0L || popupDelayMs > 60000L) {
+            throw new IllegalArgumentException("VOUCHER_POPUP_DELAY_INVALID");
+        }
+        if (popupCooldownHours < 0L || popupCooldownHours > 720L) {
+            throw new IllegalArgumentException("VOUCHER_POPUP_COOLDOWN_INVALID");
+        }
+        if (popupMaxPerSession < 1L || popupMaxPerSession > 10L) {
+            throw new IllegalArgumentException("VOUCHER_POPUP_SESSION_CAP_INVALID");
+        }
+        voucher.put("popupDelayMs", popupDelayMs);
+        voucher.put("popupCooldownHours", popupCooldownHours);
+        voucher.put("popupMaxPerSession", popupMaxPerSession);
+        voucher.put("popupCadenceEnabled", request.popupCadenceEnabled() == null || request.popupCadenceEnabled());
         voucher.put("stackWithTrial", Boolean.TRUE.equals(request.stackWithTrial()));
         voucher.put("stackWithOthers", Boolean.TRUE.equals(request.stackWithOthers()));
         voucher.put("splittable", Boolean.TRUE.equals(request.splittable()));

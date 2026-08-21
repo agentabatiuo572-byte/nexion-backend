@@ -39,6 +39,26 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                        @Param("endAt") LocalDateTime endAt);
 
     @Select("""
+            SELECT COALESCE(NULLIF(r.task_no, ''), r.receipt_no) AS id,
+                   r.client_name AS client,
+                   COALESCE(NULLIF(t.model_name, ''), r.task_type) AS model,
+                   r.reward_usdt AS rewardUsdt,
+                   r.completed_at AS completedAt
+              FROM nx_compute_receipt r
+              LEFT JOIN nx_compute_task t ON t.task_no = r.task_no
+                                         AND t.user_id = #{userId}
+                                         AND t.is_deleted = 0
+             WHERE r.user_id = #{userId}
+               AND COALESCE(r.source_environment, 'PRODUCTION') = #{sourceEnvironment}
+               AND r.is_deleted = 0
+               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+             ORDER BY r.completed_at DESC, r.id DESC
+             LIMIT 5
+            """)
+    List<EarningsLedgerRow> earningsLedger(@Param("userId") Long userId,
+                                           @Param("sourceEnvironment") String sourceEnvironment);
+
+    @Select("""
             SELECT SUM(o.amount_usdt) AS amountUsdt,
                    COUNT(*) AS orderCount
               FROM nx_order o
@@ -69,6 +89,51 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.pending_deactivate = 0
             """)
     Long activeDevices(@Param("userId") Long userId, @Param("sandbox") boolean sandbox);
+
+    @Select("""
+            SELECT d.name,
+                   d.product_code AS productCode,
+                   d.product_tier AS productTier,
+                   d.device_type AS deviceType,
+                   d.daily_usdt AS dailyUsdt
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id
+                            AND u.id = #{userId}
+                            AND u.sandbox = #{sandbox}
+                            AND u.status = 'ACTIVE'
+                            AND u.is_deleted = 0
+             WHERE d.user_id = #{userId}
+               AND d.is_deleted = 0
+               AND UPPER(d.ownership_status) = 'OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND d.deactivated_at IS NULL
+               AND d.pending_deactivate = 0
+               AND d.daily_usdt IS NOT NULL
+               AND d.daily_usdt > 0
+             ORDER BY d.daily_usdt DESC, d.id ASC
+             LIMIT 1
+            """)
+    OwnedDeviceRow highestActiveDevice(@Param("userId") Long userId,
+                                       @Param("sandbox") boolean sandbox);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id
+                            AND u.id = #{userId}
+                            AND u.sandbox = 1
+                            AND u.status = 'ACTIVE'
+                            AND u.is_deleted = 0
+             WHERE d.user_id = #{userId}
+               AND d.source_environment = 'SANDBOX'
+               AND d.run_id = #{runId}
+               AND d.is_deleted = 0
+               AND UPPER(d.ownership_status) = 'OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND d.deactivated_at IS NULL
+               AND d.pending_deactivate = 0
+            """)
+    Long sandboxActiveDevices(@Param("userId") Long userId, @Param("runId") String runId);
 
     @Select("""
             SELECT COUNT(*)
@@ -105,6 +170,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     @Select("""
             SELECT CONCAT('client_', LEFT(SHA2(CONCAT(
                          COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|', COALESCE(d.gpu_model,'')), 256), 16)) AS id,
+                   dc.display_name AS name,
                    d.gpu_model AS model,
                    dc.location AS city,
                    COUNT(*) AS gpus
@@ -120,17 +186,21 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
-             GROUP BY d.device_type, d.dc_location, d.gpu_model, dc.location
+             GROUP BY d.device_type, d.dc_location, d.gpu_model, dc.display_name, dc.location
              ORDER BY COUNT(*) DESC, id ASC
              LIMIT 20
             """)
     List<OnGridClientRow> onGridClients(@Param("sandbox") boolean sandbox);
 
     @Select("""
-            SELECT task_class AS taskClass,
+            SELECT task_id AS taskId,
+                   task_class AS taskClass,
                    name,
                    unit_text AS unit,
-                   price
+                   price,
+                   model_name AS modelName,
+                   min_reward AS minReward,
+                   max_reward AS maxReward
               FROM nx_admin_device_task
              WHERE is_deleted = 0
                AND LOWER(TRIM(status)) = 'active'
@@ -142,12 +212,27 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     List<MarketTaskRow> marketTasks();
 
     @Select("""
+            SELECT h.task_id AS taskId,
+                   h.price,
+                   h.observed_at AS observedAt
+              FROM nx_admin_device_task_price_history h
+              JOIN nx_admin_device_task t
+                ON t.task_id = h.task_id
+               AND t.is_deleted = 0
+               AND LOWER(TRIM(t.status)) = 'active'
+             WHERE h.observed_at >= DATE_SUB(NOW(3), INTERVAL 25 HOUR)
+             ORDER BY h.task_id, h.observed_at, h.id
+            """)
+    List<TaskPriceHistoryRow> marketTaskPriceHistory();
+
+    @Select("""
             SELECT p.product_no AS productNo,
                    p.name,
                    p.product_type AS productType,
                    p.tier,
                    p.price_usdt AS priceUsdt,
-                   p.estimated_daily_usdt AS dailyUsdt
+                   p.estimated_daily_usdt AS dailyUsdt,
+                   p.stock
               FROM nx_product p
              WHERE p.is_deleted = 0
                AND p.store_visible = 1
@@ -183,11 +268,17 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     record UserEnvironmentRow(boolean sandbox) { }
     record PeriodRow(BigDecimal usdt, BigDecimal nex, Long jobCount) { }
     record PaidSummary(BigDecimal amountUsdt, Long orderCount) { }
+    record OwnedDeviceRow(String name, String productCode, String productTier,
+                          String deviceType, BigDecimal dailyUsdt) { }
     record OnGridSummary(Long activeJobs, BigDecimal perSecUsdt) { }
-    record OnGridClientRow(String id, String model, String city, Long gpus) { }
-    record MarketTaskRow(String taskClass, String name, String unit, BigDecimal price) { }
+    record OnGridClientRow(String id, String name, String model, String city, Long gpus) { }
+    record EarningsLedgerRow(String id, String client, String model, BigDecimal rewardUsdt,
+                             LocalDateTime completedAt) { }
+    record MarketTaskRow(String taskId, String taskClass, String name, String unit, BigDecimal price,
+                         String modelName, BigDecimal minReward, BigDecimal maxReward) { }
+    record TaskPriceHistoryRow(String taskId, BigDecimal price, LocalDateTime observedAt) { }
     record MarketProductRow(String productNo, String name, String productType, String tier,
-                            BigDecimal priceUsdt, BigDecimal dailyUsdt) { }
+                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock) { }
     record PromoRow(String baseReward, String multiplier, Integer countdownDays, Integer countdownHours,
                     String targetDevice, String targetDaily, String status, LocalDateTime updatedAt,
                     BigDecimal productPriceUsdt) { }

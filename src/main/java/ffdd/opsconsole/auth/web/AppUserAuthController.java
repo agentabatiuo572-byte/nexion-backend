@@ -4,10 +4,13 @@ import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
 import ffdd.opsconsole.auth.application.AppUserOAuthService;
+import ffdd.opsconsole.auth.application.OAuthSandboxChallengeService;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserOAuthExchangeRequest;
 import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
+import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeRequest;
+import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
 import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
@@ -35,6 +38,7 @@ public class AppUserAuthController {
     private final AppUserRegistrationService registrationService;
     private final AppUserPasswordResetService passwordResetService;
     private final AppUserOAuthService oauthService;
+    private final OAuthSandboxChallengeService oauthSandboxChallengeService;
 
     @PostMapping("/register/otp/send")
     public ApiResult<UserRegistrationOtpResponse> sendRegistrationOtp(
@@ -60,7 +64,16 @@ public class AppUserAuthController {
     public ApiResult<UserOAuthExchangeResponse> exchangeOAuth(
             @RequestBody(required = false) UserOAuthExchangeRequest request,
             HttpServletRequest servletRequest) {
-        return oauthService.exchange(request, servletRequest.getRemoteAddr());
+        return oauthService.exchange(request, servletRequest.getRemoteAddr(),
+                servletRequest.getHeader("Origin"));
+    }
+
+    @PostMapping("/oauth/sandbox/challenge")
+    public ApiResult<UserOAuthSandboxChallengeResponse> issueOAuthSandboxChallenge(
+            @RequestBody(required = false) UserOAuthSandboxChallengeRequest request,
+            HttpServletRequest servletRequest) {
+        return oauthSandboxChallengeService.issue(request, servletRequest.getRemoteAddr(),
+                servletRequest.getHeader("Origin"));
     }
 
     @PostMapping("/login/otp/send")

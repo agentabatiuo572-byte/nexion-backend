@@ -24,5 +24,9 @@ public record GrowthVoucherRequest(
         Long expectedVersion,
         String status,
         String reason,
-        String operator) {
+        String operator,
+        Long popupDelayMs,
+        Long popupCooldownHours,
+        Long popupMaxPerSession,
+        Boolean popupCadenceEnabled) {
 }

@@ -64,14 +64,42 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     Attribution attribution(@Param("userId") Long userId);
 
     @Select("""
-            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) rank,
+            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
                        AND child.status='ACTIVE' AND child.is_deleted=0) activeDirect,
-                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm WHERE tm.user_id=u.id AND tm.is_deleted=0) teamVolumeUsd
+                   (SELECT COALESCE(SUM(tm.volume),0) FROM nx_team_member tm JOIN nx_user member
+                     ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
+                    WHERE tm.user_id=u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) teamVolumeUsd
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseFacts purchaseFacts(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT s.purchase_gate_json
+              FROM nx_admin_device_sku s
+             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1
+            """)
+    String purchaseGateJson(@Param("productNo") String productNo);
+
+    /** Same canonical quantity-aware lifetime quota CAS used by bundle items. */
+    @Update("""
+            UPDATE nx_admin_device_sku
+               SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
+                   updated_at=NOW()
+             WHERE sku_id=#{productNo} AND is_deleted=0
+               AND JSON_VALID(purchase_gate_json)=1
+               AND JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.enforce'))='true'
+               AND (JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod') IS NULL
+                    OR JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod'))='lifetime')
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
+               AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
+               AND #{quantity} > 0
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+                   <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
+            """)
+    int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);
 
     @Update("""
             UPDATE nx_product

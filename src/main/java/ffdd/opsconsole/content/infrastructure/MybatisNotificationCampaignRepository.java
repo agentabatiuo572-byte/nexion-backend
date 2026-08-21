@@ -271,8 +271,9 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     @Override
-    public int markAllNotificationsRead(Long userId) {
-        return campaignMapper.markAllUserNotificationsRead(userId);
+    public int markAllNotificationsRead(Long userId, List<Long> notificationIds) {
+        if (notificationIds == null || notificationIds.isEmpty()) return 0;
+        return campaignMapper.markAllUserNotificationsRead(userId, notificationIds);
     }
 
     @Override

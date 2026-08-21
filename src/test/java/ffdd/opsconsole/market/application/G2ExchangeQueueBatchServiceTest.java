@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.mapper.AppExchangeMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.util.List;
@@ -20,17 +21,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.springframework.core.env.Environment;
 
 class G2ExchangeQueueBatchServiceTest {
     private final AppExchangeMapper mapper = mock(AppExchangeMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final G2ExchangeFeeAllocationService feeAllocation = mock(G2ExchangeFeeAllocationService.class);
+    private final Environment environment = mock(Environment.class);
     private final G2ExchangeQueueBatchService service =
-            new G2ExchangeQueueBatchService(mapper, config, outbox, feeAllocation);
+            new G2ExchangeQueueBatchService(mapper, config, outbox, feeAllocation, environment);
 
     @BeforeEach
     void setUp() {
+        when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(mapper.lockExchangeExecutionMutex()).thenReturn("G2_EXCHANGE_EXECUTION");
         when(mapper.currentPrice()).thenReturn(BigDecimal.ONE);
         when(mapper.platformTodayUsdt()).thenReturn(BigDecimal.ZERO);
@@ -91,6 +95,17 @@ class G2ExchangeQueueBatchServiceTest {
         capOrder.verify(mapper).lockExchangeExecutionMutex();
         capOrder.verify(mapper).platformTodayUsdt();
         capOrder.verify(mapper).applyWalletDelta(any(), any(), any());
+    }
+
+    @Test
+    void failsClosedBeforeSelectingProductionQueueInAnIsolatedProfile() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.process(10))
+                .isInstanceOfSatisfying(BizException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo(503))
+                .hasMessageContaining("EXCHANGE_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
+        verify(mapper, never()).lockQueuedBatch(any(Integer.class));
     }
 
     @Test

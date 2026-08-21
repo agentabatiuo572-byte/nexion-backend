@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
@@ -35,8 +36,8 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
 
         assertThat(mapper).contains(
                 "UPPER(ownership_status) = 'OWNED'",
-                "UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')",
-                "deactivated_at IS NULL AND pending_deactivate = 0",
+                "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')",
+                "d.deactivated_at IS NULL AND d.pending_deactivate = 0",
                 "int reservedDeviceOrderCount",
                 "SUM(quantity)",
                 "'PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING'");
@@ -98,5 +99,27 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 "r.completed_at < #{end}",
                 "GROUP BY r.user_device_id");
         assertThat(sql).doesNotContain("nx_earning_event");
+    }
+
+    @Test
+    void canonicalDeviceAndEarningsSqlDefendTheProductionSandboxBoundary() throws Exception {
+        String mapper = Files.readString(
+                Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"),
+                StandardCharsets.UTF_8);
+
+        assertThat(mapper).contains(
+                "COALESCE(u.sandbox,0)=0",
+                "COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'");
+        for (String methodName : List.of(
+                "activeDeviceCount", "activateOwnedDeviceCas", "lockDeviceForUserCommand",
+                "markDevicePendingDeactivate", "deactivateOwnedDeviceCas", "markDeviceRuntimeDeactivated",
+                "userCanonicalProfile", "ownedDevices", "realizedToday")) {
+            int method = mapper.indexOf(" " + methodName + "(");
+            assertThat(method).as(methodName).isGreaterThanOrEqualTo(0);
+            int sqlStart = Math.max(mapper.lastIndexOf("@Select", method), mapper.lastIndexOf("@Update", method));
+            int sqlEnd = mapper.indexOf("\n    @", method);
+            String declaration = mapper.substring(sqlStart, sqlEnd < 0 ? mapper.length() : sqlEnd);
+            assertThat(declaration).as(methodName).contains("sandbox");
+        }
     }
 }

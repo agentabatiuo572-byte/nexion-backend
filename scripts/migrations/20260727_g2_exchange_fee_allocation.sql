@@ -1,4 +1,3 @@
-USE nexion;
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_nex_buyback_burn_pool_account (

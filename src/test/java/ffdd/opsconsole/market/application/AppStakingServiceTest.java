@@ -4,14 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.market.mapper.AppStakingMapper;
+import ffdd.opsconsole.market.mapper.MarketSandboxMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -26,6 +29,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Supplier;
+import org.springframework.mock.env.MockEnvironment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -37,9 +41,12 @@ class AppStakingServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EarningsReleaseService earningsReleaseService = mock(EarningsReleaseService.class);
+    private final MarketSandboxMapper sandboxMapper = mock(MarketSandboxMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-22T03:00:00Z"), ZoneOffset.UTC);
+    private final MockEnvironment environment = new MockEnvironment();
     private final AppStakingService service = new AppStakingService(
-            mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService, clock);
+            mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService, clock, environment,
+            sandboxMapper);
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -59,6 +66,16 @@ class AppStakingServiceTest {
                 org.mockito.ArgumentMatchers.eq("staking"), anyString())).thenReturn(ApiResult.ok(null));
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+        when(sandboxMapper.insertAccountIfAbsent(anyString(), anyString(), any())).thenReturn(1);
+        when(sandboxMapper.lockAccount(anyString(), anyString(), any())).thenReturn(
+                new MarketSandboxMapper.AccountRow(new BigDecimal("1000.000000"), 0L));
+        when(sandboxMapper.account(anyString(), anyString(), any())).thenReturn(
+                new MarketSandboxMapper.AccountRow(new BigDecimal("900.000000"), 1L));
+        when(sandboxMapper.listPositions(anyString(), anyString(), any())).thenReturn(List.of());
+        when(sandboxMapper.findIdempotency(anyString(), anyString(), any(), anyString(), anyString())).thenReturn(null);
+        when(sandboxMapper.insertIdempotency(any())).thenReturn(1);
+        when(sandboxMapper.updateWallet(anyString(), anyString(), any(), any(), any())).thenReturn(1);
+        when(sandboxMapper.insertPosition(any())).thenReturn(1);
     }
 
     @Test
@@ -66,12 +83,69 @@ class AppStakingServiceTest {
         ApiResult<java.util.Map<String, Object>> result = service.pools();
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
         @SuppressWarnings("unchecked")
         List<java.util.Map<String, Object>> pools = (List<java.util.Map<String, Object>>) result.getData().get("pools");
         assertThat(pools).singleElement().satisfies(pool -> assertThat(pool)
                 .containsEntry("tierKey", "usdt30d")
                 .containsEntry("enabled", true)
                 .containsEntry("killed", false));
+    }
+
+    @Test
+    void localSandboxUsesRunScopedPersistentStateWithoutCanonicalWrites() {
+        environment.setActiveProfiles("dev");
+        environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-STAKING-TEST-001");
+
+        ApiResult<java.util.Map<String, Object>> result = service.open(
+                42L, "sandbox-open", new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100")));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "RUN-STAKING-TEST-001");
+        verifyNoInteractions(mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService);
+        verify(sandboxMapper).insertAccountIfAbsent("staking", "RUN-STAKING-TEST-001", 42L);
+        verify(sandboxMapper).updateWallet(eq("staking"), eq("RUN-STAKING-TEST-001"), eq(42L), any(), any());
+    }
+
+    @Test
+    void productionProfileExposesCanonicalProvenance() {
+        for (String profile : List.of("prod")) {
+            environment.setActiveProfiles(profile);
+
+            ApiResult<java.util.Map<String, Object>> result = service.pools();
+
+            assertThat(result.getData()).containsEntry("serverCanonical", true)
+                    .containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
+        }
+    }
+
+    @Test
+    void developmentPublicPoolsReadTheSamePcManagedCanonicalProductsWithoutAcceptanceRunId() {
+        environment.setActiveProfiles("dev");
+
+        ApiResult<java.util.Map<String, Object>> result = service.pools();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("source", "nx_staking_product + nx_config_item + nx_emergency_control_setting");
+        verify(mapper).listCanonicalProducts();
+        verifyNoInteractions(sandboxMapper);
+    }
+
+    @Test
+    void unknownOrMixedRuntimeFailsClosedBeforeReadingCanonicalStakingTables() {
+        for (String[] profiles : List.of(new String[]{"unknown"}, new String[]{"dev", "prod"})) {
+            environment.setActiveProfiles(profiles);
+
+            assertThatThrownBy(() -> service.positions(42L))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("STAKING_PROFILE_INVALID")
+                    .satisfies(error -> assertThat(((BizException) error).getCode()).isEqualTo(503));
+        }
+
+        verifyNoInteractions(mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService);
     }
 
     @Test

@@ -12,7 +12,7 @@ class G2AcceptanceSandboxProfileGuardTest {
     @Test
     void enablesOnlyTheExplicitSingleAcceptanceProfile() {
         Environment environment = mock(Environment.class);
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
 
         G2AcceptanceSandboxProfileGuard guard = new G2AcceptanceSandboxProfileGuard(environment, "ENABLED");
 
@@ -24,7 +24,7 @@ class G2AcceptanceSandboxProfileGuardTest {
     @Test
     void failsClosedForDisabledOrMixedProfiles() {
         Environment mixed = mock(Environment.class);
-        when(mixed.getActiveProfiles()).thenReturn(new String[] { "acceptance", "prod" });
+        when(mixed.getActiveProfiles()).thenReturn(new String[] { "dev", "prod" });
 
         G2AcceptanceSandboxProfileGuard guard = new G2AcceptanceSandboxProfileGuard(mixed, "ENABLED");
 

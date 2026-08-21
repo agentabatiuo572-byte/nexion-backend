@@ -7,17 +7,17 @@ import org.junit.jupiter.api.Test;
 class H8AcceptanceSandboxProfileConditionTest {
     @Test
     void registersOnlyForOneExplicitlyIsolatedProfile() {
-        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("acceptance")).isTrue();
+        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("dev")).isTrue();
         assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("test")).isTrue();
-        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("local-sandbox")).isTrue();
+        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("dev")).isTrue();
     }
 
     @Test
     void failsClosedForEmptyUnknownOrMixedProfiles() {
         assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile()).isFalse();
         assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("prod")).isFalse();
-        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("acceptance", "prod")).isFalse();
-        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("test", "acceptance")).isFalse();
+        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("dev", "prod")).isFalse();
+        assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile("test", "dev")).isFalse();
         assertThat(H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile((String[]) null)).isFalse();
     }
 }

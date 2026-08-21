@@ -19,6 +19,7 @@ public record AppLearningCourseView(
         int attempts,
         int lastScore,
         boolean rewardGranted,
+        boolean serverCanonical,
         String source,
         String sourceEnvironment,
         String runId,

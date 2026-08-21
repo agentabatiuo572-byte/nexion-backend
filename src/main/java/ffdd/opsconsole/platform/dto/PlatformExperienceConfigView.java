@@ -7,6 +7,8 @@ public record PlatformExperienceConfigView(
         long version,
         PlatformComputeConfigView.ShareConfig share,
         boolean ready,
+        boolean homeNewcomerTasksEnabled,
+        boolean homeWeeklyPromoEnabled,
         List<String> sources,
         String updatedAt) {
 }

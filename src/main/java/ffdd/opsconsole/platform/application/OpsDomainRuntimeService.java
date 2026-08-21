@@ -269,6 +269,8 @@ public class OpsDomainRuntimeService {
                 api("TrustSectionSensitivePublish", "/api/admin/content/trust-disclosure/trust-sections/{sectionKey}/{action}", "content_i4_read", "content_i4_trust_section_manage", false),
                 api("DisclosureJurisdiction", "/api/admin/content/trust-disclosure/disclosures/{jurisdiction}/{action}", "content_i5_read", "content_i5_disclosure_publish", false),
                 api("DisclosureGateAction", "/api/admin/content/trust-disclosure/disclosures/gated-actions", "content_i5_read", "content_i5_gate_adjust", false),
+                api("LegalTerms", "/api/admin/content/legal-terms", "content_legal_terms_read", "content_legal_terms_write", false),
+                api("LegalTermsPublish", "/api/admin/content/legal-terms/{locale}/{jurisdiction}/{version}/{action}", "content_legal_terms_read", "content_legal_terms_publish", false),
                 api("I18nLearningOverview", "/api/admin/content/i18n-learning/overview", "content_i6_read", "content_i6_write", false),
                 api("I18nMessage", "/api/admin/content/i18n-learning/messages/{messageKey}/{action}", "content_i6_read", "content_i6_write", false),
                 api("LearningCourse", "/api/admin/content/i18n-learning/courses/{courseId}", "content_i7_read", "content_i7_write", true),

@@ -23,7 +23,7 @@ class QuestCompletionFactConsumerTest {
     private final QuestCompletionFactMapper mapper = mock(QuestCompletionFactMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
-    private final QuestCompletionFactConsumer consumer = new QuestCompletionFactConsumer(mapper, audit, outbox);
+    private final QuestCompletionFactConsumer consumer = new QuestCompletionFactConsumer(mapper, audit, outbox, null);
 
     @Test
     void trustedFactCompletesMissionAndPublishesCanonicalLifecycleEvent() {
@@ -69,5 +69,50 @@ class QuestCompletionFactConsumerTest {
         assertThat(consumer.consume(new QuestCompletionCommand("ORDER", "ORDER-9", 42L, "QUEST-1")).replay())
                 .isTrue();
         verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shareWithDifferentEventAfterCompletionIsRateLimited() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.lockMission("QUEST-1")).thenReturn(new MissionDefinition(7L, "QUEST-1", "WEEKLY"));
+        when(mapper.lockUserMissionStatus(42L, 7L)).thenReturn("COMPLETED");
+        when(mapper.lockFactForUserMission("SHARE", "SHARE-NEW", 42L, 7L, "QUEST-1"))
+                .thenReturn(null);
+
+        assertThatThrownBy(() -> consumer.consume(
+                new QuestCompletionCommand("SHARE", "SHARE-NEW", 42L, "QUEST-1")))
+                .hasMessage("SHARE_EVENT_RATE_LIMITED");
+        verify(mapper, never()).insertFact(anyString(), anyString(), anyString(), any(), any(), anyString());
+        verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sameShareEventAfterCompletionIsAnExactReplay() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        when(mapper.lockMission("QUEST-1")).thenReturn(new MissionDefinition(7L, "QUEST-1", "WEEKLY"));
+        when(mapper.lockUserMissionStatus(42L, 7L)).thenReturn("COMPLETED");
+        when(mapper.lockFactForUserMission("SHARE", "SHARE-OLD", 42L, 7L, "QUEST-1"))
+                .thenReturn(new CompletionFact("SHARE", "SHARE-OLD", "hash", 42L, 7L, "QUEST-1"));
+
+        assertThat(consumer.consume(
+                new QuestCompletionCommand("SHARE", "SHARE-OLD", 42L, "QUEST-1")).replay()).isTrue();
+        verify(mapper, never()).insertFact(anyString(), anyString(), anyString(), any(), any(), anyString());
+    }
+
+    @Test
+    void shareEventCannotBeReplayedAcrossAccounts() {
+        when(mapper.lockActiveUser(43L)).thenReturn(43L);
+        when(mapper.lockMission("QUEST-1")).thenReturn(new MissionDefinition(7L, "QUEST-1", "WEEKLY"));
+        when(mapper.lockUserMissionStatus(43L, 7L)).thenReturn(null);
+        when(mapper.insertFact(eq("SHARE"), eq("SHARE-ACCOUNT-1"), anyString(),
+                eq(43L), eq(7L), eq("QUEST-1"))).thenReturn(0);
+        when(mapper.lockFact("SHARE", "SHARE-ACCOUNT-1"))
+                .thenReturn(new CompletionFact("SHARE", "SHARE-ACCOUNT-1", "different-account-hash",
+                        42L, 7L, "QUEST-1"));
+
+        assertThatThrownBy(() -> consumer.consume(
+                new QuestCompletionCommand("SHARE", "SHARE-ACCOUNT-1", 43L, "QUEST-1")))
+                .hasMessage("QUEST_COMPLETION_FACT_CONFLICT");
+        verify(mapper, never()).markMissionCompleted(any(), any());
     }
 }

@@ -604,7 +604,7 @@ class AppUserAuthServiceTest {
 
     @Test
     void passwordResetCompletionRejectsBeforeMutatingACrossEnvironmentAccount() {
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
         UserEntity user = activeUser();
         user.setSandbox(0);
         when(users.selectOne(any())).thenReturn(user);
@@ -623,7 +623,7 @@ class AppUserAuthServiceTest {
 
     @Test
     void mixedOrUnknownProfilesFailClosedBeforeAnySessionIssue() {
-        environment.setActiveProfiles("production", "acceptance");
+        environment.setActiveProfiles("prod", "dev");
         UserEntity user = activeUser();
         user.setSandbox(0);
         when(users.selectOne(any())).thenReturn(user);
@@ -638,8 +638,8 @@ class AppUserAuthServiceTest {
 
     private static Stream<Arguments> crossEnvironmentAccounts() {
         return Stream.of(
-                Arguments.of("production", 1),
-                Arguments.of("acceptance", 0));
+                Arguments.of("prod", 1),
+                Arguments.of("dev", 0));
     }
 
     private UserEntity activeUser() {

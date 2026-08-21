@@ -48,4 +48,34 @@ class AppWithdrawalP0ContractTest {
         assertThat(schema).contains("nex_refunded");
         assertThat(schema).contains("nex_refunded_at");
     }
+
+    @Test
+    void ambiguousAttemptCanOnlyBeAbandonedThroughTheServerFence() throws Exception {
+        String controller = read("ffdd/opsconsole/finance/web/AppWithdrawalController.java");
+        String service = read("ffdd/opsconsole/finance/application/AppWithdrawalService.java");
+        String mapper = read("ffdd/opsconsole/finance/mapper/AppWithdrawalMapper.java");
+        String initializer = read("ffdd/opsconsole/finance/application/WithdrawalAttemptSchemaInitializer.java");
+        String schema = Files.readString(Path.of("scripts/schema.sql"));
+        String migration = Files.readString(Path.of("scripts/migrations/20260816_withdrawal_attempt_authority.sql"));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+
+        assertThat(controller).contains("@PostMapping(\"/attempts/{idempotencyKey}/abandon\")");
+        assertThat(controller).contains("service.abandonAttempt(userId, idempotencyKey");
+        assertThat(service).contains("mapper.lockActiveUser(userId)");
+        assertThat(service).contains("WITHDRAWAL_ATTEMPT_ABANDONED");
+        assertThat(service).contains("WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+        assertThat(mapper).contains("LIMIT 1 FOR UPDATE", "status='ABANDONED'", "status='COMMITTED'",
+                "findWithdrawalNoByIdempotencyKey", "d2_idempotency_key",
+                "withdrawal_no=#{withdrawalNo}", "information_schema.TABLE_CONSTRAINTS",
+                "CONSTRAINT_TYPE='CHECK'")
+                .doesNotContain("information_schema.CHECK_CONSTRAINTS");
+        assertThat(schema).contains("nx_withdrawal_attempt_control", "uk_withdrawal_attempt_user_key",
+                "chk_withdrawal_attempt_status", "d2_idempotency_key");
+        assertThat(initializer).contains("withdrawalAttemptStatusCheckCount", "WITHDRAWAL_ATTEMPT_STATUS_CHECK_MISSING");
+        assertThat(migration)
+                .contains("PREPARE", "chk_withdrawal_attempt_status", "d2_idempotency_key",
+                        "INFORMATION_SCHEMA.TABLE_CONSTRAINTS", "CONSTRAINT_TYPE='CHECK'")
+                .doesNotContain("INFORMATION_SCHEMA.CHECK_CONSTRAINTS\n          WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME");
+        assertThat(startup).contains("20260816_withdrawal_attempt_authority.sql");
+    }
 }

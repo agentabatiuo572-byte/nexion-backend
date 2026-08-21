@@ -59,7 +59,7 @@ class AppUserRegistrationServiceTest {
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 transactionExecutor, environment, referralRewardService);
-        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "prod" });
     }
 
     @Test
@@ -83,7 +83,7 @@ class AppUserRegistrationServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = { "acceptance", "test", "local-sandbox" })
+    @ValueSource(strings = { "dev", "test" })
     void strictIsolatedProfileAtomicallyMarksTheNewUserAndWalletAsSandbox(String profile) {
         when(environment.getActiveProfiles()).thenReturn(new String[] { profile });
         UserEntity sandboxSponsor = user(41L, "NXAB12CD34EF");
@@ -103,7 +103,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void sandboxRegistrationWithoutSponsorCreatesAnIsolatedRootAccountAndWallet() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
         prepareRegistrationPrerequisites("REG-H003", "81987654321", "127.0.0.3");
         when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
         doAnswer(invocation -> {
@@ -133,8 +133,55 @@ class AppUserRegistrationServiceTest {
     }
 
     @Test
+    void strictIsolatedSandboxRegistrationDoesNotConsumeTheSharedLoopbackK1SignupQuota() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
+        when(mapper.consumeValidChallengeInEnvironment(
+                "REG-LOCAL", "+84", "0912681799", "SANDBOX", "123456")).thenReturn(1);
+        when(mapper.consumedChallengeClientIpInEnvironment(
+                "REG-LOCAL", "+84", "0912681799", "SANDBOX")).thenReturn("127.0.0.1");
+        when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
+        doAnswer(invocation -> {
+            UserEntity user = invocation.getArgument(0);
+            user.setId(109L);
+            return 1;
+        }).when(userMapper).insert(any(UserEntity.class));
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+                .thenReturn(ApiResult.ok(new UserLoginResponse(
+                        "access", "Bearer", new UserLoginResponse.UserSession(
+                                109L, "+84", "0912681799", "Nexion 1799"))));
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+84", "0912681799", "REG-LOCAL", "123456", "NexPass9a", null), "127.0.0.1");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper, never()).k1ParamValueForUpdate(any());
+        verify(mapper, never()).countRegisteredAccountsByClientIp24hInEnvironment(any(), any(), anyInt());
+        verify(userMapper).ensureRegisteredUserWallet(109L, 1);
+    }
+
+    @Test
+    void productionRegistrationStillRejectsWhenTheConfiguredK1IpLimitIsReached() {
+        when(mapper.consumeValidChallengeInEnvironment(
+                "REG-PROD-LIMIT", "+84", "0912681798", "PRODUCTION", "123456")).thenReturn(1);
+        when(mapper.consumedChallengeClientIpInEnvironment(
+                "REG-PROD-LIMIT", "+84", "0912681798", "PRODUCTION")).thenReturn("203.0.113.8");
+        when(mapper.k1ParamValueForUpdate("maxSignupPerIp24h")).thenReturn("3");
+        when(mapper.countRegisteredAccountsByClientIp24hInEnvironment(
+                "203.0.113.8", "PRODUCTION", 0)).thenReturn(3);
+
+        ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
+                "+84", "0912681798", "REG-PROD-LIMIT", "123456", "NexPass9a", null), "203.0.113.8");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_K1_IP_LIMIT");
+        verify(userMapper, never()).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        verify(authService, never()).issueRegisteredSession(any(), any());
+    }
+
+    @Test
     void sandboxRegistrationRejectsAProductionSponsorBeforeUserOrWalletWrites() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
@@ -168,7 +215,7 @@ class AppUserRegistrationServiceTest {
     }
 
     @Test
-    void productionAndDefaultProfilesKeepTheNewUserAndWalletOutOfSandbox() {
+    void productionProfileKeepsTheNewUserAndWalletOutOfSandbox() {
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
@@ -185,7 +232,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void unknownOrMixedProfilesFailClosedBeforeOtpOrAnyRegistrationWrite() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "acceptance", "production" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev", "prod" });
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
                 "+81", "81987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");

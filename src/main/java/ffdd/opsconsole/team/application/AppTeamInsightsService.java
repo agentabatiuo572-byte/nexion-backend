@@ -24,15 +24,26 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppTeamInsightsService {
-    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{2,63}");
+    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private static final Set<String> PERIODS = Set.of("today", "week", "month", "all");
     private final AppTeamInsightsMapper mapper;
     private final Environment environment;
 
     public ApiResult<Map<String, Object>> leaderboard(Long userId, String requestedPeriod) {
+        return leaderboard(userId, requestedPeriod, 1, 100);
+    }
+
+    public ApiResult<Map<String, Object>> leaderboard(Long userId, String requestedPeriod, long requestedPage, long requestedPageSize) {
         String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
         if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_LEADERBOARD_PERIOD_INVALID");
+        if (requestedPage < 1 || requestedPageSize < 1 || requestedPageSize > 100) {
+            return ApiResult.fail(422, "TEAM_LEADERBOARD_PAGE_INVALID");
+        }
         Scope scope = scope(userId);
+        if (scope.sandbox() == 1) {
+            return ApiResult.ok(TeamSandboxFactGenerator.leaderboard(scope.runId(), userId, period,
+                    requestedPage, requestedPageSize));
+        }
         List<AppTeamInsightsMapper.LeaderboardRow> source = mapper.leaderboard(period, scope.sandbox());
         List<Map<String, Object>> rows = new ArrayList<>();
         Integer myRank = null; BigDecimal gap = BigDecimal.ZERO;
@@ -50,15 +61,22 @@ public class AppTeamInsightsService {
                 if (index > 0) gap = zero(source.get(index - 1).earnedUsdt()).subtract(earned).max(BigDecimal.ZERO);
             }
         }
+        int from = pageStart(requestedPage, requestedPageSize, rows.size());
+        int to = (int) Math.min(rows.size(), (long) from + requestedPageSize);
         Map<String, Object> result = provenance(scope);
-        result.put("period", period); result.put("rows", rows); result.put("myRank", myRank);
+        result.put("period", period); result.put("rows", rows.subList(from, to)); result.put("myRank", myRank);
         result.put("gapToNext", gap); result.put("poolUsd", BigDecimal.ZERO);
-        result.put("topN", Math.min(100, rows.size())); result.put("generatedAt", Instant.now().toString());
+        result.put("topN", Math.min(100, rows.size())); result.put("page", requestedPage);
+        result.put("pageSize", requestedPageSize); result.put("totalRows", rows.size());
+        result.put("generatedAt", Instant.now().toString());
         return ApiResult.ok(result);
     }
 
     public ApiResult<Map<String, Object>> commissions(Long userId) {
         Scope scope = scope(userId);
+        if (scope.sandbox() == 1) {
+            return ApiResult.ok(TeamSandboxFactGenerator.commissions(scope.runId(), userId));
+        }
         List<Map<String, Object>> events = mapper.commissionEvents(userId, 100).stream().map(this::commission).toList();
         Map<String, Object> result = provenance(scope); result.put("events", events); result.put("generatedAt", Instant.now().toString());
         return ApiResult.ok(result);
@@ -73,6 +91,9 @@ public class AppTeamInsightsService {
         String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
         if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
         Scope scope = scope(userId);
+        if (scope.sandbox() == 1) {
+            return ApiResult.ok(TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period));
+        }
         List<Map<String, Object>> events = mapper.unilevelEvents(userId, scope.sandbox(), period).stream()
                 .map(this::unilevel).toList();
         Map<String, Object> direct = split(events, true);
@@ -87,6 +108,9 @@ public class AppTeamInsightsService {
 
     public ApiResult<Map<String, Object>> leadershipPool(Long userId) {
         Scope scope = scope(userId);
+        if (scope.sandbox() == 1) {
+            return ApiResult.ok(TeamSandboxFactGenerator.leadershipPool(scope.runId(), userId));
+        }
         var distribution = mapper.rankDistribution(scope.sandbox());
         long totalVotes = distribution.stream().mapToLong(row -> (long) count(row.people()) * count(row.votes())).sum();
         int myRank = rank(scope.vRank());
@@ -111,21 +135,21 @@ public class AppTeamInsightsService {
     private Map<String, Object> commission(AppTeamInsightsMapper.CommissionRow row) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", "CM-" + row.id()); item.put("kind", kind(row.commissionType()));
-        item.put("sourceUserId", row.sourceUserId() == null ? "system" : String.valueOf(row.sourceUserId()));
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("layer", row.layerNo()); item.put("orderId", row.orderNo()); item.put("orderAmountUSD", row.orderAmountUsd());
         item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex()));
         item.put("ts", row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli());
         item.put("unlockAt", row.unlockAt() == null ? row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli()
                 : row.unlockAt().toInstant(ZoneOffset.UTC).toEpochMilli());
-        item.put("status", status(row.status())); return item;
+        String status = status(row.status());
+        item.put("status", status); item.put("settlementState", "CANONICAL");
+        item.put("withdrawable", "unlocked".equals(status)); return item;
     }
 
     private Map<String, Object> unilevel(AppTeamInsightsMapper.UnilevelRow row) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", "CM-" + row.id());
         item.put("source", "network");
-        item.put("sourceUserId", row.sourceUserId() == null ? "system" : String.valueOf(row.sourceUserId()));
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("cycle", row.cycle());
         item.put("layer", row.layerNo());
@@ -137,7 +161,9 @@ public class AppTeamInsightsService {
         item.put("ts", row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli());
         item.put("unlockAt", row.unlockAt() == null ? row.createdAt().toInstant(ZoneOffset.UTC).toEpochMilli()
                 : row.unlockAt().toInstant(ZoneOffset.UTC).toEpochMilli());
-        item.put("status", status(row.status()));
+        String status = status(row.status());
+        item.put("status", status); item.put("settlementState", "CANONICAL");
+        item.put("withdrawable", "unlocked".equals(status));
         return item;
     }
 
@@ -161,8 +187,8 @@ public class AppTeamInsightsService {
         if (user == null || user.sandbox() == null) throw new BizException(403, "TEAM_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles()).map(String::trim).map(String::toLowerCase)
                 .filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("acceptance", "test", "local-sandbox").contains(profiles.iterator().next());
-        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("production", "default").contains(profiles.iterator().next()));
+        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
+        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
         if (!isolated && !production) throw new BizException(503, "TEAM_PROFILE_INVALID");
         if (isolated && user.sandbox() != 1) throw new BizException(403, "TEAM_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "TEAM_PRODUCTION_USER_REQUIRED");
@@ -173,7 +199,7 @@ public class AppTeamInsightsService {
     }
 
     private Map<String, Object> provenance(Scope scope) {
-        Map<String, Object> result = new LinkedHashMap<>(); result.put("source", "server");
+        Map<String, Object> result = new LinkedHashMap<>(); result.put("source", "server"); result.put("serverCanonical", true);
         result.put("sourceEnvironment", scope.sourceEnvironment()); result.put("runId", scope.runId()); return result;
     }
     private String kind(String value) { String normalized=value==null?"":value.toLowerCase(); return switch(normalized){
@@ -185,5 +211,11 @@ public class AppTeamInsightsService {
     private BigDecimal zero(BigDecimal value) { return value==null||value.signum()<0?BigDecimal.ZERO:value; }
     private int count(Integer value) { return value==null||value<0?0:value; }
     private int rank(String value) { try{return Math.max(0,Math.min(12,Integer.parseInt(value==null?"0":value.replaceFirst("^[Vv]",""))));}catch(RuntimeException ignored){return 0;} }
+    private int pageStart(long page, long pageSize, int total) {
+        if (page <= 1) return 0;
+        if (page > Long.MAX_VALUE / pageSize) return total;
+        long offset = (page - 1L) * pageSize;
+        return offset >= total ? total : (int) offset;
+    }
     private record Scope(Integer sandbox, String vRank, String sourceEnvironment, String runId) { }
 }

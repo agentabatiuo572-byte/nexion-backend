@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.security;
 
 import ffdd.opsconsole.platform.application.AuthenticatedPrincipalRateLimitFilter;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.developer.web.DeveloperApiKeyAuthenticationFilter;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -39,6 +40,7 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             ImpersonationReadOnlyEnforcementFilter impersonationReadOnlyEnforcementFilter,
+            ObjectProvider<DeveloperApiKeyAuthenticationFilter> developerApiKeyAuthenticationFilterProvider,
             ObjectProvider<AuthenticatedPrincipalRateLimitFilter> principalRateLimitFilterProvider,
             ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider) throws Exception {
         UserBlocklistEnforcementFilter userBlocklistEnforcementFilter = userBlocklistFilterProvider.getIfAvailable(
@@ -46,7 +48,8 @@ public class SecurityConfig {
         AuthenticatedPrincipalRateLimitFilter authenticatedPrincipalRateLimitFilter =
                 principalRateLimitFilterProvider.getIfAvailable(
                         AuthenticatedPrincipalRateLimitFilter::disabledForSlice);
-        return http.csrf(csrf -> csrf.disable())
+        DeveloperApiKeyAuthenticationFilter developerApiKeyAuthenticationFilter = developerApiKeyAuthenticationFilterProvider.getIfAvailable();
+        HttpSecurity configured = http.csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(errors -> errors
@@ -65,12 +68,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/commission/rates").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/market/nex").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/content/trust/sections/*/view").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current", "/api/content/how-it-works/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/i18n", "/api/content/i18n/**", "/i18n", "/i18n/**").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/openapi/v1/topups/card/admission",
@@ -89,6 +92,8 @@ public class SecurityConfig {
                                 "/auth/users/login/2fa",
                                 "/auth/users/login/otp/send",
                                 "/auth/users/login/otp/verify",
+                                "/auth/users/oauth/sandbox/challenge",
+                                "/auth/users/oauth/exchange",
                                 "/auth/users/refresh",
                                 "/auth/users/logout",
                                 "/auth/users/password-reset/complete",
@@ -100,7 +105,13 @@ public class SecurityConfig {
                                 "/commerce/app/payment-options")
                         .permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+        // WebMvc slice tests and deployments that do not expose developer APIs
+        // intentionally have no API-key filter bean. Do not add a null filter.
+        if (developerApiKeyAuthenticationFilter != null) {
+            configured.addFilterAfter(developerApiKeyAuthenticationFilter, JwtAuthenticationFilter.class);
+        }
+        return configured
                 .addFilterAfter(authenticatedPrincipalRateLimitFilter, JwtAuthenticationFilter.class)
                 .addFilterAfter(impersonationReadOnlyEnforcementFilter, AuthenticatedPrincipalRateLimitFilter.class)
                 .addFilterAfter(userBlocklistEnforcementFilter, ImpersonationReadOnlyEnforcementFilter.class)

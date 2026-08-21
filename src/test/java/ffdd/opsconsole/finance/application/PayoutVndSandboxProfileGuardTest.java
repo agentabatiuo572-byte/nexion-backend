@@ -14,21 +14,47 @@ class PayoutVndSandboxProfileGuardTest {
         properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
 
         assertThatThrownBy(() -> new PayoutVndSandboxProfileGuard(
-                properties, new MockEnvironment().withProperty("spring.profiles.active", "production"))
+                properties, new MockEnvironment().withProperty("spring.profiles.active", "prod"))
                 .afterPropertiesSet())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("PAYOUT_VND_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
     }
 
     @Test
-    void localSandboxIsAllowedOnlyInAcceptanceOrTest() {
+    void localSandboxIsAllowedInDevelopment() {
         PayoutVndProviderProperties properties = new PayoutVndProviderProperties();
         properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("acceptance");
+        environment.setActiveProfiles("dev");
 
         assertThatCode(() -> new PayoutVndSandboxProfileGuard(
                 properties, environment)
                 .afterPropertiesSet()).doesNotThrowAnyException();
+    }
+
+    @Test
+    void localSandboxIsRejectedInLegacyLocalSandboxProfile() {
+        PayoutVndProviderProperties properties = new PayoutVndProviderProperties();
+        properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("local-sandbox");
+
+        assertThatThrownBy(() -> new PayoutVndSandboxProfileGuard(properties, environment).afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("PAYOUT_VND_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
+    }
+
+    @Test
+    void localSandboxIsRejectedWhenMultipleProfilesAreActive() {
+        PayoutVndProviderProperties properties = new PayoutVndProviderProperties();
+        properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev", "test");
+
+        assertThatThrownBy(() -> new PayoutVndSandboxProfileGuard(
+                properties, environment)
+                .afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("PAYOUT_VND_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
     }
 }

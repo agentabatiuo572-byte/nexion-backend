@@ -413,16 +413,20 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     List<Map<String, Object>> selectL4NetworkTreeRows(
             @Param("period") String period, @Param("depth") int depth, @Param("limit") int limit);
 
-    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0")
+    @Select("SELECT COUNT(*) FROM nx_user u WHERE u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0")
     long countUsers();
 
-    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
+    @Select("SELECT COUNT(*) FROM nx_user u WHERE u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0 "
+            + "AND u.created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)")
     long countUsersSince(@Param("days") int days);
 
-    @Select("SELECT COUNT(*) FROM nx_user WHERE is_deleted = 0 AND status = #{status}")
+    @Select("SELECT COUNT(*) FROM nx_user u WHERE u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0 "
+            + "AND u.status = #{status}")
     long countUsersByStatus(@Param("status") String status);
 
-    @Select("SELECT COUNT(*) FROM nx_user_profile WHERE is_deleted = 0")
+    @Select("SELECT COUNT(*) FROM nx_user_profile p "
+            + "JOIN nx_user u ON u.id=p.user_id AND COALESCE(u.sandbox,0)=0 "
+            + "WHERE p.is_deleted = 0 AND u.is_deleted = 0")
     long countUserProfiles();
 
     @Select("SELECT COUNT(*) FROM nx_order WHERE is_deleted = 0")
@@ -440,16 +444,23 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
     @Select("SELECT COUNT(*) FROM nx_device WHERE deleted = 0")
     long countDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
+    @Select("SELECT COUNT(*) FROM nx_user_device d "
+            + "JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0 "
+            + "WHERE d.is_deleted = 0 AND u.is_deleted = 0")
     long countUserDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0 AND status IN ('ONLINE','BUSY','ACTIVE','RUNNING')")
+    @Select("SELECT COUNT(*) FROM nx_user_device d "
+            + "JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0 "
+            + "WHERE d.is_deleted = 0 AND u.is_deleted = 0 "
+            + "AND d.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')")
     long countActiveUserDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0 AND source_environment = 'PRODUCTION'")
+    @Select("SELECT COUNT(*) FROM nx_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
+            + "WHERE t.is_deleted = 0 AND t.source_environment = 'PRODUCTION'")
     long countComputeTasks();
 
-    @Select("SELECT COUNT(*) FROM nx_compute_task WHERE is_deleted = 0 AND status = 'COMPLETED' AND source_environment = 'PRODUCTION'")
+    @Select("SELECT COUNT(*) FROM nx_compute_task t JOIN nx_user u ON u.id=t.user_id AND COALESCE(u.sandbox,0)=0 "
+            + "WHERE t.is_deleted = 0 AND t.status = 'COMPLETED' AND t.source_environment = 'PRODUCTION'")
     long countCompletedComputeTasks();
 
     @Select("SELECT COUNT(*) FROM nx_admin_device_task WHERE is_deleted = 0")

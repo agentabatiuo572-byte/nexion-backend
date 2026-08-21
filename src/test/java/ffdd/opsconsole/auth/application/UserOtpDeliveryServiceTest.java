@@ -25,7 +25,7 @@ class UserOtpDeliveryServiceTest {
 
     @Test
     void acceptanceAndTestProfilesMayUseTheExplicitLocalFixedCode() {
-        for (String profile : new String[] { "acceptance", "test", "local-sandbox" }) {
+        for (String profile : new String[] { "dev", "test", "dev" }) {
             UserOtpDeliveryService service = service(
                     "", true, new MockEnvironment().withProperty("spring.profiles.active", profile));
 
@@ -36,7 +36,7 @@ class UserOtpDeliveryServiceTest {
 
     @Test
     void productionMixedAndUnknownProfilesNeverEnableTheFixedCode() {
-        for (String profile : new String[] { "production", "production,acceptance", "staging" }) {
+        for (String profile : new String[] { "prod", "production,acceptance", "staging" }) {
             UserOtpDeliveryService service = service(
                     "", true, new MockEnvironment().withProperty("spring.profiles.active", profile));
 
@@ -60,7 +60,7 @@ class UserOtpDeliveryServiceTest {
     void configuredDeliveryUrlTakesAuthorityOverTheLocalFixedCode() {
         UserOtpDeliveryService service = service(
                 "https://sms-provider.invalid/otp", true,
-                new MockEnvironment().withProperty("spring.profiles.active", "local-sandbox"));
+                new MockEnvironment().withProperty("spring.profiles.active", "dev"));
 
         assertThat(service.available()).isTrue();
         assertThat(service.verificationCode()).matches("\\d{6}");

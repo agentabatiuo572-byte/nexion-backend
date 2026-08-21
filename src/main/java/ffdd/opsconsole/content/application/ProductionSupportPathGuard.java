@@ -32,12 +32,12 @@ public class ProductionSupportPathGuard {
 
     private boolean isolatedProfile() {
         return Arrays.stream(environment.getActiveProfiles())
-                .anyMatch(profile -> "acceptance".equals(profile) || "test".equals(profile) || "local-sandbox".equals(profile));
+                .anyMatch(profile -> "dev".equals(profile) || "test".equals(profile) || "dev".equals(profile));
     }
 
     /** Background jobs may touch official support facts only in default/production mode. */
     public boolean productionSupportAutomationAllowed() {
         String[] active = environment.getActiveProfiles();
-        return active.length == 0 || (active.length == 1 && "production".equals(active[0]));
+        return active.length == 0 || (active.length == 1 && "prod".equals(active[0]));
     }
 }

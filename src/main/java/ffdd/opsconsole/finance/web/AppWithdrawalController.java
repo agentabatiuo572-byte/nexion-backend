@@ -32,6 +32,14 @@ public class AppWithdrawalController {
         return userId == null ? unauthorized() : service.policy(userId);
     }
 
+    @PostMapping("/eligibility")
+    public ApiResult<Map<String, Object>> eligibility(
+            @RequestBody EligibilityRequest request, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? unauthorized()
+                : service.eligibility(userId, request.amount(), request.chain(), request.address(), request.policyVersion());
+    }
+
     @GetMapping("/{withdrawalNo}")
     public ApiResult<Map<String, Object>> get(
             @PathVariable String withdrawalNo, Authentication authentication) {
@@ -48,6 +56,17 @@ public class AppWithdrawalController {
         return userId == null ? unauthorized()
                 : service.submit(userId, request.amount(), request.chain(), request.address(), request.policyVersion(),
                         Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey);
+    }
+
+    @PostMapping("/attempts/{idempotencyKey}/abandon")
+    public ApiResult<Map<String, Object>> abandonAttempt(
+            @PathVariable String idempotencyKey,
+            @RequestBody WithdrawalRequest request,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? unauthorized()
+                : service.abandonAttempt(userId, idempotencyKey, request.amount(), request.chain(), request.address(),
+                        request.policyVersion(), Boolean.TRUE.equals(request.useNexFeeOffset()));
     }
 
     private Long userId(Authentication authentication) {
@@ -72,4 +91,6 @@ public class AppWithdrawalController {
             String address,
             String policyVersion,
             Boolean useNexFeeOffset) { }
+
+    public record EligibilityRequest(BigDecimal amount, String chain, String address, String policyVersion) { }
 }

@@ -120,6 +120,13 @@ try {
   Assert-Equal $resolved.JdbcUrl "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true" "Resolver defaults must match application.yml."
   Assert-Equal $resolved.Username "root" "Resolver username default must match application.yml."
 
+  Clear-ContractDatabaseEnvironment
+  Assert-Throws { & $resolver -RequireExplicit } "Production requires one complete database environment bundle"
+
+  Clear-ContractDatabaseEnvironment
+  Set-ContractVariable "NEXION_DB_PASSWORD" "partial-production-bundle"
+  Assert-Throws { & $resolver -RequireExplicit } "Production requires NEXION_DB_URL.*complete bundle"
+
   $runnerSource = Get-Content -LiteralPath $runner -Raw
   foreach ($forbiddenParameter in @('[string]$JdbcUrl', '[string]$Username', '[string]$Password')) {
     if ($runnerSource.Contains($forbiddenParameter)) {
@@ -143,6 +150,7 @@ try {
     "NEXION_DB_URL",
     "NEXION_DB_USERNAME",
     "NEXION_DB_PASSWORD",
+    '-RequireExplicit:($SpringProfile -eq "prod")',
     "Remove-Item Env:SPRING_DATASOURCE_URL",
     "Remove-Item Env:SPRING_DATASOURCE_USERNAME",
     "Remove-Item Env:SPRING_DATASOURCE_PASSWORD"

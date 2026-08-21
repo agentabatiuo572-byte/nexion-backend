@@ -151,10 +151,17 @@ public class AppUserRegistrationService {
                 || "unknown".equalsIgnoreCase(registrationIp.trim())) {
             throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
         }
-        int maxSignupPerIp24h = requiredK1MaxSignupPerIp24h();
-        if (mapper.countRegisteredAccountsByClientIp24hInEnvironment(registrationIp.trim(), audience.name(), sandbox)
-                >= maxSignupPerIp24h) {
-            return ApiResult.fail(409, "USER_REGISTRATION_K1_IP_LIMIT");
+        // Production keeps the K1 anti-farm ceiling. Strict isolated profiles
+        // already write only sandbox users/wallets and all local browsers share
+        // the same loopback address, so applying the production 24h IP quota
+        // would permanently block repeat registration acceptance on a PC.
+        // OTP per-IP/per-phone rate limits above remain active in both modes.
+        if (sandbox == 0) {
+            int maxSignupPerIp24h = requiredK1MaxSignupPerIp24h();
+            if (mapper.countRegisteredAccountsByClientIp24hInEnvironment(
+                    registrationIp.trim(), audience.name(), sandbox) >= maxSignupPerIp24h) {
+                return ApiResult.fail(409, "USER_REGISTRATION_K1_IP_LIMIT");
+            }
         }
 
         UserEntity sponsor = null;
@@ -248,8 +255,8 @@ public class AppUserRegistrationService {
 
     /**
      * The server profile is the sole authority for registration isolation.
-     * Empty/default and explicit production are production writes; every
-     * non-production profile must be one exact allow-listed sandbox profile.
+     * Only explicit prod is a production write; every development write must
+     * use one exact allow-listed development profile.
      * This decision happens before the OTP compare-and-set or any other write.
      */
     private Integer sandboxForNewRegistration() {
@@ -261,7 +268,7 @@ public class AppUserRegistrationService {
             return 0;
         }
         if (activeProfiles.length == 1
-                && ("production".equals(activeProfiles[0]) || "default".equals(activeProfiles[0]))) {
+                && "prod".equals(activeProfiles[0])) {
             return 0;
         }
         return null;

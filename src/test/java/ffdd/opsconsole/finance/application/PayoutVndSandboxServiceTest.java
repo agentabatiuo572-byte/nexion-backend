@@ -30,13 +30,29 @@ class PayoutVndSandboxServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final PayoutVndProviderProperties properties = new PayoutVndProviderProperties();
+    private final FundsSandboxRunScope runScope = mock(FundsSandboxRunScope.class);
     private final PayoutVndSandboxService service = new PayoutVndSandboxService(
-            mapper, properties, idempotency, audit, Clock.fixed(Instant.parse("2026-08-10T00:00:00Z"), ZoneOffset.UTC));
+            mapper, properties, idempotency, audit, Clock.fixed(Instant.parse("2026-08-10T00:00:00Z"), ZoneOffset.UTC), runScope);
 
     @BeforeEach
     void executeClaimedAction() {
+        when(runScope.requireRunId()).thenReturn("RUN-1");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void sandboxRejectsAnActiveProductionUserBeforeWriting() {
+        properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
+        properties.setSandboxCallbackSecret("sandbox-only-secret-at-least-24-bytes");
+        when(mapper.activeUser(7L)).thenReturn(null);
+
+        ApiResult<Map<String, Object>> result = service.create("idem-production-user",
+                new PayoutVndSandboxCreateRequest(7L, BigDecimal.TEN, "BANK", "12345678", "Production User", "sandbox must reject production user"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
+        verify(mapper, never()).insertOrder(anyString(), anyString(), any(), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -45,7 +61,7 @@ class PayoutVndSandboxServiceTest {
                 new PayoutVndSandboxCreateRequest(7L, BigDecimal.TEN, "BANK", "12345678", "Sandbox User", "valid production reason"));
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("PAYOUT_VND_PROVIDER_UNAVAILABLE");
-        verify(mapper, never()).insertOrder(anyString(), any(), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).insertOrder(anyString(), anyString(), any(), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -53,17 +69,19 @@ class PayoutVndSandboxServiceTest {
         properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         properties.setSandboxCallbackSecret("sandbox-only-secret-at-least-24-bytes");
         when(mapper.activeUser(7L)).thenReturn(7L);
-        when(mapper.insertOrder(anyString(), eq(7L), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.order(anyString())).thenAnswer(invocation -> new HashMap<>(Map.of(
-                "orderNo", invocation.getArgument(0), "userId", 7L, "status", "PENDING", "source", "mock")));
+        when(mapper.insertOrder(anyString(), eq("RUN-1"), eq(7L), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.order(eq("RUN-1"), anyString())).thenAnswer(invocation -> new HashMap<>(Map.of(
+                "orderNo", invocation.getArgument(1), "userId", 7L, "status", "PENDING", "source", "mock")));
 
         ApiResult<Map<String, Object>> created = service.create("idem-sandbox-order",
                 new PayoutVndSandboxCreateRequest(7L, new BigDecimal("100000"), "MOCKBANK", "12345678", "Sandbox User", "create isolated payout"));
         assertThat(created.getData()).containsEntry("source", "mock").containsEntry("sandbox", true);
+        verify(idempotency).execute(eq("FINANCE:D7:SANDBOX_CREATE:RUN-1"), eq("idem-sandbox-order"), anyString(), eq(ApiResult.class), any());
+        verify(mapper).insertOrder(anyString(), eq("RUN-1"), eq(7L), any(), anyString(), anyString(), anyString(), anyString(), anyString(), any());
 
         ApiResult<Map<String, Object>> rejected = service.callback("idem-callback",
                 new PayoutVndSandboxCallbackRequest("event-1", String.valueOf(created.getData().get("orderNo")), "COMPLETED", "forged"));
         assertThat(rejected.getCode()).isEqualTo(401);
-        verify(mapper, never()).insertLedger(anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).insertLedger(anyString(), anyString(), anyString(), anyString(), any());
     }
 }

@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -16,9 +17,11 @@ public class AppWalletBillsController {
     private final AppWalletBillsService service;
 
     @GetMapping
-    public ApiResult<Map<String, Object>> list(Authentication authentication) {
+    public ApiResult<Map<String, Object>> list(Authentication authentication,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int pageSize) {
         Long userId = userId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.list(userId);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.list(userId, page, pageSize);
     }
 
     private Long userId(Authentication authentication) {

@@ -19,13 +19,8 @@ public class StorefrontPurchaseGatePolicy {
         if (raw == null || raw.isBlank()) return Decision.open();
         try {
             JsonNode gate = objectMapper.readTree(raw);
-            if (gate == null || !gate.isObject()) return Decision.closed("PURCHASE_GATE_INVALID");
-            Iterator<String> names = gate.fieldNames();
-            while (names.hasNext()) if (!KEYS.contains(names.next())) return Decision.closed("PURCHASE_GATE_INVALID");
+            if (!validGate(gate)) return Decision.closed("PURCHASE_GATE_INVALID");
             String mode = text(gate, "mode");
-            if (!("all".equals(mode) || "either".equals(mode)) || !gate.path("enforce").isBoolean()) {
-                return Decision.closed("PURCHASE_GATE_INVALID");
-            }
             Integer rank = integer(gate, "rankMin");
             Integer direct = integer(gate, "activeDirectMin");
             BigDecimal volume = decimal(gate, "teamVolumeMin");
@@ -35,11 +30,11 @@ public class StorefrontPurchaseGatePolicy {
                     || volume == null && gate.has("teamVolumeMin") || cap == null && gate.has("quotaCap")
                     || sold == null && gate.has("quotaSold")) return Decision.closed("PURCHASE_GATE_INVALID");
             if ((cap != null && sold == null) || (cap == null && sold != null)) return Decision.closed("PURCHASE_GATE_INVALID");
-            if (rank != null && rank > 12 || direct != null && direct > 1_000_000 || cap != null && cap < 1
+            if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000) || cap != null && cap < 1
                     || sold != null && sold < 0 || cap != null && sold != null && sold > cap
                     || volume != null && volume.signum() < 0) return Decision.closed("PURCHASE_GATE_INVALID");
             if (gate.has("quotaPeriod") && (!gate.path("quotaPeriod").isTextual()
-                    || !("month".equals(gate.path("quotaPeriod").asText()) || "lifetime".equals(gate.path("quotaPeriod").asText())))) {
+                    || !"lifetime".equals(gate.path("quotaPeriod").asText()))) {
                 return Decision.closed("PURCHASE_GATE_INVALID");
             }
             if (!gate.path("enforce").asBoolean()) return Decision.open();
@@ -73,12 +68,33 @@ public class StorefrontPurchaseGatePolicy {
         if (raw == null || raw.isBlank()) return false;
         try {
             JsonNode gate = objectMapper.readTree(raw);
-            return gate != null && gate.isObject()
-                    && gate.path("enforce").isBoolean() && gate.path("enforce").asBoolean()
-                    && integer(gate, "quotaCap") != null && integer(gate, "quotaSold") != null;
+            return validGate(gate) && gate.path("enforce").asBoolean()
+                    && gate.has("quotaCap") && gate.has("quotaSold");
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    private boolean validGate(JsonNode gate) {
+        if (gate == null || !gate.isObject()) return false;
+        Iterator<String> names = gate.fieldNames();
+        while (names.hasNext()) if (!KEYS.contains(names.next())) return false;
+        String mode = text(gate, "mode");
+        if (!("all".equals(mode) || "either".equals(mode)) || !gate.path("enforce").isBoolean()) return false;
+        Integer rank = integer(gate, "rankMin");
+        Integer direct = integer(gate, "activeDirectMin");
+        BigDecimal volume = decimal(gate, "teamVolumeMin");
+        Integer cap = integer(gate, "quotaCap");
+        Integer sold = integer(gate, "quotaSold");
+        if (rank == null && gate.has("rankMin") || direct == null && gate.has("activeDirectMin")
+                || volume == null && gate.has("teamVolumeMin") || cap == null && gate.has("quotaCap")
+                || sold == null && gate.has("quotaSold")) return false;
+        if ((cap != null && sold == null) || (cap == null && sold != null)) return false;
+        if (rank != null && (rank < 0 || rank > 12) || direct != null && (direct < 0 || direct > 1_000_000)
+                || cap != null && cap < 1 || sold != null && sold < 0
+                || cap != null && sold != null && sold > cap || volume != null && volume.signum() < 0) return false;
+        return !gate.has("quotaPeriod") || gate.path("quotaPeriod").isTextual()
+                && "lifetime".equals(gate.path("quotaPeriod").asText());
     }
 
     private String text(JsonNode node, String key) {

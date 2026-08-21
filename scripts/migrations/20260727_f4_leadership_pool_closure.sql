@@ -1,5 +1,4 @@
 -- F4 closure: durable weekly CAS mutex for leadership-pool settlement.
-USE nexion;
 SET NAMES utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_team_f4_settlement_mutex (

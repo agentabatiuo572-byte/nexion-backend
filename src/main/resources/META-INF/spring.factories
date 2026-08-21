@@ -1,2 +1,3 @@
 org.springframework.boot.env.EnvironmentPostProcessor=\
-ffdd.opsconsole.DatabaseEnvironmentPostProcessor
+ffdd.opsconsole.DatabaseEnvironmentPostProcessor,\
+ffdd.opsconsole.RuntimeProfileEnvironmentPostProcessor

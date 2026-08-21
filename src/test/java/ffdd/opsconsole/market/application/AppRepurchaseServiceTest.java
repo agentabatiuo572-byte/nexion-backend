@@ -9,12 +9,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.facade.RiskDisclosureGateFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.market.mapper.AppRepurchaseMapper;
+import ffdd.opsconsole.market.mapper.MarketSandboxMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -30,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import org.springframework.mock.env.MockEnvironment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -42,8 +45,11 @@ class AppRepurchaseServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-07-22T03:00:00Z"), ZoneOffset.UTC);
+    private final MockEnvironment environment = new MockEnvironment();
+    private final MarketSandboxMapper sandboxMapper = mock(MarketSandboxMapper.class);
     private final AppRepurchaseService service = new AppRepurchaseService(
-            mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit, clock);
+            mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit, clock, environment,
+            sandboxMapper);
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -57,6 +63,16 @@ class AppRepurchaseServiceTest {
         when(rhythm.totalMonths()).thenReturn(12);
         when(rhythm.reinvestMultiplier()).thenReturn(BigDecimal.ONE);
         when(growthRhythmFacade.snapshot()).thenReturn(rhythm);
+        when(sandboxMapper.insertAccountIfAbsent(anyString(), anyString(), any())).thenReturn(1);
+        when(sandboxMapper.lockAccount(anyString(), anyString(), any())).thenReturn(
+                new MarketSandboxMapper.AccountRow(new BigDecimal("1000.000000"), 0L));
+        when(sandboxMapper.account(anyString(), anyString(), any())).thenReturn(
+                new MarketSandboxMapper.AccountRow(new BigDecimal("800.000000"), 1L));
+        when(sandboxMapper.listPositions(anyString(), anyString(), any())).thenReturn(List.of());
+        when(sandboxMapper.findIdempotency(anyString(), anyString(), any(), anyString(), anyString())).thenReturn(null);
+        when(sandboxMapper.insertIdempotency(any())).thenReturn(1);
+        when(sandboxMapper.updateWallet(anyString(), anyString(), any(), any(), any())).thenReturn(1);
+        when(sandboxMapper.insertPosition(any())).thenReturn(1);
     }
 
     @Test
@@ -70,9 +86,57 @@ class AppRepurchaseServiceTest {
 
         assertThat(data).containsEntry("lockDays", 90).containsEntry("apyPct", new BigDecimal("35"))
                 .containsEntry("pointsReward", false).containsEntry("g4LotteryCapacity", 1000L);
+        assertThat(data).containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
         assertThat(data.get("presets")).isEqualTo(List.of(
                 new BigDecimal("100.000000"), new BigDecimal("200.000000"),
                 new BigDecimal("500.000000"), new BigDecimal("1000.000000")));
+    }
+
+    @Test
+    void localSandboxUsesRunScopedPersistentStateWithoutCanonicalWrites() {
+        environment.setActiveProfiles("dev");
+        environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-REPURCHASE-TEST-001");
+
+        ApiResult<Map<String, Object>> result = service.open(7L, "sandbox-open",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "RUN-REPURCHASE-TEST-001");
+        verifyNoInteractions(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit);
+        verify(sandboxMapper).insertAccountIfAbsent("repurchase", "RUN-REPURCHASE-TEST-001", 7L);
+        verify(sandboxMapper).updateWallet(eq("repurchase"), eq("RUN-REPURCHASE-TEST-001"), eq(7L), any(), any());
+    }
+
+    @Test
+    void productionProfileExposesCanonicalProvenance() {
+        when(mapper.product()).thenReturn(product());
+        when(mapper.issuedTicketsThisMonth()).thenReturn(20L);
+        when(mapper.configValue("wallet.exchange.nex_usdt_price")).thenReturn("1.25");
+        when(mapper.configValue("G.genesis.lottery.monthlyCapacity")).thenReturn("1000");
+
+        for (String profile : List.of("prod")) {
+            environment.setActiveProfiles(profile);
+
+            Map<String, Object> data = service.config().getData();
+
+            assertThat(data).containsEntry("serverCanonical", true)
+                    .containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
+        }
+    }
+
+    @Test
+    void unknownOrMixedRuntimeFailsClosedBeforeReadingCanonicalRepurchaseTables() {
+        for (String[] profiles : List.of(new String[]{"unknown"}, new String[]{"dev", "prod"})) {
+            environment.setActiveProfiles(profiles);
+
+            assertThatThrownBy(() -> service.orders(7L))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("REPURCHASE_PROFILE_INVALID")
+                    .satisfies(error -> assertThat(((BizException) error).getCode()).isEqualTo(503));
+        }
+
+        verifyNoInteractions(mapper, disclosureGate, config, growthRhythmFacade, idempotency, outbox, audit);
     }
 
     @Test

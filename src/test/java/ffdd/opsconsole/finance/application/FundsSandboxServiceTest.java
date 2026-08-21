@@ -76,22 +76,50 @@ class FundsSandboxServiceTest {
     }
 
     @Test
-    void withdrawalRemainsSubmittedUntilServerCallbackAndNeverUsesEtaAsFinality() {
+    void withdrawalIsImmediatelyConfirmedByTheServerAndDebitsAvailableBalanceOnce() {
         when(mapper.findOrderByIdempotency(RUN_ID, 41L, "withdraw-key-1")).thenReturn(null);
         when(mapper.insertWalletIfAbsent(RUN_ID, 41L)).thenReturn(0);
         when(mapper.lockWallet(RUN_ID, 41L)).thenReturn(new WalletRow(41L, bd("20"), bd("0"), 3L));
-        when(mapper.reserveWallet(RUN_ID, 41L, bd("4"), 3L)).thenReturn(1);
+        when(mapper.lockWithdrawalOrderIdsSince(eq(RUN_ID), eq(41L), any())).thenReturn(java.util.List.of());
+        when(mapper.debitWallet(RUN_ID, 41L, bd("4"), 3L)).thenReturn(1);
         when(mapper.insertOrder(any())).thenReturn(1);
+        when(mapper.insertCallback(eq(RUN_ID), any())).thenReturn(1);
+        when(mapper.transitionOrder(eq(RUN_ID), any(), eq(41L), eq("SUBMITTED"), eq("CONFIRMED"), eq(0L))).thenReturn(1);
         when(mapper.insertLedger(eq(RUN_ID), any())).thenReturn(1);
+        when(mapper.markCallbackProcessed(eq(RUN_ID), any(), eq("PROCESSED"))).thenReturn(1);
 
-        var submitted = service.createWithdrawal(
+        var confirmed = service.createWithdrawal(
                 41L, "CREGIS_USDT_BEP20", bd("4"),
                 "0x3333333333333333333333333333333333333333", "withdraw-key-1");
 
-        assertThat(submitted.status()).isEqualTo("SUBMITTED");
-        assertThat(submitted.wallet().availableUsdt()).isEqualByComparingTo("16");
-        assertThat(submitted.wallet().reservedUsdt()).isEqualByComparingTo("4");
-        verify(mapper, never()).transitionOrder(any(), any(), any(), eq("SUBMITTED"), eq("CONFIRMED"), any());
+        assertThat(confirmed.status()).isEqualTo("CONFIRMED");
+        assertThat(confirmed.version()).isEqualTo(1L);
+        assertThat(confirmed.settledAt()).isNotNull();
+        assertThat(confirmed.wallet().availableUsdt()).isEqualByComparingTo("16");
+        assertThat(confirmed.wallet().reservedUsdt()).isZero();
+        verify(mapper).debitWallet(RUN_ID, 41L, bd("4"), 3L);
+        verify(mapper, never()).reserveWallet(any(), any(), any(), any());
+        verify(mapper, never()).consumeReservedWallet(any(), any(), any(), any());
+    }
+
+    @Test
+    void withdrawalDailyLimitIsEnforcedBeforeAnyMoneyOrOrderMutation() {
+        when(mapper.findOrderByIdempotency(RUN_ID, 41L, "withdraw-key-limit")).thenReturn(null);
+        when(mapper.insertWalletIfAbsent(RUN_ID, 41L)).thenReturn(0);
+        when(mapper.lockWallet(RUN_ID, 41L)).thenReturn(new WalletRow(41L, bd("20"), bd("0"), 3L));
+        when(mapper.lockWithdrawalOrderIdsSince(eq(RUN_ID), eq(41L), any())).thenReturn(
+                java.util.stream.LongStream.rangeClosed(1, 10).boxed().toList());
+
+        assertThatThrownBy(() -> service.createWithdrawal(
+                41L, "CREGIS_USDT_BEP20", bd("4"),
+                "0x3333333333333333333333333333333333333333", "withdraw-key-limit"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("FUNDS_SANDBOX_WITHDRAWAL_DAILY_LIMIT");
+
+        verify(mapper, never()).debitWallet(any(), any(), any(), any());
+        verify(mapper, never()).insertOrder(any());
+        verify(mapper, never()).insertCallback(any(), any());
+        verify(mapper, never()).insertLedger(any(), any());
     }
 
     @Test
@@ -253,20 +281,22 @@ class FundsSandboxServiceTest {
     }
 
     @Test
-    void lostWithdrawalResponseRetryReplaysReservationWithoutASecondReserve() {
+    void lostWithdrawalResponseRetryReplaysTerminalDebitWithoutASecondDebit() {
         String address = "0x3333333333333333333333333333333333333333";
-        OrderRow submitted = order("SBX-WD-RETRY", 41L, "WITHDRAWAL", "CREGIS_USDT_BEP20",
-                bd("4"), "SUBMITTED", 0L, "withdraw-key-retry",
+        OrderRow confirmed = order("SBX-WD-RETRY", 41L, "WITHDRAWAL", "CREGIS_USDT_BEP20",
+                bd("4"), "CONFIRMED", 1L, "withdraw-key-retry",
                 sha256(RUN_ID + "|41|WITHDRAWAL|CREGIS_USDT_BEP20|4.000000|" + address));
-        when(mapper.findOrderByIdempotency(RUN_ID, 41L, "withdraw-key-retry")).thenReturn(submitted);
-        when(mapper.walletSnapshot(RUN_ID, 41L)).thenReturn(new WalletRow(41L, bd("16"), bd("4"), 4L));
+        when(mapper.findOrderByIdempotency(RUN_ID, 41L, "withdraw-key-retry")).thenReturn(confirmed);
+        when(mapper.walletSnapshot(RUN_ID, 41L)).thenReturn(new WalletRow(41L, bd("16"), bd("0"), 4L));
 
         var replay = service.createWithdrawal(
                 41L, "CREGIS_USDT_BEP20", bd("4"), address, "withdraw-key-retry");
 
         assertThat(replay.orderNo()).isEqualTo("SBX-WD-RETRY");
+        assertThat(replay.status()).isEqualTo("CONFIRMED");
         assertThat(replay.wallet().availableUsdt()).isEqualByComparingTo("16");
-        assertThat(replay.wallet().reservedUsdt()).isEqualByComparingTo("4");
+        assertThat(replay.wallet().reservedUsdt()).isZero();
+        verify(mapper, never()).debitWallet(any(), any(), any(), any());
         verify(mapper, never()).reserveWallet(any(), any(), any(), any());
         verify(mapper, never()).insertLedger(any(), any());
         verify(mapper, never()).insertOrder(any());

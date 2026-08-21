@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.shared.exception.BizException;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
@@ -16,7 +17,7 @@ class LearningAcceptanceSandboxGateTest {
 
     @Test
     void enablesSandboxFactsOnlyForOneDeclaredIsolatedProfile() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
 
         assertThat(gate.enabled("SANDBOX")).isTrue();
         assertThat(gate.enabled("PRODUCTION")).isFalse();
@@ -24,17 +25,18 @@ class LearningAcceptanceSandboxGateTest {
 
     @Test
     void rejectsSandboxFactsWhenProfilesAreMixedOrNotApproved() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance", "production"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev", "prod"});
 
         assertThat(gate.enabled("SANDBOX")).isFalse();
         assertThatThrownBy(() -> gate.requireEnabled("SANDBOX"))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
                 .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
     }
 
     @Test
     void controlledAcceptanceProfileRejectsNormalUsersInsteadOfFallingThroughToProductionFacts() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
 
         assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
                 .isInstanceOf(IllegalStateException.class)
@@ -43,40 +45,56 @@ class LearningAcceptanceSandboxGateTest {
 
     @Test
     void mixedOrUnknownProfilesFailClosedForBothSandboxAndProductionUsers() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"acceptance", "production"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev", "prod"});
 
         assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
                 .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
         assertThatThrownBy(() -> gate.requireEnabled("SANDBOX"))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
                 .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
 
         when(environment.getActiveProfiles()).thenReturn(new String[] {"staging"});
         assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BizException.class)
+                .satisfies(ex -> assertThat(((BizException) ex).getCode()).isEqualTo(503))
                 .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
     }
 
     @Test
-    void productionProfileAndDefaultProfileKeepProductionUsersEnabled() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"production"});
+    void productionProfileIsEnabledWhileLegacyOrMissingProfilesFailClosed() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
         assertThatCode(() -> gate.requireEnabled("PRODUCTION")).doesNotThrowAnyException();
 
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"default"});
+        assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
+
         when(environment.getActiveProfiles()).thenReturn(new String[] {});
-        assertThatCode(() -> gate.requireEnabled("PRODUCTION")).doesNotThrowAnyException();
+        assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
     }
 
     @Test
-    void strictProfileBlocksFormalProductionCatalogCommandsWhileDefaultAndProductionRemainAvailable() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"local-sandbox"});
+    void developmentBlocksProductionCatalogCommandsWhileOnlyProdRemainsAvailable() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         assertThatThrownBy(gate::requireProductionMutationAllowed)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
 
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"production"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
         assertThatCode(gate::requireProductionMutationAllowed).doesNotThrowAnyException();
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"default"});
+        assertThatThrownBy(gate::requireProductionMutationAllowed)
+                .isInstanceOf(BizException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
         when(environment.getActiveProfiles()).thenReturn(new String[] {});
-        assertThatCode(gate::requireProductionMutationAllowed).doesNotThrowAnyException();
+        assertThatThrownBy(gate::requireProductionMutationAllowed)
+                .isInstanceOf(BizException.class)
+                .hasMessage("LEARNING_ACCEPTANCE_PROFILE_INVALID");
     }
 }

@@ -111,6 +111,7 @@ class OpsDeviceServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
+    private final E2TaskPriceHistoryService taskPriceHistoryService = mock(E2TaskPriceHistoryService.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsDeviceService service = service();
@@ -130,6 +131,7 @@ class OpsDeviceServiceTest {
                 auditLogService,
                 idempotencyService,
                 outboxService,
+                taskPriceHistoryService,
                 clock,
                 seedPolicy,
                 lockMapper);
@@ -146,6 +148,7 @@ class OpsDeviceServiceTest {
                 auditLogService,
                 idempotencyService,
                 outboxService,
+                taskPriceHistoryService,
                 clock,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
                 lockMapper) {
@@ -1009,6 +1012,34 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void createSkuRejectsUnsafeDirectMinimumAndPartialQuotaPair() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+
+        ApiResult<DeviceSkuView> tooManyDirects = service.createSku("idem-sku-gate-direct",
+                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                        new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
+                                null, 1_000_001, null, "all", null, null, null, true)));
+        ApiResult<DeviceSkuView> capWithoutSold = service.createSku("idem-sku-gate-cap",
+                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                        new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
+                                null, null, null, "all", 10, null, null, true)));
+        ApiResult<DeviceSkuView> soldWithoutCap = service.createSku("idem-sku-gate-sold",
+                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                        new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
+                                null, null, null, "all", null, 1, null, true)));
+        ApiResult<DeviceSkuView> unsupportedMonth = service.createSku("idem-sku-gate-month",
+                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                        new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
+                                null, null, null, "all", 10, 0, "month", true)));
+
+        assertThat(tooManyDirects.getMessage()).isEqualTo("SKU_PURCHASE_GATE_INVALID");
+        assertThat(capWithoutSold.getMessage()).isEqualTo("SKU_PURCHASE_GATE_INVALID");
+        assertThat(soldWithoutCap.getMessage()).isEqualTo("SKU_PURCHASE_GATE_INVALID");
+        assertThat(unsupportedMonth.getMessage()).isEqualTo("SKU_PURCHASE_GATE_PERIOD_INVALID");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
     void updateSkuAllowsEncodedMediaAssetIdsLongerThanLegacyColumn() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
@@ -1856,6 +1887,8 @@ class OpsDeviceServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("E2_TASK_PRICE_CHANGED");
+        verify(taskPriceHistoryService).recordCurrentPrice(
+                eq("TK-1"), eq(E2TaskPriceHistoryService.SOURCE_PC_PRICE), any(LocalDateTime.class));
     }
 
     @Test
@@ -1897,6 +1930,34 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateTaskRecordsHistoryWhenCatalogEditChangesPrice() {
+        catalogRepository.task = task("TK-1", "LLM 推理 70B", new BigDecimal("0.46"), "active");
+        DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest(
+                "LLM 推理 70B",
+                new BigDecimal("0.50"),
+                "/1k",
+                "手机+",
+                new BigDecimal("0.50"),
+                "active",
+                "LL",
+                "Llama 3.1 70B",
+                new BigDecimal("0.06"),
+                new BigDecimal("0.22"),
+                "8GB",
+                "派发中",
+                "catalog repricing",
+                "superadmin");
+
+        ApiResult<DeviceTaskView> result = service.updateTask(
+                "TK-1", "idem-task-reprice", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().price()).isEqualByComparingTo("0.50");
+        verify(taskPriceHistoryService).recordCurrentPrice(
+                eq("TK-1"), eq(E2TaskPriceHistoryService.SOURCE_PC_UPDATE), any(LocalDateTime.class));
+    }
+
+    @Test
     void createTaskRejectsValuesOutsideBackendOptions() {
         ApiResult<DeviceTaskView> invalidUnit = service.createTask(
                 "idem-task",
@@ -1919,6 +1980,8 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().taskId()).startsWith("TK-");
+        verify(taskPriceHistoryService).recordCurrentPrice(
+                eq(result.getData().taskId()), eq(E2TaskPriceHistoryService.SOURCE_PC_CREATE), any(LocalDateTime.class));
     }
 
     @Test

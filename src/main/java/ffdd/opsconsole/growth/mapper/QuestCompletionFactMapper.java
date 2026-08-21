@@ -12,7 +12,8 @@ import org.apache.ibatis.annotations.Select;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface QuestCompletionFactMapper {
 
-    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
     @Select("""
@@ -52,6 +53,21 @@ public interface QuestCompletionFactMapper {
              LIMIT 1 FOR UPDATE
             """)
     CompletionFact lockFact(@Param("producer") String producer, @Param("eventId") String eventId);
+
+    @Select("""
+            SELECT producer,event_id eventId,payload_hash payloadHash,user_id userId,
+                   mission_id missionId,quest_code questCode
+              FROM nx_growth_quest_completion_fact
+             WHERE producer=#{producer} AND event_id=#{eventId} AND user_id=#{userId}
+               AND mission_id=#{missionId} AND quest_code=#{questCode} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    CompletionFact lockFactForUserMission(
+            @Param("producer") String producer,
+            @Param("eventId") String eventId,
+            @Param("userId") Long userId,
+            @Param("missionId") Long missionId,
+            @Param("questCode") String questCode);
 
     @Insert("""
             INSERT INTO nx_user_mission

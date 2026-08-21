@@ -4,15 +4,18 @@ param(
   [string]$LogDir = "",
   [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
   [bool]$TemporarySuperadminMfaBypass = $false,
-  [bool]$EnableLocalNovaAi = $true,
+  [Nullable[bool]]$EnableLocalNovaAi = $null,
   [string]$NovaAiModel = "gemma4-e4b-ctx32k:latest",
-  [string]$SpringProfile = "local-sandbox"
+  [ValidateSet("dev", "prod")]
+  [string]$SpringProfile = "dev"
 )
 
 $ErrorActionPreference = "Stop"
+$localNovaAiEnabled = if ($null -eq $EnableLocalNovaAi) { $SpringProfile -eq "dev" } else { [bool]$EnableLocalNovaAi }
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1")
+$databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1") `
+  -RequireExplicit:($SpringProfile -eq "prod")
 $databaseVariableNames = @(
   "NEXION_DB_URL",
   "NEXION_DB_USERNAME",
@@ -56,8 +59,9 @@ try {
     ('set "SERVER_PORT={0}"' -f $Port),
     ('set "SPRING_PROFILES_ACTIVE={0}"' -f $SpringProfile),
     'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
-    ('set "NEXION_NOVA_AI_MODE={0}"' -f $(if ($EnableLocalNovaAi) { "OLLAMA_LOCAL" } else { "DISABLED" })),
-    'set "NEXION_NOVA_AI_BASE_URL=http://127.0.0.1:11434"',
+    ('set "NEXION_NOVA_AI_MODE={0}"' -f $(if ($localNovaAiEnabled) { "OLLAMA_LOCAL" } else { "DISABLED" })),
+    'set "NEXION_NOVA_AI_RAG_BASE_URL=http://127.0.0.1:8010"',
+    'set "NEXION_NOVA_AI_RAG_COLLECTION=customer_support_knowledge_prd_v2_20260814"',
     ('set "NEXION_NOVA_AI_MODEL={0}"' -f $NovaAiModel),
     ('set "NEXION_ADMIN_MFA_TEMPORARY_SUPERADMIN_BYPASS={0}"' -f $mfaBypassValue),
     ('call "{0}" spring-boot:run' -f $Maven)

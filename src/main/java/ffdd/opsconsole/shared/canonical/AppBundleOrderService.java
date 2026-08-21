@@ -52,8 +52,12 @@ public class AppBundleOrderService {
             if (sandboxMapper == null || acceptanceRun == null) {
                 return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
             }
-            return executeOnce(userId, normalized, idempotencyKey, "APP:BUNDLE_ORDER_CREATE:SANDBOX:USER:",
-                    () -> createSandboxOnce(userId, normalized));
+            String runId = acceptanceRun.requireRunId();
+            return executeSandboxOnce(userId, normalized, idempotencyKey, runId,
+                    () -> createSandboxOnce(userId, normalized, runId));
+        }
+        if (!profileGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
         AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -70,8 +74,7 @@ public class AppBundleOrderService {
      * Payment, cancellation, expiry and refund therefore move the complete
      * bundle atomically and never write canonical product/order tables.
      */
-    private ApiResult<Map<String, Object>> createSandboxOnce(Long userId, List<String> productNos) {
-        String runId = acceptanceRun.requireRunId();
+    private ApiResult<Map<String, Object>> createSandboxOnce(Long userId, List<String> productNos, String runId) {
         List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> products = new ArrayList<>();
         List<String> lockOrder = productNos.stream().sorted().toList();
         for (String productNo : lockOrder) {
@@ -88,10 +91,8 @@ public class AppBundleOrderService {
         if (products.stream().anyMatch(row -> StringUtils.hasText(row.purchaseGateJson()))) {
             AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
             if (facts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_UNAVAILABLE");
-            StorefrontPurchaseGatePolicy.Facts gateFacts = new StorefrontPurchaseGatePolicy.Facts(
-                    Math.max(0, facts.rank() == null ? 0 : facts.rank()),
-                    Math.max(0, facts.activeDirect() == null ? 0 : facts.activeDirect()),
-                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd());
+            StorefrontPurchaseGatePolicy.Facts gateFacts = safeGateFacts(facts);
+            if (gateFacts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_INVALID");
             if (products.stream().anyMatch(row -> !purchaseGatePolicy.evaluate(row.purchaseGateJson(), gateFacts).allowed())) {
                 return ApiResult.fail(409, "COMMERCE_SANDBOX_PURCHASE_GATE_BLOCKED");
             }
@@ -141,9 +142,8 @@ public class AppBundleOrderService {
         if (products.stream().anyMatch(row -> StringUtils.hasText(row.purchaseGateJson()))) {
             AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
             if (facts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_UNAVAILABLE");
-            StorefrontPurchaseGatePolicy.Facts gateFacts = new StorefrontPurchaseGatePolicy.Facts(
-                    Math.max(0, facts.rank() == null ? 0 : facts.rank()), Math.max(0, facts.activeDirect() == null ? 0 : facts.activeDirect()),
-                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd());
+            StorefrontPurchaseGatePolicy.Facts gateFacts = safeGateFacts(facts);
+            if (gateFacts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_INVALID");
             if (products.stream().anyMatch(row -> !purchaseGatePolicy.evaluate(row.purchaseGateJson(), gateFacts).allowed())) {
                 return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
             }
@@ -156,6 +156,9 @@ public class AppBundleOrderService {
         AppBundleOrderMapper.Attribution attribution = mapper.attribution(userId);
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        for (AppBundleOrderMapper.ProductRow product : products) {
+            reserveCanonicalPurchaseQuota(userId, product.productNo(), 1);
         }
         BigDecimal subtotal = products.stream().map(AppBundleOrderMapper.ProductRow::priceUsdt)
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.DOWN);
@@ -186,12 +189,48 @@ public class AppBundleOrderService {
                 "idSource", "server"));
     }
 
+    private StorefrontPurchaseGatePolicy.Facts safeGateFacts(AppBundleOrderMapper.PurchaseFacts facts) {
+        try {
+            return new StorefrontPurchaseGatePolicy.Facts(
+                    facts.rank() == null ? 0 : facts.rank(),
+                    facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                    facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd());
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private void reserveCanonicalPurchaseQuota(Long userId, String productNo, int quantity) {
+        String rawGate = mapper.purchaseGateJson(productNo);
+        if (!StringUtils.hasText(rawGate)) return;
+        AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
+        StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null : safeGateFacts(facts);
+        if ((facts != null && gateFacts == null)
+                || !purchaseGatePolicy.evaluate(rawGate, gateFacts).allowed()) {
+            throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+        }
+        if (purchaseGatePolicy.hasQuota(rawGate)
+                && mapper.consumePurchaseQuota(productNo, quantity) != 1) {
+            throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+        }
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<Map<String, Object>> executeOnce(Long userId, List<String> productNos, String key,
                                                         String namespace, Supplier<ApiResult<Map<String, Object>>> action) {
         String material = userId + "|" + String.join(",", productNos);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 namespace + userId, key, sha256(material), ApiResult.class, (Supplier) action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> executeSandboxOnce(Long userId, List<String> productNos, String key,
+                                                               String runId,
+                                                               Supplier<ApiResult<Map<String, Object>>> action) {
+        String material = "SANDBOX|" + runId + "|" + userId + "|" + String.join(",", productNos);
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
+                "APP:BUNDLE_ORDER_CREATE:SANDBOX:" + runId + ":USER:" + userId,
+                key, sha256(material), ApiResult.class, (Supplier) action);
     }
 
     private List<String> normalizeProducts(List<String> productNos) {

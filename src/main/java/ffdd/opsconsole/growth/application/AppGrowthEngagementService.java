@@ -21,6 +21,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -37,10 +38,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -51,6 +54,11 @@ import org.springframework.util.StringUtils;
 public class AppGrowthEngagementService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+    private static final Set<String> SHARE_CHANNELS = Set.of(
+            "telegram", "zalo", "whatsapp", "messenger", "sms", "x",
+            "copy", "poster", "system", "code", "link");
+    private static final Set<String> SHARE_SURFACES = Set.of(
+            "team_hero", "poster_sheet", "share_sheet", "proof");
 
     private final AppGrowthEngagementMapper mapper;
     private final VoucherGrantFacade voucherGrantFacade;
@@ -61,22 +69,36 @@ public class AppGrowthEngagementService {
     private final EventOutboxService outboxService;
     private final EarningsReleaseService earningsReleaseService;
 
+    private final AppGrowthWheelSandboxService sandboxService;
+    private final QuestCompletionFactConsumer questFactConsumer;
+
+    /** The run-fenced projection is absent from production-only deployments.
+     * Optional is constructor-resolved by Spring and avoids mutable field injection. */
+    private final Optional<AppGrowthVoucherSandboxService> voucherSandboxService;
+    private final Environment environment;
+
     public ApiResult<Map<String, Object>> questState(Long userId) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.questState(userId);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         requireReadableUser(userId);
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         if (rhythm == null || rhythm.currentMonth() <= 0 || rhythm.questBonusMultiplier() == null) {
             throw conflict("H1_RHYTHM_UNAVAILABLE");
         }
         Map<String, Object> promo = mapper.questPromoBanner();
-        return ApiResult.ok(linked(
+        return ApiResult.ok(productionResponse(linked(
                 "quests", safeList(mapper.questState(userId)),
                 "promoBanner", promo == null ? Map.of() : new LinkedHashMap<>(promo),
                 "questBonusMultiplier", positiveOrOne(rhythm.questBonusMultiplier()),
                 "rhythmMonth", rhythm.currentMonth(),
-                "source", "nx_mission + nx_user_mission + nx_growth_promo_banner + H1 rhythm"));
+                "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "",
+                "source", "nx_mission + nx_user_mission + nx_growth_promo_banner + H1 rhythm")));
     }
 
     public ApiResult<Map<String, Object>> eventState(Long userId) {
+        requireCanonicalEngagementRuntime();
         requireReadableUser(userId);
         List<Map<String, Object>> events = safeList(mapper.eventState(userId));
         long featuredOngoing = events.stream()
@@ -94,6 +116,10 @@ public class AppGrowthEngagementService {
     }
 
     public ApiResult<Map<String, Object>> pointState(Long userId) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.pointState(userId);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         requireReadableUser(userId);
         LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         Map<String, Object> rawStreak = mapper.pointState(userId, today);
@@ -105,7 +131,7 @@ public class AppGrowthEngagementService {
                 ? value
                 : checkedInToday instanceof Number number && number.intValue() != 0);
         streak.putIfAbsent("lastCheckInDate", null);
-        return ApiResult.ok(linked(
+        return ApiResult.ok(productionResponse(linked(
                 "rewardAsset", "NEX",
                 "serverDate", today.toString(),
                 "nextResetAtUtc", ZonedDateTime.of(
@@ -117,10 +143,21 @@ public class AppGrowthEngagementService {
                 "rules", safeList(mapper.checkInRuleState()),
                 "powerUps", safeList(mapper.streakPowerUpState(userId)),
                 "topStreakers", safeList(mapper.topStreakers()),
-                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers"));
+                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers")));
     }
 
     public ApiResult<Map<String, Object>> voucherState(Long userId) {
+        return voucherState(userId, null);
+    }
+
+    public ApiResult<Map<String, Object>> voucherState(Long userId, String requestedRunId) {
+        if (voucherSandboxService.isPresent()) {
+            if (voucherSandboxService.get().enabled()) return voucherSandboxService.get().voucherState(userId, requestedRunId);
+            if (voucherSandboxService.get().unknownProfile()) {
+                throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+            }
+        }
+        requireCanonicalEngagementRuntime();
         requireReadableUser(userId);
         Attribution attribution = attribution(userId);
         long nowMillis = System.currentTimeMillis();
@@ -136,16 +173,59 @@ public class AppGrowthEngagementService {
             }
             boolean definitionOpen = !truthy(row.get("definitionDeleted"))
                     && "active".equalsIgnoreCase(String.valueOf(row.get("definitionStatus")));
+            long lastSeenAt = numberValue(row.get("popupLastSeenAt"));
+            long delayMs = boundedCadence(row, "popupDelayMs", 1300L, 0L, 60_000L);
+            long cooldownHours = boundedCadence(row, "popupCooldownHours", 24L, 0L, 720L);
+            long maxPerSession = boundedCadence(row, "popupMaxPerSession", 1L, 1L, 10L);
+            long nextEligibleAt = lastSeenAt > 0 ? safeNextEligibleAt(lastSeenAt, cooldownHours) : 0L;
+            boolean cadenceEnabled = truthy(row.get("popupCadenceEnabled"));
+            item.put("popupDelayMs", delayMs);
+            item.put("popupCooldownHours", cooldownHours);
+            item.put("popupMaxPerSession", maxPerSession);
             item.put("grantStatus", grantStatus);
             item.put("claimable", audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus));
             item.put("audienceEligible", audienceEligible);
+            item.put("nextEligibleAt", nextEligibleAt);
+            item.put("popupEligible", cadenceEnabled && truthy(row.get("popupEnabled"))
+                    && audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus)
+                    && (nextEligibleAt == 0L || nextEligibleAt <= nowMillis));
             return item;
         }).toList();
-        return ApiResult.ok(linked("vouchers", vouchers, "source", "nx_growth_voucher + nx_growth_voucher_grant"));
+        return ApiResult.ok(linked("vouchers", vouchers, "source", "nx_growth_voucher + nx_growth_voucher_grant",
+                "serverCanonical", true,
+                "provenance", linked("source", "nx_growth_voucher", "sourceEnvironment", "PRODUCTION", "runId", "")));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> markVoucherPopupSeen(Long userId, String voucherId) {
+        return markVoucherPopupSeen(userId, voucherId, null);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> markVoucherPopupSeen(
+            Long userId, String voucherId, String requestedRunId) {
+        if (voucherSandboxService.isPresent()) {
+            if (voucherSandboxService.get().enabled()) {
+                return voucherSandboxService.get().markVoucherPopupSeen(userId, voucherId, requestedRunId);
+            }
+            if (voucherSandboxService.get().unknownProfile()) {
+                throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+            }
+        }
+        requireUser(userId);
+        String code = reference(voucherId, "VOUCHER_ID_REQUIRED");
+        if (mapper.markVoucherPopupSeen(userId, code, System.currentTimeMillis()) != 1) {
+            return ApiResult.fail(409, "VOUCHER_POPUP_STATE_CONFLICT");
+        }
+        return voucherState(userId, requestedRunId);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimQuest(Long userId, String questCode, String idempotencyKey) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.claimQuest(userId, questCode, idempotencyKey);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         requireUser(userId);
         String code = reference(questCode, "QUEST_CODE_REQUIRED");
         return executeOnce("QUEST_CLAIM", userId, idempotencyKey, code, () -> {
@@ -163,12 +243,63 @@ public class AppGrowthEngagementService {
                     "rhythmMonth", rhythm.currentMonth());
             audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
             publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
-            return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED"));
+            return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",
+                    "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
+        });
+    }
+
+    /** Records a successful client share as a server-owned H3 fact. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> recordShareEvent(
+            Long userId, ShareEventRequest request, String idempotencyKey) {
+        if (request == null) throw new BizException(422, "SHARE_EVENT_REQUIRED");
+        String eventId = reference(request.eventId(), "SHARE_EVENT_ID_INVALID");
+        String channel = allowedShareReference(request.channel(), SHARE_CHANNELS, "SHARE_CHANNEL_INVALID");
+        String surface = allowedShareReference(request.surface(), SHARE_SURFACES, "SHARE_SURFACE_INVALID");
+        String sourceEnvironment = request.sourceEnvironment() == null
+                ? "" : request.sourceEnvironment().trim().toUpperCase(Locale.ROOT);
+        String runId = request.runId() == null ? "" : request.runId().trim();
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) {
+                if (!"SANDBOX".equals(sourceEnvironment) || !validRunId(runId)) {
+                    throw new BizException(409, "SHARE_EVENT_SCOPE_MISMATCH");
+                }
+                return sandboxService.recordShareEvent(userId, runId, eventId, channel, surface,
+                        reference(idempotencyKey, "SHARE_IDEMPOTENCY_KEY_REQUIRED"));
+            }
+            if (sandboxService.unknownProfile()) {
+                throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+            }
+        }
+        requireUser(userId);
+        if (!"PRODUCTION".equals(sourceEnvironment) || !runId.isEmpty()) {
+            throw new BizException(409, "SHARE_EVENT_SCOPE_MISMATCH");
+        }
+        if (questFactConsumer == null) throw new BizException(503, "SHARE_EVENT_UNAVAILABLE");
+        String key = reference(idempotencyKey, "SHARE_IDEMPOTENCY_KEY_REQUIRED");
+        String requestHash = eventId + "|" + channel + "|" + surface + "|PRODUCTION|";
+        return executeOnce("SHARE_EVENT:PRODUCTION", userId, key, requestHash, () -> {
+            QuestCompletionFactConsumer.CompletionResult completion = questFactConsumer.consume(
+                    new QuestCompletionFactConsumer.QuestCompletionCommand(
+                            "SHARE", eventId, userId, "invite_friend"));
+            Map<String, Object> detail = linked(
+                    "eventId", eventId, "channel", channel, "surface", surface,
+                    "questCode", completion.questCode(), "replay", completion.replay());
+            if (!completion.replay()) {
+                audit("H3_SHARE_EVENT_RECORDED", "SHARE_EVENT", eventId,
+                        "SHARE:" + eventId, userId, detail);
+                publish("REFERRAL", eventId, "referral.invite_sent", userId, attribution(userId), detail);
+            }
+            return ApiResult.ok(productionResponse(linked(
+                    "eventId", eventId, "questCode", completion.questCode(),
+                    "status", completion.status(), "replay", completion.replay(),
+                    "source", "nx_growth_quest_completion_fact")));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> joinEvent(Long userId, String eventCode, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
         return executeOnce("EVENT_JOIN", userId, idempotencyKey, code, () -> {
@@ -184,6 +315,7 @@ public class AppGrowthEngagementService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimEvent(Long userId, String eventCode, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(eventCode, "EVENT_CODE_REQUIRED");
         return executeOnce("EVENT_CLAIM", userId, idempotencyKey, code, () -> {
@@ -216,6 +348,7 @@ public class AppGrowthEngagementService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> checkIn(Long userId, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         return executeOnce("DAILY_CHECK_IN", userId, idempotencyKey, today, () -> {
@@ -255,12 +388,13 @@ public class AppGrowthEngagementService {
                 publish("DAILY_CHECK_IN", userId + ":" + today, "daily.lucky_triggered",
                         userId, attribution, linked("multiplier", multiplier));
             }
-            return ApiResult.ok(detail);
+            return ApiResult.ok(productionResponse(detail));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> useStreakSaver(Long userId, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         return executeOnce("DAILY_STREAK_SAVER", userId, idempotencyKey, today, () -> {
@@ -287,13 +421,14 @@ public class AppGrowthEngagementService {
                     "STREAK-SAVER:" + userId + ":" + today, userId, detail);
             publish("USER_STREAK", String.valueOf(userId), "daily.streak_restored",
                     userId, attribution(userId), detail);
-            return ApiResult.ok(detail);
+            return ApiResult.ok(productionResponse(detail));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activateStreakPowerUp(
             Long userId, Long powerUpId, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         if (powerUpId == null || powerUpId <= 0) {
             return ApiResult.fail(422, "POWER_UP_ID_REQUIRED");
@@ -317,13 +452,17 @@ public class AppGrowthEngagementService {
                     sourceId, userId, detail);
             publish("USER_STREAK_POWER_UP", sourceId, "daily.power_up_activated",
                     userId, attribution(userId), detail);
-            return ApiResult.ok(detail);
+            return ApiResult.ok(productionResponse(detail));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimDailyMilestone(
             Long userId, Long milestoneId, String idempotencyKey) {
+        if (sandboxService != null) {
+            if (sandboxService.enabled()) return sandboxService.claimMilestone(userId, milestoneId, idempotencyKey);
+            if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+        }
         requireUser(userId);
         if (milestoneId == null || milestoneId <= 0) return ApiResult.fail(422, "MILESTONE_ID_REQUIRED");
         return executeOnce("DAILY_MILESTONE_CLAIM", userId, idempotencyKey, milestoneId, () -> {
@@ -357,15 +496,16 @@ public class AppGrowthEngagementService {
                 publish("DAILY_MILESTONE", String.valueOf(row.milestoneId()), "daily.spin_awarded",
                         userId, attribution, linked("milestoneId", row.milestoneId(), "tickets", tickets));
             }
-            return ApiResult.ok(linked(
+            return ApiResult.ok(productionResponse(linked(
                     "milestoneId", row.milestoneId(), "milestoneDay", row.milestoneDay(),
                     "rewardType", rewardType, "rewardAmount", amount, "badgeCode", row.badgeCode(),
-                    "spinTickets", tickets));
+                    "spinTickets", tickets)));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> evaluateEarningMilestones(Long userId, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         return executeOnce("EARNING_MILESTONE_EVALUATE", userId, idempotencyKey, "eligible-rules", () -> {
             List<EarningMilestone> eligible = mapper.lockEligibleEarningMilestones(userId);
@@ -389,13 +529,30 @@ public class AppGrowthEngagementService {
                 publish("EARNING_MILESTONE", eventNo, "milestone.fired", userId, attribution, detail);
                 fired.add(detail);
             }
-            return ApiResult.ok(linked("fired", fired, "count", fired.size()));
+            return ApiResult.ok(productionResponse(linked("fired", fired, "count", fired.size())));
         });
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimVoucher(
             Long userId, String voucherId, String surface, String idempotencyKey) {
+        return claimVoucher(userId, voucherId, surface, idempotencyKey, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> claimVoucher(
+            Long userId, String voucherId, String surface, String idempotencyKey,
+            String requestedRunId) {
+        if (voucherSandboxService.isPresent()) {
+            if (voucherSandboxService.get().enabled()) {
+                return voucherSandboxService.get().claimVoucher(
+                        userId, voucherId, surface, idempotencyKey, requestedRunId);
+            }
+            if (voucherSandboxService.get().unknownProfile()) {
+                throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
+            }
+        }
+        requireCanonicalEngagementRuntime();
         requireUser(userId);
         String code = reference(voucherId, "VOUCHER_ID_REQUIRED");
         String normalizedSurface = StringUtils.hasText(surface) ? surface.trim().toLowerCase(Locale.ROOT) : "home";
@@ -425,12 +582,24 @@ public class AppGrowthEngagementService {
             }
             return ApiResult.ok(linked(
                     "voucherId", code, "grantId", grant.grantId(), "status", "AVAILABLE",
-                    "replay", grant.replayed()));
+                    "replay", grant.replayed(), "serverCanonical", true,
+                    "source", "nx_growth_voucher + nx_growth_voucher_grant",
+                    "sourceEnvironment", "PRODUCTION", "runId", ""));
         });
     }
 
     private void requireUser(Long userId) {
-        if (userId == null || userId <= 0 || mapper.lockActiveUser(userId) == null) {
+        Long activeUser = null;
+        if (userId != null && userId > 0) {
+            var resolved = UserAuthEnvironment.resolve(environment);
+            if (environment != null && resolved.isEmpty()) {
+                throw new BizException(503, "USER_AUTH_ENVIRONMENT_UNSUPPORTED");
+            }
+            activeUser = resolved.orElse(UserAuthEnvironment.PRODUCTION) == UserAuthEnvironment.SANDBOX
+                    ? mapper.lockActiveSandboxUser(userId)
+                    : mapper.lockActiveUser(userId);
+        }
+        if (activeUser == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
     }
@@ -439,6 +608,17 @@ public class AppGrowthEngagementService {
         if (userId == null || userId <= 0 || mapper.findActiveUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
+    }
+
+    /**
+     * These H3-H7 operations still use canonical tables and have no run-scoped
+     * sandbox implementation.  They must never silently fall back to those
+     * tables when a sandbox or mixed runtime is active.
+     */
+    private void requireCanonicalEngagementRuntime() {
+        if (sandboxService == null) return;
+        if (sandboxService.enabled()) throw new BizException(503, "GROWTH_SANDBOX_SCOPE_UNAVAILABLE");
+        if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
     }
 
     private List<Map<String, Object>> safeList(List<Map<String, Object>> value) {
@@ -454,6 +634,38 @@ public class AppGrowthEngagementService {
         }
         return "true".equalsIgnoreCase(String.valueOf(value))
                 || "1".equals(String.valueOf(value));
+    }
+
+    private long numberValue(Object value) {
+        if (value instanceof Number number) return Math.max(0L, number.longValue());
+        try { return value == null ? 0L : Math.max(0L, Long.parseLong(value.toString())); }
+        catch (NumberFormatException ignored) { return 0L; }
+    }
+
+    private long boundedCadence(Map<String, Object> row, String key, long fallback, long minimum, long maximum) {
+        Object value = row.get(key);
+        long parsed;
+        if (!row.containsKey(key)) {
+            parsed = fallback;
+        } else if (value instanceof Number number) {
+            parsed = number.longValue();
+        } else {
+            try {
+                parsed = value == null ? 0L : Long.parseLong(value.toString());
+            } catch (NumberFormatException ex) {
+                throw new BizException(503, "VOUCHER_CADENCE_INVALID");
+            }
+        }
+        if (parsed < minimum || parsed > maximum) throw new BizException(503, "VOUCHER_CADENCE_INVALID");
+        return parsed;
+    }
+
+    private long safeNextEligibleAt(long lastSeenAt, long cooldownHours) {
+        try {
+            return Math.addExact(lastSeenAt, Math.multiplyExact(cooldownHours, 3_600_000L));
+        } catch (ArithmeticException ex) {
+            throw new BizException(503, "VOUCHER_CADENCE_INVALID");
+        }
     }
 
     private Attribution attribution(Long userId) {
@@ -601,6 +813,24 @@ public class AppGrowthEngagementService {
         return value.trim();
     }
 
+    private String shareReference(String value, String error) {
+        if (!StringUtils.hasText(value) || value.length() > 32
+                || !value.matches("^[A-Za-z0-9._:-]+$")) {
+            throw new BizException(422, error);
+        }
+        return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String allowedShareReference(String value, Set<String> allowed, String error) {
+        String normalized = shareReference(value, error);
+        if (!allowed.contains(normalized)) throw new BizException(422, error);
+        return normalized;
+    }
+
+    private boolean validRunId(String value) {
+        return value.matches("^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$");
+    }
+
     private void audit(
             String action, String resourceType, String resourceId, String bizNo,
             Long userId, Map<String, Object> detail) {
@@ -644,5 +874,18 @@ public class AppGrowthEngagementService {
         Map<String, Object> result = new LinkedHashMap<>();
         for (int i = 0; i < values.length; i += 2) result.put(String.valueOf(values[i]), values[i + 1]);
         return result;
+    }
+
+    private Map<String, Object> productionResponse(Map<String, Object> payload) {
+        Map<String, Object> response = new LinkedHashMap<>(payload);
+        response.put("serverCanonical", true);
+        response.put("sourceEnvironment", "PRODUCTION");
+        response.put("runId", "");
+        return response;
+    }
+
+    public record ShareEventRequest(
+            String eventId, String channel, String surface,
+            String sourceEnvironment, String runId) {
     }
 }

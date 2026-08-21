@@ -15,7 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppTeamInsightsController {
     private final AppTeamInsightsService service;
-    @GetMapping("/leaderboard") public ApiResult<Map<String,Object>> leaderboard(@RequestParam(defaultValue="week") String period, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.leaderboard(id,period);}
+    @GetMapping("/leaderboard") public ApiResult<Map<String,Object>> leaderboard(@RequestParam(defaultValue="week") String period,
+            @RequestParam(defaultValue="1") long page, @RequestParam(defaultValue="100") long pageSize, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.leaderboard(id,period,page,pageSize);}
     @GetMapping("/commissions") public ApiResult<Map<String,Object>> commissions(Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.commissions(id);}
     @GetMapping("/unilevel") public ApiResult<Map<String,Object>> unilevel(@RequestParam(defaultValue="week") String period, Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.unilevel(id,period);}
     @GetMapping("/leadership-pool") public ApiResult<Map<String,Object>> pool(Authentication auth){Long id=userId(auth);return id==null?ApiResult.fail(403,"USER_AUTH_REQUIRED"):service.leadershipPool(id);}

@@ -69,6 +69,7 @@ class LearningSandboxQuizIdempotencyServiceTest {
     }
 
     private static AppLearningQuizResult result() {
-        return new AppLearningQuizResult("course", "v2", 100, true, true, true, new BigDecimal("20.000000"), 1);
+        return new AppLearningQuizResult("course", "v2", 100, true, true, true, new BigDecimal("20.000000"), 1,
+                true, "SANDBOX", "run-1");
     }
 }

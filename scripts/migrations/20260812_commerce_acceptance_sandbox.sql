@@ -140,6 +140,38 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_audit (
   CONSTRAINT chk_commerce_sandbox_audit_source CHECK (source='mock' AND source_environment='SANDBOX' AND strict_profile=1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Trial claims are sandbox facts too. Conversion later creates the normal
+-- run-scoped sandbox order and settles through the shared sandbox wallet rail.
+CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_trial_claim (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  run_id VARCHAR(96) NOT NULL,
+  user_id BIGINT NOT NULL,
+  claim_no VARCHAR(96) NOT NULL,
+  product_no VARCHAR(96) NOT NULL,
+  device_name VARCHAR(255) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  claimed_at DATETIME NOT NULL,
+  expires_at DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  shadow_daily_usdt DECIMAL(18,6) NOT NULL,
+  shadow_daily_nex DECIMAL(18,6) NOT NULL,
+  offset_cap_usdt DECIMAL(18,6) NOT NULL,
+  price_usdt DECIMAL(18,6) NOT NULL,
+  order_no VARCHAR(96) NULL,
+  payment_no VARCHAR(96) NULL,
+  discount_usdt DECIMAL(18,6) NULL,
+  amount_usdt DECIMAL(18,6) NULL,
+  source VARCHAR(16) NOT NULL DEFAULT 'mock',
+  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_commerce_sandbox_trial_run_user (run_id,user_id),
+  UNIQUE KEY uk_commerce_sandbox_trial_run_claim (run_id,claim_no),
+  CONSTRAINT chk_commerce_sandbox_trial_source CHECK (source='mock' AND source_environment='SANDBOX')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
                AND TABLE_NAME='nx_commerce_sandbox_callback_inbox' AND COLUMN_NAME='canonical_status')=0,
   'ALTER TABLE nx_commerce_sandbox_callback_inbox ADD COLUMN canonical_status VARCHAR(48) NOT NULL DEFAULT ''placed'' AFTER request_hash', 'SELECT 1');

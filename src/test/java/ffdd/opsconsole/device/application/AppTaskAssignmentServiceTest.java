@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.Environment;
 
 class AppTaskAssignmentServiceTest {
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 8, 10, 12, 0);
@@ -35,13 +36,17 @@ class AppTaskAssignmentServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final ComputeTaskProofVerifier proofVerifier = mock(ComputeTaskProofVerifier.class);
+    private final Environment environment = mock(Environment.class);
     private final AppTaskAssignmentService service = new AppTaskAssignmentService(
             mapper, idempotency, outbox, audit, proofVerifier,
+            environment,
             Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("stellarbox-s1", "S1", "StellarBox S1", 96));
@@ -61,9 +66,13 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().taskId()).isEqualTo("TASK-IG");
         assertThat(result.getData().requiredSeconds()).isEqualTo(18);
         assertThat(result.getData().rewardUsdt()).isEqualByComparingTo("0.300000");
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
         verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(),
                 org.mockito.ArgumentMatchers.eq(30), anyString(), any(), anyString(), any(), any());
-        verify(mapper).bindRuntimeTask(any(), anyString(), any());
+        verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         verify(audit).recordRequired(any());
     }
 
@@ -104,47 +113,39 @@ class AppTaskAssignmentServiceTest {
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
         when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.creditWallet(any(), any(), any())).thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
         when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
-        when(mapper.insertWalletLedger(any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
         when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
         when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
         when(mapper.userEventAttribution(7L)).thenReturn(
                 new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
 
         var proof = validProof();
-        service.complete(7L, "CTA-1", "complete-a", proof);
+        var result = service.complete(7L, "CTA-1", "complete-a", proof);
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
         assertThatThrownBy(() -> service.complete(7L, "CTA-1", "complete-b", proof))
                 .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_PROOF_REPLAYED");
 
         verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
-        verify(mapper, times(1)).creditWallet(any(), any(), any());
-        verify(mapper, times(1)).insertWalletLedger(any(), anyString(), any(), any(), any());
+        verify(mapper, times(1)).creditWallet(any(), any(), any(), any());
+        verify(mapper, times(1)).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
         verify(mapper, times(1)).upsertDeviceTaskLock(any(), any(), anyString(), any(), anyString(), any());
         verify(outbox, times(2)).publishUserEvent(anyString(), anyString(), anyString(), any(),
                 anyString(), any(), anyString(), any());
     }
 
     @Test
-    void sandboxCompletionWritesOnlyTheIsolatedLedgerAndNeverCreditsWalletOrProductionEvents() {
-        when(proofVerifier.sourceEnvironment()).thenReturn("SANDBOX");
-        when(mapper.lockAssignment(7L, "CTA-1", "SANDBOX")).thenReturn(assignment("RUNNING", null, null));
-        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
-        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
-                .thenReturn(new ComputeTaskProofVerifier.Verification(true, "b".repeat(64)));
-        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.insertSandboxReward(anyString(), any(), any(), anyString(), any(), anyString(), any())).thenReturn(1);
-        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
-        when(mapper.userEventAttribution(7L)).thenReturn(
-                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+    void sandboxCompletionIsUnavailableWithoutRunScopedTaskOrDeviceProjection() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
 
-        service.complete(7L, "CTA-1", "sandbox-complete", validProof());
-
-        verify(mapper).insertSandboxReward(anyString(), any(), any(), anyString(), any(), anyString(), any());
-        verify(mapper, never()).creditWallet(any(), any(), any());
-        verify(mapper, never()).insertWalletLedger(any(), anyString(), any(), any(), any());
-        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(),
-                anyString(), any(), anyString(), any());
+        assertThatThrownBy(() -> service.complete(7L, "CTA-1", "sandbox-complete", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        verify(mapper, never()).userScope(7L);
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
     }
 
     @Test
@@ -156,7 +157,19 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.complete(7L, "CTA-1", "killed-complete", validProof()))
                 .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_KILLED");
         verify(proofVerifier, never()).verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any());
-        verify(mapper, never()).creditWallet(any(), any(), any());
+        verify(mapper, never()).creditWallet(any(), any(), any(), any());
+    }
+
+    @Test
+    void deviceDeactivatedAfterClaimIsRejectedBeforeReceiptOrRewardMutation() {
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION"))
+                .thenReturn(assignment("RUNNING", null, null));
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.complete(7L, "CTA-1", "deactivated-after-claim", validProof()))
+                .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_DEVICE_NOT_FOUND");
+        verify(mapper, never()).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(any(), any(), any(), any());
     }
 
     @Test
@@ -171,37 +184,111 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(result.getData().taskNo()).isNotEqualTo("CTA-OLD");
         verify(mapper).expireAssignment(7L, "CTA-OLD", "PRODUCTION", NOW);
-        verify(mapper).clearRuntimeTask(11L, "CTA-OLD", NOW);
+        verify(mapper).clearRuntimeTask(7L, 11L, "CTA-OLD", NOW);
         verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
                 anyString(), any(), anyString(), any(), any());
     }
 
     @Test
-    void sandboxCannotSeeOrCompleteAProductionTaskForTheSameUserAndDevice() {
-        when(proofVerifier.sourceEnvironment()).thenReturn("SANDBOX");
-        when(mapper.lockAssignment(7L, "CTA-PROD", "PRODUCTION")).thenReturn(assignment("RUNNING", null, null));
+    void sandboxCannotReadProductionTaskBecauseRuntimeIsUnavailable() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.complete(7L, "CTA-PROD", "sandbox-cross-env", validProof()))
-                .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_NOT_FOUND");
-        verify(mapper).lockAssignment(7L, "CTA-PROD", "SANDBOX");
-        verify(mapper, never()).lockAssignment(7L, "CTA-PROD", "PRODUCTION");
-        verify(mapper, never()).creditWallet(any(), any(), any());
+                .isInstanceOf(BizException.class).hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        verify(mapper, never()).userScope(7L);
+        verify(mapper, never()).lockAssignment(anyLong(), anyString(), anyString());
     }
 
     @Test
-    void expiryCasCannotMutateTheOtherEnvironmentForTheSameDevice() {
+    void sandboxCannotMutateDeviceLockBecauseRuntimeIsUnavailable() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+
+        assertThatThrownBy(() -> service.claim(7L, "sandbox-expiry", new AppTaskClaimRequest(11L)))
+                .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        verify(mapper, never()).userScope(7L);
+        verify(mapper, never()).lockDeviceTaskLock(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void mixedRuntimeIsRejectedBeforeAnyTaskAssignmentReadOrWrite() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"prod", "dev"});
+
+        assertThatThrownBy(() -> service.assignments(7L))
+                .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        verify(mapper, never()).userScope(7L);
+        verify(mapper, never()).assignments(anyLong(), anyString());
+        verify(mapper, never()).ownedDevices(anyLong());
+    }
+
+    @Test
+    void assignmentsExposeCanonicalProductionProvenance() {
+        when(mapper.assignments(7L, "PRODUCTION")).thenReturn(List.of());
+        when(mapper.ownedDevices(7L)).thenReturn(List.of());
+
+        var result = service.assignments(7L);
+
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
+    }
+
+    @Test
+    void localSandboxReadsOnlyRunScopedDevicesAndExposesNoSyntheticTaskOrReward() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
+                .thenReturn("phone-activation-e2e-20260817");
+        when(environment.getProperty("nexion.wheel.sandbox.run-id", "phone-activation-e2e-20260817"))
+                .thenReturn("phone-activation-e2e-20260817");
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.sandboxOwnedDevices(7L, "phone-activation-e2e-20260817"))
+                .thenReturn(List.of(device("phone", "PHONE", "你的手机", 8)));
+
+        var result = service.assignments(7L);
+
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(result.getData().runId()).isEqualTo("phone-activation-e2e-20260817");
+        assertThat(result.getData().devices()).hasSize(1);
+        assertThat(result.getData().devices().get(0).currentTask()).isNull();
+        assertThat(result.getData().devices().get(0).recentTasks()).isEmpty();
+        verify(mapper, never()).ownedDevices(anyLong());
+        verify(mapper, never()).assignments(anyLong(), anyString());
+    }
+
+    @Test
+    void localSandboxRejectsReservedLegacyRunBeforeReadingAnyDevice() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
+                .thenReturn("LEGACY_UNSCOPED");
+        when(environment.getProperty("nexion.wheel.sandbox.run-id", "LEGACY_UNSCOPED"))
+                .thenReturn("LEGACY_UNSCOPED");
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+
+        assertThatThrownBy(() -> service.assignments(7L))
+                .hasMessage("TASK_ASSIGNMENT_SANDBOX_RUN_ID_REQUIRED");
+        verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
+    }
+
+    @Test
+    void unknownRuntimeIsRejectedBeforeAnyTaskAssignmentReadOrWrite() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"staging"});
+
+        assertThatThrownBy(() -> service.claim(7L, "unknown", new AppTaskClaimRequest(11L)))
+                .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
+        verify(mapper, never()).userScope(7L);
+        verify(mapper, never()).lockOwnedDevice(anyLong(), anyLong());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+    }
+
+    @Test
+    void productionRequiresProductionProofEnvironmentBeforeIdempotency() {
         when(proofVerifier.sourceEnvironment()).thenReturn("SANDBOX");
-        var expired = new AppTaskAssignmentMapper.AssignmentRow("CTA-SBX", 11L, "TASK-IG", "Old", "IG",
-                "model", "Nexion App", "RUNNING", new BigDecimal("0.2"), 18, 30,
-                NOW.minusDays(2), NOW.minusDays(1), null, null, "a".repeat(64), NOW.minusDays(1));
-        when(mapper.lockActiveAssignment(7L, 11L, "SANDBOX")).thenReturn(expired);
-        when(mapper.expireAssignment(7L, "CTA-SBX", "SANDBOX", NOW)).thenReturn(1);
 
-        service.claim(7L, "sandbox-expiry", new AppTaskClaimRequest(11L));
-
-        verify(mapper).expireAssignment(7L, "CTA-SBX", "SANDBOX", NOW);
-        verify(mapper, never()).expireAssignment(7L, "CTA-SBX", "PRODUCTION", NOW);
-        verify(mapper, never()).clearRuntimeTask(any(), anyString(), any());
+        assertThatThrownBy(() -> service.claim(7L, "mismatch", new AppTaskClaimRequest(11L)))
+                .hasMessage("TASK_ASSIGNMENT_SOURCE_ENVIRONMENT_INVALID");
+        verify(mapper).userScope(7L);
+        verify(mapper, never()).lockOwnedDevice(anyLong(), anyLong());
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
     }
 
     @Test

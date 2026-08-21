@@ -63,6 +63,8 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.core.env.Environment;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class OpsTrustDisclosureServiceTest {
     private final FakeTrustDisclosureRepository repository = new FakeTrustDisclosureRepository();
@@ -86,7 +88,8 @@ class OpsTrustDisclosureServiceTest {
             i18nLearningService,
             disclosureReackNotificationService,
             idempotencyService,
-            eventOutboxService);
+            eventOutboxService,
+            new org.springframework.mock.env.MockEnvironment());
 
     @BeforeEach
     void stubLockGuard() {
@@ -196,7 +199,7 @@ class OpsTrustDisclosureServiceTest {
         var created = service.createSectionDraft("financials", "idem-i4-create-draft", sectionDraft("v6", "新版说明", 0L));
         assertThat(created.getCode()).isZero();
         assertThat(created.getData().fields()).extracting(TrustSectionVersionView.Field::key)
-                .containsExactly("reserve", "auditDate", "summary.zh", "summary.vi");
+                .containsExactly("reserve", "auditDate", "summary.zh", "summary.vi", "summary.en");
 
         var updated = service.updateSectionDraft("financials", "v6", "idem-i4-edit-draft", sectionDraft("v6", "修订说明", created.getData().revision()));
         assertThat(updated.getCode()).isZero();
@@ -438,12 +441,22 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void publishRejectsCheckboxOnlyWhenDraftHasNoChineseVietnameseFieldPair() {
+    void publishRejectsDraftWhenAnyLocalizedFamilyIsNotTrilingual() {
         repository.sectionVersions.put("financials::v5", new TrustSectionVersionView(
                 "financials", "v5", "财务透明数字组", "数字组 + 脚注",
-                List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%")),
+                List.of(
+                        new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%"),
+                        new TrustSectionVersionView.Field("summary.zh", "中文摘要", "储备充足"),
+                        new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                        new TrustSectionVersionView.Field("summary.en", "English summary", "Reserves are sufficient")),
                 "published", 1L, "system", "2026-05-12"));
-        repository.saveTrustSectionDraft("financials", sectionDraftWithoutLocalizedPair("v7"), LocalDateTime.now());
+        repository.saveTrustSectionDraft("financials", new TrustSectionDraftRequest(
+                "v7", "三语字段不完整", "数字组 + 脚注", List.of(
+                        new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
+                        new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
+                        new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                        new TrustSectionFieldInput("summary.en", "English summary", "")),
+                0L, "v5", "published", "Marina K.", "维护信任版块草稿"), LocalDateTime.now());
         authenticate("content_i4_trust_section_manage");
 
         var result = service.publishSection("financials", "idem-bilingual-fields", new TrustSectionPublishRequest(
@@ -451,7 +464,7 @@ class OpsTrustDisclosureServiceTest {
                 "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_BILINGUAL_FIELDS_REQUIRED");
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_TRILINGUAL_FIELDS_REQUIRED");
     }
 
     @Test
@@ -494,6 +507,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void appPublishedSectionsExcludeDraftAndArchivedRows() {
+        addRemainingPublishedAppTrustSections();
         repository.sections.put("draft-only", new TrustSectionView(
                 "draft-only", "草稿", "结构", "v1", "draft", "06-18", "内容", false));
         repository.sections.put("asset_safety", new TrustSectionView(
@@ -503,7 +517,135 @@ class OpsTrustDisclosureServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().sections()).extracting(ffdd.opsconsole.content.domain.AppTrustSectionsView.Section::sectionKey)
-                .containsExactlyInAnyOrder("financials", "leadership");
+                .containsExactlyInAnyOrder(
+                        "financials", "leadership", "nexNarrative", "complianceBadges", "auditsReserves", "listings");
+    }
+
+    @Test
+    void appPublishedSectionsExposeHomepageTrustFieldsFromTheCurrentI4Versions() {
+        addRemainingPublishedAppTrustSections();
+        repository.sections.put("complianceBadges", new TrustSectionView(
+                "complianceBadges", "首页 Trust 专项徽章", "七项合作与合规徽章",
+                "v2", "published", "08-20", "合规 / 超管", true));
+        repository.sectionVersions.put("complianceBadges::v2", new TrustSectionVersionView(
+                "complianceBadges", "v2", "首页 Trust 专项徽章", "七项合作与合规徽章",
+                List.of(
+                        new TrustSectionVersionView.Field("badge1Label", "徽章 1", "NVIDIA"),
+                        new TrustSectionVersionView.Field("badge1Body.zh", "徽章说明（中文）", "有效监管文件"),
+                        new TrustSectionVersionView.Field("badge1Body.vi", "Mô tả huy hiệu", "Tài liệu quản lý"),
+                        new TrustSectionVersionView.Field("badge1Body.en", "Badge description", "Regulatory documents"),
+                        new TrustSectionVersionView.Field("badge7Label", "徽章 7", "ISO 27001")),
+                "published", 1L, "migration:homepage-trust-v2", "2026-08-20"));
+        repository.sections.put("auditsReserves", new TrustSectionView(
+                "auditsReserves", "审计与储备证明", "审计报告与首页储备证明",
+                "v2", "published", "08-20", "合规 / 超管", true));
+        repository.sectionVersions.put("auditsReserves::v2", new TrustSectionVersionView(
+                "auditsReserves", "v2", "审计与储备证明", "审计报告与首页储备证明",
+                List.of(
+                        new TrustSectionVersionView.Field("homepageProof.zh", "首页储备证明（中文）", "储备链上证明"),
+                        new TrustSectionVersionView.Field("homepageProof.vi", "Bằng chứng dự trữ trang chủ", "Bằng chứng dự trữ"),
+                        new TrustSectionVersionView.Field("homepageProof.en", "Homepage reserve proof", "Reserve proof on-chain")),
+                "published", 1L, "migration:homepage-trust-v2", "2026-08-20"));
+
+        var result = service.publishedSections();
+
+        assertThat(result.getCode()).isZero();
+        var compliance = result.getData().sections().stream()
+                .filter(section -> "complianceBadges".equals(section.sectionKey())).findFirst().orElseThrow();
+        var audits = result.getData().sections().stream()
+                .filter(section -> "auditsReserves".equals(section.sectionKey())).findFirst().orElseThrow();
+        assertThat(compliance.version()).isEqualTo("v2");
+        assertThat(compliance.fields()).extracting(ffdd.opsconsole.content.domain.AppTrustSectionsView.Field::key)
+                .contains("badge1Label", "badge7Label");
+        assertThat(audits.version()).isEqualTo("v2");
+        assertThat(audits.fields()).extracting(ffdd.opsconsole.content.domain.AppTrustSectionsView.Field::key)
+                .contains("homepageProof.zh", "homepageProof.vi", "homepageProof.en");
+    }
+
+    @Test
+    void appPublishedSectionsFailClosedForIncompleteOrOrphanedCanonicalSnapshot() {
+        assertThat(service.publishedSections().getMessage()).isEqualTo("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+
+        addRemainingPublishedAppTrustSections();
+        repository.sectionVersions.remove("financials::v5");
+
+        assertThat(service.publishedSections().getMessage()).isEqualTo("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+    }
+
+    @Test
+    void appPublishedSectionsFailClosedForAliasKeysAndIncompleteLocalizedFields() {
+        addRemainingPublishedAppTrustSections();
+        TrustSectionView narrative = repository.sections.remove("nexNarrative");
+        TrustSectionVersionView narrativeVersion = repository.sectionVersions.remove("nexNarrative::v1");
+        repository.sections.put("nex-narrative", new TrustSectionView(
+                "nex-narrative", narrative.desc(), narrative.struct(), narrative.version(), narrative.status(),
+                narrative.lastChange(), narrative.roleGate(), narrative.highSensitivity()));
+        repository.sectionVersions.put("nex-narrative::v1", new TrustSectionVersionView(
+                "nex-narrative", narrativeVersion.version(), narrativeVersion.description(), narrativeVersion.structure(),
+                narrativeVersion.fields(), narrativeVersion.status(), narrativeVersion.revision(),
+                narrativeVersion.operator(), narrativeVersion.updatedAt()));
+
+        assertThat(service.publishedSections().getMessage()).isEqualTo("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+
+        repository.sections.remove("nex-narrative");
+        repository.sectionVersions.remove("nex-narrative::v1");
+        repository.sections.put("nexNarrative", narrative);
+        repository.sectionVersions.put("nexNarrative::v1", new TrustSectionVersionView(
+                "nexNarrative", "v1", "Narrative", "structured fields",
+                List.of(new TrustSectionVersionView.Field("summary.zh", "中文摘要", "可信叙事")),
+                "published", 1L, "system", "2026-06-18"));
+
+        assertThat(service.publishedSections().getMessage()).isEqualTo("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+    }
+
+    @Test
+    void appPublishedSectionsFailClosedForDuplicateFieldKeys() {
+        addRemainingPublishedAppTrustSections();
+        repository.sectionVersions.put("listings::v1", new TrustSectionVersionView(
+                "listings", "v1", "Listings", "structured fields",
+                List.of(
+                        new TrustSectionVersionView.Field("summary.zh", "中文摘要", "上架信息"),
+                        new TrustSectionVersionView.Field("summary.vi", "Tóm tắt", "Thông tin niêm yết"),
+                        new TrustSectionVersionView.Field("summary.en", "Summary", "Listing information"),
+                        new TrustSectionVersionView.Field("SUMMARY.EN", "Summary duplicate", "Duplicate")),
+                "published", 1L, "system", "2026-06-18"));
+
+        assertThat(service.publishedSections().getMessage()).isEqualTo("TRUST_SECTION_PUBLISHED_SNAPSHOT_INVALID");
+    }
+
+    @Test
+    void sandboxPublishedSectionsAreRunScopedServerMockWithoutProductionRepositoryRows() {
+        Environment sandboxEnvironment = mock(Environment.class);
+        when(sandboxEnvironment.getActiveProfiles()).thenReturn(new String[]{"test"});
+        when(sandboxEnvironment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
+                .thenReturn("trust-server-mock-run-20260819");
+        ReflectionTestUtils.setField(service, "environment", sandboxEnvironment);
+        repository.sections.clear();
+        repository.sectionVersions.clear();
+
+        var result = service.publishedSections();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().source()).isEqualTo("mock");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(result.getData().runId()).isEqualTo("trust-server-mock-run-20260819");
+        assertThat(result.getData().sections()).extracting(ffdd.opsconsole.content.domain.AppTrustSectionsView.Section::sectionKey)
+                .containsExactlyInAnyOrder(
+                        "financials", "leadership", "nexNarrative", "complianceBadges", "auditsReserves", "listings");
+    }
+
+    private void addRemainingPublishedAppTrustSections() {
+        for (String key : List.of("nexNarrative", "complianceBadges", "auditsReserves", "listings")) {
+            repository.sections.put(key, new TrustSectionView(
+                    key, key + " description", "structured fields", "v1", "published", "06-18", "内容", false));
+            repository.sectionVersions.put(key + "::v1", new TrustSectionVersionView(
+                    key, "v1", key + " description", "structured fields",
+                    List.of(
+                            new TrustSectionVersionView.Field("summary.zh", "中文摘要", "已验证"),
+                            new TrustSectionVersionView.Field("summary.vi", "Tóm tắt", "Đã xác minh"),
+                            new TrustSectionVersionView.Field("summary.en", "Summary", "Verified")),
+                    "published", 1L, "system", "2026-06-18"));
+        }
     }
 
     private void authenticate(String... authorities) {
@@ -1242,7 +1384,8 @@ class OpsTrustDisclosureServiceTest {
                 new TrustSectionFieldInput("reserve", "备付金覆盖率", "128.4%"),
                 new TrustSectionFieldInput("auditDate", "最近审计日期", "2026-06-18"),
                 new TrustSectionFieldInput("summary.zh", "中文摘要", "储备充足"),
-                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ")),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                new TrustSectionFieldInput("summary.en", "English summary", "Reserves are sufficient")),
                 expectedRevision, "v5", "published", "Marina K.", "维护信任版块草稿");
     }
 
@@ -1250,7 +1393,8 @@ class OpsTrustDisclosureServiceTest {
         return new TrustSectionDraftRequest(version, "结构化链接字段", "人员卡片", List.of(
                 new TrustSectionFieldInput(key, "链接字段", value),
                 new TrustSectionFieldInput("summary.zh", "中文摘要", "管理团队信息"),
-                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý"),
+                new TrustSectionFieldInput("summary.en", "English summary", "Leadership information")),
                 0L, "v3", "published", "Marina K.", "维护信任版块链接字段");
     }
 
@@ -1258,7 +1402,8 @@ class OpsTrustDisclosureServiceTest {
         return new TrustSectionDraftRequest(version, description, "人员卡片", List.of(
                 new TrustSectionFieldInput("leader1Url", "链接字段", "/pages/trust/nex"),
                 new TrustSectionFieldInput("summary.zh", "中文摘要", "管理团队信息"),
-                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
+                new TrustSectionFieldInput("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý"),
+                new TrustSectionFieldInput("summary.en", "English summary", "Leadership information")),
                 expectedRevision, "v3", "published", "Marina K.", "维护信任版块链接字段");
     }
 
@@ -1333,7 +1478,8 @@ class OpsTrustDisclosureServiceTest {
                             new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "128.4%"),
                             new TrustSectionVersionView.Field("auditDate", "最近审计日期", "2026-05-12"),
                             new TrustSectionVersionView.Field("summary.zh", "中文摘要", "储备充足"),
-                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Dự trữ đầy đủ")),
+                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Dự trữ đầy đủ"),
+                            new TrustSectionVersionView.Field("summary.en", "English summary", "Reserves are sufficient")),
                     "published", 1L, "system", "2026-05-12"));
             sectionVersions.put("financials::v4", new TrustSectionVersionView("financials", "v4", "财务透明数字组", "数字组 + 脚注",
                     List.of(new TrustSectionVersionView.Field("reserve", "备付金覆盖率", "120%")), "superseded", 1L, "system", "2026-04-12"));
@@ -1341,7 +1487,8 @@ class OpsTrustDisclosureServiceTest {
                     List.of(
                             new TrustSectionVersionView.Field("leader1Url", "成员详情链接", "/pages/trust/nex"),
                             new TrustSectionVersionView.Field("summary.zh", "中文摘要", "管理团队信息"),
-                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý")),
+                            new TrustSectionVersionView.Field("summary.vi", "越南语摘要", "Thông tin đội ngũ quản lý"),
+                            new TrustSectionVersionView.Field("summary.en", "English summary", "Leadership information")),
                     "published", 1L, "system", "2026-03-08"));
             jurisdictions.put("MAS", new DisclosureJurisdictionView("MAS", "新加坡", List.of("SG"), "v11", "published", "05-02", 41_200, 100, 0));
             jurisdictions.put("SFC", new DisclosureJurisdictionView("SFC", "香港", List.of("HK"), "v12", "published", "06-08", 9_400, 72, 312));
