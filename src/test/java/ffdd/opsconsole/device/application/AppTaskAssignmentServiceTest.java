@@ -234,7 +234,7 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
-    void localSandboxReadsOnlyRunScopedDevicesAndExposesNoSyntheticTaskOrReward() {
+    void developmentReadsOnlyRunScopedDevicesButExposesTheCanonicalAppContract() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
         when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
                 .thenReturn("phone-activation-e2e-20260817");
@@ -246,8 +246,10 @@ class AppTaskAssignmentServiceTest {
 
         var result = service.assignments(7L);
 
-        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(result.getData().runId()).isEqualTo("phone-activation-e2e-20260817");
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
         assertThat(result.getData().devices()).hasSize(1);
         assertThat(result.getData().devices().get(0).currentTask()).isNull();
         assertThat(result.getData().devices().get(0).recentTasks()).isEmpty();

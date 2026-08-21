@@ -1,5 +1,6 @@
 package ffdd.opsconsole.auth.web;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -13,6 +14,7 @@ import ffdd.opsconsole.auth.application.AppUserAuthService;
 import ffdd.opsconsole.auth.application.AppUserOAuthService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
+import ffdd.opsconsole.auth.application.AppUserRefreshCookieService;
 import ffdd.opsconsole.auth.application.OAuthSandboxChallengeService;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserOAuthExchangeRequest;
@@ -20,6 +22,7 @@ import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeRequest;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import ffdd.opsconsole.shared.security.SecurityConfig;
@@ -33,6 +36,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import jakarta.servlet.ServletException;
 
 @WebMvcTest(AppUserAuthController.class)
 @ActiveProfiles("dev")
@@ -58,6 +62,9 @@ class AppUserAuthControllerSecurityTest {
     private OAuthSandboxChallengeService oauthSandboxChallengeService;
 
     @MockBean
+    private AppUserRefreshCookieService refreshCookieService;
+
+    @MockBean
     private JwtAuthenticationFilter jwtAuthenticationFilter;
 
     @MockBean
@@ -65,6 +72,8 @@ class AppUserAuthControllerSecurityTest {
 
     @BeforeEach
     void continueAuthenticationFilters() throws Exception {
+        when(refreshCookieService.issueOAuth(any(), any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         doAnswer(invocation -> {
             var chain = invocation.getArgument(2, jakarta.servlet.FilterChain.class);
             chain.doFilter(invocation.getArgument(0), invocation.getArgument(1));
@@ -143,5 +152,20 @@ class AppUserAuthControllerSecurityTest {
                         .content("{}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+    }
+
+    @Test
+    void conflictingRefreshCredentialsClearTheBrowserCookieBeforeReturningFailure() throws Exception {
+        when(refreshCookieService.cookieMode(any())).thenReturn(true);
+        when(refreshCookieService.resolve(any(), any()))
+                .thenThrow(new BizException(401, "USER_REFRESH_CREDENTIAL_CONFLICT"));
+
+        assertThrows(ServletException.class, () -> mockMvc.perform(post("/auth/users/refresh")
+                .header(AppUserRefreshCookieService.MODE_HEADER,
+                        AppUserRefreshCookieService.COOKIE_MODE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"refreshToken\":\"conflicting-body-token\"}")));
+
+        verify(refreshCookieService).clear(any());
     }
 }

@@ -63,7 +63,7 @@ public class AppTaskAssignmentService {
         requireUser(userId);
         if (FundsSandboxProfileGuard.isStrictIsolatedProfile(
                 environment == null ? new String[0] : environment.getActiveProfiles())) {
-            return sandboxAssignments(userId);
+            return developmentAssignments(userId);
         }
         RuntimeScope runtime = requireProductionRuntime(userId);
         LocalDateTime now = now();
@@ -85,7 +85,7 @@ public class AppTaskAssignmentService {
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
     }
 
-    private ApiResult<AppTaskAssignmentsResponse> sandboxAssignments(Long userId) {
+    private ApiResult<AppTaskAssignmentsResponse> developmentAssignments(Long userId) {
         AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null || user.sandbox() != 1) {
             throw new BizException(403, "TASK_ASSIGNMENT_SANDBOX_USER_REQUIRED");
@@ -95,8 +95,11 @@ public class AppTaskAssignmentService {
                 .map(device -> new AppTaskDeviceState(device.id(), device.instanceNo(), device.deviceType(),
                         null, null, List.of()))
                 .toList();
+        // The RunID is an internal development-account isolation key, not App
+        // response provenance. Formal UniApp dev and prod builds consume the
+        // same Java canonical contract: PRODUCTION plus an empty public RunID.
         return ApiResult.ok(new AppTaskAssignmentsResponse(now(), devices,
-                PROVENANCE_SOURCE, "SANDBOX", runId, true));
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
     }
 
     private String sandboxRunId() {
