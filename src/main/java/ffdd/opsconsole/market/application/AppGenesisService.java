@@ -732,7 +732,8 @@ public class AppGenesisService {
 
     private RuntimeMode runtimeMode() {
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)) return RuntimeMode.SANDBOX;
+        if (FundsSandboxProfileGuard.isStrictTestProfile(profiles)) return RuntimeMode.SANDBOX;
+        if (FundsSandboxProfileGuard.isStrictDevelopmentProfile(profiles)) return RuntimeMode.PRODUCTION;
         if (profiles == null || profiles.length == 0
                 || (profiles.length == 1 && "prod".equals(profiles[0]))) {
             return RuntimeMode.PRODUCTION;

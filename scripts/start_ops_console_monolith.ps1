@@ -15,12 +15,10 @@ $ErrorActionPreference = "Stop"
 $localNovaAiEnabled = if ($null -eq $EnableLocalNovaAi) { $SpringProfile -eq "dev" } else { [bool]$EnableLocalNovaAi }
 $acceptanceRunIdValue = if (-not [string]::IsNullOrWhiteSpace($AcceptanceRunId)) {
   $AcceptanceRunId.Trim()
-} elseif ($SpringProfile -eq "dev") {
-  "nexion-local-dev"
 } else {
   ""
 }
-if ($SpringProfile -eq "dev" -and $acceptanceRunIdValue -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$') {
+if ($SpringProfile -eq "dev" -and -not [string]::IsNullOrWhiteSpace($acceptanceRunIdValue) -and $acceptanceRunIdValue -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$') {
   throw "AcceptanceRunId must contain 8-96 safe characters"
 }
 if ($SpringProfile -eq "prod" -and -not [string]::IsNullOrWhiteSpace($acceptanceRunIdValue)) {

@@ -324,7 +324,7 @@ public class AppMarketSandboxService {
     private BigDecimal moneyOrZero(BigDecimal value){return money(value==null?BigDecimal.ZERO:value);}
     private String hash(String s){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
     private String runId(){String run=environment.getProperty("NEXION_ACCEPTANCE_RUN_ID","").trim();if(!run.matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}"))throw new BizException(503,"MARKET_SANDBOX_RUN_ID_REQUIRED");return run;}
-    private void requireSandboxUser(Long user){if(user==null||user<=0)throw new BizException(401,"USER_AUTH_REQUIRED");if(!FundsSandboxProfileGuard.isStrictIsolatedProfile(environment.getActiveProfiles()))throw new BizException(503,"MARKET_SANDBOX_PROFILE_REQUIRED");if(!Integer.valueOf(1).equals(mapper.userSandbox(user)))throw new BizException(403,"MARKET_SANDBOX_USER_REQUIRED");runId();}
+    private void requireSandboxUser(Long user){if(user==null||user<=0)throw new BizException(401,"USER_AUTH_REQUIRED");if(!FundsSandboxProfileGuard.isStrictTestProfile(environment.getActiveProfiles()))throw new BizException(503,"MARKET_SANDBOX_PROFILE_REQUIRED");if(!Integer.valueOf(1).equals(mapper.userSandbox(user)))throw new BizException(403,"MARKET_SANDBOX_USER_REQUIRED");runId();}
     private Map<String,Object> linked(Object...v){Map<String,Object>m=new LinkedHashMap<>();for(int i=0;i<v.length;i+=2)m.put(String.valueOf(v[i]),v[i+1]);return m;}
     private record SandboxSalePolicy(boolean available,boolean eligibilityEnabled,int maxPerUser,int minAccountAgeDays){
         int effectiveMaxPerUser(){return available?(eligibilityEnabled?maxPerUser:Integer.MAX_VALUE):0;}

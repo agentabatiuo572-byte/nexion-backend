@@ -39,8 +39,11 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
 
     @Select("""
             SELECT COUNT(1)
-              FROM nx_genesis_holding
-             WHERE is_deleted = 0
+              FROM nx_genesis_holding h
+              JOIN nx_user u ON u.id = h.user_id
+               AND u.is_deleted = 0
+               AND COALESCE(u.sandbox, 0) = 0
+             WHERE h.is_deleted = 0
             """)
     long countHoldings();
 
@@ -132,48 +135,62 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
     int updateActiveDividendBaseFormula(@Param("formula") String formula);
 
     @Select("""
-            SELECT COALESCE(MIN(CASE WHEN UPPER(status) = 'LISTED' THEN acquired_price_usdt END), 0) AS floorUsdt,
+            SELECT COALESCE(MIN(CASE WHEN UPPER(h.status) = 'LISTED' THEN h.acquired_price_usdt END), 0) AS floorUsdt,
                    (
                      SELECT COALESCE(SUM(o.amount_usdt), 0)
                        FROM nx_genesis_order o
+                       JOIN nx_user order_user ON order_user.id = o.user_id
+                        AND order_user.is_deleted = 0
+                        AND COALESCE(order_user.sandbox, 0) = 0
                       WHERE o.is_deleted = 0
                         AND UPPER(o.status) IN ('COMPLETED', 'PAID', 'SUCCESS')
                         AND o.completed_at >= #{since}
                    ) AS volume24hUsdt,
-                   COALESCE(SUM(CASE WHEN UPPER(status) = 'LISTED' THEN 1 ELSE 0 END), 0) AS listedCount,
-                   COALESCE(COUNT(DISTINCT user_id), 0) AS ownerCount
-              FROM nx_genesis_holding
-             WHERE is_deleted = 0
+                   COALESCE(SUM(CASE WHEN UPPER(h.status) = 'LISTED' THEN 1 ELSE 0 END), 0) AS listedCount,
+                   COALESCE(COUNT(DISTINCT h.user_id), 0) AS ownerCount
+              FROM nx_genesis_holding h
+              JOIN nx_user u ON u.id = h.user_id
+               AND u.is_deleted = 0
+               AND COALESCE(u.sandbox, 0) = 0
+             WHERE h.is_deleted = 0
             """)
     GenesisSecondaryStatsView secondaryStats(@Param("since") LocalDateTime since);
 
     @Select("""
-            SELECT COALESCE(SUM(amount), 0)
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0
-               AND asset = 'USDT'
-               AND direction = 'IN'
-               AND status IN ('SUCCESS', 'PENDING')
-               AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
+            SELECT COALESCE(SUM(ledger.amount), 0)
+              FROM nx_wallet_ledger ledger
+              JOIN nx_user ledger_user ON ledger_user.id = ledger.user_id
+               AND ledger_user.is_deleted = 0
+               AND COALESCE(ledger_user.sandbox, 0) = 0
+             WHERE ledger.is_deleted = 0
+               AND ledger.asset = 'USDT'
+               AND ledger.direction = 'IN'
+               AND ledger.status IN ('SUCCESS', 'PENDING')
+               AND ledger.biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
             """)
     BigDecimal genesisAccrualUsd();
 
     @Select("""
-            SELECT biz_no
-              FROM nx_wallet_ledger
-             WHERE is_deleted = 0
-               AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
-               AND (biz_no LIKE 'G4-DIVIDEND-%-RERUN' OR biz_no LIKE 'G4E-%')
-             ORDER BY created_at DESC, id DESC
+            SELECT ledger.biz_no
+              FROM nx_wallet_ledger ledger
+              JOIN nx_user ledger_user ON ledger_user.id = ledger.user_id
+               AND ledger_user.is_deleted = 0
+               AND COALESCE(ledger_user.sandbox, 0) = 0
+             WHERE ledger.is_deleted = 0
+               AND ledger.biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
+               AND (ledger.biz_no LIKE 'G4-DIVIDEND-%-RERUN' OR ledger.biz_no LIKE 'G4E-%')
+             ORDER BY ledger.created_at DESC, ledger.id DESC
              LIMIT 1
             """)
     String latestGenesisDividendRerunBizNo();
 
     @Select("""
             SELECT
-              (SELECT COUNT(1) FROM nx_wallet_ledger
-                WHERE is_deleted=0 AND biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
-                  AND biz_no IN (CONCAT('G4-DIVIDEND-',#{batchNo},'-RERUN'),CONCAT('G4E-',#{batchNo})))
+              (SELECT COUNT(1) FROM nx_wallet_ledger ledger
+                JOIN nx_user ledger_user ON ledger_user.id = ledger.user_id
+                 AND ledger_user.is_deleted = 0 AND COALESCE(ledger_user.sandbox, 0) = 0
+                WHERE ledger.is_deleted=0 AND ledger.biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
+                  AND ledger.biz_no IN (CONCAT('G4-DIVIDEND-',#{batchNo},'-RERUN'),CONCAT('G4E-',#{batchNo})))
               +
               (SELECT COUNT(1) FROM nx_genesis_emission_batch
                 WHERE is_deleted=0 AND batch_no=#{batchNo} AND UPPER(status)='COMPLETED')
@@ -210,8 +227,10 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
                    END AS statusTone,
                    h.acquired_at AS acquiredAt,
                    h.updated_at AS updatedAt
-             FROM nx_genesis_holding h
-              LEFT JOIN nx_user u ON u.id = h.user_id AND u.is_deleted = 0
+              FROM nx_genesis_holding h
+              JOIN nx_user u ON u.id = h.user_id
+               AND u.is_deleted = 0
+               AND COALESCE(u.sandbox, 0) = 0
              WHERE h.is_deleted = 0
              ORDER BY h.holding_no ASC, h.id ASC
              LIMIT #{limit}

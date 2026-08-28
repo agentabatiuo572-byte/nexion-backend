@@ -11,8 +11,12 @@ if ($source -notmatch 'NEXION_ACCEPTANCE_RUN_ID=\{0\}') {
   throw "Backend startup must pass the resolved acceptance RunID to the child process"
 }
 
-if ($source -notmatch 'nexion-local-dev') {
-  throw "Dev startup must have a stable, non-secret local acceptance RunID fallback"
+if ($source -match 'elseif\s*\(\$SpringProfile\s+-eq\s+"dev"\)\s*\{\s*"nexion-local-dev"') {
+  throw "Standard development startup must not silently opt into an acceptance Sandbox RunID"
+}
+
+if ($source -notmatch '\$SpringProfile\s+-eq\s+"dev"\s+-and\s+-not\s+\[string\]::IsNullOrWhiteSpace\(\$acceptanceRunIdValue\)\s+-and') {
+  throw "Standard development startup must allow an empty acceptance RunID"
 }
 
 if ($source -notmatch '\$SpringProfile\s+-eq\s+"prod"[\s\S]*AcceptanceRunId is allowed only for the dev profile') {

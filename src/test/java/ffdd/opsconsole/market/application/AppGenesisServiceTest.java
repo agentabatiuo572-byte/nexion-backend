@@ -242,27 +242,30 @@ class AppGenesisServiceTest {
     }
 
     @Test
-    void isolatedGenesisAccountFailsClosedBeforeAnyProductionTableAccess() {
+    void developmentGenesisPurchaseUsesCanonicalTablesForACanonicalAccount() {
         environment.setActiveProfiles("dev");
-        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-genesis-1");
-        when(mapper.userSandbox(42L)).thenReturn(1);
+        when(mapper.userSandbox(42L)).thenReturn(0);
 
-        assertThatThrownBy(() -> service.purchase(42L, "sandbox-genesis",
-                new AppGenesisService.PurchaseRequest(1)))
-                .isInstanceOfSatisfying(BizException.class, ex -> {
-                    assertThat(ex.getCode()).isEqualTo(503);
-                    assertThat(ex.getMessage()).isEqualTo("GENESIS_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
-                });
-        verify(mapper, never()).lockActiveSeries();
-        verify(mapper, never()).debitWallet(any(), any());
+        ApiResult<Map<String, Object>> result = service.purchase(42L, "development-genesis",
+                new AppGenesisService.PurchaseRequest(1));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        verify(mapper).lockActiveSeries();
+        verify(mapper).debitWallet(42L, new BigDecimal("9999.000000"));
+        verify(mapper).insertOrder(any(AppGenesisMapper.OrderWrite.class));
+        verify(mapper).insertHolding(any(AppGenesisMapper.HoldingWrite.class));
+        verify(mapper).insertLedger(any(AppGenesisMapper.LedgerWrite.class));
     }
 
     @Test
-    void developmentPublicStateUsesPcCanonicalConfigWhileUserReadsRemainIsolated() {
+    void developmentGenesisAccountAndEligibilityUseTheSameCanonicalUserBoundaryAsG4() {
         environment.setActiveProfiles("dev");
-        environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-genesis-1");
-        when(mapper.userSandbox(42L)).thenReturn(1);
-        clearInvocations(mapper, catalog, config);
+        when(mapper.userSandbox(42L)).thenReturn(0);
+        when(mapper.holdings(42L)).thenReturn(List.of(new AppGenesisMapper.HoldingRow(
+                1L, "DEV-GENESIS-1", 42L, "DEV-ORDER-1", "genesis-main", new BigDecimal("7999"),
+                "ACTIVE", null, LocalDateTime.parse("2026-08-28T11:10:12"), null)));
 
         var state = service.state();
         var account = service.account(42L);
@@ -274,16 +277,41 @@ class AppGenesisServiceTest {
                 .containsEntry("runId", "");
         assertThat(account.getCode()).isZero();
         assertThat(account.getData()).containsEntry("serverCanonical", true)
-                .containsEntry("sourceEnvironment", "SANDBOX")
-                .containsEntry("runId", "run-genesis-1");
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        assertThat(account.getData().get("holdings").toString()).contains("DEV-GENESIS-1");
         assertThat(eligibility.getCode()).isZero();
-        assertThat(eligibility.getData()).containsEntry("eligible", false)
-                .containsEntry("halted", true)
+        assertThat(eligibility.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
                 .containsEntry("serverCanonical", true);
-        verify(mapper, org.mockito.Mockito.times(2)).userSandbox(42L);
-        verify(mapper).activeSeries();
+        verify(mapper).holdings(42L);
+        verify(mapper).wallet(42L);
+    }
+
+    @Test
+    void developmentRejectsASandboxMarkedAccountFromCanonicalGenesisTables() {
+        environment.setActiveProfiles("dev");
+        when(mapper.userSandbox(42L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.account(42L))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(403);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_PRODUCTION_USER_REQUIRED");
+                });
         verify(mapper, never()).holdings(anyLong());
-        verify(mapper, never()).wallet(anyLong());
+    }
+
+    @Test
+    void productionStillRejectsASandboxMarkedAccountFromCanonicalGenesisTables() {
+        environment.setActiveProfiles("prod");
+        when(mapper.userSandbox(42L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.account(42L))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(403);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_PRODUCTION_USER_REQUIRED");
+                });
+        verify(mapper, never()).holdings(anyLong());
     }
 
     @Test

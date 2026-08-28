@@ -28,8 +28,21 @@ class AppMarketSandboxServiceTest {
     }
 
     @Test
+    void standardDevelopmentCannotEnterSandboxWriteRailEvenWithARunId() {
+        AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-alpha");
+        env.setActiveProfiles("dev");
+        AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
+
+        assertThatThrownBy(()->service.swap(7L,"k",new AppExchangeService.SwapRequest(
+                "USDT_TO_NEX",new BigDecimal("2"),false)))
+                .hasMessageContaining("MARKET_SANDBOX_PROFILE_REQUIRED");
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
     void exchangeMutationUsesRunAndAccountScopedWalletAndReplay() {
-        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-alpha"); env.setActiveProfiles("dev"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-alpha"); env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1); when(mapper.exchangeByKey("run-alpha",7L,"k")).thenReturn(null);
         when(mapper.lockExchangeRun("run-alpha")).thenReturn("run-alpha");
         when(mapper.userCompletedGrossToday("run-alpha",7L)).thenReturn(BigDecimal.ZERO);
@@ -45,7 +58,7 @@ class AppMarketSandboxServiceTest {
 
     @Test
     void sandboxUserCannotBeReadFromAnotherRun() {
-        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-beta"); env.setActiveProfiles("dev"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-beta"); env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1); when(mapper.exchangeWallet("run-beta",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet("run-beta",7L,BigDecimal.ZERO,BigDecimal.ZERO,0L));
         when(mapper.exchangeOrders("run-beta",7L)).thenReturn(List.of()); when(mapper.exchangeLedger("run-beta",7L)).thenReturn(List.of());
         new AppMarketSandboxService(mapper,env,Optional.empty()).exchangeState(7L);
@@ -55,7 +68,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void dailyCapCannotBeBypassedByDisablingQueueMode() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-caps");
-        env.setActiveProfiles("dev"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1); when(mapper.exchangeByKey("run-caps",7L,"cap-key")).thenReturn(null);
         when(mapper.exchangeWallet("run-caps",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet("run-caps",7L,new BigDecimal("100"),BigDecimal.ZERO,0L));
         when(mapper.lockExchangeRun("run-caps")).thenReturn("run-caps");
@@ -71,7 +84,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void repeatedGenesisPurchasesCannotExceedPerUserCap() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-genesis");
-        env.setActiveProfiles("dev"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.lockGenesisRun("run-genesis")).thenReturn("run-genesis");
         when(mapper.lockCanonicalGenesisWallet(7L)).thenReturn(new AppMarketSandboxMapper.CanonicalWallet(7L,new BigDecimal("1000"),0L));
@@ -87,7 +100,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisEligibilityUsesTheSameG4SalePolicyAsProduction() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-unified-policy");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
@@ -110,7 +123,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisEligibilityUsesTheSandboxAccountsAuthoritativeAge() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-account-age");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.sandboxAccountAgeDays(7L)).thenReturn(10);
@@ -128,7 +141,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisPurchaseFailsClosedAgainstTheConfiguredFiveHoldingCap() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-configured-cap");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
@@ -164,7 +177,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisAccountProjectsRunScopedSupplyAndUserPurchaseOrders() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-orders");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.canonicalGenesisWallet(7L)).thenReturn(new AppMarketSandboxMapper.CanonicalWallet(
@@ -192,7 +205,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisCanonicalWalletRejectsAUserThatAlreadyBelongsToAnotherRun() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-new1");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.genesisArtifactsInOtherRuns("run-new1",7L)).thenReturn(1L);
@@ -207,7 +220,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisPurchaseRechecksRunIsolationAfterTheAccountWalletMutex() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-race");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.genesisArtifactsInOtherRuns("run-race",7L)).thenReturn(0L,1L);
@@ -227,7 +240,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisPurchaseUsesTheVisibleFirstTierPriceAndAdequateSandboxBalance() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-price");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.lockGenesisRun("run-price")).thenReturn("run-price");
@@ -263,7 +276,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisPurchaseRejectsWhenTheVisibleWalletCannotCoverThePrice() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-visible-insufficient");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.lockGenesisRun("run-visible-insufficient")).thenReturn("run-visible-insufficient");
@@ -283,7 +296,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisPurchaseSerializesRunSupplyAndRejectsOversell() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-sold-out");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
         when(mapper.lockGenesisRun("run-sold-out")).thenReturn("run-sold-out");
@@ -302,7 +315,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void secondarySaleRequiresSandboxSellerIdentity() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-seller");
-        env.setActiveProfiles("dev"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1); when(mapper.userSandbox(8L)).thenReturn(0);
         when(mapper.holdingSnapshot("run-seller","holding-8")).thenReturn(new AppMarketSandboxMapper.HoldingView(
                 1L,"run-seller","holding-8","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,"LISTED",new BigDecimal("12"),null,null));
@@ -316,7 +329,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void secondaryBuyLocksAccountWalletsBeforeTheListedHolding() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-lock-order");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         AppMarketSandboxMapper.HoldingView listing=new AppMarketSandboxMapper.HoldingView(
                 1L,"run-lock-order","holding-8","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,
@@ -350,7 +363,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void secondaryBuyCannotBypassTheConfiguredHoldingCap() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-secondary-cap");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         AppMarketSandboxMapper.HoldingView listing=new AppMarketSandboxMapper.HoldingView(
                 1L,"run-secondary-cap","holding-8","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,
@@ -376,7 +389,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisEligibilityConsumesG4HolderPolicyAndRunScopedPriorityFacts() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-policy");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         when(mapper.userSandbox(7L)).thenReturn(1);
@@ -412,7 +425,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void genesisEligibilityNeverEstimatesForNonHolderWhenG4PolicyIsUnavailable() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-empty");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         when(mapper.userSandbox(9L)).thenReturn(1);
@@ -439,7 +452,7 @@ class AppMarketSandboxServiceTest {
     @Test
     void matchingRunFixtureProjectsHolderAllocationAndTieRankWithoutProductionRows() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-fixture");
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         AppGenesisSandboxFixtureService fixtures=new AppGenesisSandboxFixtureService(mapper,env);
@@ -488,7 +501,7 @@ class AppMarketSandboxServiceTest {
                                                     Optional<String> minAccountAgeDays, String suffix) {
         String run="run-invalid-policy-"+suffix;
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID",run);
-        env.setActiveProfiles("dev");
+        env.setActiveProfiles("test");
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         PlatformConfigFacade config=mock(PlatformConfigFacade.class);
         when(config.activeValue("market.genesis.ops.eligibility.enabled")).thenReturn(enabled);

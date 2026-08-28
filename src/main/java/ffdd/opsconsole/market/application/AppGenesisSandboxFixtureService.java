@@ -90,8 +90,8 @@ public class AppGenesisSandboxFixtureService {
     private void requireScope(String runId, Long actorUserId) {
         String current = environment == null ? "" : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        if (!FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)
-                || profiles.length != 1 || !"dev".equalsIgnoreCase(profiles[0])
+        if (!FundsSandboxProfileGuard.isStrictTestProfile(profiles)
+                || profiles.length != 1
                 || !StringUtils.hasText(runId) || !runId.equals(current)
                 || !runId.matches("[A-Za-z0-9][A-Za-z0-9._-]{7,95}") || actorUserId == null || actorUserId <= 0) {
             throw new BizException(403, "GENESIS_SANDBOX_FIXTURE_SCOPE_INVALID");
