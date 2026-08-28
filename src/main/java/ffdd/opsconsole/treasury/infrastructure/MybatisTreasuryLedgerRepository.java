@@ -369,6 +369,19 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
 
     @Override
     @Transactional
+    public void lockOperationMutex(String lockKey) {
+        String normalized = requiredUpperOrOriginal(lockKey, "TREASURY_MUTEX_KEY_REQUIRED", true);
+        if (normalized.length() > 64) {
+            throw new IllegalArgumentException("TREASURY_MUTEX_KEY_INVALID");
+        }
+        mapper.ensureLedgerMutex(normalized);
+        if (!normalized.equals(mapper.lockLedgerMutex(normalized))) {
+            throw new IllegalStateException("TREASURY_MUTEX_UNAVAILABLE");
+        }
+    }
+
+    @Override
+    @Transactional
     public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                                 BigDecimal amount, String status, String remark) {
         if (userId == null || userId <= 0) {

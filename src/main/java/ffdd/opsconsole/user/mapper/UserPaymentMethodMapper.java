@@ -16,7 +16,7 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT card.id, card.user_id AS userId, card.card_token AS cardToken, card.brand, card.last4,
-                   NULL AS expiryLabel, 'TOKENIZED_CARD' AS provider,
+                   card.expiry_label AS expiryLabel, 'TOKENIZED_CARD' AS provider,
                    card.is_default AS isDefault,
                    CASE WHEN card.status IN ('BOUND','ACTIVE') THEN 'BOUND' ELSE card.status END AS status,
                    EXISTS(
@@ -49,7 +49,7 @@ public interface UserPaymentMethodMapper extends BaseMapper<Object> {
     @Select("""
             <script>
             SELECT card.id, card.user_id AS userId, card.card_token AS cardToken, card.brand, card.last4,
-                   NULL AS expiryLabel, 'TOKENIZED_CARD' AS provider,
+                   card.expiry_label AS expiryLabel, 'TOKENIZED_CARD' AS provider,
                    card.is_default AS isDefault,
                    CASE WHEN card.status IN ('BOUND','ACTIVE') THEN 'BOUND' ELSE card.status END AS status,
                    EXISTS(

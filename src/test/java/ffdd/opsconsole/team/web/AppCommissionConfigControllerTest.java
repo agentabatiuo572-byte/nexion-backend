@@ -31,18 +31,24 @@ class AppCommissionConfigControllerTest {
     }
 
     @Test
-    void sandboxCarriesTheRequiredRunIdAndRejectsMissingRunId() {
+    void developmentUsesProductionAuthorityWhileIsolatedTestRequiresSandboxRunId() {
         var service = mock(OpsTeamService.class);
         when(service.rates()).thenReturn(ApiResult.ok(Map.of("unilevelRates", List.of(), "configValues", Map.of())));
-        var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "commission-run-20260817");
-        environment.setActiveProfiles("dev");
+        var development = new MockEnvironment();
+        development.setActiveProfiles("dev");
 
-        var result = new AppCommissionConfigController(service, environment).rates();
-        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX")
+        var developmentResult = new AppCommissionConfigController(service, development).rates();
+        assertThat(developmentResult.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", null);
+
+        var isolated = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "commission-run-20260817");
+        isolated.setActiveProfiles("test");
+        var isolatedResult = new AppCommissionConfigController(service, isolated).rates();
+        assertThat(isolatedResult.getData()).containsEntry("sourceEnvironment", "SANDBOX")
                 .containsEntry("runId", "commission-run-20260817");
 
         var missing = new MockEnvironment();
-        missing.setActiveProfiles("dev");
+        missing.setActiveProfiles("test");
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AppCommissionConfigController(service, missing).rates())
                 .hasMessage("COMMISSION_CONFIG_SANDBOX_RUN_ID_REQUIRED");
     }

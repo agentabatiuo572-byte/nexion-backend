@@ -38,12 +38,7 @@ public class AppCanonicalBoundaryController {
             @RequestParam(required = false) String clientStatus, Authentication authentication) {
         Long userId = userId(authentication);
         if (userId == null) return forbidden();
-        boolean sandboxRuntime = sandboxTrialService != null && sandboxTrialService.enabled();
-        if (!sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
-            return ApiResult.fail(503, "TRIAL_RUNTIME_UNAVAILABLE");
-        }
-        ApiResult<Map<String, Object>> result = sandboxRuntime
-                ? sandboxTrialService.state(userId) : trialLifecycleService.state(userId);
+        ApiResult<Map<String, Object>> result = trialLifecycleService.state(userId);
         if (clientStatus != null && result.getData() != null) {
             String serverState = String.valueOf(result.getData().get("state"));
             if (!serverState.equalsIgnoreCase(clientStatus.trim())) {

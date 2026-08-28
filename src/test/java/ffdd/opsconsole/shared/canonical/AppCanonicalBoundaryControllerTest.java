@@ -119,33 +119,35 @@ class AppCanonicalBoundaryControllerTest {
     }
 
     @Test
-    void localSandboxEligibilityUsesTheRunScopedTrialAuthority() {
+    void developmentEligibilityUsesTheCanonicalTrialAuthority() {
         UsernamePasswordAuthenticationToken user = auth("42", "USER");
         when(sandboxTrialService.enabled()).thenReturn(true);
-        when(sandboxTrialService.state(42L))
-                .thenReturn(ApiResult.ok(Map.of("state", "ELIGIBLE", "sourceEnvironment", "SANDBOX")));
+        when(trialLifecycleService.state(42L))
+                .thenReturn(ApiResult.ok(Map.of("state", "ELIGIBLE", "sourceEnvironment", "PRODUCTION", "runId", "")));
 
         ApiResult<Map<String, Object>> result = controller.trialEligibility(null, user);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX");
-        verify(sandboxTrialService).state(42L);
-        verify(trialLifecycleService, never()).state(42L);
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION");
+        verify(trialLifecycleService).state(42L);
+        verify(sandboxTrialService, never()).state(42L);
     }
 
     @Test
-    void mixedRuntimeRejectsTrialReadAndChargeBeforeCanonicalLifecycleCalls() {
+    void developmentRuntimeUsesCanonicalTrialReadButStillRejectsLegacyChargeEntry() {
         UsernamePasswordAuthenticationToken user = auth("42", "USER");
         when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(trialLifecycleService.state(42L))
+                .thenReturn(ApiResult.ok(Map.of("state", "ELIGIBLE", "sourceEnvironment", "PRODUCTION", "runId", "")));
 
         ApiResult<Map<String, Object>> eligibility = controller.trialEligibility(null, user);
         ApiResult<Map<String, Object>> charge = controller.chargeTrial(null, "mixed-trial-key", user);
 
-        assertThat(eligibility.getCode()).isEqualTo(503);
-        assertThat(eligibility.getMessage()).isEqualTo("TRIAL_RUNTIME_UNAVAILABLE");
+        assertThat(eligibility.getCode()).isZero();
+        assertThat(eligibility.getData()).containsEntry("sourceEnvironment", "PRODUCTION");
         assertThat(charge.getCode()).isEqualTo(503);
         assertThat(charge.getMessage()).isEqualTo("TRIAL_RUNTIME_UNAVAILABLE");
-        verify(trialLifecycleService, never()).state(42L);
+        verify(trialLifecycleService).state(42L);
         verify(trialLifecycleService, never()).charge(42L, "mixed-trial-key");
         verify(service, never()).chargeTrial(42L, null, null, "mixed-trial-key");
     }

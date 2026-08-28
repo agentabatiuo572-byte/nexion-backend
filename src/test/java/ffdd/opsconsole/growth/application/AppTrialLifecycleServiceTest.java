@@ -25,12 +25,17 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class AppTrialLifecycleServiceTest {
     private final AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
@@ -39,8 +44,10 @@ class AppTrialLifecycleServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
+    private final MockEnvironment environment = productionEnvironment();
     private final AppTrialLifecycleService service = new AppTrialLifecycleService(
-            mapper, earningsRelease, idempotency, coverage, audit, outbox);
+            mapper, earningsRelease, idempotency, coverage, audit, outbox, environment,
+            Clock.system(ZoneId.of("Asia/Shanghai")));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -53,8 +60,23 @@ class AppTrialLifecycleServiceTest {
                 new PolicyRow("shadowDailyUSD", "40"),
                 new PolicyRow("shadowDailyNEX", "5"),
                 new PolicyRow("trialOffsetCapUSD", "50"),
-                new PolicyRow("trialPriceUSD", "1299")));
+                new PolicyRow("trialPriceUSD", "1299"),
+                new PolicyRow("seatsLeftToday", "47")));
         when(mapper.attribution(7L)).thenReturn(new Attribution("P2", 2, "2026-W30"));
+        when(mapper.consumeTrialQuota(any(LocalDate.class))).thenReturn(1);
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(47, 46);
+        when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
+        when(mapper.lockTrialStartProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
+        when(mapper.conversionProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
         when(mapper.failTrial(anyLong(), anyLong(), any(), any(), any(), any(), anyString())).thenReturn(1);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -131,6 +153,112 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void stateProjectsPcManagedFreeTrialCardQuota() {
+        when(mapper.lockTrial(7L)).thenReturn(null);
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat((Map<String, Object>) result.getData().get("config"))
+                .containsEntry("seatsLeftToday", "47");
+        assertThat(result.getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_trial_claim")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        assertThat((Map<String, Object>) result.getData().get("provenance"))
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_trial_claim")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+    }
+
+    @Test
+    void exhaustedQuotaDisablesEligibilityAndCannotBeClaimed() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "device-trial-standard"),
+                new PolicyRow("seatsLeftToday", "0")));
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(0);
+
+        ApiResult<Map<String, Object>> state = service.state(7L);
+        ApiResult<Map<String, Object>> start = service.start(7L, null, "Trial", "h2-quota-empty");
+
+        assertThat(state.getData())
+                .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "quota-exhausted");
+        assertThat(start.getCode()).isEqualTo(409);
+        assertThat(start.getMessage()).isEqualTo("TRIAL_QUOTA_EXHAUSTED");
+        verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void concurrentQuotaLossFailsClosedBeforeCreatingTrial() {
+        when(mapper.consumeTrialQuota(any(LocalDate.class))).thenReturn(0);
+
+        ApiResult<Map<String, Object>> result = service.start(7L, null, "Trial", "h2-quota-race");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_QUOTA_EXHAUSTED");
+        verify(mapper).consumeTrialQuota(any(LocalDate.class));
+        verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void successfulClaimProjectsTheDatabaseRemainingQuotaAfterAtomicConsumption() {
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(2, 0);
+        when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.start(7L, null, "Trial", "h2-quota-exact");
+
+        assertThat(result.getCode()).isZero();
+        assertThat((Map<String, Object>) result.getData().get("config"))
+                .containsEntry("seatsLeftToday", "0");
+        verify(mapper).consumeTrialQuota(any(LocalDate.class));
+    }
+
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+        return environment;
+    }
+
+    @Test
+    void quotaDayUsesAsiaShanghaiEvenWhenInjectedClockHasAnotherZone() {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-20T16:30:00Z"), ZoneId.of("Pacific/Honolulu"));
+        AppTrialLifecycleService shanghaiService = new AppTrialLifecycleService(
+                mapper, earningsRelease, idempotency, coverage, audit, outbox, environment, clock);
+
+        ApiResult<Map<String, Object>> result = shanghaiService.state(7L);
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 21), 47);
+        verify(mapper).trialQuotaRemaining(LocalDate.of(2026, 8, 21));
+    }
+
+    @Test
+    void unknownMixedOrMissingProfilesFailClosedBeforeAnyUserLookup() {
+        for (String[] profiles : new String[][] {{"test"}, {"dev", "prod"}, {}}) {
+            AppTrialLifecycleMapper isolatedMapper = mock(AppTrialLifecycleMapper.class);
+            MockEnvironment forbidden = new MockEnvironment();
+            forbidden.setActiveProfiles(profiles);
+            AppTrialLifecycleService denied = new AppTrialLifecycleService(
+                    isolatedMapper, earningsRelease, idempotency, coverage, audit, outbox, forbidden,
+                    Clock.systemUTC());
+
+            ApiResult<Map<String, Object>> result = denied.state(7L);
+
+            assertThat(result.getCode()).isEqualTo(404);
+            verify(isolatedMapper, never()).activeUser(anyLong());
+            verify(isolatedMapper, never()).activeDevelopmentUser(anyLong(), anyString(), anyString());
+        }
+    }
+
+    @Test
     void configuredTrialProductMapsToTheServerOwnedTrialDeviceInsteadOfClientInput() {
         when(mapper.policies()).thenReturn(List.of(
                 new PolicyRow("phaseOpen", "true"),
@@ -139,7 +267,8 @@ class AppTrialLifecycleServiceTest {
                 new PolicyRow("shadowDailyUSD", "40"),
                 new PolicyRow("shadowDailyNEX", "5"),
                 new PolicyRow("trialOffsetCapUSD", "50"),
-                new PolicyRow("trialPriceUSD", "1299")));
+                new PolicyRow("trialPriceUSD", "1299"),
+                new PolicyRow("seatsLeftToday", "47")));
         when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(),
                 anyInt(), any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
 
@@ -148,6 +277,28 @@ class AppTrialLifecycleServiceTest {
         assertThat(result.getCode()).isZero();
         verify(mapper).insertTrial(eq(7L), anyString(), eq("h2-product-map"), isNull(),
                 eq("NexGridBox S1"), anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void claimNeverConsumesQuotaWhenTheE1TargetProductIsUnavailable() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "stellarbox-s1"),
+                new PolicyRow("trialDays", "3"),
+                new PolicyRow("shadowDailyUSD", "40"),
+                new PolicyRow("shadowDailyNEX", "5"),
+                new PolicyRow("trialOffsetCapUSD", "50"),
+                new PolicyRow("trialPriceUSD", "1"),
+                new PolicyRow("seatsLeftToday", "47")));
+        when(mapper.lockTrialStartProduct("stellarbox-s1")).thenReturn(null);
+
+        ApiResult<Map<String, Object>> result = service.start(7L, null, "untrusted", "h2-e1-unavailable");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
+        verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
+                anyInt(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -161,11 +312,50 @@ class AppTrialLifecycleServiceTest {
         ApiResult<Map<String, Object>> start = service.start(7L, null, "untrusted-client-name", "h2-product-invalid");
 
         assertThat(state.getData()).containsEntry("canStart", false)
-                .containsEntry("eligibilityReason", "unknown");
+                .containsEntry("eligibilityReason", "product-unavailable");
         assertThat(start.getCode()).isEqualTo(409);
-        assertThat(start.getMessage()).isEqualTo("TRIAL_PRODUCT_CONFIG_INVALID");
+        assertThat(start.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
         verify(mapper, never()).insertTrial(any(), anyString(), anyString(), any(), anyString(),
                 anyInt(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void activeClaimKeepsItsLifecycleReasonWhenTheCatalogProductLaterSellsOut() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "stellarbox-s1"),
+                new PolicyRow("seatsLeftToday", "47")));
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial());
+        when(mapper.conversionProduct("stellarbox-s1")).thenReturn(null);
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("state", "ACTIVE")
+                .containsEntry("canStart", false)
+                .containsEntry("eligibilityReason", "in-progress");
+    }
+
+    @Test
+    void activeClaimKeepsTheProductPinnedAtStartWhenH2ChangesTheNewTrialTarget() {
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("trialProductId", "stellarbox-pro"),
+                new PolicyRow("trialPriceUSD", "2199"),
+                new PolicyRow("seatsLeftToday", "47")));
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial());
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1499"), 0, "P1", "DEVICE", "FINITE"));
+
+        ApiResult<Map<String, Object>> result = service.state(7L);
+
+        assertThat(result.getData().get("config"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("trialProductId", "stellarbox-s1")
+                .containsEntry("trialProductName", "Trial")
+                .containsEntry("trialPriceUSD", "1299");
     }
 
     @Test
@@ -243,7 +433,7 @@ class AppTrialLifecycleServiceTest {
     void redeemedTrialCanNeverBeRestarted() {
         TrialRow redeemed = new TrialRow(1L, 7L, "TRIAL-USED", "REDEEMED", 9L, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), LocalDateTime.now().minusDays(3), LocalDateTime.now(),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", LocalDateTime.now().minusDays(3), LocalDateTime.now(),
                 new BigDecimal("120"), new BigDecimal("15"), new BigDecimal("70"),
                 new BigDecimal("50"), new BigDecimal("1199"), null, 2L);
         when(mapper.lockTrial(7L)).thenReturn(redeemed);
@@ -260,6 +450,8 @@ class AppTrialLifecycleServiceTest {
     void insufficientWalletMovesToFailedWithCooldownWithoutSettlementMutation() {
         TrialRow active = activeTrial();
         when(mapper.lockTrial(7L)).thenReturn(active);
+        when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "Trial", BigDecimal.TEN, 1, "P1"));
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(new BigDecimal("10"), BigDecimal.ZERO));
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-low-balance");
@@ -275,17 +467,53 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
+    void successfulRedeemReservesCanonicalProductAndKeepsDeviceTraceability() {
+        TrialRow active = activeTrial();
+        when(mapper.lockTrial(7L)).thenReturn(active);
+        when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "Trial", "Entry",
+                        new BigDecimal("1299"), 1, "P1", "DEVICE", "FINITE"));
+        when(mapper.lockWallet(7L)).thenReturn(new WalletRow(new BigDecimal("2000"), BigDecimal.ZERO));
+        when(mapper.settleWallet(eq(7L), any(), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO))).thenReturn(1);
+        when(mapper.decrementProductStock(9L)).thenReturn(1);
+        when(mapper.insertConversionOrder(eq(7L), anyString(), eq(9L), any(), any(), any())).thenReturn(1);
+        when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), eq("Trial"), any()))
+                .thenReturn(1);
+        when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"),
+                eq("Entry"), eq("CLOUD"), anyString(), eq("Trial"), any(), any(), any())).thenReturn(1);
+        when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
+                .thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-success");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("payment_status", "PAID")
+                .containsEntry("order_status", "PAID")
+                .containsKey("order_no");
+        String orderNo = String.valueOf(result.getData().get("order_no"));
+        assertThat(orderNo).startsWith("TRC-");
+        verify(mapper).decrementProductStock(9L);
+        verify(mapper).insertConversionOrder(eq(7L), eq(orderNo), eq(9L),
+                eq(new BigDecimal("1299")), any(), any());
+        verify(mapper).insertConversionOrderItem(eq(orderNo), eq(9L), eq("stellarbox-s1"),
+                eq("Trial"), eq(new BigDecimal("1299")));
+        verify(mapper).insertPurchasedDevice(eq(7L), eq(orderNo), eq(9L), eq("stellarbox-s1"),
+                eq("Entry"), eq("CLOUD"), anyString(), eq("Trial"), any(), any(), any());
+    }
+
+    @Test
     void expiredActiveProjectsAsGraceAndNeverAccruesBeyondConfiguredTrialDays() {
         LocalDateTime now = LocalDateTime.now();
         TrialRow expired = new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), now.minusDays(8), now.minusDays(5),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", now.minusDays(8), now.minusDays(5),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 0L);
         when(mapper.trial(7L)).thenReturn(expired);
         when(mapper.lockTrial(7L)).thenReturn(expired, new TrialRow(1L, 7L, "TRIAL-1", "GRACE", null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), expired.claimedAt(), expired.expiresAt(),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", expired.claimedAt(), expired.expiresAt(),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 1L));
         when(mapper.enterGrace(eq(1L), eq(0L), any())).thenReturn(1);
@@ -313,7 +541,7 @@ class AppTrialLifecycleServiceTest {
         LocalDateTime now = LocalDateTime.now();
         TrialRow overdue = new TrialRow(1L, 7L, "TRIAL-DUE", "ACTIVE", null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), now.minusDays(12), now.minusDays(9),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", now.minusDays(12), now.minusDays(9),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 3L);
         when(mapper.lockTrial(7L)).thenReturn(overdue);
@@ -338,7 +566,7 @@ class AppTrialLifecycleServiceTest {
         LocalDateTime now = LocalDateTime.now();
         return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), now.minusDays(1), now.plusDays(2),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", now.minusDays(1), now.plusDays(2),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, null, 0L);
     }
@@ -348,7 +576,7 @@ class AppTrialLifecycleServiceTest {
         boolean active = "ACTIVE".equals(status);
         return new TrialRow(1L, 7L, "TRIAL-LEGACY", status, null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
-                new BigDecimal("1299"), active ? now.minusDays(1) : now.minusDays(4),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", active ? now.minusDays(1) : now.minusDays(4),
                 active ? now.plusDays(2) : now.minusDays(1),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, cooldownUntil, version);

@@ -158,7 +158,11 @@ public class AppPayoutAddressService {
         if (userId == null) throw new BizException(401, "USER_AUTH_REQUIRED");
         Long active = scope.sandbox() ? mapper.activeSandboxUser(userId) : mapper.activeUser(userId);
         if (active == null) throw new BizException(401, "USER_AUTH_REQUIRED");
-        if (!scope.sandbox() && Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+        boolean sandboxUser = Integer.valueOf(1).equals(mapper.isSandboxUser(userId));
+        if (scope.development() && !sandboxUser) {
+            throw new BizException(403, "PAYOUT_ADDRESS_DEVELOPMENT_USER_REQUIRED");
+        }
+        if (!scope.sandbox() && !scope.development() && sandboxUser) {
             throw new BizException(403, "PAYOUT_ADDRESS_SANDBOX_USER_FORBIDDEN");
         }
     }
@@ -169,7 +173,11 @@ public class AppPayoutAddressService {
         if (active == null) {
             throw new BizException(401, "USER_AUTH_REQUIRED");
         }
-        if (!scope.sandbox() && Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+        boolean sandboxUser = Integer.valueOf(1).equals(mapper.isSandboxUser(userId));
+        if (scope.development() && !sandboxUser) {
+            throw new BizException(403, "PAYOUT_ADDRESS_DEVELOPMENT_USER_REQUIRED");
+        }
+        if (!scope.sandbox() && !scope.development() && sandboxUser) {
             throw new BizException(403, "PAYOUT_ADDRESS_SANDBOX_USER_FORBIDDEN");
         }
     }
@@ -203,9 +211,12 @@ public class AppPayoutAddressService {
     }
 
     private Scope scope() {
+        if (sandboxProfile != null && sandboxProfile.isStrictDevelopmentRuntime()) {
+            return new Scope("server", "PRODUCTION", "", false, true);
+        }
         if (sandboxProfile != null && sandboxProfile.isLocalSandboxEnabled()) {
             if (sandboxRun == null) throw new BizException(503, "PAYOUT_ADDRESS_SANDBOX_RUN_ID_REQUIRED");
-            return new Scope("mock", "SANDBOX", sandboxRun.requireRunId(), true);
+            return new Scope("mock", "SANDBOX", sandboxRun.requireRunId(), true, false);
         }
         if (sandboxProfile != null) {
             if (sandboxProfile.isStrictIsolatedRuntime()) {
@@ -215,7 +226,7 @@ public class AppPayoutAddressService {
                 throw new BizException(503, "PAYOUT_ADDRESS_PROFILE_INVALID");
             }
         }
-        return new Scope("server", "PRODUCTION", "", false);
+        return new Scope("server", "PRODUCTION", "", false, false);
     }
 
     private String mask(String value) {
@@ -239,5 +250,5 @@ public class AppPayoutAddressService {
 
     public record SaveRequest(String network, String address, String challengeNo, String code) { }
 
-    private record Scope(String source, String sourceEnvironment, String runId, boolean sandbox) { }
+    private record Scope(String source, String sourceEnvironment, String runId, boolean sandbox, boolean development) { }
 }

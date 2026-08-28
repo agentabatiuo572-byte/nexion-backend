@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -14,9 +15,12 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
@@ -316,6 +320,121 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void trialsProjectsTheCanonicalE1TrialProductCatalogInsteadOfTheLegacyAlias() {
+        seedTrialPolicies();
+        trialPolicies.add(row("key", "trialProductId", "name", "trialProductId", "sub", "", "cur",
+                "device-trial-standard", "hot", false, "section", "newonly", "serverOnly", false));
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView s1 = trialSku("stellarbox-s1", "NexGridBox S1", "DEVICE", "FINITE", "on", "5", "1499");
+        DeviceSkuView share = trialSku("cloud-share", "Cloud Share", "SHARE", "UNLIMITED", "on", null, "99");
+        when(catalog.pageSkus(any())).thenReturn(new PageResult<>(2, 1, 500, List.of(s1, share)));
+
+        ApiResult<Map<String, Object>> result = serviceWithDeviceCatalog(catalog).trials();
+
+        assertThat(result.getCode()).isZero();
+        assertThat((List<Map<String, Object>>) result.getData().get("trialProducts"))
+                .singleElement()
+                .satisfies(product -> assertThat(product)
+                        .containsEntry("productNo", "stellarbox-s1")
+                        .containsEntry("name", "NexGridBox S1")
+                        .containsEntry("selectable", true));
+        assertThat((List<Map<String, Object>>) result.getData().get("params"))
+                .filteredOn(param -> "trialProductId".equals(param.get("key")))
+                .singleElement()
+                .satisfies(param -> assertThat(param).containsEntry("cur", "stellarbox-s1"));
+        assertThat((List<Map<String, Object>>) result.getData().get("params"))
+                .filteredOn(param -> "trialPriceUSD".equals(param.get("key")))
+                .singleElement()
+                .satisfies(param -> assertThat(param).containsEntry("cur", "1499"));
+    }
+
+    @Test
+    void updatingTrialProductRequiresARealAvailableE1SkuAndSynchronizesItsPrice() {
+        seedTrialPolicies();
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView s1 = trialSku("stellarbox-s1", "NexGridBox S1", "DEVICE", "FINITE", "on", "5", "1299");
+        when(catalog.findSku("stellarbox-s1")).thenReturn(Optional.of(s1));
+        when(catalog.pageSkus(any())).thenReturn(new PageResult<>(1, 1, 500, List.of(s1)));
+
+        ApiResult<Map<String, Object>> result = serviceWithDeviceCatalog(catalog).updateTrialParam(
+                "idem-h2-product", "trialProductId",
+                new GrowthConfigUpdateRequest("trialProductId", "stellarbox-s1", "use E1 product", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).upsertTrialPolicyValue(
+                "trialProductId", "stellarbox-s1", "STRING", false, "newonly", false, 9);
+        verify(questEventMapper).upsertTrialPolicyValue(
+                "trialPriceUSD", "1299", "NUMBER", true, "newonly", false, 10);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void trialsOmitsPhysicalProductsThatWereNotExplicitlyMarkedTrialEligibleInE1() {
+        seedTrialPolicies();
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView eligible = trialSku(
+                "stellarbox-s1", "NexGridBox S1", "DEVICE", "FINITE", "on", "0", "1299");
+        DeviceSkuView unmarked = trialSku(
+                "stellarbox-pro", "StellarBox Pro", "DEVICE", "FINITE", "on", "20", "1199");
+        when(unmarked.trialEligible()).thenReturn(false);
+        when(catalog.pageSkus(any())).thenReturn(new PageResult<>(2, 1, 500, List.of(eligible, unmarked)));
+
+        ApiResult<Map<String, Object>> result = serviceWithDeviceCatalog(catalog).trials();
+
+        assertThat((List<Map<String, Object>>) result.getData().get("trialProducts"))
+                .extracting(product -> product.get("productNo"))
+                .containsExactly("stellarbox-s1");
+    }
+
+    @Test
+    void updatingTrialProductRejectsAnE1SkuWithoutTheExplicitTrialEligibleFlag() {
+        seedTrialPolicies();
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView unmarked = trialSku(
+                "stellarbox-pro", "StellarBox Pro", "DEVICE", "FINITE", "on", "20", "1199");
+        when(unmarked.trialEligible()).thenReturn(false);
+        when(catalog.findSku("stellarbox-pro")).thenReturn(Optional.of(unmarked));
+
+        ApiResult<Map<String, Object>> result = serviceWithDeviceCatalog(catalog).updateTrialParam(
+                "idem-h2-unmarked", "trialProductId",
+                new GrowthConfigUpdateRequest("trialProductId", "stellarbox-pro", "reject unmarked", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("E1 商品未开启允许试用");
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                eq("trialProductId"), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    void updatingTrialProductRejectsMissingSkuWithoutChangingH2Policy() {
+        seedTrialPolicies();
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        when(catalog.findSku("missing-sku")).thenReturn(Optional.empty());
+
+        ApiResult<Map<String, Object>> result = serviceWithDeviceCatalog(catalog).updateTrialParam(
+                "idem-h2-missing", "trialProductId",
+                new GrowthConfigUpdateRequest("trialProductId", "missing-sku", "reject missing", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_FOUND_IN_E1");
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                eq("trialProductId"), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    void trialPriceIsReadOnlyBecauseItIsSynchronizedFromE1() {
+        seedTrialPolicies();
+
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-price-readonly", "trialPriceUSD",
+                new GrowthConfigUpdateRequest("trialPriceUSD", "1", "attempt drift", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("TRIAL_PARAM_READONLY");
+    }
+
+    @Test
     void updateTrialParamWritesBusinessTableAuditsAndStillMasksChargeFailureRate() {
         seedTrialPolicies();
         ApiResult<Map<String, Object>> result = service.updateTrialParam(
@@ -372,6 +491,66 @@ class OpsGrowthServiceTest {
                 .singleElement()
                 .extracting(param -> param.get("cur"))
                 .isEqualTo("72.5");
+    }
+
+    @Test
+    void trialOfferQuotaIsAWritableIntegerH2Policy() {
+        seedTrialPolicies();
+
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-seats-left",
+                "seatsLeftToday",
+                new GrowthConfigUpdateRequest("seatsLeftToday", "47", "publish free trial card quota", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).upsertTrialPolicyValue(
+                "seatsLeftToday", "47", "NUMBER", false, "live", false, 19);
+    }
+
+    @Test
+    void trialOfferQuotaRejectsFractionalValues() {
+        seedTrialPolicies();
+
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-seats-fraction",
+                "seatsLeftToday",
+                new GrowthConfigUpdateRequest("seatsLeftToday", "47.5", "reject fractional quota", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("TRIAL_QUOTA_INTEGER_REQUIRED");
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                eq("seatsLeftToday"), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    void trialOfferQuotaRejectsIntegerOverflowInsteadOfWrappingToZero() {
+        seedTrialPolicies();
+
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-seats-overflow",
+                "seatsLeftToday",
+                new GrowthConfigUpdateRequest(
+                        "seatsLeftToday", "4294967296", "reject overflow quota", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                eq("seatsLeftToday"), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
+    }
+
+    @Test
+    void trialOfferQuotaRejectsScientificNotationAtTheDirectApiBoundary() {
+        seedTrialPolicies();
+
+        ApiResult<Map<String, Object>> result = service.updateTrialParam(
+                "idem-h2-seats-scientific",
+                "seatsLeftToday",
+                new GrowthConfigUpdateRequest(
+                        "seatsLeftToday", "4.7E1", "reject non decimal integer text", "superadmin"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("TRIAL_QUOTA_INTEGER_REQUIRED");
+        verify(questEventMapper, never()).upsertTrialPolicyValue(
+                eq("seatsLeftToday"), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
     }
 
     @Test
@@ -1696,6 +1875,38 @@ class OpsGrowthServiceTest {
         row.put("batchCount", 0L);
         row.put("status", status);
         return row;
+    }
+
+    private OpsGrowthService serviceWithDeviceCatalog(DeviceCatalogRepository catalog) {
+        return new OpsGrowthService(
+                configFacade,
+                emergencyRepository,
+                coverageFacade,
+                ledgerPostingFacade,
+                auditLogService,
+                new ObjectMapper(),
+                OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                Optional.of(catalog),
+                Optional.of(questEventMapper),
+                Optional.empty(),
+                lockMapper,
+                null,
+                Optional.empty());
+    }
+
+    private static DeviceSkuView trialSku(
+            String productNo, String name, String productType, String inventoryMode,
+            String status, String stock, String price) {
+        DeviceSkuView sku = mock(DeviceSkuView.class);
+        when(sku.skuId()).thenReturn(productNo);
+        when(sku.name()).thenReturn(name);
+        when(sku.productType()).thenReturn(productType);
+        when(sku.inventoryMode()).thenReturn(inventoryMode);
+        when(sku.status()).thenReturn(status);
+        when(sku.stock()).thenReturn(stock);
+        when(sku.price()).thenReturn(new BigDecimal(price));
+        when(sku.trialEligible()).thenReturn(true);
+        return sku;
     }
 
     private OpsGrowthService serviceWithConfig(FakePlatformConfigFacade config, OpsReadTimeSeedPolicy seedPolicy) {

@@ -11,6 +11,7 @@ import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitResponse;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
@@ -61,7 +62,7 @@ public class AppTradeinService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinConfigResponse> config(Long userId) {
-        requireProductionTradeinUser(userId);
+        requireCanonicalTradeinUser(userId);
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
@@ -74,7 +75,7 @@ public class AppTradeinService {
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinEligibilityResponse> eligibility(
             Long userId, AppTradeinEligibilityRequest request) {
-        requireProductionTradeinUser(userId);
+        requireCanonicalTradeinUser(userId);
         String targetProductNo = requireEligibilityTargetNo(request == null ? null : request.targetProductNo());
         String userLevel = mapper.userLevel(userId);
         if (!StringUtils.hasText(userLevel)) {
@@ -96,7 +97,7 @@ public class AppTradeinService {
             return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_NOT_ACTIVE", null,
                     targetProductNo, List.of()));
         }
-        if (target.stock() == null || target.stock() < 1) {
+        if (!finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_OUT_OF_STOCK", target,
                     targetProductNo, List.of()));
         }
@@ -122,7 +123,7 @@ public class AppTradeinService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinQuoteResponse> quote(Long userId, AppTradeinQuoteRequest request) {
-        requireProductionTradeinUser(userId);
+        requireCanonicalTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
         Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), false);
@@ -132,7 +133,7 @@ public class AppTradeinService {
     @Transactional(readOnly = true)
     public ApiResult<AppCapacityReplaceQuoteResponse> capacityQuote(
             Long userId, AppCapacityReplaceQuoteRequest request) {
-        requireProductionTradeinUser(userId);
+        requireCanonicalTradeinUser(userId);
         String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
@@ -318,7 +319,7 @@ public class AppTradeinService {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
         AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
-        if (target == null || target.stock() == null || target.stock() < 1) {
+        if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
@@ -402,7 +403,7 @@ public class AppTradeinService {
         AppTradeinMapper.TargetProduct target = locked
                 ? mapper.lockTargetProduct(null, targetProductNo)
                 : mapper.findTargetProduct(null, targetProductNo);
-        if (target == null || target.priceUsdt() == null || target.priceUsdt().signum() <= 0
+        if (target == null || !finiteTarget(target) || target.priceUsdt() == null || target.priceUsdt().signum() <= 0
                 || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
@@ -448,7 +449,7 @@ public class AppTradeinService {
         if (target.id().equals(source.productId())) {
             throw new BizException(409, "TRADEIN_TARGET_MUST_DIFFER");
         }
-        if (target.stock() == null || target.stock() < 1) {
+        if (!finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_OUT_OF_STOCK");
         }
         requireReleased(target);
@@ -652,6 +653,36 @@ public class AppTradeinService {
         return true;
     }
 
+    private void requireCanonicalTradeinUser(Long userId) {
+        if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        int expectedEnvironment = expectedUserEnvironment();
+        Integer sandbox = mapper.activeUserEnvironment(userId);
+        if (sandbox == null) throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
+        if (sandbox != expectedEnvironment) {
+            throw new BizException(403, expectedEnvironment == 1
+                    ? "TRADEIN_DEVELOPMENT_USER_REQUIRED"
+                    : "TRADEIN_PRODUCTION_USER_REQUIRED");
+        }
+    }
+
+    private boolean finiteTarget(AppTradeinMapper.TargetProduct target) {
+        return target != null
+                && ProductInventoryMode.FINITE == ProductInventoryMode.parse(target.inventoryMode())
+                && StringUtils.hasText(target.deviceType())
+                && !"SHARE".equalsIgnoreCase(target.deviceType());
+    }
+
+    /**
+     * Read-only capacity and trade-in decisions follow the Java runtime user
+     * environment. Development may inspect its isolated accounts, but the
+     * canonical wallet, stock and order mutation rail remains production-only.
+     */
+    private int expectedUserEnvironment() {
+        if (fundsSandboxProfileGuard != null && fundsSandboxProfileGuard.isStrictDevelopmentRuntime()) return 1;
+        if (fundsSandboxProfileGuard != null && fundsSandboxProfileGuard.isStrictProductionRuntime()) return 0;
+        throw new BizException(503, "TRADEIN_RUNTIME_UNAVAILABLE");
+    }
+
     private void requireProductionTradeinUser(Long userId) {
         if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
         Integer sandbox = mapper.activeUserEnvironment(userId);
@@ -659,12 +690,6 @@ public class AppTradeinService {
         if (sandbox != 0) throw new BizException(409, "TRADEIN_SANDBOX_UNAVAILABLE");
     }
 
-    /**
-     * Trade-in settlement still writes the canonical wallet, stock and device
-     * tables. It must never be reachable while the isolated commerce wallet is
-     * enabled; the local sandbox has its own order/payment rail and no trade-in
-     * production fallback.
-     */
     private void requireProductionTradeinAvailable() {
         if (fundsSandboxProfileGuard == null || fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
             throw new BizException(409, "TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");

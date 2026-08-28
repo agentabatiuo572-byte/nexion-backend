@@ -23,25 +23,67 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
     UserEnvironmentRow userEnvironment(@Param("userId") Long userId);
 
     @Select("""
-            SELECT oi.id AS activityId,
-                   p.name AS productName,
-                   COALESCE(o.paid_at, o.created_at) AS occurredAt,
-                   oi.quantity AS quantity
-              FROM nx_order_item oi
-              JOIN nx_order o ON o.order_no = oi.order_no
-              JOIN nx_product p ON p.id = oi.product_id
-                              AND p.is_deleted = 0
-                              AND p.store_visible = 1
-              JOIN nx_user u ON u.id = o.user_id
-                            AND u.is_deleted = 0
-                            AND u.sandbox = #{sandbox}
-             WHERE o.payment_status = 'PAID'
-               AND o.is_deleted = 0
-               AND oi.is_deleted = 0
-               AND (#{cursorAt} IS NULL
-                    OR COALESCE(o.paid_at, o.created_at) < #{cursorAt}
-                    OR (COALESCE(o.paid_at, o.created_at) = #{cursorAt} AND oi.id < #{cursorId}))
-             ORDER BY COALESCE(o.paid_at, o.created_at) DESC, oi.id DESC
+            SELECT COUNT(*)
+              FROM nx_user u
+             WHERE u.id = #{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code, '')), '+', '') = REPLACE(#{countryCode}, '+', '')
+               AND u.phone = #{phone}
+               AND u.sandbox = 1
+               AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
+               AND u.is_deleted = 0
+            """)
+    int developmentUserScope(
+            @Param("userId") Long userId,
+            @Param("countryCode") String countryCode,
+            @Param("phone") String phone);
+
+    @Select("""
+            SELECT activity.activity_id AS activityId,
+                   activity.product_name AS productName,
+                   activity.occurred_at AS occurredAt,
+                   activity.quantity
+              FROM (
+                    SELECT oi.id AS activity_id,
+                           COALESCE(NULLIF(TRIM(oi.product_name), ''), p.name) AS product_name,
+                           COALESCE(o.paid_at, o.created_at) AS occurred_at,
+                           oi.quantity
+                      FROM nx_order_item oi
+                      JOIN nx_order o ON o.order_no = oi.order_no
+                      JOIN nx_product p ON p.id = oi.product_id
+                                       AND p.is_deleted = 0
+                                       AND p.store_visible = 1
+                      JOIN nx_user u ON u.id = o.user_id
+                                    AND u.is_deleted = 0
+                                    AND u.sandbox = #{sandbox}
+                     WHERE o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                       AND oi.is_deleted = 0
+                    UNION ALL
+                    SELECT -o.id AS activity_id,
+                           p.name AS product_name,
+                           COALESCE(o.paid_at, o.created_at) AS occurred_at,
+                           o.quantity
+                      FROM nx_order o
+                      JOIN nx_product p ON p.id = o.product_id
+                                       AND p.is_deleted = 0
+                                       AND p.store_visible = 1
+                      JOIN nx_user u ON u.id = o.user_id
+                                    AND u.is_deleted = 0
+                                    AND u.sandbox = #{sandbox}
+                     WHERE o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                       AND UPPER(o.order_type) = 'SINGLE'
+                       AND o.quantity > 0
+                       AND NOT EXISTS (
+                             SELECT 1 FROM nx_order_item historical_item
+                              WHERE historical_item.order_no = o.order_no
+                                AND historical_item.is_deleted = 0
+                       )
+                   ) activity
+             WHERE (#{cursorAt} IS NULL
+                    OR activity.occurred_at < #{cursorAt}
+                    OR (activity.occurred_at = #{cursorAt} AND activity.activity_id < #{cursorId}))
+             ORDER BY activity.occurred_at DESC, activity.activity_id DESC
              LIMIT #{limit}
             """)
     List<ActivityRow> recentActivities(
@@ -73,33 +115,64 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
     ProductRow sandboxProduct(@Param("runId") String runId, @Param("productNo") String productNo);
 
     @Select("""
-            SELECT COALESCE(SUM(oi.quantity), 0)
-              FROM nx_order_item oi
-              JOIN nx_order o ON o.order_no = oi.order_no
-              JOIN nx_user u ON u.id = o.user_id
-                            AND u.is_deleted = 0
-                            AND u.sandbox = #{sandbox}
-             WHERE oi.product_id = #{productId}
-               AND oi.is_deleted = 0
-               AND o.payment_status = 'PAID'
-               AND o.is_deleted = 0
+            SELECT COALESCE(SUM(paid.quantity), 0)
+              FROM (
+                    SELECT oi.quantity
+                      FROM nx_order_item oi
+                      JOIN nx_order o ON o.order_no = oi.order_no
+                      JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0 AND u.sandbox = #{sandbox}
+                     WHERE oi.product_id = #{productId}
+                       AND oi.is_deleted = 0
+                       AND o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                    UNION ALL
+                    SELECT o.quantity
+                      FROM nx_order o
+                      JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0 AND u.sandbox = #{sandbox}
+                     WHERE o.product_id = #{productId}
+                       AND o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                       AND UPPER(o.order_type) = 'SINGLE'
+                       AND o.quantity > 0
+                       AND NOT EXISTS (
+                             SELECT 1 FROM nx_order_item historical_item
+                              WHERE historical_item.order_no = o.order_no
+                                AND historical_item.is_deleted = 0
+                       )
+                   ) paid
             """)
     Long salesTotal(
             @Param("productId") long productId,
             @Param("sandbox") boolean sandbox);
 
     @Select("""
-            SELECT COALESCE(SUM(oi.quantity), 0)
-              FROM nx_order_item oi
-              JOIN nx_order o ON o.order_no = oi.order_no
-              JOIN nx_user u ON u.id = o.user_id
-                            AND u.is_deleted = 0
-                            AND u.sandbox = #{sandbox}
-             WHERE oi.product_id = #{productId}
-               AND oi.is_deleted = 0
-               AND o.payment_status = 'PAID'
-               AND o.is_deleted = 0
-               AND COALESCE(o.paid_at, o.created_at) >= #{since}
+            SELECT COALESCE(SUM(paid.quantity), 0)
+              FROM (
+                    SELECT oi.quantity
+                      FROM nx_order_item oi
+                      JOIN nx_order o ON o.order_no = oi.order_no
+                      JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0 AND u.sandbox = #{sandbox}
+                     WHERE oi.product_id = #{productId}
+                       AND oi.is_deleted = 0
+                       AND o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                       AND COALESCE(o.paid_at, o.created_at) >= #{since}
+                    UNION ALL
+                    SELECT o.quantity
+                      FROM nx_order o
+                      JOIN nx_user u ON u.id = o.user_id AND u.is_deleted = 0 AND u.sandbox = #{sandbox}
+                     WHERE o.product_id = #{productId}
+                       AND o.payment_status = 'PAID'
+                       AND o.is_deleted = 0
+                       AND UPPER(o.order_type) = 'SINGLE'
+                       AND o.quantity > 0
+                       AND COALESCE(o.paid_at, o.created_at) >= #{since}
+                       AND NOT EXISTS (
+                             SELECT 1 FROM nx_order_item historical_item
+                              WHERE historical_item.order_no = o.order_no
+                                AND historical_item.is_deleted = 0
+                       )
+                   ) paid
             """)
     Long salesSince(
             @Param("productId") long productId,

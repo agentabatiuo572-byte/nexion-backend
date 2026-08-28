@@ -23,6 +23,17 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     AppReferralAccount appReferralAccount(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.id=#{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND u.phone=#{phone} AND u.sandbox=1
+               AND u.status='ACTIVE' AND u.is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
             SELECT COUNT(*)
              FROM nx_user invited
              JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
@@ -30,14 +41,14 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                AND invited.id <> #{userId}
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
                AND invited.created_at >= #{effectiveAt}
-               AND ((#{sourceEnvironment} = 'PRODUCTION'
-                     AND COALESCE(owner.sandbox, 0) = 0 AND COALESCE(invited.sandbox, 0) = 0)
-                 OR (#{sourceEnvironment} = 'SANDBOX'
-                     AND COALESCE(owner.sandbox, 0) = 1 AND COALESCE(invited.sandbox, 0) = 1))
-             """)
+               AND #{sourceEnvironment} = 'PRODUCTION'
+               AND COALESCE(owner.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+            """)
     long appInvitedCount(@Param("userId") Long userId,
                          @Param("effectiveAt") LocalDateTime effectiveAt,
-                         @Param("sourceEnvironment") String sourceEnvironment);
+                         @Param("sourceEnvironment") String sourceEnvironment,
+                         @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
             SELECT COUNT(*)
@@ -49,11 +60,13 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
                AND invited.created_at >= #{effectiveAt} AND s.id IS NULL
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(owner.sandbox, 0) = 0 AND COALESCE(invited.sandbox, 0) = 0
-             """)
+               AND COALESCE(owner.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+            """)
     long appPendingCount(@Param("userId") Long userId,
                          @Param("effectiveAt") LocalDateTime effectiveAt,
-                         @Param("sourceEnvironment") String sourceEnvironment);
+                         @Param("sourceEnvironment") String sourceEnvironment,
+                         @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
             SELECT COUNT(*)
@@ -63,10 +76,12 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
                AND s.status = 'SETTLED' AND s.inviter_nex > 0
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
-             """)
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
+            """)
     long appPositiveSettlementCount(@Param("userId") Long userId,
-                                    @Param("sourceEnvironment") String sourceEnvironment);
+                                    @Param("sourceEnvironment") String sourceEnvironment,
+                                    @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
             SELECT COUNT(*)
@@ -76,10 +91,12 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
                AND s.status = 'SETTLED'
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
-             """)
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
+            """)
     long appSettlementCount(@Param("userId") Long userId,
-                            @Param("sourceEnvironment") String sourceEnvironment);
+                            @Param("sourceEnvironment") String sourceEnvironment,
+                            @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
             SELECT COUNT(*) AS settledCount, COALESCE(SUM(s.inviter_nex), 0) AS lifetimeInviterNex
@@ -100,12 +117,14 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
                AND s.status = 'SETTLED' AND s.inviter_nex > 0
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
             """)
     AppReferralLedgerSummary appVerifiedRewardSummary(
             @Param("userId") Long userId,
             @Param("sourceType") String sourceType,
-            @Param("sourceEnvironment") String sourceEnvironment);
+            @Param("sourceEnvironment") String sourceEnvironment,
+            @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
             SELECT s.settlement_no AS settlementNo, s.inviter_nex AS amountNex,
@@ -130,7 +149,8 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE s.inviter_user_id = #{userId} AND s.is_deleted = 0
                AND s.status = 'SETTLED' AND s.inviter_nex > 0
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(invited.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+               AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
              ORDER BY s.id DESC
              LIMIT #{limit}
             """)
@@ -138,6 +158,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             @Param("userId") Long userId,
             @Param("sourceType") String sourceType,
             @Param("sourceEnvironment") String sourceEnvironment,
+            @Param("accountSandbox") Integer accountSandbox,
             @Param("limit") int limit);
 
     @Select("""
@@ -316,15 +337,16 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
               JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                 AND invited_wallet.is_deleted = 0
-                AND invited_wallet.sandbox = 0
+                AND invited_wallet.sandbox = #{accountSandbox}
               JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
                 AND inviter_wallet.is_deleted = 0
-                AND inviter_wallet.sandbox = 0
+                AND inviter_wallet.sandbox = #{accountSandbox}
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND #{sourceEnvironment} = 'PRODUCTION'
-               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+               AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
@@ -380,6 +402,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             """)
     List<ReferralRow> findPendingReferrals(@Param("effectiveAt") LocalDateTime effectiveAt,
                                            @Param("sourceEnvironment") String sourceEnvironment,
+                                           @Param("accountSandbox") int accountSandbox,
                                            @Param("holdRisky") boolean holdRisky,
                                            @Param("limit") int limit,
                                            @Param("onlyInvitedUserId") Long onlyInvitedUserId);
@@ -420,13 +443,14 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
                JOIN nx_user_wallet invited_wallet ON invited_wallet.user_id = u.id
                  AND invited_wallet.is_deleted = 0
-                 AND invited_wallet.sandbox = 0
+                 AND invited_wallet.sandbox = #{accountSandbox}
                JOIN nx_user_wallet inviter_wallet ON inviter_wallet.user_id = inviter.id
                  AND inviter_wallet.is_deleted = 0
-                 AND inviter_wallet.sandbox = 0
+                 AND inviter_wallet.sandbox = #{accountSandbox}
               WHERE u.id = #{invitedUserId} AND inviter.id = #{inviterUserId}
                  AND #{sourceEnvironment} = 'PRODUCTION'
-                 AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+                 AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+                 AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
                 AND u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
                AND u.sponsor_user_id <> u.id AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
@@ -489,6 +513,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                           @Param("idempotencyKey") String idempotencyKey,
                           @Param("effectiveAt") LocalDateTime effectiveAt,
                           @Param("sourceEnvironment") String sourceEnvironment,
+                          @Param("accountSandbox") int accountSandbox,
                            @Param("holdRisky") boolean holdRisky);
 
     @Insert("""
@@ -580,16 +605,19 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             SELECT COUNT(*) FROM nx_referral_reward_settlement s
               JOIN nx_user invited ON invited.id=s.invited_user_id
               JOIN nx_user inviter ON inviter.id=s.inviter_user_id
-             WHERE s.is_deleted=0 AND COALESCE(invited.sandbox,0)=0 AND COALESCE(inviter.sandbox,0)=0
+             WHERE s.is_deleted=0
+               AND COALESCE(invited.sandbox,0)=#{accountSandbox}
+               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
             """)
-    long totalSettled();
+    long totalSettled(@Param("accountSandbox") int accountSandbox);
 
     @Select("""
             SELECT COUNT(*) FROM nx_user u
               JOIN nx_user inviter ON inviter.id = u.sponsor_user_id AND inviter.is_deleted = 0 AND inviter.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+               AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND NOT EXISTS (
@@ -641,6 +669,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                AND s.id IS NULL
             """)
     long totalPending(@Param("effectiveAt") LocalDateTime effectiveAt,
+                      @Param("accountSandbox") int accountSandbox,
                       @Param("holdRisky") boolean holdRisky);
 
     @Select("""
@@ -649,7 +678,8 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = u.id AND s.is_deleted = 0
              WHERE u.sponsor_user_id IS NOT NULL AND u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND COALESCE(u.sandbox, 0) = 0 AND COALESCE(inviter.sandbox, 0) = 0
+               AND COALESCE(u.sandbox, 0) = #{accountSandbox}
+               AND COALESCE(inviter.sandbox, 0) = #{accountSandbox}
                AND u.sponsor_user_id <> u.id
                AND u.created_at >= #{effectiveAt}
                AND s.id IS NULL
@@ -697,6 +727,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                )))
             """)
     long totalBlockedByK2(@Param("effectiveAt") LocalDateTime effectiveAt,
+                          @Param("accountSandbox") int accountSandbox,
                           @Param("holdRisky") boolean holdRisky);
 
     @Select("""
@@ -707,10 +738,13 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
               FROM nx_referral_reward_settlement s
               JOIN nx_user invited ON invited.id=s.invited_user_id
               JOIN nx_user inviter ON inviter.id=s.inviter_user_id
-             WHERE s.is_deleted=0 AND COALESCE(invited.sandbox,0)=0 AND COALESCE(inviter.sandbox,0)=0
+             WHERE s.is_deleted=0
+               AND COALESCE(invited.sandbox,0)=#{accountSandbox}
+               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
              ORDER BY s.id DESC LIMIT #{limit}
             """)
-    List<Map<String, Object>> recentSettlements(@Param("limit") int limit);
+    List<Map<String, Object>> recentSettlements(@Param("accountSandbox") int accountSandbox,
+                                                @Param("limit") int limit);
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}

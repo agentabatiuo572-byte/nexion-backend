@@ -46,16 +46,18 @@ class AppReferralRewardServiceTest {
         when(mapper.appReferralAccount(11L)).thenReturn(
                 new ReferralRewardMapper.AppReferralAccount("NEX-ABC", 0, new BigDecimal("120")));
         when(mapper.appInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION")))
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(0)))
                 .thenReturn(2L);
         when(mapper.appPendingCount(org.mockito.ArgumentMatchers.eq(11L),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION")))
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(0)))
                 .thenReturn(1L);
-        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION")).thenReturn(1L);
-        when(mapper.appSettlementCount(11L, "PRODUCTION")).thenReturn(1L);
-        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION"))
+        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION", 0)).thenReturn(1L);
+        when(mapper.appSettlementCount(11L, "PRODUCTION", 0)).thenReturn(1L);
+        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 0))
                 .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(1L, new BigDecimal("20")));
-        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 20)).thenReturn(List.of(
+        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 20)).thenReturn(List.of(
                 new ReferralRewardMapper.AppReferralLedgerRow("REF-1", new BigDecimal("20"), "SUCCESS",
                         new BigDecimal("120"), "withdrawable", "PRODUCTION",
                         LocalDateTime.of(2026, 8, 11, 1, 2))));
@@ -80,13 +82,13 @@ class AppReferralRewardServiceTest {
             assertThat(row.balanceAfter()).isEqualByComparingTo("120");
             assertThat(row.ledgerStatus()).isEqualTo("SUCCESS");
         });
-        verify(mapper).appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 20);
+        verify(mapper).appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 20);
     }
 
     @Test
     void mapsShanghaiDatabaseLocalSettlementTimeToTheCorrectInstantAcrossUtcDayBoundary() {
         LocalDateTime databaseLocalTime = LocalDateTime.of(2026, 8, 11, 20, 31, 19);
-        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 10)).thenReturn(List.of(
+        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 10)).thenReturn(List.of(
                 new ReferralRewardMapper.AppReferralLedgerRow("REF-DAY-BOUNDARY", new BigDecimal("20"), "SUCCESS",
                         new BigDecimal("120"), "withdrawable", "PRODUCTION", databaseLocalTime)));
 
@@ -99,7 +101,7 @@ class AppReferralRewardServiceTest {
 
     @Test
     void failsClosedWhenSettlementHasNoMatchingWalletAndReleaseFacts() {
-        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION"))
+        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 0))
                 .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(0L, BigDecimal.ZERO));
 
         assertThatThrownBy(() -> service.snapshot(11L, 10))
@@ -109,7 +111,7 @@ class AppReferralRewardServiceTest {
 
     @Test
     void sandboxUsesExplicitMockSourceAndCannotReadProductionFacts() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
         when(mapper.appReferralAccount(11L)).thenReturn(
                 new ReferralRewardMapper.AppReferralAccount("NEX-SBX", 1, new BigDecimal("999")));
@@ -148,7 +150,7 @@ class AppReferralRewardServiceTest {
         assertThatThrownBy(() -> service.snapshot(11L, 10))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         assertThatThrownBy(() -> service.snapshot(11L, 10))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_SANDBOX_RUN_ID_REQUIRED");
@@ -156,7 +158,7 @@ class AppReferralRewardServiceTest {
 
     @Test
     void strictSandboxProfileRejectsProductionAccountBeforeAnyProductionProjectionRead() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-APP-20260812");
         when(mapper.appReferralAccount(11L)).thenReturn(
                 new ReferralRewardMapper.AppReferralAccount("NEX-PROD", 0, new BigDecimal("120")));
@@ -166,9 +168,11 @@ class AppReferralRewardServiceTest {
                 .hasMessageContaining("H8_SANDBOX_ACCOUNT_REQUIRED");
 
         verify(mapper, never()).appInvitedCount(org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
         verify(mapper, never()).appVerifiedRewardSummary(org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test
@@ -207,8 +211,35 @@ class AppReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_RUNTIME_PROFILE_UNSUPPORTED");
         verify(mapper, never()).appInvitedCount(org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
         verify(mapper, never()).appVerifiedRewardSummary(org.mockito.ArgumentMatchers.anyLong(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void developmentAllowsAnyActiveDevelopmentAccountAndCanonicalBusinessTables() {
+        environment.setActiveProfiles("dev");
+        when(mapper.appReferralAccount(11L)).thenReturn(
+                new ReferralRewardMapper.AppReferralAccount("NEX-DEV", 1, new BigDecimal("120")));
+        when(mapper.appInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(1))).thenReturn(2L);
+        when(mapper.appPendingCount(org.mockito.ArgumentMatchers.eq(11L),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(1))).thenReturn(1L);
+        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION", 1)).thenReturn(1L);
+        when(mapper.appSettlementCount(11L, "PRODUCTION", 1)).thenReturn(1L);
+        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 1))
+                .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(1L, new BigDecimal("20")));
+        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 1, 10)).thenReturn(List.of());
+
+        AppReferralRewardView view = service.snapshot(11L, 10).getData();
+
+        assertThat(view.source()).isEqualTo("ledger");
+        assertThat(view.sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(view.runId()).isNull();
+        assertThat(view.invitedCount()).isEqualTo(2);
     }
 }

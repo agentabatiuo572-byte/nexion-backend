@@ -18,12 +18,35 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
 
 class QuestCompletionFactConsumerTest {
     private final QuestCompletionFactMapper mapper = mock(QuestCompletionFactMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final QuestCompletionFactConsumer consumer = new QuestCompletionFactConsumer(mapper, audit, outbox, null);
+
+    @Test
+    void developmentRuntimeCompletesMissionForActiveDevelopmentAccount() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        QuestCompletionFactConsumer developmentConsumer =
+                new QuestCompletionFactConsumer(mapper, audit, outbox, null, environment);
+        when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
+        when(mapper.lockMission("QUEST-DEV")).thenReturn(new MissionDefinition(8L, "QUEST-DEV", "WEEKLY"));
+        when(mapper.insertFact(eq("ORDER"), eq("ORDER-DEV"), anyString(), eq(42L), eq(8L), eq("QUEST-DEV")))
+                .thenReturn(1);
+        when(mapper.markMissionCompleted(42L, 8L)).thenReturn(1);
+        when(mapper.attribution(42L)).thenReturn(Map.of(
+                "phase", "P3", "accountAgeMonths", 0, "cohort", "2026-W34"));
+
+        var result = developmentConsumer.consume(
+                new QuestCompletionCommand("ORDER", "ORDER-DEV", 42L, "QUEST-DEV"));
+
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        verify(mapper).lockActiveSandboxUser(42L);
+        verify(mapper, never()).lockActiveUser(42L);
+    }
 
     @Test
     void trustedFactCompletesMissionAndPublishesCanonicalLifecycleEvent() {

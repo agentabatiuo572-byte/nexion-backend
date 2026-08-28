@@ -34,8 +34,10 @@ public class AppCommissionConfigController {
         Map<String, Object> projection = new LinkedHashMap<>();
         projection.put("source", "nx_commission_rule + nx_config_item");
         projection.put("serverCanonical", true);
-        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
-                .orElseThrow(() -> new BizException(503, "COMMISSION_CONFIG_PROFILE_INVALID"));
+        UserAuthEnvironment audience = isStrictDevelopmentProfile()
+                ? UserAuthEnvironment.PRODUCTION
+                : UserAuthEnvironment.resolve(environment)
+                        .orElseThrow(() -> new BizException(503, "COMMISSION_CONFIG_PROFILE_INVALID"));
         projection.put("sourceEnvironment", audience == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION");
         String runId = audience == UserAuthEnvironment.SANDBOX
                 ? environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim() : "";
@@ -57,5 +59,10 @@ public class AppCommissionConfigController {
     private Object value(Map<?, ?> config, String key, Object fallback) {
         Object value = config.get(key);
         return value == null ? fallback : value;
+    }
+
+    private boolean isStrictDevelopmentProfile() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        return profiles.length == 1 && "dev".equals(profiles[0]);
     }
 }

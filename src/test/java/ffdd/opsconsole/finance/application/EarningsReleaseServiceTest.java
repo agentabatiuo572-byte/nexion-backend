@@ -33,10 +33,13 @@ class EarningsReleaseServiceTest {
     private final RiskReleaseParamsService params = mock(RiskReleaseParamsService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
-    private final EarningsReleaseService service = new EarningsReleaseService(mapper, params, idempotency, audit);
+    private final FundsSandboxProfileGuard sandboxProfile = mock(FundsSandboxProfileGuard.class);
+    private final EarningsReleaseService service = new EarningsReleaseService(
+            mapper, params, idempotency, audit, sandboxProfile);
 
     @BeforeEach
     void defaults() {
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         when(params.attestationHours()).thenReturn(1);
         when(params.releaseWindowHours()).thenReturn(24);
         when(params.freeSlots()).thenReturn(1);
@@ -146,7 +149,7 @@ class EarningsReleaseServiceTest {
     @Test
     void productionRewardPersistsProductionEnvironmentAndCreditsOnlyProductionWallet() {
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
-        when(mapper.creditNex(7L, new BigDecimal("5"), "PRODUCTION")).thenReturn(1);
+        when(mapper.creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0)).thenReturn(1);
 
         service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "NEX",
                 new BigDecimal("5"), "PRODUCTION", "idem-h8-production");
@@ -156,7 +159,7 @@ class EarningsReleaseServiceTest {
         verify(mapper).insert(entry.capture());
         assertThat(entry.getValue().sourceType()).isEqualTo("H8_REFERRAL");
         assertThat(entry.getValue().sourceEnvironment()).isEqualTo("PRODUCTION");
-        verify(mapper).creditNex(7L, new BigDecimal("5"), "PRODUCTION");
+        verify(mapper).creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0);
     }
 
     @Test
@@ -167,13 +170,15 @@ class EarningsReleaseServiceTest {
                 .hasMessageContaining("EARNINGS_RELEASE_ENTRY_INVALID");
 
         verify(mapper, never()).insert(any(EarningsReleaseMapper.EntryWrite.class));
-        verify(mapper, never()).creditNex(any(), any(), anyString());
+        verify(mapper, never()).creditNex(any(), any(), anyString(), anyInt());
     }
 
     @Test
     void explicitMockRewardCanOnlyCreditMatchingSandboxWallet() {
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
-        when(mapper.creditNex(7L, new BigDecimal("5"), "SANDBOX")).thenReturn(1);
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
+        when(mapper.creditNex(7L, new BigDecimal("5"), "SANDBOX", 1)).thenReturn(1);
 
         service.creditReward(7L, "MOCK_REFERRAL", "REF-SBX:INVITER:NEX", "NEX",
                 new BigDecimal("5"), "SANDBOX", "idem-h8-sandbox-mock");
@@ -182,11 +187,13 @@ class EarningsReleaseServiceTest {
                 ArgumentCaptor.forClass(EarningsReleaseMapper.EntryWrite.class);
         verify(mapper).insert(entry.capture());
         assertThat(entry.getValue().sourceEnvironment()).isEqualTo("SANDBOX");
-        verify(mapper).creditNex(7L, new BigDecimal("5"), "SANDBOX");
+        verify(mapper).creditNex(7L, new BigDecimal("5"), "SANDBOX", 1);
     }
 
     @Test
     void matchingDurableRewardSourceIsReplayedWithoutASecondWalletCredit() {
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(0);
         when(mapper.findBySource("MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", 7L))
                 .thenReturn(new EarningsReleaseMapper.ExistingEntry(
@@ -197,11 +204,13 @@ class EarningsReleaseServiceTest {
                 new BigDecimal("5"), "SANDBOX", "LEARN:7:h3-live:v1:NEX");
 
         assertThat(entryNo).isEqualTo("ER-LEARNING-EXISTING");
-        verify(mapper, never()).creditNex(any(), any(), anyString());
+        verify(mapper, never()).creditNex(any(), any(), anyString(), anyInt());
     }
 
     @Test
     void mismatchedDurableRewardSourceFailsClosedRatherThanMaskingTheConflict() {
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(0);
         when(mapper.findBySource("MOCK_LEARNING_REWARD", "LEARN:7:h3-live:v1", 7L))
                 .thenReturn(new EarningsReleaseMapper.ExistingEntry(
@@ -213,6 +222,39 @@ class EarningsReleaseServiceTest {
                 .isInstanceOfSatisfying(BizException.class, ex ->
                         assertThat(ex.getMessage()).isEqualTo("EARNINGS_RELEASE_ENTRY_CONFLICT"));
 
-        verify(mapper, never()).creditNex(any(), any(), anyString());
+        verify(mapper, never()).creditNex(any(), any(), anyString(), anyInt());
+    }
+
+    @Test
+    void developmentCanonicalRewardCreditsPhysicalDevelopmentWallet() {
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
+        when(mapper.creditNex(7L, new BigDecimal("10"), "PRODUCTION", 1)).thenReturn(1);
+
+        service.creditReward(7L, "LEARNING_REWARD", "LEARN:7:h3-live:v1", "NEX",
+                new BigDecimal("10"), "PRODUCTION", "LEARN:7:h3-live:v1:NEX");
+
+        verify(mapper).creditNex(7L, new BigDecimal("10"), "PRODUCTION", 1);
+    }
+
+    @Test
+    void environmentAndActiveProfileMustMatchExactly() {
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
+        assertThatThrownBy(() -> service.creditReward(7L, "MOCK_LEARNING_REWARD", "dev-sandbox", "NEX",
+                BigDecimal.ONE, "SANDBOX", "dev-sandbox-key"))
+                .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_ENVIRONMENT_INVALID");
+
+        when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
+        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "test-production", "NEX",
+                BigDecimal.ONE, "PRODUCTION", "test-production-key"))
+                .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_ENVIRONMENT_INVALID");
+
+        when(sandboxProfile.isStrictTestRuntime()).thenReturn(false);
+        assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "unknown-profile", "NEX",
+                BigDecimal.ONE, "PRODUCTION", "unknown-profile-key"))
+                .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_PROFILE_INVALID");
     }
 }

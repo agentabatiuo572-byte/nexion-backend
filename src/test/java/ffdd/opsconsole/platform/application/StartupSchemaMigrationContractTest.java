@@ -26,7 +26,12 @@ class StartupSchemaMigrationContractTest {
                 "20260819_compute_sandbox_reward_run_scope.sql",
                 "20260820_e2_task_price_history.sql",
                 "20260820_home_grid_datacenter_metadata.sql",
-                "20260820_i4_homepage_trust_content.sql");
+                "20260820_i4_homepage_trust_content.sql",
+                "20260821_h2_trial_card_offer.sql",
+                "20260823_withdrawal_terminal_refund_projection.sql",
+                "20260823_team_hardware_quota_product_alignment.sql",
+                "20260826_h2_trial_product_catalog.sql",
+                "20260826_trial_conversion_order_backfill.sql");
     }
 
     @Test

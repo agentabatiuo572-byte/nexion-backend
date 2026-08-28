@@ -11,6 +11,16 @@ import org.apache.ibatis.annotations.Update;
 
 /** App-side, self-scoped payment-card projection. Never exposes a PAN or CVV. */
 public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity> {
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user
+             WHERE id=#{userId} AND country_code=#{countryCode} AND phone=#{phone}
+               AND sandbox=1 AND status='ACTIVE' AND is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND is_deleted=0 LIMIT 1")
     Long activeUser(@Param("userId") Long userId);
 
@@ -27,8 +37,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
     Long lockActiveUser(@Param("userId") Long userId);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0
@@ -37,8 +47,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
     List<CardRow> list(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0
@@ -48,8 +58,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                              @Param("runId") String runId);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment}
                AND is_deleted=0 LIMIT 1
@@ -58,8 +68,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                         @Param("sourceEnvironment") String sourceEnvironment);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
                AND is_deleted=0 LIMIT 1
@@ -68,8 +78,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                               @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0 LIMIT 1
@@ -78,8 +88,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                               @Param("sourceEnvironment") String sourceEnvironment);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0 LIMIT 1
@@ -88,8 +98,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                                     @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND id=#{methodId} AND source_environment=#{sourceEnvironment}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0 LIMIT 1
@@ -98,8 +108,8 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                            @Param("sourceEnvironment") String sourceEnvironment);
 
     @Select("""
-            SELECT id,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
-                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version
+            SELECT id,user_id userId,card_token cardToken,brand,last4,cardholder_name holder,is_default isDefault,
+                   created_at createdAt,COALESCE(source_environment,'PRODUCTION') sourceEnvironment,run_id runId,version,expiry_label expiryLabel
               FROM nx_wallet_bank_card
              WHERE user_id=#{userId} AND id=#{methodId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
                AND status IN ('BOUND','ACTIVE') AND is_deleted=0 LIMIT 1
@@ -116,25 +126,27 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                                           @Param("runId") String runId);
 
     @Update("""
-            UPDATE nx_wallet_bank_card SET brand=#{brand},last4=#{last4},cardholder_name=#{holder},
+            UPDATE nx_wallet_bank_card SET brand=#{brand},last4=#{last4},expiry_label=#{expiryLabel},cardholder_name=#{holder},
               status='BOUND',is_default=#{isDefault},unbound_reason=NULL,unbound_by=NULL,unbound_at=NULL,
               version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment}
                AND status='UNBOUND' AND is_deleted=0
             """)
     int reactivate(@Param("userId") Long userId, @Param("token") String token, @Param("brand") String brand,
-                   @Param("last4") String last4, @Param("holder") String holder, @Param("isDefault") boolean isDefault,
+                   @Param("last4") String last4, @Param("expiryLabel") String expiryLabel,
+                   @Param("holder") String holder, @Param("isDefault") boolean isDefault,
                    @Param("sourceEnvironment") String sourceEnvironment);
 
     @Update("""
-            UPDATE nx_wallet_bank_card SET brand=#{brand},last4=#{last4},cardholder_name=#{holder},
+            UPDATE nx_wallet_bank_card SET brand=#{brand},last4=#{last4},expiry_label=#{expiryLabel},cardholder_name=#{holder},
               status='BOUND',is_default=#{isDefault},unbound_reason=NULL,unbound_by=NULL,unbound_at=NULL,
               version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND card_token=#{token} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
                AND status='UNBOUND' AND is_deleted=0
             """)
     int reactivateScoped(@Param("userId") Long userId, @Param("token") String token, @Param("brand") String brand,
-                         @Param("last4") String last4, @Param("holder") String holder, @Param("isDefault") boolean isDefault,
+                         @Param("last4") String last4, @Param("expiryLabel") String expiryLabel,
+                         @Param("holder") String holder, @Param("isDefault") boolean isDefault,
                          @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     @Update("UPDATE nx_wallet_bank_card SET is_default=0,version=version+1,updated_at=NOW() WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND is_deleted=0 AND status IN ('BOUND','ACTIVE') AND is_default=1")
@@ -187,24 +199,43 @@ public interface AppPaymentMethodMapper extends BaseMapper<WalletBankCardEntity>
                          @Param("expectedVersion") Long expectedVersion, @Param("sourceEnvironment") String sourceEnvironment,
                          @Param("runId") String runId);
 
+    @Update("""
+            UPDATE nx_wallet_bank_card
+               SET status='UNBOUND',is_default=0,unbound_reason='user requested payment method unbind',
+                   unbound_by='USER',unbound_at=NOW(),version=version+1,updated_at=NOW()
+             WHERE user_id=#{userId} AND id=#{methodId} AND version=#{expectedVersion}
+               AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
+               AND status IN ('BOUND','ACTIVE') AND is_deleted=0
+            """)
+    int unbindScoped(@Param("userId") Long userId, @Param("methodId") Long methodId,
+                     @Param("expectedVersion") Long expectedVersion,
+                     @Param("sourceEnvironment") String sourceEnvironment,
+                     @Param("runId") String runId);
+
     @Insert("""
             INSERT IGNORE INTO nx_wallet_bank_card
-              (user_id,card_token,cardholder_name,brand,last4,status,is_default,source_environment,run_id,version,created_at,updated_at,is_deleted)
-            VALUES (#{userId},#{token},#{holder},#{brand},#{last4},'BOUND',#{isDefault},#{sourceEnvironment},#{runId},0,NOW(),NOW(),0)
+              (user_id,card_token,cardholder_name,brand,last4,expiry_label,status,is_default,source_environment,run_id,version,created_at,updated_at,is_deleted)
+            VALUES (#{userId},#{cardToken},#{holder},#{brand},#{last4},#{expiryLabel},'BOUND',#{isDefault},#{sourceEnvironment},#{runId},0,NOW(),NOW(),0)
             """)
     int insert(CardRow row);
 
     record CardRow(Long id, Long userId, String cardToken, String brand, String last4, String holder,
-                   boolean isDefault, LocalDateTime createdAt, String sourceEnvironment, String runId, Long version) {
+                   boolean isDefault, LocalDateTime createdAt, String sourceEnvironment, String runId, Long version,
+                   String expiryLabel) {
         /** Compatibility constructor for callers written before CAS versions were exposed. */
         public CardRow(Long id, Long userId, String cardToken, String brand, String last4, String holder,
                        boolean isDefault, LocalDateTime createdAt, String sourceEnvironment) {
-            this(id, userId, cardToken, brand, last4, holder, isDefault, createdAt, sourceEnvironment, "", 0L);
+            this(id, userId, cardToken, brand, last4, holder, isDefault, createdAt, sourceEnvironment, "", 0L, null);
         }
 
         public CardRow(Long id, Long userId, String cardToken, String brand, String last4, String holder,
                        boolean isDefault, LocalDateTime createdAt, String sourceEnvironment, Long version) {
-            this(id, userId, cardToken, brand, last4, holder, isDefault, createdAt, sourceEnvironment, "", version);
+            this(id, userId, cardToken, brand, last4, holder, isDefault, createdAt, sourceEnvironment, "", version, null);
+        }
+
+        public CardRow(Long id, Long userId, String cardToken, String brand, String last4, String holder,
+                       boolean isDefault, LocalDateTime createdAt, String sourceEnvironment, String runId, Long version) {
+            this(id, userId, cardToken, brand, last4, holder, isDefault, createdAt, sourceEnvironment, runId, version, null);
         }
     }
 }

@@ -61,7 +61,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>
-               AND COALESCE(k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
+               AND COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
              </if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
@@ -129,7 +129,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
-                   COALESCE(k4o.override_score, k4.model_score) AS riskScore,
+                   COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) AS riskScore,
                    COALESCE(
                        hit.hit_rules,
                        rd.rule_codes,
@@ -180,8 +180,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                      '; 最近=', COALESCE((SELECT CONCAT(ud.name,'/',ud.status,'/',COALESCE(ud.dc_location,'未知地域')) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 ORDER BY COALESCE(ud.last_seen_at,ud.updated_at) DESC LIMIT 1),'无')
                    ) AS deviceSummary,
                    CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 上级=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
-                   CASE WHEN k4.model_score IS NULL THEN 'K4评分不可用'
-                        ELSE CONCAT('模型=',k4.model_score,'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
+                   CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
+                        ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,
                    (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
                       FROM nx_withdrawal_order w3 WHERE w3.user_id=w.user_id AND w3.is_deleted=0) AS withdrawalHistory,
@@ -200,14 +200,15 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.d2_lifecycle_owner AS lifecycleOwner,
                    w.d2_freeze_period AS freezePeriod,
                    w.d2_previous_status AS previousStatus,
-                   CASE WHEN COALESCE(k4o.override_score, k4.model_score) IS NULL THEN 'UNAVAILABLE'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.auto_escalate_score THEN 'ESCALATED'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_high_min THEN 'HIGH'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_low_max THEN 'NORMAL'
-                        ELSE 'LOW' END AS routingPriority,
-                   k4m.band_low_max AS k4BandLowMax,
-                   k4m.band_high_min AS k4BandHighMin,
-                   k4m.auto_escalate_score AS k4AutoEscalateScore,
+                   COALESCE(NULLIF(w.d2_routing_priority, ''), CASE
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'UNAVAILABLE'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) THEN 'ESCALATED'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) THEN 'HIGH'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) THEN 'NORMAL'
+                        ELSE 'LOW' END) AS routingPriority,
+                   COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) AS k4BandLowMax,
+                   COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) AS k4BandHighMin,
+                   COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) AS k4AutoEscalateScore,
                    w.d2_k3_risk_route AS k3RiskRoute,
                    w.d2_network_fee_rate AS networkFeeRate,
                    w.d2_network_fee_min AS networkFeeMin,
@@ -260,7 +261,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>
-               AND COALESCE(k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
+               AND COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
              </if>
              <if test='keyword != null and keyword != ""'>
                AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
@@ -281,10 +282,10 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                <when test='sortBy == "riskScore"'>riskScore</when>
                <when test='sortBy == "status"'>w.status</when>
                <otherwise>CASE
-                 WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.auto_escalate_score THEN 0
-                 WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_high_min THEN 1
-                 WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_low_max THEN 2
-                 WHEN COALESCE(k4o.override_score, k4.model_score) IS NOT NULL THEN 3 ELSE 4 END ASC,
+                 WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) THEN 0
+                 WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) THEN 1
+                 WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) THEN 2
+                 WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NOT NULL THEN 3 ELSE 4 END ASC,
                  w.created_at</otherwise>
              </choose>
              <choose><when test='sortDirection == "asc"'>ASC</when><otherwise>DESC</otherwise></choose>, w.id DESC
@@ -342,7 +343,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                        ELSE CONCAT(SUBSTRING(u.phone, 1, 3), '****', SUBSTRING(u.phone, LENGTH(u.phone) - 3))
                    END AS phoneMasked,
                    COALESCE(u.status, 'UNKNOWN') AS userStatus,
-                   COALESCE(k4o.override_score, k4.model_score) AS riskScore,
+                   COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) AS riskScore,
                    COALESCE(
                        hit.hit_rules,
                        rd.rule_codes,
@@ -393,8 +394,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                      '; 最近=', COALESCE((SELECT CONCAT(ud.name,'/',ud.status,'/',COALESCE(ud.dc_location,'未知地域')) FROM nx_user_device ud WHERE ud.user_id=w.user_id AND ud.is_deleted=0 ORDER BY COALESCE(ud.last_seen_at,ud.updated_at) DESC LIMIT 1),'无')
                    ) AS deviceSummary,
                    CONCAT('邀请码=',COALESCE(u.referral_code,'—'),'; 上级=',COALESCE(u.sponsor_code,'—')) AS referralPosition,
-                   CASE WHEN k4.model_score IS NULL THEN 'K4评分不可用'
-                        ELSE CONCAT('模型=',k4.model_score,'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
+                   CASE WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'K4评分不可用'
+                        ELSE CONCAT('提交快照=',COALESCE(CAST(w.d2_k4_risk_score AS CHAR),'无'),'; 当前模型=',COALESCE(CAST(k4.model_score AS CHAR),'无'),'; 人工覆盖=',COALESCE(CAST(k4o.override_score AS CHAR),'无'),'; 决策=',COALESCE(rd.decision,'无'),'; 规则=',COALESCE(rd.rule_codes,hit.hit_rules,'无'))
                    END AS riskScoreBreakdown,
                    (SELECT GROUP_CONCAT(CONCAT(w3.withdrawal_no,'/',w3.status,'/',w3.amount,' ',w3.asset,'@',DATE_FORMAT(w3.created_at,'%Y-%m-%d %H:%i')) ORDER BY w3.created_at DESC SEPARATOR ' | ')
                       FROM nx_withdrawal_order w3 WHERE w3.user_id=w.user_id AND w3.is_deleted=0) AS withdrawalHistory,
@@ -413,14 +414,15 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    w.d2_lifecycle_owner AS lifecycleOwner,
                    w.d2_freeze_period AS freezePeriod,
                    w.d2_previous_status AS previousStatus,
-                   CASE WHEN COALESCE(k4o.override_score, k4.model_score) IS NULL THEN 'UNAVAILABLE'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.auto_escalate_score THEN 'ESCALATED'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_high_min THEN 'HIGH'
-                        WHEN COALESCE(k4o.override_score, k4.model_score) &gt;= k4m.band_low_max THEN 'NORMAL'
-                        ELSE 'LOW' END AS routingPriority,
-                   k4m.band_low_max AS k4BandLowMax,
-                   k4m.band_high_min AS k4BandHighMin,
-                   k4m.auto_escalate_score AS k4AutoEscalateScore,
+                   COALESCE(NULLIF(w.d2_routing_priority, ''), CASE
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) IS NULL THEN 'UNAVAILABLE'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) THEN 'ESCALATED'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) THEN 'HIGH'
+                        WHEN COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) THEN 'NORMAL'
+                        ELSE 'LOW' END) AS routingPriority,
+                   COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) AS k4BandLowMax,
+                   COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) AS k4BandHighMin,
+                   COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) AS k4AutoEscalateScore,
                    w.d2_k3_risk_route AS k3RiskRoute,
                    w.d2_network_fee_rate AS networkFeeRate,
                    w.d2_network_fee_min AS networkFeeMin,
@@ -608,6 +610,44 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             @Param("newStatus") String newStatus,
             @Param("failureReason") String failureReason,
             @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_withdrawal_order w
+            JOIN nx_user u ON u.id = w.user_id
+               SET w.d2_hold_until = #{simulatedDueAt},
+                   w.d2_version = w.d2_version + 1,
+                   w.updated_at = CURRENT_TIMESTAMP
+             WHERE w.withdrawal_no = #{withdrawalNo}
+               AND w.status = #{expectedStatus}
+               AND w.d2_hold_until = #{expectedHoldUntil}
+               AND w.d2_lifecycle_owner = 'H1_PHASE_COOLDOWN'
+               AND w.d2_previous_status = 'REVIEW_PASSED'
+               AND w.is_deleted = 0
+               AND u.is_deleted = 0
+               AND u.sandbox = 1
+            """)
+    int accelerateDevelopmentH1Hold(
+            @Param("withdrawalNo") String withdrawalNo,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("expectedHoldUntil") LocalDateTime expectedHoldUntil,
+            @Param("simulatedDueAt") LocalDateTime simulatedDueAt);
+
+    @Select("""
+            SELECT 1
+              FROM nx_withdrawal_order w
+              JOIN nx_user u ON u.id = w.user_id
+             WHERE w.withdrawal_no = #{withdrawalNo}
+               AND w.status = 'EXTENDED_HOLD'
+               AND w.d2_hold_until IS NOT NULL
+               AND w.d2_lifecycle_owner = 'H1_PHASE_COOLDOWN'
+               AND w.d2_previous_status = 'REVIEW_PASSED'
+               AND w.is_deleted = 0
+               AND u.is_deleted = 0
+               AND u.sandbox = 1
+             LIMIT 1
+               FOR UPDATE
+            """)
+    Integer lockDevelopmentH1Hold(@Param("withdrawalNo") String withdrawalNo);
 
     @Update("""
             UPDATE nx_withdrawal_order

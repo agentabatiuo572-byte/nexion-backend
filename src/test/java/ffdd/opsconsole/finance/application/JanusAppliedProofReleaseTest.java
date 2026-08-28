@@ -19,7 +19,8 @@ class JanusAppliedProofReleaseTest {
     private final EarningsReleaseMapper mapper = mock(EarningsReleaseMapper.class);
     private final RiskReleaseParamsService params = mock(RiskReleaseParamsService.class);
     private final EarningsReleaseService service = new EarningsReleaseService(
-            mapper, params, mock(AdminIdempotencyService.class), mock(AuditLogService.class));
+            mapper, params, mock(AdminIdempotencyService.class), mock(AuditLogService.class),
+            mock(FundsSandboxProfileGuard.class));
 
     @Test
     void consumesPersistedJanusProofExactlyOnceBeforeCreditingOnlineTime() {

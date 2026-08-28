@@ -79,6 +79,7 @@ public class OpsReferralRewardService {
 
     public Map<String, Object> overview() {
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_OVERVIEW_FORBIDDEN_IN_SANDBOX");
+        int accountSandbox = canonicalAccountSandbox();
         Map<String, Object> params = new LinkedHashMap<>();
         PARAMS.stream().sorted().forEach(key -> params.put(key,
                 "newcomer.lockMode".equals(key) ? lockMode() : amount(key)));
@@ -98,10 +99,10 @@ public class OpsReferralRewardService {
                 "newcomer.usdt", effectiveRewards.newcomerUsdt(),
                 "newcomer.nex", effectiveRewards.newcomerNex(),
                 "inviter.nex", effectiveRewards.inviterNex()));
-        result.put("pending", mapper.totalPending(effectiveAt, holdRisky));
-        result.put("settled", mapper.totalSettled());
-        result.put("blockedByK2", mapper.totalBlockedByK2(effectiveAt, holdRisky));
-        result.put("recentSettlements", mapper.recentSettlements(20));
+        result.put("pending", mapper.totalPending(effectiveAt, accountSandbox, holdRisky));
+        result.put("settled", mapper.totalSettled(accountSandbox));
+        result.put("blockedByK2", mapper.totalBlockedByK2(effectiveAt, accountSandbox, holdRisky));
+        result.put("recentSettlements", mapper.recentSettlements(accountSandbox, 20));
         result.put("source", "nx_user.sponsor_user_id");
         result.put("settlementMode", "REAL_WALLET_LEDGER");
         result.put("effectiveAt", effectiveAt.toInstant(ZoneOffset.UTC));
@@ -231,6 +232,7 @@ public class OpsReferralRewardService {
         // This is deliberately before validation/audit/idempotency: acceptance must not
         // create any production H8 write, including a rejected-action audit row.
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+        int accountSandbox = canonicalAccountSandbox();
         try {
             validateIdempotency(idempotencyKey);
             String reason = requireReason(request == null ? null : request.reason());
@@ -248,7 +250,8 @@ public class OpsReferralRewardService {
             requireApprovedSnapshot(request, snapshot);
             return idempotency.execute("REFERRAL_REWARD_SETTLEMENT", idempotencyKey,
                     hash(limit + ":" + snapshot.hash() + ":" + reason), Map.class,
-                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot, null));
+                    () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot,
+                            accountSandbox, null));
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
@@ -365,6 +368,7 @@ public class OpsReferralRewardService {
             String operator,
             String key,
             RewardSnapshot snapshot,
+            int accountSandbox,
             Long onlyInvitedUserId) {
         requireHealthyCoverage();
         LocalDateTime effectiveAt = snapshot.effectiveAt();
@@ -386,11 +390,11 @@ public class OpsReferralRewardService {
         int skipped = 0;
         boolean holdRisky = "risk_bucket".equals(lockMode);
         for (ReferralRewardMapper.ReferralRow row : mapper.findPendingReferrals(
-                effectiveAt, SETTLEMENT_ENVIRONMENT, holdRisky, limit, onlyInvitedUserId)) {
+                effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId)) {
             String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
             if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
                     newcomerUsdt, newcomerNex, inviterNex, lockMode, configSnapshot, operator, reason, key,
-                    effectiveAt, SETTLEMENT_ENVIRONMENT, holdRisky) != 1) {
+                    effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
                 skipped++;
                 continue;
             }
@@ -691,6 +695,18 @@ public class OpsReferralRewardService {
         if (H8AcceptanceSandboxProfileCondition.isStrictIsolatedProfile(environment.getActiveProfiles())) {
             throw new BizException(409, code);
         }
+        canonicalAccountSandbox();
+    }
+
+    private int canonicalAccountSandbox() {
+        String[] activeProfiles = environment.getActiveProfiles();
+        if (activeProfiles == null || activeProfiles.length != 1 || activeProfiles[0] == null) {
+            throw new BizException(503, "H8_RUNTIME_PROFILE_UNSUPPORTED");
+        }
+        String profile = activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT);
+        if ("dev".equals(profile)) return 1;
+        if ("prod".equals(profile)) return 0;
+        throw new BizException(503, "H8_RUNTIME_PROFILE_UNSUPPORTED");
     }
 
     private void requireAcceptanceSandboxProfile() {

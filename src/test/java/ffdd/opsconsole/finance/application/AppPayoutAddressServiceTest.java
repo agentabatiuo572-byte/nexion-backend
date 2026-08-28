@@ -120,6 +120,25 @@ class AppPayoutAddressServiceTest {
     }
 
     @Test
+    void developmentListUsesCanonicalTableForAnyActiveDevelopmentAccount() {
+        long userId = 21L;
+        when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUser(userId)).thenReturn(userId);
+        when(mapper.isSandboxUser(userId)).thenReturn(1);
+        when(mapper.list(userId)).thenReturn(java.util.List.of());
+
+        ApiResult<java.util.Map<String, Object>> result = service.list(userId);
+
+        org.assertj.core.api.Assertions.assertThat(result.getData())
+                .containsEntry("source", "server")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("serverCanonical", true);
+        verify(mapper).list(userId);
+        verify(mapper, org.mockito.Mockito.never()).sandboxList(anyString(), eq(userId));
+    }
+
+    @Test
     void sandboxWithoutServerRunIdFailsClosedBeforeReadingEitherAddressTable() {
         long userId = 12L;
         when(sandboxProfile.isLocalSandboxEnabled()).thenReturn(true);

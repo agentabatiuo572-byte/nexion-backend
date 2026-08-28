@@ -33,11 +33,11 @@ class AppBinaryProjectionServiceTest {
         mapper = mock(BinaryCommissionSettlementMapper.class);
         config = mock(PlatformConfigFacade.class);
         coverage = mock(TreasuryCoverageFacade.class);
+        MockEnvironment development = new MockEnvironment();
+        development.setActiveProfiles("dev");
+        when(mapper.userSandbox(41L)).thenReturn(1);
         service = new AppBinaryProjectionService(
-                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage,
-                new MockEnvironment()
-                        .withProperty("spring.profiles.active", "dev")
-                        .withProperty("NEXION_ACCEPTANCE_RUN_ID", "binary-run-20260819"));
+                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage, development);
         seed("team.ui.F.binary.threshold", "1000");
         seed("team.ui.F.binary.matchRate", "13%");
         seed("team.ui.F.binary.paused", "false");
@@ -83,8 +83,8 @@ class AppBinaryProjectionServiceTest {
 
         assertThat(result.get("source")).isEqualTo("server");
         assertThat(result.get("serverCanonical")).isEqualTo(true);
-        assertThat(result.get("sourceEnvironment")).isEqualTo("SANDBOX");
-        assertThat(result.get("runId")).isEqualTo("binary-run-20260819");
+        assertThat(result.get("sourceEnvironment")).isEqualTo("PRODUCTION");
+        assertThat(result.get("runId")).isNull();
         assertThat((BigDecimal) result.get("trackA")).isEqualByComparingTo("1000");
         assertThat((BigDecimal) result.get("trackB")).isEqualByComparingTo("2000");
         assertThat((BigDecimal) result.get("matchRate")).isEqualByComparingTo("0.13");
@@ -102,6 +102,16 @@ class AppBinaryProjectionServiceTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.snapshot(41L))
                 .hasMessage("F3_APP_VOLUME_SOURCE_AMBIGUOUS");
+    }
+
+    @Test
+    void developmentAllowsAnyActiveDevelopmentAccount() {
+        when(mapper.userSandbox(42L)).thenReturn(1);
+
+        Map<String, Object> result = service.snapshot(42L);
+
+        assertThat(result).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("serverCanonical", true);
     }
 
     private void seed(String key, String value) {

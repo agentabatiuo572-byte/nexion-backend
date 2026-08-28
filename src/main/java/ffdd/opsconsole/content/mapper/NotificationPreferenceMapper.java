@@ -16,7 +16,7 @@ public interface NotificationPreferenceMapper extends BaseMapper<Object> {
                    notify_staking AS staking,
                    notify_market AS market,
                    notify_genesis AS genesis,
-                   notify_system AS system
+                   notify_system AS `system`
               FROM nx_user_preference
              WHERE user_id = #{userId} AND is_deleted = 0
              LIMIT 1

@@ -2,13 +2,13 @@ package ffdd.opsconsole.team.application;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
-import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.team.mapper.AppTeamNetworkMapper;
 import java.math.BigDecimal;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -29,10 +29,12 @@ public class AppTeamNetworkService {
         AppTeamNetworkMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null) throw new BizException(403, "TEAM_USER_REQUIRED");
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        boolean sandboxRuntime = FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles);
+        boolean developmentRuntime = profiles.length == 1 && "dev".equals(normalize(profiles[0]));
+        boolean sandboxRuntime = profiles.length == 1 && "test".equals(normalize(profiles[0]));
         boolean productionRuntime = profiles == null || profiles.length == 0
-                || (profiles.length == 1 && "prod".equals(profiles[0]));
-        if (!sandboxRuntime && !productionRuntime) throw new BizException(503, "TEAM_PROFILE_INVALID");
+                || (profiles.length == 1 && "prod".equals(normalize(profiles[0])));
+        if (!developmentRuntime && !sandboxRuntime && !productionRuntime) throw new BizException(503, "TEAM_PROFILE_INVALID");
+        if (developmentRuntime) requireDevelopmentUser(userId, user.sandbox());
         if (sandboxRuntime && user.sandbox() != 1) throw new BizException(403, "TEAM_SANDBOX_USER_REQUIRED");
         if (productionRuntime && user.sandbox() != 0) throw new BizException(403, "TEAM_PRODUCTION_USER_REQUIRED");
         if (sandboxRuntime) {
@@ -74,5 +76,9 @@ public class AppTeamNetworkService {
     private BigDecimal zero(BigDecimal value) { return value == null || value.signum() < 0 ? BigDecimal.ZERO : value; }
     private String fallback(String value, String replacement) { return value == null || value.isBlank() ? replacement : value.trim(); }
     private int rank(String value) { try { return Integer.parseInt(fallback(value, "V0").replaceFirst("^[Vv]", "")); } catch (RuntimeException ignored) { return 0; } }
+    private String normalize(String value) { return value == null ? "" : value.trim().toLowerCase(Locale.ROOT); }
+    private void requireDevelopmentUser(Long userId, Integer sandbox) {
+        if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "TEAM_DEVELOPMENT_USER_REQUIRED");
+    }
 
 }

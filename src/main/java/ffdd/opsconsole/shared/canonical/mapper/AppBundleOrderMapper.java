@@ -17,6 +17,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Select("""
             <script>
             SELECT p.id,p.product_no productNo,p.name,p.price_usdt priceUsdt,p.stock,
+                   p.product_type AS productType,p.inventory_mode AS inventoryMode,
                    p.unlock_phase unlockPhase,
                    (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
                      WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson
@@ -35,15 +36,34 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
             SELECT COUNT(1) FROM nx_user_device
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(ownership_status)='OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL AND pending_deactivate=0
             """)
     int activeDeviceCount(@Param("userId") Long userId);
 
     @Select("""
-            SELECT COALESCE(SUM(quantity),0) FROM nx_order
-             WHERE user_id=#{userId} AND is_deleted=0
-               AND UPPER(order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
-               AND UPPER(COALESCE(activation_status,'WAITING_PAYMENT')) NOT IN
+            SELECT COALESCE(SUM(
+                     CASE WHEN EXISTS (
+                              SELECT 1 FROM nx_order_item present_item
+                               WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
+                            ) THEN COALESCE((
+                              SELECT SUM(CASE
+                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
+                                  THEN 0 ELSE order_item.quantity END)
+                                FROM nx_order_item order_item
+                                LEFT JOIN nx_product item_product
+                                  ON item_product.id=order_item.product_id AND item_product.is_deleted=0
+                               WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
+                            ),0)
+                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
+                          THEN 0 ELSE o.quantity END
+                   ),0)
+              FROM nx_order o
+              LEFT JOIN nx_product header_product
+                ON header_product.id=o.product_id AND header_product.is_deleted=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0
+               AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+               AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
             """)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
@@ -103,9 +123,11 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_product
-               SET stock=stock-1,sold_count=sold_count+1,
+               SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-1 ELSE stock END,
+                   sold_count=sold_count+1,
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
-             WHERE id=#{productId} AND is_deleted=0 AND stock>=1
+             WHERE id=#{productId} AND is_deleted=0
+               AND (inventory_mode='UNLIMITED' OR stock>=1)
             """)
     int decrementStock(@Param("productId") Long productId);
 
@@ -137,13 +159,17 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
 
     record UserLock(Long id, boolean sandbox) { }
     record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
-                      String purchaseGateJson, String unlockPhase) {
+                      String purchaseGateJson, String unlockPhase, String productType, String inventoryMode) {
         public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock) {
-            this(id, productNo, name, priceUsdt, stock, null, null);
+            this(id, productNo, name, priceUsdt, stock, null, null, "DEVICE", "FINITE");
         }
         public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
                           String purchaseGateJson) {
-            this(id, productNo, name, priceUsdt, stock, purchaseGateJson, null);
+            this(id, productNo, name, priceUsdt, stock, purchaseGateJson, null, "DEVICE", "FINITE");
+        }
+        public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
+                          String purchaseGateJson, String unlockPhase) {
+            this(id, productNo, name, priceUsdt, stock, purchaseGateJson, unlockPhase, "DEVICE", "FINITE");
         }
     }
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }

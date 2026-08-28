@@ -17,15 +17,19 @@ class ReferralRewardEnvironmentIsolationContractTest {
         String productionSelection = between(source, "SELECT u.id AS invitedUserId", "List<ReferralRow> findPendingReferrals");
         assertThat(productionSelection)
                 .contains("#{sourceEnvironment} = 'PRODUCTION'")
-                .contains("COALESCE(u.sandbox, 0) = 0")
-                .contains("COALESCE(inviter.sandbox, 0) = 0")
+                .contains("COALESCE(u.sandbox, 0) = #{accountSandbox}")
+                .contains("COALESCE(inviter.sandbox, 0) = #{accountSandbox}")
+                .contains("invited_wallet.sandbox = #{accountSandbox}")
+                .contains("inviter_wallet.sandbox = #{accountSandbox}")
                 .contains("onlyInvitedUserId");
 
         String productionInsertion = between(source, "INSERT IGNORE INTO nx_referral_reward_settlement", "int insertSettlement");
         assertThat(productionInsertion)
                 .contains("#{sourceEnvironment} = 'PRODUCTION'")
-                .contains("COALESCE(u.sandbox, 0) = 0")
-                .contains("COALESCE(inviter.sandbox, 0) = 0");
+                .contains("COALESCE(u.sandbox, 0) = #{accountSandbox}")
+                .contains("COALESCE(inviter.sandbox, 0) = #{accountSandbox}")
+                .contains("invited_wallet.sandbox = #{accountSandbox}")
+                .contains("inviter_wallet.sandbox = #{accountSandbox}");
 
         String sandboxSelection = between(source, "List<ReferralRow> findPendingReferrals", "List<ReferralRow> findPendingSandboxReferral");
         assertThat(sandboxSelection)

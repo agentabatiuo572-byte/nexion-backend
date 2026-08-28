@@ -21,7 +21,11 @@ class AppWithdrawalMapperK3ContractTest {
                 .contains("nx_admin_risk_score_model k4m")
                 .contains("k4m.state='active'")
                 .contains("k4.as_of>=DATE_SUB(NOW(),INTERVAL 1 DAY)")
-                .contains("COALESCE(k4o.override_score,k4.model_score) k4RiskScore");
+                .contains("CASE WHEN COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL THEN 0 END")
+                .contains("CASE WHEN COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL")
+                .contains("CONCAT('k4-v',k4m.model_version)")
+                .contains("THEN NOW() END")
+                .doesNotContain("CASE WHEN COALESCE(u.sandbox,0)=0");
     }
 
     @Test

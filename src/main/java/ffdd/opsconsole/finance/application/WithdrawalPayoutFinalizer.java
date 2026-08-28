@@ -86,6 +86,16 @@ public class WithdrawalPayoutFinalizer {
     }
 
     @Transactional(rollbackFor = Exception.class)
+    public boolean completeDevelopmentSimulation(WithdrawalPayoutMapper.PayoutRow row, long providerCid) {
+        String txid = "0x" + sha("development:" + row.withdrawalNo());
+        String source = "dev-simulator";
+        String payloadHash = sha(row.withdrawalNo() + "|" + providerCid + "|" + source
+                + "|SUCCEEDED|" + txid);
+        return terminal(row, providerCid, source, "DEV-" + payloadHash.substring(0, 48),
+                payloadHash, "CONFIRMED", txid, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
     public boolean terminal(WithdrawalPayoutMapper.PayoutRow row, long providerCid, String source,
                             String eventNo, String payloadHash, String status, String txid, String failureReason) {
         String existingHash = mapper.payoutLedgerPayloadHash(eventNo);

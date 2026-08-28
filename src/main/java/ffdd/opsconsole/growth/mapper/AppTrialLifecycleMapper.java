@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -24,6 +25,28 @@ public interface AppTrialLifecycleMapper {
     Long activeUser(@Param("userId") Long userId);
 
     @Select("""
+            SELECT id FROM nx_user
+             WHERE id=#{userId}
+               AND REPLACE(TRIM(COALESCE(country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND phone=#{phone} AND sandbox=1 AND status='ACTIVE' AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockDevelopmentUser(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
+            SELECT id FROM nx_user
+             WHERE id=#{userId}
+               AND REPLACE(TRIM(COALESCE(country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND phone=#{phone} AND sandbox=1 AND status='ACTIVE' AND is_deleted=0
+             LIMIT 1
+            """)
+    Long activeDevelopmentUser(@Param("userId") Long userId,
+                               @Param("countryCode") String countryCode,
+                               @Param("phone") String phone);
+
+    @Select("""
             SELECT setting_value
               FROM nx_emergency_control_setting
              WHERE setting_key=#{settingKey} AND is_deleted=0
@@ -35,7 +58,7 @@ public interface AppTrialLifecycleMapper {
             SELECT id,user_id userId,claim_no claimNo,status,user_device_id userDeviceId,
                    payment_method_id paymentMethodId,device_name deviceName,duration_days durationDays,
                    daily_usdt dailyUsdt,daily_nex dailyNex,offset_cap_usdt offsetCapUsdt,
-                   price_usdt priceUsdt,claimed_at claimedAt,expires_at expiresAt,
+                   price_usdt priceUsdt,quota_snapshot quotaSnapshot,claimed_at claimedAt,expires_at expiresAt,
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
@@ -49,7 +72,7 @@ public interface AppTrialLifecycleMapper {
             SELECT id,user_id userId,claim_no claimNo,status,user_device_id userDeviceId,
                    payment_method_id paymentMethodId,device_name deviceName,duration_days durationDays,
                    daily_usdt dailyUsdt,daily_nex dailyNex,offset_cap_usdt offsetCapUsdt,
-                   price_usdt priceUsdt,claimed_at claimedAt,expires_at expiresAt,
+                   price_usdt priceUsdt,quota_snapshot quotaSnapshot,claimed_at claimedAt,expires_at expiresAt,
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
@@ -60,27 +83,69 @@ public interface AppTrialLifecycleMapper {
     TrialRow trial(@Param("userId") Long userId);
 
     @Select("""
-            SELECT id,product_no productNo,name,price_usdt priceUsdt,stock,unlock_phase unlockPhase
+            SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
+                   product_type productType,inventory_mode inventoryMode
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
-               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0 AND stock>=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0
+               AND (inventory_mode='UNLIMITED' OR stock>=1)
              LIMIT 1 FOR UPDATE
             """)
     ConversionProduct lockConversionProduct(@Param("productNo") String productNo);
 
+    @Select("""
+            SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
+                   product_type productType,inventory_mode inventoryMode
+              FROM nx_product
+             WHERE product_no=#{productNo} AND is_deleted=0
+               AND COALESCE(store_visible,1)=1 AND trial_eligible=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0
+               AND inventory_mode='FINITE' AND stock>=1
+             LIMIT 1 FOR UPDATE
+            """)
+    ConversionProduct lockTrialStartProduct(@Param("productNo") String productNo);
+
+    @Select("""
+            SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
+                   product_type productType,inventory_mode inventoryMode
+             FROM nx_product
+             WHERE product_no=#{productNo} AND is_deleted=0
+               AND COALESCE(store_visible,1)=1
+               AND trial_eligible=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0
+               AND inventory_mode='FINITE' AND stock>=1
+             LIMIT 1
+            """)
+    ConversionProduct conversionProduct(@Param("productNo") String productNo);
+
+    @Select("""
+            SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
+                   product_type productType,inventory_mode inventoryMode
+              FROM nx_product
+             WHERE product_no=#{productNo} AND is_deleted=0
+               AND COALESCE(store_visible,1)=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND price_usdt>0
+             LIMIT 1
+            """)
+    ConversionProduct catalogProduct(@Param("productNo") String productNo);
+
     @Update("""
-            UPDATE nx_product SET stock=stock-1,sold_count=sold_count+1,updated_at=NOW()
-             WHERE id=#{productId} AND is_deleted=0 AND stock>=1
+            UPDATE nx_product
+               SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-1 ELSE stock END,
+                   sold_count=sold_count+1,updated_at=NOW()
+             WHERE id=#{productId} AND is_deleted=0
+               AND (inventory_mode='FINITE' OR UPPER(product_type)='SHARE')
+               AND (inventory_mode='UNLIMITED' OR stock>=1)
             """)
     int decrementProductStock(@Param("productId") Long productId);
 
     @Insert("""
             INSERT INTO nx_order(user_id,order_no,product_id,quantity,order_type,item_count,
               subtotal_usdt,discount_usdt,amount_usdt,payment_status,order_status,activation_status,
-              created_at,updated_at,is_deleted)
+              paid_at,created_at,updated_at,is_deleted)
             VALUES(#{userId},#{orderNo},#{productId},1,'TRIAL_CONVERT',1,
-              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PENDING','PENDING_PAYMENT','WAITING_PAYMENT',NOW(),NOW(),0)
+              #{subtotalUsdt},#{discountUsdt},#{amountUsdt},'PAID','PAID','ACTIVE',NOW(),NOW(),NOW(),0)
             """)
     int insertConversionOrder(@Param("userId") Long userId, @Param("orderNo") String orderNo,
                               @Param("productId") Long productId, @Param("subtotalUsdt") BigDecimal subtotalUsdt,
@@ -95,22 +160,34 @@ public interface AppTrialLifecycleMapper {
                                   @Param("productNo") String productNo, @Param("productName") String productName,
                                   @Param("unitPriceUsdt") BigDecimal unitPriceUsdt);
 
-    @Update("""
-            UPDATE nx_trial_claim
-               SET status='REDEEMED',settlement_amount_usdt=#{amountUsdt},discount_usdt=#{discountUsdt},
-                   settled_at=#{now},closed_at=#{now},settlement_snapshot=#{snapshot},version=version+1,updated_at=NOW()
-             WHERE id=#{id} AND version=#{version} AND is_deleted=0
-               AND UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
-            """)
-    int markTrialConverted(@Param("id") Long id, @Param("version") long version,
-                           @Param("orderNo") String orderNo, @Param("now") LocalDateTime now,
-                           @Param("snapshot") String snapshot);
-
     @Select("""
             SELECT policy_key policyKey,current_value currentValue
               FROM nx_growth_trial_policy WHERE is_deleted=0
             """)
     List<PolicyRow> policies();
+
+    @Insert("""
+            INSERT INTO nx_growth_trial_daily_quota(quota_date,daily_limit,claimed_count)
+            VALUES(#{quotaDate},#{dailyLimit},0)
+            ON DUPLICATE KEY UPDATE
+                updated_at=IF(daily_limit<>VALUES(daily_limit),NOW(),updated_at),
+                daily_limit=VALUES(daily_limit)
+            """)
+    int ensureTrialQuotaDay(@Param("quotaDate") LocalDate quotaDate, @Param("dailyLimit") int dailyLimit);
+
+    @Select("""
+            SELECT GREATEST(daily_limit-claimed_count,0)
+              FROM nx_growth_trial_daily_quota
+             WHERE quota_date=#{quotaDate}
+            """)
+    Integer trialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
+
+    @Update("""
+            UPDATE nx_growth_trial_daily_quota
+               SET claimed_count=claimed_count+1,updated_at=NOW()
+             WHERE quota_date=#{quotaDate} AND claimed_count<daily_limit
+            """)
+    int consumeTrialQuota(@Param("quotaDate") LocalDate quotaDate);
 
     @Select("""
             SELECT user_id userId,
@@ -301,13 +378,16 @@ public interface AppTrialLifecycleMapper {
                device_type,generation,base_power_w,price_usdt_snapshot,ownership_status,source_channel,
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted)
             VALUES
-              (#{userId},#{claimNo},NULL,#{productCode},'TRIAL',NULL,#{instanceNo},#{deviceName},
-               'CLOUD',1,0,#{priceUsdt},'OWNED','TRIAL','ACTIVE',0,#{dailyUsdt},#{dailyNex},NOW(),NOW(),NOW(),NOW(),0)
+              (#{userId},#{sourceOrderNo},#{productId},#{productCode},#{productTier},NULL,#{instanceNo},#{deviceName},
+               #{deviceType},1,0,#{priceUsdt},'OWNED','TRIAL','ACTIVE',0,#{dailyUsdt},#{dailyNex},NOW(),NOW(),NOW(),NOW(),0)
             """)
     int insertPurchasedDevice(
             @Param("userId") Long userId,
-            @Param("claimNo") String claimNo,
+            @Param("sourceOrderNo") String sourceOrderNo,
+            @Param("productId") Long productId,
             @Param("productCode") String productCode,
+            @Param("productTier") String productTier,
+            @Param("deviceType") String deviceType,
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
             @Param("priceUsdt") BigDecimal priceUsdt,
@@ -356,13 +436,18 @@ public interface AppTrialLifecycleMapper {
     record TrialRow(
             Long id, Long userId, String claimNo, String status, Long userDeviceId, Long paymentMethodId,
             String deviceName, Integer durationDays, BigDecimal dailyUsdt, BigDecimal dailyNex,
-            BigDecimal offsetCapUsdt, BigDecimal priceUsdt, LocalDateTime claimedAt, LocalDateTime expiresAt,
+            BigDecimal offsetCapUsdt, BigDecimal priceUsdt, String quotaSnapshot,
+            LocalDateTime claimedAt, LocalDateTime expiresAt,
             BigDecimal shadowAccruedUsdt, BigDecimal shadowAccruedNex, BigDecimal remainderUsdt,
             BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version) {
     }
 
-    record ConversionProduct(Long id, String productNo, String name, BigDecimal priceUsdt,
-                             Integer stock, String unlockPhase) {
+    record ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
+                             Integer stock, String unlockPhase, String productType, String inventoryMode) {
+        public ConversionProduct(Long id, String productNo, String name, BigDecimal priceUsdt,
+                                 Integer stock, String unlockPhase) {
+            this(id, productNo, name, null, priceUsdt, stock, unlockPhase, "DEVICE", "FINITE");
+        }
     }
 
     record WalletRow(BigDecimal usdt, BigDecimal nex) {

@@ -131,7 +131,7 @@ class AppRiskDisclosureServiceTest {
     @Test
     void strictLocalSandboxUsesPersistedFixtureAndExplicitMockProvenance() {
         MockEnvironment localSandbox = new MockEnvironment();
-        localSandbox.setActiveProfiles("dev");
+        localSandbox.setActiveProfiles("local-sandbox");
         AppRiskDisclosureService localSandboxService = new AppRiskDisclosureService(
                 repository, ackMapper, clock, ackProperties, auditLogService, tamperDetectionPublisher,
                 eventOutboxService, localSandbox);

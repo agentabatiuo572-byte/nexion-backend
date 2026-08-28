@@ -1,5 +1,8 @@
 package ffdd.opsconsole.device.application;
 
+import ffdd.opsconsole.device.dto.AppComputeReceiptPage;
+import ffdd.opsconsole.device.dto.AppComputeReceiptSummaryView;
+import ffdd.opsconsole.device.dto.AppComputeReceiptView;
 import ffdd.opsconsole.device.dto.AppTaskAssignmentView;
 import ffdd.opsconsole.device.dto.AppTaskAssignmentsResponse;
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
@@ -10,9 +13,11 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.AssignmentRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ConfigRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceLockRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceRow;
+import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ReceiptRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -31,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -48,6 +54,10 @@ public class AppTaskAssignmentService {
     private static final String PROVENANCE_ENVIRONMENT = "PRODUCTION";
     private static final String PROVENANCE_RUN_ID = "";
     private static final Pattern SANDBOX_RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
+    private static final Pattern RECEIPT_NO = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,95}");
+    private static final Pattern PROOF_HASH = Pattern.compile("[A-Fa-f0-9]{64,128}");
+    private static final Set<String> SETTLED_EARNING_STATUSES = Set.of(
+            "POSTED", "SUCCESS", "SETTLED", "CREDITED", "PAID");
     private static final String LEGACY_UNSCOPED_RUN_ID = "LEGACY_UNSCOPED";
 
     private final AppTaskAssignmentMapper mapper;
@@ -61,9 +71,12 @@ public class AppTaskAssignmentService {
     @Transactional(readOnly = true)
     public ApiResult<AppTaskAssignmentsResponse> assignments(Long userId) {
         requireUser(userId);
+        if (hasOnlyProfile("dev")) {
+            return developmentAssignments(userId);
+        }
         if (FundsSandboxProfileGuard.isStrictIsolatedProfile(
                 environment == null ? new String[0] : environment.getActiveProfiles())) {
-            return developmentAssignments(userId);
+            return acceptanceSandboxAssignments(userId);
         }
         RuntimeScope runtime = requireProductionRuntime(userId);
         LocalDateTime now = now();
@@ -86,6 +99,74 @@ public class AppTaskAssignmentService {
     }
 
     private ApiResult<AppTaskAssignmentsResponse> developmentAssignments(Long userId) {
+        requireDevelopmentAccount(userId);
+        LocalDateTime now = now();
+        List<AssignmentRow> rows = safe(mapper.developmentAssignments(userId, PROVENANCE_ENVIRONMENT));
+        List<AppTaskDeviceState> devices = safe(mapper.developmentOwnedDevices(userId)).stream().map(device -> {
+            DeviceLockRow lock = mapper.developmentDeviceTaskLock(userId, device.id());
+            AppTaskAssignmentView current = rows.stream()
+                    .filter(row -> device.id().equals(row.deviceId()) && active(row.status())
+                            && (row.leaseExpiresAt() == null || !row.leaseExpiresAt().isBefore(now)))
+                    .findFirst().map(this::view).orElse(null);
+            List<AppTaskAssignmentView> recent = rows.stream()
+                    .filter(row -> device.id().equals(row.deviceId()) && completed(row.status()))
+                    .limit(10).map(this::view).toList();
+            return new AppTaskDeviceState(device.id(), device.instanceNo(), device.deviceType(),
+                    lock == null ? null : lock.lockUntil(), current, recent);
+        }).toList();
+        return ApiResult.ok(new AppTaskAssignmentsResponse(now, devices,
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AppComputeReceiptView> receipt(Long userId, String receiptNo) {
+        requireUser(userId);
+        String normalizedReceiptNo = value(receiptNo);
+        if (!RECEIPT_NO.matcher(normalizedReceiptNo).matches()) {
+            throw new BizException(422, "TASK_RECEIPT_NO_INVALID");
+        }
+        ReceiptRow row;
+        if (hasOnlyProfile("dev")) {
+            requireDevelopmentAccount(userId);
+            row = mapper.developmentReceipt(userId, normalizedReceiptNo);
+        } else {
+            requireProductionRuntime(userId);
+            row = mapper.receipt(userId, normalizedReceiptNo);
+        }
+        if (row == null) throw new BizException(404, "TASK_RECEIPT_NOT_FOUND");
+        return ApiResult.ok(receiptView(row));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<AppComputeReceiptPage> receipts(Long userId, Integer offset, Integer limit) {
+        requireUser(userId);
+        int normalizedOffset = offset == null ? 0 : offset;
+        int normalizedLimit = limit == null ? 20 : limit;
+        if (normalizedOffset < 0 || normalizedOffset > 1_000_000
+                || normalizedLimit < 1 || normalizedLimit > 50) {
+            throw new BizException(422, "TASK_RECEIPT_PAGE_INVALID");
+        }
+        List<ReceiptRow> rows;
+        if (hasOnlyProfile("dev")) {
+            requireDevelopmentAccount(userId);
+            rows = safe(mapper.developmentReceipts(userId, normalizedOffset, normalizedLimit + 1));
+        } else {
+            requireProductionRuntime(userId);
+            rows = safe(mapper.receipts(userId, normalizedOffset, normalizedLimit + 1));
+        }
+        boolean hasMore = rows.size() > normalizedLimit;
+        List<AppComputeReceiptSummaryView> items = rows.stream().limit(normalizedLimit)
+                .map(this::receiptView)
+                .map(view -> new AppComputeReceiptSummaryView(
+                        view.receiptNo(), view.taskNo(), view.taskClass(), view.model(), view.client(),
+                        view.rewardUsdt(), view.rewardNex(), view.earningStatus(), view.completedAt()))
+                .toList();
+        Integer nextOffset = hasMore ? normalizedOffset + normalizedLimit : null;
+        return ApiResult.ok(new AppComputeReceiptPage(items, nextOffset,
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+    }
+
+    private ApiResult<AppTaskAssignmentsResponse> acceptanceSandboxAssignments(Long userId) {
         AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null || user.sandbox() != 1) {
             throw new BizException(403, "TASK_ASSIGNMENT_SANDBOX_USER_REQUIRED");
@@ -100,6 +181,11 @@ public class AppTaskAssignmentService {
         // same Java canonical contract: PRODUCTION plus an empty public RunID.
         return ApiResult.ok(new AppTaskAssignmentsResponse(now(), devices,
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+    }
+
+    private boolean hasOnlyProfile(String expected) {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        return profiles != null && profiles.length == 1 && expected.equalsIgnoreCase(profiles[0]);
     }
 
     private String sandboxRunId() {
@@ -155,10 +241,28 @@ public class AppTaskAssignmentService {
         }
         if (existing != null) return ApiResult.ok(view(existing));
 
-        TaskConfigRow task = chooseTask(mapper.eligibleTasks(device.vramTotalGb()), device.vramTotalGb());
-        BigDecimal reward = midpoint(task.minReward(), task.maxReward());
+        int routingVram = effectiveRoutingVram(device);
+        TaskConfigRow task = chooseTask(mapper.eligibleTasks(routingVram), routingVram);
+        List<ConfigRow> capacityRows = safe(mapper.e3CapacityConfig());
+        Map<String, String> capacityConfig = capacityConfig(capacityRows);
+        if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
+            throw new BizException(503, "E3_CAPACITY_CONFIG_INVALID");
+        }
+        BigDecimal reward;
+        try {
+            E3DeviceCapacityPolicy.Projection capacity = E3DeviceCapacityPolicy.project(
+                    device.productCode(), device.deviceType(), device.purchasedAt(),
+                    device.activatedAt(), now, capacityConfig);
+            reward = E3DeviceCapacityPolicy.applyCapacity(
+                    midpoint(task.minReward(), task.maxReward()), capacity);
+        } catch (IllegalArgumentException invalid) {
+            throw new BizException(503, invalid.getMessage());
+        }
         int requiredSeconds = requiredSeconds(task.taskClass());
-        int taskLockMinutes = taskLockMinutes(device, mapper.taskLockConfig());
+        int taskLockMinutes = taskLockMinutes(device, capacityRows.stream()
+                .filter(row -> row != null && Set.of("taskLockS1", "taskLockPro", "taskLockRack")
+                        .contains(row.configKey()))
+                .toList());
         String taskNo = "CTA-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String completionNonce = UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT)
                 + UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT);
@@ -283,7 +387,11 @@ public class AppTaskAssignmentService {
     }
 
     private TaskConfigRow chooseTask(List<TaskConfigRow> tasks, int vramTotalGb) {
-        return safe(tasks).stream()
+        List<TaskConfigRow> pool = safe(tasks);
+        if (pool.stream().anyMatch(task -> task == null || task.minVram() == null)) {
+            throw new BizException(503, "E2_TASK_CONFIG_INVALID");
+        }
+        return pool.stream()
                 .filter(task -> activeDevice(task.status()))
                 .filter(task -> !killed(task.killInit()))
                 .filter(task -> task.minVram() != null && task.minVram() <= vramTotalGb)
@@ -291,6 +399,16 @@ public class AppTaskAssignmentService {
                 .max(Comparator.comparing(task -> midpoint(task.minReward(), task.maxReward())
                         .divide(BigDecimal.valueOf(requiredSeconds(task.taskClass())), 12, RoundingMode.HALF_UP)))
                 .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
+    }
+
+    private int effectiveRoutingVram(DeviceRow device) {
+        String identity = String.join(" ", value(device.deviceType()), value(device.productCode()))
+                .toUpperCase(Locale.ROOT);
+        if (identity.contains("CLOUD-SHARE") || identity.contains("CLOUD_SHARE")
+                || identity.matches(".*\\bSHARE\\b.*")) {
+            return 8;
+        }
+        return device.vramTotalGb();
     }
 
     public static int taskLockMinutes(DeviceRow device, List<ConfigRow> rows) {
@@ -315,15 +433,66 @@ public class AppTaskAssignmentService {
         return minutes;
     }
 
+    private Map<String, String> capacityConfig(List<ConfigRow> rows) {
+        Map<String, String> config = new LinkedHashMap<>();
+        for (ConfigRow row : safe(rows)) {
+            if (row == null || !StringUtils.hasText(row.configKey()) || !StringUtils.hasText(row.configValue())
+                    || config.put(row.configKey(), row.configValue()) != null) {
+                return Map.of();
+            }
+        }
+        return config;
+    }
+
     private AppTaskAssignmentView view(AssignmentRow row) {
         LocalDateTime completableAt = row.startedAt() == null || row.requiredSeconds() == null
                 ? null : row.startedAt().plusSeconds(row.requiredSeconds());
-        return new AppTaskAssignmentView(row.taskNo(), row.deviceId(), row.taskId(), row.taskName(),
-                row.taskClass(), row.modelName(), row.clientName(), row.status(), row.rewardUsdt(),
+        return new AppTaskAssignmentView(row.taskNo(), row.deviceId(),
+                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), row.taskName(),
+                canonicalTaskClass(row.taskClass()), row.modelName(), row.clientName(), row.status(), row.rewardUsdt(),
                 row.requiredSeconds(), row.startedAt(), completableAt, row.completedAt(), row.receiptNo(),
                 active(row.status()) ? row.completionNonce() : null,
                 active(row.status()) ? row.proofExpiresAt() : null,
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+    }
+
+    private AppComputeReceiptView receiptView(ReceiptRow row) {
+        String proofHash = value(row.proofHash()).toLowerCase(Locale.ROOT);
+        if (!PROOF_HASH.matcher(proofHash).matches() || row.deviceId() == null || row.deviceId() <= 0
+                || row.startedAt() == null || row.completedAt() == null
+                || row.completedAt().isBefore(row.startedAt()) || row.durationSec() == null || row.durationSec() < 0
+                || !StringUtils.hasText(row.receiptNo()) || !StringUtils.hasText(row.taskNo())
+                || !StringUtils.hasText(row.deviceInstanceNo()) || !StringUtils.hasText(row.deviceName())
+                || !StringUtils.hasText(row.deviceType()) || !StringUtils.hasText(row.taskName())
+                || !StringUtils.hasText(row.clientName()) || !settledEarningStatus(row.earningStatus())
+                || row.rewardUsdt() == null || row.rewardUsdt().signum() < 0
+                || row.rewardNex() == null || row.rewardNex().signum() < 0) {
+            throw new BizException(503, "TASK_RECEIPT_DATA_INVALID");
+        }
+        return new AppComputeReceiptView(
+                row.receiptNo(), row.taskNo(), row.deviceId(), row.deviceInstanceNo(), row.deviceName(),
+                row.deviceType(), value(row.deviceGpu()), row.vramTotalGb(),
+                StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), row.taskName(),
+                canonicalTaskClass(row.taskClass()), value(row.modelName()), row.clientName(),
+                row.rewardUsdt(), row.rewardNex(), row.earningStatus(), proofHash,
+                row.startedAt(), row.completedAt(), row.durationSec(),
+                PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+    }
+
+    private String canonicalTaskClass(String taskClass) {
+        return switch (value(taskClass).toUpperCase(Locale.ROOT)) {
+            case "IG", "IMAGE_GEN", "IMAGE_GENERATION" -> "IG";
+            case "VG", "VIDEO_RENDER", "VIDEO_GENERATION" -> "VG";
+            case "LL", "LLM", "LLM_INFERENCE" -> "LL";
+            case "FT", "FINE_TUNING", "FINE_TUNE" -> "FT";
+            case "EM", "EMBEDDING", "EMBED" -> "EM";
+            case "SP", "SPEECH", "SPEECH_PROCESSING" -> "SP";
+            default -> throw new BizException(503, "TASK_ASSIGNMENT_CLASS_INVALID");
+        };
+    }
+
+    private boolean settledEarningStatus(String status) {
+        return SETTLED_EARNING_STATUSES.contains(value(status).toUpperCase(Locale.ROOT));
     }
 
     private int requiredSeconds(String taskClass) {
@@ -350,6 +519,12 @@ public class AppTaskAssignmentService {
     private boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
     private LocalDateTime now() { return LocalDateTime.now(clock).withNano(0); }
     private void requireUser(Long userId) { if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED"); }
+    private void requireDevelopmentAccount(Long userId) {
+        AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);
+        if (user == null || user.sandbox() == null || user.sandbox() != 1) {
+            throw new BizException(403, "TASK_ASSIGNMENT_DEVELOPMENT_USER_REQUIRED");
+        }
+    }
     private RuntimeScope requireProductionRuntime(Long userId) {
         ProductionDeviceRuntimeGate.requireProduction(environment, "TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
         AppTaskAssignmentMapper.UserScope user = mapper.userScope(userId);

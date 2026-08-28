@@ -38,6 +38,7 @@ public class EarningsReleaseService {
     private final RiskReleaseParamsService params;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
+    private final FundsSandboxProfileGuard sandboxProfile;
 
     /** Single server-side entry point for every newly issued reward. */
     @Transactional(rollbackFor = Exception.class)
@@ -84,6 +85,7 @@ public class EarningsReleaseService {
         }
         String normalizedSourceRef = sourceRef.trim();
         String normalizedIdempotencyKey = idempotencyKey.trim();
+        int expectedSandbox = expectedWalletSandbox(normalizedEnvironment);
         String no = "ER-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         if (mapper.insert(new EarningsReleaseMapper.EntryWrite(no, userId, clusterId, normalizedSourceType,
                 normalizedSourceRef, normalizedAsset, amount, bucket, normalizedIdempotencyKey, normalizedEnvironment)) != 1) {
@@ -96,10 +98,32 @@ public class EarningsReleaseService {
             return existing.entryNo();
         }
         int credited = "USDT".equals(normalizedAsset)
-                ? mapper.creditUsdt(userId, amount, normalizedEnvironment)
-                : mapper.creditNex(userId, amount, normalizedEnvironment);
+                ? mapper.creditUsdt(userId, amount, normalizedEnvironment, expectedSandbox)
+                : mapper.creditNex(userId, amount, normalizedEnvironment, expectedSandbox);
         if (credited != 1) throw new BizException(409, "EARNINGS_RELEASE_WALLET_CONFLICT");
         return no;
+    }
+
+    private int expectedWalletSandbox(String sourceEnvironment) {
+        if (sandboxProfile != null && sandboxProfile.isStrictDevelopmentRuntime()) {
+            if (!"PRODUCTION".equals(sourceEnvironment)) {
+                throw new BizException(422, "EARNINGS_RELEASE_ENVIRONMENT_INVALID");
+            }
+            return 1;
+        }
+        if (sandboxProfile != null && sandboxProfile.isStrictProductionRuntime()) {
+            if (!"PRODUCTION".equals(sourceEnvironment)) {
+                throw new BizException(422, "EARNINGS_RELEASE_ENVIRONMENT_INVALID");
+            }
+            return 0;
+        }
+        if (sandboxProfile != null && sandboxProfile.isStrictTestRuntime()) {
+            if (!"SANDBOX".equals(sourceEnvironment)) {
+                throw new BizException(422, "EARNINGS_RELEASE_ENVIRONMENT_INVALID");
+            }
+            return 1;
+        }
+        throw new BizException(503, "EARNINGS_RELEASE_PROFILE_INVALID");
     }
 
     private boolean matchesExistingEntry(EarningsReleaseMapper.ExistingEntry existing, Long userId,

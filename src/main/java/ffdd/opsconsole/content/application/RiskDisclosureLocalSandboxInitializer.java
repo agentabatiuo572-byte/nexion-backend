@@ -27,7 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
  * this disclosure or its mock provenance.
  */
 @Component
-@Profile("dev")
+@Profile("local-sandbox")
 @RequiredArgsConstructor
 public class RiskDisclosureLocalSandboxInitializer implements ApplicationRunner {
     private static final String CODE = "LOCAL-SANDBOX";
@@ -53,7 +53,7 @@ public class RiskDisclosureLocalSandboxInitializer implements ApplicationRunner 
 
     private boolean isStrictLocalSandbox() {
         String[] active = environment == null ? new String[0] : environment.getActiveProfiles();
-        return active.length == 1 && "dev".equals(active[0]);
+        return active.length == 1 && "local-sandbox".equals(active[0]);
     }
 
     private void ensureCatalog(LocalDateTime now) {

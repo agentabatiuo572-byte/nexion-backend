@@ -14,7 +14,7 @@ public class NovaAiProperties {
     public enum Mode { DISABLED, OLLAMA_LOCAL }
 
     private Mode mode = Mode.DISABLED;
-    private String ragBaseUrl = "http://127.0.0.1:8010";
+    private String ragBaseUrl = "http://[::1]:8010";
     private String ragCollection = "customer_support_knowledge_prd_v2_20260814";
     private String model = "gemma4-e4b-ctx32k:latest";
     private int connectTimeoutMs = 2_000;

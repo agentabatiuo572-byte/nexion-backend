@@ -26,7 +26,13 @@ nexion:
   home:
     development-settlement:
       enabled: true
+  treasury:
+    development-reserve:
+      enabled: true
+      minimum-usdt: 2000000
   finance:
+    development-payout-address:
+      enabled: true
     funds-sandbox:
       mode: LOCAL_SANDBOX
     payment-method-provider:
@@ -46,8 +52,8 @@ nexion:
       min-nex: 10
   genesis:
     sandbox:
-      initial-usdt: 1000
-      price-usdt: 10
+      initial-usdt: 20000
+      price-usdt: 7999
   compute-task:
     executor:
       mode: SANDBOX

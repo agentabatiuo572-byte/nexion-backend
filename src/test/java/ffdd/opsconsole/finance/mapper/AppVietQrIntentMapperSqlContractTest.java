@@ -160,6 +160,34 @@ class AppVietQrIntentMapperSqlContractTest {
     }
 
     @Test
+    void publishedDailyCapacitySubtractsTodayReceiptsAndLiveReservations() throws Exception {
+        Method read = AppVietQrIntentMapper.class.getMethod("findMaxAvailableBankCapacityVnd");
+        String sql = String.join("\n", read.getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("MAX(GREATEST(")
+                .contains("daily_cap_vnd")
+                .contains("received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))")
+                .contains("SUM(i.payable_vnd)")
+                .contains("i.status = 'AWAITING_PAYMENT'")
+                .contains("i.expires_at > NOW()")
+                .contains("status = 'ACTIVE'")
+                .doesNotContain("${");
+    }
+
+    @Test
+    void operationalRailCountDoesNotTreatDailyExhaustionAsMaintenance() throws Exception {
+        Method read = AppVietQrIntentMapper.class.getMethod("countActiveBankAccounts");
+        String sql = String.join("\n", read.getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("status = 'ACTIVE'")
+                .contains("is_deleted = 0")
+                .doesNotContain("daily_cap_vnd")
+                .doesNotContain("received_today_vnd");
+    }
+
+    @Test
     void fusedAccountCancelsOtherAwaitingIntentsAndTheirPcProjections() throws Exception {
         String cancelSql = String.join("\n", AppVietQrIntentMapper.class.getMethod(
                 "cancelAwaitingIntentsForFusedAccount", Long.class, String.class)

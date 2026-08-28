@@ -19,13 +19,37 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
                    COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
-              FROM nx_withdrawal_order
+             FROM nx_withdrawal_order
              WHERE is_deleted=0
+               AND EXISTS (
+                   SELECT 1 FROM nx_user u
+                    WHERE u.id=nx_withdrawal_order.user_id
+                      AND u.is_deleted=0 AND u.sandbox=0
+               )
                AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
                  OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
              ORDER BY COALESCE(d5_payout_due_at,created_at),id LIMIT #{limit}
             """)
     List<PayoutRow> claimable(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    @Select("""
+            SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,
+                   amount,d2_net_receive netReceive,d2_nex_burned nexBurned,status,
+                   d5_payout_due_at payoutDueAt,d5_provider_cid providerCid,
+                   COALESCE(d5_provider_idempotency_key,withdrawal_no) providerIdempotencyKey,
+                   d5_payout_source payoutSource,chain_broadcast_attempts attempts
+              FROM nx_withdrawal_order
+             WHERE is_deleted=0
+               AND EXISTS (
+                   SELECT 1 FROM nx_user u
+                    WHERE u.id=nx_withdrawal_order.user_id
+                      AND u.is_deleted=0 AND u.sandbox=1
+               )
+               AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
+                 OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
+             ORDER BY COALESCE(d5_payout_due_at,created_at),id LIMIT #{limit}
+            """)
+    List<PayoutRow> claimableDevelopment(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
     @Select("""
             SELECT withdrawal_no withdrawalNo,user_id userId,chain,target_address targetAddress,

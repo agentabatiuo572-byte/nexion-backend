@@ -408,6 +408,20 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e5CloudShareActivationBypassesPhysicalDeviceCap() {
+        deviceRepository.device = device("INVENTORY", 0, null);
+        deviceRepository.activeDevicesByUser = 6;
+        deviceRepository.targetOccupiesPhysicalSlot = false;
+
+        ApiResult<DeviceOpsView> result = service.activateE5Device(
+                1L, false, "idem-e5-share-activate",
+                new DeviceE5ActionRequest("activate cloud share service", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("OFFLINE");
+    }
+
+    @Test
     void e5ForceActivateAndUnbindRequireA2ReplayEvenWithBusinessPermission() {
         deviceRepository.device = device("DEACTIVATED", 0, LocalDateTime.now(clock));
         ApiResult<DeviceOpsView> force = service.activateE5Device(
@@ -1100,6 +1114,27 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateSkuPreservesTrialEligibilityWhenLegacyRequestOmitsTheField() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = withTrialEligible(
+                sku("stellarrack-p1", "StellarRack P1", "on", "P1"), true);
+        catalogRepository.skus.put("stellarrack-p1", catalogRepository.sku);
+        DeviceSkuUpsertRequest legacyRequest = skuRequest("stellarrack-p1", "StellarRack P1", "on");
+
+        assertThat(catalogRepository.sku.trialEligible()).isTrue();
+
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1",
+                catalogRepository.sku.updatedAt().toString(),
+                "idem-sku-preserve-trial-eligible",
+                legacyRequest);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(legacyRequest.trialEligible()).isNull();
+        assertThat(catalogRepository.lastSkuRequest.trialEligible()).isTrue();
+    }
+
+    @Test
     void statusAndDeleteRequireTheRevisionReadByTheOperator() {
         catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
         DeviceSkuStatusRequest request = new DeviceSkuStatusRequest("off", "并发版本保护完整验证", "superadmin");
@@ -1151,6 +1186,32 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().skuId()).isEqualTo("shared-rack-test");
+    }
+
+    @Test
+    void createShareSkuPersistsExplicitUnlimitedInventoryWithoutStock() {
+        DeviceSkuUpsertRequest request = withInventoryMode(
+                withStock(skuRequest("cloud-share", "Cloud Share", "pending", "Share", "HK-1", 1, "active", ""), ""),
+                "UNLIMITED");
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-cloud-share-unlimited", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.inventoryMode()).isEqualTo("UNLIMITED");
+        assertThat(catalogRepository.lastSkuRequest.stock()).isNull();
+    }
+
+    @Test
+    void createPhysicalSkuRejectsUnlimitedInventory() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        DeviceSkuUpsertRequest request = withInventoryMode(
+                withStock(skuRequest("bad-unlimited-device", "Bad Unlimited Device", "pending"), ""),
+                "UNLIMITED");
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-bad-unlimited-device", request);
+
+        assertThat(result.getMessage()).isEqualTo("SKU_UNLIMITED_INVENTORY_NOT_ALLOWED");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
     }
 
     @Test
@@ -1982,6 +2043,19 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().taskId()).startsWith("TK-");
         verify(taskPriceHistoryService).recordCurrentPrice(
                 eq(result.getData().taskId()), eq(E2TaskPriceHistoryService.SOURCE_PC_CREATE), any(LocalDateTime.class));
+    }
+
+    @Test
+    void createTaskRejectsNonCanonicalMinimumVramBeforePersistence() {
+        for (String invalid : List.of("08", "8.0", "8 GB", "8GBGB", " 8GB ")) {
+            ApiResult<DeviceTaskView> result = service.createTask(
+                    "idem-task-vram-" + invalid,
+                    taskRequest("LLM 推理 70B", "/1k", "手机+", invalid));
+
+            assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+            assertThat(result.getMessage()).isEqualTo("TASK_MIN_VRAM_INVALID");
+        }
+        assertThat(catalogRepository.tasks).isEmpty();
     }
 
     @Test
@@ -2885,6 +2959,19 @@ class OpsDeviceServiceTest {
                 source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), operator);
     }
 
+    private static DeviceSkuUpsertRequest withInventoryMode(DeviceSkuUpsertRequest source, String inventoryMode) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(),
+                source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(), source.dailyEarn(), source.dailyEarnNex(),
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(), source.rating(),
+                source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
+                source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
+                source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
+                inventoryMode, source.trialEligible());
+    }
+
     private static void authenticateAs(String username, String... authorities) {
         UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                 "admin-id", "n/a",
@@ -2906,6 +2993,11 @@ class OpsDeviceServiceTest {
     }
 
     private static DeviceTaskUpsertRequest taskRequest(String name, String unit, String requirement) {
+        return taskRequest(name, unit, requirement, "8GB");
+    }
+
+    private static DeviceTaskUpsertRequest taskRequest(
+            String name, String unit, String requirement, String minVram) {
         return new DeviceTaskUpsertRequest(
                 name,
                 new BigDecimal("0.46"),
@@ -2917,7 +3009,7 @@ class OpsDeviceServiceTest {
                 "BGE-M3",
                 new BigDecimal("0.06"),
                 new BigDecimal("0.22"),
-                "8GB",
+                minVram,
                 "派发中",
                 "catalog update",
                 "superadmin");
@@ -2977,6 +3069,21 @@ class OpsDeviceServiceTest {
                 status,
                 LocalDateTime.of(2026, 6, 17, 0, 0),
                 LocalDateTime.of(2026, 6, 17, 0, 0));
+    }
+
+    private static DeviceSkuView withTrialEligible(DeviceSkuView source, boolean trialEligible) {
+        return new DeviceSkuView(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(),
+                source.vram(), source.hashRate(), source.power(), source.datacenter(), source.uptime(),
+                source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(),
+                source.dailyEarn(), source.dailyEarnNex(), source.shareYieldMin(), source.shareYieldMax(),
+                source.baseRate(), source.sold(), source.stock(), source.rating(), source.reviews(),
+                source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(),
+                source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
+                source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
+                source.tag(), source.status(), source.createdAt(), source.updatedAt(), source.productType(),
+                source.inventoryMode(), trialEligible);
     }
 
     private static DeviceGenerationGateView gate(
@@ -3091,6 +3198,7 @@ class OpsDeviceServiceTest {
         private String lastConfigValueType;
         private String lastConfigOperator;
         private long activeDevicesByUser;
+        private boolean targetOccupiesPhysicalSlot = true;
         private Long pausedUserId;
         // 删除数据中心跨域引用计数(默认全零,测试按需覆写)
         private long referenceDevices;
@@ -3167,6 +3275,11 @@ class OpsDeviceServiceTest {
         @Override
         public long countActiveDevicesByUser(Long userId) {
             return activeDevicesByUser;
+        }
+
+        @Override
+        public boolean occupiesPhysicalSlot(Long deviceId) {
+            return targetOccupiesPhysicalSlot;
         }
 
         @Override

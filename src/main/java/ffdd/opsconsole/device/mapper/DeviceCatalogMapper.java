@@ -71,6 +71,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             s.base_rate AS baseRate,
             p.sold_count AS sold,
             CAST(p.stock AS CHAR) AS stock,
+            p.product_type AS productType,
+            p.inventory_mode AS inventoryMode,
+            p.trial_eligible AS trialEligible,
             p.rating_value AS rating,
             p.review_count AS reviews,
             s.ai_image_gen_per_min AS aiImageGenPerMin,
@@ -959,14 +962,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,
+              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
               share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-              #{sku.price},#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},
+              #{sku.price},#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),COALESCE(#{sku.sold},0),COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
@@ -1009,10 +1012,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("""
             UPDATE nx_product
-               SET name=#{sku.name},product_type=CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,tier=#{sku.tier},
+               SET name=#{sku.name},tier=#{sku.tier},
                    status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
                    price_usdt=#{sku.price},hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
-                   stock=#{sku.canonicalStock},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
+                   stock=#{sku.canonicalStock},inventory_mode=#{sku.inventoryMode},trial_eligible=#{sku.trialEligible},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
                    store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
                    share_yield_max=#{sku.shareYieldMax},superseded_by_product_no=#{sku.supersededBy},
@@ -1603,7 +1606,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                                   OR complete_item.quantity<=0
                                              THEN 1 ELSE 0 END)=0
                                 AND (
-                                      UPPER(complete_order.order_type)='SINGLE'
+                                      UPPER(complete_order.order_type) IN ('SINGLE','TRIAL_CONVERT')
                                       OR (
                                            UPPER(complete_order.order_type) IN ('BUNDLE','TRADE_IN')
                                            AND COUNT(complete_item.id)=complete_order.item_count
@@ -1614,10 +1617,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                      GROUP BY oi.product_id
                     HAVING oi.product_id IS NOT NULL AND MIN(oi.quantity)>0
                   ) items ON items.product_id=p.id
-               SET p.stock=p.stock+items.quantity,p.sold_count=p.sold_count-items.quantity,
+               SET p.stock=CASE WHEN p.inventory_mode='FINITE' THEN p.stock+items.quantity ELSE p.stock END,
+                   p.sold_count=p.sold_count-items.quantity,
                    p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
              WHERE p.sold_count>=items.quantity
-               AND p.stock<=2147483647-items.quantity
+               AND (p.inventory_mode='UNLIMITED' OR p.stock<=2147483647-items.quantity)
             """)
     int restockOrderItemProducts(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
@@ -1625,13 +1629,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Update("""
             UPDATE nx_product p
              JOIN nx_order o ON o.product_id=p.id AND o.order_no=#{orderNo} AND o.is_deleted=0
-               SET p.stock=p.stock+o.quantity,p.sold_count=GREATEST(0,p.sold_count-o.quantity),
+       SET p.stock=CASE WHEN p.inventory_mode='FINITE' THEN p.stock+o.quantity ELSE p.stock END,
+           p.sold_count=GREATEST(0,p.sold_count-o.quantity),
                    p.updated_at=GREATEST(CURRENT_TIMESTAMP(6),p.updated_at + INTERVAL 1 MICROSECOND)
              WHERE o.quantity>0 AND p.sold_count>=o.quantity
                AND UPPER(o.order_type)='SINGLE'
                AND NOT EXISTS (SELECT 1 FROM nx_order_item oi
                                 WHERE oi.order_no=o.order_no AND oi.is_deleted=0)
-               AND p.stock<=2147483647-o.quantity
+   AND (p.inventory_mode='UNLIMITED' OR p.stock<=2147483647-o.quantity)
             """)
     int restockOrderProduct(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
@@ -1720,6 +1725,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String baseRate,
             Long sold,
             String stock,
+            String productType,
+            String inventoryMode,
+            Boolean trialEligible,
             BigDecimal rating,
             Long reviews,
             Long aiImageGenPerMin,
@@ -1788,6 +1796,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             BigDecimal canonicalHashrate,
             Integer canonicalVramGb,
             Integer canonicalStock,
+            String inventoryMode,
+            Boolean trialEligible,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {
     }

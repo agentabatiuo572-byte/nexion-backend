@@ -15,7 +15,8 @@ class TeamFulfillmentCatalogSourceContractTest {
 
         assertThat(sql)
                 .contains("UPDATE nx_product")
-                .contains("stock = stock - 1")
+                .contains("stock = CASE WHEN inventory_mode='FINITE' THEN stock - 1 ELSE stock END")
+                .contains("(inventory_mode='UNLIMITED' OR stock > 0)")
                 .contains("sold_count = sold_count + 1")
                 .doesNotContain("nx_admin_device_sku");
     }

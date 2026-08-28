@@ -94,10 +94,14 @@ class OpsVietnamPaymentReceiptHttpContractTest {
                   "memoCode": "NX-HTTP",
                   "receivedVnd": 659750,
                   "receivedAt": "%s",
-                  "evidenceRef": "EVIDENCE-HTTP",
+                  "evidenceRef": "%s",
                   "reason": "verify absolute receipt timestamp",
                   "operator": "finance-admin"
                 }
-                """.formatted(receivedAt);
+                """.formatted(receivedAt, receiptEvidence());
+    }
+
+    private String receiptEvidence() {
+        return "media:vqr_123e4567e89b12d3a456426614174000";
     }
 }

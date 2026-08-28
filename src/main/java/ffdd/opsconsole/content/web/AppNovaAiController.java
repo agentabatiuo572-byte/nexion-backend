@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -28,7 +29,14 @@ public class AppNovaAiController {
     public ApiResult<AppNovaAiService.ChatResponse> chat(
             @Valid @RequestBody NovaAiChatRequest request,
             Authentication authentication) {
-        return ApiResult.ok(service.chat(userId(authentication), request));
+        return ApiResult.ok(service.chat(userId(authentication), userSessionId(authentication), request));
+    }
+
+    @GetMapping("/history")
+    public ApiResult<AppNovaAiService.HistoryResponse> history(
+            @RequestParam(required = false) String conversationId,
+            Authentication authentication) {
+        return ApiResult.ok(service.history(userId(authentication), conversationId));
     }
 
     private Long userId(Authentication authentication) {
@@ -41,5 +49,13 @@ public class AppNovaAiController {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    private String userSessionId(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"USER".equals(String.valueOf(details.get("subjectType")))) return null;
+        Object value = details.get("sessionId");
+        return value == null ? null : String.valueOf(value).trim();
     }
 }

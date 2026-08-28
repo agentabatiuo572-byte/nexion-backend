@@ -9,8 +9,11 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -20,6 +23,7 @@ import org.junit.jupiter.api.Test;
 class RagNovaAiGatewayTest {
     private static final String MODEL = "gemma4-e4b-ctx32k:latest";
     private static final String COLLECTION = "customer_support_knowledge_prd_v2_20260814";
+    private static final String RAG_SESSION_ID = "nova-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private final ObjectMapper objectMapper = new ObjectMapper();
     private HttpServer server;
 
@@ -41,8 +45,7 @@ class RagNovaAiGatewayTest {
             captured.set(objectMapper.readValue(exchange.getRequestBody(), new TypeReference<>() { }));
             respond(exchange, 200, """
                     {"answer":"Nexion 已更名为 NexGrid。","sources":[],"need_human":false,
-                     "collection":"customer_support_knowledge_prd_v2_20260814",
-                     "model":"gemma4-e4b-ctx32k:latest","context_count":2}
+                     "model":"generated-answer"}
                     """);
         });
         server.start();
@@ -52,7 +55,7 @@ class RagNovaAiGatewayTest {
         String answer = new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
                 MODEL,
                 "zh",
-                "app-user-42",
+                RAG_SESSION_ID,
                 List.of(
                         new NovaAiGateway.Message("user", "旧问题"),
                         new NovaAiGateway.Message("assistant", "旧回答"),
@@ -63,12 +66,10 @@ class RagNovaAiGatewayTest {
         assertThat(captured.get())
                 .containsEntry("question", "NexGrid 和 Nexion 是什么关系？")
                 .containsEntry("response_language", "zh")
-                .containsEntry("user_id", "app-user-42")
-                .containsEntry("collection", COLLECTION)
-                .containsEntry("max_output_tokens", 128)
-                .containsEntry("show_citations", false)
-                .containsEntry("use_llm", true);
-        assertThat((List<?>) captured.get().get("messages")).isEmpty();
+                .containsEntry("session_id", RAG_SESSION_ID);
+        assertThat(captured.get()).doesNotContainKeys(
+                "messages", "user_id", "collection", "top_k", "min_score",
+                "use_llm", "show_citations", "max_output_tokens");
     }
 
     @Test
@@ -85,8 +86,7 @@ class RagNovaAiGatewayTest {
             }
             respond(exchange, 200, """
                     {"answer":"Nexion was renamed to NexGrid.","sources":[],"need_human":false,
-                     "collection":"customer_support_knowledge_prd_v2_20260814",
-                     "model":"gemma4-e4b-ctx32k:latest","context_count":1}
+                     "model":"guardrail-current-fact"}
                     """);
         });
         server.start();
@@ -96,7 +96,7 @@ class RagNovaAiGatewayTest {
         String answer = new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
                 MODEL,
                 "en",
-                "app-user-42",
+                RAG_SESSION_ID,
                 List.of(new NovaAiGateway.Message("user", "What is NexGrid?")),
                 1_024));
 
@@ -105,13 +105,9 @@ class RagNovaAiGatewayTest {
     }
 
     @Test
-    void availabilityRequiresTheConfiguredModelAndQdrantCollection() throws Exception {
+    void availabilityUsesOnlyThePublicHealthStatus() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/health", exchange -> respond(exchange, 200, """
-                {"status":"ok","collection":"customer_support_knowledge_prd_v2_20260814",
-                 "llm_model":"gemma4-e4b-ctx32k:latest",
-                 "checks":{"qdrant":"ok","ollama":"ok","model":"ok"}}
-                """));
+        server.createContext("/health", exchange -> respond(exchange, 200, "{\"status\":\"ok\"}"));
         server.start();
 
         NovaAiProperties properties = properties();
@@ -119,15 +115,36 @@ class RagNovaAiGatewayTest {
 
         assertThat(new RagNovaAiGateway(properties, objectMapper).available()).isTrue();
         properties.setRagCollection("wrong_collection");
-        assertThat(new RagNovaAiGateway(properties, objectMapper).available()).isFalse();
+        assertThat(new RagNovaAiGateway(properties, objectMapper).available()).isTrue();
     }
 
     @Test
-    void rejectsAChatResponseFromTheWrongCollection() throws Exception {
+    void acceptsTheBracketedIpv6LoopbackUsedByTheControlledRuntime() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("::1"), 0), 0);
+        server.createContext("/health", exchange -> respond(exchange, 200, "{\"status\":\"ok\"}"));
+        server.start();
+
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://[::1]:" + server.getAddress().getPort());
+
+        assertThat(new RagNovaAiGateway(properties, objectMapper).available()).isTrue();
+    }
+
+    @Test
+    void controlledStartupScriptUsesTheSameIpv6LoopbackEndpoint() throws Exception {
+        String script = Files.readString(Path.of("scripts", "start_ops_console_monolith.ps1"));
+
+        assertThat(script)
+                .contains("NEXION_NOVA_AI_RAG_BASE_URL=http://[::1]:8010")
+                .doesNotContain("NEXION_NOVA_AI_RAG_BASE_URL=http://127.0.0.1:8010");
+    }
+
+    @Test
+    void rejectsAChatResponseThatExposesAnUnknownModelIdentifier() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat", exchange -> respond(exchange, 200, """
                 {"answer":"wrong corpus","sources":[],"need_human":false,
-                 "collection":"stale_collection","model":"gemma4-e4b-ctx32k:latest","context_count":0}
+                 "model":"unexpected-internal-model"}
                 """));
         server.start();
         NovaAiProperties properties = properties();
@@ -135,7 +152,7 @@ class RagNovaAiGatewayTest {
 
         RagNovaAiGateway gateway = new RagNovaAiGateway(properties, objectMapper);
         NovaAiGateway.ChatRequest request = new NovaAiGateway.ChatRequest(
-                MODEL, "en", "app-user-42", List.of(new NovaAiGateway.Message("user", "NexGrid?")), 64);
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "NexGrid?")), 64);
 
         assertThatThrownBy(() -> gateway.chat(request))
                 .isInstanceOf(BizException.class)
@@ -148,7 +165,7 @@ class RagNovaAiGatewayTest {
         properties.setRagBaseUrl("https://example.com/rag");
         RagNovaAiGateway gateway = new RagNovaAiGateway(properties, objectMapper);
         NovaAiGateway.ChatRequest request = new NovaAiGateway.ChatRequest(
-                MODEL, "en", "app-user-42", List.of(new NovaAiGateway.Message("user", "must not be sent")), 64);
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "must not be sent")), 64);
 
         assertThatThrownBy(() -> gateway.chat(request))
                 .isInstanceOf(BizException.class)

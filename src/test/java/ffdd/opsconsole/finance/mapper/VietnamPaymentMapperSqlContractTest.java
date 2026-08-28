@@ -51,6 +51,20 @@ class VietnamPaymentMapperSqlContractTest {
     }
 
     @Test
+    void startupKeyValidationReadsOnlyActiveNonDeletedAccountCiphertext() throws Exception {
+        String sql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "listActiveVietQrAccountsForKeyValidation")
+                .getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("account_number_encrypted AS accountNumberEncrypted")
+                .contains("account_number_hash AS accountNumberHash")
+                .contains("status = 'ACTIVE'")
+                .contains("is_deleted = 0")
+                .contains("ORDER BY id ASC");
+    }
+
+    @Test
     void receiptRegistrationRecordsPhysicalCashAndFusesRoutingWithoutBlockingSettlement() throws Exception {
         String sql = String.join("\n", VietnamPaymentMapper.class.getMethod(
                 "addVietQrBankReceivedToday", Long.class, java.math.BigDecimal.class,
@@ -91,5 +105,22 @@ class VietnamPaymentMapperSqlContractTest {
                 .contains("received_at AS receivedAt")
                 .contains("intent_transition_required AS intentTransitionRequired")
                 .contains("FOR UPDATE");
+    }
+
+    @Test
+    void reconciliationRowsExposeStableAccountMismatchReasonWithoutCurrentToleranceDrift() throws Exception {
+        String sql = String.join("\n", VietnamPaymentMapper.class.getMethod(
+                "listVietQrReconciliations", String.class, int.class, int.class)
+                .getAnnotation(Select.class).value());
+
+        assertThat(sql)
+                .contains("i.bank_account_id AS assignedBankAccountId")
+                .contains("i.memo_code AS memoCode")
+                .contains("i.id IS NULL OR r.bank_account_id IS NULL OR i.bank_account_id IS NULL THEN 'UNKNOWN'")
+                .contains("r.received_vnd <> i.payable_vnd THEN 'BANK_ACCOUNT_AND_AMOUNT'")
+                .contains("r.bank_account_id <> i.bank_account_id THEN 'BANK_ACCOUNT'")
+                .contains("ELSE 'AMOUNT' END AS mismatchReason")
+                .doesNotContain("tolerance_vnd")
+                .doesNotContain("JOIN nx_vietqr_config");
     }
 }

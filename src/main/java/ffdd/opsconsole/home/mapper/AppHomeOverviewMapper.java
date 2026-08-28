@@ -169,10 +169,11 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT CONCAT('client_', LEFT(SHA2(CONCAT(
-                         COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|', COALESCE(d.gpu_model,'')), 256), 16)) AS id,
-                   dc.display_name AS name,
+                         COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|',
+                         COALESCE(d.gpu_model,''), '|', COALESCE(current_client.client_name,'')), 256), 16)) AS id,
+                   COALESCE(current_client.client_name, dc.display_name) AS name,
                    d.gpu_model AS model,
-                   dc.location AS city,
+                   COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city,
                    COUNT(*) AS gpus
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
@@ -181,12 +182,26 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                             AND u.is_deleted = 0
               LEFT JOIN nx_compute_datacenter dc
                 ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+              LEFT JOIN (
+                SELECT ranked.user_device_id, ranked.client_name
+                  FROM (
+                    SELECT t.user_device_id, t.client_name,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY t.user_device_id
+                             ORDER BY COALESCE(t.completed_at, t.updated_at, t.created_at) DESC, t.id DESC
+                            ) AS task_rank
+                      FROM nx_compute_task t
+                     WHERE t.is_deleted = 0 AND NULLIF(TRIM(t.client_name), '') IS NOT NULL
+                  ) ranked
+                 WHERE ranked.task_rank = 1
+              ) current_client ON current_client.user_device_id = d.id
              WHERE d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
-             GROUP BY d.device_type, d.dc_location, d.gpu_model, dc.display_name, dc.location
+             GROUP BY d.device_type, d.dc_location, d.gpu_model,
+                      current_client.client_name, dc.display_name, dc.location
              ORDER BY COUNT(*) DESC, id ASC
              LIMIT 20
             """)
@@ -232,7 +247,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                    p.tier,
                    p.price_usdt AS priceUsdt,
                    p.estimated_daily_usdt AS dailyUsdt,
-                   p.stock
+                   p.stock,
+                   p.inventory_mode AS inventoryMode
               FROM nx_product p
              WHERE p.is_deleted = 0
                AND p.store_visible = 1
@@ -278,7 +294,12 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                          String modelName, BigDecimal minReward, BigDecimal maxReward) { }
     record TaskPriceHistoryRow(String taskId, BigDecimal price, LocalDateTime observedAt) { }
     record MarketProductRow(String productNo, String name, String productType, String tier,
-                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock) { }
+                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock, String inventoryMode) {
+        public MarketProductRow(String productNo, String name, String productType, String tier,
+                                BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock) {
+            this(productNo, name, productType, tier, priceUsdt, dailyUsdt, stock, "FINITE");
+        }
+    }
     record PromoRow(String baseReward, String multiplier, Integer countdownDays, Integer countdownHours,
                     String targetDevice, String targetDaily, String status, LocalDateTime updatedAt,
                     BigDecimal productPriceUsdt) { }

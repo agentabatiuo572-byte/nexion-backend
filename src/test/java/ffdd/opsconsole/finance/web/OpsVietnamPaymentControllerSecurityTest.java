@@ -23,6 +23,10 @@ class OpsVietnamPaymentControllerSecurityTest {
         assertPermission("fxQuote", "finance_d6_read");
         assertPermission("updateFxQuote", "finance_d6_manage", String.class,
                 ffdd.opsconsole.finance.dto.FxQuoteUpdateRequest.class);
+        Method evidenceUpload = OpsVietQrReceiptEvidenceController.class.getMethod(
+                "upload", org.springframework.web.multipart.MultipartFile.class, String.class);
+        assertThat(evidenceUpload.getAnnotation(PreAuthorize.class).value())
+                .isEqualTo("hasAuthority('finance_d1_bank_reconcile')");
     }
 
     private void assertPermission(String methodName, String permission, Class<?>... parameterTypes) throws Exception {

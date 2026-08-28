@@ -18,6 +18,16 @@ import org.springframework.mock.env.MockEnvironment;
 
 class AppTeamInsightsServiceTest {
     @Test
+    void leadershipRankDistributionGroupsByTheSelectedSourceColumnForOnlyFullGroupBy() throws Exception {
+        var method = AppTeamInsightsMapper.class.getMethod("rankDistribution", Integer.class);
+        var select = method.getAnnotation(org.apache.ibatis.annotations.Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ");
+
+        assertThat(sql).contains("GROUP BY u.v_rank")
+                .doesNotContain("GROUP BY UPPER(u.v_rank)");
+    }
+
+    @Test
     void productionLeaderboardAndCommissionAreSelfScopedAndServerBacked() {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
@@ -43,7 +53,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> new AppTeamInsightsService(mapper, environment).leaderboard(7L, "week"))
                 .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
@@ -57,7 +67,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         var result = new AppTeamInsightsService(mapper, environment).commissions(7L);
 
@@ -84,7 +94,7 @@ class AppTeamInsightsServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         when(mapper.userScope(8L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         var service = new AppTeamInsightsService(mapper, environment);
 
         var first = service.leaderboard(7L, "week", 1, 3);
@@ -118,7 +128,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         var result = new AppTeamInsightsService(mapper, environment)
                 .leaderboard(7L, "week", Integer.MAX_VALUE, 100);
@@ -134,7 +144,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         var result = new AppTeamInsightsService(mapper, environment)
                 .leaderboard(7L, "week", 1L, Long.MAX_VALUE);
@@ -148,7 +158,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-123");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> new AppTeamInsightsService(mapper, environment).commissions(7L))
                 .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
@@ -160,7 +170,7 @@ class AppTeamInsightsServiceTest {
         var mapper = mock(AppTeamInsightsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> new AppTeamInsightsService(mapper, environment)
                 .leaderboard(7L, "week", 1, 3))
@@ -190,6 +200,23 @@ class AppTeamInsightsServiceTest {
                 .doesNotContain("sourceUserId");
         assertThat(result.getData().get("split").toString()).contains("direct", "extended", "amountUSDT", "amountNEX");
         verify(mapper).unilevelEvents(7L, 0, "week");
+    }
+
+    @Test
+    void developmentAllowsAnyActiveDevelopmentAccountAndReadsCanonicalCommissionFacts() {
+        var mapper = mock(AppTeamInsightsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
+        when(mapper.commissionEvents(7L, 100)).thenReturn(List.of());
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+
+        var result = new AppTeamInsightsService(mapper, environment).commissions(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "").containsEntry("serverCanonical", true)
+                .doesNotContainKeys("factStatus", "payoutStatus");
+        verify(mapper).commissionEvents(7L, 100);
     }
 
 }

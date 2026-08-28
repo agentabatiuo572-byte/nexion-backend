@@ -56,6 +56,22 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     }
 
     @Override
+    public boolean insertAdminValueIfMissing(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        return configRepository.insertIfAbsent(new PlatformConfigItem(
+                null,
+                configKey,
+                configValue,
+                valueType,
+                configGroup,
+                "ADMIN",
+                remark,
+                1,
+                LocalDateTime.now(),
+                LocalDateTime.now()));
+    }
+
+    @Override
     public Map<String, String> activeValuesByGroup(String configGroup) {
         return configRepository.findActiveByGroups(java.util.List.of(configGroup)).stream()
                 .collect(Collectors.toMap(PlatformConfigItem::configKey, PlatformConfigItem::configValue, (left, right) -> right));

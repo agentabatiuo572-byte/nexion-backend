@@ -17,6 +17,7 @@ import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantResult;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
@@ -202,6 +203,40 @@ class AppGrowthEngagementServiceTest {
         verify(outbox).publishUserEvent(
                 eq("DAILY_CHECK_IN"), anyString(), eq("daily.lucky_triggered"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void developmentCheckInCreditsTheFixedDevelopmentWalletThroughTheCanonicalReleaseRail() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
+        AppGrowthEngagementService developmentService = new AppGrowthEngagementService(
+                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, earningsRelease,
+                null, null, java.util.Optional.empty(), environment);
+        LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
+        when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
+        when(mapper.dailyMissionId()).thenReturn(2L);
+        when(mapper.lockStreak(42L)).thenReturn(new StreakState(0, 0, 0, null));
+        when(mapper.checkInRule("baseline")).thenReturn("2");
+        when(mapper.checkInRule("bonus7")).thenReturn("5");
+        when(mapper.checkInRule("p2")).thenReturn("0");
+        when(mapper.checkInRule("p15")).thenReturn("0");
+        when(mapper.insertCheckIn(eq(42L), eq(2L), eq(today), eq(2), eq(BigDecimal.ONE),
+                eq(0), eq(0), eq(2))).thenReturn(1);
+        when(mapper.updateStreak(42L, 1, today)).thenReturn(1);
+        when(mapper.lockWalletNex(42L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.insertNexLedger(
+                42L, "DAILY:42:" + today, "DAILY_CHECK_IN", new BigDecimal("2.000000"),
+                new BigDecimal("2.000000"), "H5 daily check-in")).thenReturn(1);
+
+        var result = developmentService.checkIn(42L, "development-daily-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        verify(earningsRelease).creditReward(
+                42L, "DAILY_CHECK_IN", "DAILY:42:" + today, "NEX",
+                new BigDecimal("2.000000"), "GROWTH:DAILY:42:" + today + ":NEX");
     }
 
     @Test

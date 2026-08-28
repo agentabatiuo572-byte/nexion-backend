@@ -52,6 +52,7 @@ public class OpsVietnamPaymentService {
     private final FinanceSensitiveDataCipher sensitiveDataCipher;
     private final AppVietQrIntentMapper appIntentMapper;
     private final EventOutboxService outboxService;
+    private final VietQrReceiptEvidenceService receiptEvidenceService;
     private final Clock clock;
 
     @Transactional
@@ -514,6 +515,8 @@ public class OpsVietnamPaymentService {
         String reconciliationNo = "VQR-REC-"
                 + UUID.randomUUID().toString().replace("-", "")
                         .substring(0, 20).toUpperCase(Locale.ROOT);
+        String actor = operator(request.operator());
+        receiptEvidenceService.claim(request.evidenceRef(), reconciliationNo, actor);
         try {
             if (mapper.insertVietQrReceipt(
                     reconciliationNo, intentNo, userId, request.bankAccountId(),
@@ -556,7 +559,7 @@ public class OpsVietnamPaymentService {
                     request.bankAccountId(), intentNo);
         }
         requiredAudit("VIETQR_RECEIPT_REGISTERED", "VIETQR_RECONCILIATION",
-                reconciliationNo, operator(request.operator()), request.reason(), idempotencyKey,
+                reconciliationNo, actor, request.reason(), idempotencyKey,
                 Map.of(
                         "bankAccountId", request.bankAccountId(),
                         "paymentReference", paymentReference,
@@ -776,6 +779,14 @@ public class OpsVietnamPaymentService {
         }
     }
 
+    private void validateReceiptUploadEvidence(String evidenceRef) {
+        String value = clean(evidenceRef);
+        if (!value.matches("media:vqr_[0-9a-f]{32}")) {
+            validation("VIETQR_RECEIPT_UPLOAD_EVIDENCE_REQUIRED");
+        }
+        receiptEvidenceService.validateReferenceSyntax(evidenceRef);
+    }
+
     private void validateReceiptRegistration(
             String idempotencyKey, VietQrReceiptRegistrationRequest request) {
         requireKeyAndReason(idempotencyKey, request == null ? null : request.reason());
@@ -783,7 +794,7 @@ public class OpsVietnamPaymentService {
                 || request.bankAccountId() <= 0) {
             validation("VIETQR_BANK_ACCOUNT_ID_REQUIRED");
         }
-        validateEvidence(request.evidenceRef());
+        validateReceiptUploadEvidence(request.evidenceRef());
         String paymentReference = clean(request.paymentReference());
         if (paymentReference.length() < 6 || paymentReference.length() > 128
                 || !paymentReference.matches("[A-Za-z0-9][A-Za-z0-9._:/-]*")) {

@@ -66,6 +66,18 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
         return toDomain(entity);
     }
 
+    @Override
+    public boolean insertIfAbsent(PlatformConfigItem item) {
+        return mapper.insertIfConfigKeyAbsent(
+                item.configKey(),
+                item.configValue(),
+                item.valueType(),
+                item.configGroup(),
+                item.visibility(),
+                item.remark(),
+                item.status()) == 1;
+    }
+
     private PlatformConfigItem toDomain(PlatformConfigItemEntity entity) {
         return new PlatformConfigItem(
                 entity.getId(),

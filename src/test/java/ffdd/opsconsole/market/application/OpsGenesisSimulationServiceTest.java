@@ -102,4 +102,41 @@ class OpsGenesisSimulationServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("G4_CONFIG_STATE_CONFLICT");
     }
+
+    @Test
+    void updatesTheServerCanonicalGenesisEligibilityKeyWithCasAndAudit() {
+        when(config.activeValueForUpdate("market.genesis.ops.eligibility.minAccountAgeDays"))
+                .thenReturn(Optional.of("0"));
+
+        Map<String, Object> result = service.updateConfig("eligibility.minAccountAgeDays", "idem-age-policy",
+                new NexMarketValueUpdateRequest("1", "verify current genesis eligibility policy", "superadmin", "0"));
+
+        assertThat(result).containsEntry("key", "eligibility.minAccountAgeDays")
+                .containsEntry("value", "1")
+                .containsEntry("status", "UPDATED");
+        verify(config).upsertAdminValue(
+                "market.genesis.ops.eligibility.minAccountAgeDays",
+                "1", "INTEGER", "MARKET_GENESIS_OPS",
+                "G4 资格门/预售配置；verify current genesis eligibility policy");
+        verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void createsAMissingCanonicalEligibilityRowUsingTheEmptyCasBaseline() {
+        when(config.activeValueForUpdate("market.genesis.ops.eligibility.enabled"))
+                .thenReturn(Optional.empty());
+
+        Map<String, Object> result = service.updateConfig("eligibility.enabled", "idem-first-policy-write",
+                new NexMarketValueUpdateRequest(
+                        "true", "recover missing genesis policy row", "superadmin", ""));
+
+        assertThat(result).containsEntry("key", "eligibility.enabled")
+                .containsEntry("value", "true")
+                .containsEntry("status", "UPDATED");
+        verify(config).upsertAdminValue(
+                "market.genesis.ops.eligibility.enabled",
+                "true", "BOOLEAN", "MARKET_GENESIS_OPS",
+                "G4 资格门/预售配置；recover missing genesis policy row");
+        verify(audit).recordRequired(any());
+    }
 }

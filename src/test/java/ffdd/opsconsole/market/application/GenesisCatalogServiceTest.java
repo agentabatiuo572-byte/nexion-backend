@@ -14,7 +14,6 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
-import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.InviteRow;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -24,8 +23,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import org.springframework.dao.DuplicateKeyException;
 
 class GenesisCatalogServiceTest {
     private final GenesisCatalogMapper mapper = mock(GenesisCatalogMapper.class);
@@ -55,32 +52,4 @@ class GenesisCatalogServiceTest {
         verify(mapper, never()).advanceTierVersion(anyLong(), anyLong());
     }
 
-    @Test
-    void issuedInviteUsesAtLeastSixtyFourBitsOfRandomPayload() {
-        when(mapper.insertInvite(anyString(), anyString(), anyString())).thenReturn(1);
-        when(mapper.inviteCodes()).thenReturn(List.of());
-        ArgumentCaptor<String> code = ArgumentCaptor.forClass(String.class);
-
-        assertThat(service.issueInvitesOnce(new GenesisCatalogService.InviteIssueRequest(
-                1, "security entropy check", "superadmin")).getCode()).isZero();
-
-        verify(mapper).insertInvite(code.capture(), anyString(), anyString());
-        assertThat(code.getValue()).matches("NEXGRID-OG-[A-F0-9]{16}");
-    }
-
-    @Test
-    void concurrentSecondCodeForSameAccountReturnsStableConflictInsteadOfDatabase500() {
-        String code = "NEXGRID-OG-0123456789ABCDEF";
-        when(mapper.lockInvite(code)).thenReturn(new InviteRow(code, "unused", "superadmin",
-                null, "", null, null, null, null, null));
-        when(mapper.redeemedCount(42L)).thenReturn(0);
-        when(mapper.redeemInvite(code, 42L))
-                .thenThrow(new DuplicateKeyException("uk_genesis_invite_redeemed_account"));
-
-        assertThatThrownBy(() -> service.redeem(42L, code))
-                .isInstanceOfSatisfying(BizException.class, ex -> {
-                    assertThat(ex.getCode()).isEqualTo(409);
-                    assertThat(ex.getMessage()).isEqualTo("GENESIS_INVITE_ACCOUNT_ALREADY_REDEEMED");
-                });
-    }
 }

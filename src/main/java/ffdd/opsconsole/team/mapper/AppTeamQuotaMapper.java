@@ -20,6 +20,17 @@ public interface AppTeamQuotaMapper extends BaseMapper<Object> {
     UserScope userScope(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.id=#{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND u.phone=#{phone} AND u.sandbox=1
+               AND u.status='ACTIVE' AND u.is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
             SELECT COUNT(*)
               FROM nx_user child
               JOIN nx_user owner ON owner.id = #{userId}

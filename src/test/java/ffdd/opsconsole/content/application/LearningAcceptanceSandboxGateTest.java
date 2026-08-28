@@ -16,8 +16,8 @@ class LearningAcceptanceSandboxGateTest {
     private final LearningAcceptanceSandboxGate gate = new LearningAcceptanceSandboxGate(environment);
 
     @Test
-    void enablesSandboxFactsOnlyForOneDeclaredIsolatedProfile() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+    void enablesSandboxFactsOnlyForTheTestProfile() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
 
         assertThat(gate.enabled("SANDBOX")).isTrue();
         assertThat(gate.enabled("PRODUCTION")).isFalse();
@@ -35,8 +35,8 @@ class LearningAcceptanceSandboxGateTest {
     }
 
     @Test
-    void controlledAcceptanceProfileRejectsNormalUsersInsteadOfFallingThroughToProductionFacts() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+    void testProfileRejectsNormalUsersInsteadOfFallingThroughToProductionFacts() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
 
         assertThatThrownBy(() -> gate.requireEnabled("PRODUCTION"))
                 .isInstanceOf(IllegalStateException.class)
@@ -80,8 +80,15 @@ class LearningAcceptanceSandboxGateTest {
     }
 
     @Test
-    void developmentBlocksProductionCatalogCommandsWhileOnlyProdRemainsAvailable() {
+    void developmentAndProductionAllowCanonicalCatalogCommandsWhileTestBlocksThem() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        assertThatCode(gate::requireProductionMutationAllowed).doesNotThrowAnyException();
+        assertThatCode(() -> gate.requireEnabled("PRODUCTION")).doesNotThrowAnyException();
+        assertThatThrownBy(() -> gate.requireEnabled("SANDBOX"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("LEARNING_DEVELOPMENT_PRODUCTION_FACT_REQUIRED");
+
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
         assertThatThrownBy(gate::requireProductionMutationAllowed)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");

@@ -23,6 +23,45 @@ class PublishedRankHowPolicyServiceTest {
     }
 
     @Test
+    void developmentPublishesTheSameProductionShapedContractConsumedByTheFormalApp() {
+        PlatformConfigFacade config = publishedConfig();
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+
+        var result = new PublishedRankHowPolicyService(config, environment, mock(AuditLogService.class))
+                .publicPolicy("en");
+
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
+    }
+
+    @Test
+    void isolatedTestProfileRetainsRunScopedSandboxProvenance() {
+        PlatformConfigFacade config = publishedConfig();
+        var environment = new MockEnvironment()
+                .withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-team-001");
+        environment.setActiveProfiles("test");
+
+        var result = new PublishedRankHowPolicyService(config, environment, mock(AuditLogService.class))
+                .publicPolicy("en");
+
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "run-team-001");
+    }
+
+    @Test
+    void isolatedTestProfileFailsClosedWithoutAValidRunId() {
+        PlatformConfigFacade config = publishedConfig();
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("test");
+
+        var result = new PublishedRankHowPolicyService(config, environment, mock(AuditLogService.class))
+                .publicPolicy("en");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("RANK_HOW_POLICY_UNAVAILABLE");
+    }
+
+    @Test
     void missingPolicyFailsClosedInsteadOfFallingBackToLocalNarrative() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("team.rank_how.published")).thenReturn(Optional.empty());
@@ -51,5 +90,13 @@ class PublishedRankHowPolicyServiceTest {
         var unsafe=java.util.List.of(java.util.Map.of("id","x","title","A","body","A","order",1.5));
         assertThat(service.update("r4","PUBLISHED",java.util.Map.of("en",java.util.Map.of("hero","h","sections",unsafe)),0L,"Publish reviewed rank policy").getCode()).isEqualTo(422);
         verifyNoInteractions(config);
+    }
+
+    private PlatformConfigFacade publishedConfig() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("team.rank_how.published")).thenReturn(Optional.of("""
+                {"version":"r3","status":"PUBLISHED","locales":{"en":{"hero":"Rank policy","sections":[{"id":"qualification","title":"Qualification","body":"Server evaluates each step.","order":1}]}}}
+                """));
+        return config;
     }
 }

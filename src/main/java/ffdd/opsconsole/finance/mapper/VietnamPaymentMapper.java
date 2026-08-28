@@ -43,6 +43,16 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
     List<Map<String, Object>> listVietQrBankAccounts();
 
     @Select("""
+            SELECT id,
+                   account_number_encrypted AS accountNumberEncrypted,
+                   account_number_hash AS accountNumberHash
+              FROM nx_vietqr_bank_account
+             WHERE status = 'ACTIVE' AND is_deleted = 0
+             ORDER BY id ASC
+            """)
+    List<Map<String, Object>> listActiveVietQrAccountsForKeyValidation();
+
+    @Select("""
             SELECT COUNT(1)
               FROM nx_vietqr_reconciliation
              WHERE is_deleted = 0
@@ -51,19 +61,27 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
     long countVietQrReconciliations(@Param("viewType") String viewType);
 
     @Select("""
-            SELECT id, reconciliation_no AS reconciliationNo, intent_no AS intentNo,
-                   user_id AS userId, bank_account_id AS bankAccountId,
-                   view_type AS viewType, status, payable_vnd AS payableVnd,
-                   received_vnd AS receivedVnd,
-                   locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
-                   credited_usdt AS creditedUsdt, payment_reference AS paymentReference,
-                   note, expires_at AS expiresAt, received_at AS receivedAt,
-                   intent_transition_required AS intentTransitionRequired,
-                   version, created_at AS createdAt, updated_at AS updatedAt
-              FROM nx_vietqr_reconciliation
-             WHERE is_deleted = 0
-               AND (#{viewType} IS NULL OR view_type = #{viewType})
-             ORDER BY created_at DESC, id DESC
+            SELECT r.id, r.reconciliation_no AS reconciliationNo, r.intent_no AS intentNo,
+                   r.user_id AS userId, r.bank_account_id AS bankAccountId,
+                   i.bank_account_id AS assignedBankAccountId, i.memo_code AS memoCode,
+                   CASE WHEN r.view_type <> 'MISMATCH' THEN NULL
+                        WHEN i.id IS NULL OR r.bank_account_id IS NULL OR i.bank_account_id IS NULL THEN 'UNKNOWN'
+                        WHEN r.bank_account_id <> i.bank_account_id
+                             AND r.received_vnd <> i.payable_vnd THEN 'BANK_ACCOUNT_AND_AMOUNT'
+                        WHEN r.bank_account_id <> i.bank_account_id THEN 'BANK_ACCOUNT'
+                        ELSE 'AMOUNT' END AS mismatchReason,
+                   r.view_type AS viewType, r.status, r.payable_vnd AS payableVnd,
+                   r.received_vnd AS receivedVnd,
+                   r.locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,
+                   r.credited_usdt AS creditedUsdt, r.payment_reference AS paymentReference,
+                   r.note, r.expires_at AS expiresAt, r.received_at AS receivedAt,
+                   r.intent_transition_required AS intentTransitionRequired,
+                   r.version, r.created_at AS createdAt, r.updated_at AS updatedAt
+              FROM nx_vietqr_reconciliation r
+              LEFT JOIN nx_vietqr_intent i ON i.intent_no = r.intent_no AND i.is_deleted = 0
+             WHERE r.is_deleted = 0
+               AND (#{viewType} IS NULL OR r.view_type = #{viewType})
+             ORDER BY r.created_at DESC, r.id DESC
              LIMIT #{pageSize} OFFSET #{offset}
             """)
     List<Map<String, Object>> listVietQrReconciliations(

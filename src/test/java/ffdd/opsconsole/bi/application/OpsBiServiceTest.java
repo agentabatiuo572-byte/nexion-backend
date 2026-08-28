@@ -1416,6 +1416,10 @@ class OpsBiServiceTest {
         }
 
         @Override
+        public void lockOperationMutex(String lockKey) {
+        }
+
+        @Override
         public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
         }
 

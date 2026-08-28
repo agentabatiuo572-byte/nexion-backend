@@ -14,6 +14,17 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
     UserScope userScope(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.id=#{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND u.phone=#{phone} AND u.sandbox=1
+               AND u.status='ACTIVE' AND u.is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
             WITH earned AS (
               SELECT ce.user_id,SUM(ce.amount_usdt) earned_usdt
                 FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
@@ -80,7 +91,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
               FROM nx_user u LEFT JOIN nx_v_rank_config c ON UPPER(c.rank_code)=UPPER(u.v_rank)
                AND c.status=1 AND c.is_deleted=0
              WHERE u.sandbox=#{sandbox} AND u.status='ACTIVE' AND u.is_deleted=0
-             GROUP BY UPPER(u.v_rank) ORDER BY vRank
+             GROUP BY u.v_rank ORDER BY vRank
             """)
     List<RankDistributionRow> rankDistribution(@Param("sandbox") Integer sandbox);
 

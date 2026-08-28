@@ -16,6 +16,10 @@ public interface QuestCompletionFactMapper {
             + "AND COALESCE(sandbox,0)=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
+            + "AND COALESCE(sandbox,0)=1 FOR UPDATE")
+    Long lockActiveSandboxUser(@Param("userId") Long userId);
+
     @Select("""
             SELECT id missionId,mission_code questCode,mission_type layer
               FROM nx_mission

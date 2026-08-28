@@ -12,11 +12,14 @@ import static org.mockito.Mockito.when;
 import ffdd.opsconsole.device.application.ComputeTaskProofVerifier;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
+import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -26,9 +29,12 @@ class AppHomeOverviewServiceTest {
     private final AppHomeOverviewMapper mapper = org.mockito.Mockito.mock(AppHomeOverviewMapper.class);
     private final ComputeTaskProofVerifier verifier = org.mockito.Mockito.mock(ComputeTaskProofVerifier.class);
     private final GrowthPublicStatsService publicStats = org.mockito.Mockito.mock(GrowthPublicStatsService.class);
+    private final AppCanonicalBoundaryService purchaseEligibility =
+            org.mockito.Mockito.mock(AppCanonicalBoundaryService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
-    private final AppHomeOverviewService service = new AppHomeOverviewService(mapper, verifier, publicStats, clock, environment);
+    private final AppHomeOverviewService service =
+            new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, clock, environment);
 
     @Test
     void sandboxReturnsCurrentRunProjectionWithoutReadingProductionFacts() {
@@ -159,6 +165,23 @@ class AppHomeOverviewServiceTest {
     }
 
     @Test
+    void productionTodayRollsOverAtShanghaiMidnightInsteadOfJvmTimezone() {
+        Clock midnightClock = Clock.fixed(
+                Instant.parse("2026-08-14T16:00:01Z"), ZoneOffset.UTC);
+        AppHomeOverviewService midnightService = new AppHomeOverviewService(
+                mapper, verifier, publicStats, purchaseEligibility, midnightClock, environment);
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+
+        var result = midnightService.overview(42L);
+
+        assertEquals(0, result.getCode());
+        verify(mapper).earnings(42L, "PRODUCTION",
+                LocalDateTime.parse("2026-08-15T00:00:00"),
+                LocalDateTime.parse("2026-08-15T00:00:01"));
+    }
+
+    @Test
     void productionGridReturnsDatabaseBackedClientNameAndCity() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
@@ -224,6 +247,9 @@ class AppHomeOverviewServiceTest {
                         new BigDecimal("1199.00"), new BigDecimal("13.000000"), 3),
                 new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
                         new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(
+                42L, List.of("stellarbox-pro", "stellarrack-p1")))
+                .thenReturn(eligibilityBatch(decision("stellarbox-pro", true)));
 
         var result = service.overview(42L);
 
@@ -241,6 +267,107 @@ class AppHomeOverviewServiceTest {
         assertEquals(new BigDecimal("1199.00"), target.get("priceUsdt"));
         assertEquals(217L, calculator.get("multiplier"));
         assertEquals(92L, calculator.get("paybackDays"));
+    }
+
+    @Test
+    void productionHomeSkipsUnreleasedUpgradeAndUsesNextImmediatelyPurchasableProduct() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("stellarbox-pro", "StellarBox Pro", "SERVER", "Pro",
+                        new BigDecimal("1199.00"), new BigDecimal("13.000000"), 3),
+                new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
+                        new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(
+                42L, List.of("stellarbox-pro", "stellarrack-p1")))
+                .thenReturn(eligibilityBatch(
+                        decision("stellarbox-pro", false),
+                        decision("stellarrack-p1", true)));
+
+        var result = service.overview(42L);
+
+        var calculator = (Map<?, ?>) result.getData().get("doTheMath");
+        var target = (Map<?, ?>) calculator.get("target");
+        assertEquals("stellarrack-p1", target.get("productNo"));
+    }
+
+    @Test
+    void productionHomeHidesDoTheMathWhenNoHigherProductIsImmediatelyPurchasable() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
+                        new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarrack-p1")))
+                .thenReturn(eligibilityBatch(decision("stellarrack-p1", false)));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        assertNull(result.getData().get("doTheMath"));
+    }
+
+    @Test
+    void productionHomeFailsClosedWhenEligibilityCannotBeVerified() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
+                        new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarrack-p1")))
+                .thenReturn(ApiResult.fail(503, "PURCHASE_ELIGIBILITY_UNAVAILABLE"));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        assertNull(result.getData().get("doTheMath"));
+    }
+
+    @Test
+    void productionHomeFailsClosedWhenEligibilityCheckThrows() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
+                        new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarrack-p1")))
+                .thenThrow(new IllegalStateException("eligibility dependency unavailable"));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        assertNull(result.getData().get("doTheMath"));
+    }
+
+    @Test
+    void productionHomeRejectsEligibilityResponseForAnotherProduct() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "StellarBox Pro", "stellarbox-pro", "Pro", "DEVICE", new BigDecimal("13.000000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("stellarrack-p1", "StellarRack P1", "DEVICE", "Flagship",
+                        new BigDecimal("4499.00"), new BigDecimal("45.000000"), 2)));
+        when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarrack-p1")))
+                .thenReturn(eligibilityBatch(decision("another-product", true)));
+
+        var result = service.overview(42L);
+
+        assertEquals(0, result.getCode());
+        assertNull(result.getData().get("doTheMath"));
     }
 
     @Test
@@ -269,5 +396,18 @@ class AppHomeOverviewServiceTest {
         assertEquals(503, result.getCode());
         assertEquals("APP_HOME_PROFILE_INVALID", result.getMessage());
         verify(mapper, org.mockito.Mockito.never()).userEnvironment(42L);
+    }
+
+    private AppCanonicalBoundaryService.PurchaseEligibilityDecision decision(
+            String productNo, boolean eligible) {
+        return new AppCanonicalBoundaryService.PurchaseEligibilityDecision(
+                productNo, eligible, eligible ? "ELIGIBLE" : "PRODUCT_NOT_RELEASED");
+    }
+
+    private ApiResult<Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision>> eligibilityBatch(
+            AppCanonicalBoundaryService.PurchaseEligibilityDecision... decisions) {
+        Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision> data = new LinkedHashMap<>();
+        for (var decision : decisions) data.put(decision.productNo(), decision);
+        return ApiResult.ok(data);
     }
 }

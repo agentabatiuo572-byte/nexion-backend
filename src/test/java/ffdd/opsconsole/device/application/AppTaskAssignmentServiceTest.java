@@ -3,6 +3,7 @@ package ffdd.opsconsole.device.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
@@ -52,6 +54,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("stellarbox-s1", "S1", "StellarBox S1", 96));
         when(mapper.eligibleTasks(96)).thenReturn(List.of(task("TASK-IG", "IG", 24, "pending")));
         when(mapper.taskLockConfig()).thenReturn(lockConfig());
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.taskRuntimeGate(7L, 11L, "TASK-IG"))
                 .thenReturn(new AppTaskAssignmentMapper.TaskRuntimeGateRow("active", "pending", 24, 96));
         when(proofVerifier.sourceEnvironment()).thenReturn("PRODUCTION");
@@ -77,6 +80,19 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void cloudShareUsesManagedEightGbRoutingCapabilityInsteadOfPhysicalVram() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(
+                device("SHARE", "SHARE", "Cloud Share", 0));
+        when(mapper.eligibleTasks(8)).thenReturn(List.of(task("TASK-EM", "EM", 8, "pending")));
+
+        var result = service.claim(7L, "claim-cloud-share", new AppTaskClaimRequest(11L));
+
+        assertThat(result.getData().taskId()).isEqualTo("TASK-EM");
+        verify(mapper).eligibleTasks(8);
+        verify(mapper, never()).eligibleTasks(0);
+    }
+
+    @Test
     void killedTaskIsBlockedEvenIfAStaleMapperReturnsIt() {
         when(mapper.eligibleTasks(96)).thenReturn(List.of(task("TASK-KILLED", "IG", 24, "已 kill")));
 
@@ -92,6 +108,21 @@ class AppTaskAssignmentServiceTest {
 
         assertThatThrownBy(() -> service.claim(7L, "claim-vram", new AppTaskClaimRequest(11L)))
                 .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_NO_ELIGIBLE_TASK");
+    }
+
+    @Test
+    void anyInvalidActiveE2MinimumVramFailsTheWholeNewAssignmentClosed() {
+        when(mapper.eligibleTasks(96)).thenReturn(List.of(
+                task("TASK-IG", "IG", 24, "pending"),
+                new AppTaskAssignmentMapper.TaskConfigRow(
+                        "TASK-BROKEN", "Broken", "EM", "model-v1",
+                        new BigDecimal("0.20"), new BigDecimal("0.40"), null,
+                        "active", "pending")));
+
+        assertThatThrownBy(() -> service.claim(7L, "claim-invalid-e2", new AppTaskClaimRequest(11L)))
+                .isInstanceOf(BizException.class).hasMessageContaining("E2_TASK_CONFIG_INVALID");
+        verify(mapper, never()).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
     }
 
     @Test
@@ -234,8 +265,195 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
-    void developmentReadsOnlyRunScopedDevicesButExposesTheCanonicalAppContract() {
+    void developmentReadsEveryActiveDevelopmentAccountsProductionShapedDevicesAndSettlementHistory() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.developmentOwnedDevices(7L))
+                .thenReturn(List.of(device("phone", "PHONE", "你的手机", 8)));
+        when(mapper.developmentAssignments(7L, "PRODUCTION"))
+                .thenReturn(List.of(new AppTaskAssignmentMapper.AssignmentRow(
+                        "CTA-1", 11L, null, "Development settled compute task", "LLM_INFERENCE",
+                        "gemma4-e4b-ctx32k", "Gemma AI Support", "COMPLETED", new BigDecimal("68.40"),
+                        45, 0, NOW.minusMinutes(1), null, NOW, "CTR-1", null, null)));
+
+        var result = service.assignments(7L);
+
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
+        assertThat(result.getData().devices()).hasSize(1);
+        assertThat(result.getData().devices().get(0).currentTask()).isNull();
+        assertThat(result.getData().devices().get(0).recentTasks()).hasSize(1);
+        assertThat(result.getData().devices().get(0).recentTasks().get(0).receiptNo()).isEqualTo("CTR-1");
+        assertThat(result.getData().devices().get(0).recentTasks().get(0).taskClass()).isEqualTo("LL");
+        verify(mapper, never()).ownedDevices(anyLong());
+        verify(mapper, never()).assignments(anyLong(), anyString());
+        verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
+    }
+
+    @Test
+    void completionUsesTheRewardFrozenAtClaimForReceiptWalletLedgerAndEvents() {
+        BigDecimal adjustedReward = new BigDecimal("0.257374");
+        var running = assignment("RUNNING", null, null, adjustedReward);
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(running);
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.257374"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        var result = service.complete(7L, "CTA-1", "complete-adjusted", validProof());
+
+        assertThat(result.getData().rewardUsdt()).isEqualByComparingTo(adjustedReward);
+        verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
+                eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+        verify(mapper).creditWallet(7L, 11L, adjustedReward, NOW);
+        verify(mapper).insertWalletLedger(7L, 11L, "CTA-1", adjustedReward,
+                new BigDecimal("10.257374"), NOW);
+        verify(mapper).insertEarningEvent(anyString(), eq(7L), eq(11L), anyString(),
+                eq(adjustedReward), eq(NOW));
+        verify(mapper, never()).e3CapacityConfig();
+    }
+
+    @Test
+    void claimFreezesTheServerE3CapacityAdjustedRewardForReceiptAndWalletSettlement() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(
+                device("stellarbox-pro", "PRO", "StellarBox Pro", 192, null, NOW.minusMonths(4)));
+        when(mapper.eligibleTasks(192)).thenReturn(List.of(task("TASK-IG", "IG", 24, "pending")));
+
+        var claimed = service.claim(7L, "claim-aged-pro", new AppTaskClaimRequest(11L));
+
+        assertThat(claimed.getData().rewardUsdt()).isEqualByComparingTo("0.257374");
+        verify(mapper).insertAssignment(anyString(), eq(7L), eq(11L), any(),
+                eq(new BigDecimal("0.257374")), eq(18), eq(150), anyString(), any(),
+                eq("PRODUCTION"), eq(NOW), any());
+    }
+
+    @Test
+    void claimFailsClosedBeforeCreatingATaskWhenAnyRequiredE3ConfigKeyIsMissing() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig().stream()
+                .filter(row -> !"cycleMonths".equals(row.configKey()))
+                .toList());
+
+        assertThatThrownBy(() -> service.claim(7L, "claim-missing-e3", new AppTaskClaimRequest(11L)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("E3_CAPACITY_CONFIG_INVALID");
+
+        verify(mapper, never()).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
+    }
+
+    @Test
+    void developmentReadsTheActiveAccountsCanonicalComputeReceipt() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.developmentReceipt(7L, "R-CTA-1")).thenReturn(
+                new AppTaskAssignmentMapper.ReceiptRow(
+                        "R-CTA-1", "CTA-1", 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
+                        8, "TASK-LL", "Development settled compute task", "LLM_INFERENCE",
+                        "gemma4-e4b-ctx32k", "Gemma AI Support", new BigDecimal("68.400000"),
+                        BigDecimal.ZERO, "SETTLED", "a".repeat(64), NOW.minusSeconds(45), NOW, 45));
+
+        var result = service.receipt(7L, "R-CTA-1");
+
+        assertThat(result.getData().receiptNo()).isEqualTo("R-CTA-1");
+        assertThat(result.getData().proofHash()).isEqualTo("a".repeat(64));
+        assertThat(result.getData().deviceName()).isEqualTo("你的手机");
+        assertThat(result.getData().durationSec()).isEqualTo(45);
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
+        verify(mapper, never()).receipt(anyLong(), anyString());
+    }
+
+    @Test
+    void developmentPaginatesEveryCanonicalComputeReceiptBeyondTheAssignmentPreview() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.developmentReceipts(7L, 0, 3)).thenReturn(List.of(
+                receiptRow("R-CTA-3", "CTA-3", NOW),
+                receiptRow("R-CTA-2", "CTA-2", NOW.minusMinutes(1)),
+                receiptRow("R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
+
+        var result = service.receipts(7L, 0, 2);
+
+        assertThat(result.getData().items()).extracting("receiptNo")
+                .containsExactly("R-CTA-3", "R-CTA-2");
+        assertThat(result.getData().nextOffset()).isEqualTo(2);
+        assertThat(result.getData().source()).isEqualTo("server");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().serverCanonical()).isTrue();
+        verify(mapper).developmentReceipts(7L, 0, 3);
+        verify(mapper, never()).receipts(anyLong(), anyInt(), anyInt());
+    }
+
+    @Test
+    void receiptPaginationRejectsInvalidBoundsBeforeDatabaseAccess() {
+        assertThatThrownBy(() -> service.receipts(7L, -1, 20))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_PAGE_INVALID");
+        assertThatThrownBy(() -> service.receipts(7L, 0, 51))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_PAGE_INVALID");
+        verify(mapper, never()).receipts(anyLong(), anyInt(), anyInt());
+        verify(mapper, never()).developmentReceipts(anyLong(), anyInt(), anyInt());
+    }
+
+    @Test
+    void productionCannotReadAnotherUsersComputeReceipt() {
+        when(mapper.receipt(7L, "R-OTHER-USER")).thenReturn(null);
+
+        assertThatThrownBy(() -> service.receipt(7L, "R-OTHER-USER"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_NOT_FOUND");
+        verify(mapper).receipt(7L, "R-OTHER-USER");
+    }
+
+    @Test
+    void developmentRejectsAnUnsettledComputeReceipt() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.developmentReceipt(7L, "R-PENDING-1")).thenReturn(
+                new AppTaskAssignmentMapper.ReceiptRow(
+                        "R-PENDING-1", "PENDING-1", 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
+                        8, "TASK-LL", "Pending compute task", "LL", "gemma4-e4b-ctx32k",
+                        "Gemma AI Support", new BigDecimal("0.250000"), BigDecimal.ZERO,
+                        "PENDING", "b".repeat(64), NOW.minusSeconds(45), NOW, 45));
+
+        assertThatThrownBy(() -> service.receipt(7L, "R-PENDING-1"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_DATA_INVALID");
+    }
+
+    @Test
+    void developmentRejectsAComputeReceiptWithMissingReward() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
+        when(mapper.developmentReceipt(7L, "R-MISSING-REWARD-1")).thenReturn(
+                new AppTaskAssignmentMapper.ReceiptRow(
+                        "R-MISSING-REWARD-1", "MISSING-REWARD-1", 11L, "DEV-11", "你的手机",
+                        "MOBILE", "Adreno", 8, "TASK-LL", "Completed compute task", "LL",
+                        "gemma4-e4b-ctx32k", "Gemma AI Support", null, BigDecimal.ZERO,
+                        "SETTLED", "c".repeat(64), NOW.minusSeconds(45), NOW, 45));
+
+        assertThatThrownBy(() -> service.receipt(7L, "R-MISSING-REWARD-1"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_DATA_INVALID");
+    }
+
+    @Test
+    void acceptanceSandboxReadsOnlyItsRunScopedDevices() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
         when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
                 .thenReturn("phone-activation-e2e-20260817");
         when(environment.getProperty("nexion.wheel.sandbox.run-id", "phone-activation-e2e-20260817"))
@@ -246,20 +464,17 @@ class AppTaskAssignmentServiceTest {
 
         var result = service.assignments(7L);
 
-        assertThat(result.getData().source()).isEqualTo("server");
         assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().runId()).isEmpty();
-        assertThat(result.getData().serverCanonical()).isTrue();
         assertThat(result.getData().devices()).hasSize(1);
-        assertThat(result.getData().devices().get(0).currentTask()).isNull();
         assertThat(result.getData().devices().get(0).recentTasks()).isEmpty();
-        verify(mapper, never()).ownedDevices(anyLong());
-        verify(mapper, never()).assignments(anyLong(), anyString());
+        verify(mapper, never()).developmentOwnedDevices(anyLong());
+        verify(mapper, never()).developmentAssignments(anyLong(), anyString());
     }
 
     @Test
     void localSandboxRejectsReservedLegacyRunBeforeReadingAnyDevice() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
         when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
                 .thenReturn("LEGACY_UNSCOPED");
         when(environment.getProperty("nexion.wheel.sandbox.run-id", "LEGACY_UNSCOPED"))
@@ -305,8 +520,19 @@ class AppTaskAssignmentServiceTest {
 
     private AppTaskAssignmentMapper.DeviceRow device(
             String type, String tier, String name, int vram) {
+        return device(type, tier, name, vram, NOW.minusDays(1));
+    }
+
+    private AppTaskAssignmentMapper.DeviceRow device(
+            String type, String tier, String name, int vram, LocalDateTime purchasedAt) {
+        return device(type, tier, name, vram, purchasedAt, NOW.minusDays(1));
+    }
+
+    private AppTaskAssignmentMapper.DeviceRow device(
+            String type, String tier, String name, int vram,
+            LocalDateTime purchasedAt, LocalDateTime activatedAt) {
         return new AppTaskAssignmentMapper.DeviceRow(11L, "DEV-11", type, tier, name, "ACTIVE",
-                NOW.minusDays(1), vram, "SG", "ONLINE", null, false);
+                type, purchasedAt, activatedAt, vram, "SG", "ONLINE", null, false);
     }
 
     private AppTaskAssignmentMapper.TaskConfigRow task(String id, String type, int minVram, String kill) {
@@ -316,10 +542,25 @@ class AppTaskAssignmentServiceTest {
 
     private AppTaskAssignmentMapper.AssignmentRow assignment(
             String status, LocalDateTime completedAt, String receiptNo) {
+        return assignment(status, completedAt, receiptNo, new BigDecimal("0.300000"));
+    }
+
+    private AppTaskAssignmentMapper.AssignmentRow assignment(
+            String status, LocalDateTime completedAt, String receiptNo, BigDecimal reward) {
         return new AppTaskAssignmentMapper.AssignmentRow("CTA-1", 11L, "TASK-IG", "Canonical IG", "IG",
-                "model-v1", "Nexion App", status, new BigDecimal("0.300000"), 18, 30,
+                "model-v1", "Nexion App", status, reward, 18, 30,
                 NOW.minusMinutes(1), NOW.plusHours(23), completedAt, receiptNo,
                 "a".repeat(64), NOW.plusHours(23));
+    }
+
+    private AppTaskAssignmentMapper.ReceiptRow receiptRow(
+            String receiptNo, String taskNo, LocalDateTime completedAt) {
+        return new AppTaskAssignmentMapper.ReceiptRow(
+                receiptNo, taskNo, 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
+                8, "TASK-LL", "Development settled compute task", "LLM_INFERENCE",
+                "gemma4-e4b-ctx32k", "Gemma AI Support", new BigDecimal("0.250000"),
+                BigDecimal.ZERO, "SETTLED", "a".repeat(64), completedAt.minusSeconds(45),
+                completedAt, 45);
     }
 
     private AppTaskCompleteRequest validProof() {
@@ -331,5 +572,31 @@ class AppTaskAssignmentServiceTest {
         return List.of(new AppTaskAssignmentMapper.ConfigRow("taskLockS1", "30"),
                 new AppTaskAssignmentMapper.ConfigRow("taskLockPro", "150"),
                 new AppTaskAssignmentMapper.ConfigRow("taskLockRack", "480"));
+    }
+
+    private List<AppTaskAssignmentMapper.ConfigRow> capacityConfig() {
+        return java.util.Map.ofEntries(
+                        java.util.Map.entry("capacityBand1DeltaPct", "-3"),
+                        java.util.Map.entry("capacityBand2DeltaPct", "-6"),
+                        java.util.Map.entry("capacityBand3DeltaPct", "-23.7"),
+                        java.util.Map.entry("stageEarlyEnd", "3"),
+                        java.util.Map.entry("stageMidEnd", "8"),
+                        java.util.Map.entry("cycleMonths", "13"),
+                        java.util.Map.entry("capacityFloorPct", "22"),
+                        java.util.Map.entry("capacitySubsidyDays", "30"),
+                        java.util.Map.entry("taskLockS1", "30"),
+                        java.util.Map.entry("taskLockPro", "150"),
+                        java.util.Map.entry("taskLockRack", "480"),
+                        java.util.Map.entry("capacityApplyToPhone", "false"),
+                        java.util.Map.entry("capacityApplyToCloudShare", "false"),
+                        java.util.Map.entry("capacityApplyToPcGpu", "false"),
+                        java.util.Map.entry("capacityApplyToS1", "true"),
+                        java.util.Map.entry("capacityApplyToPro", "true"),
+                        java.util.Map.entry("capacityApplyToProV2", "true"),
+                        java.util.Map.entry("capacityApplyToRackP1", "true"),
+                        java.util.Map.entry("capacityApplyToRackP2", "true"))
+                .entrySet().stream()
+                .map(entry -> new AppTaskAssignmentMapper.ConfigRow(entry.getKey(), entry.getValue()))
+                .toList();
     }
 }

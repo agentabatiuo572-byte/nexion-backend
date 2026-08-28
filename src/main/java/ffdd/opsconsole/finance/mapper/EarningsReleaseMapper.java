@@ -23,22 +23,22 @@ public interface EarningsReleaseMapper {
                SET w.usdt_available=w.usdt_available+#{amount},
                    w.lifetime_earned=w.lifetime_earned+#{amount},w.version=w.version+1,w.updated_at=NOW()
              WHERE w.user_id=#{userId} AND w.is_deleted=0
-               AND ((#{sourceEnvironment}='PRODUCTION' AND u.sandbox=0 AND w.sandbox=0)
-                 OR (#{sourceEnvironment}='SANDBOX' AND u.sandbox=1 AND w.sandbox=1))
+               AND u.sandbox=#{expectedSandbox} AND w.sandbox=#{expectedSandbox}
             """)
     int creditUsdt(@Param("userId") Long userId,@Param("amount") BigDecimal amount,
-                   @Param("sourceEnvironment") String sourceEnvironment);
+                   @Param("sourceEnvironment") String sourceEnvironment,
+                   @Param("expectedSandbox") int expectedSandbox);
     @Update("""
             UPDATE nx_user_wallet w
               JOIN nx_user u ON u.id=w.user_id AND u.is_deleted=0 AND u.status='ACTIVE'
                SET w.nex_available=w.nex_available+#{amount},
                    w.lifetime_earned=w.lifetime_earned+#{amount},w.version=w.version+1,w.updated_at=NOW()
              WHERE w.user_id=#{userId} AND w.is_deleted=0
-               AND ((#{sourceEnvironment}='PRODUCTION' AND u.sandbox=0 AND w.sandbox=0)
-                 OR (#{sourceEnvironment}='SANDBOX' AND u.sandbox=1 AND w.sandbox=1))
+               AND u.sandbox=#{expectedSandbox} AND w.sandbox=#{expectedSandbox}
             """)
     int creditNex(@Param("userId") Long userId,@Param("amount") BigDecimal amount,
-                  @Param("sourceEnvironment") String sourceEnvironment);
+                  @Param("sourceEnvironment") String sourceEnvironment,
+                  @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT asset,bucket,COALESCE(SUM(amount),0) amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND status='ACTIVE' AND is_deleted=0 GROUP BY asset,bucket")
     List<BucketAmount> buckets(@Param("userId") Long userId);
     @Select("SELECT COALESCE(SUM(amount),0) FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0")

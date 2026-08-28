@@ -4,9 +4,27 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.platform.infrastructure.PlatformConfigItemEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Insert;
 import java.util.Map;
 
 public interface PlatformConfigItemMapper extends BaseMapper<PlatformConfigItemEntity> {
+    @Insert("""
+            INSERT IGNORE INTO nx_config_item
+                (config_key, config_value, value_type, config_group, visibility, remark,
+                 status, created_at, updated_at, is_deleted)
+            VALUES
+                (#{configKey}, #{configValue}, #{valueType}, #{configGroup}, #{visibility}, #{remark},
+                 #{status}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)
+            """)
+    int insertIfConfigKeyAbsent(
+            @Param("configKey") String configKey,
+            @Param("configValue") String configValue,
+            @Param("valueType") String valueType,
+            @Param("configGroup") String configGroup,
+            @Param("visibility") String visibility,
+            @Param("remark") String remark,
+            @Param("status") Integer status);
+
     @Select("""
             SELECT id, config_key, config_value, value_type, config_group, visibility, remark,
                    status, created_at, updated_at, is_deleted

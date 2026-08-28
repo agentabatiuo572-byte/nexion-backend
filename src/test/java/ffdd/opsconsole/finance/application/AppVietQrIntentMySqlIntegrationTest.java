@@ -124,6 +124,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                         cipher,
                         session.getMapper(AppVietQrIntentMapper.class),
                         mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
+                        mock(VietQrReceiptEvidenceService.class),
                         Clock.system(ZoneId.of("Asia/Shanghai")));
                 BigDecimal walletBefore = walletAvailable(connection, userId);
                 BigDecimal cumulativeBefore = walletCumulativeDeposit(connection, userId);
@@ -142,7 +143,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                                 String.valueOf(created.getData().get("memoCode")),
                                 new BigDecimal("659750"),
                                 receivedAt.atZone(ZoneId.of("Asia/Shanghai")).toOffsetDateTime(),
-                                "MYSQL-EVIDENCE-" + suffix,
+                                receiptEvidence(),
                                 "register real mysql bank receipt",
                                 "integration-admin"));
                 assertThat(bank).containsKey("accountNumber");
@@ -201,7 +202,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                                         String.valueOf(created.getData().get("memoCode")),
                                         new BigDecimal("659750"),
                                         receivedAt.atZone(ZoneId.of("Asia/Shanghai")).toOffsetDateTime(),
-                                        "MYSQL-EVIDENCE-SUP-" + suffix,
+                                        receiptEvidence(),
                                         "register terminal supplemental receipt",
                                         "integration-admin"));
                 assertThat(supplementalReceipt.getData())
@@ -239,7 +240,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                                         String.valueOf(rollbackIntent.getData().get("memoCode")),
                                         new BigDecimal("659750"),
                                         receivedAt.atZone(ZoneId.of("Asia/Shanghai")).toOffsetDateTime(),
-                                        "MYSQL-EVIDENCE-ROLLBACK-" + suffix,
+                                        receiptEvidence(),
                                         "register rollback mysql receipt",
                                         "integration-admin"));
                 long rollbackReconciliationId =
@@ -296,7 +297,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                                         String.valueOf(cancellable.getData().get("memoCode")),
                                         new BigDecimal("659750"),
                                         receivedAt.atZone(ZoneId.of("Asia/Shanghai")).toOffsetDateTime(),
-                                        "MYSQL-EVIDENCE-CANCEL-" + suffix,
+                                        receiptEvidence(),
                                         "register receipt after app cancellation",
                                         "integration-admin"));
                 assertThat(cancelledReceipt.getData())
@@ -328,7 +329,7 @@ class AppVietQrIntentMySqlIntegrationTest {
                                         new BigDecimal("200000"),
                                         receivedAt.atZone(ZoneId.of("Asia/Shanghai"))
                                                 .toOffsetDateTime(),
-                                        "MYSQL-EVIDENCE-FUSE-" + suffix,
+                                        receiptEvidence(),
                                         "fuse account with physical receipt",
                                         "integration-admin"))
                         .getData())
@@ -527,5 +528,9 @@ class AppVietQrIntentMySqlIntegrationTest {
         return HexFormat.of().formatHex(
                 MessageDigest.getInstance("SHA-256")
                         .digest(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private String receiptEvidence() {
+        return "media:vqr_123e4567e89b12d3a456426614174000";
     }
 }

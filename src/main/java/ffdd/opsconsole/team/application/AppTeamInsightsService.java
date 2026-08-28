@@ -40,7 +40,7 @@ public class AppTeamInsightsService {
             return ApiResult.fail(422, "TEAM_LEADERBOARD_PAGE_INVALID");
         }
         Scope scope = scope(userId);
-        if (scope.sandbox() == 1) {
+        if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(TeamSandboxFactGenerator.leaderboard(scope.runId(), userId, period,
                     requestedPage, requestedPageSize));
         }
@@ -74,7 +74,7 @@ public class AppTeamInsightsService {
 
     public ApiResult<Map<String, Object>> commissions(Long userId) {
         Scope scope = scope(userId);
-        if (scope.sandbox() == 1) {
+        if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(TeamSandboxFactGenerator.commissions(scope.runId(), userId));
         }
         List<Map<String, Object>> events = mapper.commissionEvents(userId, 100).stream().map(this::commission).toList();
@@ -91,7 +91,7 @@ public class AppTeamInsightsService {
         String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
         if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
         Scope scope = scope(userId);
-        if (scope.sandbox() == 1) {
+        if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period));
         }
         List<Map<String, Object>> events = mapper.unilevelEvents(userId, scope.sandbox(), period).stream()
@@ -108,7 +108,7 @@ public class AppTeamInsightsService {
 
     public ApiResult<Map<String, Object>> leadershipPool(Long userId) {
         Scope scope = scope(userId);
-        if (scope.sandbox() == 1) {
+        if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(TeamSandboxFactGenerator.leadershipPool(scope.runId(), userId));
         }
         var distribution = mapper.rankDistribution(scope.sandbox());
@@ -187,9 +187,14 @@ public class AppTeamInsightsService {
         if (user == null || user.sandbox() == null) throw new BizException(403, "TEAM_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles()).map(String::trim).map(String::toLowerCase)
                 .filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
+        boolean development = profiles.size() == 1 && "dev".equals(profiles.iterator().next());
+        boolean isolated = profiles.size() == 1 && "test".equals(profiles.iterator().next());
         boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
-        if (!isolated && !production) throw new BizException(503, "TEAM_PROFILE_INVALID");
+        if (!development && !isolated && !production) throw new BizException(503, "TEAM_PROFILE_INVALID");
+        if (development) {
+            requireDevelopmentUser(userId, user.sandbox());
+            return new Scope(1, user.vRank(), "PRODUCTION", "");
+        }
         if (isolated && user.sandbox() != 1) throw new BizException(403, "TEAM_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "TEAM_PRODUCTION_USER_REQUIRED");
         if (production) return new Scope(0, user.vRank(), "PRODUCTION", "");
@@ -216,6 +221,9 @@ public class AppTeamInsightsService {
         if (page > Long.MAX_VALUE / pageSize) return total;
         long offset = (page - 1L) * pageSize;
         return offset >= total ? total : (int) offset;
+    }
+    private void requireDevelopmentUser(Long userId, Integer sandbox) {
+        if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "TEAM_DEVELOPMENT_USER_REQUIRED");
     }
     private record Scope(Integer sandbox, String vRank, String sourceEnvironment, String runId) { }
 }

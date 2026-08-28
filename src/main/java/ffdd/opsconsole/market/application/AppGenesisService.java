@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -76,7 +77,8 @@ public class AppGenesisService {
                 "market", linked("enabled", marketEnabled, "restoreOwner", "J1", "internalP2POnly", true),
                 "emission", linked("open", emissionOpen(), "owner", "H1", "dailyRatePct", nz(series.dailyEmissionRatePct())),
                 "sale", salePolicy.publicView(clock.instant()),
-                "listings", mapper.listings(), "transactions", mapper.transactions(),
+                "listings", mapper.listings().stream().map(this::listingView).toList(),
+                "transactions", mapper.transactions().stream().map(this::transactionView).toList(),
                 "marketStats", statsView(),
                 "serverCanonical", true,
                 "halted", killSwitch.halted(),
@@ -131,7 +133,7 @@ public class AppGenesisService {
         requireGenesisSubject(userId);
         final String requestKey = requireIdempotencyKey(idempotencyKey);
         int quantity = request == null || request.quantity() == null ? 0 : request.quantity();
-        if (quantity < 1 || quantity > 20) throw new BizException(422, "GENESIS_QUANTITY_INVALID");
+        if (quantity < 1) throw new BizException(422, "GENESIS_QUANTITY_INVALID");
         return once("PRIMARY_PURCHASE", userId, requestKey, quantity,
                 () -> purchaseInternal(userId, requestKey, quantity));
     }
@@ -315,7 +317,9 @@ public class AppGenesisService {
     private Map<String, Object> accountView(Long userId, AppGenesisMapper.SeriesRow series) {
         SalePolicy policy = salePolicy(series);
         return linked("series", seriesView(series, mapper.holdingCount(series.seriesCode())),
-                "holdings", mapper.holdings(userId), "emissions", mapper.emissions(userId),
+                "holdings", mapper.holdings(userId).stream().map(this::holdingView).toList(),
+                "emissions", mapper.emissions(userId).stream().map(this::emissionView).toList(),
+                "orders", mapper.userTransactions(userId).stream().map(this::transactionView).toList(),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled(),
                 "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),
                 "eligibility", eligibilityView(userId, series, policy), "serverCanonical", true,
@@ -349,6 +353,33 @@ public class AppGenesisService {
                 "lastSaleUsdt", stats.lastSaleUsdt() == null ? null : money(stats.lastSaleUsdt()));
     }
 
+    private Map<String,Object> holdingView(AppGenesisMapper.HoldingRow row) {
+        return linked("holdingNo",row.holdingNo(),"seriesCode",row.seriesCode(),
+                "acquiredPriceUsdt",money(row.acquiredPriceUsdt()),"status",row.status(),
+                "listingPriceUsdt",row.listingPriceUsdt()==null?null:money(row.listingPriceUsdt()),
+                "acquiredAt",apiTime(row.acquiredAt()),"listedAt",apiTime(row.listedAt()));
+    }
+
+    private Map<String,Object> listingView(AppGenesisMapper.ListingRow row) {
+        return linked("holdingNo",row.holdingNo(),"seriesCode",row.seriesCode(),
+                "askPriceUsdt",money(row.askPriceUsdt()),"listedAt",apiTime(row.listedAt()),"seller",row.seller());
+    }
+
+    private Map<String,Object> transactionView(AppGenesisMapper.TransactionRow row) {
+        return linked("orderNo",row.orderNo(),"orderType",row.orderType(),"quantity",row.quantity(),
+                "unitPriceUsdt",money(row.unitPriceUsdt()),"amountUsdt",money(row.amountUsdt()),
+                "royaltyUsdt",money(row.royaltyUsdt()),"completedAt",apiTime(row.completedAt()));
+    }
+
+    private Map<String,Object> emissionView(AppGenesisMapper.EmissionRow row) {
+        return linked("batchNo",row.batchNo(),"holdingNo",row.holdingNo(),"amountUsdt",money(row.amountUsdt()),
+                "status",row.status(),"paidAt",apiTime(row.paidAt()));
+    }
+
+    private String apiTime(LocalDateTime value) {
+        return value == null ? null : value.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString();
+    }
+
     private void requireEligibleUser(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy salePolicy,
                                      int acquiringQuantity) {
         if (!salePolicy.available()) throw new BizException(503, "GENESIS_SALE_POLICY_UNAVAILABLE");
@@ -376,7 +407,6 @@ public class AppGenesisService {
         long owned = mapper.userHoldingCount(userId, series.seriesCode());
         List<String> reasons = new java.util.ArrayList<>();
         int ageDays = user.accountAgeDays() == null ? 0 : Math.max(0, user.accountAgeDays());
-        boolean hasGenesisInvite = catalogService != null && catalogService.hasRedeemedInvite(userId);
         if (!policy.available()) reasons.add("SALE_POLICY_UNAVAILABLE");
         if (policy.eligibilityEnabled() && ageDays < policy.minAccountAgeDays()) reasons.add("ACCOUNT_AGE_REQUIRED");
         if (user.countryCode() == null || user.countryCode().length() != 2) reasons.add("COUNTRY_REQUIRED");
@@ -389,8 +419,7 @@ public class AppGenesisService {
                 "ownedCount", owned, "maxPerUser", max,
                 "remainingCap", Math.max(0L, (long) max - owned),
                 "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
-                "accountAgeDays", ageDays, "hasGenesisInvite", hasGenesisInvite,
-                "mode", "any-of", "appliesTo", "both", "halted", !marketEnabled(),
+                "accountAgeDays", ageDays, "halted", !marketEnabled(),
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "");
         result.putAll(holderProjection(userId, series.seriesCode(), owned, reasons));
         return result;
@@ -558,22 +587,6 @@ public class AppGenesisService {
                 "nx_emergency_control_setting:" + KILL_KEY, enabled);
     }
 
-    public ApiResult<Map<String,Object>> redeemInvite(Long userId,String idempotencyKey,String code){
-        if(runtimeMode()==RuntimeMode.SANDBOX && sandbox.isPresent())
-            return sandbox.get().genesisRedeemInvite(userId,idempotencyKey,code);
-        if(catalogService==null) throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");
-        requireGenesisSubject(userId);
-        String normalized = code == null ? "" : code.trim().toUpperCase(Locale.ROOT);
-        ApiResult<Map<String,Object>> result = once("INVITE_REDEEM", userId, idempotencyKey, normalized,
-                () -> catalogService.redeem(userId, normalized));
-        Map<String,Object> receipt = new LinkedHashMap<>(result.getData());
-        receipt.put("serverCanonical", true);
-        receipt.put("sourceEnvironment", "PRODUCTION");
-        receipt.put("runId", "");
-        receipt.put("source", "nx_genesis_invite_code");
-        return new ApiResult<>(result.getCode(), result.getMessage(), receipt);
-    }
-
     private boolean emissionOpen() {
         return config.activeValue(EMISSION_GATE_KEY).map(this::switchOn).orElse(false);
     }
@@ -683,7 +696,6 @@ public class AppGenesisService {
         return linked("eligible", false, "reasons", List.of("SANDBOX_HOLD"),
                 "ownedCount", 0L, "maxPerUser", 0, "remainingCap", 0L,
                 "minAccountAgeDays", 0, "accountAgeDays", 0,
-                "hasGenesisInvite", false, "mode", "any-of", "appliesTo", "both",
                 "halted", true, "serverCanonical", true,
                 "sourceEnvironment", "SANDBOX", "runId", runId);
     }

@@ -110,6 +110,9 @@ public interface TreasuryLedgerRepository {
 
     Optional<BigDecimal> latestNexUsdtPrice();
 
+    /** Acquires a transaction-scoped, database-backed mutex for a treasury command. */
+    void lockOperationMutex(String lockKey);
+
     void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey);
 
     default void recordWithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {

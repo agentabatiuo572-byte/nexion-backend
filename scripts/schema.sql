@@ -955,6 +955,7 @@ CREATE TABLE IF NOT EXISTS nx_wallet_bank_card (
   cardholder_name VARCHAR(80) NOT NULL,
   brand VARCHAR(32) NOT NULL,
   last4 VARCHAR(4) NOT NULL,
+  expiry_label VARCHAR(5) NULL,
   country_code VARCHAR(8) NULL,
   status VARCHAR(32) NOT NULL,
   is_default TINYINT NOT NULL DEFAULT 0,
@@ -1287,7 +1288,9 @@ CREATE TABLE IF NOT EXISTS nx_product (
   hashrate DECIMAL(18,6) NOT NULL DEFAULT 0,
   estimated_daily_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_nex DECIMAL(18,6) NOT NULL DEFAULT 0,
-  stock INT NOT NULL DEFAULT 0,
+    stock INT NOT NULL DEFAULT 0,
+    inventory_mode VARCHAR(16) NOT NULL DEFAULT 'FINITE',
+    trial_eligible TINYINT NOT NULL DEFAULT 0,
   cover_url VARCHAR(512) NULL,
   detail_image_urls TEXT NULL,
   badge VARCHAR(64) NULL,
@@ -1318,7 +1321,9 @@ CREATE TABLE IF NOT EXISTS nx_product (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_product_no (product_no),
   KEY idx_product_sale (status),
-  KEY idx_product_store (store_visible, store_status, sort_order)
+  KEY idx_product_store (store_visible, store_status, sort_order),
+  CONSTRAINT chk_product_inventory_mode CHECK (inventory_mode IN ('FINITE','UNLIMITED')),
+  CONSTRAINT chk_product_unlimited_share CHECK (inventory_mode = 'FINITE' OR UPPER(product_type) = 'SHARE')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'detail_image_urls') = 0,
@@ -4604,6 +4609,13 @@ VALUES
 INSERT IGNORE INTO nx_config_item
   (config_key,config_value,value_type,config_group,visibility,remark,status,is_deleted)
 VALUES
+  ('market.genesis.ops.eligibility.enabled','true','BOOLEAN','MARKET_GENESIS_OPS','ADMIN','G4 server-authoritative Genesis eligibility switch',1,0),
+  ('market.genesis.ops.eligibility.maxPerUser','5','INTEGER','MARKET_GENESIS_OPS','ADMIN','G4 server-authoritative Genesis holding cap per user',1,0),
+  ('market.genesis.ops.eligibility.minAccountAgeDays','0','INTEGER','MARKET_GENESIS_OPS','ADMIN','G4 server-authoritative minimum account age in days',1,0),
+  ('market.genesis.ops.presale.enabled','false','BOOLEAN','MARKET_GENESIS_OPS','ADMIN','G4 Genesis presale switch',1,0),
+  ('market.genesis.ops.presale.showCountdown','true','BOOLEAN','MARKET_GENESIS_OPS','ADMIN','G4 Genesis presale countdown visibility',1,0),
+  ('market.genesis.ops.presale.unitPrice','9999','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 Genesis presale unit price',1,0),
+  ('market.genesis.ops.presale.maxPerUser','5','INTEGER','MARKET_GENESIS_OPS','ADMIN','G4 Genesis presale purchase cap per user',1,0),
   ('market.genesis.ops.holder.allocationNexPerHolding','80000','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder reserved allocation per active Genesis holding',1,0),
   ('market.genesis.ops.holder.priorityTop1Percent','1','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder priority top one percent threshold',1,0),
   ('market.genesis.ops.holder.priorityTop3Percent','3','NUMBER','MARKET_GENESIS_OPS','ADMIN','G4 holder priority top three percent threshold',1,0),
@@ -6479,6 +6491,7 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
   tier VARCHAR(32) NOT NULL,
   price_usdt DECIMAL(18,6) NOT NULL,
   stock INT NOT NULL,
+  inventory_mode VARCHAR(16) NOT NULL DEFAULT 'FINITE',
   sold_count INT NOT NULL DEFAULT 0,
   device_type VARCHAR(64) NULL,
   generation VARCHAR(64) NULL,
@@ -6514,6 +6527,8 @@ CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
   UNIQUE KEY uk_commerce_sandbox_catalog_run_product (run_id,product_id),
   UNIQUE KEY uk_commerce_sandbox_catalog_run_no (run_id,product_no),
   CONSTRAINT chk_commerce_sandbox_catalog_stock CHECK (stock >= 0 AND sold_count >= 0),
+  CONSTRAINT chk_commerce_sandbox_catalog_inventory_mode CHECK (inventory_mode IN ('FINITE','UNLIMITED')),
+  CONSTRAINT chk_commerce_sandbox_catalog_unlimited_share CHECK (inventory_mode = 'FINITE' OR UPPER(device_type) = 'SHARE'),
   CONSTRAINT chk_commerce_sandbox_catalog_price CHECK (price_usdt > 0),
   CONSTRAINT chk_commerce_sandbox_catalog_source CHECK (source = 'mock' AND source_environment = 'SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -7080,4 +7095,32 @@ CREATE TABLE IF NOT EXISTS nx_growth_quest_sandbox (
   KEY idx_growth_quest_sandbox_user (run_id,user_id,source_environment,mission_status),
   CONSTRAINT chk_growth_quest_sandbox_source CHECK (source='mock' AND source_environment='SANDBOX'),
   CONSTRAINT chk_growth_quest_sandbox_status CHECK (mission_status IN ('PENDING','COMPLETED','CLAIMABLE','CLAIMED'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- D1 bank receipt uploads are immutable, server-classified proof assets. The
+-- opaque asset id can be bound once to a single reconciliation.
+CREATE TABLE IF NOT EXISTS nx_vietqr_receipt_evidence (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  asset_id VARCHAR(64) NOT NULL,
+  object_key VARCHAR(255) NOT NULL,
+  purpose VARCHAR(64) NOT NULL,
+  content_type VARCHAR(128) NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  content_sha256 CHAR(64) NOT NULL,
+  uploaded_by VARCHAR(128) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'AVAILABLE',
+  bound_resource_type VARCHAR(64) NULL,
+  bound_resource_id VARCHAR(96) NULL,
+  bound_by VARCHAR(128) NULL,
+  bound_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_vietqr_receipt_evidence_asset (asset_id),
+  UNIQUE KEY uk_vietqr_receipt_evidence_object (object_key),
+  KEY idx_vietqr_receipt_evidence_status (purpose, status, created_at),
+  KEY idx_vietqr_receipt_evidence_bound (bound_resource_type, bound_resource_id),
+  CONSTRAINT chk_vietqr_receipt_evidence_status CHECK (status IN ('AVAILABLE', 'BOUND')),
+  CONSTRAINT chk_vietqr_receipt_evidence_size CHECK (size_bytes > 0 AND size_bytes <= 10485760)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -29,6 +29,8 @@ import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -36,6 +38,9 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -101,6 +106,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private static final String WITHDRAW_DISCLOSURE_GATE_KEY = "disclosure.gate.withdraw";
     private static final String WITHDRAW_GEO_EMERGENCY_KEY = "emergency.geo.j4.block.required";
     private static final String WITHDRAW_GEO_ENDPOINT_KEY = "withdraw";
+    private static final String D2_SCHEDULED_EXPIRY = "SCHEDULED_EXPIRY";
+    private static final String DEVELOPMENT_SIMULATED_DUE = "DEVELOPMENT_SIMULATED_DUE";
     private static final Pattern FIRST_DECIMAL = Pattern.compile("(\\d+(?:\\.\\d+)?)");
     private final PlatformConfigFacade configFacade;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -117,6 +124,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final TreasuryLedgerRepository treasuryLedgerRepository;
     private final EventOutboxService eventOutboxService;
     private final AdminOperatorRoleResolver operatorRoleResolver;
+    private final AppWithdrawalMapper appWithdrawalMapper;
+    private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -858,8 +867,16 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || request.withdrawalIds() == null || request.withdrawalIds().isEmpty()
-                || request.withdrawalIds().size() > 100 || !StringUtils.hasText(request.action())) {
+        if (request == null || request.withdrawalIds() == null || !StringUtils.hasText(request.action())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_BATCH_INVALID");
+        }
+        List<String> canonicalIds = request.withdrawalIds().stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
+        if (canonicalIds.isEmpty() || canonicalIds.size() > 100) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "WITHDRAWAL_BATCH_INVALID");
         }
         if (!validReason(request.reason())) {
@@ -873,21 +890,21 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "D2_BATCH_" + action,
                 idempotencyKey.trim(),
-                sha256("D2_BATCH|" + action + "|" + String.join(",", request.withdrawalIds()) + "|" + request.reason().trim()),
+                d2BatchRequestHash(action, canonicalIds, request),
                 ApiResult.class,
-                () -> executeD2Batch(idempotencyKey.trim(), request, action));
+                () -> executeD2Batch(idempotencyKey.trim(), request, action, canonicalIds));
         return result;
     }
 
     private ApiResult<Map<String, Object>> executeD2Batch(
             String idempotencyKey,
             WithdrawalBatchReviewRequest request,
-            String action) {
+            String action,
+            List<String> canonicalIds) {
         List<String> accepted = new java.util.ArrayList<>();
         List<String> rejected = new java.util.ArrayList<>();
         List<Map<String, Object>> conflicts = new java.util.ArrayList<>();
-        for (String rawId : request.withdrawalIds().stream().filter(StringUtils::hasText).distinct().toList()) {
-            String withdrawalId = rawId.trim();
+        for (String withdrawalId : canonicalIds) {
             if (isWithdrawalLockedByA2(withdrawalId)) {
                 conflicts.add(Map.of("withdrawalId", withdrawalId, "reason", "OBJECT_LOCKED_BY_A2"));
                 continue;
@@ -953,8 +970,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
         }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
-        if ("APPROVE".equals(action) && order.riskScore() == null) {
-            return ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE");
+        D2CurrentRisk currentRisk = null;
+        if ("APPROVE".equals(action)) {
+            currentRisk = currentD2Risk(order, LocalDateTime.now());
+            if (currentRisk.failureReason() != null) {
+                return ApiResult.fail(503, currentRisk.failureReason());
+            }
+            if ("freeze".equals(currentRisk.k3Action())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_CURRENT_ROUTE_REQUIRES_FREEZE");
+            }
+            if ("delay".equals(currentRisk.k3Action())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_CURRENT_ROUTE_REQUIRES_DELAY");
+            }
         }
         ApiResult<WithdrawalOrderView> formGuard = validateD2ActionFields(action, request, order);
         if (formGuard != null) {
@@ -985,9 +1012,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String blockedReason = approvalBlockReason(order, dailyLimitCount);
             if (blockedReason != null) {
                 auditWithdrawalReviewBlocked(order, action, blockedReason, dailyLimitCount, idempotencyKey, request);
-                int httpStatus = OpsErrorCode.COVERAGE_BELOW_REDLINE.name().equals(blockedReason)
-                        ? OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus()
-                        : OpsErrorCode.VALIDATION_FAILED.httpStatus();
+                int httpStatus = OpsErrorCode.COVERAGE_UNAVAILABLE.name().equals(blockedReason)
+                        ? OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus()
+                        : OpsErrorCode.COVERAGE_BELOW_REDLINE.name().equals(blockedReason)
+                                ? OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus()
+                                : OpsErrorCode.VALIDATION_FAILED.httpStatus();
                 return ApiResult.fail(httpStatus, blockedReason);
             }
         }
@@ -1057,56 +1086,100 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         int released = 0;
         for (String withdrawalNo : withdrawalRepository.findExpiredLifecycleNos(effectiveNow)) {
-            WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
-            if (order == null || !Set.of(D2WithdrawalStateMachine.EXTENDED_HOLD, D2WithdrawalStateMachine.FROZEN)
-                    .contains(D2WithdrawalStateMachine.canonical(order.status()))) {
-                continue;
+            if (releaseDueD2Lifecycle(
+                    withdrawalNo, effectiveNow, "system:d2-scheduler", D2_SCHEDULED_EXPIRY, null)
+                    == D2LifecycleReleaseResult.RELEASED) {
+                released++;
             }
-            boolean h1FastTrack = "H1_PHASE_COOLDOWN".equals(order.lifecycleOwner())
-                    && D2WithdrawalStateMachine.REVIEW_PASSED.equals(
-                            D2WithdrawalStateMachine.canonical(order.previousStatus()));
-            D2ExpiryDecision decision = h1FastTrack
-                    ? h1FastTrackDecision(order, effectiveNow)
-                    : new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                            "scheduled-review-due", "withdraw.review_due", null);
-            boolean transitioned;
-            if (D2WithdrawalStateMachine.EXTENDED_HOLD.equals(decision.status())) {
-                transitioned = withdrawalRepository.transitionStatusWithLifecycle(
-                        order.withdrawalNo(), order.status(), decision.status(), decision.reason(),
-                        decision.nextReviewAt(), "K3_EXPIRY_DELAY", "K3_DELAY_ONCE",
-                        D2WithdrawalStateMachine.REVIEW_PENDING);
-            } else {
-                transitioned = withdrawalRepository.releaseExpiredLifecycle(
-                        order.withdrawalNo(), order.status(), decision.status(),
-                        D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status()) ? null : decision.reason(),
-                        effectiveNow);
-            }
-            if (!transitioned) {
-                continue;
-            }
-            Map<String, Object> detail = new LinkedHashMap<>();
-            detail.put("from", D2WithdrawalStateMachine.canonical(order.status()));
-            detail.put("to", decision.status());
-            detail.put("owner", trimToEmpty(order.lifecycleOwner()));
-            detail.put("reviewAt", order.holdUntil());
-            detail.put("period", trimToEmpty(order.freezePeriod()));
-            detail.put("cause", decision.reason());
-            if (decision.nextReviewAt() != null) detail.put("nextReviewAt", decision.nextReviewAt());
-            String auditAction = switch (decision.status()) {
-                case D2WithdrawalStateMachine.REVIEW_PASSED -> "D2_WITHDRAWAL_COOLDOWN_AUTO_APPROVED";
-                case D2WithdrawalStateMachine.FROZEN -> "D2_WITHDRAWAL_COOLDOWN_FROZEN";
-                case D2WithdrawalStateMachine.EXTENDED_HOLD -> "D2_WITHDRAWAL_COOLDOWN_DELAYED";
-                default -> "D2_WITHDRAWAL_REVIEW_DUE";
-            };
-            auditRequired(auditAction, "WITHDRAWAL", order.withdrawalNo(), "system:d2-scheduler", detail);
-            publishD2LifecycleEvent(order, decision.eventName(), decision.status(), decision.reason(),
-                    decision.nextReviewAt() == null ? null : 7,
-                    decision.nextReviewAt() == null ? null : "K3_EXPIRY_DELAY",
-                    decision.nextReviewAt(), decision.nextReviewAt() == null ? null : "K3_DELAY_ONCE",
-                    "system:d2-scheduler");
-            released++;
         }
         return released;
+    }
+
+    /**
+     * Executes one due lifecycle through the same K3/K4/B1/D3/A2 state machine used by the scheduler.
+     * Development simulation may make the hold due first, but it cannot choose the resulting state.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public D2LifecycleReleaseResult releaseDueD2Lifecycle(
+            String withdrawalNo,
+            LocalDateTime now,
+            String operator,
+            String trigger,
+            String operatorReason) {
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
+        if (order == null
+                || order.holdUntil() == null
+                || order.holdUntil().isAfter(effectiveNow)
+                || !Set.of(D2WithdrawalStateMachine.EXTENDED_HOLD, D2WithdrawalStateMachine.FROZEN)
+                        .contains(D2WithdrawalStateMachine.canonical(order.status()))) {
+            return D2LifecycleReleaseResult.NOT_DUE;
+        }
+        if (isWithdrawalLockedByA2(order.withdrawalNo())) {
+            return D2LifecycleReleaseResult.LOCKED;
+        }
+        String authenticatedOperator = StringUtils.hasText(operator) ? operator.trim() : "system:d2-scheduler";
+        String canonicalTrigger = DEVELOPMENT_SIMULATED_DUE.equals(trigger)
+                ? DEVELOPMENT_SIMULATED_DUE : D2_SCHEDULED_EXPIRY;
+        boolean h1FastTrack = "H1_PHASE_COOLDOWN".equals(order.lifecycleOwner())
+                && D2WithdrawalStateMachine.REVIEW_PASSED.equals(
+                        D2WithdrawalStateMachine.canonical(order.previousStatus()));
+        D2ExpiryDecision decision = h1FastTrack
+                ? h1FastTrackDecision(order, effectiveNow)
+                : new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        "scheduled-review-due", "withdraw.review_due", null);
+        boolean transitioned;
+        if (D2WithdrawalStateMachine.EXTENDED_HOLD.equals(decision.status())) {
+            transitioned = withdrawalRepository.transitionStatusWithLifecycle(
+                    order.withdrawalNo(), order.status(), decision.status(), decision.reason(),
+                    decision.nextReviewAt(), "K3_EXPIRY_DELAY", "K3_DELAY_ONCE",
+                    D2WithdrawalStateMachine.REVIEW_PENDING);
+        } else {
+            transitioned = withdrawalRepository.releaseExpiredLifecycle(
+                    order.withdrawalNo(), order.status(), decision.status(),
+                    D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status()) ? null : decision.reason(),
+                    effectiveNow);
+        }
+        if (!transitioned) {
+            return D2LifecycleReleaseResult.CONFLICT;
+        }
+        if (D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status())) {
+            treasuryLedgerRepository.recordWithdrawalReserve(
+                    order.withdrawalNo(), order.amount(), decision.reason(), authenticatedOperator,
+                    "d2-lifecycle:" + order.withdrawalNo() + ":review-passed");
+        }
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("from", D2WithdrawalStateMachine.canonical(order.status()));
+        detail.put("to", decision.status());
+        detail.put("owner", trimToEmpty(order.lifecycleOwner()));
+        detail.put("reviewAt", order.holdUntil());
+        detail.put("period", trimToEmpty(order.freezePeriod()));
+        detail.put("cause", decision.reason());
+        detail.put("trigger", canonicalTrigger);
+        if (StringUtils.hasText(operatorReason)) detail.put("operatorReason", operatorReason.trim());
+        if (decision.nextReviewAt() != null) detail.put("nextReviewAt", decision.nextReviewAt());
+        String auditAction = switch (decision.status()) {
+            case D2WithdrawalStateMachine.REVIEW_PASSED -> "D2_WITHDRAWAL_COOLDOWN_AUTO_APPROVED";
+            case D2WithdrawalStateMachine.FROZEN -> "D2_WITHDRAWAL_COOLDOWN_FROZEN";
+            case D2WithdrawalStateMachine.EXTENDED_HOLD -> "D2_WITHDRAWAL_COOLDOWN_DELAYED";
+            default -> "D2_WITHDRAWAL_REVIEW_DUE";
+        };
+        auditRequired(auditAction, "WITHDRAWAL", order.withdrawalNo(), authenticatedOperator, detail);
+        boolean delayedAgain = decision.nextReviewAt() != null;
+        publishD2LifecycleEvent(order, decision.eventName(), decision.status(), decision.reason(),
+                delayedAgain ? 7 : null,
+                delayedAgain ? "K3_EXPIRY_DELAY" : order.lifecycleOwner(),
+                delayedAgain ? decision.nextReviewAt() : order.holdUntil(),
+                delayedAgain ? "K3_DELAY_ONCE" : order.freezePeriod(),
+                authenticatedOperator);
+        return D2LifecycleReleaseResult.RELEASED;
+    }
+
+    public enum D2LifecycleReleaseResult {
+        RELEASED,
+        NOT_DUE,
+        LOCKED,
+        CONFLICT
     }
 
     private ApiResult<Map<String, Object>> updateTopupChannelText(
@@ -1828,11 +1901,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private D2ExpiryDecision h1FastTrackDecision(WithdrawalOrderView order, LocalDateTime now) {
-        String k3Route = trimToEmpty(order.k3RiskRoute()).toLowerCase(Locale.ROOT);
-        if (!Set.of("pass", "delay", "manual", "freeze").contains(k3Route)) {
+        LocalDateTime effectiveNow = now;
+        D2CurrentRisk currentRisk = currentD2Risk(order, now);
+        if (currentRisk.failureReason() != null) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                    "K3_ROUTE_UNAVAILABLE", "withdraw.review_due", null);
+                    currentRisk.failureReason(), "withdraw.review_due", null);
         }
+        String k3Route = currentRisk.k3Action();
         if ("freeze".equals(k3Route)) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.FROZEN,
                     "K3_ROUTE:freeze", "withdraw.frozen", null);
@@ -1840,28 +1915,17 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if ("delay".equals(k3Route)) {
             // One bounded D2 hold preserves K3 authority; previousStatus is changed so this rule cannot loop forever.
             return new D2ExpiryDecision(D2WithdrawalStateMachine.EXTENDED_HOLD,
-                    "K3_ROUTE:delay", "withdraw.delayed", now.plusDays(7));
+                    "K3_ROUTE:delay", "withdraw.delayed", effectiveNow.plusDays(7));
         }
         if ("manual".equals(k3Route)) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "K3_ROUTE:manual", "withdraw.review_due", null);
         }
-        if (order.riskScore() == null || order.k4BandLowMax() == null
-                || order.k4BandHighMin() == null || order.k4AutoEscalateScore() == null
-                || order.k4BandLowMax() < 0
-                || order.k4BandLowMax() >= order.k4BandHighMin()
-                || order.k4BandHighMin() > 100
-                || order.k4AutoEscalateScore() < order.k4BandHighMin()
-                || order.k4AutoEscalateScore() > 100) {
-            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                    "K4_RISK_SCORE_UNAVAILABLE", "withdraw.review_due", null);
-        }
-        if (order.riskScore() >= order.k4AutoEscalateScore()
-                || !"LOW".equalsIgnoreCase(trimToEmpty(order.routingPriority()))) {
+        if (!"LOW".equals(currentRisk.k4Priority())) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     "K4_FAST_TRACK_NO_LONGER_ELIGIBLE", "withdraw.review_due", null);
         }
-        String gateReason = approvalBlockReason(order, withdrawalDailyLimitCount());
+        String gateReason = approvalBlockReason(order, withdrawalDailyLimitCount(), effectiveNow);
         if (gateReason != null) {
             return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
                     gateReason, "withdraw.review_due", null);
@@ -1871,6 +1935,69 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private record D2ExpiryDecision(String status, String reason, String eventName, LocalDateTime nextReviewAt) { }
+
+    /**
+     * D2 写操作和 H1 到期放行都必须重新读取当前 K4 模型与 K3 规则。
+     * 队列表中的风险字段只是提交时快照，可用于审计展示，不能授权今天的资金动作。
+     */
+    private D2CurrentRisk currentD2Risk(WithdrawalOrderView order, LocalDateTime now) {
+        WithdrawalRiskFacts facts = appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress());
+        if (facts == null || !StringUtils.hasText(facts.userNo())
+                || facts.withdrawalCount24h() == null || facts.withdrawalSum24h() == null
+                || facts.accountAgeDays() == null || !StringUtils.hasText(facts.addressReputation())) {
+            return D2CurrentRisk.unavailable("K3_WITHDRAWAL_FACTS_UNAVAILABLE");
+        }
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        if (facts.k4RiskScore() == null
+                || facts.k4RiskScore() < 0
+                || facts.k4RiskScore() > 100
+                || !StringUtils.hasText(facts.k4ModelVersion())
+                || !facts.k4ModelVersion().matches("k4-v\\d+")
+                || facts.k4AsOf() == null
+                || facts.k4AsOf().isAfter(effectiveNow)
+                || facts.k4AsOf().isBefore(effectiveNow.minusDays(1))
+                || !validD2K4Thresholds(facts)) {
+            return D2CurrentRisk.unavailable("K4_RISK_SCORE_UNAVAILABLE");
+        }
+        WithdrawalRiskDecision decision;
+        try {
+            decision = withdrawalRiskRuleFacade.evaluate(new WithdrawalRiskContext(
+                    order.userId(), order.withdrawalNo(), facts.userNo(), order.amount(),
+                    facts.withdrawalCount24h(), facts.withdrawalSum24h(),
+                    facts.accountAgeDays(), facts.addressReputation(),
+                    order.chain(), order.targetAddress(), null));
+        } catch (RuntimeException unavailable) {
+            return D2CurrentRisk.unavailable("K3_WITHDRAWAL_DECISION_UNAVAILABLE");
+        }
+        if (decision == null || !Set.of("pass", "delay", "manual", "freeze").contains(decision.action())) {
+            return D2CurrentRisk.unavailable("K3_WITHDRAWAL_DECISION_UNAVAILABLE");
+        }
+        return new D2CurrentRisk(
+                decision.action(), d2K4Priority(facts.k4RiskScore(), facts), null);
+    }
+
+    private boolean validD2K4Thresholds(WithdrawalRiskFacts facts) {
+        return facts.k4BandLowMax() != null && facts.k4BandHighMin() != null
+                && facts.k4AutoEscalateScore() != null
+                && facts.k4BandLowMax() >= 0
+                && facts.k4BandLowMax() < facts.k4BandHighMin()
+                && facts.k4BandHighMin() <= 100
+                && facts.k4AutoEscalateScore() >= facts.k4BandHighMin()
+                && facts.k4AutoEscalateScore() <= 100;
+    }
+
+    private String d2K4Priority(int score, WithdrawalRiskFacts facts) {
+        if (score >= facts.k4AutoEscalateScore()) return "ESCALATED";
+        if (score >= facts.k4BandHighMin()) return "HIGH";
+        if (score >= facts.k4BandLowMax()) return "NORMAL";
+        return "LOW";
+    }
+
+    private record D2CurrentRisk(String k3Action, String k4Priority, String failureReason) {
+        private static D2CurrentRisk unavailable(String reason) {
+            return new D2CurrentRisk(null, null, reason);
+        }
+    }
 
     private String normalizeIpSegment(String raw) {
         if (!StringUtils.hasText(raw)) {
@@ -1917,6 +2044,23 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
     }
 
+    private String d2BatchRequestHash(
+            String action,
+            List<String> canonicalIds,
+            WithdrawalBatchReviewRequest request) {
+        return sha256(String.join("\u001f",
+                "D2_BATCH",
+                action,
+                String.join(",", canonicalIds),
+                AdminActorResolver.resolve(request.operator()),
+                request.reason().trim(),
+                trimToEmpty(request.reasonCode()),
+                request.holdDays() == null ? "" : request.holdDays().toString(),
+                trimToEmpty(request.period()).toUpperCase(Locale.ROOT),
+                trimToEmpty(request.owner()),
+                trimToEmpty(request.reviewAt())));
+    }
+
     private int withdrawalDailyLimitCount() {
         int count = configDecimal("withdrawal.daily_count_limit", BigDecimal.ZERO)
                 .setScale(0, RoundingMode.DOWN)
@@ -1933,6 +2077,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
+        return approvalBlockReason(order, dailyLimitCount, LocalDateTime.now());
+    }
+
+    private String approvalBlockReason(
+            WithdrawalOrderView order, int dailyLimitCount, LocalDateTime effectiveNow) {
         if (!withdrawGateEnabled()) {
             return "WITHDRAWAL_KILL_SWITCH_DISABLED";
         }
@@ -1942,11 +2091,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (withdrawGeoEmergencyBlocked() || withdrawGeoEndpointBlocked(order)) {
             return "WITHDRAWAL_GEO_BLOCKED";
         }
-        if (order.holdUntil() != null && order.holdUntil().isAfter(LocalDateTime.now())) {
+        if (order.holdUntil() != null && order.holdUntil().isAfter(effectiveNow)) {
             return "WITHDRAWAL_COOLDOWN_ACTIVE";
         }
-        if (coverageBelowRedline()) {
-            return OpsErrorCode.COVERAGE_BELOW_REDLINE.name();
+        String coverageBlockReason = coverageBlockReason();
+        if (coverageBlockReason != null) {
+            return coverageBlockReason;
         }
         if (exceedsDailyLimit(order, dailyLimitCount)) {
             return "WITHDRAWAL_DAILY_LIMIT_EXCEEDED";
@@ -1969,10 +2119,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         detail.put("requestedAction", action);
         detail.put("blockedReason", blockedReason);
         detail.put("statusUnchanged", true);
-        if (OpsErrorCode.COVERAGE_BELOW_REDLINE.name().equals(blockedReason)) {
-            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-            detail.put("coverageRatio", coverage.coverageRatio());
-            detail.put("redlinePct", coverage.redlinePct());
+        if (Set.of(OpsErrorCode.COVERAGE_UNAVAILABLE.name(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
+                .contains(blockedReason)) {
+            try {
+                TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+                detail.put("coverageReliable", coverage != null && coverage.reliable());
+                if (coverage != null && coverage.coverageRatio() != null) {
+                    detail.put("coverageRatio", coverage.coverageRatio());
+                }
+                if (coverage != null && coverage.redlinePct() != null) {
+                    detail.put("redlinePct", coverage.redlinePct());
+                }
+            } catch (RuntimeException unavailable) {
+                detail.put("coverageReliable", false);
+            }
         }
         audit("D2_WITHDRAWAL_REVIEW_BLOCKED", "WITHDRAWAL", order.withdrawalNo(), request.operator(), "BLOCKED", detail);
     }
@@ -2020,9 +2180,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return emergencyRepository.settingValue(key);
     }
 
-    private boolean coverageBelowRedline() {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    private String coverageBlockReason() {
+        try {
+            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+            if (coverage == null || !coverage.reliable()
+                    || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                    || coverage.coverageRatio().signum() <= 0 || coverage.redlinePct().signum() <= 0) {
+                return OpsErrorCode.COVERAGE_UNAVAILABLE.name();
+            }
+            return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0
+                    ? OpsErrorCode.COVERAGE_BELOW_REDLINE.name()
+                    : null;
+        } catch (RuntimeException unavailable) {
+            return OpsErrorCode.COVERAGE_UNAVAILABLE.name();
+        }
     }
 
     private boolean parseSwitchEnabled(String raw) {

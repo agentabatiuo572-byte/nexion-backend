@@ -14,6 +14,15 @@ public interface PlatformConfigFacade extends DomainFacade {
 
     void upsertAdminValue(String configKey, String configValue, String valueType, String configGroup, String remark);
 
+    /**
+     * Atomically inserts an operator-editable value only when the key has never existed.
+     * Disabled and soft-deleted rows still count as existing and are never overwritten.
+     */
+    default boolean insertAdminValueIfMissing(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        return false;
+    }
+
     default Map<String, String> activeValuesByGroup(String configGroup) {
         return Map.of();
     }

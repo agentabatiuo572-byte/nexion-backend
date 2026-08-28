@@ -43,8 +43,9 @@ class OpsVietnamPaymentServiceTest {
     private final FinanceSensitiveDataCipher sensitiveDataCipher = mock(FinanceSensitiveDataCipher.class);
     private final AppVietQrIntentMapper appIntentMapper = mock(AppVietQrIntentMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final VietQrReceiptEvidenceService receiptEvidence = mock(VietQrReceiptEvidenceService.class);
     private final OpsVietnamPaymentService service = new OpsVietnamPaymentService(
-            mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox,
+            mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
             Clock.fixed(Instant.parse("2026-07-25T00:00:00Z"), ZoneOffset.UTC));
 
     @BeforeEach
@@ -352,6 +353,49 @@ class OpsVietnamPaymentServiceTest {
     }
 
     @Test
+    void writeOffCannotBypassAReceiptAccountMismatchOrTouchTheWallet() {
+        when(mapper.findVietQrReconciliationForUpdate(140L)).thenReturn(Map.ofEntries(
+                Map.entry("reconciliationNo", "REC-ACCOUNT-MISMATCH"),
+                Map.entry("intentNo", "VQR-ACCOUNT-MISMATCH"),
+                Map.entry("userId", 41L),
+                Map.entry("bankAccountId", 9L),
+                Map.entry("viewType", "MISMATCH"),
+                Map.entry("status", "OPEN"),
+                Map.entry("receivedVnd", new BigDecimal("659750")),
+                Map.entry("receivedAt", LocalDateTime.of(2026, 7, 25, 0, 20)),
+                Map.entry("paymentReference", "BANK-ACCOUNT-MISMATCH"),
+                Map.entry("lockedFxRateVndPerUsdt", new BigDecimal("26390")),
+                Map.entry("intentTransitionRequired", true),
+                Map.entry("version", 0L)));
+        when(appIntentMapper.findIntentForUpdate("VQR-ACCOUNT-MISMATCH")).thenReturn(Map.ofEntries(
+                Map.entry("intentNo", "VQR-ACCOUNT-MISMATCH"),
+                Map.entry("userId", 41L),
+                Map.entry("status", "MISMATCH_REVIEW"),
+                Map.entry("payableVnd", new BigDecimal("659750")),
+                Map.entry("requestedUsdt", new BigDecimal("25")),
+                Map.entry("bankAccountId", 8L),
+                Map.entry("lockedFxRateVndPerUsdt", new BigDecimal("26390")),
+                Map.entry("createdAt", LocalDateTime.of(2026, 7, 25, 0, 10)),
+                Map.entry("expiresAt", LocalDateTime.of(2026, 7, 25, 0, 30)),
+                Map.entry("version", 0L)));
+
+        assertThatThrownBy(() -> service.reconcile(
+                140L, "write-off", "write-off-account-mismatch",
+                new VietQrReconciliationCommandRequest(
+                        0L, null, null, "EVIDENCE-ACCOUNT-MISMATCH",
+                        "reject account mismatch writeoff", "finance-admin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_INTENT_BANK_ACCOUNT_MISMATCH");
+
+        verify(mapper, never()).findUsdtWalletForUpdate(anyLong());
+        verify(mapper, never()).creditUsdtWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertVietQrWalletLedger(
+                anyString(), anyLong(), any(), any(), anyString());
+        verify(mapper, never()).completeVietQrReconciliation(
+                anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), anyString());
+    }
+
+    @Test
     void orphanReceiptCannotBeAssignedToAnIntentCreatedAfterTheMoneyArrived() {
         when(mapper.findVietQrReconciliationForUpdate(15L)).thenReturn(Map.ofEntries(
                 Map.entry("reconciliationNo", "REC-15"),
@@ -574,7 +618,7 @@ class OpsVietnamPaymentServiceTest {
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-EXACT-1", "nx-exact",
                         new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC),
-                        "EVIDENCE-EXACT-1", "register exact bank receipt", "finance-admin"));
+                        receiptEvidence(), "register exact bank receipt", "finance-admin"));
 
         assertThat(result.getData())
                 .containsEntry("viewType", "MATCHED")
@@ -585,6 +629,7 @@ class OpsVietnamPaymentServiceTest {
                 new BigDecimal("659750"), new BigDecimal("0.000000"), receivedAt);
         verify(mapper).addVietQrBankReceivedToday(
                 8L, new BigDecimal("659750"), bankDate(receivedAt));
+        verify(receiptEvidence).claim(eq(receiptEvidence()), anyString(), anyString());
         verify(appIntentMapper).cancelAwaitingIntentsForFusedAccount(8L, "VQR-EXACT");
         verify(appIntentMapper).closeCancelledInFlightReconciliationsForFusedAccount(
                 8L, "VQR-EXACT");
@@ -609,7 +654,7 @@ class OpsVietnamPaymentServiceTest {
                 "receipt-cap-20",
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-REC-20", null, new BigDecimal("659750"),
-                        receivedAt.atOffset(ZoneOffset.UTC), "EVIDENCE-20",
+                        receivedAt.atOffset(ZoneOffset.UTC), receiptEvidence(),
                         "record actual receipt total", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_BANK_ACCOUNT_RECEIPT_TOTAL_UPDATE_FAILED");
@@ -635,7 +680,7 @@ class OpsVietnamPaymentServiceTest {
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-PREDATE", "NX-PREDATE",
                         new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC),
-                        "EVIDENCE-PREDATE", "reject historical receipt reuse", "finance-admin")))
+                        receiptEvidence(), "reject historical receipt reuse", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIPT_PREDATES_INTENT");
 
@@ -731,7 +776,7 @@ class OpsVietnamPaymentServiceTest {
                 "receipt-within-grace",
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-WITHIN-GRACE", "NX-WITHIN-GRACE",
-                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), "EVIDENCE-22",
+                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), receiptEvidence(),
                         "register receipt inside grace", "finance-admin")).getData())
                 .containsEntry("viewType", "MATCHED");
 
@@ -813,7 +858,7 @@ class OpsVietnamPaymentServiceTest {
                 "receipt-after-grace",
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-AFTER-GRACE", "NX-AFTER-GRACE",
-                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), "EVIDENCE-23",
+                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), receiptEvidence(),
                         "register receipt after grace", "finance-admin")).getData())
                 .containsEntry("viewType", "LATE");
     }
@@ -849,7 +894,7 @@ class OpsVietnamPaymentServiceTest {
                 "receipt-duplicate-24",
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-DUPLICATE-2", "NX-DUPLICATE",
-                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), "EVIDENCE-24",
+                        new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC), receiptEvidence(),
                         "register supplemental receipt", "finance-admin")).getData())
                 .containsEntry("viewType", "LATE");
 
@@ -922,9 +967,23 @@ class OpsVietnamPaymentServiceTest {
                         8L, "BANK-PATHOLOGICAL", "NX-PATH",
                         new BigDecimal("1e+100000000"),
                         LocalDateTime.of(2026, 7, 25, 0, 0).atOffset(ZoneOffset.UTC),
-                        "EVIDENCE-PATH", "reject pathological receipt amount", "finance-admin")))
+                        receiptEvidence(), "reject pathological receipt amount", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIVED_AMOUNT_INVALID");
+        verify(mapper, never()).findVietQrBankAccountForUpdate(anyLong());
+    }
+
+    @Test
+    void receiptRegistrationRejectsAnOperatorTypedEvidenceReference() {
+        assertThatThrownBy(() -> service.registerVietQrReceipt(
+                "receipt-free-text-evidence",
+                new VietQrReceiptRegistrationRequest(
+                        8L, "BANK-FREE-TEXT", null, new BigDecimal("659750"),
+                        LocalDateTime.of(2026, 7, 25, 0, 0).atOffset(ZoneOffset.UTC),
+                        "EVIDENCE-I-TYPED-MYSELF",
+                        "reject an unuploaded bank receipt", "finance-admin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_RECEIPT_UPLOAD_EVIDENCE_REQUIRED");
         verify(mapper, never()).findVietQrBankAccountForUpdate(anyLong());
     }
 
@@ -939,7 +998,7 @@ class OpsVietnamPaymentServiceTest {
                         8L, "BANK-NEXT-DAY", "NX-NEXT-DAY",
                         new BigDecimal("659750"),
                         OffsetDateTime.parse("2026-07-27T00:01:00+07:00"),
-                        "EVIDENCE-NEXT-DAY",
+                        receiptEvidence(),
                         "reject future vietnam business date", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIVED_AT_INVALID");
@@ -948,8 +1007,12 @@ class OpsVietnamPaymentServiceTest {
 
     private OpsVietnamPaymentService serviceAt(String instant) {
         return new OpsVietnamPaymentService(
-                mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox,
+                mapper, audit, idempotency, sensitiveDataCipher, appIntentMapper, outbox, receiptEvidence,
                 Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
+    }
+
+    private String receiptEvidence() {
+        return "media:vqr_123e4567e89b12d3a456426614174000";
     }
 
     private LocalDate bankDate(LocalDateTime receivedAt) {

@@ -75,9 +75,18 @@ class AppCanonicalBoundaryServiceTest {
         when(growthRhythmFacade.snapshot()).thenReturn(h1Snapshot("P3"));
         when(productReleasePolicy.evaluate(any(), any()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+        when(productReleasePolicy.evaluateBatch(any())).thenAnswer(invocation -> {
+            Map<String, String> candidates = invocation.getArgument(0);
+            Map<String, StorefrontProductReleasePolicy.Decision> decisions = new java.util.LinkedHashMap<>();
+            candidates.forEach((productNo, unlockPhase) -> decisions.put(
+                    productNo, StorefrontProductReleasePolicy.Decision.open(unlockPhase)));
+            return decisions;
+        });
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
         when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.activeUserEnvironment(42L)).thenReturn(0);
+        when(mapper.insertOrderItem(anyString(), anyLong(), anyInt(), any(BigDecimal.class))).thenReturn(1);
         when(mapper.userCanonicalProfile(42L)).thenReturn(new CanonicalStateMapper.UserCanonicalProfile(
                 new BigDecimal("500"), new BigDecimal("80"), LocalDateTime.of(2026, 1, 1, 0, 0)));
     }
@@ -258,9 +267,9 @@ class AppCanonicalBoundaryServiceTest {
 
     @Test
     void purchaseEligibilityReadsTheSameServerGateAndFactsAsOrderSubmission() {
-        when(mapper.findPurchasableProduct(null, "stellarbox-pro-v2")).thenReturn(
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro-v2"))).thenReturn(List.of(
                 new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro-v2", new BigDecimal("2639"), 3,
-                        "P4", "{\"rankMin\":2,\"mode\":\"all\",\"enforce\":true}"));
+                        "P4", "{\"rankMin\":2,\"mode\":\"all\",\"enforce\":true}")));
         when(mapper.purchaseFacts(42L)).thenReturn(
                 new CanonicalStateMapper.PurchaseFacts(1, 0, BigDecimal.ZERO));
 
@@ -269,16 +278,17 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("eligible", false)
                 .containsEntry("decisionCode", "PURCHASE_GATE_NOT_MET")
-                .containsEntry("source", "nx_admin_device_sku.purchase_gate_json + nx_user");
+                .containsEntry("source", "nx_product + nx_admin_device_sku + nx_user");
     }
 
     @Test
     void purchaseEligibilityCannotReportAnUnreleasedSkuAsEligible() {
-        when(mapper.findPurchasableProduct(null, "stellarbox-pro-v2")).thenReturn(
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro-v2"))).thenReturn(List.of(
                 new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro-v2", new BigDecimal("2639"), 3,
-                        "P4", "{\"mode\":\"all\",\"enforce\":true}"));
-        when(productReleasePolicy.evaluate("stellarbox-pro-v2", "P4"))
-                .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "P4"));
+                        "P4", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(productReleasePolicy.evaluateBatch(Map.of("stellarbox-pro-v2", "P4")))
+                .thenReturn(Map.of("stellarbox-pro-v2",
+                        StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "P4")));
 
         var result = service.purchaseEligibility(42L, "stellarbox-pro-v2");
 
@@ -289,13 +299,113 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void purchaseEligibilityRejectsDeviceWithIncompleteStorefrontSpecs() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-incomplete"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(
+                        19L, "stellarbox-incomplete", new BigDecimal("999"), 3, "P2", null,
+                        "DEVICE", "FINITE", null, null, null, null)));
+
+        var result = service.purchaseEligibility(42L, "stellarbox-incomplete");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", false)
+                .containsEntry("decisionCode", "PRODUCT_SPECS_UNAVAILABLE");
+        verify(mapper, never()).purchaseFacts(42L);
+    }
+
+    @Test
+    void purchaseEligibilityRejectsUnlimitedInventoryForPhysicalDevice() {
+        when(mapper.findPurchasableProducts(List.of("unlimited-device"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(
+                        20L, "unlimited-device", new BigDecimal("999"), 0, "P2", null,
+                        "DEVICE", "UNLIMITED", "RTX 4090", 24, "1200W", "Singapore")));
+
+        var result = service.purchaseEligibility(42L, "unlimited-device");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", false)
+                .containsEntry("decisionCode", "PRODUCT_INVENTORY_MODE_INVALID");
+        verify(mapper, never()).purchaseFacts(42L);
+    }
+
+    @Test
+    void purchaseEligibilityAcceptsFiniteServerAsAPhysicalDeviceType() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-s1"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(
+                        25L, "stellarbox-s1", new BigDecimal("1699"), 10, null, null,
+                        "SERVER", "FINITE", "RTX 4090", 96, "1200W", "Virginia")));
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
+
+        var result = service.purchaseEligibility(42L, "stellarbox-s1");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", true)
+                .containsEntry("decisionCode", "ELIGIBLE");
+    }
+
+    @Test
+    void purchaseEligibilityBatchReadsProductsAndUserFactsOnceWithoutLockingTheUser() {
+        var first = new CanonicalStateMapper.ProductStock(
+                21L, "stellarbox-pro", new BigDecimal("1199"), 3, "P2", null,
+                "DEVICE", "FINITE", "RTX 4090", 24, "1200W", "Singapore");
+        var second = new CanonicalStateMapper.ProductStock(
+                22L, "stellarrack-p1", new BigDecimal("4499"), 2, "P3", null,
+                "DEVICE", "FINITE", "RTX 5090", 48, "2400W", "Singapore");
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro", "stellarrack-p1")))
+                .thenReturn(List.of(first, second));
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
+
+        var result = service.purchaseEligibilityBatch(
+                42L, List.of("stellarbox-pro", "stellarrack-p1"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsOnlyKeys("stellarbox-pro", "stellarrack-p1");
+        assertThat(result.getData().get("stellarbox-pro").eligible()).isTrue();
+        assertThat(result.getData().get("stellarrack-p1").eligible()).isTrue();
+        verify(mapper).findPurchasableProducts(List.of("stellarbox-pro", "stellarrack-p1"));
+        verify(mapper).purchaseFacts(42L);
+        verify(mapper, never()).lockUser(42L);
+    }
+
+    @Test
+    void ordinaryOrderRejectsTheSameIncompleteSpecsBlockedByEligibility() {
+        when(mapper.lockProduct(23L, null)).thenReturn(new CanonicalStateMapper.ProductStock(
+                23L, "stellarbox-incomplete", new BigDecimal("999"), 3, "P2", null,
+                "DEVICE", "FINITE", null, null, null, null));
+
+        var result = service.createOrder(42L, null, 23L, 1, "incomplete-spec-order");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_SPECS_UNAVAILABLE");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+    }
+
+    @Test
+    void ordinaryOrderRejectsTheSameUnlimitedDeviceModeBlockedByEligibility() {
+        when(mapper.lockProduct(24L, null)).thenReturn(new CanonicalStateMapper.ProductStock(
+                24L, "unlimited-device", new BigDecimal("999"), 0, "P2", null,
+                "DEVICE", "UNLIMITED", "RTX 4090", 24, "1200W", "Singapore"));
+
+        var result = service.createOrder(42L, null, 24L, 1, "invalid-inventory-order");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_INVENTORY_MODE_INVALID");
+        verify(mapper, never()).decrementProductStock(anyLong(), anyInt());
+        verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+    }
+
+    @Test
     void purchaseEligibilityUsesOnlyTheRunScopedSandboxSnapshotInAnIsolatedProfile() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
-        when(commerceSandboxMapper.findSandboxEligibilityProduct("test-run-0001", "stellarbox-pro-v2"))
-                .thenReturn(new CommerceAcceptanceSandboxMapper.SandboxEligibilityProduct(
-                        "stellarbox-pro-v2", "P4", "{\"rankMin\":2,\"mode\":\"all\",\"enforce\":true}"));
+        when(commerceSandboxMapper.listSandboxEligibilityProducts(
+                "test-run-0001", List.of("stellarbox-pro-v2")))
+                .thenReturn(List.of(new CommerceAcceptanceSandboxMapper.SandboxEligibilityProduct(
+                        "stellarbox-pro-v2", "P4", "{\"rankMin\":2,\"mode\":\"all\",\"enforce\":true}")));
         when(commerceSandboxMapper.purchaseGateFacts(42L)).thenReturn(
                 new CommerceAcceptanceSandboxMapper.PurchaseGateFacts(1, 0, BigDecimal.ZERO));
 
@@ -308,19 +418,19 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("runId", "test-run-0001")
                 .containsEntry("serverCanonical", true);
         verify(mapper, never()).lockUser(42L);
-        verify(mapper, never()).findPurchasableProduct(any(), anyString());
+        verify(mapper, never()).findPurchasableProducts(any());
         verify(mapper, never()).purchaseFacts(42L);
     }
 
     @Test
     void purchaseEligibilityRejectsSandboxUserEvenInTheStrictProductionProfile() {
         when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
-        when(mapper.lockUser(42L)).thenReturn(new CanonicalStateMapper.UserLock(42L, true));
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
 
         assertThatThrownBy(() -> service.purchaseEligibility(42L, "stellarbox-pro-v2"))
                 .isInstanceOf(BizException.class)
                 .hasMessage("COMMERCE_SANDBOX_USER_FORBIDDEN");
-        verify(mapper, never()).findPurchasableProduct(any(), anyString());
+        verify(mapper, never()).findPurchasableProducts(any());
     }
 
     @Test
@@ -471,8 +581,8 @@ class AppCanonicalBoundaryServiceTest {
         when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null, 1)).thenReturn(
                 new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(8L, "BOX-8", "Sandbox Box", "Pro",
                         new BigDecimal("1299"), 4, 0, "RTX", 24, BigDecimal.ONE, BigDecimal.ONE,
-                        BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now(), null, null,
-                        null, null, null, null, null,
+                        BigDecimal.ZERO, "", null, null, 7L, LocalDateTime.now(), "1200W", "Singapore",
+                        null, null, null, null, null, null,
                         "{\"rankMin\":1,\"mode\":\"all\",\"enforce\":true}"));
         when(commerceSandboxMapper.purchaseGateFacts(42L)).thenReturn(
                 new CommerceAcceptanceSandboxMapper.PurchaseGateFacts(1, 0, BigDecimal.ZERO));
@@ -649,6 +759,95 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void developmentOrderHistoryUsesAnyActiveRegisteredDevelopmentAccountAndCanonicalBusinessTable() {
+        when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(mapper.userOrders(42L)).thenReturn(List.of(userOrder("PAID", "PAID", "ACTIVE")));
+
+        var result = service.orders(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("source", "server")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", null)
+                .containsEntry("serverCanonical", true);
+        verify(mapper).userOrders(42L);
+        verify(commerceSandboxMapper, never()).listSandboxOrders(anyString(), anyLong());
+        verify(mapper, never()).lockUser(42L);
+    }
+
+    @Test
+    void acceptanceSandboxCheckoutCannotBypassTheStorefrontSpecsGate() {
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
+        when(commerceSandboxMapper.lockSandboxCatalogProduct("test-run-0001", 8L, null, 1)).thenReturn(
+                new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(
+                        8L, "BOX-8", "Sandbox Box", "Pro", new BigDecimal("1299"), 4, 0,
+                        null, null, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ZERO, "", null, null,
+                        7L, LocalDateTime.now(), null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, "DEVICE", "FINITE"));
+        when(commerceSandboxMapper.claimOrderReceipt(any())).thenReturn(1);
+        when(commerceSandboxMapper.completeOrderReceipt(any())).thenReturn(1);
+
+        var result = service.createOrder(42L, null, 8L, 1, "sandbox-incomplete-specs");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_SPECS_UNAVAILABLE");
+        verify(commerceSandboxMapper, never()).reserveSandboxCatalogStock(anyString(), anyLong(), anyLong(), anyInt());
+        verify(commerceSandboxMapper, never()).insertSandboxOrder(any());
+    }
+
+    @Test
+    void unlimitedShareOrderDoesNotRequirePhysicalStockOrDeviceCapacity() {
+        when(mapper.lockProduct(88L, null)).thenReturn(new CanonicalStateMapper.ProductStock(
+                88L, "cloud-share", new BigDecimal("199"), 0, null, null, "SHARE", "UNLIMITED"));
+        when(mapper.decrementProductStock(88L, 2)).thenReturn(1);
+        when(mapper.insertOrder(eq(42L), anyString(), eq(88L), eq(2),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class))).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+
+        var result = service.createOrder(42L, null, 88L, 2, "cloud-share-order-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("subtotalUsdt", new BigDecimal("398.000000"));
+        verify(mapper).decrementProductStock(88L, 2);
+        verify(mapper, never()).activeDeviceCount(42L);
+        verify(mapper, never()).reservedDeviceOrderCount(42L);
+    }
+
+    @Test
+    void developmentOrderCreationUsesCanonicalBusinessTablesForAnyActiveRegisteredDevelopmentAccount() {
+        when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(mapper.lockProduct(18L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P1", "{\"mode\":\"all\",\"enforce\":true}"));
+        when(mapper.purchaseFacts(42L)).thenReturn(new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
+        when(mapper.developmentActiveDeviceCount(42L)).thenReturn(0);
+        when(mapper.developmentReservedDeviceOrderCount(42L)).thenReturn(0);
+        when(mapper.developmentUserEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P1", 0, "2026-W34"));
+        when(mapper.decrementProductStock(18L, 1)).thenReturn(1);
+        when(mapper.insertOrder(eq(42L), anyString(), eq(18L), eq(1),
+                any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class))).thenReturn(1);
+        when(mapper.insertOrderItem(anyString(), eq(18L), eq(1),
+                eq(new BigDecimal("1199.000000")))).thenReturn(1);
+
+        var result = service.createOrder(42L, null, 18L, 1, "development-order-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("idSource", "server")
+                .containsEntry("paymentStatus", "PENDING")
+                .containsEntry("orderStatus", "PENDING_PAYMENT");
+        verify(commerceSandboxMapper, never()).lockSandboxCatalogProduct(anyString(), any(), any(), anyInt());
+    }
+
+    @Test
     void controlledProfileReadsOnlyRunScopedSandboxOrderSnapshots() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
@@ -728,13 +927,106 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("actualPaidUsdt", new BigDecimal("649.000000"))
                 .containsEntry("cumulativeOutputUsdt", new BigDecimal("200.000000"))
                 .containsEntry("capacitySubsidized", false)
-                .containsEntry("capacitySubsidyDays", 30);
+                .containsEntry("capacitySubsidyDays", 30)
+                .containsEntry("capacitySubsidyRemainingDays", 0);
+        assertThat(devices.get(0).get("capacitySubsidyEndsAt")).isInstanceOf(Long.class);
         assertThat(result.getData()).containsKey("capacitySchedule");
     }
 
     @Test
-    void localSandboxFleetIsRunScopedServerAuthoredAndHasNoRealizedReward() {
+    void exposesTheTrueServerAuthoredNewDeviceSubsidyCountdown() {
+        LocalDateTime purchasedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
+                .minusDays(1).minusHours(1);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                19L, "DEV-19", "StellarBox Pro", "SERVER", "stellarbox-pro", "ACTIVE", 1L,
+                purchasedAt, purchasedAt, new BigDecimal("13"), BigDecimal.ZERO,
+                "RTX 4090", 24, new BigDecimal("1200"), "Singapore",
+                new BigDecimal("1699"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        @SuppressWarnings("unchecked")
+        var devices = (List<Map<String, Object>>) result.getData().get("devices");
+        assertThat(devices.get(0))
+                .containsEntry("capacitySubsidized", true)
+                .containsEntry("capacitySubsidyDays", 30)
+                .containsEntry("capacitySubsidyRemainingDays", 29);
+        assertThat(devices.get(0).get("capacitySubsidyEndsAt")).isInstanceOf(Long.class);
+    }
+
+    @Test
+    void developmentPurchaseEligibilityUsesAnyActiveRegisteredDevelopmentAccountAndCanonicalBusinessTables() {
+        when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro-v2"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro-v2", new BigDecimal("2639"), 3,
+                        "P4", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(1, 0, BigDecimal.ZERO));
+
+        var result = service.purchaseEligibility(42L, "stellarbox-pro-v2");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", true)
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", null)
+                .containsEntry("serverCanonical", true);
+        verify(commerceSandboxMapper, never()).listSandboxEligibilityProducts(anyString(), any());
+    }
+
+    @Test
+    void developmentPurchaseEligibilityRejectsAnInactiveOrNonDevelopmentUser() {
+        when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(99L)).thenReturn(null);
+
+        var result = service.purchaseEligibility(99L, "stellarbox-pro-v2");
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("CANONICAL_DEVELOPMENT_USER_REQUIRED");
+        verify(mapper, never()).findPurchasableProducts(any());
+    }
+
+    @Test
+    void developmentFleetUsesTheFixedAccountProductionShapedBusinessFacts() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.developmentUserCanonicalProfile(42L)).thenReturn(
+                new CanonicalStateMapper.UserCanonicalProfile(
+                        new BigDecimal("323.89"), BigDecimal.ZERO,
+                        LocalDateTime.of(2026, 8, 20, 0, 0)));
+        when(mapper.developmentOwnedDevices(42L)).thenReturn(List.of(
+                new CanonicalStateMapper.OwnedDevice(
+                        44L, "DEV-HOME-PHONE-42", "Development phone", "MOBILE", "phone", "ACTIVE", 1L,
+                        LocalDateTime.of(2026, 8, 20, 1, 0), LocalDateTime.of(2026, 8, 20, 1, 0),
+                        BigDecimal.ZERO, BigDecimal.ZERO, "Local accelerator", 8,
+                        BigDecimal.ZERO, "User device", BigDecimal.ZERO, new BigDecimal("323.89"))));
+        when(mapper.developmentRealizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(new CanonicalStateMapper.DeviceRealizedToday(
+                        44L, new BigDecimal("323.890000"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("serverCanonical", true)
+                .containsEntry("realizedTodayUsdt", new BigDecimal("323.890000"));
+        verify(mapper, never()).userCanonicalProfile(anyLong());
+        verify(mapper, never()).ownedDevices(anyLong());
+        verify(mapper, never()).sandboxUserCanonicalProfile(anyLong());
+        verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
+    }
+
+    @Test
+    void localSandboxFleetIsRunScopedServerAuthoredAndHasNoRealizedReward() {
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
         when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", ""))
                 .thenReturn("phone-activation-e2e-20260817");
         when(environment.getProperty("nexion.wheel.sandbox.run-id", "phone-activation-e2e-20260817"))
@@ -927,6 +1219,56 @@ class AppCanonicalBoundaryServiceTest {
         verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
         verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit, never()).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void projectsCapacityFromActivationWhenThePurchaseTimeIsMissing() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                9L, "DEV-9", "StellarBox Pro", "SERVER", "stellarbox-pro", "ACTIVE", 73L, false,
+                LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMonths(4), null,
+                new BigDecimal("5"), BigDecimal.ZERO, "RTX 4070", 96,
+                new BigDecimal("1200"), "Singapore", new BigDecimal("999"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getCode()).isZero();
+        var device = (Map<?, ?>) ((List<?>) result.getData().get("devices")).get(0);
+        assertThat(device.get("capacityAgeMonths")).isEqualTo(4);
+        assertThat(device.get("capacityPct")).isEqualTo(new BigDecimal("85.791262"));
+        assertThat(device.get("dailyUsdt")).isEqualTo(new BigDecimal("4.289563"));
+    }
+
+    @Test
+    void rejectsCapacityProjectionWhenBothLifecycleTimesAreMissing() {
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                9L, "DEV-9", "StellarBox Pro", "SERVER", "stellarbox-pro", "ACTIVE", 73L, false,
+                null, null, new BigDecimal("5"), BigDecimal.ZERO, "RTX 4070", 96,
+                new BigDecimal("1200"), "Singapore", new BigDecimal("999"), BigDecimal.ZERO)));
+
+        assertThatThrownBy(() -> service.deviceEarnings(42L, false, false, null))
+                .isInstanceOf(BizException.class)
+                .hasMessage("E3_DEVICE_LIFECYCLE_START_UNAVAILABLE");
+    }
+
+    @Test
+    void cloudShareActivationDoesNotConsumeOrRequireAPhysicalSlot() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(
+                        9L, 42L, "DEV-SHARE-9", "DEACTIVATED", "OWNED", 1L, false, "SHARE"));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+        when(mapper.activateOwnedDeviceCas(42L, 9L, 1L, 6)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+
+        var activated = service.activateDevice(42L, 9L, 1L, null, "activate-cloud-share");
+
+        assertThat(activated.getCode()).isZero();
+        assertThat(activated.getData()).containsEntry("activeCount", 6).containsEntry("slotCap", 6);
+        verify(mapper).activateOwnedDeviceCas(42L, 9L, 1L, 6);
     }
 
     @Test

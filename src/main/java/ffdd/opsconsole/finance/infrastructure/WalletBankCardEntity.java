@@ -17,6 +17,7 @@ public class WalletBankCardEntity extends BaseEntity {
     private String cardholderName;
     private String brand;
     private String last4;
+    private String expiryLabel;
     private String countryCode;
     private String status;
     private Boolean isDefault;

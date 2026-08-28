@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import java.time.ZoneId;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
@@ -33,7 +34,15 @@ class DateTimeFormatConfigTest {
         Jackson2ObjectMapperBuilder builder = Jackson2ObjectMapperBuilder.json();
         config.nexionDateTimeJacksonCustomizer().customize(builder);
         ObjectMapper mapper = builder.build();
-        var constructor = DeviceSkuView.class.getDeclaredConstructors()[0];
+        var constructor = Arrays.stream(DeviceSkuView.class.getDeclaredConstructors())
+                .filter(candidate -> {
+                    Class<?>[] types = candidate.getParameterTypes();
+                    return types.length >= 2
+                            && types[types.length - 2] == LocalDateTime.class
+                            && types[types.length - 1] == LocalDateTime.class;
+                })
+                .findFirst()
+                .orElseThrow();
         Object[] arguments = new Object[constructor.getParameterCount()];
         arguments[arguments.length - 2] = LocalDateTime.of(2026, 8, 15, 1, 23, 34);
         arguments[arguments.length - 1] = LocalDateTime.of(2026, 8, 15, 1, 23, 35, 123_456_000);

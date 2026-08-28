@@ -3,7 +3,6 @@ package ffdd.opsconsole.finance.application;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
-import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -43,10 +42,25 @@ public class AppVietQrIntentService {
     public ApiResult<Map<String, Object>> paymentConfig() {
         requirePaymentRuntime();
         Map<String, Object> config = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
+        Map<String, Object> fx = required(mapper.findFxQuoteConfig(), "FX_QUOTE_UNAVAILABLE");
+        BigDecimal rate = VietnamPaymentPolicy.quoteRate(
+                decimal(fx.get("baseRateVndPerUsdt")), decimal(fx.get("buySpreadPct")));
+        BigDecimal remainingCapacityVnd = mapper.findMaxAvailableBankCapacityVnd();
+        if (remainingCapacityVnd == null || remainingCapacityVnd.signum() < 0) {
+            remainingCapacityVnd = BigDecimal.ZERO;
+        }
+        BigDecimal configuredMax = decimal(config.get("perTxLimitUsd"))
+                .setScale(2, RoundingMode.DOWN);
+        BigDecimal todayRemainingDepositUsdt = remainingCapacityVnd.divide(rate, 2, RoundingMode.DOWN);
         Map<String, Object> vietQr = new LinkedHashMap<>();
-        vietQr.put("enabled", mapper.countAvailableBankAccounts() > 0);
+        // "enabled" describes whether an operational bank rail exists. Daily
+        // exhaustion is a separate business limit and must not masquerade as
+        // maintenance, nor overwrite the configured per-transaction maximum.
+        vietQr.put("enabled", mapper.countActiveBankAccounts() > 0);
         vietQr.put("minDepositUsdt", MIN_DEPOSIT_USDT);
-        vietQr.put("maxDepositUsdt", decimal(config.get("perTxLimitUsd")));
+        vietQr.put("maxDepositUsdt", configuredMax);
+        vietQr.put("todayRemainingDepositUsdt", todayRemainingDepositUsdt);
+        vietQr.put("todayRemainingVnd", remainingCapacityVnd);
         vietQr.put("toleranceVnd", decimal(config.get("toleranceVnd")));
         vietQr.put("graceMinutes", integer(config.get("graceMinutes")));
         vietQr.put("version", longValue(config.get("version")));
@@ -116,10 +130,13 @@ public class AppVietQrIntentService {
         LocalDateTime expiresAt = LocalDateTime.now(clock).plusMinutes(lockMinutes);
 
         List<Map<String, Object>> accounts = safeList(mapper.listActiveBankAccountsForUpdate());
+        if (accounts.isEmpty()) {
+            throw new BizException(503, "VIETQR_BANK_RAIL_UNAVAILABLE");
+        }
         Map<String, Object> account = selectAccount(
                 accounts, payableVnd, text(vietQr.get("rotationStrategy")));
         if (account == null) {
-            throw new BizException(503, "VIETQR_BANK_RAIL_UNAVAILABLE");
+            throw new BizException(422, "VIETQR_DAILY_CAPACITY_EXCEEDED");
         }
 
         for (int attempt = 0; attempt < 5; attempt++) {
@@ -337,15 +354,22 @@ public class AppVietQrIntentService {
      * a sandbox source.
      */
     private void requirePaymentRuntime() {
-        java.util.Optional<UserAuthEnvironment> profile = UserAuthEnvironment.resolve(environment);
-        if (profile.isEmpty()) throw new BizException(503, "VIETQR_RUNTIME_PROFILE_INVALID");
-        if (profile.get() == UserAuthEnvironment.SANDBOX) {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        String[] normalized = java.util.Arrays.stream(profiles == null ? new String[0] : profiles)
+                .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
+                .filter(value -> !value.isEmpty())
+                .distinct()
+                .toArray(String[]::new);
+        if (normalized.length != 1) throw new BizException(503, "VIETQR_RUNTIME_PROFILE_INVALID");
+        if ("dev".equals(normalized[0]) || "prod".equals(normalized[0])) return;
+        if ("test".equals(normalized[0])) {
             String runId = environment == null ? null : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID");
             if (runId == null || !runId.trim().matches("[A-Za-z0-9][A-Za-z0-9_-]{2,63}")) {
                 throw new BizException(503, "VIETQR_SANDBOX_RUN_ID_REQUIRED");
             }
             throw new BizException(503, "VIETQR_SANDBOX_CONFIG_UNAVAILABLE");
         }
+        throw new BizException(503, "VIETQR_RUNTIME_PROFILE_INVALID");
     }
 
     private String isoInstant(Object value) {

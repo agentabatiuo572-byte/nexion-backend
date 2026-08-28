@@ -73,7 +73,9 @@ public class AppTeamQuotaService {
             tier.put("unlockKind", unlockKind(row.unlockMode()));
             List<Map<String, Object>> conditions = new ArrayList<>();
             if (row.directRefs() != null && row.directRefs() > 0) {
-                conditions.add(condition("directRefs", row.directRefs(), factMap.get("directRefs")));
+                // PC 的 quota_tier.direct_refs 表示购买门同口径的“有效直推人数”。
+                // V-Rank directRefs 是“达到 V1 自购门槛的直推分支数”，不能混用。
+                conditions.add(condition("directRefs", row.directRefs(), factMap.get("activeDirect")));
             }
             if (row.monthVolumeUsd() != null && row.monthVolumeUsd().signum() > 0) {
                 conditions.add(condition("teamVolume", row.monthVolumeUsd(), factMap.get("teamVolumeUSD")));
@@ -107,9 +109,14 @@ public class AppTeamQuotaService {
         if (user == null || user.sandbox() == null) throw new BizException(403, "TEAM_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles()).map(String::trim).map(String::toLowerCase)
                 .filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
+        boolean development = profiles.size() == 1 && "dev".equals(profiles.iterator().next());
+        boolean isolated = profiles.size() == 1 && "test".equals(profiles.iterator().next());
         boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
-        if (!isolated && !production) throw new BizException(503, "TEAM_PROFILE_INVALID");
+        if (!development && !isolated && !production) throw new BizException(503, "TEAM_PROFILE_INVALID");
+        if (development) {
+            requireDevelopmentUser(userId, user.sandbox());
+            return new Scope("PRODUCTION", "", user.vRank());
+        }
         if (isolated && user.sandbox() != 1) throw new BizException(403, "TEAM_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "TEAM_PRODUCTION_USER_REQUIRED");
         if (production) return new Scope("PRODUCTION", "", user.vRank());
@@ -124,6 +131,9 @@ public class AppTeamQuotaService {
     private String unlockKind(String mode) {
         String normalized = mode == null ? "ALL" : mode.trim().toUpperCase();
         return switch (normalized) { case "EITHER" -> "EITHER"; default -> "ALL"; };
+    }
+    private void requireDevelopmentUser(Long userId, Integer sandbox) {
+        if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "TEAM_DEVELOPMENT_USER_REQUIRED");
     }
     private record Scope(String sourceEnvironment, String runId, String vRank) { }
 }

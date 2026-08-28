@@ -8,12 +8,14 @@ import org.junit.jupiter.api.Test;
 
 class CommerceCatalogEligibilityContractTest {
     @Test
-    void catalogAndOrdinaryOrderUseTheSameActiveVisiblePositiveStockAndPriceBoundary() throws Exception {
+    void catalogShowsSoldOutRowsButEligibilityAndOrderRequirePurchasableInventory() throws Exception {
         String catalog = Files.readString(Path.of("src/main/java/ffdd/opsconsole/device/mapper/AppTradeinMapper.java"));
         String order = Files.readString(Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"));
 
-        assertThat(catalog).contains("store_visible=1", "UPPER(status) IN ('ACTIVE','ON_SALE')", "price_usdt>0", "stock>=1");
+        assertThat(catalog).contains("store_visible=1", "UPPER(status) IN ('ACTIVE','ON_SALE')", "price_usdt>0",
+                "(p.inventory_mode='UNLIMITED' OR p.stock>=0)");
         assertThat(order).contains("COALESCE(p.store_visible, 1) = 1", "UPPER(p.status) IN ('ACTIVE', 'ON_SALE')",
-                "p.price_usdt > 0 AND p.stock >= 1");
+                "p.price_usdt > 0 AND (p.inventory_mode='UNLIMITED' OR p.stock >= 1)",
+                "findPurchasableProducts", "p.gpu_model AS gpuModel", "AS power", "AS datacenter");
     }
 }

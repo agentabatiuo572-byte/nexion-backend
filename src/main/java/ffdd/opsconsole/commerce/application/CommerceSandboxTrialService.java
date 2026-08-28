@@ -1,6 +1,7 @@
 package ffdd.opsconsole.commerce.application;
 
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.commerce.mapper.CommerceSandboxTrialMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceSandboxTrialMapper.TrialClaim;
 import ffdd.opsconsole.commerce.mapper.CommerceSandboxTrialMapper.TrialClaimWrite;
@@ -129,8 +130,13 @@ public class CommerceSandboxTrialService {
         }
         CommerceAcceptanceSandboxMapper.SandboxCatalogProduct product = commerceMapper.lockSandboxCatalogProduct(
                 runId, null, requested, 1);
-        if (product == null || product.productId() == null || product.version() == null || product.stock() == null
-                || product.stock() < 1 || product.priceUsdt() == null || product.priceUsdt().signum() <= 0) {
+        ProductInventoryMode inventoryMode = product == null ? null : ProductInventoryMode.parse(product.inventoryMode());
+        if (product == null || product.productId() == null || product.version() == null || inventoryMode == null
+                || (inventoryMode == ProductInventoryMode.UNLIMITED
+                    && !"SHARE".equalsIgnoreCase(product.productType()))
+                || (inventoryMode == ProductInventoryMode.FINITE
+                    && (product.stock() == null || product.stock() < 1))
+                || product.priceUsdt() == null || product.priceUsdt().signum() <= 0) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         BigDecimal shadowOffset = shadow(row, now).min(row.offsetCapUsdt()).min(product.priceUsdt())

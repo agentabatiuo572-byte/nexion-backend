@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -14,8 +15,9 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.core.env.Environment;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -24,7 +26,6 @@ import org.springframework.util.StringUtils;
  * only trusted server producers can invoke this bean after proving the business fact.
  */
 @Service
-@RequiredArgsConstructor
 public class QuestCompletionFactConsumer {
     private static final Set<String> TRUSTED_PRODUCERS = Set.of(
             "ORDER", "REFERRAL", "LEARNING", "DEVICE", "COMMISSION", "SYSTEM", "SHARE");
@@ -33,6 +34,29 @@ public class QuestCompletionFactConsumer {
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
     private final AppGrowthWheelSandboxService sandboxService;
+    private final Environment environment;
+
+    @Autowired
+    public QuestCompletionFactConsumer(
+            QuestCompletionFactMapper mapper,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            AppGrowthWheelSandboxService sandboxService,
+            Environment environment) {
+        this.mapper = mapper;
+        this.auditLogService = auditLogService;
+        this.outboxService = outboxService;
+        this.sandboxService = sandboxService;
+        this.environment = environment;
+    }
+
+    QuestCompletionFactConsumer(
+            QuestCompletionFactMapper mapper,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            AppGrowthWheelSandboxService sandboxService) {
+        this(mapper, auditLogService, outboxService, sandboxService, null);
+    }
 
     @Transactional(rollbackFor = Exception.class)
     public CompletionResult consume(QuestCompletionCommand command) {
@@ -53,7 +77,16 @@ public class QuestCompletionFactConsumer {
             if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
         }
         Long userId = command.userId();
-        if (userId == null || userId <= 0 || mapper.lockActiveUser(userId) == null) {
+        UserAuthEnvironment runtime = environment == null
+                ? UserAuthEnvironment.PRODUCTION
+                : UserAuthEnvironment.resolve(environment)
+                        .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_UNSUPPORTED"));
+        Long activeUser = userId == null || userId <= 0
+                ? null
+                : runtime == UserAuthEnvironment.SANDBOX
+                        ? mapper.lockActiveSandboxUser(userId)
+                        : mapper.lockActiveUser(userId);
+        if (activeUser == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
         MissionDefinition mission = mapper.lockMission(questCode);

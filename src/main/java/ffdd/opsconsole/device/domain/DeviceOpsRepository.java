@@ -28,6 +28,11 @@ public interface DeviceOpsRepository {
         return 0;
     }
 
+    /** True only when activating this target consumes one of the six physical-device slots. */
+    default boolean occupiesPhysicalSlot(Long deviceId) {
+        return true;
+    }
+
     default Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
         return Optional.empty();
     }

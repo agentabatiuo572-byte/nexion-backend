@@ -22,6 +22,7 @@ class NotificationPreferenceDeliveryContractTest {
         assertThat(nova).contains("notify_commission", "notify_team", "notify_staking", "notify_market", "notify_genesis");
         assertThat(campaign).contains("notificationIds", "<foreach", "n.id IN", "notify_system");
         assertThat(preference).contains(
+                "notify_system AS `system`",
                 "ON DUPLICATE KEY UPDATE",
                 "CASE WHEN #{commission} IS NULL THEN notify_commission ELSE #{commission} END",
                 "CASE WHEN #{system} IS NULL THEN notify_system ELSE #{system} END");

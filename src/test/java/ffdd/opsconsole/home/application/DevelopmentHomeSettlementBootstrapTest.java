@@ -1,23 +1,22 @@
 package ffdd.opsconsole.home.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Profiles;
 
 class DevelopmentHomeSettlementBootstrapTest {
-
     @Test
     void registersOnlyForDevWithoutProdEvenWhenProfilesAreMixed() {
         Profile profile = DevelopmentHomeSettlementBootstrap.class.getAnnotation(Profile.class);
@@ -30,70 +29,30 @@ class DevelopmentHomeSettlementBootstrapTest {
     }
 
     @Test
-    void seedsFiveIdempotentSettlementsInRealBusinessTablesForTheFixedDevelopmentAccount() {
+    void runCreatesOnlyTheStablePhoneThenUsesTaskProgression() {
         DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
         when(mapper.findDevelopmentUserId("+86", "18708173775")).thenReturn(60723152670L);
-        when(mapper.findDevelopmentHomeDeviceId(60723152670L)).thenReturn(810L);
-        when(mapper.insertSettledReceipt(any())).thenReturn(1);
-        Clock clock = Clock.fixed(Instant.parse("2026-08-21T04:30:00Z"), ZoneId.of("Asia/Shanghai"));
+        when(mapper.findDevelopmentHomeDeviceId(60723152670L)).thenReturn(null);
+        when(mapper.developmentE3CapacityConfig()).thenReturn(java.util.List.of());
         DevelopmentHomeSettlementBootstrap bootstrap = new DevelopmentHomeSettlementBootstrap(
-                mapper, clock, "+86", "18708173775", true);
+                mapper, Clock.fixed(Instant.parse("2026-08-27T04:00:00Z"), ZoneId.of("Asia/Shanghai")),
+                "+86", "18708173775", true);
 
-        assertThat(bootstrap.seedToday()).isEqualTo(5);
-
-        ArgumentCaptor<DevelopmentHomeSettlementMapper.DevelopmentSettlement> rows =
-                ArgumentCaptor.forClass(DevelopmentHomeSettlementMapper.DevelopmentSettlement.class);
-        verify(mapper, org.mockito.Mockito.times(5)).insertCompletedTask(rows.capture());
-        verify(mapper, org.mockito.Mockito.times(5)).insertSettledReceipt(any());
-        java.math.BigDecimal total = rows.getAllValues().stream()
-                .map(DevelopmentHomeSettlementMapper.DevelopmentSettlement::rewardUsdt)
-                .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
-        assertThat(total).isEqualByComparingTo("323.89");
-        assertThat(rows.getAllValues()).allSatisfy(row -> {
-            assertThat(row.sourceEnvironment()).isEqualTo("PRODUCTION");
-            assertThat(row.taskNo()).startsWith("DEV-HOME-20260821-");
-            assertThat(row.completedAt().toLocalDate()).isEqualTo(java.time.LocalDate.of(2026, 8, 21));
-        });
-    }
-
-    @Test
-    void doesNothingWhenTheConfiguredDevelopmentAccountIsMissing() {
-        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
-        Clock clock = Clock.fixed(Instant.parse("2026-08-21T04:30:00Z"), ZoneId.of("Asia/Shanghai"));
-        DevelopmentHomeSettlementBootstrap bootstrap = new DevelopmentHomeSettlementBootstrap(
-                mapper, clock, "+86", "18708173775", true);
-
-        assertThat(bootstrap.seedToday()).isZero();
-        verify(mapper).findDevelopmentUserId("+86", "18708173775");
-    }
-
-    @Test
-    void failsClosedWhenConfigurationAttemptsToRedirectTheFixedDevelopmentAccount() {
-        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
-        Clock clock = Clock.fixed(Instant.parse("2026-08-21T04:30:00Z"), ZoneId.of("Asia/Shanghai"));
-        DevelopmentHomeSettlementBootstrap bootstrap = new DevelopmentHomeSettlementBootstrap(
-                mapper, clock, "+84", "19999999999", true);
-
-        assertThat(bootstrap.seedToday()).isZero();
-
-        verify(mapper, never()).findDevelopmentUserId(any(), any());
-        verify(mapper, never()).insertCompletedTask(any());
-        verify(mapper, never()).insertSettledReceipt(any());
-    }
-
-    @Test
-    void createsAStableCanonicalDevelopmentDeviceWhenTheFixedAccountHasNoActiveOwnedDevice() {
-        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
-        when(mapper.findDevelopmentUserId("+86", "18708173775")).thenReturn(60723152670L);
-        when(mapper.findDevelopmentHomeDeviceId(60723152670L)).thenReturn(null, 811L);
-        when(mapper.insertSettledReceipt(any())).thenReturn(1);
-        Clock clock = Clock.fixed(Instant.parse("2026-08-21T04:30:00Z"), ZoneId.of("Asia/Shanghai"));
-        DevelopmentHomeSettlementBootstrap bootstrap = new DevelopmentHomeSettlementBootstrap(
-                mapper, clock, "+86", "18708173775", true);
-
-        assertThat(bootstrap.seedToday()).isEqualTo(5);
+        bootstrap.run(null);
 
         verify(mapper).ensureDevelopmentDevice(60723152670L, "DEV-HOME-PHONE-60723152670");
-        verify(mapper, org.mockito.Mockito.times(2)).findDevelopmentHomeDeviceId(60723152670L);
+        verify(mapper, never()).insertCompletedTask(org.mockito.ArgumentMatchers.any());
+        verify(mapper, never()).insertSettledReceipt(org.mockito.ArgumentMatchers.any());
+        verify(mapper, never()).insertDevelopmentPurchasedTask(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void removedMidnightAndDailyOrderSettlementAreNotScheduledOrReachable() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/home/application/DevelopmentHomeSettlementBootstrap.java"));
+
+        assertThat(source).doesNotContain("seedToday(", "seedPurchasedDevices(",
+                "DEV-HOME-202", "DEV-ORDER-");
+        assertThat(source).contains("advanceTasks()", "TASK_PREFIX = \"DEV-TASK-\"");
     }
 }

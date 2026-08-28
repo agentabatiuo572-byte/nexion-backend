@@ -100,7 +100,22 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260817_genesis_holder_policy.sql"),
   (Join-Path $root "scripts\migrations\20260820_home_grid_datacenter_metadata.sql"),
   (Join-Path $root "scripts\migrations\20260820_e2_task_price_history.sql"),
-  (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql")
+  (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql"),
+  (Join-Path $root "scripts\migrations\20260821_h2_trial_card_offer.sql"),
+  (Join-Path $root "scripts\migrations\20260823_withdrawal_terminal_refund_projection.sql"),
+  (Join-Path $root "scripts\migrations\20260823_team_hardware_quota_product_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20260823_withdrawal_submitted_schema_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20260823_d2_lifecycle_event_schema_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20260824_nova_conversation_history.sql"),
+  (Join-Path $root "scripts\migrations\20260825_product_inventory_mode.sql"),
+  (Join-Path $root "scripts\migrations\20260825_payment_method_expiry_label.sql"),
+  (Join-Path $root "scripts\migrations\20260825_vietqr_receipt_evidence.sql"),
+  (Join-Path $root "scripts\migrations\20260826_h2_trial_product_catalog.sql"),
+  (Join-Path $root "scripts\migrations\20260826_product_trial_eligibility.sql"),
+  (Join-Path $root "scripts\migrations\20260826_trial_conversion_order_backfill.sql"),
+  # Genesis qualification is exclusively server-authoritative. Seed the three
+  # canonical eligibility keys and retire the former four-channel any-of rows.
+  (Join-Path $root "scripts\migrations\20260827_genesis_unified_eligibility.sql")
 )
 
 if (-not $JdbcUrl.StartsWith("jdbc:mysql://", [System.StringComparison]::OrdinalIgnoreCase)) {

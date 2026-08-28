@@ -134,6 +134,12 @@ public class AppWithdrawalService {
                 .setScale(6, RoundingMode.DOWN);
         int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
         boolean dailyLimitReached = mapper.countLast24Hours(userId) >= dailyLimit;
+        PayoutAddressRow payoutAddress = mapper.payoutAddressForEligibility(userId, normalizedChain);
+        boolean payoutAddressReady = payoutAddress != null
+                && StringUtils.hasText(payoutAddress.address())
+                && payoutAddress.effectiveAt() != null
+                && !payoutAddress.effectiveAt().isAfter(LocalDateTime.now())
+                && payoutAddressMatches(normalizedChain, normalizedAddress, payoutAddress.address());
         WithdrawalRiskFacts facts = mapper.withdrawalRiskFacts(userId, normalizedAddress);
         if (facts == null || facts.k4RiskScore() == null || !StringUtils.hasText(facts.k4ModelVersion())
                 || facts.k4AsOf() == null || !validK4Thresholds(facts)) {
@@ -160,9 +166,16 @@ public class AppWithdrawalService {
         else if (score >= facts.k4BandHighMin()) reasons.add("K4_HIGH_PRIORITY:" + score);
         else if (score >= facts.k4BandLowMax()) reasons.add("K4_MANUAL:" + score);
         if (strong) reasons.add("A3_STRONG_REVIEW_THRESHOLD");
-        List<String> waived = fast ? List.of("new-address-hold", "first-withdrawal-review") : List.of();
+        if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
+            reasons.add("PAYOUT_ADDRESS_REQUIRED");
+        } else if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(LocalDateTime.now())) {
+            reasons.add("PAYOUT_ADDRESS_CHANGE_PENDING");
+        } else if (!payoutAddressMatches(normalizedChain, normalizedAddress, payoutAddress.address())) {
+            reasons.add("PAYOUT_ADDRESS_MISMATCH");
+        }
+        List<String> waived = fast ? List.of("first-withdrawal-review") : List.of();
         boolean canSubmit = requested.compareTo(MIN_WITHDRAWAL) >= 0 && requested.compareTo(max) <= 0
-                && !dailyLimitReached && withdrawGateEnabled();
+                && !dailyLimitReached && payoutAddressReady && withdrawGateEnabled();
         return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
                 "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", nextPlatformDayReset(),
@@ -502,11 +515,17 @@ public class AppWithdrawalService {
      * every wallet/order/ledger/audit/outbox interaction.
      */
     private void requireProductionWithdrawalSubject(Long userId) {
-        if (!isProductionOrDefaultProfile(environment.getActiveProfiles())) {
+        boolean development = FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles());
+        boolean production = isProductionOrDefaultProfile(environment.getActiveProfiles());
+        if (!development && !production) {
             throw new BizException(503, "WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
         }
         if (userId == null || userId <= 0) return;
-        if (Integer.valueOf(1).equals(mapper.isSandboxUser(userId))) {
+        Integer sandbox = mapper.isSandboxUser(userId);
+        if (development && !Integer.valueOf(1).equals(sandbox)) {
+            throw new BizException(403, "WITHDRAWAL_DEVELOPMENT_USER_REQUIRED");
+        }
+        if (production && Integer.valueOf(1).equals(sandbox)) {
             throw new BizException(403, "WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
         }
     }

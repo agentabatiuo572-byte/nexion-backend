@@ -20,7 +20,10 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HexFormat;
@@ -29,10 +32,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -41,16 +46,17 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppTrialLifecycleService {
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
+    private static final String TRIAL_CONVERSION_SOURCE = "nx_trial_claim + nx_order + nx_order_item";
+    private static final BigDecimal MAX_EXPECTED_AMOUNT = new BigDecimal("1000000.00");
     private static final List<String> ACTIVE_STATES = List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED");
     private static final List<String> RESTARTABLE_STATES = List.of("CANCELLED", "FAILED");
     private static final List<String> PERSISTED_STATES = List.of(
             "CLAIMED", "ACTIVE", "GRACE", "EXTENDED", "REDEEMED", "FAILED", "CANCELLED");
-    /** Only product ids that have a reviewed server-owned device projection may start or settle H2. */
-    private static final Map<String, String> TRIAL_PRODUCT_DEVICE_NAMES = Map.of(
-            "stellarbox-s1", "NexGridBox S1",
-            "device-trial-standard", "NexGridBox S1");
+    private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
+    private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
 
     private final AppTrialLifecycleMapper mapper;
     private final EarningsReleaseService earningsReleaseService;
@@ -58,13 +64,15 @@ public class AppTrialLifecycleService {
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService audit;
     private final EventOutboxService outbox;
+    private final Environment environment;
+    private final Clock clock;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> state(Long userId) {
-        if (userId == null || mapper.activeUser(userId) == null) {
+        if (userId == null || invalidUser(activeUser(userId, false))) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = businessNow();
         Map<String, String> policy = policyMap();
         TrialRow row = mapper.lockTrial(userId);
         row = advanceExpiredActiveToGrace(userId, row, policy, now);
@@ -109,7 +117,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PAYMENT_METHOD_UNAVAILABLE");
         }
         TrialRow existing = mapper.lockTrial(userId);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = businessNow();
         String existingState = existing == null ? null : normalize(existing.status());
         if (existing != null && active(existingState)) return ApiResult.fail(409, "TRIAL_ALREADY_ACTIVE");
         if (existing != null && "REDEEMED".equals(existingState)) {
@@ -126,16 +134,31 @@ public class AppTrialLifecycleService {
         BigDecimal dailyNex = decimal(policy, "shadowDailyNEX", "65");
         BigDecimal offsetCap = decimal(policy, "trialOffsetCapUSD",
                 policy.getOrDefault("discountCapUSD", "50"));
-        BigDecimal price = decimal(policy, "trialPriceUSD", "1299");
         String productCode = trialProductCode(policy);
-        String normalizedDevice = trialDeviceName(policy);
-        if (productCode == null || normalizedDevice == null) {
+        if (productCode == null) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
         }
+        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockTrialStartProduct(productCode);
+        if (!availablePhysicalTrialProduct(product)) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        }
+        String normalizedDevice = product.name();
+        BigDecimal price = product.priceUsdt();
+        LocalDate quotaDate = businessDate();
+        int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
+        if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
+            return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
+        }
+        Integer seatsAfterClaimValue = mapper.trialQuotaRemaining(quotaDate);
+        if (seatsAfterClaimValue == null || seatsAfterClaimValue < 0) {
+            throw new BizException(503, "TRIAL_QUOTA_STATE_UNAVAILABLE");
+        }
+        int seatsAfterClaim = seatsAfterClaimValue;
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=NEXION_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
-                + ",offsetCapUsdt=" + offsetCap + ",priceUsdt=" + price;
+                + ",offsetCapUsdt=" + offsetCap + ",priceUsdt=" + price
+                + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
         int changed = existing == null
                 ? mapper.insertTrial(userId, claimNo, idempotencyKey, paymentMethodId, normalizedDevice,
                         days, dailyUsdt, dailyNex, offsetCap, price, now, now.plusDays(days), snapshot)
@@ -147,7 +170,9 @@ public class AppTrialLifecycleService {
         publish("TRIAL", claimNo, "trial.started", userId, attr, linked(
                 "trial_price_usdt", price, "trial_days", days, "payment_rail", "NEXION_USDT_WALLET"));
         record("H2_TRIAL_STARTED", claimNo, userId, linked("claimNo", claimNo, "policySnapshot", snapshot));
-        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
+        Map<String, String> remainingPolicy = new LinkedHashMap<>(policy);
+        remainingPolicy.put("seatsLeftToday", Integer.toString(seatsAfterClaim));
+        return ApiResult.ok(project(userId, mapper.trial(userId), remainingPolicy, now));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -162,7 +187,7 @@ public class AppTrialLifecycleService {
     private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason) {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CANCELLABLE");
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = businessNow();
         int cooldownDays = positiveInt(policyMap(), "cooldownDays", 30);
         if (mapper.cancelTrial(row.id(), row.version(), reason, now, now.plusDays(cooldownDays)) != 1) {
             throw new BizException(409, "TRIAL_CANCEL_CONFLICT");
@@ -186,7 +211,7 @@ public class AppTrialLifecycleService {
         Map<String, String> policy = policyMap();
         TrialRow row = mapper.lockTrial(userId);
         if (row == null) return ApiResult.fail(409, "TRIAL_NOT_EXTENDABLE");
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = businessNow();
         if ("ACTIVE".equals(normalize(row.status())) && !row.expiresAt().isAfter(now)) {
             if (mapper.enterGrace(row.id(), row.version(), now) != 1) throw new BizException(409, "TRIAL_GRACE_CONFLICT");
             row = mapper.lockTrial(userId);
@@ -218,52 +243,107 @@ public class AppTrialLifecycleService {
 
     /** Converts the reserved trial slot into one authoritative catalogue order. */
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> convert(Long userId, String productNo, String idempotencyKey) {
+    public ApiResult<Map<String, Object>> convert(
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String idempotencyKey) {
         requireUser(userId);
         String normalized = productNo == null ? "" : productNo.trim();
-        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey, normalized,
-                () -> convertOnce(userId, normalized));
+        return once("TRIAL_CONVERT:PRODUCTION", userId, idempotencyKey,
+                linked("productNo", normalized, "expectedAmountUsdt", expectedAmountUsdt),
+                () -> convertOnce(userId, normalized, expectedAmountUsdt));
     }
 
-    private ApiResult<Map<String, Object>> convertOnce(Long userId, String productNo) {
+    private ApiResult<Map<String, Object>> convertOnce(
+            Long userId, String productNo, BigDecimal expectedAmountUsdt) {
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
-        Map<String, String> policy = policyMap();
-        String configured = trialProductCode(policy);
-        boolean alias = "device-trial-standard".equals(configured) && "stellarbox-s1".equals(productNo);
-        if (configured == null || !(productNo.equals(configured) || alias)) {
-            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        if (!validExpectedAmount(expectedAmountUsdt)) {
+            return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }
+        Map<String, String> policy = policyMap();
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
-        LocalDateTime now = LocalDateTime.now();
+        String configured = trialProductCode(policy, row);
+        String canonicalRequested = canonicalTrialProductId(productNo);
+        if (configured == null || !canonicalRequested.equals(configured)) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        }
+        LocalDateTime now = businessNow();
         if (row.expiresAt() == null || now.isAfter(row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7)))) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
-        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(productNo);
-        if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0
-                || product.stock() == null || product.stock() < 1 || !StringUtils.hasText(product.name())) {
+        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
+        if (!availablePhysicalTrialProduct(product)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         Settlement settlement = settlement(row, policy, false, now);
-        BigDecimal discount = settlement.offsetUsdt().min(product.priceUsdt()).setScale(6, RoundingMode.DOWN);
-        BigDecimal amount = product.priceUsdt().subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal subtotal = row.priceUsdt();
+        if (subtotal == null || subtotal.signum() <= 0) {
+            throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
+        }
+        BigDecimal promoDiscount = conversionPromoDiscount(subtotal, policy);
+        BigDecimal discount = promoDiscount.add(settlement.offsetUsdt())
+                .min(subtotal).setScale(6, RoundingMode.DOWN);
+        BigDecimal amount = subtotal.subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        // The App confirms a two-decimal USDT quote. Reject only when the
+        // canonical two-decimal amount increased; a later/larger trial offset
+        // may safely reduce what the user owes.
+        if (amount.setScale(2, RoundingMode.HALF_UP)
+                .compareTo(expectedAmountUsdt.setScale(2, RoundingMode.UNNECESSARY)) > 0) {
+            return ApiResult.fail(409, "TRIAL_AMOUNT_MISMATCH");
+        }
+        requireCoverage(settlement.remainderUsdt(), settlement.shadowNex());
+        WalletRow wallet = mapper.lockWallet(userId);
+        if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
+        if (wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
+        if (mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
+            throw new BizException(409, "TRIAL_WALLET_CONFLICT");
+        }
+        if (settlement.remainderUsdt().signum() > 0) {
+            earningsReleaseService.creditReward(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
+                    "USDT", settlement.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
+        }
+        if (settlement.shadowNex().signum() > 0) {
+            earningsReleaseService.creditReward(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
+                    "NEX", settlement.shadowNex(), "H2:" + row.claimNo() + ":NEX");
+        }
+        BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
+        BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
+        if (amount.signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":CHARGE", "TRIAL_CHARGE",
+                "USDT", "OUT", amount, wallet.usdt().subtract(amount), "H2 conversion via Nexion USDT wallet");
+        if (settlement.remainderUsdt().signum() > 0) mapper.insertLedger(
+                userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS", "USDT", "IN",
+                settlement.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
+        if (settlement.shadowNex().signum() > 0) mapper.insertLedger(
+                userId, row.claimNo() + ":NEX", "TRIAL_BONUS", "NEX", "IN",
+                settlement.shadowNex(), nexAfter, "H2 shadow NEX credited after purchase");
         String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         if (mapper.decrementProductStock(product.id()) != 1) throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
-        if (mapper.insertConversionOrder(userId, orderNo, product.id(), product.priceUsdt(), discount, amount) != 1
+        if (mapper.insertConversionOrder(userId, orderNo, product.id(), subtotal, discount, amount) != 1
                 || mapper.insertConversionOrderItem(orderNo, product.id(), product.productNo(), product.name(),
-                        product.priceUsdt()) != 1) {
+                        subtotal) != 1) {
             throw new BizException(409, "TRIAL_CONVERSION_ORDER_CONFLICT");
         }
-        String snapshot = "orderNo=" + orderNo + ",productNo=" + product.productNo()
-                + ",productPriceUsdt=" + product.priceUsdt() + ",discountUsdt=" + discount
-                + ",amountUsdt=" + amount + ",sourceEnvironment=PRODUCTION";
-        if (mapper.markTrialConverted(row.id(), row.version(), orderNo, now, snapshot) != 1) {
+        String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
+                .substring(0, 20).toUpperCase(Locale.ROOT);
+        if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
+                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : "CLOUD",
+                instanceNo, row.deviceName(), subtotal, row.dailyUsdt(), row.dailyNex()) != 1) {
+            throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
+        }
+        Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
+        String snapshot = settlement.snapshot("convert", "NEXION_USDT_WALLET", product.productNo())
+                + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
+                + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount;
+        if (deviceId == null || mapper.markRedeemed(row.id(), row.version(), deviceId,
+                settlement.shadowUsdt(), settlement.shadowNex(), settlement.remainderUsdt(), discount,
+                amount, now, snapshot) != 1) {
             throw new BizException(409, "TRIAL_CONVERSION_CONFLICT");
         }
         Attribution attr = requireAttribution(userId);
         Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
-                "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PENDING",
-                "orderStatus", "PENDING_PAYMENT", "sourceEnvironment", "PRODUCTION");
+                "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
+                "orderStatus", "PAID", "paymentRail", "NEXION_USDT_WALLET",
+                "deviceId", deviceId, "sourceEnvironment", "PRODUCTION");
+        putCanonicalProvenance(detail, TRIAL_CONVERSION_SOURCE);
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
         return ApiResult.ok(detail);
@@ -290,7 +370,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_DUE_STATE_CONFLICT");
         }
         Map<String, String> policy = policyMap();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = businessNow();
         String state = normalize(row.status());
         if (row.expiresAt() == null) return ApiResult.fail(409, "TRIAL_DUE_TIME_MISSING");
         LocalDateTime dueAt = "EXTENDED".equals(state)
@@ -307,9 +387,13 @@ public class AppTrialLifecycleService {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CHARGEABLE");
         Map<String, String> policy = policyMap();
-        String productCode = trialProductCode(policy);
+        String productCode = trialProductCode(policy, row);
         if (productCode == null) return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
-        LocalDateTime now = LocalDateTime.now();
+        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(productCode);
+        if (!availablePhysicalTrialProduct(product)) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        }
+        LocalDateTime now = businessNow();
         Settlement value = settlement(row, policy, early, now);
         requireCoverage(value.remainderUsdt(), value.shadowNex());
         WalletRow wallet = mapper.lockWallet(userId);
@@ -344,13 +428,28 @@ public class AppTrialLifecycleService {
                 "USDT", "IN", value.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
         if (value.shadowNex().signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":NEX", "TRIAL_BONUS",
                 "NEX", "IN", value.shadowNex(), nexAfter, "H2 shadow NEX credited after purchase");
+        if (mapper.decrementProductStock(product.id()) != 1) {
+            throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
+        }
+        BigDecimal orderDiscount = value.discountUsdt().add(value.offsetUsdt())
+                .min(row.priceUsdt()).setScale(6, RoundingMode.DOWN);
+        String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        if (mapper.insertConversionOrder(userId, orderNo, product.id(), row.priceUsdt(),
+                orderDiscount, value.chargeUsdt()) != 1
+                || mapper.insertConversionOrderItem(orderNo, product.id(), product.productNo(), product.name(),
+                        row.priceUsdt()) != 1) {
+            throw new BizException(409, "TRIAL_CONVERSION_ORDER_CONFLICT");
+        }
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
-        if (mapper.insertPurchasedDevice(userId, row.claimNo(), productCode, instanceNo, row.deviceName(),
+        if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
+                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : "CLOUD",
+                instanceNo, row.deviceName(),
                 row.priceUsdt(), row.dailyUsdt(), row.dailyNex()) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
-        String snapshot = value.snapshot(trigger, "NEXION_USDT_WALLET", productCode);
+        String snapshot = value.snapshot(trigger, "NEXION_USDT_WALLET", productCode)
+                + ",orderNo=" + orderNo + ",totalDiscountUsdt=" + orderDiscount;
         if (deviceId == null || mapper.markRedeemed(row.id(), row.version(), deviceId,
                 value.shadowUsdt(), value.shadowNex(), value.remainderUsdt(), value.discountUsdt(),
                 value.chargeUsdt(), now, snapshot) != 1) {
@@ -361,7 +460,8 @@ public class AppTrialLifecycleService {
                 "shadow_usdt", value.shadowUsdt(), "shadow_nex", value.shadowNex(),
                 "offset_usdt", value.offsetUsdt(), "remainder_usdt", value.remainderUsdt(),
                 "discount_applied", value.discountUsdt(), "amount_usdt", value.chargeUsdt(),
-                "early_purchase", early, "payment_rail", "NEXION_USDT_WALLET", "device_id", deviceId);
+                "early_purchase", early, "order_no", orderNo, "payment_status", "PAID",
+                "order_status", "PAID", "payment_rail", "NEXION_USDT_WALLET", "device_id", deviceId);
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
         publishChargeAttempt(userId, row, trigger, "SUCCESS", value.chargeUsdt(), "REDEEMED");
         record("H2_TRIAL_REDEEMED", row.claimNo(), userId, detail);
@@ -392,6 +492,19 @@ public class AppTrialLifecycleService {
         return new Settlement(shadowUsdt, shadowNex, offset, remainder, discount, charge);
     }
 
+    private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, Map<String, String> policy) {
+        BigDecimal rate = decimal(policy, "discountRate", "15");
+        if (rate.compareTo(BigDecimal.ONE) > 0) rate = rate.movePointLeft(2);
+        return catalogPrice.multiply(rate)
+                .min(decimal(policy, "discountCapUSD", "50"))
+                .setScale(6, RoundingMode.DOWN);
+    }
+
+    private boolean validExpectedAmount(BigDecimal expected) {
+        return expected != null && expected.signum() >= 0 && expected.scale() <= 2
+                && expected.compareTo(MAX_EXPECTED_AMOUNT) <= 0;
+    }
+
     private void publishChargeAttempt(
             Long userId, TrialRow row, String trigger, String result, BigDecimal amount, String reason) {
         Attribution attr = requireAttribution(userId);
@@ -407,21 +520,33 @@ public class AppTrialLifecycleService {
         boolean trialGateEnabled = trialGateEnabled();
         boolean phaseOpen = flag(policy, "phaseOpen", true);
         boolean riskBlocked = mapper.trialCycleSignalCount(userId) > 0;
-        boolean productConfigured = trialProductCode(policy) != null;
+        String configuredProductCode = trialProductCode(policy, row);
+        AppTrialLifecycleMapper.ConversionProduct catalogProduct = configuredProductCode == null
+                ? null : mapper.catalogProduct(configuredProductCode);
+        AppTrialLifecycleMapper.ConversionProduct startProduct = configuredProductCode == null
+                ? null : mapper.conversionProduct(configuredProductCode);
+        boolean productAvailable = availablePhysicalTrialProduct(startProduct);
+        boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         result.put("authoritative", true);
-        result.put("serverNowEpochMs", now.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli());
+        result.put("serverCanonical", true);
+        result.put("sourceEnvironment", "PRODUCTION");
+        result.put("runId", "");
+        result.put("serverNowEpochMs", now.atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
         if (row == null) {
             result.put("state", "ELIGIBLE");
-            boolean canStart = productConfigured && trialGateEnabled && phaseOpen && !riskBlocked;
+            boolean canStart = productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable;
             result.put("canStart", canStart);
-            result.put("eligibilityReason", productConfigured
-                    ? eligibilityReason("ELIGIBLE", canStart, trialGateEnabled, phaseOpen, riskBlocked, null, now)
-                    : "unknown");
+            result.put("eligibilityReason", productAvailable
+                    ? eligibilityReason("ELIGIBLE", canStart, trialGateEnabled, phaseOpen,
+                            riskBlocked, quotaAvailable, null, now)
+                    : "product-unavailable");
             result.put("trialGateEnabled", trialGateEnabled);
             result.put("version", 0L);
-            result.put("source", "nx_trial_claim");
+            putCanonicalProvenance(result, "nx_trial_claim");
             result.put("paymentRail", "NEXION_USDT_WALLET");
-            result.put("config", safePolicy(policy));
+            result.put("config", safePolicy(policy, configuredProductCode,
+                    catalogProduct == null ? null : catalogProduct.name(),
+                    catalogProduct == null ? null : catalogProduct.priceUsdt()));
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -429,14 +554,14 @@ public class AppTrialLifecycleService {
         int graceDays = nonNegativeInt(policy, "graceDays", 7);
         boolean canStart = restartable(effectiveState)
                 && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
-                && productConfigured && trialGateEnabled && phaseOpen && !riskBlocked;
+                && productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable;
         result.put("claimNo", row.claimNo());
         result.put("state", effectiveState);
         result.put("canStart", canStart);
-        result.put("eligibilityReason", productConfigured
+        result.put("eligibilityReason", !restartable(effectiveState) || productAvailable
                 ? eligibilityReason(effectiveState, canStart, trialGateEnabled, phaseOpen, riskBlocked,
-                        row.cooldownUntil(), now)
-                : "unknown");
+                        quotaAvailable, row.cooldownUntil(), now)
+                : "product-unavailable");
         result.put("trialGateEnabled", trialGateEnabled);
         result.put("version", row.version());
         result.put("deviceName", row.deviceName());
@@ -460,24 +585,28 @@ public class AppTrialLifecycleService {
         result.put("remainderUsdt", preview == null ? safe(row.remainderUsdt()) : preview.remainderUsdt());
         result.put("priceUsdt", row.priceUsdt());
         result.put("paymentRail", "NEXION_USDT_WALLET");
-        result.put("source", "nx_trial_claim + nx_user_wallet");
-        result.put("config", safePolicy(policy));
+        putCanonicalProvenance(result, "nx_trial_claim + nx_user_wallet");
+        boolean frozenProduct = !restartable(effectiveState);
+        result.put("config", safePolicy(policy, configuredProductCode,
+                frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
+                frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt()));
         return result;
     }
 
     private Long epochMillis(LocalDateTime value) {
-        return value == null ? null : value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        return value == null ? null : value.atZone(BUSINESS_ZONE).toInstant().toEpochMilli();
     }
 
     private String eligibilityReason(
             String state, boolean canStart, boolean trialGateEnabled, boolean phaseOpen,
-            boolean riskBlocked, LocalDateTime cooldownUntil, LocalDateTime now) {
+            boolean riskBlocked, boolean quotaAvailable, LocalDateTime cooldownUntil, LocalDateTime now) {
         if (!"ELIGIBLE".equals(state) && !PERSISTED_STATES.contains(normalize(state))) return "unknown";
         if (canStart) return null;
         if (active(state)) return "in-progress";
         if ("REDEEMED".equals(state)) return "converted";
         if (riskBlocked) return "risk";
         if (!trialGateEnabled || !phaseOpen) return "phase-closed";
+        if (!quotaAvailable) return "quota-exhausted";
         if (cooldownUntil != null && cooldownUntil.isAfter(now)) return "used";
         return "unknown";
     }
@@ -491,16 +620,18 @@ public class AppTrialLifecycleService {
         return state;
     }
 
-    private Map<String, Object> safePolicy(Map<String, String> policy) {
+    private Map<String, Object> safePolicy(
+            Map<String, String> policy, String productCode, String productName, BigDecimal productPrice) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
                 "discountRate", "0.15", "discountCapUSD", "20", "trialOffsetCapUSD", "50",
                 "autoChargeAtEnd", "true", "highQualityThresholdUSD", "100",
-                "trialProductId", "device-trial-standard", "trialPriceUSD", "1299",
+                "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
                 "shadowDailyUSD", "38.52", "shadowDailyNEX", "65", "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
-                "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1");
+                "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
+                "seatsLeftToday", "0");
         defaults.forEach((key, fallback) -> {
             if (List.of("phaseOpen", "autoPushEnabled", "autoChargeAtEnd").contains(key)) {
                 result.put(key, flag(policy, key, Boolean.parseBoolean(fallback)));
@@ -508,6 +639,11 @@ public class AppTrialLifecycleService {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
         });
+        if (StringUtils.hasText(productCode)) result.put("trialProductId", productCode);
+        if (StringUtils.hasText(productName)) result.put("trialProductName", productName.trim());
+        if (productPrice != null && productPrice.signum() > 0) {
+            result.put("trialPriceUSD", productPrice.stripTrailingZeros().toPlainString());
+        }
         return result;
     }
 
@@ -518,13 +654,42 @@ public class AppTrialLifecycleService {
     }
 
     private String trialProductCode(Map<String, String> policy) {
-        String productCode = policy.getOrDefault("trialProductId", "device-trial-standard");
-        return TRIAL_PRODUCT_DEVICE_NAMES.containsKey(productCode) ? productCode : null;
+        String productCode = canonicalTrialProductId(policy.getOrDefault("trialProductId", CANONICAL_TRIAL_PRODUCT_ID));
+        return productCode.matches("[A-Za-z0-9._-]{2,64}") ? productCode : null;
     }
 
-    private String trialDeviceName(Map<String, String> policy) {
-        String productCode = trialProductCode(policy);
-        return productCode == null ? null : TRIAL_PRODUCT_DEVICE_NAMES.get(productCode);
+    private String trialProductCode(Map<String, String> policy, TrialRow row) {
+        if (row != null && !restartable(normalize(row.status()))) {
+            String pinned = canonicalTrialProductId(snapshotValue(row.quotaSnapshot(), "productCode"));
+            if (pinned.matches("[A-Za-z0-9._-]{2,64}")) return pinned;
+        }
+        return trialProductCode(policy);
+    }
+
+    private String snapshotValue(String snapshot, String key) {
+        if (!StringUtils.hasText(snapshot) || !StringUtils.hasText(key)) return "";
+        String prefix = key + "=";
+        for (String token : snapshot.split(",")) {
+            String trimmed = token.trim();
+            if (trimmed.startsWith(prefix)) return trimmed.substring(prefix.length()).trim();
+        }
+        return "";
+    }
+
+    private String canonicalTrialProductId(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
+    }
+
+    private boolean availablePhysicalTrialProduct(AppTrialLifecycleMapper.ConversionProduct product) {
+        return product != null
+                && "FINITE".equalsIgnoreCase(product.inventoryMode())
+                && Set.of("DEVICE", "SERVER").contains(normalize(product.productType()))
+                && product.priceUsdt() != null
+                && product.priceUsdt().signum() > 0
+                && product.stock() != null
+                && product.stock() > 0
+                && StringUtils.hasText(product.name());
     }
 
     private void requireCoverage(BigDecimal remainderUsdt, BigDecimal rewardNex) {
@@ -539,7 +704,38 @@ public class AppTrialLifecycleService {
     }
 
     private void requireUser(Long userId) {
-        if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        if (userId == null || invalidUser(activeUser(userId, true))) throw new BizException(404, "USER_NOT_FOUND");
+    }
+
+    private Long activeUser(Long userId, boolean lock) {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        boolean development = profiles.length == 1 && "dev".equalsIgnoreCase(profiles[0].trim());
+        boolean production = profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0].trim());
+        if (production) return lock ? mapper.lockActiveUser(userId) : mapper.activeUser(userId);
+        if (!development) return null;
+        String countryCode = environment.getProperty("nexion.auth.development-passkey-account.country-code", "");
+        String phone = environment.getProperty("nexion.auth.development-passkey-account.phone", "");
+        countryCode = countryCode == null ? "" : countryCode.trim();
+        phone = phone == null ? "" : phone.trim();
+        if (countryCode.isBlank() || phone.isBlank()) return null;
+        return lock ? mapper.lockDevelopmentUser(userId, countryCode, phone)
+                : mapper.activeDevelopmentUser(userId, countryCode, phone);
+    }
+
+    private boolean invalidUser(Long resolvedUserId) {
+        return resolvedUserId == null || resolvedUserId <= 0L;
+    }
+
+    private void putCanonicalProvenance(Map<String, Object> target, String source) {
+        target.put("serverCanonical", true);
+        target.put("source", source);
+        target.put("sourceEnvironment", "PRODUCTION");
+        target.put("runId", "");
+        target.put("provenance", linked(
+                "serverCanonical", true,
+                "source", source,
+                "sourceEnvironment", "PRODUCTION",
+                "runId", ""));
     }
 
     private Attribution requireAttribution(Long userId) {
@@ -568,8 +764,22 @@ public class AppTrialLifecycleService {
 
     private Map<String, String> policyMap() {
         List<PolicyRow> rows = mapper.policies();
-        return (rows == null ? List.<PolicyRow>of() : rows).stream().collect(Collectors.toMap(
+        Map<String, String> policy = (rows == null ? List.<PolicyRow>of() : rows).stream().collect(Collectors.toMap(
                 PolicyRow::policyKey, PolicyRow::currentValue, (left, right) -> right, LinkedHashMap::new));
+        int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", 0);
+        LocalDate quotaDate = businessDate();
+        mapper.ensureTrialQuotaDay(quotaDate, dailyLimit);
+        Integer remaining = mapper.trialQuotaRemaining(quotaDate);
+        policy.put("seatsLeftToday", Integer.toString(remaining == null ? 0 : Math.max(remaining, 0)));
+        return policy;
+    }
+
+    private LocalDate businessDate() {
+        return Instant.now(clock).atZone(BUSINESS_ZONE).toLocalDate();
+    }
+
+    private LocalDateTime businessNow() {
+        return LocalDateTime.ofInstant(Instant.now(clock), BUSINESS_ZONE);
     }
 
     private boolean trialGateEnabled() {

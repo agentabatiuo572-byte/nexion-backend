@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -89,6 +90,44 @@ class AppLearningServiceTest {
         assertThat(result.getData().courses().get(0).serverCanonical()).isTrue();
         assertThat(result.getData().courses().get(0).sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().courses().get(0).runId()).isEmpty();
+    }
+
+    @Test
+    void developmentOverviewReadsPublishedBusinessFactsWithProductionProvenance() {
+        when(sandboxGate.isStrictDevelopmentRuntime()).thenReturn(true);
+        allowDevelopmentAccount();
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(repository.listCourses()).thenReturn(List.of(course("published")));
+        when(mapper.listProgress(42L)).thenReturn(List.of());
+        when(mapper.sumGrantedReward(42L)).thenReturn(new BigDecimal("20.000000"));
+
+        var result = service.overview(42L, "vi");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        assertThat(result.getData().courses()).singleElement().satisfies(course -> {
+            assertThat(course.source()).isEqualTo("provider");
+            assertThat(course.sourceEnvironment()).isEqualTo("PRODUCTION");
+            assertThat(course.runId()).isEmpty();
+        });
+        verify(mapper).listProgress(42L);
+        verify(mapper).sumGrantedReward(42L);
+        verify(mapper, never()).listSandboxProgress(anyString(), anyLong());
+        verify(mapper, never()).sumSandboxGrantedReward(anyString(), anyLong());
+    }
+
+    @Test
+    void developmentOverviewRejectsAnAccountOutsideTheActiveDevelopmentUserScope() {
+        when(sandboxGate.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.developmentUserScope(42L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.overview(42L, "vi"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("LEARNING_DEVELOPMENT_USER_REQUIRED");
+
+        verify(repository, never()).listCourses();
+        verify(mapper, never()).listProgress(anyLong());
     }
 
     @Test
@@ -260,6 +299,32 @@ class AppLearningServiceTest {
                 org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
         verify(mapper, never()).insertLearningEvent(anyLong(), anyString(), anyString(), anyString(), anyString());
         verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void developmentQuizWritesCanonicalProductionFactsForAnyActiveDevelopmentAccount() {
+        when(sandboxGate.isStrictDevelopmentRuntime()).thenReturn(true);
+        allowDevelopmentAccount();
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
+        when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
+        when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertLearningEvent(42L, "test-course", "v2", "course_completed", "{\"source\":\"quiz\"}"))
+                .thenReturn(1);
+
+        var result = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz:development:v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
+        verify(mapper).recordQuiz(42L, "test-course", "v2", 100, 100);
+        verify(mapper, never()).recordSandboxQuiz(anyString(), anyLong(), anyString(), anyString(), anyInt(), anyInt());
+    }
+
+    private void allowDevelopmentAccount() {
+        when(mapper.developmentUserScope(42L)).thenReturn(1);
     }
 
     @Test

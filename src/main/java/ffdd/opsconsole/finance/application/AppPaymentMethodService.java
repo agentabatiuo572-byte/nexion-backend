@@ -47,22 +47,54 @@ public class AppPaymentMethodService {
         String brand = required(request.brand(), "PAYMENT_METHOD_BRAND_INVALID", "[a-z]+") .toLowerCase(Locale.ROOT);
         if (!BRANDS.contains(brand)) throw new BizException(422, "PAYMENT_METHOD_BRAND_INVALID");
         String last4 = required(request.last4(), "PAYMENT_METHOD_LAST4_INVALID", "\\d{4}");
+        String expiry = required(request.expiry(), "PAYMENT_METHOD_EXPIRY_INVALID", "(?:0[1-9]|1[0-2])/\\d{2}");
         String holder = required(request.holder(), "PAYMENT_METHOD_HOLDER_INVALID", ".{2,80}").toUpperCase(Locale.ROOT);
-        String hash = sha256(scope.sourceEnvironment() + "|" + scope.runId() + "|" + userId + "|" + token + "|" + source + "|" + brand + "|" + last4 + "|" + holder + "|" + request.makeDefault());
+        String hash = sha256(scope.sourceEnvironment() + "|" + scope.runId() + "|" + userId + "|" + token + "|" + source + "|" + brand + "|" + last4 + "|" + expiry + "|" + holder + "|" + request.makeDefault());
         return idempotency.execute("APP_PAYMENT_METHOD_BIND:" + scope.sourceEnvironment() + ":" + scope.runId() + ":" + userId, idempotencyKey, hash, ApiResult.class,
-                () -> bindOnce(userId, token, brand, last4, holder, request.makeDefault(), scope));
+                () -> bindOnce(userId, token, brand, last4, expiry, holder, request.makeDefault(), scope));
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> unbind(Long userId, Long methodId, Long expectedVersion, String key) {
         Scope scope = scope();
         requireUser(userId, scope);
-        // The legacy administrative revocation mapper has no run dimension.
-        // Refuse the sandbox operation until it can be routed through a scoped
-        // revoke command rather than risking a card from another fixture run.
-        if (scope.sandbox()) throw new BizException(503, "PAYMENT_METHOD_SANDBOX_UNAVAILABLE");
+        if (expectedVersion == null) throw new BizException(422, "PAYMENT_METHOD_EXPECTED_VERSION_REQUIRED");
+        if (key == null || key.isBlank()) throw new BizException(422, "IDEMPOTENCY_KEY_REQUIRED");
+        if (scope.sandbox()) {
+            return idempotency.execute(
+                    "APP_PAYMENT_METHOD_UNBIND:" + scope.sourceEnvironment() + ":" + scope.runId() + ":" + userId,
+                    key,
+                    sha256(scope.sourceEnvironment() + "|" + scope.runId() + "|" + userId + "|" + methodId + "|" + expectedVersion),
+                    ApiResult.class,
+                    () -> unbindSandboxOnce(userId, methodId, expectedVersion, scope));
+        }
         Map<String, Object> result = userPaymentMethods.unbind(userId, methodId, key,
                 new UserPaymentMethodCommandRequest("user requested payment method unbind", expectedVersion, "app"));
         return ApiResult.ok(linked("serverCanonical", true, "receipt", "CARD_UNBOUND", "result", result));
+    }
+
+    @Transactional
+    ApiResult<Map<String, Object>> unbindSandboxOnce(
+            Long userId, Long methodId, Long expectedVersion, Scope scope) {
+        if (mapper.lockActiveUser(userId) == null) throw new BizException(401, "USER_AUTH_REQUIRED");
+        CardRow target = mapper.findActiveByIdScoped(
+                userId, methodId, scope.sourceEnvironment(), scope.runId());
+        if (target == null) throw new BizException(404, "PAYMENT_METHOD_NOT_FOUND");
+        if (target.version() == null || !expectedVersion.equals(target.version())) {
+            throw new BizException(409, "PAYMENT_METHOD_VERSION_CONFLICT");
+        }
+        if (target.isDefault() && mapper.defaultTrialGuardScoped(
+                userId, scope.sourceEnvironment(), scope.runId())) {
+            throw new BizException(409, "PAYMENT_METHOD_TRIAL_GUARDED");
+        }
+        if (mapper.unbindScoped(userId, methodId, expectedVersion,
+                scope.sourceEnvironment(), scope.runId()) != 1) {
+            throw new BizException(409, "PAYMENT_METHOD_VERSION_CONFLICT");
+        }
+        return ApiResult.ok(linked(
+                "serverCanonical", true, "receipt", "CARD_UNBOUND",
+                "source", "mock", "sandbox", true,
+                "sourceEnvironment", scope.sourceEnvironment(), "runId", scope.runId()));
     }
 
     @Transactional
@@ -99,7 +131,7 @@ public class AppPaymentMethodService {
     }
 
     @Transactional
-    ApiResult<Map<String, Object>> bindOnce(Long userId, String token, String brand, String last4, String holder,
+    ApiResult<Map<String, Object>> bindOnce(Long userId, String token, String brand, String last4, String expiry, String holder,
                                             boolean makeDefault, Scope scope) {
         String sourceEnvironment = scope.sourceEnvironment();
         String runId = scope.runId();
@@ -111,7 +143,7 @@ public class AppPaymentMethodService {
         if (isDefault) mapper.clearDefaultScoped(userId, sourceEnvironment, runId);
         CardRow historical = mapper.findByTokenScoped(userId, token, sourceEnvironment, runId);
         if (historical != null) {
-            if (mapper.reactivateScoped(userId, token, brand, last4, holder, isDefault, sourceEnvironment, runId) != 1) {
+            if (mapper.reactivateScoped(userId, token, brand, last4, expiry, holder, isDefault, sourceEnvironment, runId) != 1) {
                 throw new BizException(409, "PAYMENT_METHOD_REBIND_CONFLICT");
             }
             CardRow reactivated = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
@@ -123,7 +155,7 @@ public class AppPaymentMethodService {
             throw new BizException(409, tokenOwner.equals(userId)
                     ? "PAYMENT_METHOD_TOKEN_RETIRED" : "PAYMENT_METHOD_TOKEN_OWNERSHIP_CONFLICT");
         }
-        CardRow row = new CardRow(null, userId, token, brand, last4, holder, isDefault, null, sourceEnvironment, runId, 0L);
+        CardRow row = new CardRow(null, userId, token, brand, last4, holder, isDefault, null, sourceEnvironment, runId, 0L, expiry);
         if (mapper.insert(row) != 1) {
             CardRow concurrent = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
             if (concurrent != null) return bindReceipt(concurrent);
@@ -161,12 +193,15 @@ public class AppPaymentMethodService {
     }
 
     private void requireUser(Long userId, Scope scope) {
-        if (userId == null || mapper.activeUser(userId) == null) throw new BizException(401, "USER_AUTH_REQUIRED");
+        requireAuthenticatedUser(userId);
         Integer sandbox = mapper.userSandbox(userId);
         if (sandbox == null) throw new BizException(403, "PAYMENT_METHOD_USER_REQUIRED");
         boolean sandboxSource = scope.sandbox();
         if (sandboxSource && sandbox != 1) throw new BizException(403, "PAYMENT_METHOD_SANDBOX_USER_REQUIRED");
         if (!sandboxSource && sandbox != 0) throw new BizException(403, "PAYMENT_METHOD_PRODUCTION_USER_REQUIRED");
+    }
+    private void requireAuthenticatedUser(Long userId) {
+        if (userId == null || mapper.activeUser(userId) == null) throw new BizException(401, "USER_AUTH_REQUIRED");
     }
     private String required(String value, String error, String pattern) {
         String normalized = value == null ? "" : value.trim();
@@ -192,7 +227,8 @@ public class AppPaymentMethodService {
     private Map<String, Object> view(CardRow row) {
         boolean sandbox = sandbox(row);
         return linked("id", row.id(), "tokenId", String.valueOf(row.id()), "version", row.version() == null ? 0L : row.version(), "brand", row.brand(),
-                "last4", row.last4(), "holder", row.holder(), "status", "BOUND",
+                "last4", row.last4(), "expiry", row.expiryLabel() == null ? "--/--" : row.expiryLabel(),
+                "holder", row.holder(), "status", "BOUND",
                 "isDefault", row.isDefault(), "boundAt", row.createdAt() == null ? null : row.createdAt().toString(),
                 "source", sandbox ? "mock" : "provider", "sandbox", sandbox,
                 "providerCanonical", !sandbox, "sourceEnvironment", row.sourceEnvironment(),
@@ -200,6 +236,6 @@ public class AppPaymentMethodService {
     }
     private Map<String, Object> linked(Object... values) { Map<String, Object> map = new LinkedHashMap<>(); for (int i = 0; i < values.length; i += 2) map.put(String.valueOf(values[i]), values[i + 1]); return map; }
     private String sha256(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); } catch (Exception ex) { throw new IllegalStateException(ex); } }
-    public record BindRequest(String providerToken, String source, String brand, String last4, String holder, boolean makeDefault) { }
+    public record BindRequest(String providerToken, String source, String brand, String last4, String expiry, String holder, boolean makeDefault) { }
     private record Scope(String source, String sourceEnvironment, String runId, boolean sandbox) { }
 }

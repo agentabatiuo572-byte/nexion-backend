@@ -38,6 +38,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL AND pending_deactivate=0
             """)
     int countActiveDevices(@Param("userId") Long userId);
@@ -109,6 +110,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -135,6 +137,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -161,6 +164,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -187,6 +191,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -214,6 +219,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(d.ownership_status)='OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -240,12 +246,12 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                    s.phone_daily_earn AS phoneDailyEarn,s.phone_daily_earn_nex AS phoneDailyEarnNex,s.features_json AS featuresJson,
                    s.ai_image_gen_per_min AS aiImageGenPerMin,s.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    s.ai_video_min_per_hour AS aiVideoMinPerHour,s.ai_fine_tune_mins AS aiFineTuneMins,
-                   s.ai_unlocks AS aiUnlocks,NULL AS purchaseGateJson
+                   s.ai_unlocks AS aiUnlocks,NULL AS purchaseGateJson,p.inventory_mode AS inventoryMode
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
                AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
-               AND p.price_usdt>0 AND p.stock>=1
+               AND p.price_usdt>0 AND (p.inventory_mode='UNLIMITED' OR p.stock>=0)
              ORDER BY p.store_featured DESC,p.sort_order ASC,p.id ASC
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
@@ -254,7 +260,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
                    unlock_phase AS unlockPhase,
                    product_type AS deviceType, generation, gpu_model AS gpuModel,
-                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex
+                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex,
+                   inventory_mode AS inventoryMode
               FROM nx_product
              WHERE is_deleted=0 AND store_visible=1
                AND ((#{productId} IS NOT NULL AND id=#{productId}
@@ -269,7 +276,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
                    unlock_phase AS unlockPhase,
                    product_type AS deviceType, generation, gpu_model AS gpuModel,
-                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex
+                   vram_total_gb AS vramTotalGb, hashrate, estimated_daily_usdt AS dailyUsdt, daily_nex AS dailyNex,
+                   inventory_mode AS inventoryMode
               FROM nx_product
              WHERE is_deleted=0 AND store_visible=1
                AND ((#{productId} IS NOT NULL AND id=#{productId}
@@ -317,7 +325,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                SET stock=stock-1, sold_count=sold_count+1,
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE id=#{productId} AND is_deleted=0 AND store_visible=1
-               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND stock>=1
+               AND UPPER(status) IN ('ACTIVE','ON_SALE') AND inventory_mode='FINITE' AND stock>=1
             """)
     int decrementTargetStock(@Param("productId") Long productId);
 
@@ -327,6 +335,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                    deactivated_at=NOW(), updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL AND pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -342,6 +351,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                    deactivated_at=NOW(), updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL AND pending_deactivate=0
                AND NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
@@ -430,13 +440,20 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
     record TargetProduct(Long id, String productNo, String name, String tier, String status,
                          BigDecimal priceUsdt, Integer stock, String unlockPhase, String deviceType, Integer generation,
                          String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
-                         BigDecimal dailyUsdt, BigDecimal dailyNex) {
+                         BigDecimal dailyUsdt, BigDecimal dailyNex, String inventoryMode) {
+        public TargetProduct(Long id, String productNo, String name, String tier, String status,
+                             BigDecimal priceUsdt, Integer stock, String unlockPhase, String deviceType, Integer generation,
+                             String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
+                             BigDecimal dailyUsdt, BigDecimal dailyNex) {
+            this(id, productNo, name, tier, status, priceUsdt, stock, unlockPhase, deviceType, generation,
+                    gpuModel, vramTotalGb, hashrate, dailyUsdt, dailyNex, "FINITE");
+        }
         public TargetProduct(Long id, String productNo, String name, String tier, String status,
                              BigDecimal priceUsdt, Integer stock, String deviceType, Integer generation,
                              String gpuModel, Integer vramTotalGb, BigDecimal hashrate,
                              BigDecimal dailyUsdt, BigDecimal dailyNex) {
             this(id, productNo, name, tier, status, priceUsdt, stock, null, deviceType, generation,
-                    gpuModel, vramTotalGb, hashrate, dailyUsdt, dailyNex);
+                    gpuModel, vramTotalGb, hashrate, dailyUsdt, dailyNex, "FINITE");
         }
     }
 
@@ -447,7 +464,22 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                                 String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
                                 BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
-                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                String inventoryMode) {
+        /** Compatibility constructor for callers before explicit inventory semantics. */
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                    BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
+                    hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter,
+                    uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin,
+                    aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, "FINITE");
+        }
         /** Compatibility constructor for callers compiled against the pre-datacenter projection. */
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                     String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
@@ -459,7 +491,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
             this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
                     hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter,
                     null, null, null, null, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour,
-                    aiFineTuneMins, aiUnlocks, purchaseGateJson);
+                    aiFineTuneMins, aiUnlocks, purchaseGateJson, "FINITE");
         }
 
         /** Compatibility constructor for callers compiled against the pre-P2 projection. */
@@ -473,7 +505,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
             this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
                     hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt,
                     power, null, null, null, null, null, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour,
-                    aiFineTuneMins, aiUnlocks, purchaseGateJson);
+                    aiFineTuneMins, aiUnlocks, purchaseGateJson, "FINITE");
         }
 
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
@@ -482,7 +514,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
                                     String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt) {
             this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb,
                     hashrate, dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, "FINITE");
         }
     }
 

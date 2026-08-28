@@ -77,6 +77,23 @@ public interface WithdrawalOrderRepository {
         return false;
     }
 
+    default boolean accelerateDevelopmentH1Hold(
+            String withdrawalNo,
+            String expectedStatus,
+            LocalDateTime expectedHoldUntil,
+            LocalDateTime simulatedDueAt) {
+        return false;
+    }
+
+    /**
+     * Serializes development-only H1 expiry simulations for one withdrawal.
+     * The concrete MySQL implementation holds the row mutex for the surrounding
+     * idempotent command transaction and returns false outside the exact dev scope.
+     */
+    default boolean lockDevelopmentH1Hold(String withdrawalNo) {
+        return false;
+    }
+
     int freezePendingByUserId(Long userId, String reason);
 
     int restoreFrozenByUserStatus(Long userId);

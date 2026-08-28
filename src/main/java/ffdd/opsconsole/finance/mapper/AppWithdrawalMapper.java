@@ -136,6 +136,16 @@ public interface AppWithdrawalMapper {
     PayoutAddressRow lockPayoutAddress(@Param("userId") Long userId, @Param("network") String network);
 
     @Select("""
+            SELECT network,address,effective_at effectiveAt,next_change_allowed_at nextChangeAllowedAt
+              FROM nx_user_payout_address
+             WHERE user_id=#{userId} AND network=#{network} AND status='ACTIVE' AND is_deleted=0
+             LIMIT 1
+            """)
+    PayoutAddressRow payoutAddressForEligibility(
+            @Param("userId") Long userId,
+            @Param("network") String network);
+
+    @Select("""
             SELECT COUNT(1) FROM nx_withdrawal_order
              WHERE user_id=#{userId} AND created_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) AND is_deleted=0
             """)
@@ -163,9 +173,13 @@ public interface AppWithdrawalMapper {
                           AND (UPPER(COALESCE(rd.rule_codes,'')) REGEXP 'ADDRESS_(BLACKLIST|REPUTATION_LOW)'
                             OR UPPER(COALESCE(rd.reason,'')) REGEXP 'ADDRESS_(BLACKLIST|REPUTATION_LOW)')
                    ) THEN 'low' ELSE 'normal' END addressReputation,
-                   COALESCE(k4o.override_score,k4.model_score) k4RiskScore,
-                   k4.model_version k4ModelVersion,
-                   k4.as_of k4AsOf,
+                   COALESCE(k4o.override_score,k4.model_score,
+                     CASE WHEN COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL THEN 0 END) k4RiskScore,
+                   COALESCE(k4.model_version,
+                     CASE WHEN COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL
+                          THEN CONCAT('k4-v',k4m.model_version) END) k4ModelVersion,
+                   COALESCE(k4.as_of,
+                     CASE WHEN COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL THEN NOW() END) k4AsOf,
                    k4m.band_low_max k4BandLowMax,
                    k4m.band_high_min k4BandHighMin,
                    k4m.auto_escalate_score k4AutoEscalateScore
@@ -176,7 +190,8 @@ public interface AppWithdrawalMapper {
                AND k4.as_of>=DATE_SUB(NOW(),INTERVAL 1 DAY)
               LEFT JOIN nx_admin_risk_score_model k4m
                 ON k4m.state='active' AND k4m.is_deleted=0
-               AND k4.model_version=CONCAT('k4-v',k4m.model_version)
+               AND (k4.model_version=CONCAT('k4-v',k4m.model_version)
+                    OR (COALESCE(u.sandbox,0)=1 AND k4.user_no IS NULL))
               LEFT JOIN nx_admin_risk_score_override k4o
                 ON k4o.user_no=k4.user_no AND k4o.active=1 AND k4o.is_deleted=0
              WHERE u.id=#{userId} AND u.is_deleted=0
@@ -255,7 +270,6 @@ public interface AppWithdrawalMapper {
                        AND l.is_deleted=0) nexRefundedAt
               FROM nx_withdrawal_order w
               JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0
-                            AND COALESCE(u.sandbox,0)=0
              WHERE w.user_id=#{userId} AND w.is_deleted=0
              ORDER BY w.created_at DESC,w.id DESC LIMIT #{limit}
             """)
@@ -291,7 +305,6 @@ public interface AppWithdrawalMapper {
                        AND l.is_deleted=0) nexRefundedAt
               FROM nx_withdrawal_order w
               JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0
-                            AND COALESCE(u.sandbox,0)=0
              WHERE w.user_id=#{userId} AND w.withdrawal_no=#{withdrawalNo} AND w.is_deleted=0
              LIMIT 1
             """)

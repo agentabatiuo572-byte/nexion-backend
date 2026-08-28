@@ -47,6 +47,7 @@ class AppTradeinServiceTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(false);
         when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -75,30 +76,50 @@ class AppTradeinServiceTest {
     }
 
     @Test
-    void submitFailsClosedBeforeProductionStateIsReadInLocalSandbox() {
+    void developmentRuntimeAllowsTheFixedDevelopmentAccountToResolveCapacityBeforeCheckout() {
         when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
 
-        assertThatThrownBy(() -> service.submit(7L, "tradein-sandbox-1",
-                new AppTradeinSubmitRequest(11L, 22L, null,
-                        new BigDecimal("799.00"), new BigDecimal("400.00"))))
+        var result = service.capacityQuote(7L,
+                new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().decision()).isEqualTo("REPLACE_REQUIRED");
+        assertThat(result.getData().decisionSource()).isEqualTo("server");
+    }
+
+    @Test
+    void developmentRuntimeRejectsCapacityReplacementBeforeSharedStateIsRead() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.capacityReplace(7L, "capacity-dev-1",
+                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000"))))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
 
         verify(mapper, never()).lockActiveUser(any());
+        verify(mapper, never()).decrementTargetStock(any());
+        verify(mapper, never()).consumePurchaseQuota(anyString(), any());
         verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
     }
 
     @Test
-    void capacityReplacementFailsClosedBeforeProductionStateIsReadInLocalSandbox() {
+    void developmentRuntimeRejectsAProductionUserBeforeCapacityStateIsRead() {
         when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
 
-        assertThatThrownBy(() -> service.capacityReplace(7L, "capacity-sandbox-1",
-                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("799.00"))))
+        assertThatThrownBy(() -> service.capacityQuote(7L,
+                new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2")))
                 .isInstanceOf(BizException.class)
-                .hasMessageContaining("TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
+                .hasMessageContaining("TRADEIN_DEVELOPMENT_USER_REQUIRED");
 
-        verify(mapper, never()).lockActiveUser(any());
-        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).countActiveDevices(any());
     }
 
     @Test
@@ -125,12 +146,12 @@ class AppTradeinServiceTest {
     void sandboxUserIsRejectedByEveryTradeinReadEntryOutsideLocalSandbox() {
         when(mapper.activeUserEnvironment(7L)).thenReturn(1);
 
-        assertSandboxTradeinUnavailable(() -> service.config(7L));
-        assertSandboxTradeinUnavailable(() -> service.eligibility(7L,
+        assertProductionReadUserRequired(() -> service.config(7L));
+        assertProductionReadUserRequired(() -> service.eligibility(7L,
                 new AppTradeinEligibilityRequest("stellarbox-pro-v2")));
-        assertSandboxTradeinUnavailable(() -> service.quote(7L,
+        assertProductionReadUserRequired(() -> service.quote(7L,
                 new AppTradeinQuoteRequest(11L, 22L)));
-        assertSandboxTradeinUnavailable(() -> service.capacityQuote(7L,
+        assertProductionReadUserRequired(() -> service.capacityQuote(7L,
                 new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2")));
 
         verify(mapper, never()).userLevel(7L);
@@ -144,12 +165,12 @@ class AppTradeinServiceTest {
     void sandboxUserIsRejectedByBothTradeinWriteEntriesBeforeIdempotencyOutsideLocalSandbox() {
         when(mapper.activeUserEnvironment(7L)).thenReturn(1);
 
-        assertSandboxTradeinUnavailable(() -> service.submit(7L, "tradein-sandbox-2",
+        assertProductionWriteUserRequired(() -> service.submit(7L, "tradein-sandbox-2",
                 new AppTradeinSubmitRequest(11L, 22L)));
-        assertSandboxTradeinUnavailable(() -> service.capacityReplace(7L, "capacity-sandbox-2",
+        assertProductionWriteUserRequired(() -> service.capacityReplace(7L, "capacity-sandbox-2",
                 new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("799.00"))));
 
-        verify(mapper, never()).lockActiveUser(7L);
+        verify(mapper, never()).lockActiveUser(any());
         verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
         verify(mapper, never()).debitWalletUsdt(any(), any());
         verify(mapper, never()).insertPaidOrder(any());
@@ -500,7 +521,24 @@ class AppTradeinServiceTest {
         return new AppTradeinMapper.ConfigRow(key, value);
     }
 
-    private void assertSandboxTradeinUnavailable(ThrowingCallable action) {
+    private void assertProductionReadUserRequired(ThrowingCallable action) {
+        assertThatThrownBy(action)
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_PRODUCTION_USER_REQUIRED");
+    }
+
+    @Test
+    void quoteRejectsFiniteCloudShareAsANonPhysicalTradeinTarget() {
+        when(mapper.findTargetProduct(22L, null)).thenReturn(new AppTradeinMapper.TargetProduct(
+                22L, "cloud-share", "Cloud Share", "Share", "ACTIVE", new BigDecimal("100"), 3,
+                null, "SHARE", 1, null, null, BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ONE, "FINITE"));
+
+        assertThatThrownBy(() -> service.quote(7L, new AppTradeinQuoteRequest(11L, 22L, null)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TRADEIN_TARGET_OUT_OF_STOCK");
+    }
+
+    private void assertProductionWriteUserRequired(ThrowingCallable action) {
         assertThatThrownBy(action)
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TRADEIN_SANDBOX_UNAVAILABLE");

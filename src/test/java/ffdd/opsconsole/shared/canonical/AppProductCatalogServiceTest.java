@@ -29,6 +29,7 @@ class AppProductCatalogServiceTest {
         when(releasePolicy.evaluate(any(), any()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(0);
     }
 
     @Test
@@ -36,16 +37,20 @@ class AppProductCatalogServiceTest {
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
                 "stellarbox-pro-v2", "NexionBox Pro v2", "Pro", new BigDecimal("2639"), 3)));
 
-        Map<String, Object> data = service.catalog().getData();
+        Map<String, Object> data = service.catalog(42L).getData();
 
         assertThat(data.get("source")).isEqualTo("nx_product");
         assertThat(data.get("serverCanonical")).isEqualTo(true);
+        assertThat(data).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
         assertThat((List<?>) data.get("products")).singleElement().satisfies(item -> {
             Map<?, ?> product = (Map<?, ?>) item;
             assertThat(product.get("id")).isEqualTo("stellarbox-pro-v2");
             assertThat(product.get("name")).isEqualTo("NexionBox Pro v2");
             assertThat(product.get("tier")).isEqualTo("Pro");
             assertThat(product.get("price")).isEqualTo(new BigDecimal("2639"));
+            assertThat(product.get("productType")).isEqualTo("DEVICE");
+            assertThat(product.get("inventoryMode")).isEqualTo("FINITE");
             assertThat(product.get("stock")).isEqualTo(3);
             assertThat(product.get("status")).isEqualTo("active");
             assertThat(product.get("available")).isEqualTo(true);
@@ -62,7 +67,7 @@ class AppProductCatalogServiceTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> product =
-                (Map<String, Object>) ((List<?>) service.catalog().getData().get("products")).get(0);
+                (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
 
         assertThat(product).containsEntry("available", false)
                 .containsEntry("releaseState", "E1_PHASE_NOT_REACHED")
@@ -74,24 +79,118 @@ class AppProductCatalogServiceTest {
     void catalogKeepsAnEmptyPurchasableInventoryHonestInsteadOfResurfacingAdminOnlySkus() {
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of());
 
-        Map<String, Object> data = service.catalog().getData();
+        Map<String, Object> data = service.catalog(42L).getData();
 
         assertThat(data.get("source")).isEqualTo("nx_product");
         assertThat(data.get("products")).isEqualTo(List.of());
     }
 
     @Test
+    void catalogKeepsAZeroStockPhysicalSkuVisibleButNotPurchasable() {
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
+                "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 0)));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> product =
+                (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
+
+        assertThat(product).containsEntry("id", "stellarbox-s1")
+                .containsEntry("inventoryMode", "FINITE")
+                .containsEntry("stock", 0)
+                .containsEntry("available", true)
+                .containsEntry("purchaseBlocked", true)
+                .containsEntry("purchaseBlockedReason", "PRODUCT_OUT_OF_STOCK");
+    }
+
+    @Test
     void developmentRuntimeUsesTheSameCanonicalE1CatalogAsPc() {
         when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
                 "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 8)));
 
         var result = service.catalog(42L);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("source", "nx_product");
+        assertThat(result.getData()).containsEntry("source", "nx_product")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("serverCanonical", true);
         org.mockito.Mockito.verifyNoInteractions(sandboxMapper);
+    }
+
+    @Test
+    void catalogPublishesCloudShareAsUnlimitedWithoutInventingPhysicalStock() {
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
+                "cloud-share", "Cloud Share", "Share", new BigDecimal("199"), 0,
+                "SHARE", 1, null, null, null, BigDecimal.ZERO, new BigDecimal("10"),
+                "Shared compute", null, 12, null, null, null, null, null, null, null, null,
+                "[]", null, null, null, null, null, null, "UNLIMITED")));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> product =
+                (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
+
+        assertThat(product).containsEntry("id", "cloud-share")
+                .containsEntry("productType", "SHARE")
+                .containsEntry("inventoryMode", "UNLIMITED")
+                .containsEntry("stock", null)
+                .containsEntry("available", true)
+                .containsEntry("purchaseBlocked", false);
+    }
+
+    @Test
+    void developmentRuntimeAllowsAnyActiveRegisteredDevelopmentUser() {
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(99L)).thenReturn(1);
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
+                "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 8)));
+
+        var result = service.catalog(99L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("source", "nx_product")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("serverCanonical", true);
+        org.mockito.Mockito.verifyNoInteractions(sandboxMapper);
+    }
+
+    @Test
+    void developmentRuntimeRejectsAnInactiveOrMissingUser() {
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(99L)).thenReturn(null);
+
+        var result = service.catalog(99L);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_CATALOG_DEVELOPMENT_USER_REQUIRED");
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).listPurchasableCatalogTargets();
+    }
+
+    @Test
+    void productionRuntimeRejectsSandboxUserBeforeReadingTheCanonicalCatalog() {
+        when(mapper.activeUserEnvironment(99L)).thenReturn(1);
+
+        var result = service.catalog(99L);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_CATALOG_PRODUCTION_USER_REQUIRED");
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).listPurchasableCatalogTargets();
+    }
+
+    @Test
+    void productionRuntimeRejectsAnInactiveOrMissingUserBeforeReadingTheCanonicalCatalog() {
+        when(mapper.activeUserEnvironment(99L)).thenReturn(null);
+
+        var result = service.catalog(99L);
+
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_CATALOG_PRODUCTION_USER_REQUIRED");
+        org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).listPurchasableCatalogTargets();
     }
 
     @Test
@@ -133,7 +232,7 @@ class AppProductCatalogServiceTest {
                 "Flagship AI", "{\"rankMin\":3,\"mode\":\"all\",\"enforce\":true}")));
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog().getData().get("products")).get(0);
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
 
         assertThat(product.get("power")).isEqualTo("2200W");
         assertThat(product.get("features")).isEqualTo(List.of("Managed hosting"));
@@ -151,7 +250,7 @@ class AppProductCatalogServiceTest {
                 null, null, 0, null, null, "700W", "Tokyo DC", "99.9%", "36 months",
                 new BigDecimal("0.06"), new BigDecimal("12"), "[]", null, null, null, null, null, null)));
 
-        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog().getData().get("products")).get(0);
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
 
         assertThat(product).containsEntry("uptime", "99.9%")
                 .containsEntry("warranty", "36 months")

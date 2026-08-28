@@ -51,7 +51,7 @@ nexion:
     ai:
       # Local RAG is opt-in and uses loopback Qdrant + Ollama only.
       mode: ${NEXION_NOVA_AI_MODE:DISABLED}
-      rag-base-url: ${NEXION_NOVA_AI_RAG_BASE_URL:http://127.0.0.1:8010}
+      rag-base-url: ${NEXION_NOVA_AI_RAG_BASE_URL:http://[::1]:8010}
       rag-collection: ${NEXION_NOVA_AI_RAG_COLLECTION:customer_support_knowledge_prd_v2_20260814}
       model: ${NEXION_NOVA_AI_MODEL:gemma4-e4b-ctx32k:latest}
       connect-timeout-ms: ${NEXION_NOVA_AI_CONNECT_TIMEOUT_MS:2000}

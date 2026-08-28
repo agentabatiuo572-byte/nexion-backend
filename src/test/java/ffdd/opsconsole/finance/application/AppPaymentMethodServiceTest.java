@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,6 +36,7 @@ class AppPaymentMethodServiceTest {
     void passThroughIdempotencyAndAuthenticate() {
         when(mapper.activeUser(USER_ID)).thenReturn(USER_ID);
         when(mapper.userSandbox(USER_ID)).thenReturn(1);
+        when(mapper.developmentUserScope(USER_ID, "+84", "fixed-phone")).thenReturn(1);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
     }
@@ -46,13 +48,13 @@ class AppPaymentMethodServiceTest {
         when(mapper.findActiveByTokenScoped(USER_ID, TOKEN, "SANDBOX", "test-run")).thenReturn(null, reactivated);
         when(mapper.listScoped(USER_ID, "SANDBOX", "test-run")).thenReturn(List.of());
         when(mapper.findByTokenScoped(USER_ID, TOKEN, "SANDBOX", "test-run")).thenReturn(unboundHistorical);
-        when(mapper.reactivateScoped(USER_ID, TOKEN, "visa", "4242", "ALICE", true, "SANDBOX", "test-run")).thenReturn(1);
+        when(mapper.reactivateScoped(USER_ID, TOKEN, "visa", "4242", "12/30", "ALICE", true, "SANDBOX", "test-run")).thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.bind(USER_ID, request(), "idem-unbound");
 
         assertThat(result.getData()).containsEntry("receipt", "CARD_BOUND");
         assertThat(((Map<?, ?>) result.getData().get("card")).get("status")).isEqualTo("BOUND");
-        verify(mapper).reactivateScoped(USER_ID, TOKEN, "visa", "4242", "ALICE", true, "SANDBOX", "test-run");
+        verify(mapper).reactivateScoped(USER_ID, TOKEN, "visa", "4242", "12/30", "ALICE", true, "SANDBOX", "test-run");
     }
 
     @Test
@@ -101,7 +103,7 @@ class AppPaymentMethodServiceTest {
     void locallyMintedMockTokenIsRejectedByTheDefaultProductionBoundary() {
         when(mapper.userSandbox(USER_ID)).thenReturn(0);
         AppPaymentMethodService.BindRequest forged = new AppPaymentMethodService.BindRequest(
-                "tok_0123456789abcdef01234567", "mock", "visa", "4242", "Alice", true);
+                "tok_0123456789abcdef01234567", "mock", "visa", "4242", "12/30", "Alice", true);
         PaymentMethodProviderProperties production = new PaymentMethodProviderProperties();
         AppPaymentMethodService productionService = new AppPaymentMethodService(
                 mapper, idempotency, production, guard(production, "prod"), null);
@@ -127,7 +129,7 @@ class AppPaymentMethodServiceTest {
                 .containsEntry("sandbox", true)
                 .containsEntry("providerCanonical", false);
         Map<String, Object> card = (Map<String, Object>) result.getData().get("card");
-        assertThat(card).containsEntry("source", "mock");
+        assertThat(card).containsEntry("source", "mock").containsEntry("expiry", "12/30");
     }
 
     @Test
@@ -141,10 +143,20 @@ class AppPaymentMethodServiceTest {
     }
 
     @Test
-    void sandboxUnbindFailsClosedInsteadOfUsingUnscopedRevocationMapper() {
-        assertThatThrownBy(() -> service.unbind(USER_ID, 99L, 1L, "idem-unbind"))
-                .isInstanceOf(BizException.class)
-                .hasMessage("PAYMENT_METHOD_SANDBOX_UNAVAILABLE");
+    void sandboxUnbindUsesAccountRunAndVersionScopedCas() {
+        CardRow target = new CardRow(99L, USER_ID, TOKEN, "visa", "4242", "ALICE", false,
+                LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "test-run", 1L);
+        when(mapper.lockActiveUser(USER_ID)).thenReturn(USER_ID);
+        when(mapper.findActiveByIdScoped(USER_ID, 99L, "SANDBOX", "test-run")).thenReturn(target);
+        when(mapper.unbindScoped(USER_ID, 99L, 1L, "SANDBOX", "test-run")).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.unbind(USER_ID, 99L, 1L, "idem-unbind");
+
+        assertThat(result.getData()).containsEntry("serverCanonical", true)
+                .containsEntry("receipt", "CARD_UNBOUND")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "test-run");
+        verify(mapper).unbindScoped(USER_ID, 99L, 1L, "SANDBOX", "test-run");
     }
 
     @Test
@@ -173,6 +185,42 @@ class AppPaymentMethodServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void developmentListReadsAccountScopedSandboxCardsForAnyActiveSandboxUser() {
+        PaymentMethodProviderProperties development = sandboxProperties();
+        AppPaymentMethodService developmentService = new AppPaymentMethodService(
+                mapper, idempotency, development, guard(development, "dev"), null);
+        CardRow sandbox = new CardRow(22L, USER_ID, "tok_0123456789abcdef01234567", "visa", "2222", "ALICE",
+                true, LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "local-dev", 0L);
+        when(mapper.listScoped(USER_ID, "SANDBOX", "local-dev")).thenReturn(List.of(sandbox));
+
+        ApiResult<Map<String, Object>> result = developmentService.list(USER_ID);
+
+        assertThat(result.getData()).containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "local-dev")
+                .containsEntry("sandbox", true);
+        List<Map<String, Object>> cards = (List<Map<String, Object>>) result.getData().get("cards");
+        assertThat(cards).singleElement().satisfies(card ->
+                assertThat(card).containsEntry("tokenId", "22").containsEntry("sandbox", true));
+        verify(mapper).listScoped(USER_ID, "SANDBOX", "local-dev");
+    }
+
+    @Test
+    void developmentListRejectsProductionUserBeforeReadingSandboxCards() {
+        PaymentMethodProviderProperties development = sandboxProperties();
+        AppPaymentMethodService developmentService = new AppPaymentMethodService(
+                mapper, idempotency, development, guard(development, "dev"), null);
+        when(mapper.userSandbox(USER_ID)).thenReturn(0);
+
+        assertThatThrownBy(() -> developmentService.list(USER_ID))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("PAYMENT_METHOD_SANDBOX_USER_REQUIRED");
+
+        verify(mapper, never()).listScoped(USER_ID, "SANDBOX", "local-dev");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void productionWalletListNeverExposesPersistedSandboxCards() {
         when(mapper.userSandbox(USER_ID)).thenReturn(0);
         PaymentMethodProviderProperties production = new PaymentMethodProviderProperties();
@@ -191,7 +239,7 @@ class AppPaymentMethodServiceTest {
     }
 
     private static AppPaymentMethodService.BindRequest request() {
-        return new AppPaymentMethodService.BindRequest(TOKEN, "mock", "visa", "4242", "Alice", true);
+        return new AppPaymentMethodService.BindRequest(TOKEN, "mock", "visa", "4242", "12/30", "Alice", true);
     }
 
     private static PaymentMethodProviderProperties sandboxProperties() {
@@ -202,13 +250,17 @@ class AppPaymentMethodServiceTest {
 
     private static CardRow row(long id) {
         return new CardRow(id, USER_ID, TOKEN, "visa", "4242", "ALICE", true,
-                LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX");
+                LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "", 0L, "12/30");
     }
 
     private static PaymentMethodSandboxProfileGuard guard(PaymentMethodProviderProperties properties, String profile) {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles(profile);
         if ("test".equals(profile)) environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "test-run");
+        if ("dev".equals(profile)) {
+            environment.setProperty("nexion.auth.development-passkey-account.country-code", "+84");
+            environment.setProperty("nexion.auth.development-passkey-account.phone", "fixed-phone");
+        }
         PaymentMethodSandboxProfileGuard guard = new PaymentMethodSandboxProfileGuard(properties, environment);
         guard.afterPropertiesSet();
         return guard;

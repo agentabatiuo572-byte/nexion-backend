@@ -54,22 +54,31 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
     Map<String, Object> findFxQuoteConfig();
 
     @Select("""
+            SELECT MAX(GREATEST(
+                       daily_cap_vnd - (
+                           CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
+                                THEN received_today_vnd ELSE 0 END
+                           + COALESCE((
+                               SELECT SUM(i.payable_vnd)
+                                 FROM nx_vietqr_intent i
+                                WHERE i.bank_account_id = nx_vietqr_bank_account.id
+                                  AND i.status = 'AWAITING_PAYMENT'
+                                  AND i.expires_at > NOW() AND i.is_deleted = 0
+                           ), 0)
+                       ),
+                       0
+                   ))
+              FROM nx_vietqr_bank_account
+             WHERE status = 'ACTIVE' AND is_deleted = 0
+            """)
+    BigDecimal findMaxAvailableBankCapacityVnd();
+
+    @Select("""
             SELECT COUNT(1)
               FROM nx_vietqr_bank_account
              WHERE status = 'ACTIVE' AND is_deleted = 0
-               AND (
-                   CASE WHEN received_business_date = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 HOUR))
-                        THEN received_today_vnd ELSE 0 END
-                   + COALESCE((
-                       SELECT SUM(i.payable_vnd)
-                         FROM nx_vietqr_intent i
-                        WHERE i.bank_account_id = nx_vietqr_bank_account.id
-                          AND i.status = 'AWAITING_PAYMENT'
-                          AND i.expires_at > NOW() AND i.is_deleted = 0
-                   ), 0)
-               ) < daily_cap_vnd
             """)
-    long countAvailableBankAccounts();
+    long countActiveBankAccounts();
 
     @Select("""
             SELECT id, bank_name AS bankName, account_holder AS accountHolder,

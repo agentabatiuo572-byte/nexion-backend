@@ -32,6 +32,7 @@ public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
              WHERE user_id = #{userId} AND is_deleted = 0
                AND UPPER(ownership_status) = 'OWNED'
                AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL AND pending_deactivate = 0
             """)
     int activeDeviceCount(@Param("userId") Long userId);

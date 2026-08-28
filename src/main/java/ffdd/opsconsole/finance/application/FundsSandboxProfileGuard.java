@@ -54,6 +54,13 @@ public class FundsSandboxProfileGuard implements InitializingBean {
                 && "dev".equals(activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT));
     }
 
+    public static boolean isStrictTestProfile(String... activeProfiles) {
+        return activeProfiles != null
+                && activeProfiles.length == 1
+                && activeProfiles[0] != null
+                && "test".equals(activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT));
+    }
+
     public boolean isStrictIsolatedRuntime() {
         return isStrictIsolatedProfile(environment.getActiveProfiles());
     }
@@ -64,6 +71,10 @@ public class FundsSandboxProfileGuard implements InitializingBean {
 
     public boolean isStrictDevelopmentRuntime() {
         return isStrictDevelopmentProfile(environment.getActiveProfiles());
+    }
+
+    public boolean isStrictTestRuntime() {
+        return isStrictTestProfile(environment.getActiveProfiles());
     }
 
     public String source() {

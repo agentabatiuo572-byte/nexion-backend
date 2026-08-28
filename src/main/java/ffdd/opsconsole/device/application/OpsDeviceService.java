@@ -30,6 +30,7 @@ import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
@@ -328,6 +329,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
+        DeviceSkuUpsertRequest effectiveWriteRequest = writeRequest.trialEligible() == null
+                ? withTrialEligible(writeRequest, Boolean.TRUE.equals(before.trialEligible()))
+                : writeRequest;
         String nextStatus = normalizeSkuStatus(writeRequest.status());
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized, writeRequest.unlockPhase());
@@ -336,17 +340,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         LocalDateTime changedAt = LocalDateTime.now(clock);
-        DeviceSkuView updated = catalogRepository.updateSku(normalized, writeRequest, expectedRevision, changedAt)
+        DeviceSkuView updated = catalogRepository.updateSku(
+                        normalized, effectiveWriteRequest, expectedRevision, changedAt)
                 .orElse(null);
         if (updated == null) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
         if (!"on".equals(before.status()) && "on".equals(updated.status())) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_listed", e1SkuStatusEvent(
-                    normalized, before.status(), updated.status(), writeRequest.operator(), writeRequest.reason()));
+                    normalized, before.status(), updated.status(), effectiveWriteRequest.operator(), effectiveWriteRequest.reason()));
         } else if ("on".equals(before.status()) && !"on".equals(updated.status())) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_unlisted", e1SkuStatusEvent(
-                    normalized, before.status(), updated.status(), writeRequest.operator(), writeRequest.reason()));
+                    normalized, before.status(), updated.status(), effectiveWriteRequest.operator(), effectiveWriteRequest.reason()));
         }
         if (before.price() != null && updated.price() != null && before.price().compareTo(updated.price()) != 0) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_price_changed", detail(
@@ -356,8 +361,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "before", before.price(),
                     "after", updated.price(),
                     "effective_at", changedAt.toString(),
-                    "operator", writeRequest.operator(),
-                    "reason", writeRequest.reason().trim()));
+                    "operator", effectiveWriteRequest.operator(),
+                    "reason", effectiveWriteRequest.reason().trim()));
         }
         auditRequired("E1_SKU_UPDATED", "DEVICE_SKU", normalized, writeRequest.operator(), detail(
                 "skuId", normalized,
@@ -365,7 +370,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "afterName", updated.name(),
                 "beforePrice", before.price(),
                 "afterPrice", updated.price(),
-                "reason", writeRequest.reason().trim(),
+                "reason", effectiveWriteRequest.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
         });
@@ -2640,7 +2645,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before.userId() == null || before.userId() <= 0) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DEVICE_USER_REQUIRED");
             }
-            if (deviceRepository.countActiveDevicesByUser(before.userId()) >= E5_MAX_DEVICES_PER_USER) {
+            if (deviceRepository.occupiesPhysicalSlot(deviceId)
+                    && deviceRepository.countActiveDevicesByUser(before.userId()) >= E5_MAX_DEVICES_PER_USER) {
                 return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
             }
             DeviceOpsView updated = deviceRepository.activateDevice(deviceId, LocalDateTime.now(clock)).orElse(null);
@@ -2883,21 +2889,32 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!StringUtils.hasText(request.datacenter())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_DATACENTER_REQUIRED");
         }
-        if (!StringUtils.hasText(request.stock())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
+        if (inventoryMode == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_INVENTORY_MODE_INVALID");
         }
-        String stock = request.stock().trim();
-        if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+        if (inventoryMode == ProductInventoryMode.UNLIMITED && !"Share".equals(tier)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_INVENTORY_NOT_ALLOWED");
         }
-        long stockValue;
-        try {
-            stockValue = Long.parseLong(stock);
-            if (stockValue > Integer.MAX_VALUE) {
+        long stockValue = 0;
+        if (inventoryMode == ProductInventoryMode.FINITE) {
+            if (!StringUtils.hasText(request.stock())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
             }
-        } catch (NumberFormatException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+            String stock = request.stock().trim();
+            if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+            }
+            try {
+                stockValue = Long.parseLong(stock);
+                if (stockValue > Integer.MAX_VALUE) {
+                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+                }
+            } catch (NumberFormatException ex) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
+            }
+        } else if (StringUtils.hasText(request.stock())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY");
         }
         long sold = request.sold() == null ? 0L : request.sold();
         if (sold < 0 || sold > Integer.MAX_VALUE || sold + stockValue > Integer.MAX_VALUE) {
@@ -2964,6 +2981,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request) {
         String tier = normalizeExact(request.tier());
         String unlockPhase = "Share".equals(tier) ? "" : normalizeE1Phase(request.unlockPhase());
+        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
         return new DeviceSkuUpsertRequest(
                 request.skuId(),
                 request.name(),
@@ -2986,7 +3004,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.shareYieldMax(),
                 request.baseRate(),
                 request.sold(),
-                request.stock(),
+                inventoryMode == ProductInventoryMode.UNLIMITED ? null : request.stock(),
                 request.rating(),
                 request.reviews(),
                 request.aiImageGenPerMin(),
@@ -3007,7 +3025,29 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.tag(),
                 request.status(),
                 request.reason(),
-                operator(request.operator()));
+                operator(request.operator()),
+                inventoryMode.name(),
+                request.trialEligible());
+    }
+
+    private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
+        return new DeviceSkuUpsertRequest(
+                request.skuId(), request.name(), request.tier(), request.tagline(), request.badge(), request.gpu(),
+                request.vram(), request.hashRate(), request.power(), request.datacenter(), request.uptime(),
+                request.warranty(), request.phoneDailyEarn(), request.phoneDailyEarnNex(), request.price(),
+                request.dailyEarn(), request.dailyEarnNex(), request.shareYieldMin(), request.shareYieldMax(),
+                request.baseRate(), request.sold(), request.stock(), request.rating(), request.reviews(),
+                request.aiImageGenPerMin(), request.aiLlmTokensPerSec(), request.aiVideoMinPerHour(),
+                request.aiFineTuneMins(), request.aiUnlocks(), request.features(), request.generation(),
+                request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
+                request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
+                request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
+                trialEligible);
+    }
+
+    private ProductInventoryMode inventoryMode(String raw) {
+        if (!StringUtils.hasText(raw)) return ProductInventoryMode.FINITE;
+        return ProductInventoryMode.parse(raw);
     }
 
     private ApiResult<DeviceReviewView> requireReviewCommand(String idempotencyKey, DeviceReviewUpsertRequest request) {
@@ -4167,10 +4207,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!StringUtils.hasText(raw)) {
             return -1;
         }
-        String normalized = raw.trim().toUpperCase(Locale.ROOT).replace("GB", "").trim();
+        if (!raw.equals(raw.trim())) {
+            return -1;
+        }
+        String normalized = raw.toUpperCase(Locale.ROOT);
+        if (!normalized.matches("^(0|[1-9][0-9]{0,3})(GB)?$")) {
+            return -1;
+        }
+        String digits = normalized.endsWith("GB")
+                ? normalized.substring(0, normalized.length() - 2)
+                : normalized;
         try {
-            BigDecimal value = new BigDecimal(normalized);
-            return value.signum() < 0 ? -1 : value.intValueExact();
+            return Integer.parseInt(digits);
         } catch (RuntimeException ex) {
             return -1;
         }
@@ -4720,7 +4768,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "lifecycle"), str(p, "supersededBy"), decimal(p, "tradeinDiscount"),
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
-                str(p, "status"), reason, operator);
+                str(p, "status"), reason, operator, str(p, "inventoryMode"),
+                boolVal(p, "trialEligible"));
     }
 
     /** 从 replay params 的 purchaseGate 子 map 重建 DevicePurchaseGateView;缺失返回 null。 */

@@ -76,9 +76,9 @@ class AppGenesisServiceTest {
         when(mapper.emissions(42L)).thenReturn(List.of());
         when(mapper.listings()).thenReturn(List.of());
         when(mapper.transactions()).thenReturn(List.of());
+        when(mapper.userTransactions(42L)).thenReturn(List.of());
         when(catalog.marketOpen()).thenReturn(true);
         when(catalog.priceForSold(anyLong())).thenReturn(new BigDecimal("9999.000000"));
-        when(catalog.hasRedeemedInvite(anyLong())).thenReturn(false);
         when(catalog.publicState()).thenReturn(java.util.Map.of(
                 "tiers", List.of(), "tiersVersion", 1L, "marketOpenState", "open",
                 "marketOpenStateVersion", 1L, "closedNoticeKey", "default"));
@@ -91,6 +91,26 @@ class AppGenesisServiceTest {
         var data=service.state().getData();
         @SuppressWarnings("unchecked") var series=(java.util.Map<String,Object>)data.get("series");
         assertThat(series).containsEntry("soldSupply",0L).containsEntry("remainingSupply",1000L);
+    }
+
+    @Test
+    void accountIncludesOnlyTheCurrentUsersGenesisPurchaseOrders() {
+        when(mapper.holdings(42L)).thenReturn(List.of(new AppGenesisMapper.HoldingRow(
+                1L,"GEN-HOLD-1",42L,"GEN-OWN-1","genesis-main",new BigDecimal("9999"),
+                "ACTIVE",null,LocalDateTime.parse("2026-07-22T04:00:00"),null)));
+        when(mapper.emissions(42L)).thenReturn(List.of(new AppGenesisMapper.EmissionRow(
+                "GEN-EM-1","GEN-HOLD-1",new BigDecimal("1.25"),"PAID",
+                LocalDateTime.parse("2026-07-22T04:30:00"))));
+        when(mapper.userTransactions(42L)).thenReturn(List.of(new AppGenesisMapper.TransactionRow(
+                "GEN-OWN-1","PRIMARY",1,new BigDecimal("9999"),new BigDecimal("9999"),
+                BigDecimal.ZERO,LocalDateTime.parse("2026-07-22T04:00:00"))));
+
+        Map<String,Object> data=service.account(42L).getData();
+
+        assertThat(data.get("orders").toString()).contains("GEN-OWN-1", "PRIMARY", "2026-07-21T20:00:00Z");
+        assertThat(data.get("holdings").toString()).contains("GEN-HOLD-1", "2026-07-21T20:00:00Z");
+        assertThat(data.get("emissions").toString()).contains("GEN-EM-1", "2026-07-21T20:30:00Z");
+        verify(mapper).userTransactions(42L);
     }
 
     @Test
@@ -140,6 +160,9 @@ class AppGenesisServiceTest {
                 "tx_deadbeef", "SECONDARY", 1, new BigDecimal("24800"),
                 new BigDecimal("24800"), new BigDecimal("620"),
                 LocalDateTime.of(2026, 7, 22, 3, 0))));
+        when(mapper.listings()).thenReturn(List.of(new AppGenesisMapper.ListingRow(
+                "GEN-LIST-1","genesis-main",new BigDecimal("25000"),
+                LocalDateTime.of(2026,7,22,3,30),"usr_abcd")));
 
         var data = service.state().getData();
         assertThat(data.get("marketStats")).isInstanceOf(Map.class);
@@ -148,8 +171,13 @@ class AppGenesisServiceTest {
         assertThat(stats).containsEntry("owners", 17L)
                 .containsEntry("floorDeltaPct", new BigDecimal("25.0000"));
         @SuppressWarnings("unchecked")
-        var transactions = (List<AppGenesisMapper.TransactionRow>) data.get("transactions");
-        assertThat(transactions.get(0).orderNo()).isEqualTo("tx_deadbeef");
+        var transactions = (List<Map<String, Object>>) data.get("transactions");
+        assertThat(transactions.get(0)).containsEntry("orderNo", "tx_deadbeef")
+                .containsEntry("completedAt", "2026-07-21T19:00:00Z");
+        @SuppressWarnings("unchecked")
+        var listings = (List<Map<String, Object>>) data.get("listings");
+        assertThat(listings.get(0)).containsEntry("holdingNo", "GEN-LIST-1")
+                .containsEntry("listedAt", "2026-07-21T19:30:00Z");
     }
 
     @Test
@@ -405,6 +433,7 @@ class AppGenesisServiceTest {
         verify(mapper).debitWallet(42L,new BigDecimal("9999.000000"));
         var eligibility=service.eligibility(42L).getData();
         assertThat(eligibility).containsEntry("maxPerUser",2).containsEntry("remainingCap",1L);
+        assertThat(eligibility).doesNotContainKeys("mode","appliesTo","hasGenesisInvite");
     }
 
     @Test
@@ -415,6 +444,25 @@ class AppGenesisServiceTest {
         assertThatThrownBy(()->service.purchase(42L,"purchase-cap",
                 new AppGenesisService.PurchaseRequest(1)))
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_USER_CAP_REACHED");
+        when(mapper.lockHolding("listed-cap")).thenReturn(new AppGenesisMapper.HoldingRow(
+                9L,"listed-cap",99L,"seller-order","genesis-main",new BigDecimal("100"),
+                "LISTED",new BigDecimal("120"),LocalDateTime.now(),LocalDateTime.now()));
+        assertThatThrownBy(()->service.buyListing(42L,"listed-cap","secondary-cap"))
+                .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_USER_CAP_REACHED");
+        verify(mapper,never()).debitWallet(any(),any());
+        verify(mapper,never()).creditWallet(any(),any());
+        verify(mapper,never()).transferHolding(anyLong(),anyLong(),anyLong(),anyString(),any(),any());
+    }
+
+    @Test
+    void requestValidationDoesNotKeepTheRetiredTwentyUnitCap() {
+        when(config.activeValue("market.genesis.ops.eligibility.maxPerUser")).thenReturn(Optional.of("5"));
+
+        assertThatThrownBy(() -> service.purchase(42L,"purchase-retired-cap",
+                new AppGenesisService.PurchaseRequest(21)))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("GENESIS_USER_CAP_REACHED");
+
         verify(mapper,never()).debitWallet(any(),any());
     }
 
@@ -431,20 +479,6 @@ class AppGenesisServiceTest {
         assertThat(publicSale).isEqualTo(accountSale)
                 .containsEntry("maxPerUser",3)
                 .containsEntry("serverCanonical",true);
-    }
-
-    @Test
-    void inviteRedeemReceiptCarriesCanonicalEnvironmentProvenance(){
-        when(catalog.redeem(42L,"NEXGRID-OG-1234567890ABCDEF"))
-                .thenReturn(ApiResult.ok(Map.of("code","NEXGRID-OG-1234567890ABCDEF","status","used")));
-
-        var data=service.redeemInvite(42L,"invite-1","NEXGRID-OG-1234567890ABCDEF").getData();
-
-        assertThat(data)
-                .containsEntry("serverCanonical",true)
-                .containsEntry("sourceEnvironment","PRODUCTION")
-                .containsEntry("runId","")
-                .containsEntry("source","nx_genesis_invite_code");
     }
 
     private AppGenesisMapper.SeriesRow series(){

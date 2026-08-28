@@ -2,6 +2,9 @@ package ffdd.opsconsole.shared.canonical;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
@@ -11,6 +14,8 @@ import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,6 +58,24 @@ class StorefrontProductReleasePolicyTest {
             assertThat(decision.available()).isFalse();
             assertThat(decision.reason()).isEqualTo("E1_GENERATION_RELEASE_MONTH_NOT_REACHED");
         });
+    }
+
+    @Test
+    void batchEvaluationReadsRhythmPhasesAndGenerationGatesOnlyOnce() {
+        when(catalog.listGenerationGates(false)).thenReturn(List.of(new DeviceGenerationGateView(
+                "box-gen2", "Gen2", 7, "52", BigDecimal.ZERO, true, 0, false, "active", null, null)));
+        Map<String, String> candidates = new LinkedHashMap<>();
+        candidates.put("box-now", "52");
+        candidates.put("box-gen2", "52");
+
+        Map<String, StorefrontProductReleasePolicy.Decision> decisions = policy.evaluateBatch(candidates);
+
+        assertThat(decisions.get("box-now").available()).isTrue();
+        assertThat(decisions.get("box-gen2").reason()).isEqualTo("E1_GENERATION_RELEASE_MONTH_NOT_REACHED");
+        verify(rhythm, times(1)).snapshot();
+        verify(catalog, times(1)).listPhases("E1", false);
+        verify(catalog, times(1)).listGenerationGates(false);
+        verify(catalog, never()).findGenerationGate(org.mockito.ArgumentMatchers.anyString());
     }
 
     private DevicePhaseView phase(String id, int sortOrder) {

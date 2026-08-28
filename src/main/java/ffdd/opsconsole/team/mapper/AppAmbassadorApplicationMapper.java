@@ -18,6 +18,17 @@ public interface AppAmbassadorApplicationMapper extends BaseMapper<Object> {
     UserScope user(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.id=#{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND u.phone=#{phone} AND u.sandbox=1
+               AND u.status='ACTIVE' AND u.is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
             SELECT id,user_id userId,idempotency_key idempotencyKey,request_hash requestHash,
                    UPPER(status) status,city,event_date eventDate,requested_budget_usdt budget,
                    application_reason bucket,created_at submittedAt,

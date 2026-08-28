@@ -119,6 +119,21 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public boolean accelerateDevelopmentH1Hold(
+            String withdrawalNo,
+            String expectedStatus,
+            LocalDateTime expectedHoldUntil,
+            LocalDateTime simulatedDueAt) {
+        return mapper.accelerateDevelopmentH1Hold(
+                withdrawalNo, expectedStatus, expectedHoldUntil, simulatedDueAt) == 1;
+    }
+
+    @Override
+    public boolean lockDevelopmentH1Hold(String withdrawalNo) {
+        return mapper.lockDevelopmentH1Hold(withdrawalNo) != null;
+    }
+
+    @Override
     public int freezePendingByUserId(Long userId, String reason) {
         return mapper.freezePendingByUserId(userId, reason);
     }

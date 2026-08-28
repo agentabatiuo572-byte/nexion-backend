@@ -45,6 +45,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Select("SELECT id,sandbox FROM nx_user WHERE id = #{userId} AND status='ACTIVE' AND is_deleted = 0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 
+    @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status='ACTIVE' AND is_deleted = 0 LIMIT 1")
+    Integer activeUserEnvironment(@Param("userId") Long userId);
+
     record UserLock(Long id, boolean sandbox) { }
 
     @Select("""
@@ -61,6 +64,22 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
              LIMIT 1
             """)
     UserEventAttribution userEventAttribution(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE((
+                       SELECT config_value
+                         FROM nx_config_item
+                        WHERE config_key = 'growth.phase.current' AND status = 1 AND is_deleted = 0
+                        LIMIT 1
+                   ), 'P1') AS phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) AS accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') AS cohort
+              FROM nx_user u
+             WHERE u.id = #{userId} AND u.is_deleted = 0 AND u.sandbox=1
+               AND UPPER(COALESCE(u.status,'ACTIVE'))='ACTIVE'
+             LIMIT 1
+            """)
+    UserEventAttribution developmentUserEventAttribution(@Param("userId") Long userId);
 
     @Select("""
             SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
@@ -82,20 +101,79 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
             """)
     int activeDeviceCount(@Param("userId") Long userId);
 
     @Select("""
-            SELECT COALESCE(SUM(quantity), 0)
+            SELECT COUNT(1)
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+             WHERE d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+               AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+            """)
+    int developmentActiveDeviceCount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE(SUM(
+                     CASE WHEN EXISTS (
+                              SELECT 1 FROM nx_order_item present_item
+                               WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
+                            ) THEN COALESCE((
+                              SELECT SUM(CASE
+                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
+                                  THEN 0 ELSE order_item.quantity END)
+                                FROM nx_order_item order_item
+                                LEFT JOIN nx_product item_product
+                                  ON item_product.id=order_item.product_id AND item_product.is_deleted=0
+                               WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
+                            ),0)
+                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
+                          THEN 0 ELSE o.quantity END
+                   ), 0)
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0
+              LEFT JOIN nx_product header_product
+                ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND UPPER(COALESCE(o.activation_status, 'WAITING_PAYMENT')) NOT IN
                    ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
             """)
     int reservedDeviceOrderCount(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE(SUM(
+                     CASE WHEN EXISTS (
+                              SELECT 1 FROM nx_order_item present_item
+                               WHERE present_item.order_no=o.order_no AND present_item.is_deleted=0
+                            ) THEN COALESCE((
+                              SELECT SUM(CASE
+                                  WHEN UPPER(COALESCE(NULLIF(item_product.product_type,''),'DEVICE'))='SHARE'
+                                  THEN 0 ELSE order_item.quantity END)
+                                FROM nx_order_item order_item
+                                LEFT JOIN nx_product item_product
+                                  ON item_product.id=order_item.product_id AND item_product.is_deleted=0
+                               WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
+                            ),0)
+                          WHEN UPPER(COALESCE(NULLIF(header_product.product_type,''),'DEVICE'))='SHARE'
+                          THEN 0 ELSE o.quantity END
+                   ),0)
+              FROM nx_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
+              LEFT JOIN nx_product header_product
+                ON header_product.id=o.product_id AND header_product.is_deleted=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0
+               AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
+               AND UPPER(COALESCE(o.activation_status,'WAITING_PAYMENT')) NOT IN
+                   ('ACTIVATED','REFUNDED','CANCELLED','PROVISIONING_FAILED')
+            """)
+    int developmentReservedDeviceOrderCount(@Param("userId") Long userId);
 
     @Select("""
             SELECT COALESCE((
@@ -116,15 +194,17 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                AND row_version = #{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u
                             WHERE u.id = #{userId} AND COALESCE(u.sandbox,0)=0)
-               AND (SELECT active_count FROM (
+               AND (UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) = 'SHARE'
+                    OR (SELECT active_count FROM (
                     SELECT COUNT(1) AS active_count
                       FROM nx_user_device d
                       JOIN nx_user u ON u.id = d.user_id AND COALESCE(u.sandbox,0)=0
                      WHERE d.user_id = #{userId} AND d.is_deleted = 0
                        AND UPPER(d.ownership_status) = 'OWNED'
                        AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                       AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                        AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
-               ) active_snapshot) < #{slotCap}
+               ) active_snapshot) < #{slotCap})
             """)
     int activateOwnedDeviceCas(@Param("userId") Long userId,
                                @Param("deviceId") Long deviceId,
@@ -134,7 +214,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Select("""
             SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo, d.status,
                    d.ownership_status AS ownershipStatus, d.row_version AS rowVersion,
-                   d.pending_deactivate AS pendingDeactivate
+                   d.pending_deactivate AS pendingDeactivate,d.device_type AS deviceType
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0
              WHERE d.id = #{deviceId} AND d.is_deleted = 0
@@ -233,6 +313,101 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
              GROUP BY r.user_device_id
             """)
     List<DeviceRealizedToday> realizedToday(
+            @Param("userId") Long userId,
+            @Param("start") LocalDateTime start,
+            @Param("end") LocalDateTime end);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user u
+             WHERE u.id = #{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code, '')), '+', '') = REPLACE(#{countryCode}, '+', '')
+               AND u.phone = #{phone}
+               AND u.sandbox = 1
+               AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
+               AND u.is_deleted = 0
+            """)
+    int developmentUserScope(
+            @Param("userId") Long userId,
+            @Param("countryCode") String countryCode,
+            @Param("phone") String phone);
+
+    @Select("""
+            SELECT w.usdt_available AS usdtAvailable,
+                   w.nex_available AS nexAvailable,
+                   u.created_at AS joinedAt
+              FROM nx_user u
+              JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
+             WHERE u.id = #{userId}
+               AND u.sandbox = 1
+               AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
+               AND u.is_deleted = 0
+             LIMIT 1
+            """)
+    UserCanonicalProfile developmentUserCanonicalProfile(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT d.id,
+                   d.instance_no AS instanceNo,
+                   d.name,
+                   d.device_type AS deviceType,
+                   d.product_code AS productCode,
+                   d.status,
+                   d.row_version AS rowVersion,
+                   d.pending_deactivate AS pendingDeactivate,
+                   d.activated_at AS activatedAt,
+                   d.purchased_at AS purchasedAt,
+                   d.daily_usdt AS dailyUsdt,
+                   d.daily_nex AS dailyNex,
+                   d.gpu_model AS gpuModel,
+                   d.vram_total_gb AS vramTotalGb,
+                   d.base_power_w AS basePowerW,
+                   d.dc_location AS location,
+                   COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
+                            NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
+                   COALESCE((SELECT SUM(r.reward_usdt)
+                              FROM nx_compute_receipt r
+                              WHERE r.user_device_id = d.id AND r.is_deleted = 0
+                                AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
+                                AND UPPER(r.earning_status) IN
+                                    ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')), 0) AS cumulativeOutputUsdt
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id
+                            AND u.sandbox = 1
+                            AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
+                            AND u.is_deleted = 0
+              LEFT JOIN nx_product p
+                ON p.id = d.product_id AND p.is_deleted = 0
+              LEFT JOIN nx_order o
+                ON o.order_no = d.source_order_no AND o.user_id = d.user_id
+               AND o.payment_status = 'PAID' AND o.is_deleted = 0
+             WHERE d.user_id = #{userId}
+               AND d.is_deleted = 0
+               AND UPPER(d.ownership_status) = 'OWNED'
+               AND UPPER(COALESCE(d.source_environment, '')) = 'PRODUCTION'
+               AND COALESCE(d.run_id, '') = ''
+             ORDER BY d.purchased_at ASC, d.id ASC
+            """)
+    List<OwnedDevice> developmentOwnedDevices(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT r.user_device_id AS deviceId,
+                   COALESCE(SUM(r.reward_usdt), 0) AS todayEarningsUsdt,
+                   COALESCE(SUM(r.reward_nex), 0) AS todayEarningsNex
+              FROM nx_compute_receipt r
+              JOIN nx_user u ON u.id = r.user_id
+                            AND u.sandbox = 1
+                            AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
+                            AND u.is_deleted = 0
+             WHERE r.user_id = #{userId}
+               AND r.is_deleted = 0
+               AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
+               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.completed_at >= #{start}
+               AND r.completed_at < #{end}
+             GROUP BY r.user_device_id
+            """)
+    List<DeviceRealizedToday> developmentRealizedToday(
             @Param("userId") Long userId,
             @Param("start") LocalDateTime start,
             @Param("end") LocalDateTime end);
@@ -347,16 +522,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     int incrementOtpFailure(@Param("userId") Long userId, @Param("challengeNo") String challengeNo);
 
     @Select("""
-            SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock, p.unlock_phase AS unlockPhase,
+            SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock,
+                   p.unlock_phase AS unlockPhase,
                    (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
-                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS purchaseGateJson
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS purchaseGateJson,
+                   p.product_type AS productType, p.inventory_mode AS inventoryMode,
+                   p.gpu_model AS gpuModel, p.vram_total_gb AS vramTotalGb,
+                   (SELECT s.power_text FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS power,
+                   (SELECT s.datacenter FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS datacenter
               FROM nx_product p
              WHERE p.is_deleted = 0
                AND ((#{productId} IS NOT NULL AND p.id = #{productId})
                  OR (#{productNo} IS NOT NULL AND p.product_no = #{productNo}))
                AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE')
                AND COALESCE(p.store_visible, 1) = 1
-               AND p.price_usdt > 0 AND p.stock >= 1
+               AND p.price_usdt > 0 AND (p.inventory_mode='UNLIMITED' OR p.stock >= 1)
              LIMIT 1 FOR UPDATE
             """)
     ProductStock lockProduct(@Param("productId") Long productId, @Param("productNo") String productNo);
@@ -365,17 +547,47 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock,
                    p.unlock_phase AS unlockPhase,
                    (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
-                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS purchaseGateJson
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS purchaseGateJson,
+                   p.product_type AS productType, p.inventory_mode AS inventoryMode,
+                   p.gpu_model AS gpuModel, p.vram_total_gb AS vramTotalGb,
+                   (SELECT s.power_text FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS power,
+                   (SELECT s.datacenter FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) AS datacenter
               FROM nx_product p
              WHERE p.is_deleted=0
                AND ((#{productId} IS NOT NULL AND p.id=#{productId})
                  OR (#{productNo} IS NOT NULL AND p.product_no=#{productNo}))
                AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
-               AND COALESCE(p.store_visible,1)=1 AND p.price_usdt>0 AND p.stock>=1
+               AND COALESCE(p.store_visible,1)=1 AND p.price_usdt>0
+               AND (p.inventory_mode='UNLIMITED' OR p.stock>=1)
              LIMIT 1
             """)
     ProductStock findPurchasableProduct(@Param("productId") Long productId,
                                         @Param("productNo") String productNo);
+
+    @Select("""
+            <script>
+            SELECT p.id, p.product_no AS productNo, p.price_usdt AS priceUsdt, p.stock,
+                   p.unlock_phase AS unlockPhase,
+                   s.purchase_gate_json AS purchaseGateJson,
+                   p.product_type AS productType, p.inventory_mode AS inventoryMode,
+                   p.gpu_model AS gpuModel, p.vram_total_gb AS vramTotalGb,
+                   s.power_text AS power, s.datacenter AS datacenter
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted=0
+               AND p.product_no IN
+               <foreach item="productNo" collection="productNos" open="(" separator="," close=")">
+                 #{productNo}
+               </foreach>
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND COALESCE(p.store_visible,1)=1 AND p.price_usdt&gt;0
+               AND (p.inventory_mode='UNLIMITED' OR p.stock&gt;=1)
+             ORDER BY p.id
+            </script>
+            """)
+    List<ProductStock> findPurchasableProducts(@Param("productNos") List<String> productNos);
 
     @Select("""
             SELECT s.purchase_gate_json
@@ -405,9 +617,11 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Update("""
             UPDATE nx_product
-               SET stock = stock - #{quantity}, sold_count = sold_count + #{quantity},
+               SET stock = CASE WHEN inventory_mode='FINITE' THEN stock - #{quantity} ELSE stock END,
+                   sold_count = sold_count + #{quantity},
                    updated_at = GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
-             WHERE id = #{productId} AND is_deleted = 0 AND stock >= #{quantity}
+             WHERE id = #{productId} AND is_deleted = 0
+               AND (inventory_mode='UNLIMITED' OR stock >= #{quantity})
             """)
     int decrementProductStock(@Param("productId") Long productId, @Param("quantity") Integer quantity);
 
@@ -429,6 +643,20 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                     @Param("subtotalUsdt") BigDecimal subtotalUsdt,
                     @Param("discountUsdt") BigDecimal discountUsdt,
                     @Param("amountUsdt") BigDecimal amountUsdt);
+
+    @Insert("""
+            INSERT INTO nx_order_item
+              (order_no,product_id,product_no,product_name,quantity,unit_price_usdt,line_amount_usdt,
+               sort_order,created_at,updated_at,is_deleted)
+            SELECT #{orderNo},p.id,p.product_no,p.name,#{quantity},p.price_usdt,#{lineAmountUsdt},
+                   0,NOW(6),NOW(6),0
+              FROM nx_product p
+             WHERE p.id=#{productId} AND p.is_deleted=0
+            """)
+    int insertOrderItem(@Param("orderNo") String orderNo,
+                        @Param("productId") Long productId,
+                        @Param("quantity") Integer quantity,
+                        @Param("lineAmountUsdt") BigDecimal lineAmountUsdt);
 
     @Select("""
             SELECT o.order_no AS orderNo,
@@ -559,10 +787,14 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     record UserDeviceCommandRow(
             Long id, Long userId, String instanceNo, String status, String ownershipStatus, Long rowVersion,
-            boolean pendingDeactivate) {
+            boolean pendingDeactivate, String deviceType) {
+        public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
+                                    String ownershipStatus, Long rowVersion, boolean pendingDeactivate) {
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, pendingDeactivate, "DEVICE");
+        }
         public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
                                     String ownershipStatus, Long rowVersion) {
-            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, false);
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, false, "DEVICE");
         }
     }
 
@@ -606,9 +838,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
         }
     }
 
-    record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock, String unlockPhase, String purchaseGateJson) {
+    record ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock, String unlockPhase,
+                        String purchaseGateJson, String productType, String inventoryMode,
+                        String gpuModel, Integer vramTotalGb, String power, String datacenter) {
+        public ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock,
+                            String unlockPhase, String purchaseGateJson, String productType, String inventoryMode) {
+            this(id, productNo, priceUsdt, stock, unlockPhase, purchaseGateJson, productType, inventoryMode,
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured",
+                    "SHARE".equalsIgnoreCase(productType) ? null : 1,
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured",
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured");
+        }
+        public ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock,
+                            String unlockPhase, String purchaseGateJson) {
+            this(id, productNo, priceUsdt, stock, unlockPhase, purchaseGateJson, "DEVICE", "FINITE");
+        }
         public ProductStock(Long id, String productNo, BigDecimal priceUsdt, Integer stock, String unlockPhase) {
-            this(id, productNo, priceUsdt, stock, unlockPhase, null);
+            this(id, productNo, priceUsdt, stock, unlockPhase, null, "DEVICE", "FINITE");
         }
     }
 

@@ -6,11 +6,11 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class PublishedRankHowPolicyService {
     static final String CONFIG_KEY = "team.rank_how.published";
+    private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
@@ -41,8 +42,13 @@ public class PublishedRankHowPolicyService {
             out.put("status", "PUBLISHED");
             out.put("source", "server");
             String sourceEnvironment = sourceEnvironment();
+            String runId = "";
+            if ("SANDBOX".equals(sourceEnvironment)) {
+                runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+                if (!RUN_ID.matcher(runId).matches()) return unavailable();
+            }
             out.put("sourceEnvironment", sourceEnvironment);
-            out.put("runId", "SANDBOX".equals(sourceEnvironment) ? environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim() : "");
+            out.put("runId", runId);
             return ApiResult.ok(out);
         } catch (Exception ex) { return unavailable(); }
     }
@@ -124,5 +130,12 @@ public class PublishedRankHowPolicyService {
     private String text(Object value) { String text = value == null ? null : String.valueOf(value).trim(); return text == null || text.isBlank() ? null : text; }
     private boolean bounded(Object value,int max){String v=text(value);return v!=null&&v.length()<=max;}
     private ApiResult<Map<String, Object>> unavailable() { return ApiResult.fail(503, "RANK_HOW_POLICY_UNAVAILABLE"); }
-    private String sourceEnvironment() { return UserAuthEnvironment.resolve(environment).map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION").orElse("PRODUCTION"); }
+    private String sourceEnvironment() {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        if (profiles.length == 1 && "test".equals(profiles[0])) return "SANDBOX";
+        if (profiles.length == 0 || (profiles.length == 1 && ("dev".equals(profiles[0]) || "prod".equals(profiles[0])))) {
+            return "PRODUCTION";
+        }
+        throw new IllegalStateException("RANK_HOW_RUNTIME_PROFILE_INVALID");
+    }
 }

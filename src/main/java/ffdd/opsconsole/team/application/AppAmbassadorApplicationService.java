@@ -47,7 +47,7 @@ public class AppAmbassadorApplicationService {
             return ApiResult.fail(422, "AMBASSADOR_APPLICATION_INVALID");
         }
         var user = mapper.lockUser(userId);
-        Scope scope = scope(user, true);
+        Scope scope = scope(userId, user);
         int rank = rank(user.vRank());
         if (rank < 5) return ApiResult.fail(403, "AMBASSADOR_V5_REQUIRED");
         String canonicalBucket = normalizedBucket.toLowerCase();
@@ -76,7 +76,7 @@ public class AppAmbassadorApplicationService {
     public ApiResult<Map<String, Object>> latest(Long userId) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         var user = mapper.user(userId);
-        Scope scope = scope(user, false);
+        Scope scope = scope(userId, user);
         var row = mapper.latest(userId, scope.sourceEnvironment(), scope.runId());
         if (row != null) return ApiResult.ok(view(row));
         Map<String, Object> none = new LinkedHashMap<>();
@@ -96,19 +96,29 @@ public class AppAmbassadorApplicationService {
         return result;
     }
 
-    private Scope scope(AppAmbassadorApplicationMapper.UserScope user, boolean locked) {
+    private Scope scope(Long userId, AppAmbassadorApplicationMapper.UserScope user) {
         if (user == null || user.sandbox() == null) throw new BizException(403, "AMBASSADOR_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles() == null ? new String[0] : environment.getActiveProfiles())
                 .map(value -> value.trim().toLowerCase()).filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
+        boolean development = profiles.size() == 1 && "dev".equals(profiles.iterator().next());
+        boolean isolated = profiles.size() == 1 && "test".equals(profiles.iterator().next());
         boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
-        if (!isolated && !production) throw new BizException(503, "AMBASSADOR_PROFILE_INVALID");
+        if (!development && !isolated && !production) throw new BizException(503, "AMBASSADOR_PROFILE_INVALID");
+        if (development) {
+            requireDevelopmentUser(userId, user);
+            return new Scope("PRODUCTION", "");
+        }
         if (isolated && user.sandbox() != 1) throw new BizException(403, "AMBASSADOR_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "AMBASSADOR_PRODUCTION_USER_REQUIRED");
         if (production) return new Scope("PRODUCTION", "");
         String runId = trim(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID"));
         if (runId == null || !RUN_ID.matcher(runId).matches()) throw new BizException(503, "AMBASSADOR_RUN_ID_REQUIRED");
         return new Scope("SANDBOX", runId);
+    }
+
+    private void requireDevelopmentUser(Long userId, AppAmbassadorApplicationMapper.UserScope user) {
+        if (!Integer.valueOf(1).equals(user.sandbox())) throw new BizException(403, "AMBASSADOR_DEVELOPMENT_USER_REQUIRED");
+        if (userId == null || userId <= 0) throw new BizException(403, "AMBASSADOR_DEVELOPMENT_USER_REQUIRED");
     }
 
     private int rank(String value) {

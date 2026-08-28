@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -219,8 +220,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     }
 
     private boolean isStrictLocalSandbox() {
-        String[] active = environment == null ? new String[0] : environment.getActiveProfiles();
-        return active.length == 1 && "dev".equals(active[0]);
+        return environment != null && environment.acceptsProfiles(Profiles.of("local-sandbox"));
     }
 
     private IssuedReadToken issueReadToken(Long userId, String jurisdiction, String version) {

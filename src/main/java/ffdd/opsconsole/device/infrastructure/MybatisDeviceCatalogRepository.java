@@ -17,6 +17,7 @@ import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.dto.DeviceOrderQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceReviewQueryRequest;
@@ -385,7 +386,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         if (itemRows == 0L) {
             return "SINGLE".equals(orderType) && mapper.restockOrderProduct(orderNo, now) == 1;
         }
-        if (!java.util.Set.of("SINGLE", "BUNDLE", "TRADE_IN").contains(orderType)) {
+        if (!java.util.Set.of("SINGLE", "BUNDLE", "TRADE_IN", "TRIAL_CONVERT").contains(orderType)) {
             return false;
         }
         long validItemQuantity = plan.validItemQuantity() == null ? 0L : plan.validItemQuantity();
@@ -543,7 +544,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.shareYieldMax(),
                 row.baseRate(),
                 row.sold(),
-                row.stock(),
+                ProductInventoryMode.isUnlimited(row.inventoryMode()) ? null : row.stock(),
                 row.rating(),
                 row.reviews(),
                 row.aiImageGenPerMin(),
@@ -564,7 +565,10 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.tag(),
                 row.status(),
                 row.createdAt(),
-                row.updatedAt());
+                row.updatedAt(),
+                row.productType(),
+                row.inventoryMode(),
+                Boolean.TRUE.equals(row.trialEligible()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,
@@ -613,7 +617,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 skuStatus(request.status()),
                 firstDecimal(request.hashRate()),
                 firstInteger(request.vram()),
-                stockQuantity(request.stock()),
+                ProductInventoryMode.isUnlimited(request.inventoryMode()) ? 0 : stockQuantity(request.stock()),
+                request.inventoryMode().trim().toUpperCase(java.util.Locale.ROOT),
+                Boolean.TRUE.equals(request.trialEligible()),
                 createdAt,
                 updatedAt);
     }

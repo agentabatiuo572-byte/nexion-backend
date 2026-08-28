@@ -156,6 +156,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public boolean occupiesPhysicalSlot(Long deviceId) {
+        return Boolean.TRUE.equals(mapper.occupiesPhysicalSlot(deviceId));
+    }
+
+    @Override
     public Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
         if (mapper.activateE5Device(deviceId, activatedAt) != 1) {
             return Optional.empty();

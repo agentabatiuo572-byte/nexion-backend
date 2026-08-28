@@ -17,6 +17,13 @@ import org.apache.ibatis.annotations.Update;
 
 public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
     @Select("""
+            SELECT COUNT(*)
+              FROM nx_user
+             WHERE id=#{userId} AND sandbox=1 AND status='ACTIVE' AND is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId);
+
+    @Select("""
             SELECT course_id courseId,course_version version,status,title_zh titleZh,title_en titleEn,title_vi titleVi,
                    body_zh bodyZh,body_en bodyEn,body_vi bodyVi,category,format,level,reward_nex rewardNex,duration,
                    featured,quiz_json quizJson,pass_score passScore,retry_limit retryLimit,completion_condition completionCondition,

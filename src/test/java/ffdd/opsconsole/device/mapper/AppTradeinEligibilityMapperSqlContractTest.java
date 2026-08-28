@@ -3,12 +3,13 @@ package ffdd.opsconsole.device.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Method;
+import java.util.List;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class AppTradeinEligibilityMapperSqlContractTest {
     @Test
-    void tradeinUserEnvironmentAndWriteLockAreProductionOnly() throws Exception {
+    void tradeinReadsUseRuntimeEnvironmentButWriteLockRemainsProductionOnly() throws Exception {
         Method environment = AppTradeinMapper.class.getMethod("activeUserEnvironment", Long.class);
         String environmentSql = String.join(" ", environment.getAnnotation(Select.class).value());
         assertThat(environmentSql)
@@ -36,8 +37,30 @@ class AppTradeinEligibilityMapperSqlContractTest {
                 .contains("UPPER(d.status) IN ('ACTIVE','ONLINE')")
                 .contains("d.deactivated_at IS NULL")
                 .contains("d.pending_deactivate=0")
+                .contains("UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'")
                 .contains("UPPER(t.status) IN ('CLAIMED','RUNNING')")
                 .contains("ORDER BY d.id");
+    }
+
+    @Test
+    void everyTradeinSourceReadAndMutationRejectsCloudShare() throws Exception {
+        for (String methodName : List.of(
+                "findSourceDevice", "lockSourceDevice", "listTradeinSourceCandidates",
+                "findCapacityReplacementSource", "lockCapacityReplacementSource")) {
+            Method method = AppTradeinMapper.class.getMethod(methodName,
+                    methodName.contains("SourceDevice") ? new Class<?>[] {Long.class, Long.class}
+                            : new Class<?>[] {Long.class});
+            String sql = String.join(" ", method.getAnnotation(Select.class).value());
+            assertThat(sql).as(methodName)
+                    .contains("UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
+        }
+
+        for (String methodName : List.of("recycleSourceDevice", "moveSourceDeviceToInventory")) {
+            Method method = AppTradeinMapper.class.getMethod(methodName, Long.class, Long.class);
+            String sql = String.join(" ", method.getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+            assertThat(sql).as(methodName)
+                    .contains("UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'");
+        }
     }
 
     @Test

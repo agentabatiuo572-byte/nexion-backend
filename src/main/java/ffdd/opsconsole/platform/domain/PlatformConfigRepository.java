@@ -18,4 +18,9 @@ public interface PlatformConfigRepository {
     List<PlatformConfigItem> findActiveByGroups(Collection<String> configGroups);
 
     PlatformConfigItem save(PlatformConfigItem item);
+
+    /** Atomic insert guarded by the unique config_key index; never revives or updates an existing row. */
+    default boolean insertIfAbsent(PlatformConfigItem item) {
+        return false;
+    }
 }

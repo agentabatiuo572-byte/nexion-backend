@@ -30,6 +30,7 @@ class PaymentMethodSandboxProfileGuardTest {
 
         guard.afterPropertiesSet();
         assertThat(guard.sourceEnvironment()).isEqualTo("SANDBOX");
+        assertThat(guard.requireRunId()).isEqualTo("local-dev");
     }
 
     @Test

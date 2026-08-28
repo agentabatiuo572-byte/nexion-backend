@@ -495,6 +495,40 @@ class OpsTreasuryServiceTest {
     }
 
     @Test
+    void developmentReserveLocksBeforeRecalculatingAndInjectingTheCanonicalDifference() {
+        ledgerRepository.reserveUsd = BigDecimal.ZERO;
+
+        ApiResult<Map<String, Object>> first = service.ensureDevelopmentReserve(
+                new BigDecimal("2000000"), java.time.LocalDate.of(2026, 8, 22));
+        ApiResult<Map<String, Object>> second = service.ensureDevelopmentReserve(
+                new BigDecimal("2000000"), java.time.LocalDate.of(2026, 8, 22));
+
+        assertThat(first.getCode()).isZero();
+        assertThat(first.getData()).containsEntry("injected", true)
+                .containsEntry("amount", new BigDecimal("2000000.00"));
+        assertThat(second.getCode()).isZero();
+        assertThat(second.getData()).containsEntry("injected", false);
+        assertThat(ledgerRepository.reserveInjections).hasSize(1);
+        assertThat(ledgerRepository.operationEvents)
+                .containsExactly("lock:D3_DEVELOPMENT_RESERVE", "inject", "lock:D3_DEVELOPMENT_RESERVE");
+    }
+
+    @Test
+    void developmentReserveFailsClosedForMalformedCoverageThresholds() {
+        ledgerRepository.reserveUsd = BigDecimal.ZERO;
+        configFacade.values.put("wallet.dual-ledger.redline-pct", "120");
+        configFacade.values.put("wallet.dual-ledger.healthy-pct", "100");
+
+        ApiResult<Map<String, Object>> result = service.ensureDevelopmentReserve(
+                new BigDecimal("2000000"), java.time.LocalDate.of(2026, 8, 22));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("DEVELOPMENT_TREASURY_SNAPSHOT_INVALID");
+        assertThat(ledgerRepository.reserveInjections).isEmpty();
+        assertThat(ledgerRepository.operationEvents).containsExactly("lock:D3_DEVELOPMENT_RESERVE");
+    }
+
+    @Test
     void scopeUpdateUsesPlatformFacadeAndAudits() {
         TreasuryScopeRequest request = new TreasuryScopeRequest("active liabilities only", "policy change", "superadmin");
 
@@ -1348,6 +1382,7 @@ class OpsTreasuryServiceTest {
         private final List<TreasuryLedgerBillView> bills = new ArrayList<>();
         private final Map<String, BigDecimal> actualBalances = new LinkedHashMap<>();
         private final List<Map<String, Object>> reserveInjections = new ArrayList<>();
+        private final List<String> operationEvents = new ArrayList<>();
         private final java.util.Set<String> vouchers = new java.util.HashSet<>();
         private String lastBillType;
         private Long lastBillUserId;
@@ -1523,7 +1558,13 @@ class OpsTreasuryServiceTest {
         }
 
         @Override
+        public void lockOperationMutex(String lockKey) {
+            operationEvents.add("lock:" + lockKey);
+        }
+
+        @Override
         public void recordReserveInjection(String voucherNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
+            operationEvents.add("inject");
             BigDecimal normalized = amountUsd.setScale(2, java.math.RoundingMode.HALF_UP);
             reserveUsd = reserveUsd.add(normalized);
             injectedCumulative = injectedCumulative.add(normalized);

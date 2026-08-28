@@ -1,7 +1,6 @@
 package ffdd.opsconsole.market.mapper;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -49,30 +48,7 @@ public interface GenesisCatalogMapper {
     @Select("SELECT COALESCE(COUNT(*),0) FROM nx_genesis_holding WHERE is_deleted=0")
     long soldCount();
 
-    @Select("SELECT code,status,issued_by issuedBy,issued_at issuedAt,note,redeemed_by redeemedBy,redeemed_at redeemedAt,voided_by voidedBy,voided_at voidedAt,void_reason voidReason FROM nx_genesis_invite_code WHERE is_deleted=0 ORDER BY issued_at DESC,code LIMIT 1000")
-    List<InviteRow> inviteCodes();
-
-    @Insert("INSERT INTO nx_genesis_invite_code(code,status,issued_by,issued_at,note,is_deleted) VALUES(#{code},'unused',#{issuedBy},NOW(),#{note},0)")
-    int insertInvite(@Param("code") String code, @Param("issuedBy") String issuedBy, @Param("note") String note);
-
-    @Select("SELECT code,status,issued_by issuedBy,issued_at issuedAt,note,redeemed_by redeemedBy,redeemed_at redeemedAt,voided_by voidedBy,voided_at voidedAt,void_reason voidReason FROM nx_genesis_invite_code WHERE code=#{code} AND is_deleted=0 FOR UPDATE")
-    InviteRow lockInvite(@Param("code") String code);
-
-    @Update("UPDATE nx_genesis_invite_code SET status='void',voided_by=#{operator},voided_at=NOW(),void_reason=#{reason},updated_at=NOW() WHERE code=#{code} AND status='unused' AND is_deleted=0")
-    int voidInvite(@Param("code") String code, @Param("operator") String operator, @Param("reason") String reason);
-
-    @Select("SELECT COUNT(*) FROM nx_genesis_invite_code WHERE redeemed_by=#{userId} AND status='used' AND is_deleted=0")
-    int redeemedCount(@Param("userId") Long userId);
-
-    @Select("SELECT code,status,issued_by issuedBy,issued_at issuedAt,note,redeemed_by redeemedBy,redeemed_at redeemedAt,voided_by voidedBy,voided_at voidedAt,void_reason voidReason FROM nx_genesis_invite_code WHERE redeemed_by=#{userId} AND status='used' AND is_deleted=0 LIMIT 1")
-    InviteRow redeemedByUser(@Param("userId") Long userId);
-
-    @Update("UPDATE nx_genesis_invite_code SET status='used',redeemed_by=#{userId},redeemed_at=NOW(),updated_at=NOW() WHERE code=#{code} AND status='unused' AND redeemed_by IS NULL AND is_deleted=0")
-    int redeemInvite(@Param("code") String code, @Param("userId") Long userId);
-
     record CatalogState(Long id,Long tiersVersion,String marketOpenState,Long marketOpenStateVersion,
                         String closedNoticeKey,String lastChange,Long nextTierSeq) { }
     record TierRow(String tierId,Integer rangeFrom,Integer rangeTo,BigDecimal priceUsdt) { }
-    record InviteRow(String code,String status,String issuedBy,LocalDateTime issuedAt,String note,
-                     Long redeemedBy,LocalDateTime redeemedAt,String voidedBy,LocalDateTime voidedAt,String voidReason) { }
 }

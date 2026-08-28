@@ -12,13 +12,132 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class AppOrderCommandServiceTest {
+    @Test
+    void developmentPaymentUsesCanonicalBusinessTablesAndImmediateLocalFulfillment() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var audit = mock(AuditLogService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(guard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(mapper.lockDevelopmentPayOrder("ORD-DEV-1")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-DEV-1", 7L, 18L, 1, new BigDecimal("1199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("2000.000000"), 4L));
+        when(mapper.debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L)).thenReturn(1);
+        when(mapper.insertDevelopmentPurchaseLedger(eq("ORD-DEV-1"), eq(7L),
+                eq(new BigDecimal("1199.000000")), eq(new BigDecimal("801.000000")))).thenReturn(1);
+        when(mapper.markDevelopmentOrderActivated(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-DEV-")))
+                .thenReturn(1);
+        when(mapper.insertDevelopmentPayment(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-DEV-"),
+                eq(new BigDecimal("1199.000000")))).thenReturn(1);
+        when(mapper.insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("DEV-ORD-"), eq(0)))
+                .thenReturn(1);
+        when(mapper.developmentDeviceFact(startsWith("DEV-ORD-"))).thenReturn(
+                new AppOrderCommandMapper.DevelopmentDeviceFact(91L, "DEV-ORD-INSTANCE"));
+        when(mapper.attribution(7L)).thenReturn(Map.of(
+                "phase", "P3", "accountAgeMonths", 0, "cohort", "2026-W34"));
+        when(mapper.insertDevelopmentOrderHistory(eq("ORD-DEV-1"), eq("placed"), eq("activated"),
+                anyString())).thenReturn(1);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var outbox = mock(EventOutboxService.class);
+        var result = new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null, outbox)
+                .pay(7L, "ORD-DEV-1", "development-pay-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("orderNo", "ORD-DEV-1")
+                .containsEntry("paymentStatus", "PAID")
+                .containsEntry("orderStatus", "COMPLETED")
+                .containsEntry("canonicalStatus", "activated")
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "mock")
+                .containsEntry("sourceEnvironment", "SANDBOX")
+                .containsEntry("runId", "local-dev")
+                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
+        verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L);
+        verify(mapper).insertDevelopmentPurchaseLedger("ORD-DEV-1", 7L,
+                new BigDecimal("1199.000000"), new BigDecimal("801.000000"));
+        verify(mapper).insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("DEV-ORD-"), eq(0));
+        verify(outbox).publishUserEvent(eq("DEVICE"), eq("91"), eq("admin.device_activated"), eq(7L),
+                eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && map.get("deviceId").equals(91L)
+                        && map.get("instanceNo").equals("DEV-ORD-INSTANCE")
+                        && map.get("mode").equals("DEVELOPMENT_SIMULATED")));
+        verify(audit).recordRequired(any());
+        verifyNoInteractions(mock(CommerceAcceptanceSandboxMapper.class));
+    }
+
+    @Test
+    void developmentPaymentRejectsInsufficientWalletBeforeAnyOrderOrDeviceMutation() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(mapper.lockDevelopmentPayOrder("ORD-DEV-LOW")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-DEV-LOW", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("10.000000"), 9L));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-DEV-LOW", "development-pay-low");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_WALLET_INSUFFICIENT");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+        verify(mapper, never()).insertDevelopmentPayment(anyString(), anyLong(), anyString(), any());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
+    @Test
+    void paidDevelopmentOrderReplayReturnsCurrentWalletWithoutDoubleDebit() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(mapper.lockDevelopmentPayOrder("ORD-DEV-PAID")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-DEV-PAID", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        "PAY-DEV-AF2D80199A1F88C85A3C8B75AEC54D43",
+                        "PAID", "COMPLETED", "ACTIVATED"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("801.000000"), 5L));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-DEV-PAID", "development-pay-replay");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("idempotent", true)
+                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
     @Test
     void cancelsOnlyPendingOwnedProductionOrderAndReturnsBundleStockAtomically() {
         var mapper = mock(AppOrderCommandMapper.class);

@@ -234,9 +234,21 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             SELECT COUNT(*) FROM nx_user_device
              WHERE user_id = #{userId} AND is_deleted = 0
                AND status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
                AND deactivated_at IS NULL
             """)
     long countActiveDevicesByUser(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT CASE
+                     WHEN UPPER(COALESCE(NULLIF(device_type,''),'DEVICE'))='SHARE' THEN 0
+                     ELSE 1
+                   END
+              FROM nx_user_device
+             WHERE id=#{deviceId} AND is_deleted=0
+             LIMIT 1
+            """)
+    Boolean occupiesPhysicalSlot(@Param("deviceId") Long deviceId);
 
     @Update("""
             UPDATE nx_user_device

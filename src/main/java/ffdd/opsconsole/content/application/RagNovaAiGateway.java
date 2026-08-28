@@ -11,7 +11,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -35,14 +34,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
             Message current = request.messages().get(currentIndex);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("question", current.content());
-            body.put("messages", List.of());
             body.put("response_language", request.language());
-            body.put("user_id", request.sessionId());
-            body.put("collection", properties.getRagCollection());
-            body.put("top_k", 6);
-            body.put("use_llm", true);
-            body.put("show_citations", false);
-            body.put("max_output_tokens", bounded(request.maxOutputTokens(), 64, 2_048));
+            body.put("session_id", request.sessionId());
 
             HttpRequest httpRequest = HttpRequest.newBuilder(target.resolve("/chat"))
                     .timeout(Duration.ofMillis(bounded(properties.getReadTimeoutMs(), 1_000, 300_000)))
@@ -56,9 +49,7 @@ public class RagNovaAiGateway implements NovaAiGateway {
             JsonNode root = objectMapper.readTree(response.body());
             String answer = root.path("answer").asText("").trim();
             String model = root.path("model").asText("");
-            String collection = root.path("collection").asText("");
-            boolean acceptedModel = request.model().equals(model) || model.startsWith("guardrail");
-            if (!properties.getRagCollection().equals(collection) || !acceptedModel || answer.isBlank()
+            if (!isAcceptedPublicRoute(model) || answer.isBlank()
                     || answer.length() > bounded(properties.getMaxOutputChars(), 256, 16_000)) {
                 throw invalidResponse();
             }
@@ -84,13 +75,7 @@ public class RagNovaAiGateway implements NovaAiGateway {
             HttpResponse<String> response = httpClient().send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200 || response.body() == null || response.body().length() > 128_000) return false;
             JsonNode root = objectMapper.readTree(response.body());
-            JsonNode checks = root.path("checks");
-            return "ok".equals(root.path("status").asText())
-                    && properties.getRagCollection().equals(root.path("collection").asText())
-                    && properties.getModel().equals(root.path("llm_model").asText())
-                    && "ok".equals(checks.path("qdrant").asText())
-                    && "ok".equals(checks.path("ollama").asText())
-                    && "ok".equals(checks.path("model").asText());
+            return "ok".equals(root.path("status").asText());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return false;
@@ -117,7 +102,10 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private URI localBaseUri(String value) {
         try {
             URI uri = URI.create(value == null ? "" : value.trim());
-            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String rawHost = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String host = rawHost.startsWith("[") && rawHost.endsWith("]")
+                    ? rawHost.substring(1, rawHost.length() - 1)
+                    : rawHost;
             boolean loopback = "127.0.0.1".equals(host) || "localhost".equals(host) || "::1".equals(host)
                     || "0:0:0:0:0:0:0:1".equals(host);
             if (!"http".equalsIgnoreCase(uri.getScheme()) || !loopback || uri.getUserInfo() != null
@@ -140,6 +128,13 @@ public class RagNovaAiGateway implements NovaAiGateway {
 
     private BizException invalidResponse() {
         return new BizException(502, "NOVA_AI_RESPONSE_INVALID");
+    }
+
+    private boolean isAcceptedPublicRoute(String value) {
+        return "generated-answer".equals(value)
+                || "retrieval-only".equals(value)
+                || "retrieval-fallback".equals(value)
+                || (value != null && value.startsWith("guardrail"));
     }
 
     private int bounded(int value, int min, int max) {

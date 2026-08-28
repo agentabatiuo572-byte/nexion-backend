@@ -30,11 +30,15 @@ import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalReviewRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalConfirmationRequest;
 import ffdd.opsconsole.finance.dto.WithdrawalBatchReviewRequest;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper;
+import ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.WithdrawalRiskFacts;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
+import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -72,6 +76,8 @@ class OpsFinanceServiceTest {
     private final TreasuryLedgerRepository treasuryLedgerRepository = mock(TreasuryLedgerRepository.class);
     private final EventOutboxService eventOutboxService = mock(EventOutboxService.class);
     private final AdminOperatorRoleResolver operatorRoleResolver = mock(AdminOperatorRoleResolver.class);
+    private final AppWithdrawalMapper appWithdrawalMapper = mock(AppWithdrawalMapper.class);
+    private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade = mock(WithdrawalRiskRuleFacade.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
@@ -88,7 +94,9 @@ class OpsFinanceServiceTest {
                     disclosureGateFacade,
                     treasuryLedgerRepository,
                     eventOutboxService,
-                    operatorRoleResolver);
+                    operatorRoleResolver,
+                    appWithdrawalMapper,
+                    withdrawalRiskRuleFacade);
 
     @BeforeEach
     void setUpRiskDefaults() {
@@ -98,6 +106,11 @@ class OpsFinanceServiceTest {
         when(disclosureGateFacade.checkUserGate(org.mockito.ArgumentMatchers.anyLong(), anyString(), anyString()))
                 .thenReturn(ApiResult.ok(null));
         when(operatorRoleResolver.resolveCode()).thenReturn(null);
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(currentRiskFacts(40));
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new WithdrawalRiskDecision("pass", null, null, List.of()));
         when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
                 12, 7, "P3", 58,
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
@@ -124,7 +137,9 @@ class OpsFinanceServiceTest {
                 disclosureGateFacade,
                 treasuryLedgerRepository,
                 eventOutboxService,
-                operatorRoleResolver);
+                operatorRoleResolver,
+                appWithdrawalMapper,
+                withdrawalRiskRuleFacade);
     }
 
     @Test
@@ -530,6 +545,9 @@ class OpsFinanceServiceTest {
     void reviewWithdrawalFailsClosedWhenK4ScoreIsUnavailable() {
         withdrawalRepository.order = withdrawal(
                 "WD-K4-MISSING", "REVIEWING", "ACTIVE", null, "", 1);
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(currentRiskFacts(null));
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
                 "WD-K4-MISSING", "idem-k4-missing",
@@ -542,6 +560,152 @@ class OpsFinanceServiceTest {
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void reviewWithdrawalFailsClosedWhenCurrentK4FactsAreStale() {
+        withdrawalRepository.order = withdrawal("WD-K4-STALE", "REVIEWING");
+        WithdrawalRiskFacts stale = new WithdrawalRiskFacts(
+                "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
+                40, "k4-v1", LocalDateTime.now().minusDays(2), 41, 73, 91);
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(stale);
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-K4-STALE", "idem-k4-stale",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "current K4 facts required"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalFailsClosedWhenCoverageSnapshotIsUnreliable() {
+        withdrawalRepository.order = withdrawal("WD-B1-UNAVAILABLE", "REVIEWING");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-B1-UNAVAILABLE", "idem-b1-unavailable",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "current B1 coverage is required"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("COVERAGE_UNAVAILABLE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void reviewWithdrawalFailsClosedForMissingInvalidOrFailedCoverageSnapshots() {
+        withdrawalRepository.order = withdrawal("WD-B1-INVALID", "REVIEWING");
+
+        coverageFacade.snapshot = null;
+        assertCoverageUnavailable("null");
+
+        for (TreasuryCoverageSnapshot invalid : List.of(
+                new TreasuryCoverageSnapshot(BigDecimal.ZERO, new BigDecimal("85.00"), true),
+                new TreasuryCoverageSnapshot(new BigDecimal("100.00"), BigDecimal.ZERO, true),
+                new TreasuryCoverageSnapshot(new BigDecimal("-1.00"), new BigDecimal("85.00"), true),
+                new TreasuryCoverageSnapshot(new BigDecimal("100.00"), new BigDecimal("-1.00"), true))) {
+            coverageFacade.snapshot = invalid;
+            assertCoverageUnavailable("invalid-" + invalid.coverageRatio() + "-" + invalid.redlinePct());
+        }
+
+        coverageFacade.failure = new IllegalStateException("coverage dependency unavailable");
+        assertCoverageUnavailable("exception");
+    }
+
+    private void assertCoverageUnavailable(String suffix) {
+        withdrawalRepository.lastStatus = null;
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-B1-INVALID", "idem-b1-" + suffix,
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "current B1 coverage is required"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("COVERAGE_UNAVAILABLE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void batchApproveReportsCoverageUnavailableWithoutAdvancingAnyItem() {
+        withdrawalRepository.order = withdrawal("WD-B1-BATCH", "REVIEWING");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
+        WithdrawalBatchReviewRequest request = new WithdrawalBatchReviewRequest(
+                "APPROVE", List.of("WD-B1-BATCH"), "superadmin", "batch B1 authority required",
+                null, null, null, null, null);
+
+        ApiResult<Map<String, Object>> result = service.reviewWithdrawalsBatch("idem-b1-batch", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("accepted")).isEqualTo(List.of());
+        assertThat(result.getData().get("conflicts")).isEqualTo(List.of(Map.of(
+                "withdrawalId", "WD-B1-BATCH", "reason", "COVERAGE_UNAVAILABLE")));
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalRejectsFutureOrNegativeCurrentK4Facts() {
+        withdrawalRepository.order = withdrawal("WD-K4-FUTURE", "REVIEWING");
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(new WithdrawalRiskFacts(
+                        "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
+                        40, "k4-v1", LocalDateTime.now().plusMinutes(1), 41, 73, 91));
+
+        ApiResult<WithdrawalOrderView> future = service.reviewWithdrawal(
+                "WD-K4-FUTURE", "idem-k4-future",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "future K4 facts are invalid"));
+
+        assertThat(future.getCode()).isEqualTo(503);
+        assertThat(future.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+
+        withdrawalRepository.order = withdrawal("WD-K4-NEGATIVE", "REVIEWING");
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(new WithdrawalRiskFacts(
+                        "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
+                        -1, "k4-v1", LocalDateTime.now(), 41, 73, 91));
+
+        ApiResult<WithdrawalOrderView> negative = service.reviewWithdrawal(
+                "WD-K4-NEGATIVE", "idem-k4-negative",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "negative K4 facts are invalid"));
+
+        assertThat(negative.getCode()).isEqualTo(503);
+        assertThat(negative.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+
+        withdrawalRepository.order = withdrawal("WD-K4-OVERFLOW", "REVIEWING");
+        when(appWithdrawalMapper.withdrawalRiskFacts(
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(new WithdrawalRiskFacts(
+                        "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
+                        101, "k4-v1", LocalDateTime.now(), 41, 73, 91));
+
+        ApiResult<WithdrawalOrderView> overflow = service.reviewWithdrawal(
+                "WD-K4-OVERFLOW", "idem-k4-overflow",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "overflow K4 facts are invalid"));
+
+        assertThat(overflow.getCode()).isEqualTo(503);
+        assertThat(overflow.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+    }
+
+    @Test
+    void reviewWithdrawalCannotApproveWhenCurrentK3RequiresFreeze() {
+        withdrawalRepository.order = withdrawal("WD-K3-FREEZE", "REVIEWING");
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new WithdrawalRiskDecision("freeze", "K3-ADDRESS", "address", List.of()));
+
+        ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
+                "WD-K3-FREEZE", "idem-k3-freeze",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "current K3 route required"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("K3_CURRENT_ROUTE_REQUIRES_FREEZE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
     }
 
     @Test
@@ -1352,11 +1516,18 @@ class OpsFinanceServiceTest {
                 .containsEntry("to", "REVIEW_PENDING")
                 .containsEntry("owner", "risk:oncall")
                 .containsEntry("period", "SEVEN_DAYS");
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> payload = ArgumentCaptor.forClass(Map.class);
         verify(eventOutboxService).publish(
                 org.mockito.ArgumentMatchers.eq("WITHDRAWAL"),
                 org.mockito.ArgumentMatchers.eq("WD-DUE-HOLD-1"),
                 org.mockito.ArgumentMatchers.eq("withdraw.review_due"),
-                org.mockito.ArgumentMatchers.any());
+                payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("lifecycle_owner", "risk:oncall")
+                .containsEntry("review_at", dueAt)
+                .containsEntry("freeze_period", "SEVEN_DAYS")
+                .containsEntry("operator", "system:d2-scheduler");
     }
 
     @Test
@@ -1380,6 +1551,107 @@ class OpsFinanceServiceTest {
         assertThat(payload.getValue()).containsOnlyKeys(
                 "withdrawal_id", "amount", "currency", "state", "reason",
                 "address_hash", "risk_score", "operator");
+        verify(treasuryLedgerRepository, org.mockito.Mockito.times(1)).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.eq("WD-H1-FAST-1"),
+                org.mockito.ArgumentMatchers.eq(new BigDecimal("100.00")),
+                org.mockito.ArgumentMatchers.eq("H1_COOLDOWN_FAST_TRACK_APPROVED"),
+                org.mockito.ArgumentMatchers.eq("system:d2-scheduler"),
+                org.mockito.ArgumentMatchers.eq("d2-lifecycle:WD-H1-FAST-1:review-passed"));
+    }
+
+    @Test
+    void developmentDueTriggerUsesTheRealH1DecisionAndAuditsTheAuthenticatedOperator() {
+        LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
+        withdrawalRepository.order = withLifecycle(
+                withdrawal("WD-H1-DEV-DUE-1", "EXTENDED_HOLD"),
+                dueAt, "H1_PHASE_COOLDOWN", "H1:M3:P2");
+
+        OpsFinanceService.D2LifecycleReleaseResult result = service.releaseDueD2Lifecycle(
+                "WD-H1-DEV-DUE-1",
+                LocalDateTime.now(),
+                "d2-tester",
+                "DEVELOPMENT_SIMULATED_DUE",
+                "开发验收模拟冷却到期");
+
+        assertThat(result).isEqualTo(OpsFinanceService.D2LifecycleReleaseResult.RELEASED);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("d2-tester");
+        assertThat(detailMap(audit.getValue().getDetail()))
+                .containsEntry("trigger", "DEVELOPMENT_SIMULATED_DUE")
+                .containsEntry("operatorReason", "开发验收模拟冷却到期")
+                .containsEntry("to", "REVIEW_PASSED");
+        verify(treasuryLedgerRepository).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.eq("WD-H1-DEV-DUE-1"),
+                org.mockito.ArgumentMatchers.eq(new BigDecimal("100.00")),
+                org.mockito.ArgumentMatchers.eq("H1_COOLDOWN_FAST_TRACK_APPROVED"),
+                org.mockito.ArgumentMatchers.eq("d2-tester"),
+                org.mockito.ArgumentMatchers.eq("d2-lifecycle:WD-H1-DEV-DUE-1:review-passed"));
+    }
+
+    @Test
+    void developmentDueTriggerStopsAtTheCanonicalA2LockWithoutAnyMoneyOrEventWrite() {
+        LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
+        withdrawalRepository.order = withLifecycle(
+                withdrawal("WD-H1-DEV-A2-LOCKED", "EXTENDED_HOLD"),
+                dueAt, "H1_PHASE_COOLDOWN", "H1:M3:P2");
+        when(lockMapper.countActiveByTarget("D", "withdrawal", "WD-H1-DEV-A2-LOCKED")).thenReturn(1);
+
+        OpsFinanceService.D2LifecycleReleaseResult result = service.releaseDueD2Lifecycle(
+                "WD-H1-DEV-A2-LOCKED",
+                LocalDateTime.now(),
+                "d2-tester",
+                "DEVELOPMENT_SIMULATED_DUE",
+                "开发验收模拟冷却到期");
+
+        assertThat(result).isEqualTo(OpsFinanceService.D2LifecycleReleaseResult.LOCKED);
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        verify(auditLogService, org.mockito.Mockito.never())
+                .recordRequired(org.mockito.ArgumentMatchers.any());
+        verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString());
+        verify(eventOutboxService, org.mockito.Mockito.never()).publish(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyMap());
+    }
+
+    @Test
+    void expiredH1FastTrackReturnsToManualReviewWhenCoverageIsUnavailable() {
+        LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
+        withdrawalRepository.order = withLifecycle(
+                withdrawal("WD-H1-B1-UNAVAILABLE", "EXTENDED_HOLD"),
+                dueAt, "H1_PHASE_COOLDOWN", "H1:M3:P2");
+        withdrawalRepository.expiredLifecycleNos = List.of("WD-H1-B1-UNAVAILABLE");
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
+
+        int released = service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+
+        assertThat(released).isEqualTo(1);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
+        assertThat(withdrawalRepository.lastFailureReason).isEqualTo("COVERAGE_UNAVAILABLE");
+        verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void expiredH1FastTrackReturnsToManualReviewWhenCurrentK3NoLongerPasses() {
+        LocalDateTime dueAt = LocalDateTime.now().minusMinutes(1);
+        withdrawalRepository.order = withLifecycle(
+                withdrawal("WD-H1-CURRENT-MANUAL", "EXTENDED_HOLD"),
+                dueAt, "H1_PHASE_COOLDOWN", "H1:M3:P2");
+        withdrawalRepository.expiredLifecycleNos = List.of("WD-H1-CURRENT-MANUAL");
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new WithdrawalRiskDecision("manual", "K3-VELOCITY", "velocity", List.of()));
+
+        int released = service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+
+        assertThat(released).isEqualTo(1);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
     }
 
     @Test
@@ -1498,6 +1770,12 @@ class OpsFinanceServiceTest {
         return withdrawal(withdrawalNo, status, "ACTIVE", 42, "", withdrawalCount24h);
     }
 
+    private static WithdrawalRiskFacts currentRiskFacts(Integer score) {
+        return new WithdrawalRiskFacts(
+                "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
+                score, "k4-v1", LocalDateTime.now(), 41, 73, 91);
+    }
+
     private static WithdrawalOrderView withdrawal(String withdrawalNo, String status, BigDecimal amount) {
         return withdrawal(withdrawalNo, status, "ACTIVE", 42, "", "", 1, amount);
     }
@@ -1607,9 +1885,13 @@ class OpsFinanceServiceTest {
 
     private static final class FakeTreasuryCoverageFacade implements TreasuryCoverageFacade {
         private TreasuryCoverageSnapshot snapshot = new TreasuryCoverageSnapshot(new BigDecimal("100.00"), new BigDecimal("85.00"));
+        private RuntimeException failure;
 
         @Override
         public TreasuryCoverageSnapshot snapshot() {
+            if (failure != null) {
+                throw failure;
+            }
             return snapshot;
         }
     }

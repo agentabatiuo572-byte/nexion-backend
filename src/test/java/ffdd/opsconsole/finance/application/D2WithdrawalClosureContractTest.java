@@ -144,12 +144,31 @@ class D2WithdrawalClosureContractTest {
                 "src/main/java/ffdd/opsconsole/finance/application/OpsFinanceService.java"));
         assertThat(service)
                 .contains("sha256(\"D2_ITEM|")
+                .contains(".distinct()")
+                .contains(".sorted()")
+                .contains("d2BatchRequestHash(action, canonicalIds, request)")
+                .contains("AdminActorResolver.resolve(request.operator())")
+                .contains("trimToEmpty(request.reasonCode())")
                 .doesNotContain("idempotencyKey + \"-\" + accepted.size()");
 
         String migration = Files.readString(Path.of("scripts/migrations/20260720_d2_withdrawal_closure.sql"));
         assertThat(migration)
                 .contains("'operator','string',1")
                 .contains("'withdraw.approved','withdraw.rejected','withdraw.delayed','withdraw.frozen','withdraw.unfrozen','withdraw.refunded','withdraw.review_due'");
+    }
+
+    @Test
+    void d2ApprovalAndCooldownUseCurrentK3K4AuthorityInsteadOfQueueSnapshots() throws Exception {
+        String service = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/finance/application/OpsFinanceService.java"));
+        assertThat(service)
+                .contains("currentD2Risk(order, LocalDateTime.now())")
+                .contains("currentD2Risk(order, now)")
+                .contains("appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress())")
+                .contains("facts.k4AsOf().isBefore(effectiveNow.minusDays(1))")
+                .contains("withdrawalRiskRuleFacade.evaluate(new WithdrawalRiskContext(")
+                .contains("K3_CURRENT_ROUTE_REQUIRES_FREEZE")
+                .contains("K3_CURRENT_ROUTE_REQUIRES_DELAY");
     }
 
     @Test

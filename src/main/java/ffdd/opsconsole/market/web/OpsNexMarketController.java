@@ -170,22 +170,6 @@ public class OpsNexMarketController {
         return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
     }
 
-    @GetMapping("/genesis/invite-codes")
-    @PreAuthorize("hasAuthority('finprod_g4_read')")
-    public ApiResult<Map<String,Object>> genesisInviteCodes(){return genesisCatalogService.invites();}
-
-    @PostMapping("/genesis/invite-codes")
-    @PreAuthorize("hasAuthority('finprod_g4_write')")
-    public ApiResult<Map<String,Object>> issueGenesisInviteCodes(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody GenesisCatalogService.InviteIssueRequest request){return genesisCatalogService.issueInvites(idempotencyKey,request);}
-
-    @PostMapping("/genesis/invite-codes/{code}/void")
-    @PreAuthorize("hasAuthority('finprod_g4_write')")
-    public ApiResult<Map<String,Object>> voidGenesisInviteCode(@PathVariable String code,
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody GenesisCatalogService.InviteVoidRequest request){return genesisCatalogService.voidInvite(code,idempotencyKey,request);}
-
     @PostMapping("/genesis/dividend-batches/{batchNo}/rerun")
     @PreAuthorize("hasAuthority('finprod_g4_write')")
     public ApiResult<Map<String, Object>> rerunGenesisDividendBatch(

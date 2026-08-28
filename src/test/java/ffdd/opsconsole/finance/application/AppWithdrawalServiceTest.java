@@ -346,8 +346,8 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
-    void strictAcceptanceProfileRejectsProductionWithdrawalBeforeAnyMapperOrSideEffect() {
-        for (String strictProfile : java.util.List.of("dev", "test", "dev")) {
+    void strictTestProfileRejectsCanonicalWithdrawalBeforeAnyMapperOrSideEffect() {
+        for (String strictProfile : java.util.List.of("test")) {
             environment.setActiveProfiles(strictProfile);
             assertThatThrownBy(() -> service.submit(
                     7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-" + strictProfile))
@@ -370,6 +370,29 @@ class AppWithdrawalServiceTest {
         verify(idempotency, never()).execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
         verify(audit, never()).recordRequired(any());
         verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void developmentProfileAllowsCanonicalWithdrawalHistoryForAnActiveDevelopmentAccount() {
+        environment.setActiveProfiles("dev");
+        when(mapper.isSandboxUser(7L)).thenReturn(1);
+        when(mapper.userWithdrawals(7L, 50)).thenReturn(java.util.List.of());
+
+        ApiResult<java.util.Map<String, Object>> result = service.list(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("source", "nx_withdrawal_order")
+                .containsEntry("sourceEnvironment", "PRODUCTION");
+    }
+
+    @Test
+    void developmentProfileRejectsAProductionAccountBeforeFinancialInteraction() {
+        environment.setActiveProfiles("dev");
+        when(mapper.isSandboxUser(7L)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.list(7L))
+                .isInstanceOf(BizException.class)
+                .hasMessage("WITHDRAWAL_DEVELOPMENT_USER_REQUIRED");
     }
 
     @Test
@@ -454,6 +477,26 @@ class AppWithdrawalServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
         verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+    }
+
+    @Test
+    void eligibilityNeverAdvertisesSubmitWhileTheServerPayoutAddressIsPending() {
+        when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(
+                7L, new BigDecimal("500.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
+        when(mapper.payoutAddressForEligibility(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().plusHours(12),
+                LocalDateTime.now().plusDays(7)));
+
+        ApiResult<java.util.Map<String, Object>> result = service.eligibility(
+                7L, new BigDecimal("20"), "USDT-TRC20", "TR7NHqExampleAddress",
+                String.valueOf(service.policy(7L).getData().get("policyVersion")));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("canSubmit", false);
+        assertThat(result.getData().get("riskReasons")).asList()
+                .contains("PAYOUT_ADDRESS_CHANGE_PENDING");
+        assertThat(result.getData().get("waivedGates")).asList()
+                .doesNotContain("new-address-hold");
     }
 
     @Test

@@ -32,11 +32,26 @@ class AppTeamNetworkServiceTest {
     }
 
     @Test
+    void developmentAllowsAnyActiveDevelopmentAccountAndReturnsCanonicalDatabaseFacts() {
+        AppTeamNetworkMapper mapper = mock(AppTeamNetworkMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
+        when(mapper.members(7L)).thenReturn(List.of());
+        MockEnvironment environment = developmentEnvironment();
+
+        var result = new AppTeamNetworkService(mapper, environment).snapshot(7L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "").containsEntry("serverCanonical", true);
+        verify(mapper).members(7L);
+    }
+
+    @Test
     void sandboxReturnsRunScopedServerOwnedFacts() {
         AppTeamNetworkMapper mapper = mock(AppTeamNetworkMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
         MockEnvironment environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "TEAM-RUN-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         var result = new AppTeamNetworkService(mapper, environment).snapshot(7L);
         assertThat(result.getCode()).isZero();
@@ -54,7 +69,7 @@ class AppTeamNetworkServiceTest {
         AppTeamNetworkMapper mapper = mock(AppTeamNetworkMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
         MockEnvironment environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "short");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> new AppTeamNetworkService(mapper, environment).snapshot(7L))
                 .hasMessage("TEAM_RUN_ID_REQUIRED");
@@ -66,7 +81,7 @@ class AppTeamNetworkServiceTest {
         when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
         when(mapper.userScope(8L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
         MockEnvironment environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "TEAM-RUN-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         AppTeamNetworkService service = new AppTeamNetworkService(mapper, environment);
 
         Object accountA = service.snapshot(7L).getData().get("members").toString();
@@ -90,5 +105,11 @@ class AppTeamNetworkServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(
                 () -> new AppTeamNetworkService(mapper, new MockEnvironment()).snapshot(7L))
                 .hasMessage("TEAM_NETWORK_MEMBER_LIMIT_EXCEEDED");
+    }
+
+    private MockEnvironment developmentEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        return environment;
     }
 }

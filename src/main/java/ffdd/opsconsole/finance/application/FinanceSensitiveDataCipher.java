@@ -72,6 +72,11 @@ public class FinanceSensitiveDataCipher {
                 versioned ? associatedData : null);
     }
 
+    /** Verifies that the service has usable key material before exposing finance APIs. */
+    public void validateConfiguration() {
+        requireKeyMaterial();
+    }
+
     private String decryptInternal(String ciphertext, String associatedData) {
         requireKeyMaterial();
         try {

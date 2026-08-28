@@ -15,6 +15,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakPowerUp;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
+import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -687,7 +688,7 @@ public class AppGrowthEngagementService {
         if (earningsReleaseService == null) {
             if (mapper.creditWalletNex(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
         } else {
-            earningsReleaseService.creditReward(userId, bizType, bizNo, "NEX", amount,
+            creditReleasedReward(userId, bizType, bizNo, "NEX", amount,
                     "GROWTH:" + bizNo + ":NEX");
         }
         if (mapper.insertNexLedger(userId, bizNo, bizType, amount, before.add(amount), remark) != 1) {
@@ -703,12 +704,28 @@ public class AppGrowthEngagementService {
         if (earningsReleaseService == null) {
             if (mapper.creditWalletUsdt(userId, amount) != 1) throw conflict("USER_WALLET_CONFLICT");
         } else {
-            earningsReleaseService.creditReward(userId, bizType, bizNo, "USDT", amount,
+            creditReleasedReward(userId, bizType, bizNo, "USDT", amount,
                     "GROWTH:" + bizNo + ":USDT");
         }
         if (mapper.insertUsdtLedger(userId, bizNo, bizType, amount, before.add(amount), remark) != 1) {
             throw conflict("REWARD_LEDGER_CONFLICT");
         }
+    }
+
+    private void creditReleasedReward(Long userId, String bizType, String bizNo, String asset,
+                                      BigDecimal amount, String idempotencyKey) {
+        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
+        if (FundsSandboxProfileGuard.isStrictTestProfile(profiles)) {
+            earningsReleaseService.creditReward(userId, "MOCK_" + bizType, bizNo, asset, amount,
+                    "SANDBOX", idempotencyKey);
+            return;
+        }
+        if (profiles.length != 0
+                && !FundsSandboxProfileGuard.isStrictDevelopmentProfile(profiles)
+                && !FundsSandboxProfileGuard.isStrictProductionProfile(profiles)) {
+            throw new BizException(503, "EARNINGS_RELEASE_PROFILE_INVALID");
+        }
+        earningsReleaseService.creditReward(userId, bizType, bizNo, asset, amount, idempotencyKey);
     }
 
     private void creditPoints(Long userId, String bizNo, String bizType, int points) {

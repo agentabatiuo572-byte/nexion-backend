@@ -25,13 +25,15 @@ class UserOtpDeliveryServiceTest {
 
     @Test
     void acceptanceAndTestProfilesMayUseTheExplicitLocalFixedCode() {
-        for (String profile : new String[] { "dev", "test", "dev" }) {
+        for (String profile : new String[] { "dev", "test" }) {
             UserOtpDeliveryService service = service(
                     "", true, new MockEnvironment().withProperty("spring.profiles.active", profile));
 
             assertThat(service.available()).as(profile).isTrue();
             assertThat(service.verificationCode()).as(profile).isEqualTo("123456");
+            service.deliver("+86", "13800000000", "OTP-LOCAL", "123456", 5);
         }
+        verifyNoInteractions(restClientBuilder);
     }
 
     @Test

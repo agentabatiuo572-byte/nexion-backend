@@ -39,7 +39,20 @@ public class PaymentMethodSandboxProfileGuard implements InitializingBean {
         return FundsSandboxProfileGuard.isStrictProductionProfile(environment.getActiveProfiles());
     }
 
+    public boolean isStrictDevelopmentProfile() {
+        return FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles());
+    }
+
+    public String developmentCountryCode() {
+        return environment.getProperty("nexion.auth.development-passkey-account.country-code", "").trim();
+    }
+
+    public String developmentPhone() {
+        return environment.getProperty("nexion.auth.development-passkey-account.phone", "").trim();
+    }
+
     public String requireRunId() {
+        if (isStrictDevelopmentProfile()) return "local-dev";
         String runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID");
         if (runId == null || !runId.trim().matches("[A-Za-z0-9][A-Za-z0-9_-]{2,63}")) {
             throw new ffdd.opsconsole.shared.exception.BizException(503, "PAYMENT_METHOD_SANDBOX_RUN_ID_REQUIRED");

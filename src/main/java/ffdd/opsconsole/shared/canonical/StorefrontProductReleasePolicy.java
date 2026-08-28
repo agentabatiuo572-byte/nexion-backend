@@ -6,6 +6,8 @@ import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -38,6 +40,55 @@ public class StorefrontProductReleasePolicy {
         DeviceGenerationGateView gate = StringUtils.hasText(productNo)
                 ? catalogRepository.findGenerationGate(productNo).orElse(null)
                 : null;
+        return evaluateWithContext(unlockPhaseId, platformMonth, phases, currentIndex, gate);
+    }
+
+    /**
+     * Evaluates a storefront candidate set from one rhythm snapshot, one phase
+     * snapshot and one generation-gate snapshot. Home/Earn uses this path so a
+     * conversion card does not multiply E1 reads by the number of candidates.
+     */
+    public Map<String, Decision> evaluateBatch(Map<String, String> productUnlockPhases) {
+        Map<String, String> candidates = new LinkedHashMap<>();
+        if (productUnlockPhases != null) {
+            productUnlockPhases.forEach((productNo, unlockPhase) -> {
+                if (StringUtils.hasText(productNo)) candidates.put(productNo.trim(), unlockPhase);
+            });
+        }
+        if (candidates.isEmpty()) return Map.of();
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        if (rhythm == null || rhythm.currentMonth() < 1) {
+            return closedBatch(candidates, "H1_RHYTHM_UNAVAILABLE");
+        }
+        int platformMonth = Math.min(12, rhythm.currentMonth());
+        List<DevicePhaseView> phases = catalogRepository.listPhases(E1_SCOPE, false);
+        if (phases == null || phases.isEmpty()) {
+            return closedBatch(candidates, "E1_PHASE_CONFIG_UNAVAILABLE");
+        }
+        int currentIndex = Math.min(phases.size() - 1, ((platformMonth - 1) * phases.size()) / 12);
+        Map<String, DeviceGenerationGateView> gates = new LinkedHashMap<>();
+        List<DeviceGenerationGateView> gateRows = catalogRepository.listGenerationGates(false);
+        if (gateRows != null) {
+            for (DeviceGenerationGateView gate : gateRows) {
+                if (gate != null && StringUtils.hasText(gate.id())) gates.putIfAbsent(gate.id().trim(), gate);
+            }
+        }
+        Map<String, Decision> decisions = new LinkedHashMap<>();
+        candidates.forEach((productNo, unlockPhase) -> decisions.put(productNo,
+                evaluateWithContext(unlockPhase, platformMonth, phases, currentIndex, gates.get(productNo))));
+        return decisions;
+    }
+
+    private Map<String, Decision> closedBatch(Map<String, String> candidates, String reason) {
+        Map<String, Decision> decisions = new LinkedHashMap<>();
+        candidates.forEach((productNo, unlockPhase) -> decisions.put(
+                productNo, Decision.closed(reason, unlockPhase)));
+        return decisions;
+    }
+
+    private Decision evaluateWithContext(
+            String unlockPhaseId, int platformMonth, List<DevicePhaseView> phases,
+            int currentIndex, DeviceGenerationGateView gate) {
         if (gate != null && "active".equalsIgnoreCase(gate.status())) {
             if (!Boolean.TRUE.equals(gate.eligibility())) {
                 return Decision.closed("E1_GENERATION_ELIGIBILITY_REQUIRED", unlockPhaseId);

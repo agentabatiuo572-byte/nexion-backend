@@ -24,7 +24,8 @@ class AppWithdrawalP0ContractTest {
         assertThat(service).contains("idempotency.execute");
         assertThat(mapper).contains("userWithdrawal");
         assertThat(mapper).contains("w.user_id=#{userId}");
-        assertThat(mapper).contains("COALESCE(u.sandbox,0)=0");
+        assertThat(mapper).contains("JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0");
+        assertThat(mapper).doesNotContain("COALESCE(u.sandbox,0)=0");
     }
 
     @Test
@@ -47,6 +48,11 @@ class AppWithdrawalP0ContractTest {
         assertThat(schema).contains("retriable");
         assertThat(schema).contains("nex_refunded");
         assertThat(schema).contains("nex_refunded_at");
+        String migration = Files.readString(
+                Path.of("scripts/migrations/20260823_withdrawal_terminal_refund_projection.sql"));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(migration).contains("terminal_reason", "retriable", "nex_refunded", "nex_refunded_at");
+        assertThat(startup).contains("20260823_withdrawal_terminal_refund_projection.sql");
     }
 
     @Test

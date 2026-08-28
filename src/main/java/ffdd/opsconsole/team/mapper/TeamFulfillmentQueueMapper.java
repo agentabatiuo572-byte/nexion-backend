@@ -45,14 +45,15 @@ public interface TeamFulfillmentQueueMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_product
-               SET stock = stock - 1,
+               SET stock = CASE WHEN inventory_mode='FINITE' THEN stock - 1 ELSE stock END,
                    sold_count = sold_count + 1,
                    updated_at = GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no = #{skuId}
                AND is_deleted = 0
                AND store_visible = 1
                AND UPPER(status) IN ('ACTIVE', 'ON_SALE')
-               AND stock > 0
+               AND (inventory_mode='FINITE' OR UPPER(product_type)='SHARE')
+               AND (inventory_mode='UNLIMITED' OR stock > 0)
             """)
     int reserveSkuStock(@Param("skuId") String skuId);
 

@@ -245,6 +245,18 @@ public interface AppGenesisMapper {
     List<TransactionRow> transactions();
 
     @Select("""
+            SELECT o.order_no AS orderNo,UPPER(o.order_type) AS orderType,o.quantity,
+                   o.unit_price_usdt AS unitPriceUsdt,o.amount_usdt AS amountUsdt,
+                   o.royalty_usdt AS royaltyUsdt,o.completed_at AS completedAt
+              FROM nx_genesis_order o
+              JOIN nx_user u ON u.id=o.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0 AND UPPER(o.status)='COMPLETED'
+               AND UPPER(o.order_type) IN ('PRIMARY','SECONDARY')
+             ORDER BY o.completed_at DESC,o.id DESC LIMIT 100
+            """)
+    List<TransactionRow> userTransactions(@Param("userId") Long userId);
+
+    @Select("""
             SELECT i.batch_no AS batchNo,i.holding_no AS holdingNo,i.amount_usdt AS amountUsdt,
                    UPPER(i.status) AS status,i.paid_at AS paidAt
               FROM nx_genesis_emission_item i

@@ -3,11 +3,12 @@ package ffdd.opsconsole.finance.application;
 import ffdd.opsconsole.finance.mapper.AppWalletBillsMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import java.math.BigDecimal;
-import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -19,7 +20,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class AppWalletBillsService {
     private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
-    private static final Set<String> ISOLATED_PROFILES = Set.of("dev", "test");
+    private static final Set<String> DEVELOPMENT_PROFILES = Set.of("dev");
+    private static final Set<String> ISOLATED_PROFILES = Set.of("test");
     private final AppWalletBillsMapper mapper;
     private final Environment environment;
 
@@ -58,12 +60,14 @@ public class AppWalletBillsService {
                 .collect(Collectors.toSet());
         boolean production = profiles.isEmpty()
                 || (profiles.size() == 1 && PRODUCTION_PROFILES.contains(profiles.iterator().next()));
+        boolean development = profiles.size() == 1 && DEVELOPMENT_PROFILES.contains(profiles.iterator().next());
         boolean isolated = profiles.size() == 1 && ISOLATED_PROFILES.contains(profiles.iterator().next());
         if (isolated) throw new BizException(409, "WALLET_PRODUCTION_BILLS_FORBIDDEN");
-        if (!production) throw new BizException(503, "WALLET_PROFILE_INVALID");
+        if (!production && !development) throw new BizException(503, "WALLET_PROFILE_INVALID");
         AppWalletBillsMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null) throw new BizException(403, "WALLET_USER_REQUIRED");
-        if (user.sandbox() != 0) throw new BizException(403, "WALLET_PRODUCTION_USER_REQUIRED");
+        if (development && user.sandbox() != 1) throw new BizException(403, "WALLET_DEVELOPMENT_USER_REQUIRED");
+        if (production && user.sandbox() != 0) throw new BizException(403, "WALLET_PRODUCTION_USER_REQUIRED");
     }
 
     private Map<String, Object> bill(AppWalletBillsMapper.LedgerRow row) {
@@ -78,13 +82,23 @@ public class AppWalletBillsService {
         item.put("direction", row.direction());
         item.put("amount", nonNegative(row.amount()));
         item.put("balanceAfter", nonNegative(row.balanceAfter()));
-        item.put("status", row.status());
+        item.put("status", apiStatus(row.status()));
         item.put("remark", row.remark());
-        item.put("createdAt", row.createdAt().toInstant(ZoneOffset.UTC).toString());
+        item.put("createdAt", row.createdAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString());
         return item;
     }
 
     private BigDecimal nonNegative(BigDecimal value) {
         return value == null || value.signum() < 0 ? BigDecimal.ZERO : value;
+    }
+
+    private String apiStatus(String value) {
+        if (value == null || value.isBlank()) throw new BizException(500, "WALLET_LEDGER_STATUS_INVALID");
+        return switch (value.trim().toUpperCase(Locale.ROOT)) {
+            case "SUCCESS", "POSTED", "COMPLETED", "CONFIRMED" -> "SUCCESS";
+            case "PENDING" -> "PENDING";
+            case "FAILED", "REJECTED", "CANCELLED" -> "FAILED";
+            default -> throw new BizException(500, "WALLET_LEDGER_STATUS_INVALID");
+        };
     }
 }

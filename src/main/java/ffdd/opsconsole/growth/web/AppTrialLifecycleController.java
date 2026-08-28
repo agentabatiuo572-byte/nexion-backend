@@ -1,16 +1,11 @@
 package ffdd.opsconsole.growth.web;
 
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
-import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
-import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.util.Map;
-import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
-import org.springframework.core.env.Environment;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,13 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppTrialLifecycleController {
     private final AppTrialLifecycleService service;
-    private final CommerceSandboxTrialService sandboxService;
-    private final Environment environment;
 
     @GetMapping("/state")
     public ApiResult<Map<String, Object>> state(Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : sandbox() ? sandboxService.state(userId) : service.state(userId);
+        return userId == null ? forbidden() : service.state(userId);
     }
 
     @PostMapping("/start")
@@ -40,7 +33,6 @@ public class AppTrialLifecycleController {
         Long userId = userId(authentication);
         StartRequest body = request == null ? new StartRequest(null, null) : request;
         return userId == null ? forbidden()
-                : sandbox() ? sandboxService.start(userId, idempotencyKey)
                 : service.start(userId, body.paymentMethodId(), body.deviceName(), idempotencyKey);
     }
 
@@ -51,7 +43,6 @@ public class AppTrialLifecycleController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : sandbox() ? sandboxService.cancel(userId)
                 : service.cancel(userId, request == null ? null : request.reason(), idempotencyKey);
     }
 
@@ -60,8 +51,7 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : sandbox()
-                ? ApiResult.fail(409, "TRIAL_SANDBOX_COMMAND_UNSUPPORTED") : service.extend(userId, idempotencyKey);
+        return userId == null ? forbidden() : service.extend(userId, idempotencyKey);
     }
 
     @PostMapping("/redeem-early")
@@ -69,8 +59,7 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : sandbox()
-                ? ApiResult.fail(409, "TRIAL_SANDBOX_COMMAND_UNSUPPORTED") : service.redeemEarly(userId, idempotencyKey);
+        return userId == null ? forbidden() : service.redeemEarly(userId, idempotencyKey);
     }
 
     @PostMapping("/convert")
@@ -80,24 +69,10 @@ public class AppTrialLifecycleController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : sandbox() ? sandboxService.convert(userId, request == null ? null : request.productNo(),
-                        request == null ? null : request.expectedAmountUsdt(), idempotencyKey)
-                : service.convert(userId, request == null ? null : request.productNo(), idempotencyKey);
-    }
-
-    private boolean sandbox() {
-        String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(profiles)) {
-            if (sandboxService == null || !sandboxService.enabled()) {
-                throw new BizException(503, "TRIAL_SANDBOX_UNAVAILABLE");
-            }
-            return true;
-        }
-        if (profiles == null || profiles.length == 0
-                || profiles.length == 1 && Set.of("prod").contains(profiles[0])) {
-            return false;
-        }
-        throw new BizException(503, "TRIAL_RUNTIME_PROFILE_UNSUPPORTED");
+                : service.convert(userId,
+                        request == null ? null : request.productNo(),
+                        request == null ? null : request.expectedAmountUsdt(),
+                        idempotencyKey);
     }
 
     private Long userId(Authentication authentication) {

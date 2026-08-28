@@ -6,6 +6,7 @@ import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -80,8 +81,14 @@ public class AppBundleOrderService {
         for (String productNo : lockOrder) {
             CommerceAcceptanceSandboxMapper.SandboxCatalogProduct product = sandboxMapper.lockSandboxCatalogProduct(
                     runId, null, productNo, 1);
+            ProductInventoryMode inventoryMode = product == null ? null : ProductInventoryMode.parse(product.inventoryMode());
             if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0
-                    || product.stock() == null || product.stock() < 1 || product.version() == null) {
+                    || inventoryMode == null
+                    || (inventoryMode == ProductInventoryMode.UNLIMITED
+                        && !"SHARE".equalsIgnoreCase(product.productType()))
+                    || (inventoryMode == ProductInventoryMode.FINITE
+                        && (product.stock() == null || product.stock() < 1))
+                    || product.version() == null) {
                 return ApiResult.fail(409, "COMMERCE_SANDBOX_PRODUCT_NOT_AVAILABLE");
             }
             StorefrontProductReleasePolicy.Decision release = releasePolicy.evaluate(product.productNo(), product.unlockPhase());
@@ -131,7 +138,9 @@ public class AppBundleOrderService {
         if (rows == null || rows.size() != productNos.size()) return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         List<AppBundleOrderMapper.ProductRow> products = rows.stream()
                 .sorted(Comparator.comparing(AppBundleOrderMapper.ProductRow::productNo)).toList();
-        if (products.stream().anyMatch(row -> row.stock() == null || row.stock() < 1
+        if (products.stream().anyMatch(row -> ProductInventoryMode.parse(row.inventoryMode()) == null
+                || (ProductInventoryMode.isUnlimited(row.inventoryMode()) && !"SHARE".equalsIgnoreCase(row.productType()))
+                || (!ProductInventoryMode.isUnlimited(row.inventoryMode()) && (row.stock() == null || row.stock() < 1))
                 || row.priceUsdt() == null || row.priceUsdt().signum() <= 0 || !StringUtils.hasText(row.name()))) {
             return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         }
@@ -149,10 +158,14 @@ public class AppBundleOrderService {
             }
         }
         int itemCount = products.size();
+        long physicalItemCount = products.stream()
+                .filter(row -> !"SHARE".equalsIgnoreCase(row.productType())).count();
         int cap = Math.max(1, mapper.deviceSlotCap());
         int active = Math.max(0, mapper.activeDeviceCount(userId));
         int reserved = Math.max(0, mapper.reservedDeviceOrderCount(userId));
-        if ((long) active + reserved + itemCount > cap) return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
+        if ((long) active + reserved + physicalItemCount > cap) {
+            return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
+        }
         AppBundleOrderMapper.Attribution attribution = mapper.attribution(userId);
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");

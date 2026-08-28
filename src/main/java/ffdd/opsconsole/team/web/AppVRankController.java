@@ -2,7 +2,6 @@ package ffdd.opsconsole.team.web;
 
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
-import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
@@ -14,6 +13,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.Arrays;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.security.core.Authentication;
@@ -62,7 +64,7 @@ public class AppVRankController {
             return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
         }
         Scope scope = userScope(userId);
-        if (scope.sandbox() == 1) {
+        if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(TeamSandboxFactGenerator.currentRank(scope.runId(), userId));
         }
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
@@ -87,26 +89,34 @@ public class AppVRankController {
         if (user == null || user.sandbox() == null) {
             throw new BizException(403, "V_RANK_USER_REQUIRED");
         }
-        if (runtime.sandbox() == 1 && user.sandbox() != 1) {
+        if (runtime.development()) {
+            requireDevelopmentUser(userId, user.sandbox());
+        } else if (runtime.sandbox() == 1 && user.sandbox() != 1) {
             throw new BizException(403, "V_RANK_SANDBOX_USER_REQUIRED");
-        }
-        if (runtime.sandbox() == 0 && user.sandbox() != 0) {
+        } else if (runtime.sandbox() == 0 && user.sandbox() != 0) {
             throw new BizException(403, "V_RANK_PRODUCTION_USER_REQUIRED");
         }
-        return new Scope(user.sandbox(), runtime.sourceEnvironment(), runtime.runId());
+        return new Scope(user.sandbox(), runtime.sourceEnvironment(), runtime.runId(), runtime.development());
     }
 
     private Scope runtimeScope() {
-        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
-                .orElseThrow(() -> new BizException(503, "V_RANK_PROFILE_INVALID"));
-        if (audience == UserAuthEnvironment.SANDBOX) {
+        Set<String> profiles = environment == null ? Set.of() : Arrays.stream(environment.getActiveProfiles())
+                .map(value -> value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT))
+                .filter(value -> !value.isBlank()).collect(Collectors.toSet());
+        if (profiles.size() == 1 && "test".equals(profiles.iterator().next())) {
             String runId = environment == null ? "" : environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
             if (!RUN_ID.matcher(runId).matches()) {
                 throw new BizException(503, "V_RANK_SANDBOX_RUN_ID_REQUIRED");
             }
-            return new Scope(1, "SANDBOX", runId);
+            return new Scope(1, "SANDBOX", runId, false);
         }
-        return new Scope(0, "PRODUCTION", "");
+        if (profiles.size() == 1 && "dev".equals(profiles.iterator().next())) {
+            return new Scope(1, "PRODUCTION", "", true);
+        }
+        if (profiles.isEmpty() || (profiles.size() == 1 && "prod".equals(profiles.iterator().next()))) {
+            return new Scope(0, "PRODUCTION", "", false);
+        }
+        throw new BizException(503, "V_RANK_PROFILE_INVALID");
     }
 
     private List<Map<String, Object>> rankRows() {
@@ -199,5 +209,9 @@ public class AppVRankController {
         }
     }
 
-    private record Scope(Integer sandbox, String sourceEnvironment, String runId) { }
+    private void requireDevelopmentUser(Long userId, Integer sandbox) {
+        if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "V_RANK_DEVELOPMENT_USER_REQUIRED");
+    }
+
+    private record Scope(Integer sandbox, String sourceEnvironment, String runId, boolean development) { }
 }

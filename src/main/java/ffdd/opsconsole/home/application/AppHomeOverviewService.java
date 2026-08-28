@@ -5,6 +5,7 @@ import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.EarningsLedgerRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.MarketProductRow;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.MarketTaskRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.OnGridClientRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.OwnedDeviceRow;
@@ -12,6 +13,7 @@ import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.PeriodRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.PromoRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.TaskPriceHistoryRow;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -64,6 +66,7 @@ public class AppHomeOverviewService {
     private final AppHomeOverviewMapper mapper;
     private final ComputeTaskProofVerifier proofVerifier;
     private final GrowthPublicStatsService publicStatsService;
+    private final AppCanonicalBoundaryService purchaseEligibilityService;
     private final Clock clock;
     private final Environment runtimeEnvironment;
 
@@ -122,7 +125,7 @@ public class AppHomeOverviewService {
             result.put("marketBoard", marketBoard(
                     safe(mapper.marketTasks()), safe(mapper.marketTaskPriceHistory()), marketProducts));
             result.put("doTheMath", doTheMath(
-                    mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
+                    userId, mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
             result.put("weeklyPromo", promo());
             AppHomeOverviewMapper.PaidSummary paid = mapper.cumulativePaid(userId, accountSandbox);
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
@@ -248,30 +251,30 @@ public class AppHomeOverviewService {
         return linked("workloads", workloads, "deviceRankings", rankings);
     }
 
-    private Map<String, Object> doTheMath(OwnedDeviceRow base, List<MarketProductRow> products) {
+    private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products) {
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
         String baseKind = productKind(String.join(" ",
                 text(base.productCode()), text(base.productTier()), text(base.deviceType()), text(base.name())));
         int baseIndex = DEVICE_UPGRADE_LADDER.indexOf(baseKind);
         if (baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
-        MarketProductRow target = products.stream()
+        List<MarketProductRow> candidates = products.stream()
                 .filter(row -> row != null && row.dailyUsdt() != null && row.dailyUsdt().compareTo(base.dailyUsdt()) > 0)
                 .filter(row -> row.priceUsdt() != null && row.priceUsdt().signum() > 0)
-                // The CTA opens the real store detail page. Keep the target on
-                // the same stock gate as AppTradeinMapper.listPurchasableCatalogTargets;
-                // otherwise a sold-out product can appear in Home but be absent
-                // from GET /api/store/catalog and the detail route fails closed.
-                .filter(row -> row.stock() != null && row.stock() > 0)
+                // A stop-loss CTA must be actionable now, so finite inventory must be positive.
+                .filter(row -> ProductInventoryMode.isUnlimited(row.inventoryMode())
+                        || (row.stock() != null && row.stock() > 0))
                 .filter(row -> !text(row.productNo()).isBlank() && !text(row.name()).isBlank())
                 .filter(row -> {
                     int targetIndex = DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row));
                     return targetIndex > baseIndex;
                 })
-                .min(java.util.Comparator
+                .sorted(java.util.Comparator
                         .comparingInt((MarketProductRow row) -> DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row)))
                         .thenComparing(MarketProductRow::dailyUsdt)
                         .thenComparing(MarketProductRow::productNo))
-                .orElse(null);
+                .toList();
+        if (candidates.isEmpty()) return null;
+        MarketProductRow target = immediatelyPurchasable(userId, candidates);
         if (target == null) return null;
         String targetKind = deviceKind(target);
         long multiplier = target.dailyUsdt().divide(base.dailyUsdt(), 0, RoundingMode.HALF_UP).longValue();
@@ -286,6 +289,27 @@ public class AppHomeOverviewService {
                         "priceUsdt", nonNegative(target.priceUsdt())),
                 "multiplier", multiplier,
                 "paybackDays", paybackDays);
+    }
+
+    private MarketProductRow immediatelyPurchasable(Long userId, List<MarketProductRow> candidates) {
+        try {
+            List<String> productNos = candidates.stream().map(MarketProductRow::productNo).toList();
+            ApiResult<Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision>> result =
+                    purchaseEligibilityService.purchaseEligibilityBatch(userId, productNos);
+            if (result == null || result.getCode() != 0 || result.getData() == null) return null;
+            Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision> decisions = result.getData();
+            return candidates.stream().filter(candidate -> {
+                AppCanonicalBoundaryService.PurchaseEligibilityDecision decision =
+                        decisions.get(candidate.productNo());
+                return decision != null && decision.eligible()
+                        && candidate.productNo().equals(text(decision.productNo()));
+            }).findFirst().orElse(null);
+        } catch (RuntimeException exception) {
+            // Home is a read projection. An eligibility outage must hide the
+            // conversion card, not make the entire Home/Earn surface unavailable
+            // and never fall back to a locally guessed product.
+            return null;
+        }
     }
 
     private PriceHistoryProjection priceHistory(List<TaskPriceHistoryRow> rows, LocalDateTime now) {

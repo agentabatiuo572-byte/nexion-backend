@@ -79,13 +79,34 @@ class AppVRankControllerTest {
     }
 
     @Test
+    void developmentAllowsAnyActiveDevelopmentAccountAndCanonicalRankFacts() {
+        var commission = mock(TeamCommissionRepository.class);
+        var performance = mock(VRankPerformanceRepository.class);
+        var users = mock(AppTeamInsightsMapper.class);
+        when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V2"));
+        when(commission.currentMemberVRank(7L)).thenReturn("V2");
+        when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
+                new BigDecimal("1198"), new BigDecimal("5240"), 5, Map.of(1, 3)));
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+
+        var result = new AppVRankController(commission, performance, users, environment)
+                .current(userAuthentication(7L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
+        verify(performance).computeSnapshot(7L);
+        verify(commission).currentMemberVRank(7L);
+    }
+
+    @Test
     void sandboxCurrentRankIsServerGeneratedAndStableByRunAndAccount() {
         var commission = mock(TeamCommissionRepository.class);
         var performance = mock(VRankPerformanceRepository.class);
         var users = mock(AppTeamInsightsMapper.class);
         when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V2"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         var controller = new AppVRankController(commission, performance, users, environment);
 
         var first = controller.current(userAuthentication(7L));
@@ -109,7 +130,7 @@ class AppVRankControllerTest {
         var users = mock(AppTeamInsightsMapper.class);
         when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V2"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> new AppVRankController(commission, performance, users, environment)
                 .current(userAuthentication(7L)))
@@ -126,7 +147,7 @@ class AppVRankControllerTest {
         var users = mock(AppTeamInsightsMapper.class);
         when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V2"));
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-123");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> new AppVRankController(commission, performance, users, environment)
                 .current(userAuthentication(7L)))

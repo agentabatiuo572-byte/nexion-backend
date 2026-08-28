@@ -12,12 +12,15 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.Environment;
 
 class AppStorefrontActivityServiceTest {
     private final AppStorefrontActivityMapper mapper = mock(AppStorefrontActivityMapper.class);
     private final CommerceAcceptanceRun acceptanceRun = mock(CommerceAcceptanceRun.class);
     private final FundsSandboxProfileGuard profileGuard = mock(FundsSandboxProfileGuard.class);
-    private final AppStorefrontActivityService service = new AppStorefrontActivityService(mapper, acceptanceRun, profileGuard);
+    private final Environment environment = mock(Environment.class);
+    private final AppStorefrontActivityService service = new AppStorefrontActivityService(
+            mapper, acceptanceRun, profileGuard, environment);
 
     @BeforeEach
     void strictProductionByDefault() {
@@ -37,6 +40,7 @@ class AppStorefrontActivityServiceTest {
         assertThat(result.getCode()).isZero();
         Map<String, Object> data = result.getData();
         assertThat(data).containsEntry("sourceEnvironment", "PRODUCTION");
+        assertThat(data).containsEntry("serverCanonical", true);
         assertThat(data).containsKey("items").doesNotContainKeys("userId", "orderNo", "walletAddress", "country");
         @SuppressWarnings("unchecked")
         Map<String, Object> item = (Map<String, Object>) ((List<?>) data.get("items")).get(0);
@@ -45,6 +49,53 @@ class AppStorefrontActivityServiceTest {
                 .containsEntry("occurredAt", "2026-08-15T11:00");
         assertThat(item).doesNotContainKeys("userId", "orderNo", "walletAddress", "country", "quantity");
         assertThat(data.get("nextCursor")).isNull();
+    }
+
+    @Test
+    void developmentActivityUsesCanonicalBusinessTablesForAnyActiveDevelopmentAccount() {
+        when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.userEnvironment(7L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+        when(mapper.recentActivities(eq(false), isNull(), isNull(), eq(21))).thenReturn(List.of(
+                new AppStorefrontActivityMapper.ActivityRow(
+                        42L, "NexionBox Pro", LocalDateTime.of(2026, 8, 22, 9, 37), 1)));
+
+        ApiResult<Map<String, Object>> result = service.activity(7L, null, 20);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        verify(mapper).recentActivities(eq(false), isNull(), isNull(), eq(21));
+        verifyNoInteractions(acceptanceRun);
+    }
+
+    @Test
+    void developmentActivityAllowsAnotherActiveDevelopmentAccount() {
+        when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+
+        ApiResult<Map<String, Object>> result = service.activity(8L, null, 20);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION");
+        verify(mapper).recentActivities(eq(false), isNull(), isNull(), eq(21));
+    }
+
+    @Test
+    void developmentActivityDoesNotDependOnTheFixedAccountConfiguration() {
+        when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+
+        ApiResult<Map<String, Object>> result = service.activity(8L, null, 20);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION");
+        verify(mapper).recentActivities(eq(false), isNull(), isNull(), eq(21));
     }
 
     @Test
@@ -87,6 +138,34 @@ class AppStorefrontActivityServiceTest {
                 .doesNotContainKey("viewing");
         verify(mapper).salesTotal(12L, false);
         verify(mapper).salesSince(eq(12L), eq(false), any(LocalDateTime.class));
+    }
+
+    @Test
+    void developmentSocialProofUsesCanonicalProductAndPaidOrderFacts() {
+        when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(environment.getProperty("nexion.auth.development-passkey-account.country-code", ""))
+                .thenReturn("+86");
+        when(environment.getProperty("nexion.auth.development-passkey-account.phone", ""))
+                .thenReturn("18708173775");
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+        when(mapper.developmentUserScope(8L, "+86", "18708173775")).thenReturn(1);
+        when(mapper.product("stellarbox-pro-v2")).thenReturn(
+                new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro"));
+        when(mapper.salesTotal(12L, false)).thenReturn(91L);
+        when(mapper.salesSince(eq(12L), eq(false), any(LocalDateTime.class))).thenReturn(4L);
+
+        ApiResult<Map<String, Object>> result = service.socialProof(8L, "stellarbox-pro-v2", 30);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("serverCanonical", true)
+                .containsEntry("cumulativeSales", 91L)
+                .containsEntry("windowSales", 4L);
+        verify(mapper, never()).sandboxProduct(anyString(), anyString());
+        verifyNoInteractions(acceptanceRun);
     }
 
     @Test

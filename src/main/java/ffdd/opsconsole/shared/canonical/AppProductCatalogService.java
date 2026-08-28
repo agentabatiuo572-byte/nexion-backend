@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.device.domain.DeviceSkuSpecifications;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
@@ -53,6 +54,8 @@ public class AppProductCatalogService {
         if (!developmentRuntime && !fundsSandboxProfileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
+        ApiResult<Map<String, Object>> audienceFailure = canonicalAudienceFailure(userId, developmentRuntime);
+        if (audienceFailure != null) return audienceFailure;
         try {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
             if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
@@ -67,12 +70,28 @@ public class AppProductCatalogService {
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("source", "nx_product");
             response.put("serverCanonical", true);
+            response.put("sourceEnvironment", "PRODUCTION");
+            response.put("runId", "");
             response.put("revision", revision == null ? null : revision.toString());
             response.put("products", products);
             return ApiResult.ok(response);
         } catch (RuntimeException ex) {
             return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
         }
+    }
+
+    private ApiResult<Map<String, Object>> canonicalAudienceFailure(Long userId, boolean developmentRuntime) {
+        if (userId == null || userId <= 0) {
+            return ApiResult.fail(403, "PRODUCT_CATALOG_PRODUCTION_USER_REQUIRED");
+        }
+        if (!developmentRuntime) {
+            return Integer.valueOf(0).equals(tradeinMapper.activeUserEnvironment(userId))
+                    ? null
+                    : ApiResult.fail(403, "PRODUCT_CATALOG_PRODUCTION_USER_REQUIRED");
+        }
+        return Integer.valueOf(1).equals(tradeinMapper.activeUserEnvironment(userId))
+                ? null
+                : ApiResult.fail(403, "PRODUCT_CATALOG_DEVELOPMENT_USER_REQUIRED");
     }
 
     private ApiResult<Map<String, Object>> sandboxCatalog() {
@@ -85,7 +104,7 @@ public class AppProductCatalogService {
                     seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(),
                     seed.power(), seed.datacenter(), seed.uptime(), seed.warranty(), seed.phoneDailyEarn(), seed.phoneDailyEarnNex(),
                     seed.featuresJson(), seed.aiImageGenPerMin(), seed.aiLlmTokensPerSec(), seed.aiVideoMinPerHour(),
-                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), runId));
+                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId));
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
@@ -104,25 +123,28 @@ public class AppProductCatalogService {
 
     private Map<String, Object> sandboxProduct(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target) {
         return product(new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
-                target.priceUsdt(), target.stock(), target.productNo(), 0, target.gpuModel(), target.vramTotalGb(),
+                target.priceUsdt(), target.stock(), target.productType(), 0, target.gpuModel(), target.vramTotalGb(),
                 target.hashrate(), target.dailyUsdt(), target.dailyNex(), target.tagline(), target.badge(), target.sold(),
                 target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
-                target.purchaseGateJson()), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
+                target.purchaseGateJson(), target.inventoryMode()), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
     }
 
     private Map<String, Object> product(
             AppTradeinMapper.CatalogTargetProduct target,
             StorefrontProductReleasePolicy.Decision release) {
+        String productType = canonicalProductType(target == null ? null : target.deviceType(), target == null ? null : target.tier());
         if (target == null
                 || !StringUtils.hasText(target.productNo())
                 || !StringUtils.hasText(target.name())
                 || !TIERS.contains(target.tier())
                 || target.priceUsdt() == null
                 || target.priceUsdt().signum() <= 0
-                || target.stock() == null
-                || target.stock() < 1
+                || ProductInventoryMode.parse(target.inventoryMode()) == null
+                || (ProductInventoryMode.isUnlimited(target.inventoryMode()) && !"SHARE".equals(productType))
+                || (!ProductInventoryMode.isUnlimited(target.inventoryMode())
+                    && (target.stock() == null || target.stock() < 0))
                 || target.dailyUsdt() == null
                 || target.dailyUsdt().signum() < 0
                 || target.dailyNex() == null
@@ -137,10 +159,11 @@ public class AppProductCatalogService {
         item.put("tier", target.tier());
         item.put("tagline", text(target.tagline()));
         item.put("badge", nullableText(target.badge()));
-        boolean specsComplete = StringUtils.hasText(target.gpuModel())
+        boolean share = "Share".equals(target.tier());
+        boolean specsComplete = share || (StringUtils.hasText(target.gpuModel())
                 && target.vramTotalGb() != null && target.vramTotalGb() > 0
                 && StringUtils.hasText(target.power())
-                && StringUtils.hasText(target.datacenter());
+                && StringUtils.hasText(target.datacenter()));
         item.put("gpu", display(target.gpuModel()));
         item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
                 ? "unavailable" : target.vramTotalGb() + "GB");
@@ -155,7 +178,9 @@ public class AppProductCatalogService {
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("price", target.priceUsdt());
         item.put("sold", target.sold());
-        item.put("stock", target.stock());
+        item.put("productType", productType);
+        item.put("inventoryMode", target.inventoryMode());
+        item.put("stock", ProductInventoryMode.isUnlimited(target.inventoryMode()) ? null : target.stock());
         item.put("features", features(target.featuresJson()));
         item.put("ai", ai(target));
         item.put("status", "active");
@@ -171,9 +196,22 @@ public class AppProductCatalogService {
         // Historical client-only gates are deliberately not projected until every quote/order
         // path enforces the same eligibility and quota rules on the server.
         item.put("purchaseGate", null);
-        item.put("purchaseBlocked", !specsComplete);
-        item.put("purchaseBlockedReason", specsComplete ? null : "PRODUCT_SPECS_UNAVAILABLE");
+        boolean outOfStock = !ProductInventoryMode.isUnlimited(target.inventoryMode()) && target.stock() == 0;
+        item.put("purchaseBlocked", !specsComplete || outOfStock);
+        item.put("purchaseBlockedReason", !specsComplete
+                ? "PRODUCT_SPECS_UNAVAILABLE"
+                : outOfStock ? "PRODUCT_OUT_OF_STOCK" : null);
         return item;
+    }
+
+    private String canonicalProductType(String raw, String tier) {
+        if (StringUtils.hasText(raw)) {
+            String normalized = raw.trim().toUpperCase(java.util.Locale.ROOT);
+            if ("DEVICE".equals(normalized) || "SHARE".equals(normalized)) return normalized;
+        }
+        // Compatibility for old isolated-catalog fixtures only. Canonical nx_product rows
+        // always project product_type explicitly through AppTradeinMapper.
+        return "Share".equals(tier) ? "SHARE" : "DEVICE";
     }
 
     private List<String> features(String json) {

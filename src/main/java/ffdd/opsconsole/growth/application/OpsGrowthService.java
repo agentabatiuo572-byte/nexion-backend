@@ -86,6 +86,8 @@ public class OpsGrowthService implements AuditReplayable {
     private static final String TRIAL_AUTO_PUSH_KILLED_KEY = "growth.trial.auto_push_killed";
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
+    private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
+    private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
     private static final String QUEST_PREFIX = "growth.quest.";
     private static final String WHEEL_PREFIX = "growth.wheel.";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
@@ -128,7 +130,8 @@ public class OpsGrowthService implements AuditReplayable {
             "autoPushEnabled",
             "autoPushDelayMs",
             "autoPushCooldownHours",
-            "autoPushMaxPerSession");
+            "autoPushMaxPerSession",
+            "seatsLeftToday");
     private static final Set<String> TRIAL_TERMINAL_STATES = Set.of("cancelled", "redeemed", "failed");
     private static final Set<String> EVENT_STATES = Set.of("upcoming", "ongoing", "ended");
     private static final Set<String> EVENT_KINDS = Set.of(
@@ -413,11 +416,13 @@ public class OpsGrowthService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> trials() {
         ensureTrialSeedData();
+        List<Map<String, Object>> trialProducts = trialProductOptions();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H2");
         response.put("stats", trialStats());
         response.put("modelA", trialModelA());
-        response.put("params", trialParams());
+        response.put("params", trialParams(trialProducts));
+        response.put("trialProducts", trialProducts);
         response.put("gates", trialGates());
         response.put("states", trialStates());
         response.put("sessions", trialSessions());
@@ -434,6 +439,7 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updateTrialParam(
             String idempotencyKey,
             String paramKey,
@@ -443,8 +449,11 @@ public class OpsGrowthService implements AuditReplayable {
             return guard;
         }
         String key = normalizeTrialParamKey(paramKey);
-        if (Set.of("phaseOpen", "trialProductId").contains(key)) {
+        if (Set.of("phaseOpen", "trialPriceUSD").contains(key)) {
             return validation("TRIAL_PARAM_READONLY");
+        }
+        if ("trialProductId".equals(key)) {
+            return updateTrialProduct(idempotencyKey, request);
         }
         String value;
         try {
@@ -2872,16 +2881,150 @@ public class OpsGrowthService implements AuditReplayable {
         return model;
     }
 
-    private List<Map<String, Object>> trialParams() {
-        return growthRows(GrowthQuestEventMapper::listTrialPolicies).stream()
+    private List<Map<String, Object>> trialParams(List<Map<String, Object>> trialProducts) {
+        List<Map<String, Object>> policies = growthRows(GrowthQuestEventMapper::listTrialPolicies);
+        String productNo = policies.stream()
+                .filter(row -> "trialProductId".equals(row.get("key")))
+                .map(row -> canonicalTrialProductId(stringValue(row.get("cur"), "")))
+                .findFirst()
+                .orElse("");
+        String livePrice = liveTrialProductPrice(productNo, trialProducts);
+        return policies.stream()
                 .map(row -> {
                     Map<String, Object> copy = new LinkedHashMap<>(row);
+                    if ("trialProductId".equals(copy.get("key"))) {
+                        copy.put("cur", canonicalTrialProductId(stringValue(copy.get("cur"), "")));
+                    }
+                    if ("trialPriceUSD".equals(copy.get("key")) && livePrice != null) {
+                        copy.put("cur", livePrice);
+                    }
                     if (truthy(copy.get("serverOnly"))) {
                         copy.put("cur", "•••(server only)");
                     }
                     return copy;
                 })
                 .toList();
+    }
+
+    private String liveTrialProductPrice(String productNo, List<Map<String, Object>> trialProducts) {
+        return trialProducts.stream()
+                .filter(product -> productNo.equals(stringValue(product.get("productNo"), "")))
+                .map(product -> product.get("priceUsdt"))
+                .filter(value -> value != null)
+                .map(this::voucherNumberValue)
+                .filter(price -> price.signum() > 0)
+                .map(price -> price.stripTrailingZeros().toPlainString())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private ApiResult<Map<String, Object>> updateTrialProduct(
+            String idempotencyKey, GrowthConfigUpdateRequest request) {
+        String requested = canonicalTrialProductId(requireText(request.value(), "VALUE_REQUIRED"));
+        if (!requested.matches("[A-Za-z0-9._-]{2,64}")) {
+            return validation("TRIAL_PRODUCT_ID_INVALID");
+        }
+        if (deviceCatalogRepository.isEmpty()) {
+            return validation("TRIAL_PRODUCT_CATALOG_UNAVAILABLE");
+        }
+        DeviceSkuView product = deviceCatalogRepository.get().findSku(requested).orElse(null);
+        if (product == null) {
+            return validation("TRIAL_PRODUCT_NOT_FOUND_IN_E1");
+        }
+        String unavailableReason = trialProductUnavailableReason(product);
+        if (unavailableReason != null) {
+            return validation(unavailableReason);
+        }
+        if (questEventMapper.isEmpty()) {
+            return validation("TRIAL_POLICY_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        String price = product.price().stripTrailingZeros().toPlainString();
+        questEventMapper.get().upsertTrialPolicyValue(
+                "trialProductId", requested, "STRING", false, "newonly", false,
+                TRIAL_PARAM_KEYS.indexOf("trialProductId"));
+        questEventMapper.get().upsertTrialPolicyValue(
+                "trialPriceUSD", price, "NUMBER", true, "newonly", false,
+                TRIAL_PARAM_KEYS.indexOf("trialPriceUSD"));
+        audit("H2_TRIAL_PRODUCT_CHANGED", "TRIAL_PARAM", "trialProductId", request.operator(), Map.of(
+                "productNo", requested,
+                "productName", product.name(),
+                "priceUsdt", price,
+                "source", "E1.nx_product",
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = trials().getData();
+        response.put("updated", Map.of(
+                "key", "trialProductId",
+                "source", "E1.nx_product",
+                "value", requested,
+                "priceUsdt", price,
+                "serverOnly", false));
+        return ApiResult.ok(response);
+    }
+
+    private List<Map<String, Object>> trialProductOptions() {
+        if (deviceCatalogRepository.isEmpty()) {
+            return List.of();
+        }
+        return deviceCatalogRepository.get()
+                .pageSkus(new DeviceSkuQueryRequest(null, null, 1L, 500L))
+                .getRecords()
+                .stream()
+                .filter(this::isPhysicalTrialProduct)
+                .filter(product -> Boolean.TRUE.equals(product.trialEligible()))
+                .map(this::trialProductOption)
+                .toList();
+    }
+
+    private Map<String, Object> trialProductOption(DeviceSkuView product) {
+        String reason = trialProductUnavailableReason(product);
+        return row(
+                "productNo", product.skuId(),
+                "name", product.name(),
+                "priceUsdt", product.price(),
+                "stock", product.stock(),
+                "status", product.status(),
+                "productType", product.productType(),
+                "inventoryMode", product.inventoryMode(),
+                "selectable", reason == null,
+                "unavailableReason", reason == null ? "" : reason);
+    }
+
+    private boolean isPhysicalTrialProduct(DeviceSkuView product) {
+        return product != null
+                && Set.of("DEVICE", "SERVER").contains(stringValue(product.productType(), "").toUpperCase(Locale.ROOT))
+                && "FINITE".equalsIgnoreCase(product.inventoryMode());
+    }
+
+    private String trialProductUnavailableReason(DeviceSkuView product) {
+        if (product != null && !Boolean.TRUE.equals(product.trialEligible())) {
+            return "E1 商品未开启允许试用";
+        }
+        if (!isPhysicalTrialProduct(product)) {
+            return "TRIAL_PRODUCT_PHYSICAL_FINITE_REQUIRED";
+        }
+        if (!StringUtils.hasText(product.name())) {
+            return "TRIAL_PRODUCT_NAME_REQUIRED";
+        }
+        if (!"on".equalsIgnoreCase(product.status())) {
+            return "TRIAL_PRODUCT_NOT_ON_SALE";
+        }
+        if (product.price() == null || product.price().signum() <= 0) {
+            return "TRIAL_PRODUCT_PRICE_INVALID";
+        }
+        try {
+            if (!StringUtils.hasText(product.stock()) || Integer.parseInt(product.stock().trim()) <= 0) {
+                return "TRIAL_PRODUCT_OUT_OF_STOCK";
+            }
+        } catch (NumberFormatException ex) {
+            return "TRIAL_PRODUCT_STOCK_INVALID";
+        }
+        return null;
+    }
+
+    private String canonicalTrialProductId(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
     }
 
     private String trialParamCurrentValue(String key, String fallback) {
@@ -2987,6 +3130,16 @@ public class OpsGrowthService implements AuditReplayable {
         }
         if (Set.of("autoPushDelayMs", "autoPushCooldownHours", "autoPushMaxPerSession").contains(key)) {
             return wholeDays(parseDecimal(value), 0, 86400000).toPlainString();
+        }
+        if ("seatsLeftToday".equals(key)) {
+            if (!value.matches("[0-9]+")) {
+                throw new IllegalArgumentException("TRIAL_QUOTA_INTEGER_REQUIRED");
+            }
+            BigDecimal quota = parseDecimal(value);
+            if (quota.stripTrailingZeros().scale() > 0) {
+                throw new IllegalArgumentException("TRIAL_QUOTA_INTEGER_REQUIRED");
+            }
+            return wholeDays(quota, 0, 1000000).toPlainString();
         }
         return value;
     }
@@ -3170,7 +3323,8 @@ public class OpsGrowthService implements AuditReplayable {
     private String trialParamValueType(String key) {
         return Set.of("discountRate", "discountCapUSD", "trialOffsetCapUSD", "highQualityThresholdUSD", "chargeFailRate",
                 "trialPriceUSD", "shadowDailyUSD", "shadowDailyNEX", "autoPushDelayMs",
-                "autoPushCooldownHours", "autoPushMaxPerSession").contains(key) || isTrialDayParam(key) ? "NUMBER" : "STRING";
+                "autoPushCooldownHours", "autoPushMaxPerSession", "seatsLeftToday").contains(key)
+                || isTrialDayParam(key) ? "NUMBER" : "STRING";
     }
 
     private boolean trialParamHot(String key) {
@@ -4537,11 +4691,12 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private BigDecimal wholeDays(BigDecimal value, int min, int max) {
-        int days = value.setScale(0, RoundingMode.DOWN).intValue();
-        if (days < min || days > max) {
+        BigDecimal whole = value.setScale(0, RoundingMode.DOWN);
+        if (whole.compareTo(BigDecimal.valueOf(min)) < 0
+                || whole.compareTo(BigDecimal.valueOf(max)) > 0) {
             throw new IllegalArgumentException("Days value is out of range");
         }
-        return BigDecimal.valueOf(days);
+        return whole;
     }
 
     private BigDecimal percent(BigDecimal ratio) {

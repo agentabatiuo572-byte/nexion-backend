@@ -14,6 +14,7 @@ import org.springframework.core.convert.converter.Converter;
 
 @Configuration
 public class DateTimeFormatConfig {
+    public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     public static final String DATE_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss";
     public static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern(DATE_TIME_PATTERN);
 
@@ -28,7 +29,7 @@ public class DateTimeFormatConfig {
 
     @Bean
     public Clock systemClock() {
-        return Clock.system(ZoneId.of("Asia/Shanghai"));
+        return Clock.system(BUSINESS_ZONE);
     }
 
     @Bean

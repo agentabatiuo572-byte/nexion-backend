@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -118,7 +119,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void strictSandboxProfileBlocksProductionSettlementBeforeAnyWriteOrAudit() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> service.runSettlements("idem-ref-sandbox-block",
                 new ReferralSettlementRunRequest(10, "strict sandbox must not write production",
@@ -132,7 +133,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementRequiresRunScopedFixtureId() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-run-required",
                 new AcceptanceSandboxReferralSettlementRequest(null, 22L,
@@ -145,7 +146,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementRejectsAnotherLegalRunBeforeIdempotencyOrAudit() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
 
         assertThatThrownBy(() -> service.runAcceptanceSandboxSettlement("idem-h8-other-run",
@@ -161,7 +162,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void rejectedSandboxSettlementAuditsAuthenticatedActorInsteadOfSpoofedRequestOperator() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "RUN-H8-SERVER");
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken("812", null, List.of()));
@@ -198,11 +199,11 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void settlesRealSponsorChainExactlyOnceAndCreditsBothWallets() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                 any(LocalDateTime.class), eq("PRODUCTION"), eq(true))).thenReturn(1);
+                 any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true))).thenReturn(1);
 
         Map<String, Object> result = service.runSettlements("idem-ref-1",
                 request(10, "manual reconciliation"));
@@ -221,8 +222,25 @@ class OpsReferralRewardServiceTest {
     }
 
     @Test
-    void acceptanceSandboxSettlementUsesMockSourceAndNeverCallsProductionLedgerFacade() {
+    void developmentProfileSettlesPhysicalDevelopmentAccountsThroughCanonicalProductionLedger() {
         environment.setActiveProfiles("dev");
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(1), eq(true), eq(10), eq(null)))
+                .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
+        when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
+                eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
+                any(LocalDateTime.class), eq("PRODUCTION"), eq(1), eq(true))).thenReturn(1);
+
+        Map<String, Object> result = service.runSettlements("idem-ref-dev-canonical",
+                request(10, "development canonical referral settlement"));
+
+        assertThat(result).containsEntry("settled", 1).containsEntry("skipped", 0);
+        verify(earningsRelease).creditReward(eq(11L), eq("H8_REFERRAL"), anyString(), eq("NEX"),
+                decimal("10"), eq("PRODUCTION"), anyString());
+    }
+
+    @Test
+    void acceptanceSandboxSettlementUsesMockSourceAndNeverCallsProductionLedgerFacade() {
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
         when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
@@ -252,7 +270,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void acceptanceSandboxSettlementDoesNotDependOnProductionCoverage() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "run-h8-acceptance");
         when(mapper.findPendingSandboxReferral(any(LocalDateTime.class), anyString(), eq(22L)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
@@ -273,7 +291,7 @@ class OpsReferralRewardServiceTest {
 
     @Test
     void finalAtomicEligibilityFailureNeverCreditsWalletOrLedger() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
 
         Map<String, Object> result = service.runSettlements("idem-ref-race",
@@ -323,16 +341,16 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_MUTEX_UNAVAILABLE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyInt(), anyBoolean(), anyInt(), any());
     }
 
     @Test
     void postSettlementCoverageDropRollsBackTheBatch() {
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(true), eq(10), eq(null)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                 any(LocalDateTime.class), eq("PRODUCTION"), eq(true))).thenReturn(1);
+                 any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true))).thenReturn(1);
         when(coverage.snapshot()).thenReturn(
                 new TreasuryCoverageSnapshot(new BigDecimal("100"), new BigDecimal("85")),
                 new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
@@ -352,7 +370,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_DATA_UNAVAILABLE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyInt(), anyBoolean(), anyInt(), any());
     }
 
     @Test
@@ -378,7 +396,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("B1_COVERAGE_BELOW_REDLINE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyInt(), anyBoolean(), anyInt(), any());
     }
 
     @Test
@@ -452,7 +470,7 @@ class OpsReferralRewardServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("H8_REWARD_SNAPSHOT_CHANGED_REPROPOSE");
 
-        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyBoolean(), any(Integer.class), any());
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyInt(), anyBoolean(), anyInt(), any());
     }
 
     @Test

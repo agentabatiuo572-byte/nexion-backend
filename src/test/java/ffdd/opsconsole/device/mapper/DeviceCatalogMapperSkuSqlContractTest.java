@@ -47,6 +47,25 @@ class DeviceCatalogMapperSkuSqlContractTest {
     }
 
     @Test
+    void e1CatalogPersistsExplicitInventoryModeInTheCanonicalProduct() throws Exception {
+        String insertSql = String.join("\n", DeviceCatalogMapper.class.getMethod(
+                "insertSku", DeviceCatalogMapper.SkuWrite.class).getAnnotation(Insert.class).value());
+        String updateSql = updateSql("updateSku", DeviceCatalogMapper.SkuWrite.class, java.time.LocalDateTime.class);
+        String pageSql = selectSql("pageSkus", String.class, String.class, long.class, long.class);
+
+        assertThat(insertSql).contains("inventory_mode", "#{sku.inventoryMode}");
+        assertThat(updateSql).contains("inventory_mode=#{sku.inventoryMode}");
+        assertThat(pageSql).contains("p.inventory_mode AS inventoryMode");
+    }
+
+    @Test
+    void e1CatalogOrdinaryEditPreservesTheCanonicalProductType() throws Exception {
+        String updateSql = updateSql("updateSku", DeviceCatalogMapper.SkuWrite.class, java.time.LocalDateTime.class);
+
+        assertThat(updateSql).doesNotContain("product_type=");
+    }
+
+    @Test
     void e1CatalogUpdateUsesTheProductRevisionAsAnOptimisticLock() throws Exception {
         String sql = updateSql("updateSku", DeviceCatalogMapper.SkuWrite.class, java.time.LocalDateTime.class);
         String statusSql = updateSql("updateSkuStatus", String.class, String.class, java.time.LocalDateTime.class, java.time.LocalDateTime.class);
@@ -101,6 +120,19 @@ class DeviceCatalogMapperSkuSqlContractTest {
                 .contains("p.sold_count>=items.quantity")
                 .contains("p.stock<=2147483647-items.quantity")
                 .doesNotContain("p.is_deleted=0");
+        assertThat(sql).contains("p.inventory_mode='FINITE'");
+        assertThat(itemSql).contains("p.inventory_mode='FINITE'");
+    }
+
+    @Test
+    void canonicalProductSchemaDefinesFiniteAndUnlimitedInventoryWithoutMagicStock() throws Exception {
+        String schema = Files.readString(Path.of("scripts", "schema.sql"));
+        int productStart = schema.indexOf("CREATE TABLE IF NOT EXISTS nx_product (");
+        int productEnd = schema.indexOf(") ENGINE=InnoDB", productStart);
+
+        assertThat(schema.substring(productStart, productEnd))
+                .contains("inventory_mode VARCHAR(16) NOT NULL DEFAULT 'FINITE'")
+                .contains("CHECK (inventory_mode IN ('FINITE','UNLIMITED'))");
     }
 
     @Test

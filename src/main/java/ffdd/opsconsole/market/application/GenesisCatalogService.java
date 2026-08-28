@@ -2,7 +2,6 @@ package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
-import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.InviteRow;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -15,20 +14,17 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
-import org.springframework.dao.DuplicateKeyException;
 
 @Service
 @RequiredArgsConstructor
@@ -179,49 +175,6 @@ public class GenesisCatalogService {
         return ApiResult.ok();
     }
 
-    public ApiResult<Map<String,Object>> invites() { return ApiResult.ok(inviteRegistry(mapper.inviteCodes())); }
-
-    public ApiResult<Map<String,Object>> issueInvites(String idempotencyKey, InviteIssueRequest request) {
-        return onceResult("ISSUE_INVITES",idempotencyKey,request,()->issueInvitesOnce(request));
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    protected ApiResult<Map<String,Object>> issueInvitesOnce(InviteIssueRequest request) {
-        if (request==null || request.count()==null || request.count()<1 || request.count()>100
-                || request.note()!=null && request.note().trim().length()>60) throw new BizException(422,"GENESIS_INVITE_REQUEST_INVALID");
-        String actor=AdminActorResolver.resolve(request.operator()); List<Map<String,Object>> issued=new ArrayList<>();
-        for(int i=0;i<request.count();i++){String code="NEXGRID-OG-"+UUID.randomUUID().toString().replace("-","").substring(0,16).toUpperCase();
-            if(mapper.insertInvite(code,actor,request.note()==null?"":request.note().trim())!=1) throw new BizException(409,"GENESIS_INVITE_CREATE_CONFLICT"); issued.add(Map.of("code",code,"status","unused"));}
-        audit("GENESIS_INVITES_ISSUED","BATCH",actor,"issue invite codes",Map.of("count",request.count(),"note",request.note()==null?"":request.note()));
-        Map<String,Object> data=new LinkedHashMap<>(); data.put("issued",issued); data.put("registry",inviteRegistry(mapper.inviteCodes())); return ApiResult.ok(data);
-    }
-
-    public ApiResult<Map<String,Object>> voidInvite(String code,String idempotencyKey,InviteVoidRequest request){return onceResult("VOID_INVITE:"+code,idempotencyKey,request,()->voidInviteOnce(code,request));}
-    @Transactional(rollbackFor = Exception.class)
-    protected ApiResult<Map<String,Object>> voidInviteOnce(String code,InviteVoidRequest request){requireReason(request==null?null:request.reason()); InviteRow row=mapper.lockInvite(normalizeCode(code));
-        if(row==null) throw new BizException(404,"GENESIS_INVITE_NOT_FOUND"); if(!"unused".equals(row.status())) throw new BizException(409,"GENESIS_INVITE_STATE_CONFLICT"); String actor=AdminActorResolver.resolve(request.operator());
-        if(mapper.voidInvite(row.code(),actor,request.reason().trim())!=1) throw new BizException(409,"GENESIS_INVITE_STATE_CONFLICT"); audit("GENESIS_INVITE_VOIDED",row.code(),actor,request.reason(),Map.of("before","unused","after","void")); return invites();}
-
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String,Object>> redeem(Long userId,String code){if(userId==null||userId<=0)throw new BizException(403,"USER_SUBJECT_REQUIRED"); InviteRow row=mapper.lockInvite(normalizeCode(code));
-        if(row==null)throw new BizException(404,"GENESIS_INVITE_NOT_FOUND");
-        if("used".equals(row.status()) && userId.equals(row.redeemedBy())) return ApiResult.ok(Map.of("code",row.code(),"status","used","replayed",true));
-        if(mapper.redeemedCount(userId)>0)throw new BizException(409,"GENESIS_INVITE_ACCOUNT_ALREADY_REDEEMED");
-        if("void".equals(row.status())) throw new BizException(409,"GENESIS_INVITE_VOIDED");
-        if(!"unused".equals(row.status()))throw new BizException(409,"GENESIS_INVITE_STATE_CONFLICT");
-        try {
-            if(mapper.redeemInvite(row.code(),userId)!=1)throw new BizException(409,"GENESIS_INVITE_STATE_CONFLICT");
-        } catch (DuplicateKeyException ex) {
-            // redeemInvite can only collide on the one-account-one-redemption key.
-            // Normalize the concurrent loser instead of leaking a generic database 500.
-            throw new BizException(409,"GENESIS_INVITE_ACCOUNT_ALREADY_REDEEMED");
-        }
-        audit("GENESIS_INVITE_REDEEMED",row.code(),"user:"+userId,"redeem invite",Map.of("userId",userId)); return ApiResult.ok(Map.of("code",row.code(),"status","used","replayed",false));}
-
-    public boolean hasRedeemedInvite(Long userId) {
-        return userId != null && userId > 0 && mapper.redeemedCount(userId) > 0;
-    }
-
     private CatalogState lockVersion(Long expected){if(expected==null)throw new BizException(400,"EXPECTED_TIERS_VERSION_REQUIRED");CatalogState state=requireStateForUpdate();if(!expected.equals(state.tiersVersion()))throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");return state;}
     private CatalogState requireState(){CatalogState s=mapper.state();if(s==null||!Set.of("open","closed").contains(s.marketOpenState()))throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");return s;}
     private CatalogState requireStateForUpdate(){CatalogState s=mapper.lockState();if(s==null)throw new BizException(503,"GENESIS_CATALOG_UNAVAILABLE");return s;}
@@ -230,13 +183,9 @@ public class GenesisCatalogService {
     private void validateBoundary(Integer to,BigDecimal price,int from){if(to==null||to<=from||price==null||price.signum()<=0||price.stripTrailingZeros().scale()>0)throw new BizException(422,"GENESIS_TIER_INVALID");}
     private int indexOf(List<TierRow> rows,String id){for(int i=0;i<rows.size();i++)if(rows.get(i).tierId().equals(id))return i;throw new BizException(404,"GENESIS_TIER_NOT_FOUND");}
     private List<Map<String,Object>> tierViews(List<TierRow> rows){return rows.stream().map(r->Map.<String,Object>of("id",r.tierId(),"from",r.rangeFrom(),"to",r.rangeTo(),"priceUSDT",r.priceUsdt())).toList();}
-    private Map<String,Object> inviteRegistry(List<InviteRow> rows){List<Map<String,Object>> list=rows.stream().map(r->{Map<String,Object> m=new LinkedHashMap<>();m.put("code",r.code());m.put("status",r.status());m.put("issuedBy",r.issuedBy());m.put("issuedAt",epoch(r.issuedAt()));m.put("note",r.note());m.put("redeemedBy",r.redeemedBy());m.put("redeemedAt",epoch(r.redeemedAt()));m.put("voidedBy",r.voidedBy());m.put("voidedAt",epoch(r.voidedAt()));m.put("voidReason",r.voidReason());return m;}).toList(); Map<String,Object> counts=new LinkedHashMap<>();counts.put("all",rows.size());counts.put("unused",rows.stream().filter(r->"unused".equals(r.status())).count());counts.put("used",rows.stream().filter(r->"used".equals(r.status())).count());counts.put("void",rows.stream().filter(r->"void".equals(r.status())).count());return Map.of("codes",list,"counts",counts);}
-    private Long epoch(LocalDateTime value){return value==null?null:value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();}
-    private String normalizeCode(String code){String v=code==null?"":code.trim().toUpperCase();if(!v.matches("NEXGRID-OG-[A-Z0-9]{16}"))throw new BizException(422,"GENESIS_INVITE_CODE_INVALID");return v;}
     private void requireReason(String reason){if(!StringUtils.hasText(reason)||reason.trim().length()<8||reason.trim().length()>200)throw new BizException(422,"REASON_INVALID");}
     private void audit(String action,String id,String actor,String reason,Map<String,Object> detail){Map<String,Object> d=new LinkedHashMap<>(detail);d.put("reason",reason);audit.recordRequired(AuditLogWriteRequest.builder().action(action).resourceType("GENESIS_CATALOG").resourceId(id).actorUsername(AdminActorResolver.resolve(actor)).riskLevel("HIGH").detail(d).build());}
     @SuppressWarnings({"rawtypes","unchecked"}) private ApiResult<Void> once(String action,String key,Object req,Supplier<ApiResult<Void>> supplier){return (ApiResult<Void>)(ApiResult)idempotency.execute("G4_"+action,key,hash(String.valueOf(req)),ApiResult.class,(Supplier)supplier);}
-    @SuppressWarnings({"rawtypes","unchecked"}) private ApiResult<Map<String,Object>> onceResult(String action,String key,Object req,Supplier<ApiResult<Map<String,Object>>> supplier){return (ApiResult<Map<String,Object>>)(ApiResult)idempotency.execute("G4_"+action,key,hash(String.valueOf(req)),ApiResult.class,(Supplier)supplier);}
     private String hash(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
 
     private Map<String,Object> unavailablePublicState(String reason) {
@@ -257,6 +206,4 @@ public class GenesisCatalogService {
     public record DeleteTierRequest(Long expectedTiersVersion,String reason,String operator){}
     public record MarketStateRequest(String value,String reason,String operator,String noticeKey,
                                      Long expectedMarketOpenStateVersion){}
-    public record InviteIssueRequest(Integer count,String note,String operator){}
-    public record InviteVoidRequest(String reason,String operator){}
 }

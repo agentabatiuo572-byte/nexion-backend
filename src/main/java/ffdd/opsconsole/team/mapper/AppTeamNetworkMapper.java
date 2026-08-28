@@ -14,6 +14,17 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
     UserScope userScope(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.id=#{userId}
+               AND REPLACE(TRIM(COALESCE(u.country_code,'')),'+','')=REPLACE(#{countryCode},'+','')
+               AND u.phone=#{phone} AND u.sandbox=1
+               AND u.status='ACTIVE' AND u.is_deleted=0
+            """)
+    int developmentUserScope(@Param("userId") Long userId,
+                             @Param("countryCode") String countryCode,
+                             @Param("phone") String phone);
+
+    @Select("""
             WITH RECURSIVE network AS (
               SELECT child.id member_user_id,child.sponsor_user_id,1 level,child.id root_user_id,
                      CAST(CONCAT(',',#{userId},',',child.id,',') AS CHAR(2048)) path

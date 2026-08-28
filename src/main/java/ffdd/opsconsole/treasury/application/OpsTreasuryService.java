@@ -39,6 +39,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -74,6 +75,8 @@ public class OpsTreasuryService {
     private static final String D3_WITHDRAW_COOLDOWN_DAYS_LEGACY_KEY = "wallet.withdrawal.cooldown_days";
     private static final String D3_FORECAST_CONFIG_IDEMPOTENCY_SCOPE = "D3_FORECAST_CONFIG_UPDATE";
     private static final String D3_RESERVE_INJECTION_IDEMPOTENCY_SCOPE = "D3_RESERVE_INJECTION";
+    private static final String D3_DEVELOPMENT_RESERVE_MUTEX = "D3_DEVELOPMENT_RESERVE";
+    private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
     private static final List<String> D4_BILL_TYPE_ORDER = List.of(
             "swap", "topup", "withdraw", "earning", "commission", "refund", "bonus");
     private static final Set<String> D4_BILL_TYPES = Set.copyOf(D4_BILL_TYPE_ORDER);
@@ -747,6 +750,68 @@ public class OpsTreasuryService {
                 reserveInjectionRequestHash(amount, voucherNo, reason, operator),
                 ApiResult.class,
                 () -> createInjectionNew(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+    }
+
+    /**
+     * Local-development only caller: serializes the target calculation and the canonical D3 injection
+     * in one database transaction. The caller is profile-gated; this method itself never bypasses the
+     * normal D3 idempotency, audit or outbox path.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> ensureDevelopmentReserve(
+            BigDecimal minimumReserveUsdt,
+            LocalDate businessDay) {
+        BigDecimal minimum = minimumReserveUsdt == null
+                ? BigDecimal.ZERO
+                : minimumReserveUsdt.setScale(2, RoundingMode.CEILING);
+        if (minimum.signum() <= 0 || businessDay == null) {
+            throw new IllegalArgumentException("DEVELOPMENT_TREASURY_RESERVE_INPUT_INVALID");
+        }
+
+        ledgerRepository.lockOperationMutex(D3_DEVELOPMENT_RESERVE_MUTEX);
+        Map<String, Object> dualLedger = dualLedgerSnapshot();
+        Object rawSnapshot = dualLedger.get("snapshot");
+        if (!(rawSnapshot instanceof Map<?, ?> snapshot)) {
+            return ApiResult.fail(503, "DEVELOPMENT_TREASURY_SNAPSHOT_UNAVAILABLE");
+        }
+        BigDecimal reserve = decimal(snapshot.get("reserveUsd"));
+        BigDecimal liabilities = decimal(snapshot.get("liabilitiesUsd"));
+        BigDecimal redlinePct = decimal(snapshot.get("redlinePct"));
+        BigDecimal healthyPct = decimal(snapshot.get("healthyPct"));
+        BigDecimal nexUsdRate = decimal(snapshot.get("nexUsdRate"));
+        if (!Boolean.TRUE.equals(snapshot.get("valuationReliable"))
+                || reserve.signum() < 0
+                || liabilities.signum() < 0
+                || nexUsdRate.signum() <= 0
+                || redlinePct.signum() <= 0
+                || healthyPct.compareTo(redlinePct) <= 0) {
+            return ApiResult.fail(503, "DEVELOPMENT_TREASURY_SNAPSHOT_INVALID");
+        }
+
+        BigDecimal coverageTarget = liabilities.multiply(healthyPct)
+                .divide(ONE_HUNDRED, 2, RoundingMode.CEILING);
+        BigDecimal targetReserve = minimum.max(coverageTarget).setScale(2, RoundingMode.CEILING);
+        BigDecimal amount = targetReserve.subtract(reserve).setScale(2, RoundingMode.CEILING);
+        if (amount.signum() <= 0) {
+            return ApiResult.ok(section("injected", false, "amount", BigDecimal.ZERO));
+        }
+
+        String dayKey = DateTimeFormatter.BASIC_ISO_DATE.format(businessDay);
+        String amountCents = amount.movePointRight(2).setScale(0, RoundingMode.UNNECESSARY).toPlainString();
+        String commandSuffix = dayKey + ":" + amountCents;
+        ApiResult<Map<String, Object>> injection = createInjection(
+                "development:treasury-reserve:" + commandSuffix,
+                new TreasuryInjectionRequest(
+                        amount,
+                        "DEV-LOCAL-TREASURY-" + dayKey + "-" + amountCents,
+                        "Local development reserve for app reward flows",
+                        "development-system"));
+        if (injection == null || injection.getCode() != 0) {
+            return injection == null
+                    ? ApiResult.fail(500, "DEVELOPMENT_TREASURY_RESERVE_COMMAND_FAILED")
+                    : injection;
+        }
+        return ApiResult.ok(section("injected", true, "amount", amount));
     }
 
     private ApiResult<Map<String, Object>> createInjectionNew(

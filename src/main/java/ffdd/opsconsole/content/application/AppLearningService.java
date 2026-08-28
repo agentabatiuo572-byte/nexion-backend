@@ -51,6 +51,7 @@ public class AppLearningService {
 
     public ApiResult<AppLearningOverview> overview(Long userId, String language) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        requireDevelopmentAccount(userId);
         String sourceEnvironment = rewardEnvironmentForRead(userId);
         Map<String, LearningProgressRow> progress = progressByCourse(userId, sourceEnvironment);
         List<AppLearningCourseView> courses = publishedCourses(sourceEnvironment).stream()
@@ -64,6 +65,7 @@ public class AppLearningService {
 
     public ApiResult<AppLearningCourseView> course(Long userId, String courseId, String language) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        requireDevelopmentAccount(userId);
         String sourceEnvironment = rewardEnvironmentForRead(userId);
         LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
@@ -79,6 +81,7 @@ public class AppLearningService {
     @Transactional
     public ApiResult<AppLearningCourseView> start(Long userId, String courseId, String language, String expectedVersion) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        requireDevelopmentAccount(userId);
         String sourceEnvironment = lockedRewardEnvironment(userId);
         LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
@@ -99,6 +102,7 @@ public class AppLearningService {
     @Transactional
     public ApiResult<AppLearningQuizResult> complete(Long userId, String courseId, String expectedVersion) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        requireDevelopmentAccount(userId);
         String sourceEnvironment = lockedRewardEnvironment(userId);
         LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
@@ -122,7 +126,8 @@ public class AppLearningService {
 
     public ApiResult<AppLearningQuizResult> submitQuiz(Long userId, String courseId, AppLearningQuizSubmitRequest request) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
-        String sourceEnvironment = rewardEnvironmentForRead(userId);
+        requireDevelopmentAccount(userId);
+        String sourceEnvironment = rewardEnvironmentForCommand(userId);
         LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         List<LearningQuizQuestionView> questions = course.quizQuestions() == null ? List.of() : course.quizQuestions();
@@ -240,6 +245,9 @@ public class AppLearningService {
 
     private String lockedRewardEnvironment(Long userId) {
         String sourceEnvironment = learningMapper.lockRewardEnvironment(userId);
+        if (sandboxGate.isStrictDevelopmentRuntime() && "SANDBOX".equals(sourceEnvironment)) {
+            return "PRODUCTION";
+        }
         if (!"PRODUCTION".equals(sourceEnvironment) && !"SANDBOX".equals(sourceEnvironment)) {
             throw new BizException(409, "LEARNING_REWARD_ENVIRONMENT_INVALID");
         }
@@ -299,7 +307,8 @@ public class AppLearningService {
 
     public ApiResult<LearningQuizReceipt> quizReceipt(Long userId, String courseId, String expectedVersion, String idempotencyKey) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
-        String environment = rewardEnvironmentForRead(userId);
+        requireDevelopmentAccount(userId);
+        String environment = rewardEnvironmentForCommand(userId);
         LearningCourseView course = publishedCourse(courseId, environment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         if (!StringUtils.hasText(idempotencyKey) || !course.version().equals(expectedVersion)) {
@@ -385,12 +394,34 @@ public class AppLearningService {
     private boolean sandbox(String sourceEnvironment) { return sandboxGate.enabled(sourceEnvironment); }
 
     private String rewardEnvironmentForRead(Long userId) {
+        if (sandboxGate.isStrictDevelopmentRuntime()) {
+            return "PRODUCTION";
+        }
         String sourceEnvironment = learningMapper.readRewardEnvironment(userId);
         if (!"PRODUCTION".equals(sourceEnvironment) && !"SANDBOX".equals(sourceEnvironment)) {
             throw new BizException(409, "LEARNING_REWARD_ENVIRONMENT_INVALID");
         }
         sandboxGate.requireEnabled(sourceEnvironment);
         return sourceEnvironment;
+    }
+
+    private String rewardEnvironmentForCommand(Long userId) {
+        String sourceEnvironment = learningMapper.readRewardEnvironment(userId);
+        if (sandboxGate.isStrictDevelopmentRuntime() && "SANDBOX".equals(sourceEnvironment)) {
+            return "PRODUCTION";
+        }
+        if (!"PRODUCTION".equals(sourceEnvironment) && !"SANDBOX".equals(sourceEnvironment)) {
+            throw new BizException(409, "LEARNING_REWARD_ENVIRONMENT_INVALID");
+        }
+        sandboxGate.requireEnabled(sourceEnvironment);
+        return sourceEnvironment;
+    }
+
+    private void requireDevelopmentAccount(Long userId) {
+        if (!sandboxGate.isStrictDevelopmentRuntime()) return;
+        if (learningMapper.developmentUserScope(userId) != 1) {
+            throw new BizException(403, "LEARNING_DEVELOPMENT_USER_REQUIRED");
+        }
     }
 
     private LearningProgressRow findProgress(String sourceEnvironment, Long userId, LearningCourseView course) {

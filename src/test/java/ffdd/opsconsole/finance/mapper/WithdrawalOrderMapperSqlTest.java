@@ -135,7 +135,7 @@ class WithdrawalOrderMapperSqlTest {
     }
 
     @Test
-    void withdrawalQueriesUseOnlyFreshCurrentK4EffectiveRiskScore() throws Exception {
+    void withdrawalQueriesPreferImmutableSubmissionK4SnapshotWithCurrentFallback() throws Exception {
         String countSql = String.join("\n", WithdrawalOrderMapper.class
                 .getMethod(
                         "countPage",
@@ -179,7 +179,7 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("nx_admin_risk_score_model k4m")
                 .contains("k4m.state = 'active'");
         assertThat(normalizedCountSql)
-                .contains("COALESCE(k4o.override_score, k4.model_score)")
+                .contains("COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score)")
                 .doesNotContain("rd.risk_score")
                 .doesNotContain("rd2.risk_score");
         assertThat(pageSql)
@@ -188,10 +188,12 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("k4.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)")
                 .contains("nx_admin_risk_score_model k4m");
         assertThat(normalizedPageSql)
-                .contains("COALESCE(k4o.override_score, k4.model_score) AS riskScore")
-                .contains("k4m.auto_escalate_score THEN 0")
-                .contains("k4m.band_high_min THEN 1")
-                .contains("k4m.band_low_max THEN 2")
+                .contains("COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) AS riskScore")
+                .contains("COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) THEN 0")
+                .contains("COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) THEN 1")
+                .contains("COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) THEN 2")
+                .contains("COALESCE(NULLIF(w.d2_routing_priority, ''), CASE")
+                .contains("COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) AS k4BandLowMax")
                 .doesNotContain("rd.risk_score")
                 .doesNotContain("rd2.risk_score");
         assertThat(detailSql)
@@ -200,7 +202,9 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("k4.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)")
                 .contains("nx_admin_risk_score_model k4m");
         assertThat(normalizedDetailSql)
-                .contains("COALESCE(k4o.override_score, k4.model_score) AS riskScore")
+                .contains("COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) AS riskScore")
+                .contains("COALESCE(NULLIF(w.d2_routing_priority, ''), CASE")
+                .contains("COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) AS k4BandHighMin")
                 .doesNotContain("rd.risk_score")
                 .doesNotContain("rd2.risk_score");
     }
@@ -231,7 +235,7 @@ class WithdrawalOrderMapperSqlTest {
     }
 
     @Test
-    void defaultQueueOrderingUsesCurrentK4PriorityBeforePagination() throws Exception {
+    void defaultQueueOrderingUsesSubmissionSnapshotPriorityBeforePagination() throws Exception {
         String pageSql = String.join("\n", WithdrawalOrderMapper.class
                 .getMethod(
                         "page",
@@ -250,11 +254,12 @@ class WithdrawalOrderMapperSqlTest {
                 .value());
         String normalized = pageSql.replaceAll("\\s+", " ").trim();
 
-        assertThat(pageSql).contains("END AS routingPriority");
+        assertThat(pageSql).contains("END) AS routingPriority");
         assertThat(normalized)
-                .contains("k4m.auto_escalate_score THEN 0")
-                .contains("k4m.band_high_min THEN 1")
-                .contains("k4m.band_low_max THEN 2")
+                .contains("COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score)")
+                .contains("COALESCE(w.d2_k4_auto_escalate_score, k4m.auto_escalate_score) THEN 0")
+                .contains("COALESCE(w.d2_k4_band_high_min, k4m.band_high_min) THEN 1")
+                .contains("COALESCE(w.d2_k4_band_low_max, k4m.band_low_max) THEN 2")
                 .contains("LIMIT #{pageSize} OFFSET #{offset}");
     }
 

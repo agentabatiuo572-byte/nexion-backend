@@ -31,9 +31,26 @@ class AppStorefrontActivityMapperContractTest {
                 .contains("nx_order")
                 .contains("nx_product")
                 .contains("u.sandbox = #{sandbox}")
-                .contains("ORDER BY COALESCE(o.paid_at, o.created_at) DESC, oi.id DESC")
+                .contains("UPPER(o.order_type) = 'SINGLE'")
+                .contains("NOT EXISTS")
+                .contains("ORDER BY activity.occurred_at DESC, activity.activity_id DESC")
                 .contains("LIMIT #{limit}")
                 .doesNotContain("${");
+    }
+
+    @Test
+    void productionSalesQueriesIncludeHistoricalSingleItemOrdersWithoutDoubleCountingItems() throws Exception {
+        for (String name : new String[] {"salesTotal", "salesSince"}) {
+            Method method = java.util.Arrays.stream(AppStorefrontActivityMapper.class.getDeclaredMethods())
+                    .filter(candidate -> candidate.getName().equals(name))
+                    .findFirst().orElseThrow();
+            String sql = String.join("\n", method.getAnnotation(Select.class).value());
+            assertThat(sql)
+                    .contains("UNION ALL")
+                    .contains("UPPER(o.order_type) = 'SINGLE'")
+                    .contains("NOT EXISTS")
+                    .contains("historical_item.order_no = o.order_no");
+        }
     }
 
     @Test

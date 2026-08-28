@@ -53,13 +53,44 @@ class AppVietQrIntentServiceTest {
                 "buySpreadPct", new BigDecimal("1.5"),
                 "lockWindowMinutes", 30,
                 "version", 7L));
+        when(mapper.countActiveBankAccounts()).thenReturn(1L);
         when(cipher.decrypt("ciphertext", "account-hash"))
                 .thenReturn("9704361234567890");
     }
 
     @Test
-    void explicitSandboxFailsClosedBeforeReadingProductionPaymentTables() {
+    void exactDevelopmentUsesCanonicalPaymentTablesAndProductionProvenance() {
         environment.setActiveProfiles("dev");
+        when(mapper.findMaxAvailableBankCapacityVnd())
+                .thenReturn(new BigDecimal("200000000"));
+
+        assertThat(service.paymentConfig().getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_vietqr_config")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        assertThat(service.fxQuote("VND", "USDT").getData())
+                .containsEntry("serverCanonical", true)
+                .containsEntry("source", "nx_finance_fx_quote_config")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+    }
+
+    @Test
+    void isolatedTestRequiresADeclaredRunBeforeCheckingRunScopedConfig() {
+        environment.setActiveProfiles("test");
+
+        assertThatThrownBy(service::paymentConfig)
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_SANDBOX_RUN_ID_REQUIRED")
+                .extracting("code")
+                .isEqualTo(503);
+        verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void isolatedTestNeverFallsThroughToCanonicalPaymentTables() {
+        environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "payment-run-1");
 
         assertThatThrownBy(service::paymentConfig)
@@ -70,18 +101,6 @@ class AppVietQrIntentServiceTest {
         assertThatThrownBy(() -> service.fxQuote("VND", "USDT"))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_SANDBOX_CONFIG_UNAVAILABLE")
-                .extracting("code")
-                .isEqualTo(503);
-        verifyNoInteractions(mapper);
-    }
-
-    @Test
-    void explicitSandboxRequiresADeclaredRunBeforeCheckingRunScopedConfig() {
-        environment.setActiveProfiles("dev");
-
-        assertThatThrownBy(service::paymentConfig)
-                .isInstanceOf(BizException.class)
-                .hasMessage("VIETQR_SANDBOX_RUN_ID_REQUIRED")
                 .extracting("code")
                 .isEqualTo(503);
         verifyNoInteractions(mapper);
@@ -110,7 +129,8 @@ class AppVietQrIntentServiceTest {
 
     @Test
     void productionPaymentSnapshotsCarryTheirEnvironmentAndSourceProof() {
-        when(mapper.countAvailableBankAccounts()).thenReturn(1L);
+        when(mapper.findMaxAvailableBankCapacityVnd())
+                .thenReturn(new BigDecimal("200000000"));
 
         assertThat(service.paymentConfig().getData())
                 .containsEntry("serverCanonical", true)
@@ -122,6 +142,52 @@ class AppVietQrIntentServiceTest {
                 .containsEntry("source", "nx_finance_fx_quote_config")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
+    }
+
+    @Test
+    void paymentConfigSeparatesPerTransactionMaximumFromTodaysRemainingCapacity() {
+        when(mapper.findMaxAvailableBankCapacityVnd())
+                .thenReturn(new BigDecimal("68050000"));
+
+        Map<String, Object> vietQr = (Map<String, Object>)
+                service.paymentConfig().getData().get("vietQr");
+
+        assertThat(vietQr)
+                .containsEntry("enabled", true)
+                .containsEntry("minDepositUsdt", new BigDecimal("10.00"))
+                .containsEntry("maxDepositUsdt", new BigDecimal("5000.00"))
+                .containsEntry("todayRemainingDepositUsdt", new BigDecimal("2578.62"))
+                .containsEntry("todayRemainingVnd", new BigDecimal("68050000"));
+    }
+
+    @Test
+    void paymentConfigKeepsOperationalRailDistinctFromExhaustedDailyCapacity() {
+        when(mapper.findMaxAvailableBankCapacityVnd())
+                .thenReturn(new BigDecimal("16580"));
+
+        Map<String, Object> vietQr = (Map<String, Object>)
+                service.paymentConfig().getData().get("vietQr");
+
+        assertThat(vietQr)
+                .containsEntry("enabled", true)
+                .containsEntry("maxDepositUsdt", new BigDecimal("5000.00"))
+                .containsEntry("todayRemainingDepositUsdt", new BigDecimal("0.62"))
+                .containsEntry("todayRemainingVnd", new BigDecimal("16580"));
+    }
+
+    @Test
+    void paymentConfigDisablesRailOnlyWhenNoActiveBankAccountExists() {
+        when(mapper.countActiveBankAccounts()).thenReturn(0L);
+        when(mapper.findMaxAvailableBankCapacityVnd()).thenReturn(null);
+
+        Map<String, Object> vietQr = (Map<String, Object>)
+                service.paymentConfig().getData().get("vietQr");
+
+        assertThat(vietQr)
+                .containsEntry("enabled", false)
+                .containsEntry("maxDepositUsdt", new BigDecimal("5000.00"))
+                .containsEntry("todayRemainingDepositUsdt", new BigDecimal("0.00"))
+                .containsEntry("todayRemainingVnd", BigDecimal.ZERO);
     }
 
     @Test
@@ -312,6 +378,25 @@ class AppVietQrIntentServiceTest {
 
         assertThat(service.create(41L, "create-cap", new BigDecimal("25")).getData())
                 .containsEntry("intentNo", "VQR-CAP");
+    }
+
+    @Test
+    void createReportsSettledDailyCapacityRejectionBeforeWritingAnIntent() {
+        when(mapper.findIntentByCreateKey(41L, "create-daily-cap")).thenReturn(null);
+        when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
+        when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of(
+                accountRow(94L, new BigDecimal("200000000"), new BigDecimal("131950000"))));
+        when(mapper.sumActiveReservedVnd(94L)).thenReturn(BigDecimal.ZERO);
+
+        assertThatThrownBy(() -> service.create(
+                41L, "create-daily-cap", new BigDecimal("5000")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_DAILY_CAPACITY_EXCEEDED")
+                .extracting("code")
+                .isEqualTo(422);
+        verify(mapper, never()).insertIntent(
+                anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
+                anyLong(), anyString(), any());
     }
 
     private Map<String, Object> accountRow(
