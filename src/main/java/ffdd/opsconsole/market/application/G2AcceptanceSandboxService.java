@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 @Service
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxService {
     private final G2AcceptanceSandboxProfileGuard guard;

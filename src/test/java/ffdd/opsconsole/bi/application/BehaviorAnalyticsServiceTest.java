@@ -101,7 +101,7 @@ class BehaviorAnalyticsServiceTest {
                 new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
                         "/pages/store/store", "/pages/store/store", true));
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), environment, "unit-test-pseudonym-secret", "unit-run");
         when(mapper.isSandboxUser(9000001L)).thenReturn(true);
@@ -320,7 +320,7 @@ class BehaviorAnalyticsServiceTest {
     @Test
     void sandboxRunSessionAuthoritySerializesStaleConcurrentReadsWithoutCrossRunProductionLocking() {
         MockEnvironment acceptance = new MockEnvironment();
-        acceptance.setActiveProfiles("dev");
+        acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
@@ -389,7 +389,7 @@ class BehaviorAnalyticsServiceTest {
     @Test
     void sandboxUniqueInsertConflictRereadsOnlyItsRunWinnerAndAcknowledgesTheSameFullFingerprint() {
         MockEnvironment acceptance = new MockEnvironment();
-        acceptance.setActiveProfiles("dev");
+        acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);
@@ -419,7 +419,7 @@ class BehaviorAnalyticsServiceTest {
     @Test
     void sandboxUniqueInsertConflictWithChangedFullFingerprintFailsClosedWith409AndNeverRetriesInsert() {
         MockEnvironment acceptance = new MockEnvironment();
-        acceptance.setActiveProfiles("dev");
+        acceptance.setActiveProfiles("test");
         BehaviorAnalyticsService sandboxService = new BehaviorAnalyticsService(mapper, sandboxMapper, outbox,
                 mock(AuditLogService.class), acceptance, "unit-test-pseudonym-secret", "run-A");
         when(mapper.isSandboxUser(42L)).thenReturn(true);

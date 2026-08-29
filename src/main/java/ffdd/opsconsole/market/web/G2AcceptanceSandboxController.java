@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Acceptance-only controller; production has no route to this executor. */
 @RestController
-@Profile({"dev", "test"})
+@Profile("test")
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/market/exchange/acceptance")
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxController {

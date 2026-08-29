@@ -74,13 +74,6 @@ public class AppOrderCommandService {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return ApiResult.fail(422, "ORDER_CANCEL_INPUT_INVALID");
         if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
         String normalized = orderNo.trim();
-        if (sandboxGuard.isStrictDevelopmentRuntime()) {
-            Integer userEnvironment = mapper.activeUserEnvironment(userId);
-            if (userEnvironment == null) return ApiResult.fail(404, "USER_NOT_FOUND");
-            if (userEnvironment != 1) return ApiResult.fail(403, "CANONICAL_DEVELOPMENT_USER_REQUIRED");
-            return execute("ORDER_CANCEL", userId, normalized, idempotencyKey,
-                    () -> cancelProduction(userId, normalized));
-        }
         if (sandboxGuard.isLocalSandboxEnabled()) return cancelSandbox(userId, normalized, idempotencyKey);
         if (!sandboxGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
@@ -91,7 +84,7 @@ public class AppOrderCommandService {
         return execute("ORDER_CANCEL", userId, normalized, idempotencyKey, () -> cancelProduction(userId, normalized));
     }
 
-    /** User-confirmed checkout payment. Development is locally simulated; production remains provider fail-closed. */
+    /** User-confirmed checkout payment. Local development debits the canonical development wallet. */
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> pay(Long userId, String orderNo, String idempotencyKey) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) {
@@ -100,14 +93,11 @@ public class AppOrderCommandService {
         if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
         String normalized = orderNo.trim();
         if (sandboxGuard.isStrictDevelopmentRuntime()) {
-            Integer userEnvironment = mapper.activeUserEnvironment(userId);
-            if (userEnvironment == null) return ApiResult.fail(404, "USER_NOT_FOUND");
-            if (userEnvironment != 1) return ApiResult.fail(403, "CANONICAL_DEVELOPMENT_USER_REQUIRED");
-            String paymentScope = "APP:ORDER_PAYMENT:DEVELOPMENT:USER:" + userId;
-            String requestHash = sha256("DEVELOPMENT|" + userId + "|" + normalized);
-            return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                    paymentScope, idempotencyKey, requestHash, ApiResult.class,
-                    (Supplier) () -> payDevelopment(userId, normalized));
+            if (!Integer.valueOf(0).equals(mapper.activeUserEnvironment(userId))) {
+                return ApiResult.fail(403, "COMMERCE_PRODUCTION_USER_REQUIRED");
+            }
+            return execute("ORDER_PAYMENT", userId, normalized, idempotencyKey,
+                    () -> payDevelopment(userId, normalized));
         }
         if (!sandboxGuard.isLocalSandboxEnabled()) {
             // No production order/wallet read is allowed on the provider HOLD path.
@@ -182,13 +172,13 @@ public class AppOrderCommandService {
                 orderNo, "placed", "activated", "DEV-PAY-" + paymentNo) != 1) {
             throw new BizException(409, "ORDER_HISTORY_CONFLICT");
         }
-        audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_DEVELOPMENT_SIMULATED_PAYMENT")
+        audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_DEVELOPMENT_WALLET_PAYMENT")
                 .resourceType("ORDER").resourceId(orderNo).bizNo(orderNo).userId(userId).actorId(userId)
                 .actorType("USER").method("POST").path("/api/orders/" + orderNo + "/pay")
                 .result("SUCCESS").riskLevel("LOW")
                 .detail(Map.of("paymentNo", paymentNo, "quantity", order.quantity(),
                         "amountUsdt", order.amountUsdt(), "walletBalanceAfterUsdt", balanceAfter,
-                        "environment", "DEVELOPMENT", "simulated", true)).build());
+                        "environment", "DEVELOPMENT", "canonical", true)).build());
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, false);
     }
 
@@ -208,9 +198,9 @@ public class AppOrderCommandService {
         detail.put("instanceNo", device.instanceNo());
         detail.put("beforeStatus", "PROVISIONING");
         detail.put("afterStatus", "ACTIVE");
-        detail.put("mode", "DEVELOPMENT_SIMULATED");
+        detail.put("mode", "DEVELOPMENT_LOCAL");
         detail.put("operator", "system:development-checkout");
-        detail.put("reason", "Development simulated checkout activated device");
+        detail.put("reason", "Development wallet checkout activated device");
         detail.put("ts", Instant.now().toString());
         outbox.publishUserEvent("DEVICE", String.valueOf(device.deviceId()), "admin.device_activated",
                 userId, phase, accountAgeMonths, String.valueOf(attribution.get("cohort")), detail);
@@ -235,9 +225,9 @@ public class AppOrderCommandService {
         data.put("amountUsdt", order.amountUsdt());
         data.put("walletBalanceAfterUsdt", walletBalanceAfterUsdt);
         data.put("idempotent", idempotent);
-        data.put("source", "mock");
-        data.put("sourceEnvironment", "SANDBOX");
-        data.put("runId", "local-dev");
+        data.put("source", "server");
+        data.put("sourceEnvironment", "PRODUCTION");
+        data.put("runId", "");
         data.put("serverCanonical", true);
         return ApiResult.ok(data);
     }

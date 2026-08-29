@@ -27,7 +27,7 @@ public class JanusExecutorClaimVerifier {
     private static final Pattern NONCE = Pattern.compile("^[A-Za-z0-9._:-]{32,128}$");
     private static final Pattern SIGNATURE = Pattern.compile("^[a-fA-F0-9]{64}$");
     private static final Pattern PATH = Pattern.compile("^/api/app/janus/[A-Za-z0-9/_?=&.:%-]+$");
-    private static final Set<String> SANDBOX_PROFILES = Set.of("dev", "test");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("test");
 
     private final JanusExecutorClaimNonceMapper mapper;
     private final Environment environment;

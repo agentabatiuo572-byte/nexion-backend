@@ -4,12 +4,12 @@ import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 /** Refuses an acceptance start if its isolated H8 proof ledger was not migrated. */
 @Component
-@Conditional(H8AcceptanceSandboxProfileCondition.class)
+@Profile("test")
 @RequiredArgsConstructor
 public class H8AcceptanceSandboxSchemaInitializer implements ApplicationRunner {
     private final ReferralRewardMapper mapper;

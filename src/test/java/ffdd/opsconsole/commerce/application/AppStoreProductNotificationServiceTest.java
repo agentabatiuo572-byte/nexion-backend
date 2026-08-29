@@ -28,7 +28,7 @@ class AppStoreProductNotificationServiceTest {
 
     @BeforeEach
     void useProductionAccountAudienceByDefault() {
-        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
     }
 
     @Test
@@ -59,12 +59,12 @@ class AppStoreProductNotificationServiceTest {
     }
 
     @Test
-    void developmentUsesTheAuthenticatedSandboxAccountWithProductionShapedProvenance() {
+    void developmentUsesTheAuthenticatedCanonicalAccountWithProductionProvenance() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         var product = new AppStoreProductNotificationMapper.ProductRow(
                 10L, "stellarbox-pro-v2", "StellarBox Pro v2", "ACTIVE", "P3",
                 LocalDateTime.of(2026, 8, 16, 1, 2, 3));
-        when(mapper.activeSandboxUser(7L)).thenReturn(7L);
+        when(mapper.activeUser(7L)).thenReturn(7L);
         when(mapper.product("stellarbox-pro-v2")).thenReturn(product);
         when(releasePolicy.evaluate("stellarbox-pro-v2", "P3"))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "P3"));
@@ -81,7 +81,7 @@ class AppStoreProductNotificationServiceTest {
         var view = (AppStoreProductNotificationService.NotificationView) result.getData();
         assertThat(view.sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(view.runId()).isEmpty();
-        verify(mapper).activeSandboxUser(7L);
+        verify(mapper).activeUser(7L);
         verify(mapper).upsert(eq(7L), eq(product), eq("E1_PHASE_NOT_REACHED"), eq("P3"),
                 eq("2026-08-16T01:02:03"));
     }

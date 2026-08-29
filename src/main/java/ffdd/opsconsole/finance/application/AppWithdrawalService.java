@@ -515,16 +515,13 @@ public class AppWithdrawalService {
      * every wallet/order/ledger/audit/outbox interaction.
      */
     private void requireProductionWithdrawalSubject(Long userId) {
-        boolean development = FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles());
+        boolean development = false;
         boolean production = isProductionOrDefaultProfile(environment.getActiveProfiles());
         if (!development && !production) {
             throw new BizException(503, "WITHDRAWAL_PRODUCTION_PROFILE_REQUIRED");
         }
         if (userId == null || userId <= 0) return;
         Integer sandbox = mapper.isSandboxUser(userId);
-        if (development && !Integer.valueOf(1).equals(sandbox)) {
-            throw new BizException(403, "WITHDRAWAL_DEVELOPMENT_USER_REQUIRED");
-        }
         if (production && Integer.valueOf(1).equals(sandbox)) {
             throw new BizException(403, "WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
         }

@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
  * production-adjacent and is never permitted to select sandbox tables.
  */
 @Component
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class SupportAcceptanceSandboxProfileGuard {
     private final Environment environment;

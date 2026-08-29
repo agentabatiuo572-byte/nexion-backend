@@ -35,7 +35,7 @@ class AppBinaryProjectionServiceTest {
         coverage = mock(TreasuryCoverageFacade.class);
         MockEnvironment development = new MockEnvironment();
         development.setActiveProfiles("dev");
-        when(mapper.userSandbox(41L)).thenReturn(1);
+        when(mapper.userSandbox(41L)).thenReturn(0);
         service = new AppBinaryProjectionService(
                 mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage, development);
         seed("team.ui.F.binary.threshold", "1000");
@@ -106,7 +106,7 @@ class AppBinaryProjectionServiceTest {
 
     @Test
     void developmentAllowsAnyActiveDevelopmentAccount() {
-        when(mapper.userSandbox(42L)).thenReturn(1);
+        when(mapper.userSandbox(42L)).thenReturn(0);
 
         Map<String, Object> result = service.snapshot(42L);
 

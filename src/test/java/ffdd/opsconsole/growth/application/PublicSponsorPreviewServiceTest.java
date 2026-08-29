@@ -22,7 +22,7 @@ class PublicSponsorPreviewServiceTest {
 
     @Test
     void validCodeReturnsOnlyMaskedSponsorAndServerGiftFact() {
-        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         when(mapper.findActiveByCanonicalCode("NXAB12CD34EF")).thenReturn(List.of(
                 new PublicSponsorPreviewMapper.SponsorRow("NXAB12CD34EF", "Alice Example", "V3", 0)));
         when(rewards.publicConfig()).thenReturn(new ReferralRewardPublicConfigView(
@@ -42,7 +42,7 @@ class PublicSponsorPreviewServiceTest {
 
     @Test
     void invalidMissingAndCrossEnvironmentCodesFailClosed() {
-        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
 
         assertThat(service.preview("bad!").getMessage()).isEqualTo("REFERRAL_PREVIEW_INVALID");
         when(mapper.findActiveByCanonicalCode("NXNOTFOUND1")).thenReturn(List.of());
@@ -54,7 +54,7 @@ class PublicSponsorPreviewServiceTest {
 
     @Test
     void genericRewardRuntimeFailureFailsClosedAsUnavailable() {
-        when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
         when(mapper.findActiveByCanonicalCode("AB12CD34")).thenReturn(List.of(
                 new PublicSponsorPreviewMapper.SponsorRow("AB12CD34", "Alice", "V1", 0)));
         doThrow(new IllegalArgumentException("malformed config")).when(rewards).publicConfig();

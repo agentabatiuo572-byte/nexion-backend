@@ -227,26 +227,27 @@ class EarningsReleaseServiceTest {
 
     @Test
     void developmentCanonicalRewardCreditsPhysicalDevelopmentWallet() {
-        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
         when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
-        when(mapper.creditNex(7L, new BigDecimal("10"), "PRODUCTION", 1)).thenReturn(1);
+        when(mapper.creditNex(7L, new BigDecimal("10"), "PRODUCTION", 0)).thenReturn(1);
 
         service.creditReward(7L, "LEARNING_REWARD", "LEARN:7:h3-live:v1", "NEX",
                 new BigDecimal("10"), "PRODUCTION", "LEARN:7:h3-live:v1:NEX");
 
-        verify(mapper).creditNex(7L, new BigDecimal("10"), "PRODUCTION", 1);
+        verify(mapper).creditNex(7L, new BigDecimal("10"), "PRODUCTION", 0);
     }
 
     @Test
     void environmentAndActiveProfileMustMatchExactly() {
-        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
         assertThatThrownBy(() -> service.creditReward(7L, "MOCK_LEARNING_REWARD", "dev-sandbox", "NEX",
                 BigDecimal.ONE, "SANDBOX", "dev-sandbox-key"))
                 .isInstanceOf(BizException.class).hasMessage("EARNINGS_RELEASE_ENVIRONMENT_INVALID");
 
         when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(false);
+        when(sandboxProfile.isStrictProductionRuntime()).thenReturn(false);
         when(sandboxProfile.isStrictTestRuntime()).thenReturn(true);
         assertThatThrownBy(() -> service.creditReward(7L, "LEARNING_REWARD", "test-production", "NEX",
                 BigDecimal.ONE, "PRODUCTION", "test-production-key"))

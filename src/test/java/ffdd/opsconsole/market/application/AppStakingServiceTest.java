@@ -51,6 +51,7 @@ class AppStakingServiceTest {
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
+        environment.setActiveProfiles("dev");
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
         when(mapper.listCanonicalProducts()).thenReturn(List.of(product()));
         when(mapper.lockProductByTier("usdt30d")).thenReturn(product());
@@ -94,7 +95,7 @@ class AppStakingServiceTest {
 
     @Test
     void localSandboxUsesRunScopedPersistentStateWithoutCanonicalWrites() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-STAKING-TEST-001");
 
         ApiResult<java.util.Map<String, Object>> result = service.open(

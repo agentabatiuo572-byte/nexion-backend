@@ -49,6 +49,23 @@ class OAuthSandboxChallengeServiceTest {
     }
 
     @Test
+    void developmentProfileIssuesOnlyTheLoopbackPasskeyChallenge() {
+        Environment environment = mock(Environment.class);
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");
+        OAuthSandboxChallengeService service = new OAuthSandboxChallengeService(environment);
+
+        var passkey = service.issue(new UserOAuthSandboxChallengeRequest("PASSKEY"), LOOPBACK, LOCAL_ORIGIN);
+        var google = service.issue(new UserOAuthSandboxChallengeRequest("GOOGLE"), LOOPBACK, LOCAL_ORIGIN);
+
+        assertThat(passkey.getCode()).isZero();
+        assertThat(service.consume("PASSKEY", passkey.getData().challengeNo()))
+                .contains("development-passkey-fixed-account");
+        assertThat(google.getCode()).isEqualTo(503);
+        assertThat(google.getMessage()).isEqualTo("OAUTH_SANDBOX_CHALLENGE_FORBIDDEN");
+    }
+
+    @Test
     void passkeyChallengeRejectsANonLocalDevelopmentCaller() {
         OAuthSandboxChallengeService service = new OAuthSandboxChallengeService(sandboxEnvironment());
 
@@ -154,7 +171,7 @@ class OAuthSandboxChallengeServiceTest {
 
     private static Environment sandboxEnvironment() {
         Environment environment = mock(Environment.class);
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");
         return environment;
     }

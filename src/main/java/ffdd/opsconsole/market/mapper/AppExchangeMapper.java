@@ -198,9 +198,9 @@ public interface AppExchangeMapper {
     int insertFeeAllocation(FeeAllocationWrite row);
 
     @Select("""
-            SELECT exchange_no AS exchangeNo,from_asset AS fromAsset,to_asset AS toAsset,
-                   from_amount AS fromAmount,to_amount AS toAmount,rate,UPPER(status) AS status,
-                   created_at AS createdAt
+            SELECT o.exchange_no AS exchangeNo,o.from_asset AS fromAsset,o.to_asset AS toAsset,
+                   o.from_amount AS fromAmount,o.to_amount AS toAmount,o.rate,UPPER(o.status) AS status,
+                   o.created_at AS createdAt
               FROM nx_exchange_order o
               JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0

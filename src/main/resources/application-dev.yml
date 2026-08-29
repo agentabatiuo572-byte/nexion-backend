@@ -8,15 +8,13 @@ spring:
 server:
   forward-headers-strategy: none
 
-# Local development is the only runtime allowed to enable simulated providers.
-# Secrets still come from process environment variables and never from this file.
+# Development uses the canonical local business-data rail. PRODUCTION below is
+# data provenance inside the local dev database; it does not select the online
+# production database. Provider integrations stay fail-closed without secrets.
 nexion:
   developer:
     webhooks:
       allow-loopback: true
-  wheel:
-    sandbox:
-      run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
   auth:
     user-otp:
       local-fixed-code-enabled: true
@@ -34,50 +32,25 @@ nexion:
     development-payout-address:
       enabled: true
     funds-sandbox:
-      mode: LOCAL_SANDBOX
+      mode: DISABLED
     payment-method-provider:
-      mode: LOCAL_SANDBOX
-  exchange:
-    sandbox:
-      initial-usdt: 1000
-      initial-nex: 0
-      current-price: 0.125
-      cost-basis: 0.085
-      sparkline: 0.113,0.117,0.121,0.125,0.129,0.126,0.125
-      user-daily-cap-usdt: 50
-      platform-daily-cap-usdt: 20000
-      fee-pct: 0
-      fee-min-usdt: 0.50
-      min-usdt: 1
-      min-nex: 10
-  genesis:
-    sandbox:
-      initial-usdt: 20000
-      price-usdt: 7999
+      mode: DISABLED
   compute-task:
     executor:
-      mode: SANDBOX
+      mode: PRODUCTION
   janus:
     executor:
-      mode: SANDBOX
-      sandbox-targets: ${NEXION_JANUS_SANDBOX_TARGETS:approved}
+      mode: PRODUCTION
   geo-block:
     allow-loopback-without-country: true
   analytics:
-    source-environment: SANDBOX
-    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+    source-environment: PRODUCTION
   support:
-    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
     acceptance-sandbox:
-      mode: ENABLED
-  learning:
-    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
-  commerce:
-    acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}
+      mode: DISABLED
   market:
     g2-acceptance-sandbox:
-      mode: ENABLED
+      mode: DISABLED
   acceptance:
     f2:
-      coverage-override-enabled: ${NEXION_ACCEPTANCE_F2_COVERAGE_OVERRIDE:true}
-      coverage-override-run-id: ${NEXION_ACCEPTANCE_F2_COVERAGE_OVERRIDE_RUN_ID:${NEXION_ACCEPTANCE_RUN_ID:}}
+      coverage-override-enabled: false

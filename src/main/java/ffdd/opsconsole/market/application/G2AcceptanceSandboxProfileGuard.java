@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component;
  * profile must be treated as production-adjacent and is therefore closed, not "best effort".
  */
 @Component
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxProfileGuard {
     private final Environment environment;

@@ -54,6 +54,7 @@ class AppRepurchaseServiceTest {
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void executeIdempotentAction() {
+        environment.setActiveProfiles("dev");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(disclosureGate.checkUserGate(eq(7L), eq("staking"), anyString())).thenReturn(ApiResult.ok(null));
@@ -94,7 +95,7 @@ class AppRepurchaseServiceTest {
 
     @Test
     void localSandboxUsesRunScopedPersistentStateWithoutCanonicalWrites() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-REPURCHASE-TEST-001");
 
         ApiResult<Map<String, Object>> result = service.open(7L, "sandbox-open",

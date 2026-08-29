@@ -38,7 +38,7 @@ class AppHomeOverviewServiceTest {
 
     @Test
     void sandboxReturnsCurrentRunProjectionWithoutReadingProductionFacts() {
-        when(verifier.sourceEnvironment()).thenReturn("SANDBOX");
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         environment.setActiveProfiles("test");
         environment.setProperty("NEXION_ACCEPTANCE_RUN_ID", "home-run-20260819");
         environment.setProperty("NEXION_BUILD_CANDIDATE_ID", "a".repeat(64));
@@ -374,7 +374,7 @@ class AppHomeOverviewServiceTest {
     void developmentAccountReadsCanonicalPcBackedProjectionWithoutRunId() {
         when(verifier.sourceEnvironment()).thenReturn("SANDBOX");
         environment.setActiveProfiles("dev");
-        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(true));
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
 
         var result = service.overview(42L);
 

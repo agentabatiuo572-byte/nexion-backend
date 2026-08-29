@@ -205,7 +205,7 @@ class AppTeamInsightsServiceTest {
     @Test
     void developmentAllowsAnyActiveDevelopmentAccountAndReadsCanonicalCommissionFacts() {
         var mapper = mock(AppTeamInsightsMapper.class);
-        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V5"));
+        when(mapper.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V5"));
         when(mapper.commissionEvents(7L, 100)).thenReturn(List.of());
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");

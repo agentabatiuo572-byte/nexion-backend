@@ -51,6 +51,7 @@ public class AppTrialLifecycleService {
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String TRIAL_CONVERSION_SOURCE = "nx_trial_claim + nx_order + nx_order_item";
     private static final BigDecimal MAX_EXPECTED_AMOUNT = new BigDecimal("1000000.00");
+    private static final Duration MAX_AUTO_SETTLEMENT_DELAY = Duration.ofHours(24);
     private static final List<String> ACTIVE_STATES = List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED");
     private static final List<String> RESTARTABLE_STATES = List.of("CANCELLED", "FAILED");
     private static final List<String> PERSISTED_STATES = List.of(
@@ -342,7 +343,10 @@ public class AppTrialLifecycleService {
         Map<String, Object> detail = linked("orderNo", orderNo, "productNo", product.productNo(),
                 "amountUsdt", amount, "discountUsdt", discount, "paymentStatus", "PAID",
                 "orderStatus", "PAID", "paymentRail", "NEXION_USDT_WALLET",
-                "deviceId", deviceId, "sourceEnvironment", "PRODUCTION");
+                "deviceId", deviceId, "shadowUsdt", settlement.shadowUsdt(),
+                "shadowNex", settlement.shadowNex(), "offsetUsdt", settlement.offsetUsdt(),
+                "remainderUsdt", settlement.remainderUsdt(), "discountApplied", promoDiscount,
+                "earlyPurchase", false, "sourceEnvironment", "PRODUCTION");
         putCanonicalProvenance(detail, TRIAL_CONVERSION_SOURCE);
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
@@ -379,6 +383,13 @@ public class AppTrialLifecycleService {
         if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
         if (!flag(policy, "autoChargeAtEnd", true)) {
             return cancelOnce(userId, "auto_end");
+        }
+        // A delayed worker must never turn an old authorization into a surprise
+        // purchase weeks later. Resolve the stale lifecycle without touching
+        // wallet, stock or orders; the user can explicitly start again after
+        // the normal cooldown.
+        if (now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))) {
+            return cancelOnce(userId, "auto_settlement_window_expired");
         }
         return redeemOnce(userId, false, "auto");
     }
@@ -459,8 +470,9 @@ public class AppTrialLifecycleService {
         Map<String, Object> detail = linked(
                 "shadow_usdt", value.shadowUsdt(), "shadow_nex", value.shadowNex(),
                 "offset_usdt", value.offsetUsdt(), "remainder_usdt", value.remainderUsdt(),
-                "discount_applied", value.discountUsdt(), "amount_usdt", value.chargeUsdt(),
-                "early_purchase", early, "order_no", orderNo, "payment_status", "PAID",
+                "discount_applied", value.discountUsdt(), "discount_usdt", orderDiscount,
+                "amount_usdt", value.chargeUsdt(), "early_purchase", early,
+                "order_no", orderNo, "product_no", product.productNo(), "payment_status", "PAID",
                 "order_status", "PAID", "payment_rail", "NEXION_USDT_WALLET", "device_id", deviceId);
         publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
         publishChargeAttempt(userId, row, trigger, "SUCCESS", value.chargeUsdt(), "REDEEMED");
@@ -711,15 +723,8 @@ public class AppTrialLifecycleService {
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
         boolean development = profiles.length == 1 && "dev".equalsIgnoreCase(profiles[0].trim());
         boolean production = profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0].trim());
-        if (production) return lock ? mapper.lockActiveUser(userId) : mapper.activeUser(userId);
-        if (!development) return null;
-        String countryCode = environment.getProperty("nexion.auth.development-passkey-account.country-code", "");
-        String phone = environment.getProperty("nexion.auth.development-passkey-account.phone", "");
-        countryCode = countryCode == null ? "" : countryCode.trim();
-        phone = phone == null ? "" : phone.trim();
-        if (countryCode.isBlank() || phone.isBlank()) return null;
-        return lock ? mapper.lockDevelopmentUser(userId, countryCode, phone)
-                : mapper.activeDevelopmentUser(userId, countryCode, phone);
+        if (production || development) return lock ? mapper.lockActiveUser(userId) : mapper.activeUser(userId);
+        return null;
     }
 
     private boolean invalidUser(Long resolvedUserId) {

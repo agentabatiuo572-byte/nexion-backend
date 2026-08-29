@@ -71,9 +71,6 @@ public class AppTaskAssignmentService {
     @Transactional(readOnly = true)
     public ApiResult<AppTaskAssignmentsResponse> assignments(Long userId) {
         requireUser(userId);
-        if (hasOnlyProfile("dev")) {
-            return developmentAssignments(userId);
-        }
         if (FundsSandboxProfileGuard.isStrictIsolatedProfile(
                 environment == null ? new String[0] : environment.getActiveProfiles())) {
             return acceptanceSandboxAssignments(userId);
@@ -126,13 +123,8 @@ public class AppTaskAssignmentService {
             throw new BizException(422, "TASK_RECEIPT_NO_INVALID");
         }
         ReceiptRow row;
-        if (hasOnlyProfile("dev")) {
-            requireDevelopmentAccount(userId);
-            row = mapper.developmentReceipt(userId, normalizedReceiptNo);
-        } else {
-            requireProductionRuntime(userId);
-            row = mapper.receipt(userId, normalizedReceiptNo);
-        }
+        requireProductionRuntime(userId);
+        row = mapper.receipt(userId, normalizedReceiptNo);
         if (row == null) throw new BizException(404, "TASK_RECEIPT_NOT_FOUND");
         return ApiResult.ok(receiptView(row));
     }
@@ -147,13 +139,8 @@ public class AppTaskAssignmentService {
             throw new BizException(422, "TASK_RECEIPT_PAGE_INVALID");
         }
         List<ReceiptRow> rows;
-        if (hasOnlyProfile("dev")) {
-            requireDevelopmentAccount(userId);
-            rows = safe(mapper.developmentReceipts(userId, normalizedOffset, normalizedLimit + 1));
-        } else {
-            requireProductionRuntime(userId);
-            rows = safe(mapper.receipts(userId, normalizedOffset, normalizedLimit + 1));
-        }
+        requireProductionRuntime(userId);
+        rows = safe(mapper.receipts(userId, normalizedOffset, normalizedLimit + 1));
         boolean hasMore = rows.size() > normalizedLimit;
         List<AppComputeReceiptSummaryView> items = rows.stream().limit(normalizedLimit)
                 .map(this::receiptView)

@@ -43,6 +43,14 @@ class G2G3ClosureContractTest {
     }
 
     @Test
+    void exchangeOrderProjectionQualifiesColumnsSharedWithTheUserTable() throws Exception {
+        String mapper = source("src/main/java/ffdd/opsconsole/market/mapper/AppExchangeMapper.java");
+        assertThat(mapper).contains(
+                "o.rate,UPPER(o.status) AS status",
+                "o.created_at AS createdAt");
+    }
+
+    @Test
     void migrationRegistersExecutionLockAndCanonicalEvents() throws Exception {
         String migration = source("scripts/migrations/20260722_g2_g3_closure.sql");
         assertThat(migration).contains("nx_g3_schedule_execution", "UNIQUE KEY uk_g3_schedule_run_date",

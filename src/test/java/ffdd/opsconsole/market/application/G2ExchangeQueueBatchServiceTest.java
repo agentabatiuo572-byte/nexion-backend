@@ -99,7 +99,7 @@ class G2ExchangeQueueBatchServiceTest {
 
     @Test
     void failsClosedBeforeSelectingProductionQueueInAnIsolatedProfile() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.process(10))
                 .isInstanceOfSatisfying(BizException.class,

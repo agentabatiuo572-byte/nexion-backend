@@ -44,6 +44,7 @@ class AppUserPasswordResetServiceTest {
 
     @BeforeEach
     void defaults() {
+        environment.setActiveProfiles("dev");
         when(delivery.available()).thenReturn(true);
         when(delivery.verificationCode()).thenReturn("123456");
         UserOtpSendGuardRecord guard = new UserOtpSendGuardRecord();

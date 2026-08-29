@@ -185,38 +185,33 @@ class AppPaymentMethodServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void developmentListReadsAccountScopedSandboxCardsForAnyActiveSandboxUser() {
-        PaymentMethodProviderProperties development = sandboxProperties();
+    void developmentListReadsCanonicalProviderCardsForAnActiveDevelopmentUser() {
+        PaymentMethodProviderProperties development = new PaymentMethodProviderProperties();
         AppPaymentMethodService developmentService = new AppPaymentMethodService(
                 mapper, idempotency, development, guard(development, "dev"), null);
-        CardRow sandbox = new CardRow(22L, USER_ID, "tok_0123456789abcdef01234567", "visa", "2222", "ALICE",
-                true, LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "local-dev", 0L);
-        when(mapper.listScoped(USER_ID, "SANDBOX", "local-dev")).thenReturn(List.of(sandbox));
+        CardRow provider = new CardRow(22L, USER_ID, "provider-token-00000022", "visa", "2222", "ALICE",
+                true, LocalDateTime.of(2026, 8, 9, 0, 0), "PRODUCTION", "", 0L);
+        when(mapper.userSandbox(USER_ID)).thenReturn(0);
+        when(mapper.listScoped(USER_ID, "PRODUCTION", "")).thenReturn(List.of(provider));
 
         ApiResult<Map<String, Object>> result = developmentService.list(USER_ID);
 
-        assertThat(result.getData()).containsEntry("source", "mock")
-                .containsEntry("sourceEnvironment", "SANDBOX")
-                .containsEntry("runId", "local-dev")
-                .containsEntry("sandbox", true);
+        assertThat(result.getData()).containsEntry("source", "provider")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
+                .containsEntry("sandbox", false);
         List<Map<String, Object>> cards = (List<Map<String, Object>>) result.getData().get("cards");
         assertThat(cards).singleElement().satisfies(card ->
-                assertThat(card).containsEntry("tokenId", "22").containsEntry("sandbox", true));
-        verify(mapper).listScoped(USER_ID, "SANDBOX", "local-dev");
+                assertThat(card).containsEntry("tokenId", "22").containsEntry("sandbox", false));
+        verify(mapper).listScoped(USER_ID, "PRODUCTION", "");
     }
 
     @Test
-    void developmentListRejectsProductionUserBeforeReadingSandboxCards() {
+    void developmentRejectsLocalSandboxProviderModeAtStartup() {
         PaymentMethodProviderProperties development = sandboxProperties();
-        AppPaymentMethodService developmentService = new AppPaymentMethodService(
-                mapper, idempotency, development, guard(development, "dev"), null);
-        when(mapper.userSandbox(USER_ID)).thenReturn(0);
-
-        assertThatThrownBy(() -> developmentService.list(USER_ID))
-                .isInstanceOf(BizException.class)
-                .hasMessageContaining("PAYMENT_METHOD_SANDBOX_USER_REQUIRED");
-
-        verify(mapper, never()).listScoped(USER_ID, "SANDBOX", "local-dev");
+        assertThatThrownBy(() -> guard(development, "dev"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("PAYMENT_METHOD_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
     }
 
     @Test

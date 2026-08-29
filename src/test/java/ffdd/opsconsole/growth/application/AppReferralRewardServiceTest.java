@@ -222,18 +222,18 @@ class AppReferralRewardServiceTest {
     void developmentAllowsAnyActiveDevelopmentAccountAndCanonicalBusinessTables() {
         environment.setActiveProfiles("dev");
         when(mapper.appReferralAccount(11L)).thenReturn(
-                new ReferralRewardMapper.AppReferralAccount("NEX-DEV", 1, new BigDecimal("120")));
+                new ReferralRewardMapper.AppReferralAccount("NEX-DEV", 0, new BigDecimal("120")));
         when(mapper.appInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
                 org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
-                org.mockito.ArgumentMatchers.eq(1))).thenReturn(2L);
+                org.mockito.ArgumentMatchers.eq(0))).thenReturn(2L);
         when(mapper.appPendingCount(org.mockito.ArgumentMatchers.eq(11L),
                 org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
-                org.mockito.ArgumentMatchers.eq(1))).thenReturn(1L);
-        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION", 1)).thenReturn(1L);
-        when(mapper.appSettlementCount(11L, "PRODUCTION", 1)).thenReturn(1L);
-        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 1))
+                org.mockito.ArgumentMatchers.eq(0))).thenReturn(1L);
+        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION", 0)).thenReturn(1L);
+        when(mapper.appSettlementCount(11L, "PRODUCTION", 0)).thenReturn(1L);
+        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 0))
                 .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(1L, new BigDecimal("20")));
-        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 1, 10)).thenReturn(List.of());
+        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 10)).thenReturn(List.of());
 
         AppReferralRewardView view = service.snapshot(11L, 10).getData();
 

@@ -70,7 +70,7 @@ class ABPendingClosureContractTest {
         assertThat(delivery).contains(
                 "@Scheduled", "MAX_RETRIES", "requireAllowedPublicHttps", "Redirect.NEVER",
                 "deliveryId", "Idempotency-Key", "b5-alert-delivery-",
-                "ProxySelector", "WEBHOOK_EGRESS_PROXY_KEY", "sandboxProfileAllowed");
+                "ProxySelector", "WEBHOOK_EGRESS_PROXY_KEY", "B5_EMAIL_PROVIDER_UNAVAILABLE");
         assertThat(finalizer).contains("REQUIRES_NEW", "FAILED_RETRY", "B5_ALERT_DELIVERY", "recordRequired");
         assertThat(service).contains(
                 "B5_SIGNAL_STATUS_CHANGED", "B5_SIGNAL_VERSION_CONFLICT",

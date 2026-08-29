@@ -44,7 +44,7 @@ public class AppProductCatalogService {
     }
 
     public ApiResult<Map<String, Object>> catalog(Long userId) {
-        boolean developmentRuntime = fundsSandboxProfileGuard.isStrictDevelopmentRuntime();
+        boolean developmentRuntime = false;
         if (!developmentRuntime && fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
             if (userId == null || !commerceAcceptanceSandboxMapper.isSandboxUser(userId)) {
                 return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");

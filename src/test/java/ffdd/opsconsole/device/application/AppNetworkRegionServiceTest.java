@@ -45,7 +45,7 @@ class AppNetworkRegionServiceTest {
 
     @Test
     void rejectsAcceptanceBeforeReadingUserOrProjectionBecauseNoRunScopedDeviceProjectionExists() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.list(42L))
                 .hasMessage("NETWORK_REGION_RUNTIME_UNSUPPORTED");

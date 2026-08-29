@@ -16,16 +16,16 @@ class ProductionSupportPathGuardTest {
     private final ProductionSupportPathGuard guard = new ProductionSupportPathGuard(environment, mapper);
 
     @Test
-    void developmentProfileAllowsCanonicalSupportForAnActiveDevelopmentAccount() {
+    void developmentProfileAllowsCanonicalSupportForAnOrdinaryDevelopmentAccount() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
-        when(mapper.sandboxUser(7L)).thenReturn(1);
+        when(mapper.sandboxUser(7L)).thenReturn(0);
         assertThatCode(() -> guard.requireAllowed(7L)).doesNotThrowAnyException();
     }
 
     @Test
-    void developmentProfileRejectsAProductionAccount() {
+    void developmentProfileRejectsARetiredSandboxAccount() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
-        when(mapper.sandboxUser(7L)).thenReturn(0);
+        when(mapper.sandboxUser(7L)).thenReturn(1);
         assertThatThrownBy(() -> guard.requireAllowed(7L)).hasMessageContaining("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
     }
 

@@ -38,6 +38,7 @@ class LegalTermsServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         MockEnvironment environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
+        environment.setActiveProfiles("dev");
         service = new LegalTermsService(repository, clock, environment, audit);
     }
 
@@ -142,7 +143,7 @@ class LegalTermsServiceTest {
         assertThat(service.current("en", "VN", 43L).getData().toString()).contains("acknowledged=false");
 
         MockEnvironment sandboxEnvironment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
-        sandboxEnvironment.setActiveProfiles("dev");
+        sandboxEnvironment.setActiveProfiles("test");
         LegalTermsService sandbox = new LegalTermsService(repository, clock, sandboxEnvironment, audit);
         assertThat(sandbox.acknowledge(42L,
                 new LegalTermsAckRequest("en", "VN", "v7", true, "idem-sandbox", ""))
@@ -150,7 +151,7 @@ class LegalTermsServiceTest {
     }
 
     @Test
-    void devProfileWithoutAnAcceptanceRunIdStillReturnsAConsistentSandboxContract() {
+    void devProfileWithoutAnAcceptanceRunIdUsesTheCanonicalContract() {
         LegalTermsVersionView current = version("en", "GLOBAL", "v4");
         when(repository.findPublished("en", "GLOBAL")).thenReturn(java.util.Optional.of(current));
         MockEnvironment devEnvironment = new MockEnvironment();
@@ -160,30 +161,31 @@ class LegalTermsServiceTest {
         ApiResult<LegalTermsCurrentView> result = devService.current("en", "GLOBAL", null);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(result.getData().runId()).isEqualTo("dev");
+        assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
+        assertThat(result.getData().runId()).isEmpty();
     }
 
     @Test
-    void devDefaultRunIdSupportsAcknowledgementAndAcknowledgedReadback() {
+    void explicitTestRunSupportsSandboxAcknowledgementAndAcknowledgedReadback() {
         LegalTermsVersionView current = version("en", "GLOBAL", "v4");
         when(repository.findPublished("en", "GLOBAL")).thenReturn(java.util.Optional.of(current));
-        when(repository.findAck(42L, "SANDBOX", "dev", "en", "GLOBAL"))
+        when(repository.findAck(42L, "SANDBOX", "run-1", "en", "GLOBAL"))
                 .thenReturn(java.util.Optional.empty())
                 .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
                         "v4", LocalDateTime.parse("2026-08-17T00:00:00"), "idem-dev")));
-        MockEnvironment devEnvironment = new MockEnvironment();
-        devEnvironment.setActiveProfiles("dev");
-        LegalTermsService devService = new LegalTermsService(repository, clock, devEnvironment, audit);
+        MockEnvironment testEnvironment = new MockEnvironment()
+                .withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
+        testEnvironment.setActiveProfiles("test");
+        LegalTermsService testService = new LegalTermsService(repository, clock, testEnvironment, audit);
 
-        ApiResult<LegalTermsCurrentView> result = devService.acknowledge(42L,
-                new LegalTermsAckRequest("en", "GLOBAL", "v4", true, "idem-dev", "dev"));
+        ApiResult<LegalTermsCurrentView> result = testService.acknowledge(42L,
+                new LegalTermsAckRequest("en", "GLOBAL", "v4", true, "idem-dev", "run-1"));
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(result.getData().runId()).isEqualTo("dev");
+        assertThat(result.getData().runId()).isEqualTo("run-1");
         assertThat(result.getData().acknowledged()).isTrue();
-        verify(repository).saveAck(42L, "SANDBOX", "dev", "en", "GLOBAL", "v4", "idem-dev",
+        verify(repository).saveAck(42L, "SANDBOX", "run-1", "en", "GLOBAL", "v4", "idem-dev",
                 LocalDateTime.parse("2026-08-17T00:00:00"));
     }
 

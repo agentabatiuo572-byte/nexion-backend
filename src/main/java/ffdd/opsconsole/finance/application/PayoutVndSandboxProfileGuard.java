@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class PayoutVndSandboxProfileGuard implements InitializingBean {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("dev", "test");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("test");
 
     private final PayoutVndProviderProperties properties;
     private final Environment environment;

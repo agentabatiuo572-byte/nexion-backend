@@ -80,14 +80,10 @@ public class AppAmbassadorPolicyService {
         if (user == null || user.sandbox() == null) throw new BizException(403, "AMBASSADOR_USER_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles() == null ? new String[0] : environment.getActiveProfiles())
                 .map(value -> value.trim().toLowerCase()).filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean development = profiles.size() == 1 && "dev".equals(profiles.iterator().next());
+        boolean development = false;
         boolean isolated = profiles.size() == 1 && "test".equals(profiles.iterator().next());
-        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
+        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("dev", "prod").contains(profiles.iterator().next()));
         if (!development && !isolated && !production) throw new BizException(503, "AMBASSADOR_PROFILE_INVALID");
-        if (development) {
-            requireDevelopmentUser(userId, user);
-            return new Scope("PRODUCTION", "");
-        }
         if (isolated && user.sandbox() != 1) throw new BizException(403, "AMBASSADOR_SANDBOX_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "AMBASSADOR_PRODUCTION_USER_REQUIRED");
         if (production) return new Scope("PRODUCTION", "");

@@ -94,7 +94,7 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void sandboxUnknownAndMixedRuntimeRejectCanonicalDeviceCommandsBeforeAnyUserLockOrIdempotency() {
         when(environment.getActiveProfiles()).thenReturn(
-                new String[] {"dev"}, new String[] {"qa"}, new String[] {"prod", "dev"});
+                new String[] {"test"}, new String[] {"qa"}, new String[] {"prod", "dev"});
 
         assertThat(service.activateDevice(42L, 9L, 0L, null, "runtime-activate").getCode()).isEqualTo(503);
         assertThat(service.deactivateDevice(42L, 9L, 0L, "runtime-deactivate").getCode()).isEqualTo(503);
@@ -761,9 +761,8 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void developmentOrderHistoryUsesAnyActiveRegisteredDevelopmentAccountAndCanonicalBusinessTable() {
         when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.userOrders(42L)).thenReturn(List.of(userOrder("PAID", "PAID", "ACTIVE")));
 
         var result = service.orders(42L);
@@ -775,7 +774,7 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("serverCanonical", true);
         verify(mapper).userOrders(42L);
         verify(commerceSandboxMapper, never()).listSandboxOrders(anyString(), anyLong());
-        verify(mapper, never()).lockUser(42L);
+        verify(mapper).lockUser(42L);
     }
 
     @Test
@@ -821,16 +820,15 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void developmentOrderCreationUsesCanonicalBusinessTablesForAnyActiveRegisteredDevelopmentAccount() {
         when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.lockProduct(18L, null)).thenReturn(
                 new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
                         "P1", "{\"mode\":\"all\",\"enforce\":true}"));
         when(mapper.purchaseFacts(42L)).thenReturn(new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
-        when(mapper.developmentActiveDeviceCount(42L)).thenReturn(0);
-        when(mapper.developmentReservedDeviceOrderCount(42L)).thenReturn(0);
-        when(mapper.developmentUserEventAttribution(42L)).thenReturn(
+        when(mapper.activeDeviceCount(42L)).thenReturn(0);
+        when(mapper.reservedDeviceOrderCount(42L)).thenReturn(0);
+        when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P1", 0, "2026-W34"));
         when(mapper.decrementProductStock(18L, 1)).thenReturn(1);
         when(mapper.insertOrder(eq(42L), anyString(), eq(18L), eq(1),
@@ -958,9 +956,9 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void developmentPurchaseEligibilityUsesAnyActiveRegisteredDevelopmentAccountAndCanonicalBusinessTables() {
         when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(0);
         when(mapper.findPurchasableProducts(List.of("stellarbox-pro-v2"))).thenReturn(List.of(
                 new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro-v2", new BigDecimal("2639"), 3,
                         "P4", "{\"mode\":\"all\",\"enforce\":true}")));
@@ -980,33 +978,31 @@ class AppCanonicalBoundaryServiceTest {
     @Test
     void developmentPurchaseEligibilityRejectsAnInactiveOrNonDevelopmentUser() {
         when(fundsSandboxProfileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.activeUserEnvironment(99L)).thenReturn(null);
 
-        var result = service.purchaseEligibility(99L, "stellarbox-pro-v2");
-
-        assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("CANONICAL_DEVELOPMENT_USER_REQUIRED");
+        assertThatThrownBy(() -> service.purchaseEligibility(99L, "stellarbox-pro-v2"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("USER_NOT_FOUND");
         verify(mapper, never()).findPurchasableProducts(any());
     }
 
     @Test
-    void developmentFleetUsesTheFixedAccountProductionShapedBusinessFacts() {
+    void developmentFleetUsesCanonicalProductionShapedBusinessFacts() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
-        when(mapper.developmentUserCanonicalProfile(42L)).thenReturn(
+        when(mapper.userCanonicalProfile(42L)).thenReturn(
                 new CanonicalStateMapper.UserCanonicalProfile(
                         new BigDecimal("323.89"), BigDecimal.ZERO,
                         LocalDateTime.of(2026, 8, 20, 0, 0)));
-        when(mapper.developmentOwnedDevices(42L)).thenReturn(List.of(
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(
                 new CanonicalStateMapper.OwnedDevice(
                         44L, "DEV-HOME-PHONE-42", "Development phone", "MOBILE", "phone", "ACTIVE", 1L,
                         LocalDateTime.of(2026, 8, 20, 1, 0), LocalDateTime.of(2026, 8, 20, 1, 0),
                         BigDecimal.ZERO, BigDecimal.ZERO, "Local accelerator", 8,
                         BigDecimal.ZERO, "User device", BigDecimal.ZERO, new BigDecimal("323.89"))));
-        when(mapper.developmentRealizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
+        when(mapper.realizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
                 .thenReturn(List.of(new CanonicalStateMapper.DeviceRealizedToday(
                         44L, new BigDecimal("323.890000"), BigDecimal.ZERO)));
 
@@ -1018,8 +1014,8 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("runId", "")
                 .containsEntry("serverCanonical", true)
                 .containsEntry("realizedTodayUsdt", new BigDecimal("323.890000"));
-        verify(mapper, never()).userCanonicalProfile(anyLong());
-        verify(mapper, never()).ownedDevices(anyLong());
+        verify(mapper).userCanonicalProfile(42L);
+        verify(mapper).ownedDevices(42L);
         verify(mapper, never()).sandboxUserCanonicalProfile(anyLong());
         verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
     }

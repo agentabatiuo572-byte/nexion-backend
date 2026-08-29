@@ -59,13 +59,14 @@ class BehaviorAnalyticsFixtureSafetyGuardTest {
     }
 
     private static Stream<String> allowedProfileSets() {
-        return Stream.of("test", "dev", "dev");
+        return Stream.of("test");
     }
 
     private static Stream<Arguments> forbiddenProfileSets() {
         return Stream.of(
                 Arguments.of("none", new String[0]),
                 Arguments.of("prod", new String[]{"prod"}),
+                Arguments.of("dev", new String[]{"dev"}),
                 Arguments.of("unknown", new String[]{"development"}),
                 Arguments.of("production+acceptance", new String[]{"prod", "dev"}),
                 Arguments.of("production+test", new String[]{"prod", "test"}),

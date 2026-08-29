@@ -410,7 +410,7 @@ public class AppExchangeService {
             throw new BizException(503, "EXCHANGE_SANDBOX_ISOLATED_TABLE_UNAVAILABLE");
         }
         if (normalized.length != 0 && !(normalized.length == 1
-                && Set.of("prod").contains(normalized[0]))) {
+                && Set.of("dev", "prod").contains(normalized[0]))) {
             throw new BizException(503, "EXCHANGE_RUNTIME_PROFILE_UNSUPPORTED");
         }
     }

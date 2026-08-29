@@ -34,7 +34,6 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -66,8 +65,6 @@ public class OpsRiskRadarService {
     private final AuditLogService auditLogService;
     private final AdminOperatorRoleResolver roleResolver;
     private final Clock clock;
-    @Value("${spring.profiles.active:}")
-    private final String activeProfiles;
 
     public ApiResult<Map<String, Object>> radar() {
         return ApiResult.ok(radarView());
@@ -350,9 +347,7 @@ public class OpsRiskRadarService {
         if (!inApp && !email && !webhook) {
             throw new BizException(400, "B5_SUBSCRIPTION_CHANNEL_REQUIRED");
         }
-        if (email && (!B5RiskAlertDeliveryService.sandboxProfileAllowed(activeProfiles)
-                || !"sandbox".equalsIgnoreCase(configFacade
-                .activeValue(B5RiskAlertDeliveryService.EMAIL_MODE_KEY).orElse("disabled").trim()))) {
+        if (email) {
             throw new BizException(503, "B5_EMAIL_PROVIDER_UNAVAILABLE");
         }
         if (webhook && (webhookUrl == null || !webhookUrl.startsWith("https://") || webhookUrl.length() > 500)) {
@@ -581,10 +576,7 @@ public class OpsRiskRadarService {
         return section(
                 "inApp", channels.contains("inApp"),
                 "email", channels.contains("email"),
-                "emailMode", B5RiskAlertDeliveryService.sandboxProfileAllowed(activeProfiles)
-                        && "sandbox".equalsIgnoreCase(configFacade
-                        .activeValue(B5RiskAlertDeliveryService.EMAIL_MODE_KEY).orElse("disabled").trim())
-                        ? "sandbox" : "disabled",
+                "emailMode", "disabled",
                 "webhook", channels.contains("webhook"),
                 "webhookMode", StringUtils.hasText(configFacade
                         .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))

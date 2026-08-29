@@ -47,7 +47,7 @@ class AppUserOAuthServiceTest {
     void setUp() {
         service = new AppUserOAuthService(identityMapper, userMapper, passwordEncoder,
                 authService, outboxService, environment, sandboxChallengeService);
-        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");
         when(passwordEncoder.encode(any())).thenReturn("oauth-hash");
     }
@@ -127,6 +127,43 @@ class AppUserOAuthServiceTest {
         verify(userMapper, never()).insert(any(UserEntity.class));
         verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
         verify(identityMapper, never()).insertIdentity(any());
+    }
+
+    @Test
+    void developmentPasskeyUsesTheCanonicalAccountRailWithoutEnablingOtherMockProviders() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
+        when(environment.getProperty("nexion.auth.development-passkey-account.country-code"))
+                .thenReturn("+86");
+        when(environment.getProperty("nexion.auth.development-passkey-account.phone"))
+                .thenReturn("18708173775");
+        UserEntity fixed = activeSandboxUser(188L, "+86", "18708173775", "Development User");
+        fixed.setSandbox(0);
+        when(userMapper.lockActiveCanonicalDevelopmentUserByPhone("+86", "86", "18708173775"))
+                .thenReturn(fixed);
+        when(userMapper.lockActiveDevelopmentUserByPhone("+86", "86", "18708173775"))
+                .thenReturn(fixed);
+        when(sandboxChallengeService.consume("PASSKEY", "OAUTH-33333333333333333333333333333333"))
+                .thenReturn(java.util.Optional.of("development-passkey-fixed-account"));
+        when(authService.issueRegisteredSession(fixed, "127.0.0.1"))
+                .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
+                        "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
+                                188L, "+86", "18708173775", "Development User"), "refresh")));
+
+        ApiResult<UserOAuthExchangeResponse> passkey = service.exchange(
+                new UserOAuthExchangeRequest("PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
+                        "OAUTH-33333333333333333333333333333333"),
+                "127.0.0.1", LOCAL_ORIGIN);
+        ApiResult<UserOAuthExchangeResponse> google = service.exchange(
+                new UserOAuthExchangeRequest("GOOGLE", "SANDBOX_MOCK", null, "Google User",
+                        "OAUTH-44444444444444444444444444444444"),
+                "127.0.0.1", LOCAL_ORIGIN);
+
+        assertThat(passkey.getCode()).isZero();
+        assertThat(passkey.getData().source()).isEqualTo("development");
+        assertThat(passkey.getData().sandbox()).isFalse();
+        assertThat(google.getCode()).isEqualTo(503);
+        assertThat(google.getMessage()).isEqualTo("OAUTH_PROVIDER_NOT_CONFIGURED");
+        verify(userMapper, never()).insert(any(UserEntity.class));
     }
 
     @Test
@@ -396,6 +433,17 @@ class AppUserOAuthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(422);
         assertThat(result.getMessage()).isEqualTo("OAUTH_REQUEST_INVALID");
+        verify(userMapper, never()).insert(any(UserEntity.class));
+    }
+
+    @Test
+    void missingRequestIsRejectedBeforeProviderNormalization() {
+        ApiResult<UserOAuthExchangeResponse> result = service.exchange(
+                null, "127.0.0.1", LOCAL_ORIGIN);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("OAUTH_REQUEST_INVALID");
+        verify(sandboxChallengeService, never()).consume(any(), any());
         verify(userMapper, never()).insert(any(UserEntity.class));
     }
 

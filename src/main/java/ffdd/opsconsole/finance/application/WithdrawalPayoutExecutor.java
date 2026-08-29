@@ -12,9 +12,11 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 @Component
+@Profile("!dev | prod")
 @RequiredArgsConstructor
 public class WithdrawalPayoutExecutor {
     private final WithdrawalPayoutMapper mapper;

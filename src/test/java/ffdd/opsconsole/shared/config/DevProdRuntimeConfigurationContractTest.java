@@ -19,12 +19,21 @@ class DevProdRuntimeConfigurationContractTest {
     }
 
     @Test
-    void devProfileOwnsAllLocalSimulationSwitches() throws IOException {
+    void devProfileUsesCanonicalDevelopmentDataAndNoSandboxRuntime() throws IOException {
         String dev = Files.readString(RESOURCES.resolve("application-dev.yml"));
 
         assertThat(dev).contains("local-fixed-code-enabled: true");
-        assertThat(dev).contains("mode: LOCAL_SANDBOX");
         assertThat(dev).contains("allow-loopback-without-country: true");
+        assertThat(dev).contains("funds-sandbox:").contains("mode: DISABLED");
+        assertThat(dev).contains("payment-method-provider:").contains("mode: DISABLED");
+        assertThat(dev).contains("source-environment: PRODUCTION");
+        assertThat(dev).doesNotContain(
+                "LOCAL_SANDBOX",
+                "mode: SANDBOX",
+                "source-environment: SANDBOX",
+                "NEXION_ACCEPTANCE_RUN_ID",
+                "acceptance-run-id:",
+                "mode: ENABLED");
     }
 
     @Test

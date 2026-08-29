@@ -45,15 +45,6 @@ public class AppNetworkRankService {
 
     private Scope scope(Long userId) {
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        boolean development = ffdd.opsconsole.finance.application.FundsSandboxProfileGuard
-                .isStrictDevelopmentProfile(profiles);
-        if (development) {
-            AppNetworkRankMapper.UserScope user = mapper.userScope(userId);
-            if (user == null || user.sandbox() == null || !Integer.valueOf(1).equals(user.sandbox())) {
-                throw new BizException(403, "NETWORK_RANK_SANDBOX_USER_REQUIRED");
-            }
-            return new Scope(false, true, "PRODUCTION", "");
-        }
         UserAuthEnvironment runtime = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "NETWORK_RANK_RUNTIME_UNSUPPORTED"));
         String runId = "";

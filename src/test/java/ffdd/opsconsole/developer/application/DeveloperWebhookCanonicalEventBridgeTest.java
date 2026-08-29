@@ -53,7 +53,7 @@ class DeveloperWebhookCanonicalEventBridgeTest {
         var access = mock(AppDeveloperAccessMapper.class);
         when(access.userSandbox(7L)).thenReturn(1);
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         var bridge = new DeveloperWebhookCanonicalEventBridge(delivery, access, environment, objectMapper);
 
         assertThat(bridge.bridge(message("evt-stale", "ORDER", "order.updated",

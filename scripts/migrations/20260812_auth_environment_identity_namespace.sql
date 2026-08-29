@@ -1,13 +1,13 @@
--- Authentication identity namespace: a phone can exist independently in SANDBOX and PRODUCTION.
+-- Canonical authentication identity namespace after Sandbox retirement.
 -- Legacy registration OTP records have no trustworthy audience and remain deliberately unverifiable.
-SET @drop_phone_unique := IF((SELECT COUNT(*) FROM information_schema.statistics
-  WHERE table_schema=DATABASE() AND table_name='nx_user' AND index_name='uk_user_phone')>0,
-  'ALTER TABLE nx_user DROP INDEX uk_user_phone', 'SELECT 1');
-PREPARE stmt FROM @drop_phone_unique; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @add_phone_environment_unique := IF((SELECT COUNT(*) FROM information_schema.statistics
-  WHERE table_schema=DATABASE() AND table_name='nx_user' AND index_name='uk_user_phone_sandbox')=0,
-  'ALTER TABLE nx_user ADD UNIQUE KEY uk_user_phone_sandbox (country_code,phone,sandbox)', 'SELECT 1');
-PREPARE stmt FROM @add_phone_environment_unique; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @drop_phone_environment_unique := IF((SELECT COUNT(*) FROM information_schema.statistics
+  WHERE table_schema=DATABASE() AND table_name='nx_user' AND index_name='uk_user_phone_sandbox')>0,
+  'ALTER TABLE nx_user DROP INDEX uk_user_phone_sandbox', 'SELECT 1');
+PREPARE stmt FROM @drop_phone_environment_unique; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @add_phone_unique := IF((SELECT COUNT(*) FROM information_schema.statistics
+  WHERE table_schema=DATABASE() AND table_name='nx_user' AND index_name='uk_user_phone')=0,
+  'ALTER TABLE nx_user ADD UNIQUE KEY uk_user_phone (country_code,phone)', 'SELECT 1');
+PREPARE stmt FROM @add_phone_unique; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @add_registration_otp_environment := IF((SELECT COUNT(*) FROM information_schema.columns
   WHERE table_schema=DATABASE() AND table_name='nx_user_registration_otp' AND column_name='auth_environment')=0,

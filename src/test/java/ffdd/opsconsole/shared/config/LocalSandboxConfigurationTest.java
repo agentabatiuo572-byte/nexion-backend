@@ -9,39 +9,32 @@ import org.springframework.core.io.ClassPathResource;
 
 class LocalSandboxConfigurationTest {
     @Test
-    void developmentMapsOneAcceptanceRunAcrossInternalSandboxDomainsAndEnablesSupport() throws IOException {
+    void developmentUsesTheCanonicalBusinessRailWithoutAnAcceptanceRun() throws IOException {
         String yaml = resource("application-dev.yml");
 
         assertThat(yaml)
-                .contains("source-environment: SANDBOX")
-                .contains("analytics:", "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}")
-                .contains("support:", "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}")
-                .contains("acceptance-sandbox:", "mode: ENABLED")
-                .contains("learning:", "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}")
-                .contains("commerce:", "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}");
+                .contains("source-environment: PRODUCTION")
+                .contains("funds-sandbox:", "mode: DISABLED")
+                .contains("acceptance-sandbox:", "mode: DISABLED")
+                .doesNotContain("NEXION_ACCEPTANCE_RUN_ID", "source-environment: SANDBOX");
     }
 
     @Test
-    void developmentEnablesInternalFundsSandboxWhileDefaultsStayFailClosed() throws IOException {
+    void developmentDisablesMockFundsAndUsesCanonicalExecutors() throws IOException {
         String yaml = resource("application-dev.yml");
         String defaults = resource("application.yml");
 
-        assertThat(yaml).contains("funds-sandbox:", "mode: LOCAL_SANDBOX")
-                .contains("payment-method-provider:", "mode: LOCAL_SANDBOX")
-                .contains("compute-task:", "executor:", "mode: SANDBOX");
+        assertThat(yaml).contains("funds-sandbox:", "mode: DISABLED")
+                .contains("payment-method-provider:", "mode: DISABLED")
+                .contains("compute-task:", "executor:", "mode: PRODUCTION");
         assertThat(defaults).contains("mode: ${NEXION_FUNDS_SANDBOX_MODE:DISABLED}");
     }
 
     @Test
-    void developmentRunIdMappingsHaveAnEmptyFailClosedDefault() throws IOException {
+    void developmentHasNoDeployableAcceptanceRunMapping() throws IOException {
         String yaml = resource("application-dev.yml");
 
-        String mapping = "acceptance-run-id: ${NEXION_ACCEPTANCE_RUN_ID:}";
-        int occurrences = 0;
-        for (int offset = 0; (offset = yaml.indexOf(mapping, offset)) >= 0; offset += mapping.length()) {
-            occurrences++;
-        }
-        assertThat(occurrences).isEqualTo(4);
+        assertThat(yaml).doesNotContain("acceptance-run-id:", "NEXION_ACCEPTANCE_RUN_ID", "LOCAL_SANDBOX");
     }
 
     private static String resource(String name) throws IOException {

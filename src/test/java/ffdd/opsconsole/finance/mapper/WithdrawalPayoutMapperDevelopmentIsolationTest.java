@@ -22,7 +22,7 @@ class WithdrawalPayoutMapperDevelopmentIsolationTest {
 
         assertThat(normalize(sql))
                 .contains("EXISTS ( SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id")
-                .contains("u.sandbox=1")
+                .contains("u.sandbox=0")
                 .contains("status='REVIEW_PASSED'");
     }
 

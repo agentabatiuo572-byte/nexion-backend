@@ -53,11 +53,14 @@ public class OAuthSandboxChallengeService {
     public synchronized ApiResult<UserOAuthSandboxChallengeResponse> issue(
             UserOAuthSandboxChallengeRequest request, String clientAddress, String requestOrigin) {
         var audience = UserAuthEnvironment.resolve(environment);
-        if (audience.isEmpty() || audience.get() != UserAuthEnvironment.SANDBOX) {
-            return ApiResult.fail(503, "OAUTH_SANDBOX_CHALLENGE_FORBIDDEN");
-        }
         String provider = normalizeProvider(request == null ? null : request.provider());
         if (!PROVIDERS.contains(provider)) return ApiResult.fail(422, "OAUTH_REQUEST_INVALID");
+        boolean sandboxProfile = audience.filter(value -> value == UserAuthEnvironment.SANDBOX).isPresent();
+        boolean developmentPasskey = UserAuthEnvironment.hasSingleActiveProfile(environment, "dev")
+                && "PASSKEY".equals(provider);
+        if (!sandboxProfile && !developmentPasskey) {
+            return ApiResult.fail(503, "OAUTH_SANDBOX_CHALLENGE_FORBIDDEN");
+        }
         if (!UserAuthEnvironment.hasSafeDevelopmentForwardHeaderPolicy(environment)) {
             return ApiResult.fail(503, "OAUTH_DEVELOPMENT_PASSKEY_NETWORK_POLICY_INVALID");
         }

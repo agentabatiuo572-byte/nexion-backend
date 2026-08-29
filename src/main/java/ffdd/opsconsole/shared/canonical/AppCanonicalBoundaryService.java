@@ -312,7 +312,7 @@ public class AppCanonicalBoundaryService {
 
     public ApiResult<Map<String, Object>> deviceEarnings(
             Long userId, boolean seedLegacyDevice, boolean fastForwardAll, BigDecimal bumpedEarningsTotal) {
-        boolean developmentRuntime = isDevelopmentRuntime();
+        boolean developmentRuntime = false;
         boolean sandboxRuntime = isAcceptanceSandboxRuntime();
         if (!developmentRuntime && !sandboxRuntime && !isProductionRuntime()) {
             return ApiResult.fail(503, "CANONICAL_DEVICE_RUNTIME_UNSUPPORTED");
@@ -428,17 +428,13 @@ public class AppCanonicalBoundaryService {
                 "serverCanonical", true));
     }
 
-    private boolean isDevelopmentRuntime() {
-        return hasOnlyProfile("dev");
-    }
-
     private boolean isAcceptanceSandboxRuntime() {
         return hasOnlyProfile("test");
     }
 
     private boolean isProductionRuntime() {
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();
-        return profiles == null || profiles.length == 0 || hasOnlyProfile("prod");
+        return profiles == null || profiles.length == 0 || hasOnlyProfile("dev") || hasOnlyProfile("prod");
     }
 
     private boolean hasOnlyProfile(String expected) {
@@ -462,7 +458,7 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(503, "CANONICAL_DEVICE_SANDBOX_UNAVAILABLE");
         }
         if (profiles != null && profiles.length > 0
-                && !(profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0]))) {
+                && !(profiles.length == 1 && java.util.Set.of("dev", "prod").contains(profiles[0].trim().toLowerCase(java.util.Locale.ROOT)))) {
             return ApiResult.fail(503, "CANONICAL_DEVICE_RUNTIME_UNSUPPORTED");
         }
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
@@ -582,7 +578,7 @@ public class AppCanonicalBoundaryService {
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String idempotencyKey) {
-        boolean developmentRuntime = fundsSandboxProfileGuard.isStrictDevelopmentRuntime();
+        boolean developmentRuntime = false;
         // Acceptance checkout has its own catalogue/order/inventory facts. Do this
         // before touching canonical order, product, voucher, or outbox boundaries.
         if (!developmentRuntime && commerceSandboxProfile()) {
@@ -612,7 +608,7 @@ public class AppCanonicalBoundaryService {
     }
 
     public ApiResult<Map<String, Object>> orders(Long userId) {
-        boolean developmentRuntime = fundsSandboxProfileGuard.isStrictDevelopmentRuntime();
+        boolean developmentRuntime = false;
         if (developmentRuntime) {
             Integer userEnvironment = mapper.activeUserEnvironment(userId);
             if (userEnvironment == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -734,8 +730,7 @@ public class AppCanonicalBoundaryService {
         }
         PurchaseEligibilityDecision decision = batch.getData() == null ? null : batch.getData().get(normalized);
         if (decision == null) return ApiResult.fail(404, "PRODUCT_NOT_AVAILABLE");
-        boolean productionShaped = fundsSandboxProfileGuard.isStrictDevelopmentRuntime()
-                || !fundsSandboxProfileGuard.isLocalSandboxEnabled();
+        boolean productionShaped = !fundsSandboxProfileGuard.isLocalSandboxEnabled();
         String runId = productionShaped ? null : commerceAcceptanceRun.requireRunId();
         return ApiResult.ok(linked("productNo", decision.productNo(), "eligible", decision.eligible(),
                 "decisionCode", decision.decisionCode(),
@@ -764,11 +759,7 @@ public class AppCanonicalBoundaryService {
                 .anyMatch(value -> !value.matches("[A-Za-z0-9._:-]{1,64}"))) {
             return ApiResult.fail(422, "PURCHASE_ELIGIBILITY_REQUEST_INVALID");
         }
-        if (fundsSandboxProfileGuard.isStrictDevelopmentRuntime()) {
-            if (!Integer.valueOf(1).equals(mapper.activeUserEnvironment(userId))) {
-                return ApiResult.fail(403, "CANONICAL_DEVELOPMENT_USER_REQUIRED");
-            }
-        } else if (fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
+        if (fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
             return sandboxPurchaseEligibilityBatch(userId, normalized);
         } else {
             requireProductionPurchaseEligibilityUser(userId);

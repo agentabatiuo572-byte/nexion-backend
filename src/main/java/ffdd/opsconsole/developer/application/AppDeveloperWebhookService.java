@@ -179,7 +179,7 @@ public class AppDeveloperWebhookService {
     private boolean isLocalProfile() {
         return java.util.Arrays.stream(environment.getActiveProfiles())
                 .map(profile -> profile.toLowerCase(Locale.ROOT))
-                .anyMatch(Set.of("dev", "test")::contains);
+                .anyMatch(Set.of("test")::contains);
     }
     private boolean isLoopback(String host) { return Set.of("localhost", "127.0.0.1", "::1", "[::1]").contains(host.toLowerCase(Locale.ROOT)); }
     private boolean isPrivateLiteral(String host) { String h = host.toLowerCase(Locale.ROOT); return isLoopback(h) || Set.of("metadata", "metadata.google.internal", "instance-data").contains(h) || h.equals("0.0.0.0") || h.startsWith("10.") || h.startsWith("192.168.") || h.startsWith("169.254.") || h.matches("172\\.(1[6-9]|2\\d|3[0-1])\\..*"); }

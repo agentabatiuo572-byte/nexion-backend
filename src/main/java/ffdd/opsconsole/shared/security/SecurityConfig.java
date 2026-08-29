@@ -92,6 +92,7 @@ public class SecurityConfig {
                                 "/auth/users/login/2fa",
                                 "/auth/users/login/otp/send",
                                 "/auth/users/login/otp/verify",
+                                "/auth/users/oauth/development/passkey/challenge",
                                 "/auth/users/oauth/sandbox/challenge",
                                 "/auth/users/oauth/exchange",
                                 "/auth/users/refresh",

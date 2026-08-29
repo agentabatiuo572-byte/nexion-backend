@@ -83,7 +83,7 @@ class AppUserRegistrationServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = { "dev", "test" })
+    @ValueSource(strings = { "test" })
     void strictIsolatedProfileAtomicallyMarksTheNewUserAndWalletAsSandbox(String profile) {
         when(environment.getActiveProfiles()).thenReturn(new String[] { profile });
         UserEntity sandboxSponsor = user(41L, "NXAB12CD34EF");
@@ -103,7 +103,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void sandboxRegistrationWithoutSponsorCreatesAnIsolatedRootAccountAndWallet() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "test" });
         prepareRegistrationPrerequisites("REG-H003", "81987654321", "127.0.0.3");
         when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
         doAnswer(invocation -> {
@@ -134,7 +134,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void strictIsolatedSandboxRegistrationDoesNotConsumeTheSharedLoopbackK1SignupQuota() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "test" });
         when(mapper.consumeValidChallengeInEnvironment(
                 "REG-LOCAL", "+84", "0912681799", "SANDBOX", "123456")).thenReturn(1);
         when(mapper.consumedChallengeClientIpInEnvironment(
@@ -181,7 +181,7 @@ class AppUserRegistrationServiceTest {
 
     @Test
     void sandboxRegistrationRejectsAProductionSponsorBeforeUserOrWalletWrites() {
-        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "test" });
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
@@ -214,8 +214,10 @@ class AppUserRegistrationServiceTest {
         verify(outboxService, never()).publish(any(), any(), any(), any());
     }
 
-    @Test
-    void productionProfileKeepsTheNewUserAndWalletOutOfSandbox() {
+    @ParameterizedTest
+    @ValueSource(strings = { "dev", "prod" })
+    void canonicalProfileKeepsTheNewUserAndWalletOutOfSandbox(String profile) {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { profile });
         prepareSuccessfulRegistration(user(41L, "NXAB12CD34EF"));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(

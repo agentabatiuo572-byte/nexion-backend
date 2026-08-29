@@ -28,8 +28,8 @@ class AppOrderCommandServiceTest {
         var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(guard.isLocalSandboxEnabled()).thenReturn(true);
-        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.lockDevelopmentPayOrder("ORD-DEV-1")).thenReturn(
                 new AppOrderCommandMapper.DevelopmentPayOrder(
                         "ORD-DEV-1", 7L, 18L, 1, new BigDecimal("1199.000000"),
@@ -64,9 +64,9 @@ class AppOrderCommandServiceTest {
                 .containsEntry("orderStatus", "COMPLETED")
                 .containsEntry("canonicalStatus", "activated")
                 .containsEntry("serverCanonical", true)
-                .containsEntry("source", "mock")
-                .containsEntry("sourceEnvironment", "SANDBOX")
-                .containsEntry("runId", "local-dev")
+                .containsEntry("source", "server")
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "")
                 .containsEntry("walletBalanceAfterUsdt", new BigDecimal("801.000000"));
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L);
         verify(mapper).insertDevelopmentPurchaseLedger("ORD-DEV-1", 7L,
@@ -76,7 +76,7 @@ class AppOrderCommandServiceTest {
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
                         && map.get("deviceId").equals(91L)
                         && map.get("instanceNo").equals("DEV-ORD-INSTANCE")
-                        && map.get("mode").equals("DEVELOPMENT_SIMULATED")));
+                        && map.get("mode").equals("DEVELOPMENT_LOCAL")));
         verify(audit).recordRequired(any());
         verifyNoInteractions(mock(CommerceAcceptanceSandboxMapper.class));
     }
@@ -87,7 +87,7 @@ class AppOrderCommandServiceTest {
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.lockDevelopmentPayOrder("ORD-DEV-LOW")).thenReturn(
                 new AppOrderCommandMapper.DevelopmentPayOrder(
                         "ORD-DEV-LOW", 7L, 18L, 1, new BigDecimal("199.000000"),
@@ -115,7 +115,7 @@ class AppOrderCommandServiceTest {
         var idempotency = mock(AdminIdempotencyService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.lockDevelopmentPayOrder("ORD-DEV-PAID")).thenReturn(
                 new AppOrderCommandMapper.DevelopmentPayOrder(
                         "ORD-DEV-PAID", 7L, 18L, 1, new BigDecimal("199.000000"),

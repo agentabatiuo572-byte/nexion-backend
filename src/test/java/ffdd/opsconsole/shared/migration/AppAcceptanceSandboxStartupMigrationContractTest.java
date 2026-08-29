@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 class AppAcceptanceSandboxStartupMigrationContractTest {
     @Test
-    void everyAppAcceptanceSandboxMigrationIsInControlledStartupAndBaseline() throws Exception {
+    void historicalFixturesRemainReadableButCannotRunAtCanonicalStartup() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         String schema = Files.readString(Path.of("scripts/schema.sql"));
         String analytics = Files.readString(Path.of("scripts/migrations/20260812_l6_acceptance_sandbox_fact.sql"));
@@ -17,11 +17,11 @@ class AppAcceptanceSandboxStartupMigrationContractTest {
         String support = Files.readString(Path.of("scripts/migrations/20260812_support_acceptance_sandbox.sql"));
         String h8RunScope = Files.readString(Path.of("scripts/migrations/20260812_h8_acceptance_sandbox_run_scope.sql"));
 
-        assertThat(runner).contains("20260812_l6_acceptance_sandbox_fact.sql")
-                .contains("20260812_commerce_acceptance_sandbox.sql")
-                .contains("20260812_learning_acceptance_sandbox.sql")
-                .contains("20260812_support_acceptance_sandbox.sql")
-                .contains("20260812_h8_acceptance_sandbox_run_scope.sql");
+        assertThat(runner).doesNotContain("20260812_l6_acceptance_sandbox_fact.sql")
+                .doesNotContain("20260812_commerce_acceptance_sandbox.sql")
+                .doesNotContain("20260812_learning_acceptance_sandbox.sql")
+                .doesNotContain("20260812_support_acceptance_sandbox.sql")
+                .doesNotContain("20260812_h8_acceptance_sandbox_run_scope.sql");
         assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_behavior_sandbox_fact")
                 .contains("CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog")
                 .contains("CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_order")
@@ -49,7 +49,12 @@ class AppAcceptanceSandboxStartupMigrationContractTest {
         assertThat(analytics).doesNotContain("ADD COLUMN IF NOT EXISTS");
         assertThat(learning).doesNotContain("ADD COLUMN IF NOT EXISTS");
         assertThat(schema).contains("uk_h8_sandbox_referral_run_invited (run_id, invited_user_id)")
-                .contains("uk_h8_sandbox_referral_ledger_fact (run_id, settlement_no, user_id, asset)");
+                .contains("uk_h8_sandbox_referral_ledger_fact (run_id, settlement_no, user_id, asset)")
+                .contains("DROP TABLE IF EXISTS")
+                .contains("nx_behavior_sandbox_fact,")
+                .contains("nx_commerce_sandbox_catalog,")
+                .contains("nx_learning_sandbox_progress,")
+                .contains("nx_support_acceptance_sandbox_run,");
     }
 
     @Test

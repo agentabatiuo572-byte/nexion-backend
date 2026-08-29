@@ -673,12 +673,9 @@ public class AppTradeinService {
     }
 
     /**
-     * Read-only capacity and trade-in decisions follow the Java runtime user
-     * environment. Development may inspect its isolated accounts, but the
-     * canonical wallet, stock and order mutation rail remains production-only.
+     * Development and production both use the canonical wallet, stock and order rail.
      */
     private int expectedUserEnvironment() {
-        if (fundsSandboxProfileGuard != null && fundsSandboxProfileGuard.isStrictDevelopmentRuntime()) return 1;
         if (fundsSandboxProfileGuard != null && fundsSandboxProfileGuard.isStrictProductionRuntime()) return 0;
         throw new BizException(503, "TRADEIN_RUNTIME_UNAVAILABLE");
     }

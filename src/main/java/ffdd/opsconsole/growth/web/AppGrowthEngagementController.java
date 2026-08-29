@@ -58,20 +58,17 @@ public class AppGrowthEngagementController {
     }
 
     @GetMapping("/api/vouchers")
-    public ApiResult<Map<String, Object>> voucherState(
-            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
-            Authentication authentication) {
+    public ApiResult<Map<String, Object>> voucherState(Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.voucherState(userId, runId);
+        return userId == null ? forbidden() : service.voucherState(userId);
     }
 
     @PostMapping("/api/vouchers/{voucherId}/popup-seen")
     public ApiResult<Map<String, Object>> voucherPopupSeen(
             @PathVariable String voucherId,
-            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.markVoucherPopupSeen(userId, voucherId, runId);
+        return userId == null ? forbidden() : service.markVoucherPopupSeen(userId, voucherId);
     }
 
     @PostMapping("/api/quests/{questCode}/claim")
@@ -168,12 +165,11 @@ public class AppGrowthEngagementController {
             @PathVariable String voucherId,
             @RequestBody(required = false) VoucherClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestHeader(name = "X-Nexion-Acceptance-Run-ID", required = false) String runId,
             Authentication authentication) {
         Long userId = userId(authentication);
         String surface = request == null ? null : request.surface();
         return userId == null ? forbidden()
-                : service.claimVoucher(userId, voucherId, surface, idempotencyKey, runId);
+                : service.claimVoucher(userId, voucherId, surface, idempotencyKey);
     }
 
     private Long userId(Authentication authentication) {

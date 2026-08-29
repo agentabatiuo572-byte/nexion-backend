@@ -22,32 +22,24 @@ class B5RiskAlertDeliveryServiceTest {
     private final B5RiskRadarMapper mapper = mock(B5RiskRadarMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final B5RiskAlertDeliveryFinalizer finalizer = mock(B5RiskAlertDeliveryFinalizer.class);
-    private final B5RiskAlertDeliveryService service = service("");
+    private final B5RiskAlertDeliveryService service = service();
 
     @Test
-    void sandboxEmailPersistsMockReceiptAndDoesNotEnterRetryLoop() {
-        B5RiskAlertDeliveryService testProfileService = service("test");
+    void emailCannotFallBackToASandboxReceiptInAnyRuntime() {
         when(config.activeValue("risk.alert-subscription.subscriber")).thenReturn(Optional.of("risk-admin"));
         when(config.activeValue("risk.alert-subscription.channels")).thenReturn(Optional.of("email"));
-        when(config.activeValue("risk.alert-subscription.email-mode")).thenReturn(Optional.of("sandbox"));
-        when(mapper.undeliveredSignalNos("risk-admin", "email", 500)).thenReturn(List.of());
-        when(mapper.dueAlertDeliveries(100)).thenReturn(List.of(new AlertDeliveryRecord(
-                7L, "SIG-7", "risk-admin", "email", "PENDING", 0, LocalDateTime.now())));
-        when(finalizer.claim(7L)).thenReturn(true);
 
-        testProfileService.scanAndDispatch();
-
-        verify(finalizer).complete(org.mockito.ArgumentMatchers.argThat(row -> row.id() == 7L), eq("mock"), org.mockito.ArgumentMatchers.startsWith("sandbox:"));
+        assertThatThrownBy(service::scanAndDispatch)
+                .hasMessage("B5_EMAIL_PROVIDER_UNAVAILABLE");
+        verify(finalizer, never()).complete(any(), any(), any());
     }
 
     @Test
     void productionProfileCannotTurnSandboxConfigIntoDeliveredEmail() {
-        B5RiskAlertDeliveryService productionProfileService = service("prod");
         when(config.activeValue("risk.alert-subscription.subscriber")).thenReturn(Optional.of("risk-admin"));
         when(config.activeValue("risk.alert-subscription.channels")).thenReturn(Optional.of("email"));
-        when(config.activeValue("risk.alert-subscription.email-mode")).thenReturn(Optional.of("sandbox"));
 
-        assertThatThrownBy(productionProfileService::scanAndDispatch)
+        assertThatThrownBy(service::scanAndDispatch)
                 .hasMessage("B5_EMAIL_PROVIDER_UNAVAILABLE");
         verify(finalizer, never()).complete(any(), any(), any());
     }
@@ -97,7 +89,7 @@ class B5RiskAlertDeliveryServiceTest {
                 .hasMessage("B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
     }
 
-    private B5RiskAlertDeliveryService service(String activeProfiles) {
-        return new B5RiskAlertDeliveryService(mapper, config, finalizer, activeProfiles);
+    private B5RiskAlertDeliveryService service() {
+        return new B5RiskAlertDeliveryService(mapper, config, finalizer);
     }
 }

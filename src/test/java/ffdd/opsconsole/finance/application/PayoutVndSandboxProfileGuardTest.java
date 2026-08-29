@@ -21,11 +21,11 @@ class PayoutVndSandboxProfileGuardTest {
     }
 
     @Test
-    void localSandboxIsAllowedInDevelopment() {
+    void localSandboxIsAllowedOnlyInTheInternalTestProfile() {
         PayoutVndProviderProperties properties = new PayoutVndProviderProperties();
         properties.setMode(PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
 
         assertThatCode(() -> new PayoutVndSandboxProfileGuard(
                 properties, environment)

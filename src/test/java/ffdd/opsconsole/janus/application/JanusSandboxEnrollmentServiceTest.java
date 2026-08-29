@@ -12,7 +12,7 @@ class JanusSandboxEnrollmentServiceTest {
     @Test
     void enrollmentRotatesAndBindsCredentialToUserDeviceTargetAndExpiry() {
         AtomicLong now = new AtomicLong(1_000L);
-        JanusSandboxEnrollmentService service = service("dev", "SANDBOX", now);
+        JanusSandboxEnrollmentService service = service("test", "SANDBOX", now);
 
         var first = service.issue(42L, "device-42");
         assertThat(first.subjectId()).isEqualTo("42");
@@ -37,7 +37,7 @@ class JanusSandboxEnrollmentServiceTest {
         AtomicLong now = new AtomicLong(1_000L);
         assertThatThrownBy(() -> service("prod", "SANDBOX", now).issue(42L, "device-42"))
                 .hasMessage("JANUS_SANDBOX_ENROLLMENT_FORBIDDEN");
-        assertThatThrownBy(() -> service("dev", "PRODUCTION", now).issue(42L, "device-42"))
+        assertThatThrownBy(() -> service("test", "PRODUCTION", now).issue(42L, "device-42"))
                 .hasMessage("JANUS_SANDBOX_ENROLLMENT_FORBIDDEN");
     }
 

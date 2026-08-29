@@ -18,15 +18,35 @@ class PublishedHowContentServiceTest {
         }}
         """;
 
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+        return environment;
+    }
+
     @Test
     void publishesOnlyKnownKeysWithLocaleFallbackAndProvenance() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(DOC));
-        var result = new PublishedHowContentService(config, new MockEnvironment(), mock(AuditLogService.class))
+        var result = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class))
                 .publicContent("team-binary-how", "zh-CN");
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("contentKey", "team-binary-how").containsEntry("locale", "en").containsEntry("source", "server");
         assertThat(result.getData().get("blocks")).asList().hasSize(1);
+    }
+
+    @Test
+    void unknownRuntimeProfileCannotReadPublishedProductionHowContent() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(DOC));
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("staging");
+
+        var result = new PublishedHowContentService(config, environment, mock(AuditLogService.class))
+                .publicContent("genesis-how", "en");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("HOW_CONTENT_UNAVAILABLE");
     }
 
     @Test

@@ -83,8 +83,7 @@ public class AppHomeOverviewService {
         // but it must not redirect persisted homepage reads to Sandbox tables.
         String sourceEnvironment = productionProfile ? "PRODUCTION" : proofVerifier.sourceEnvironment();
         boolean sandbox = isolatedProfile;
-        boolean developmentProfile = isStrictProfile(runtimeEnvironment.getActiveProfiles(), Set.of("dev"), false);
-        boolean accountSandbox = sandbox || developmentProfile;
+        boolean accountSandbox = sandbox;
         AppHomeOverviewMapper.UserEnvironmentRow accountEnvironment = mapper.userEnvironment(userId);
         if (accountEnvironment == null || accountEnvironment.sandbox() != accountSandbox) {
             return ApiResult.fail(403, "USER_ENVIRONMENT_MISMATCH");

@@ -34,7 +34,7 @@ class AppTeamNetworkServiceTest {
     @Test
     void developmentAllowsAnyActiveDevelopmentAccountAndReturnsCanonicalDatabaseFacts() {
         AppTeamNetworkMapper mapper = mock(AppTeamNetworkMapper.class);
-        when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(1));
+        when(mapper.userScope(7L)).thenReturn(new AppTeamNetworkMapper.UserScope(0));
         when(mapper.members(7L)).thenReturn(List.of());
         MockEnvironment environment = developmentEnvironment();
 

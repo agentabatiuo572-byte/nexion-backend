@@ -11,12 +11,11 @@ import org.springframework.core.env.Environment;
  * Guards projections that have no run-scoped device/task source yet.
  *
  * <p>Sandbox, unknown and mixed profiles must fail before the caller reads an
- * identity or touches an idempotency/locking path.  An empty profile is the
- * deploy-time production default; an explicitly active profile is production
- * only when it is exactly {@code production} or {@code default}.</p>
+ * identity or touches an idempotency/locking path. The deployed development
+ * and production profiles share the canonical business rail.</p>
  */
 final class ProductionDeviceRuntimeGate {
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
 
     private ProductionDeviceRuntimeGate() { }
 

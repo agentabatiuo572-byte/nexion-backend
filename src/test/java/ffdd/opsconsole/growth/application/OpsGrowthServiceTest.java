@@ -1474,19 +1474,6 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void phaseSandboxPreviewIsReadOnlyAndIncludesImpactMatrix() {
-        ApiResult<Map<String, Object>> result = service.phaseSandboxPreview();
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData())
-                .containsEntry("domain", "H1")
-                .containsEntry("mode", "READ_ONLY_SANDBOX")
-                .containsEntry("writes", false);
-        assertThat(result.getData().get("impactMatrix")).asList().hasSize(5);
-        assertThat(result.getData().get("retiredDials").toString()).contains("premiumUnlock", "nexV2Unlock");
-    }
-
-    @Test
     void updateCurrentMonthDialWritesCanonicalMonthlyCellActiveDialMirrorAndAudit() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "7");

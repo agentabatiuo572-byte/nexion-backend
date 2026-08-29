@@ -65,7 +65,7 @@ class AppComputeShareEnrollmentServiceTest {
 
     @Test
     void sandboxOrDisabledProfileCannotTouchProductionEnrollmentTables() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         assertThat(service.create(42L, "NVIDIA RTX 4070", "pair-key-2").getMessage())
                 .isEqualTo("COMPUTE_SHARE_PRODUCTION_ENROLLMENT_FORBIDDEN");
 

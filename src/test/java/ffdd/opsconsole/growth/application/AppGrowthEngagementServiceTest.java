@@ -316,11 +316,11 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
-    void developmentAudienceCanClaimTheCanonicalVoucherWithTheFixedDevelopmentSession() {
+    void developmentAudienceCanClaimTheCanonicalVoucherWithACanonicalAccount() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
         ReflectionTestUtils.setField(service, "environment", environment);
-        when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(mapper.lockUserClaimableVoucher(eq("V-DEV"), eq("home"), anyLong()))
                 .thenReturn(new VoucherClaimDefinition("V-DEV", "all"));
         when(voucher.grant(any())).thenReturn(new VoucherGrantResult("G-DEV", false));
@@ -328,8 +328,8 @@ class AppGrowthEngagementServiceTest {
         var result = service.claimVoucher(42L, "V-DEV", "home", "voucher-dev-key");
 
         assertThat(result.getCode()).isZero();
-        verify(mapper).lockActiveSandboxUser(42L);
-        verify(mapper, never()).lockActiveUser(42L);
+        verify(mapper).lockActiveUser(42L);
+        verify(mapper, never()).lockActiveSandboxUser(42L);
     }
 
     @Test

@@ -57,44 +57,6 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'ALTER TABLE nx_admin_device_sku ADD COLUMN uptime VARCHAR(64) NULL AFTER datacenter', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Specifications are copied into each acceptance RunID catalog. Reads must not
--- join live E1 metadata, otherwise an operator edit mutates an existing run.
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='power_text')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN power_text VARCHAR(64) NULL AFTER unlock_phase', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='datacenter')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN datacenter VARCHAR(128) NULL AFTER power_text', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='uptime')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN uptime VARCHAR(64) NULL AFTER datacenter', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='warranty')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN warranty VARCHAR(128) NULL AFTER uptime', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='phone_daily_earn')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN phone_daily_earn DECIMAL(18,6) NULL AFTER warranty', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='phone_daily_earn_nex')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN phone_daily_earn_nex DECIMAL(18,6) NULL AFTER phone_daily_earn', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='features_json')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN features_json TEXT NULL AFTER phone_daily_earn_nex', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='ai_image_gen_per_min')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN ai_image_gen_per_min DECIMAL(18,6) NULL AFTER features_json', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='ai_llm_tokens_per_sec')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN ai_llm_tokens_per_sec DECIMAL(18,6) NULL AFTER ai_image_gen_per_min', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='ai_video_min_per_hour')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN ai_video_min_per_hour DECIMAL(18,6) NULL AFTER ai_llm_tokens_per_sec', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='ai_fine_tune_mins')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN ai_fine_tune_mins DECIMAL(18,6) NULL AFTER ai_video_min_per_hour', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_commerce_sandbox_catalog' AND COLUMN_NAME='ai_unlocks')=0,
-  'ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN ai_unlocks VARCHAR(255) NULL AFTER ai_fine_tune_mins', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_device_sku' AND COLUMN_NAME='warranty')=0,
   'ALTER TABLE nx_admin_device_sku ADD COLUMN warranty VARCHAR(128) NULL AFTER uptime', 'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

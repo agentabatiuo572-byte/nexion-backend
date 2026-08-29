@@ -17,7 +17,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id FROM nx_user
              WHERE REPLACE(TRIM(COALESCE(country_code, '')), '+', '') = REPLACE(#{countryCode}, '+', '')
-               AND phone=#{phone} AND sandbox=1
+               AND phone=#{phone} AND sandbox=0
                AND UPPER(COALESCE(status, 'ACTIVE'))='ACTIVE' AND is_deleted=0
              LIMIT 1
             """)
@@ -111,7 +111,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
               FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id AND o.is_deleted=0
              WHERE d.is_deleted=0 AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
@@ -134,7 +134,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
               FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              WHERE d.is_deleted=0 AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
                AND UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
@@ -175,7 +175,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
               FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              WHERE d.id=#{userDeviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
@@ -204,7 +204,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    t.model_name AS modelName, t.client_name AS clientName, t.reward_usdt AS rewardUsdt,
                    t.required_seconds AS requiredSeconds, t.started_at AS startedAt
               FROM nx_compute_task t
-              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              WHERE t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
                AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING')
@@ -216,7 +216,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*) FROM nx_compute_task t
-              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=1 AND u.is_deleted=0
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0 AND u.is_deleted=0
              WHERE t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
                AND t.task_no LIKE 'DEV-TASK-%' AND t.status='COMPLETED'
                AND t.source_environment='PRODUCTION' AND t.is_deleted=0
@@ -235,7 +235,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    'PRODUCTION',#{clientName},'RUNNING',#{startedAt},#{startedAt},#{leaseExpiresAt},
                    1,3,#{startedAt},#{startedAt},0
               FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              WHERE d.id=#{userDeviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
@@ -251,7 +251,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_compute_task t
-              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
                SET t.status='COMPLETED',t.proof_consumed_at=#{completedAt},t.completed_at=#{completedAt},
                    t.updated_at=#{completedAt}
@@ -272,7 +272,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             SELECT #{userId},#{userDeviceId},#{taskNo},#{receiptNo},#{taskClass},#{clientName},
                    #{rewardUsdt},0,'SETTLED','PRODUCTION',#{proofHash},#{completedAt},#{completedAt},#{completedAt},0
               FROM nx_compute_task t
-              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              WHERE t.task_no=#{taskNo} AND t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
                AND t.task_no LIKE 'DEV-TASK-%' AND t.status='COMPLETED'
@@ -301,7 +301,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
               cumulative_deposit_usdt,version,created_at,updated_at,is_deleted)
             SELECT #{userId},0,0,0,0,0,0,#{now},#{now},0
               FROM nx_user u
-             WHERE u.id=#{userId} AND u.sandbox=1
+             WHERE u.id=#{userId} AND u.sandbox=0
                AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
             """)
     int ensureDevelopmentWallet(@Param("userId") Long userId, @Param("now") LocalDateTime now);
@@ -315,7 +315,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    #{modelName},#{rewardUsdt},60,0,'PRODUCTION','NexGrid Development Workload','COMPLETED',
                    #{startedAt},#{startedAt},#{completedAt},#{completedAt},#{completedAt},#{completedAt},0
               FROM nx_user_device d
-              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
              WHERE d.id=#{userDeviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(COALESCE(d.ownership_status, ''))='OWNED' AND d.activated_at IS NOT NULL
                AND UPPER(COALESCE(d.source_channel, ''))='ORDER'
@@ -339,7 +339,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_compute_task t
-              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0
                            AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
                SET t.started_at=CASE WHEN t.started_at IS NULL OR t.started_at<#{dayStart}
                                      THEN #{dayStart} ELSE t.started_at END,
@@ -362,7 +362,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_compute_receipt r
-              JOIN nx_user u ON u.id=r.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=r.user_id AND u.sandbox=0
                            AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
                SET r.completed_at=#{dayStart},
                    r.created_at=CASE WHEN r.created_at<#{dayStart} THEN #{dayStart} ELSE r.created_at END,
@@ -381,7 +381,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_user_wallet w
-              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=0
                SET w.usdt_available=w.usdt_available+#{amount},
                    w.lifetime_earned=w.lifetime_earned+#{amount},
                    w.version=w.version+1,w.updated_at=#{now}
@@ -399,7 +399,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
     @Select("""
             SELECT w.usdt_available
               FROM nx_user_wallet w
-              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=0
              WHERE w.user_id=#{userId} AND w.is_deleted=0
                AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
              LIMIT 1
@@ -413,7 +413,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             SELECT #{userId},#{taskNo},'COMPUTE_TASK_REWARD','USDT','IN',#{amount},#{balanceAfter},
                    'SUCCESS','development server-authoritative compute task reward',#{now},#{now},0
               FROM nx_user u
-             WHERE u.id=#{userId} AND u.sandbox=1
+             WHERE u.id=#{userId} AND u.sandbox=0
                AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
             """)
     int insertDevelopmentWalletLedger(@Param("userId") Long userId,
@@ -429,7 +429,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             SELECT #{eventNo},#{userId},#{userDeviceId},#{receiptNo},'USDT',#{amount},'POSTED',
                    #{now},#{now},#{now},0
               FROM nx_user u
-             WHERE u.id=#{userId} AND u.sandbox=1
+             WHERE u.id=#{userId} AND u.sandbox=0
                AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
             """)
     int insertDevelopmentEarningEvent(@Param("eventNo") String eventNo,

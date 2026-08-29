@@ -21,16 +21,16 @@ class PaymentMethodSandboxProfileGuardTest {
     }
 
     @Test
-    void developmentProfileCanUseExplicitlyIsolatedSandbox() {
+    void developmentProfileRejectsTheRetiredLocalSandbox() {
         PaymentMethodProviderProperties properties = new PaymentMethodProviderProperties();
         properties.setMode(PaymentMethodProviderProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
         var guard = new PaymentMethodSandboxProfileGuard(properties, environment);
 
-        guard.afterPropertiesSet();
-        assertThat(guard.sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(guard.requireRunId()).isEqualTo("local-dev");
+        assertThatThrownBy(guard::afterPropertiesSet)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("PAYMENT_METHOD_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
     }
 
     @Test

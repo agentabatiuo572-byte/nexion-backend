@@ -43,15 +43,6 @@ class OpsGrowthControllerTest {
     }
 
     @Test
-    void phaseSandboxPreviewDelegatesToService() {
-        when(growthService.phaseSandboxPreview()).thenReturn(ApiResult.ok(Map.of("writes", false)));
-
-        assertThat(controller.phaseSandboxPreview().getData()).containsEntry("writes", false);
-
-        verify(growthService).phaseSandboxPreview();
-    }
-
-    @Test
     void trialOverviewDelegatesToService() {
         when(growthService.trials()).thenReturn(ApiResult.ok(Map.of("domain", "H2")));
 

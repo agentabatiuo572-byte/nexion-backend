@@ -181,33 +181,6 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
-    public ApiResult<Map<String, Object>> phaseSandboxPreview() {
-        ensurePhaseSeedData();
-        int totalMonths = rhythmTotalMonths();
-        int currentMonth = currentMonth();
-        List<Map<String, Object>> monthlyDials = monthlyDials(currentMonth);
-        int nextMonth = Math.min(monthlyDials.size(), currentMonth + 1);
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("domain", "H1");
-        response.put("mode", "READ_ONLY_SANDBOX");
-        response.put("currentMonth", currentMonth);
-        response.put("currentPhase", currentPhaseForRhythm(currentMonth, totalMonths));
-        response.put("rhythm", rhythmOverview());
-        response.put("coverage", coverage());
-        response.put("withdrawNexGate", withdrawGate().getData());
-        response.put("nextMonthDials", nextMonth > 0 ? monthlyDials.get(nextMonth - 1) : Map.of());
-        response.put("impactMatrix", List.of(
-                impact("D5", "提现派发", "withdrawPenaltyFeeRate / withdrawCooldownDays 由当月 H1 矩阵派发"),
-                impact("B1", "兑付覆盖率红线", "放松提现、奖励或活动流出方向时低于红线返回 422"),
-                impact("F3", "佣金与团队结算", "binaryDailyCap 约束双轨每日结算上限"),
-                impact("H3", "任务奖励", "questBonusMultiplier 影响任务奖励倍率"),
-                impact("J1", "Kill Switch", "红线或事故期恢复会付钱业务前必须先看 J1 闸门")));
-        response.put("retiredDials", List.copyOf(RETIRED_KEYS));
-        response.put("writes", false);
-        response.put("sources", List.of("nx_config_item:growth.*", "treasury.coverage.snapshot", "withdraw_nex_gate"));
-        return ApiResult.ok(response);
-    }
-
     public ApiResult<Map<String, Object>> rhythm() {
         ensureRhythmSeedData();
         return ApiResult.ok(rhythmOverview());
@@ -4929,14 +4902,6 @@ public class OpsGrowthService implements AuditReplayable {
                 .riskLevel("HIGH")
                 .detail(detail)
                 .build());
-    }
-
-    private Map<String, Object> impact(String domain, String title, String detail) {
-        Map<String, Object> impact = new LinkedHashMap<>();
-        impact.put("domain", domain);
-        impact.put("title", title);
-        impact.put("detail", detail);
-        return impact;
     }
 
     private Map<String, Object> row(Object... pairs) {

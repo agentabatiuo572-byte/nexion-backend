@@ -34,9 +34,8 @@ class DeviceCatalogMapperProductSpecContractTest {
         String migration = Files.readString(Path.of("scripts/migrations/20260817_p2_product_specifications.sql"));
         assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_admin_device_sku",
                 "uptime VARCHAR(64)", "phone_daily_earn DECIMAL(18,6)",
-                "CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog");
-        assertThat(migration).contains("CREATE TABLE IF NOT EXISTS nx_admin_device_sku",
-                "ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN uptime",
-                "ALTER TABLE nx_commerce_sandbox_catalog ADD COLUMN phone_daily_earn");
+                "DROP TABLE IF EXISTS", "nx_commerce_sandbox_catalog");
+        assertThat(migration).contains("CREATE TABLE IF NOT EXISTS nx_admin_device_sku")
+                .doesNotContain("ALTER TABLE nx_commerce_sandbox_catalog");
     }
 }

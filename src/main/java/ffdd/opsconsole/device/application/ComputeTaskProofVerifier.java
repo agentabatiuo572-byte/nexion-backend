@@ -28,7 +28,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class ComputeTaskProofVerifier {
-    private static final Set<String> SANDBOX_PROFILES = Set.of("DEV", "TEST");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("TEST");
     private static final Pattern EXECUTOR_ID = Pattern.compile("^[A-Za-z0-9._:-]{3,128}$");
 
     @Value("${nexion.compute-task.executor.mode:PRODUCTION}")

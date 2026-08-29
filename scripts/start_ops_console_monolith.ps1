@@ -6,24 +6,13 @@ param(
   [bool]$TemporarySuperadminMfaBypass = $false,
   [Nullable[bool]]$EnableLocalNovaAi = $null,
   [string]$NovaAiModel = "gemma4-e4b-ctx32k:latest",
-  [string]$AcceptanceRunId = $env:NEXION_ACCEPTANCE_RUN_ID,
   [ValidateSet("dev", "prod")]
   [string]$SpringProfile = "dev"
 )
 
 $ErrorActionPreference = "Stop"
 $localNovaAiEnabled = if ($null -eq $EnableLocalNovaAi) { $SpringProfile -eq "dev" } else { [bool]$EnableLocalNovaAi }
-$acceptanceRunIdValue = if (-not [string]::IsNullOrWhiteSpace($AcceptanceRunId)) {
-  $AcceptanceRunId.Trim()
-} else {
-  ""
-}
-if ($SpringProfile -eq "dev" -and -not [string]::IsNullOrWhiteSpace($acceptanceRunIdValue) -and $acceptanceRunIdValue -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{7,95}$') {
-  throw "AcceptanceRunId must contain 8-96 safe characters"
-}
-if ($SpringProfile -eq "prod" -and -not [string]::IsNullOrWhiteSpace($acceptanceRunIdValue)) {
-  throw "AcceptanceRunId is allowed only for the dev profile"
-}
+$previousAcceptanceRunId = [Environment]::GetEnvironmentVariable("NEXION_ACCEPTANCE_RUN_ID", "Process")
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1") `
@@ -62,6 +51,7 @@ if (-not (Test-Path $Maven)) {
 }
 
 try {
+  Remove-Item Env:NEXION_ACCEPTANCE_RUN_ID -ErrorAction SilentlyContinue
   $env:NEXION_DB_URL = $databaseEnvironment.JdbcUrl
   $env:NEXION_DB_USERNAME = $databaseEnvironment.Username
   $env:NEXION_DB_PASSWORD = $databaseEnvironment.Password
@@ -84,7 +74,6 @@ try {
     ('cd /d "{0}"' -f $root.Path),
     ('set "SERVER_PORT={0}"' -f $Port),
     ('set "SPRING_PROFILES_ACTIVE={0}"' -f $SpringProfile),
-    ('set "NEXION_ACCEPTANCE_RUN_ID={0}"' -f $acceptanceRunIdValue),
     'set "NEXION_ARCHITECTURE_DISTRIBUTED_RUNTIME_ENABLED=false"',
     ('set "NEXION_NOVA_AI_MODE={0}"' -f $(if ($localNovaAiEnabled) { "OLLAMA_LOCAL" } else { "DISABLED" })),
     'set "NEXION_NOVA_AI_RAG_BASE_URL=http://[::1]:8010"',
@@ -111,4 +100,5 @@ try {
     [Environment]::SetEnvironmentVariable($name, $previousDatabaseEnvironment[$name], "Process")
   }
   [Environment]::SetEnvironmentVariable("NEXION_FINANCE_DATA_KEY", $previousFinanceDataKey, "Process")
+  [Environment]::SetEnvironmentVariable("NEXION_ACCEPTANCE_RUN_ID", $previousAcceptanceRunId, "Process")
 }

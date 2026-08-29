@@ -1,6 +1,5 @@
 package ffdd.opsconsole.auth.application;
 
-import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.security.SecureRandom;
 import java.util.Map;
 import java.util.Locale;
@@ -59,8 +58,8 @@ public class UserOtpDeliveryService {
 
     private boolean localFixedCodeAllowed() {
         if (!localFixedCodeEnabled || StringUtils.hasText(deliveryUrl)) return false;
-        return UserAuthEnvironment.resolve(environment)
-                .map(audience -> audience == UserAuthEnvironment.SANDBOX)
-                .orElse(false);
+        String[] profiles = environment.getActiveProfiles();
+        return profiles.length == 1
+                && ("dev".equals(profiles[0]) || "test".equals(profiles[0]));
     }
 }

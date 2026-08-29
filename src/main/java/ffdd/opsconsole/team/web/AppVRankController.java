@@ -110,10 +110,7 @@ public class AppVRankController {
             }
             return new Scope(1, "SANDBOX", runId, false);
         }
-        if (profiles.size() == 1 && "dev".equals(profiles.iterator().next())) {
-            return new Scope(1, "PRODUCTION", "", true);
-        }
-        if (profiles.isEmpty() || (profiles.size() == 1 && "prod".equals(profiles.iterator().next()))) {
+        if (profiles.isEmpty() || (profiles.size() == 1 && Set.of("dev", "prod").contains(profiles.iterator().next()))) {
             return new Scope(0, "PRODUCTION", "", false);
         }
         throw new BizException(503, "V_RANK_PROFILE_INVALID");

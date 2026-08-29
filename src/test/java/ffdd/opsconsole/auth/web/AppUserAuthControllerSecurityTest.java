@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -117,12 +118,25 @@ class AppUserAuthControllerSecurityTest {
     }
 
     @Test
-    void anonymousOAuthSandboxChallengeReachesOnlyTheDedicatedService() throws Exception {
-        var request = new UserOAuthSandboxChallengeRequest("TELEGRAM");
-        when(oauthSandboxChallengeService.issue(
-                request, "127.0.0.1", "http://127.0.0.1:5173")).thenReturn(ApiResult.ok(
-                new UserOAuthSandboxChallengeResponse("OAUTH-22222222222222222222222222222222", 300)));
+    void emptyOAuthExchangeBodyReturnsValidationFailure() throws Exception {
+        when(oauthService.exchange(eq(null), eq("127.0.0.1"), eq(null)))
+                .thenReturn(ApiResult.fail(422, "OAUTH_REQUEST_INVALID"));
 
+        mockMvc.perform(post("/auth/users/oauth/exchange")
+                        .with(req -> {
+                            req.setRemoteAddr("127.0.0.1");
+                            return req;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(422))
+                .andExpect(jsonPath("$.message").value("OAUTH_REQUEST_INVALID"));
+
+        verify(oauthService).exchange(eq(null), eq("127.0.0.1"), eq(null));
+    }
+
+    @Test
+    void developmentRuntimeDoesNotRegisterTheRetiredOAuthSandboxChallenge() throws Exception {
         mockMvc.perform(post("/auth/users/oauth/sandbox/challenge")
                         .with(req -> {
                             req.setRemoteAddr("127.0.0.1");
@@ -131,12 +145,9 @@ class AppUserAuthControllerSecurityTest {
                         .header("Origin", "http://127.0.0.1:5173")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"provider\":\"TELEGRAM\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(0))
-                .andExpect(jsonPath("$.data.expiresInSec").value(300));
+                .andExpect(status().isNotFound());
 
-        verify(oauthSandboxChallengeService).issue(
-                request, "127.0.0.1", "http://127.0.0.1:5173");
+        verifyNoInteractions(oauthSandboxChallengeService);
     }
 
     @Test

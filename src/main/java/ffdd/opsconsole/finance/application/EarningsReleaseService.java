@@ -105,12 +105,6 @@ public class EarningsReleaseService {
     }
 
     private int expectedWalletSandbox(String sourceEnvironment) {
-        if (sandboxProfile != null && sandboxProfile.isStrictDevelopmentRuntime()) {
-            if (!"PRODUCTION".equals(sourceEnvironment)) {
-                throw new BizException(422, "EARNINGS_RELEASE_ENVIRONMENT_INVALID");
-            }
-            return 1;
-        }
         if (sandboxProfile != null && sandboxProfile.isStrictProductionRuntime()) {
             if (!"PRODUCTION".equals(sourceEnvironment)) {
                 throw new BizException(422, "EARNINGS_RELEASE_ENVIRONMENT_INVALID");

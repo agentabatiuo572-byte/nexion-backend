@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class PaymentMethodSandboxProfileGuard implements InitializingBean {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("dev", "test");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("test");
     private final PaymentMethodProviderProperties properties;
     private final Environment environment;
 

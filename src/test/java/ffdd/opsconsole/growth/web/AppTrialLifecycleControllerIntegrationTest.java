@@ -33,6 +33,11 @@ class AppTrialLifecycleControllerIntegrationTest {
         when(mapper.policies()).thenReturn(List.of(
                 new AppTrialLifecycleMapper.PolicyRow("seatsLeftToday", "47")));
         when(mapper.trialQuotaRemaining(org.mockito.ArgumentMatchers.any(LocalDate.class))).thenReturn(47);
+        var product = new AppTrialLifecycleMapper.ConversionProduct(
+                1L, "stellarbox-s1", "StellarBox S1", "S1", new BigDecimal("1299"),
+                47, "P1", "DEVICE", "FINITE");
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(product);
+        when(mapper.conversionProduct("stellarbox-s1")).thenReturn(product);
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("prod");
         AppTrialLifecycleController controller = controller(mapper, environment);
@@ -69,15 +74,13 @@ class AppTrialLifecycleControllerIntegrationTest {
     @Test
     void developmentRuntimeUsesTheCanonicalPcManagedTrialPolicy() {
         AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
-        when(mapper.activeDevelopmentUser(42L, "84", "18708173775")).thenReturn(42L);
+        when(mapper.activeUser(42L)).thenReturn(42L);
         when(mapper.lockTrial(42L)).thenReturn(null);
         when(mapper.policies()).thenReturn(List.of(
                 new AppTrialLifecycleMapper.PolicyRow("seatsLeftToday", "47")));
         when(mapper.trialQuotaRemaining(org.mockito.ArgumentMatchers.any(LocalDate.class))).thenReturn(47);
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
-        environment.setProperty("nexion.auth.development-passkey-account.country-code", "84");
-        environment.setProperty("nexion.auth.development-passkey-account.phone", "18708173775");
 
         ApiResult<Map<String, Object>> result = controller(mapper, environment).state(auth("42", "USER"));
 
@@ -90,17 +93,15 @@ class AppTrialLifecycleControllerIntegrationTest {
     }
 
     @Test
-    void developmentRuntimeRejectsAnyAccountOtherThanTheConfiguredFixedPasskeyUser() {
+    void developmentRuntimeRejectsAnInactiveAccount() {
         AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
-        environment.setProperty("nexion.auth.development-passkey-account.country-code", "84");
-        environment.setProperty("nexion.auth.development-passkey-account.phone", "18708173775");
 
         ApiResult<Map<String, Object>> result = controller(mapper, environment).state(auth("99", "USER"));
 
         assertThat(result.getCode()).isEqualTo(404);
-        verify(mapper).activeDevelopmentUser(99L, "84", "18708173775");
+        verify(mapper).activeUser(99L);
     }
 
     @Test

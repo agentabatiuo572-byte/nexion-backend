@@ -39,12 +39,15 @@ class QuestSandboxIsolationContractTest {
     }
 
     @Test
-    void sandboxQuestSchemaIsInBaselineAndControlledStartup() throws Exception {
+    void historicalQuestFixtureIsDroppedByBaselineAndExcludedFromStartup() throws Exception {
         String migration = Files.readString(Path.of("scripts/migrations/20260816_growth_quest_sandbox.sql"));
         String schema = Files.readString(Path.of("scripts/schema.sql"));
         String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         assertThat(migration).contains("nx_growth_quest_sandbox", "uk_growth_quest_sandbox_scope", "source_environment");
-        assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_growth_quest_sandbox");
-        assertThat(startup).contains("20260816_growth_quest_sandbox.sql");
+        assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_growth_quest_sandbox")
+                .contains("nx_growth_quest_sandbox;");
+        assertThat(schema.lastIndexOf("nx_growth_quest_sandbox;"))
+                .isGreaterThan(schema.indexOf("CREATE TABLE IF NOT EXISTS nx_growth_quest_sandbox"));
+        assertThat(startup).doesNotContain("20260816_growth_quest_sandbox.sql");
     }
 }

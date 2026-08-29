@@ -61,7 +61,7 @@ class AppAmbassadorPolicyServiceTest {
     @Test
     void developmentAllowsAnyActiveDevelopmentAccountAndProductionProvenance() {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "dev" });
-        when(mapper.user(9L)).thenReturn(new AppAmbassadorPolicyMapper.UserScope(1, "V5"));
+        when(mapper.user(9L)).thenReturn(new AppAmbassadorPolicyMapper.UserScope(0, "V5"));
         when(mapper.policy()).thenReturn(new AppAmbassadorPolicyMapper.PolicyRow("ambassador-v1", 3L,
                 new BigDecimal("3000.000000"), "[{\"id\":\"venue\",\"title\":\"Event venue\",\"range\":\"$1,000 — $10,000\",\"rule\":\"Host\",\"minBudgetUsdt\":1000,\"maxBudgetUsdt\":10000},{\"id\":\"kol\",\"title\":\"KOL\",\"range\":\"$500 — $5,000\",\"rule\":\"Creator\",\"minBudgetUsdt\":500,\"maxBudgetUsdt\":5000},{\"id\":\"print\",\"title\":\"Print\",\"range\":\"$1,000 — $8,000\",\"rule\":\"Visibility\",\"minBudgetUsdt\":1000,\"maxBudgetUsdt\":8000},{\"id\":\"dev\",\"title\":\"Developer\",\"range\":\"$300 — $3,000\",\"rule\":\"Workshop\",\"minBudgetUsdt\":300,\"maxBudgetUsdt\":3000}]"));
 

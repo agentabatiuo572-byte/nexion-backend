@@ -54,9 +54,9 @@ class AppStorefrontActivityServiceTest {
     @Test
     void developmentActivityUsesCanonicalBusinessTablesForAnyActiveDevelopmentAccount() {
         when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(mapper.userEnvironment(7L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(mapper.userEnvironment(7L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
         when(mapper.recentActivities(eq(false), isNull(), isNull(), eq(21))).thenReturn(List.of(
                 new AppStorefrontActivityMapper.ActivityRow(
                         42L, "NexionBox Pro", LocalDateTime.of(2026, 8, 22, 9, 37), 1)));
@@ -73,9 +73,9 @@ class AppStorefrontActivityServiceTest {
     @Test
     void developmentActivityAllowsAnotherActiveDevelopmentAccount() {
         when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
 
         ApiResult<Map<String, Object>> result = service.activity(8L, null, 20);
 
@@ -87,9 +87,9 @@ class AppStorefrontActivityServiceTest {
     @Test
     void developmentActivityDoesNotDependOnTheFixedAccountConfiguration() {
         when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(false);
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
 
         ApiResult<Map<String, Object>> result = service.activity(8L, null, 20);
 
@@ -143,14 +143,13 @@ class AppStorefrontActivityServiceTest {
     @Test
     void developmentSocialProofUsesCanonicalProductAndPaidOrderFacts() {
         when(profileGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(profileGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(profileGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(profileGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(profileGuard.isLocalSandboxEnabled()).thenReturn(false);
         when(environment.getProperty("nexion.auth.development-passkey-account.country-code", ""))
                 .thenReturn("+86");
         when(environment.getProperty("nexion.auth.development-passkey-account.phone", ""))
                 .thenReturn("18708173775");
-        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(true));
-        when(mapper.developmentUserScope(8L, "+86", "18708173775")).thenReturn(1);
+        when(mapper.userEnvironment(8L)).thenReturn(new AppStorefrontActivityMapper.UserEnvironmentRow(false));
         when(mapper.product("stellarbox-pro-v2")).thenReturn(
                 new AppStorefrontActivityMapper.ProductRow(12L, "NexionBox Pro"));
         when(mapper.salesTotal(12L, false)).thenReturn(91L);

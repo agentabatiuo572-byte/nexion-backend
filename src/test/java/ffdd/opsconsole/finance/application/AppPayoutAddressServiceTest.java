@@ -122,9 +122,8 @@ class AppPayoutAddressServiceTest {
     @Test
     void developmentListUsesCanonicalTableForAnyActiveDevelopmentAccount() {
         long userId = 21L;
-        when(sandboxProfile.isStrictDevelopmentRuntime()).thenReturn(true);
         when(mapper.activeUser(userId)).thenReturn(userId);
-        when(mapper.isSandboxUser(userId)).thenReturn(1);
+        when(mapper.isSandboxUser(userId)).thenReturn(0);
         when(mapper.list(userId)).thenReturn(java.util.List.of());
 
         ApiResult<java.util.Map<String, Object>> result = service.list(userId);

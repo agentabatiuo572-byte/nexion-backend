@@ -29,8 +29,8 @@ public class DeveloperAccountGuard {
         if (sandbox == null) throw new BizException(403, "USER_AUTH_REQUIRED");
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles())
                 .map(String::trim).map(String::toLowerCase).filter(value -> !value.isBlank()).collect(java.util.stream.Collectors.toSet());
-        boolean isolated = profiles.size() == 1 && Set.of("dev", "test").contains(profiles.iterator().next());
-        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("prod").contains(profiles.iterator().next()));
+        boolean isolated = profiles.size() == 1 && Set.of("test").contains(profiles.iterator().next());
+        boolean production = profiles.isEmpty() || (profiles.size() == 1 && Set.of("dev", "prod").contains(profiles.iterator().next()));
         if (!isolated && !production) throw new BizException(503, "DEVELOPER_ACCESS_PROFILE_INVALID");
         if (isolated && sandbox != 1) throw new BizException(403, "DEVELOPER_ACCESS_SANDBOX_USER_REQUIRED");
         if (production && sandbox != 0) throw new BizException(403, "DEVELOPER_ACCESS_PRODUCTION_USER_REQUIRED");

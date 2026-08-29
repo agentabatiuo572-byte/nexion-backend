@@ -45,6 +45,19 @@ class RuntimeProfileEnvironmentPostProcessorTest {
     }
 
     @Test
+    void rejectsAcceptanceRunIdInEveryDeployableRuntime() {
+        for (String profile : new String[] {"dev", "prod"}) {
+            MockEnvironment environment = new MockEnvironment()
+                    .withProperty("spring.profiles.active", profile)
+                    .withProperty("NEXION_ACCEPTANCE_RUN_ID", "retired-sandbox-run");
+
+            assertThatThrownBy(() -> processor.validate(environment))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("SANDBOX_RUNTIME_RETIRED");
+        }
+    }
+
+    @Test
     void rejectsProfileGroupsOrIncludesThatExpandTheFinalActiveSet() {
         MockEnvironment environment = new MockEnvironment()
                 .withProperty("spring.profiles.active", "dev");

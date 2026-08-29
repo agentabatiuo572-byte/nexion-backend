@@ -16,20 +16,19 @@ class AppGenesisPointsServiceTest {
 
     @Test
     void ranks_only_holders_in_the_authenticated_environment_and_projects_current_user() {
-        when(mapper.userScope(7L)).thenReturn(new AppGenesisPointsMapper.UserScope(1, "sandbox-user"));
+        when(mapper.userScope(7L)).thenReturn(new AppGenesisPointsMapper.UserScope(0, "development-user"));
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "")).thenReturn("acceptance-20260815");
-        when(mapper.sandboxLeaderboard("acceptance-20260815")).thenReturn(List.of(
+        when(mapper.leaderboard(0)).thenReturn(List.of(
                 new AppGenesisPointsMapper.PointsRow(7L, "Alice", 3L),
                 new AppGenesisPointsMapper.PointsRow(8L, "Bob", 1L)));
-        when(mapper.sandboxCurrentUser(7L,"acceptance-20260815"))
+        when(mapper.currentUser(7L, 0))
                 .thenReturn(new AppGenesisPointsMapper.PointsRow(7L,"Alice",3L));
-        when(mapper.sandboxCurrentRank(7L,"acceptance-20260815")).thenReturn(1);
+        when(mapper.currentRank(7L, 0)).thenReturn(1);
 
         var result = service.projection(7L);
 
-        assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX");
-        assertThat(result.getData()).containsEntry("source", "mock");
+        assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION");
+        assertThat(result.getData()).containsEntry("source", "nx_genesis_holding");
         assertThat(result.getData().get("leaderboard").toString()).contains("points=3000");
         assertThat(result.getData().get("currentUser").toString()).contains("rank=1");
     }
@@ -37,7 +36,7 @@ class AppGenesisPointsServiceTest {
     @Test
     void refuses_a_production_user_in_a_sandbox_profile() {
         when(mapper.userScope(7L)).thenReturn(new AppGenesisPointsMapper.UserScope(0, "production-user"));
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.projection(7L))
                 .hasMessage("GENESIS_SANDBOX_USER_REQUIRED");

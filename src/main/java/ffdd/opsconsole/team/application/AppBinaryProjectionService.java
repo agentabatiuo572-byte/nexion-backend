@@ -293,14 +293,10 @@ public class AppBinaryProjectionService {
         Set<String> profiles = environment == null ? Set.of() : Arrays.stream(environment.getActiveProfiles())
                 .map(value -> value == null ? "" : value.trim().toLowerCase(Locale.ROOT))
                 .filter(value -> !value.isBlank()).collect(Collectors.toSet());
-        boolean development = profiles.size() == 1 && "dev".equals(profiles.iterator().next());
+        boolean development = false;
         boolean isolated = profiles.size() == 1 && "test".equals(profiles.iterator().next());
-        boolean production = profiles.isEmpty() || profiles.size() == 1 && "prod".equals(profiles.iterator().next());
+        boolean production = profiles.isEmpty() || profiles.size() == 1 && Set.of("dev", "prod").contains(profiles.iterator().next());
         if (!development && !isolated && !production) throw new BizException(503, "F3_APP_PROFILE_INVALID");
-        if (development) {
-            if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "F3_APP_DEVELOPMENT_USER_REQUIRED");
-            return new Scope(UserAuthEnvironment.PRODUCTION.name(), null);
-        }
         if (isolated) {
             if (!Integer.valueOf(1).equals(sandbox)) throw new BizException(403, "F3_APP_SANDBOX_USER_REQUIRED");
             String runId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();

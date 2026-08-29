@@ -77,10 +77,10 @@ class AppTradeinServiceTest {
 
     @Test
     void developmentRuntimeAllowsTheFixedDevelopmentAccountToResolveCapacityBeforeCheckout() {
-        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(false);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
-        when(mapper.activeUserEnvironment(7L)).thenReturn(1);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
 
         var result = service.capacityQuote(7L,
                 new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
@@ -91,33 +91,16 @@ class AppTradeinServiceTest {
     }
 
     @Test
-    void developmentRuntimeRejectsCapacityReplacementBeforeSharedStateIsRead() {
-        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
+    void developmentRuntimeRejectsASandboxUserBeforeCapacityStateIsRead() {
+        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(false);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.activeUserEnvironment(7L)).thenReturn(1);
-
-        assertThatThrownBy(() -> service.capacityReplace(7L, "capacity-dev-1",
-                new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000"))))
-                .isInstanceOf(BizException.class)
-                .hasMessageContaining("TRADEIN_LOCAL_SANDBOX_UNAVAILABLE");
-
-        verify(mapper, never()).lockActiveUser(any());
-        verify(mapper, never()).decrementTargetStock(any());
-        verify(mapper, never()).consumePurchaseQuota(anyString(), any());
-        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
-    }
-
-    @Test
-    void developmentRuntimeRejectsAProductionUserBeforeCapacityStateIsRead() {
-        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
 
         assertThatThrownBy(() -> service.capacityQuote(7L,
                 new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2")))
                 .isInstanceOf(BizException.class)
-                .hasMessageContaining("TRADEIN_DEVELOPMENT_USER_REQUIRED");
+                .hasMessageContaining("TRADEIN_PRODUCTION_USER_REQUIRED");
 
         verify(mapper, never()).countActiveDevices(any());
     }

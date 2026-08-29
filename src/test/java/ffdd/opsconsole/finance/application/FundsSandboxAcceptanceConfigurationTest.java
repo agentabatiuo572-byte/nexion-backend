@@ -9,12 +9,12 @@ import org.springframework.core.io.ClassPathResource;
 
 class FundsSandboxAcceptanceConfigurationTest {
     @Test
-    void developmentProfileExplicitlyEnablesOnlyTheServerOwnedFundsSandbox() throws IOException {
+    void developmentProfileExplicitlyRetiresTheFundsSandbox() throws IOException {
         ClassPathResource profile = new ClassPathResource("application-dev.yml");
 
         assertThat(profile.exists()).isTrue();
         String yaml = new String(profile.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertThat(yaml).contains("funds-sandbox:", "mode: LOCAL_SANDBOX");
-        assertThat(yaml).doesNotContain("mode: PROVIDER");
+        assertThat(yaml).contains("funds-sandbox:", "mode: DISABLED");
+        assertThat(yaml).doesNotContain("mode: PROVIDER", "mode: LOCAL_SANDBOX");
     }
 }

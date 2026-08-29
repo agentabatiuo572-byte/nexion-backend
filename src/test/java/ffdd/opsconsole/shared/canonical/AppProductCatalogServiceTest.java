@@ -104,9 +104,9 @@ class AppProductCatalogServiceTest {
 
     @Test
     void developmentRuntimeUsesTheSameCanonicalE1CatalogAsPc() {
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(mapper.activeUserEnvironment(42L)).thenReturn(1);
+        when(mapper.activeUserEnvironment(42L)).thenReturn(0);
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
                 "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 8)));
 
@@ -142,9 +142,9 @@ class AppProductCatalogServiceTest {
 
     @Test
     void developmentRuntimeAllowsAnyActiveRegisteredDevelopmentUser() {
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
-        when(mapper.activeUserEnvironment(99L)).thenReturn(1);
+        when(mapper.activeUserEnvironment(99L)).thenReturn(0);
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(target(
                 "stellarbox-s1", "NexGridBox S1", "Entry", new BigDecimal("1299"), 8)));
 
@@ -160,14 +160,14 @@ class AppProductCatalogServiceTest {
 
     @Test
     void developmentRuntimeRejectsAnInactiveOrMissingUser() {
-        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(false);
+        when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(sandboxGuard.isStrictDevelopmentRuntime()).thenReturn(true);
         when(mapper.activeUserEnvironment(99L)).thenReturn(null);
 
         var result = service.catalog(99L);
 
         assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("PRODUCT_CATALOG_DEVELOPMENT_USER_REQUIRED");
+        assertThat(result.getMessage()).isEqualTo("PRODUCT_CATALOG_PRODUCTION_USER_REQUIRED");
         org.mockito.Mockito.verify(mapper, org.mockito.Mockito.never()).listPurchasableCatalogTargets();
     }
 

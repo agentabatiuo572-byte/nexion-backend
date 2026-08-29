@@ -1,7 +1,6 @@
 package ffdd.opsconsole.market.web;
 
 import ffdd.opsconsole.market.application.AppGenesisService;
-import ffdd.opsconsole.market.application.AppGenesisSandboxFixtureService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -12,14 +11,12 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequiredArgsConstructor
 public class AppGenesisController {
     private final AppGenesisService service;
-    private final AppGenesisSandboxFixtureService sandboxFixtures;
 
     @GetMapping("/api/genesis/state")
     public ApiResult<Map<String, Object>> state() {
@@ -36,28 +33,6 @@ public class AppGenesisController {
     public ApiResult<Map<String, Object>> eligibility(Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.eligibility(userId);
-    }
-
-    /** Explicit local acceptance fixture; production fails closed in the service. */
-    @PostMapping("/api/genesis/sandbox-fixture")
-    public ApiResult<Map<String, Object>> sandboxFixture(Authentication authentication,
-                                                         @RequestBody SandboxFixtureRequest request) {
-        Long userId = userId(authentication);
-        if (userId == null) return forbidden();
-        String runId = request == null ? null : request.runId();
-        sandboxFixtures.replace(runId, userId, request == null ? null : request.holders());
-        return ApiResult.ok(Map.of("serverCanonical", true, "source", "mock",
-                "sourceEnvironment", "SANDBOX", "runId", runId, "fixture", "GENESIS_HOLDER"));
-    }
-
-    @DeleteMapping("/api/genesis/sandbox-fixture")
-    public ApiResult<Map<String, Object>> clearSandboxFixture(Authentication authentication,
-                                                               @RequestParam String runId) {
-        Long userId = userId(authentication);
-        if (userId == null) return forbidden();
-        sandboxFixtures.clear(runId, userId);
-        return ApiResult.ok(Map.of("serverCanonical", true, "source", "mock",
-                "sourceEnvironment", "SANDBOX", "runId", runId, "cleared", true));
     }
 
     @PostMapping("/api/genesis/purchase")
@@ -113,5 +88,4 @@ public class AppGenesisController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record SandboxFixtureRequest(String runId, java.util.List<AppGenesisSandboxFixtureService.HolderSpec> holders) { }
 }

@@ -36,7 +36,7 @@ class AppWalletBillsServiceTest {
     @Test
     void developmentAccountReceivesCanonicalBusinessLedgerWithProductionShapedContract() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
-        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(1));
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         when(mapper.count(7L)).thenReturn(1L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
                 12L, "QUEST:H3:7", "QUEST_REWARD", "NEX", "IN", new BigDecimal("50"),
@@ -101,7 +101,7 @@ class AppWalletBillsServiceTest {
     @Test
     void businessLocalLedgerTimeIsPublishedAsAnUnambiguousInstant() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
-        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(1));
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
         when(mapper.rows(7L, 200)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
                 22L, "G4-SBX-1", "GENESIS_PURCHASE", "USDT", "OUT", new BigDecimal("7999"),
                 new BigDecimal("2711.97"), "SUCCESS", "Genesis purchase",

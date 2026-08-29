@@ -78,7 +78,7 @@ class ReferralRewardEnvironmentIsolationContractTest {
     }
 
     @Test
-    void isolatedSandboxLedgerIsInBothBaselineSchemaAndControlledMigration() throws Exception {
+    void historicalIsolatedLedgerIsReadableButExcludedFromCanonicalStartup() throws Exception {
         String baseline = Files.readString(Path.of("scripts/schema.sql"));
         String migration = Files.readString(Path.of(
                 "scripts/migrations/20260811_h8_acceptance_sandbox_referral_ledger.sql"));
@@ -95,7 +95,9 @@ class ReferralRewardEnvironmentIsolationContractTest {
                     .contains("uk_h8_sandbox_referral_ledger_fact");
         }
         assertThat(startup)
-                .contains("20260811_h8_acceptance_sandbox_referral_ledger.sql");
+                .doesNotContain("20260811_h8_acceptance_sandbox_referral_ledger.sql");
+        assertThat(baseline.lastIndexOf("nx_h8_sandbox_referral_ledger,"))
+                .isGreaterThan(baseline.indexOf("CREATE TABLE IF NOT EXISTS nx_h8_sandbox_referral_ledger"));
     }
 
     @Test
@@ -122,11 +124,11 @@ class ReferralRewardEnvironmentIsolationContractTest {
                 "src/main/java/ffdd/opsconsole/growth/application/H8AcceptanceSandboxSchemaInitializer.java"));
 
         assertThat(controller)
-                .contains("@Conditional(H8AcceptanceSandboxProfileCondition.class)")
-                .doesNotContain("@Profile(");
+                .contains("@Profile(\"test\")")
+                .doesNotContain("@Conditional(");
         assertThat(initializer)
-                .contains("@Conditional(H8AcceptanceSandboxProfileCondition.class)")
-                .doesNotContain("@Profile(");
+                .contains("@Profile(\"test\")")
+                .doesNotContain("@Conditional(");
     }
 
     @Test

@@ -45,7 +45,7 @@ public class AppStorefrontActivityService {
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(400, "STOREFRONT_ACTIVITY_CURSOR_INVALID");
         }
-        boolean developmentRuntime = profileGuard.isStrictDevelopmentRuntime();
+        boolean developmentRuntime = false;
         boolean sandboxRuntime = profileGuard.isLocalSandboxEnabled();
         if (!developmentRuntime && !sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "STOREFRONT_ACTIVITY_UNAVAILABLE");
@@ -91,7 +91,7 @@ public class AppStorefrontActivityService {
         if (windowDays < 0 || productNo == null || !productNo.matches("[A-Za-z0-9._-]{1,64}")) {
             return ApiResult.fail(400, "STOREFRONT_SOCIAL_PROOF_REQUEST_INVALID");
         }
-        boolean developmentRuntime = profileGuard.isStrictDevelopmentRuntime();
+        boolean developmentRuntime = false;
         boolean sandboxRuntime = profileGuard.isLocalSandboxEnabled();
         if (!developmentRuntime && !sandboxRuntime && !profileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");

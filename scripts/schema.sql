@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS nx_user (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_user_phone_sandbox (country_code, phone, sandbox),
+  UNIQUE KEY uk_user_phone (country_code, phone),
   UNIQUE KEY uk_user_referral_code (referral_code),
   KEY idx_user_sponsor (sponsor_user_id),
   KEY idx_user_status (status)
@@ -7124,3 +7124,47 @@ CREATE TABLE IF NOT EXISTS nx_vietqr_receipt_evidence (
   CONSTRAINT chk_vietqr_receipt_evidence_status CHECK (status IN ('AVAILABLE', 'BOUND')),
   CONSTRAINT chk_vietqr_receipt_evidence_size CHECK (size_bytes > 0 AND size_bytes <= 10485760)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- The isolated runtime was retired on 2026-08-28. Historical definitions are
+-- intentionally left above so old dumps remain readable, but a canonical
+-- schema installation must finish without any of those active tables.
+DROP TABLE IF EXISTS
+  nx_compute_sandbox_reward,
+  nx_growth_wheel_sandbox_scope,
+  nx_growth_wheel_sandbox_tier,
+  nx_growth_wheel_sandbox_guard,
+  nx_growth_wheel_sandbox_ticket,
+  nx_growth_wheel_sandbox_spin,
+  nx_growth_wheel_sandbox_reward_ledger,
+  nx_growth_wheel_sandbox_command,
+  nx_user_payout_address_sandbox,
+  nx_user_payout_address_sandbox_history,
+  nx_user_payout_address_sandbox_otp,
+  nx_h8_sandbox_referral_settlement,
+  nx_h8_sandbox_referral_ledger,
+  nx_g2_acceptance_sandbox_batch,
+  nx_g2_acceptance_sandbox_order,
+  nx_g2_acceptance_sandbox_ledger,
+  nx_g2_acceptance_sandbox_idempotency,
+  nx_behavior_sandbox_fact,
+  nx_commerce_sandbox_catalog,
+  nx_commerce_sandbox_order,
+  nx_commerce_sandbox_inventory,
+  nx_commerce_sandbox_callback_inbox,
+  nx_commerce_sandbox_order_receipt,
+  nx_commerce_sandbox_audit,
+  nx_commerce_sandbox_trial_claim,
+  nx_learning_sandbox_progress,
+  nx_learning_sandbox_event,
+  nx_learning_sandbox_reward_ledger,
+  nx_learning_sandbox_idempotency,
+  nx_learning_sandbox_course,
+  nx_learning_sandbox_admin_idempotency,
+  nx_support_acceptance_sandbox_run,
+  nx_support_acceptance_sandbox_ticket,
+  nx_support_acceptance_sandbox_ticket_message,
+  nx_support_acceptance_sandbox_conversation,
+  nx_support_acceptance_sandbox_conversation_message,
+  nx_support_acceptance_sandbox_receipt,
+  nx_support_acceptance_sandbox_idempotency,
+  nx_growth_quest_sandbox;

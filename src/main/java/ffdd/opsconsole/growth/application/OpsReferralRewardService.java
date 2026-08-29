@@ -704,7 +704,7 @@ public class OpsReferralRewardService {
             throw new BizException(503, "H8_RUNTIME_PROFILE_UNSUPPORTED");
         }
         String profile = activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT);
-        if ("dev".equals(profile)) return 1;
+        if ("dev".equals(profile)) return 0;
         if ("prod".equals(profile)) return 0;
         throw new BizException(503, "H8_RUNTIME_PROFILE_UNSUPPORTED");
     }

@@ -46,15 +46,15 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
-    void developmentAcceptsTheAuthenticatedSandboxAccountButReturnsProductionShapedFacts() {
+    void developmentAcceptsTheAuthenticatedCanonicalAccount() {
         when(environment.getActiveProfiles()).thenReturn(new String[] {"dev"});
-        when(mapper.userSandbox(9L)).thenReturn(1);
-        var request = request("dev-sandbox-account", 0L, "key-dev-001", 12, 8,
+        when(mapper.userSandbox(9L)).thenReturn(0);
+        var request = request("dev-canonical-account", 0L, "key-dev-001", 12, 8,
                 "Pixel 8", "Google", "Mali-G715", 900, 48, true);
-        when(mapper.findForUpdate(9L, "dev-sandbox-account")).thenReturn(null);
+        when(mapper.findForUpdate(9L, "dev-canonical-account")).thenReturn(null);
         when(mapper.insert(any())).thenReturn(1);
-        when(mapper.find(9L, "dev-sandbox-account"))
-                .thenReturn(row(9L, "dev-sandbox-account", 1L, "key-dev-001", "hash", 7L));
+        when(mapper.find(9L, "dev-canonical-account"))
+                .thenReturn(row(9L, "dev-canonical-account", 1L, "key-dev-001", "hash", 7L));
 
         ApiResult<Map<String, Object>> result = service.calibrate(9L, request);
 

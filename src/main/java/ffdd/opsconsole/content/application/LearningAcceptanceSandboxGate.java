@@ -18,7 +18,7 @@ public class LearningAcceptanceSandboxGate {
     }
 
     public boolean isStrictDevelopmentRuntime() {
-        return FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles());
+        return false;
     }
 
     public String developmentCountryCode() {

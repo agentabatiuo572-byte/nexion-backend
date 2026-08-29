@@ -269,7 +269,7 @@ class AppExchangeServiceTest {
 
     @Test
     void sandboxMutationsStillFailBeforeReadingProductionWallets() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.swap(7L, "idem-sandbox-isolated",
                 new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false)))

@@ -27,12 +27,12 @@ class QuestCompletionFactConsumerTest {
     private final QuestCompletionFactConsumer consumer = new QuestCompletionFactConsumer(mapper, audit, outbox, null);
 
     @Test
-    void developmentRuntimeCompletesMissionForActiveDevelopmentAccount() {
+    void developmentRuntimeCompletesMissionForActiveCanonicalAccount() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
         QuestCompletionFactConsumer developmentConsumer =
                 new QuestCompletionFactConsumer(mapper, audit, outbox, null, environment);
-        when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(mapper.lockMission("QUEST-DEV")).thenReturn(new MissionDefinition(8L, "QUEST-DEV", "WEEKLY"));
         when(mapper.insertFact(eq("ORDER"), eq("ORDER-DEV"), anyString(), eq(42L), eq(8L), eq("QUEST-DEV")))
                 .thenReturn(1);
@@ -44,8 +44,8 @@ class QuestCompletionFactConsumerTest {
                 new QuestCompletionCommand("ORDER", "ORDER-DEV", 42L, "QUEST-DEV"));
 
         assertThat(result.status()).isEqualTo("COMPLETED");
-        verify(mapper).lockActiveSandboxUser(42L);
-        verify(mapper, never()).lockActiveUser(42L);
+        verify(mapper).lockActiveUser(42L);
+        verify(mapper, never()).lockActiveSandboxUser(42L);
     }
 
     @Test

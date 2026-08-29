@@ -153,7 +153,7 @@ public class G4AdminCommandService {
             throw new BizException(503,"G4_GENESIS_EMISSION_SANDBOX_UNAVAILABLE");
         }
         if (profiles == null || profiles.length == 0
-                || (profiles.length == 1 && "prod".equalsIgnoreCase(profiles[0]))) {
+                || (profiles.length == 1 && java.util.Set.of("dev", "prod").contains(profiles[0].trim().toLowerCase(java.util.Locale.ROOT)))) {
             return;
         }
         throw new BizException(503,"G4_GENESIS_EMISSION_RUNTIME_UNSUPPORTED");

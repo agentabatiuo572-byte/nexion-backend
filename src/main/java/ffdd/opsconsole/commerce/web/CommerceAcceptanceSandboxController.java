@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Does not register in production, even for an administrator. */
 @RestController
+@Profile("test")
 @Conditional(CommerceAcceptanceSandboxProfileCondition.class)
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/commerce/acceptance/sandbox-orders")
 @RequiredArgsConstructor

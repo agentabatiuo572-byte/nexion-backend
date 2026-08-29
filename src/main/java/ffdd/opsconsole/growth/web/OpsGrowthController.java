@@ -62,12 +62,6 @@ public class OpsGrowthController {
         return growthService.phases();
     }
 
-    @GetMapping("/phases/sandbox-preview")
-    @PreAuthorize("hasAuthority('growth_h1_read')")
-    public ApiResult<Map<String, Object>> phaseSandboxPreview() {
-        return growthService.phaseSandboxPreview();
-    }
-
     @GetMapping("/rhythm")
     @PreAuthorize("hasAuthority('growth_h1_read')")
     public ApiResult<Map<String, Object>> rhythm() {

@@ -19,7 +19,9 @@ class AppCommissionConfigControllerTest {
                 "unilevelRates", List.of(Map.of("level", "L1", "usdtPct", 10, "nexReward", 50)),
                 "configValues", Map.of("F.cooldown", "21", "F.promo.weekMultiplier", "1.25"))));
 
-        var result = new AppCommissionConfigController(service, new MockEnvironment()).rates();
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+        var result = new AppCommissionConfigController(service, environment).rates();
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("serverCanonical", true)

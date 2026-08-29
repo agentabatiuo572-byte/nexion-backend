@@ -171,7 +171,7 @@ class AppTaskAssignmentServiceTest {
 
     @Test
     void sandboxCompletionIsUnavailableWithoutRunScopedTaskOrDeviceProjection() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.complete(7L, "CTA-1", "sandbox-complete", validProof()))
                 .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
@@ -232,7 +232,7 @@ class AppTaskAssignmentServiceTest {
 
     @Test
     void sandboxCannotMutateDeviceLockBecauseRuntimeIsUnavailable() {
-        when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
+        when(environment.getActiveProfiles()).thenReturn(new String[]{"test"});
 
         assertThatThrownBy(() -> service.claim(7L, "sandbox-expiry", new AppTaskClaimRequest(11L)))
                 .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
@@ -267,10 +267,10 @@ class AppTaskAssignmentServiceTest {
     @Test
     void developmentReadsEveryActiveDevelopmentAccountsProductionShapedDevicesAndSettlementHistory() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
-        when(mapper.developmentOwnedDevices(7L))
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.ownedDevices(7L))
                 .thenReturn(List.of(device("phone", "PHONE", "你的手机", 8)));
-        when(mapper.developmentAssignments(7L, "PRODUCTION"))
+        when(mapper.assignments(7L, "PRODUCTION"))
                 .thenReturn(List.of(new AppTaskAssignmentMapper.AssignmentRow(
                         "CTA-1", 11L, null, "Development settled compute task", "LLM_INFERENCE",
                         "gemma4-e4b-ctx32k", "Gemma AI Support", "COMPLETED", new BigDecimal("68.40"),
@@ -287,8 +287,8 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().devices().get(0).recentTasks()).hasSize(1);
         assertThat(result.getData().devices().get(0).recentTasks().get(0).receiptNo()).isEqualTo("CTR-1");
         assertThat(result.getData().devices().get(0).recentTasks().get(0).taskClass()).isEqualTo("LL");
-        verify(mapper, never()).ownedDevices(anyLong());
-        verify(mapper, never()).assignments(anyLong(), anyString());
+        verify(mapper).ownedDevices(7L);
+        verify(mapper).assignments(7L, "PRODUCTION");
         verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
     }
 
@@ -354,8 +354,8 @@ class AppTaskAssignmentServiceTest {
     @Test
     void developmentReadsTheActiveAccountsCanonicalComputeReceipt() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
-        when(mapper.developmentReceipt(7L, "R-CTA-1")).thenReturn(
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.receipt(7L, "R-CTA-1")).thenReturn(
                 new AppTaskAssignmentMapper.ReceiptRow(
                         "R-CTA-1", "CTA-1", 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
                         8, "TASK-LL", "Development settled compute task", "LLM_INFERENCE",
@@ -372,14 +372,14 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().runId()).isEmpty();
         assertThat(result.getData().serverCanonical()).isTrue();
-        verify(mapper, never()).receipt(anyLong(), anyString());
+        verify(mapper).receipt(7L, "R-CTA-1");
     }
 
     @Test
     void developmentPaginatesEveryCanonicalComputeReceiptBeyondTheAssignmentPreview() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
-        when(mapper.developmentReceipts(7L, 0, 3)).thenReturn(List.of(
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.receipts(7L, 0, 3)).thenReturn(List.of(
                 receiptRow("R-CTA-3", "CTA-3", NOW),
                 receiptRow("R-CTA-2", "CTA-2", NOW.minusMinutes(1)),
                 receiptRow("R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
@@ -393,8 +393,7 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().runId()).isEmpty();
         assertThat(result.getData().serverCanonical()).isTrue();
-        verify(mapper).developmentReceipts(7L, 0, 3);
-        verify(mapper, never()).receipts(anyLong(), anyInt(), anyInt());
+        verify(mapper).receipts(7L, 0, 3);
     }
 
     @Test
@@ -422,8 +421,8 @@ class AppTaskAssignmentServiceTest {
     @Test
     void developmentRejectsAnUnsettledComputeReceipt() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
-        when(mapper.developmentReceipt(7L, "R-PENDING-1")).thenReturn(
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.receipt(7L, "R-PENDING-1")).thenReturn(
                 new AppTaskAssignmentMapper.ReceiptRow(
                         "R-PENDING-1", "PENDING-1", 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
                         8, "TASK-LL", "Pending compute task", "LL", "gemma4-e4b-ctx32k",
@@ -438,8 +437,8 @@ class AppTaskAssignmentServiceTest {
     @Test
     void developmentRejectsAComputeReceiptWithMissingReward() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
-        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(1));
-        when(mapper.developmentReceipt(7L, "R-MISSING-REWARD-1")).thenReturn(
+        when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.receipt(7L, "R-MISSING-REWARD-1")).thenReturn(
                 new AppTaskAssignmentMapper.ReceiptRow(
                         "R-MISSING-REWARD-1", "MISSING-REWARD-1", 11L, "DEV-11", "你的手机",
                         "MOBILE", "Adreno", 8, "TASK-LL", "Completed compute task", "LL",

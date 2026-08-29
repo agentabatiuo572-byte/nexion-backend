@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** Independent acceptance facts only; no production support repository is injected here. */
 @Service
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class SupportAcceptanceSandboxService {
     private static final ObjectMapper JSON = new ObjectMapper()

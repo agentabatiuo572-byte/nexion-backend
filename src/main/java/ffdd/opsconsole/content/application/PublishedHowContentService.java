@@ -200,5 +200,9 @@ public class PublishedHowContentService {
     private String normalizeLocale(String value) { String locale = value == null ? "en" : value.trim().replace('_', '-').toLowerCase(Locale.ROOT); return locale.isBlank() ? "en" : locale; }
     private String text(Object value) { String text = value == null ? null : String.valueOf(value).trim(); return text == null || text.isBlank() ? null : text; }
     private boolean bounded(Object value, int max) { String text = text(value); return text != null && text.length() <= max; }
-    private String sourceEnvironment() { return UserAuthEnvironment.resolve(environment).map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION").orElse("PRODUCTION"); }
+    private String sourceEnvironment() {
+        return UserAuthEnvironment.resolve(environment)
+                .map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION")
+                .orElseThrow(() -> new IllegalStateException("HOW_CONTENT_ENVIRONMENT_UNAVAILABLE"));
+    }
 }

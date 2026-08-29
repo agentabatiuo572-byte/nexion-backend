@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Acceptance-only, run-scoped observer. The explicit zero deltas are a contract, never an aggregate inference. */
 @RestController
-@Profile({"dev", "test"})
+@Profile("test")
 @RequestMapping("/api/admin/content/learning-acceptance")
 @RequiredArgsConstructor
 public class OpsLearningAcceptanceObservationController {

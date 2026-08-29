@@ -19,8 +19,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class AppGenesisPointsService {
     private static final int POINTS_PER_HOLDING = 1_000;
-    private static final Set<String> ISOLATED_PROFILES = Set.of("dev", "test");
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
+    private static final Set<String> ISOLATED_PROFILES = Set.of("test");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
     private final AppGenesisPointsMapper mapper;
     private final Environment environment;
 

@@ -11,7 +11,7 @@ import org.springframework.mock.env.MockEnvironment;
 class UserAuthEnvironmentTest {
 
     @Test
-    void activeSpringProfileIsTheOnlyRuntimeAuthority() {
+    void standardDevelopmentAndProductionUseTheCanonicalAccountRail() {
         MockEnvironment dev = new MockEnvironment()
                 .withProperty("nexion.runtime.environment", "PROD");
         dev.setActiveProfiles("dev");
@@ -20,8 +20,28 @@ class UserAuthEnvironmentTest {
                 .withProperty("nexion.runtime.environment", "DEV");
         prod.setActiveProfiles("prod");
 
-        assertThat(UserAuthEnvironment.resolve(dev)).contains(UserAuthEnvironment.SANDBOX);
+        assertThat(UserAuthEnvironment.resolve(dev)).contains(UserAuthEnvironment.PRODUCTION);
         assertThat(UserAuthEnvironment.resolve(prod)).contains(UserAuthEnvironment.PRODUCTION);
+    }
+
+    @Test
+    void onlyTheExplicitTestProfileUsesTheSandboxAccountRail() {
+        MockEnvironment test = new MockEnvironment();
+        test.setActiveProfiles("test");
+
+        assertThat(UserAuthEnvironment.resolve(test)).contains(UserAuthEnvironment.SANDBOX);
+    }
+
+    @Test
+    void missingUnknownAndMixedProfilesFailClosed() {
+        MockEnvironment unknown = new MockEnvironment();
+        unknown.setActiveProfiles("staging");
+        MockEnvironment mixed = new MockEnvironment();
+        mixed.setActiveProfiles("dev", "prod");
+
+        assertThat(UserAuthEnvironment.resolve(new MockEnvironment())).isEmpty();
+        assertThat(UserAuthEnvironment.resolve(unknown)).isEmpty();
+        assertThat(UserAuthEnvironment.resolve(mixed)).isEmpty();
     }
 
     @Test

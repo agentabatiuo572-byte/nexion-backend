@@ -73,7 +73,7 @@ class AppUserRegistrationReferralLockContractTest {
     }
 
     @Test
-    void registrationIdentityAndOtpAreScopedByServerOwnedEnvironment() throws Exception {
+    void registrationIdentityIsCanonicalWhileOtpKeepsItsServerOwnedAudience() throws Exception {
         String schema = Files.readString(Path.of("scripts/schema.sql"));
         String mapper = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/auth/mapper/AppUserRegistrationMapper.java"));
@@ -81,11 +81,15 @@ class AppUserRegistrationReferralLockContractTest {
                 "scripts/migrations/20260812_auth_environment_identity_namespace.sql"));
         String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
 
-        assertThat(schema).contains("uk_user_phone_sandbox (country_code, phone, sandbox)");
+        assertThat(schema).contains("uk_user_phone (country_code, phone)")
+                .doesNotContain("uk_user_phone_sandbox");
         assertThat(schema).contains("auth_environment VARCHAR(16) NOT NULL");
         assertThat(mapper).contains("auth_environment=#{authEnvironment}");
         assertThat(mapper).contains("consumeValidChallengeInEnvironment");
-        assertThat(migration).contains("uk_user_phone_sandbox");
+        assertThat(migration)
+                .contains("DROP INDEX uk_user_phone_sandbox")
+                .contains("ADD UNIQUE KEY uk_user_phone (country_code,phone)")
+                .doesNotContain("ADD UNIQUE KEY uk_user_phone_sandbox");
         assertThat(migration).contains("DEFAULT ''LEGACY''");
         assertThat(startup).contains("20260812_auth_environment_identity_namespace.sql");
     }

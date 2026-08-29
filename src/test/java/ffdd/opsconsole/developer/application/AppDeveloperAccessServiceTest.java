@@ -66,7 +66,7 @@ class AppDeveloperAccessServiceTest {
             return 1;
         });
         MockEnvironment environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-1");
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         var result = new AppDeveloperAccessService(mapper, environment).submit(
                 7L, "Nexion", "dev@example.com", "Inference workloads", "key-1");
         assertThat(result.getCode()).isZero();

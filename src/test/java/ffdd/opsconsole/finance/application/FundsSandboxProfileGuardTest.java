@@ -21,23 +21,20 @@ class FundsSandboxProfileGuardTest {
     }
 
     @Test
-    void developmentCanRunExplicitServerSandbox() {
+    void developmentCannotRunTheRetiredLocalFundsSandbox() {
         FundsSandboxProperties properties = new FundsSandboxProperties();
         properties.setMode(FundsSandboxProperties.Mode.LOCAL_SANDBOX);
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
-        FundsSandboxProfileGuard guard = new FundsSandboxProfileGuard(properties, environment);
 
-        guard.afterPropertiesSet();
-
-        assertThat(guard.source()).isEqualTo("mock");
-        assertThat(guard.sourceEnvironment()).isEqualTo("SANDBOX");
-        assertThat(guard.isLocalSandboxEnabled()).isTrue();
+        assertThatThrownBy(() -> new FundsSandboxProfileGuard(properties, environment).afterPropertiesSet())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("FUNDS_LOCAL_SANDBOX_PROFILE_FORBIDDEN");
     }
 
     @Test
     void onlyOneExplicitIsolatedProfileCanEnableLocalFundsSandbox() {
-        assertThat(FundsSandboxProfileGuard.isStrictIsolatedProfile("dev")).isTrue();
+        assertThat(FundsSandboxProfileGuard.isStrictIsolatedProfile("dev")).isFalse();
         assertThat(FundsSandboxProfileGuard.isStrictIsolatedProfile("test")).isTrue();
         assertThat(FundsSandboxProfileGuard.isStrictIsolatedProfile("local-sandbox")).isFalse();
         assertThat(FundsSandboxProfileGuard.isStrictIsolatedProfile()).isFalse();
@@ -80,12 +77,12 @@ class FundsSandboxProfileGuardTest {
     }
 
     @Test
-    void onlySingleProdProfileCanUseCanonicalFunds() {
+    void singleDevOrProdProfileCanUseCanonicalFunds() {
         assertThat(FundsSandboxProfileGuard.isStrictProductionProfile()).isFalse();
         assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("prod")).isTrue();
         assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("default")).isFalse();
         assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("unknown")).isFalse();
         assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("prod", "test")).isFalse();
-        assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("dev")).isFalse();
+        assertThat(FundsSandboxProfileGuard.isStrictProductionProfile("dev")).isTrue();
     }
 }

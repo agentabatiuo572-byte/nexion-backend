@@ -13,7 +13,7 @@ public interface DevelopmentPayoutAddressMapper {
     @Select("""
             SELECT id FROM nx_user
              WHERE country_code=#{countryCode} AND phone=#{phone}
-               AND sandbox=1 AND status='ACTIVE' AND is_deleted=0
+               AND sandbox=0 AND status='ACTIVE' AND is_deleted=0
              LIMIT 1
             """)
     Long findDevelopmentUserId(@Param("countryCode") String countryCode, @Param("phone") String phone);

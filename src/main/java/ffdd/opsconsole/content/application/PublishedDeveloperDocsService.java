@@ -168,6 +168,8 @@ public class PublishedDeveloperDocsService {
     private ApiResult<Map<String, Object>> unavailable() { return ApiResult.fail(503, "DEVELOPER_DOCS_UNAVAILABLE"); }
 
     private String sourceEnvironment() {
-        return UserAuthEnvironment.resolve(environment).map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION").orElse("PRODUCTION");
+        return UserAuthEnvironment.resolve(environment)
+                .map(value -> value == UserAuthEnvironment.SANDBOX ? "SANDBOX" : "PRODUCTION")
+                .orElseThrow(() -> new IllegalStateException("DEVELOPER_DOCS_ENVIRONMENT_UNAVAILABLE"));
     }
 }

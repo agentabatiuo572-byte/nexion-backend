@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 /** Refuses acceptance startup until the four isolated G2 fixture tables were migrated explicitly. */
 @Component
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxSchemaInitializer implements ApplicationRunner {
     private final G2AcceptanceSandboxProfileGuard guard;

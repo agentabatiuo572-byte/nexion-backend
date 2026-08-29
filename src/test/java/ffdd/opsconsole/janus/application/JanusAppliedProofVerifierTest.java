@@ -108,7 +108,7 @@ class JanusAppliedProofVerifierTest {
     @Test
     void sandboxAppliedProofAcceptsTheSameServerEnrollmentAndRejectsAnotherUser() throws Exception {
         var environment = new MockEnvironment() {
-            @Override public String[] getActiveProfiles() { return new String[]{"dev"}; }
+            @Override public String[] getActiveProfiles() { return new String[]{"test"}; }
         };
         var enrollment = new JanusSandboxEnrollmentService(environment, "SANDBOX", "approved",
                 60_000L, System::currentTimeMillis, new java.security.SecureRandom());

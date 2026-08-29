@@ -3,11 +3,8 @@ package ffdd.opsconsole.finance.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.finance.application.PayoutVndCommandBoundary;
 import ffdd.opsconsole.finance.application.PayoutVndConfigService;
-import ffdd.opsconsole.finance.application.PayoutVndSandboxService;
 import ffdd.opsconsole.finance.dto.PayoutVndChannelUpdateRequest;
 import ffdd.opsconsole.finance.dto.PayoutVndConfigUpdateRequest;
-import ffdd.opsconsole.finance.dto.PayoutVndSandboxCallbackRequest;
-import ffdd.opsconsole.finance.dto.PayoutVndSandboxCreateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -20,11 +17,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -33,7 +28,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsPayoutVndController {
     private final PayoutVndConfigService service;
     private final PayoutVndCommandBoundary commands;
-    private final PayoutVndSandboxService sandbox;
     private final AuditLogService audit;
 
     @GetMapping("/config")
@@ -58,28 +52,6 @@ public class OpsPayoutVndController {
             @RequestBody(required = false) PayoutVndChannelUpdateRequest request) {
         return executeAudited("D7_PAYOUT_VND_CHANNEL_REJECTED", "CHANNEL_UPDATE",
                 idempotencyKey, request, () -> service.updateChannel(request));
-    }
-
-    @GetMapping("/sandbox/orders")
-    @PreAuthorize("hasAuthority('finance_d7_read')")
-    public ApiResult<Map<String, Object>> sandboxOrders(@RequestParam Long userId) {
-        return sandbox.orders(userId);
-    }
-
-    @PostMapping("/sandbox/orders")
-    @PreAuthorize("hasAuthority('finance_d7_manage')")
-    public ApiResult<Map<String, Object>> createSandboxOrder(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) PayoutVndSandboxCreateRequest request) {
-        return sandbox.create(idempotencyKey, request);
-    }
-
-    @PostMapping("/sandbox/callbacks")
-    @PreAuthorize("hasAuthority('finance_d7_manage')")
-    public ApiResult<Map<String, Object>> sandboxCallback(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) PayoutVndSandboxCallbackRequest request) {
-        return sandbox.callback(idempotencyKey, request);
     }
 
     private ApiResult<Map<String, Object>> executeAudited(

@@ -24,10 +24,11 @@ public class ProductionSupportPathGuard {
         }
         if (userId == null) return;
         Integer sandbox = mapper.sandboxUser(userId);
-        boolean allowed = profile == RuntimeProfile.DEVELOPMENT
-                ? Integer.valueOf(1).equals(sandbox)
-                : Integer.valueOf(0).equals(sandbox);
-        if (!allowed) {
+        // Development and production now share the canonical business path.
+        // Retired acceptance-sandbox identities must stay isolated from it in
+        // both profiles; the old dev-only inversion made ordinary dev users
+        // lose FAQ, ticket, and conversation access after sandbox retirement.
+        if (!Integer.valueOf(0).equals(sandbox)) {
             throw new BizException(409, "SUPPORT_PRODUCTION_PATH_FORBIDDEN");
         }
     }

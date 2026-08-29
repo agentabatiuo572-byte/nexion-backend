@@ -51,11 +51,10 @@ public class AppReferralRewardService {
         if (!developmentProfile && !strictSandboxProfile && !productionProfile) {
             throw new BizException(503, "H8_REWARD_RUNTIME_PROFILE_UNSUPPORTED");
         }
-        if (developmentProfile) requireDevelopmentUser(userId, account.sandbox());
         if (strictSandboxProfile && !sandbox) {
             throw new BizException(403, "H8_SANDBOX_ACCOUNT_REQUIRED");
         }
-        if (productionProfile && sandbox) {
+        if ((developmentProfile || productionProfile) && sandbox) {
             throw new BizException(403, "H8_PRODUCTION_SANDBOX_ACCOUNT_FORBIDDEN");
         }
         boolean sandboxFacts = strictSandboxProfile;

@@ -55,7 +55,7 @@ class AppTeamQuotaServiceTest {
     @Test
     void developmentAllowsAnyActiveDevelopmentAccountAndCanonicalCatalog() {
         var mapper = mock(AppTeamQuotaMapper.class);
-        when(mapper.userScope(7L)).thenReturn(new AppTeamQuotaMapper.UserScope(1, "V5"));
+        when(mapper.userScope(7L)).thenReturn(new AppTeamQuotaMapper.UserScope(0, "V5"));
         when(mapper.quotaRows()).thenReturn(List.of(new AppTeamQuotaMapper.QuotaRow(
                 "PRO", "stellarbox-pro", "Pro", 3, BigDecimal.ZERO, 10, "ALL", 2L)));
         when(mapper.activeDirect(7L)).thenReturn(2L);

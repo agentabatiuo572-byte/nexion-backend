@@ -16,7 +16,6 @@ import java.util.Arrays;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -27,15 +26,12 @@ public class B5RiskAlertDeliveryService {
     private static final String WEBHOOK_KEY = "risk.alert-subscription.webhook-url";
     private static final String SUBSCRIBER_KEY = "risk.alert-subscription.subscriber";
     static final String WEBHOOK_ALLOWLIST_KEY = "risk.alert-subscription.webhook-host-allowlist";
-    static final String EMAIL_MODE_KEY = "risk.alert-subscription.email-mode";
     static final String WEBHOOK_EGRESS_PROXY_KEY = "risk.alert-subscription.webhook-egress-proxy";
     static final int MAX_RETRIES = 5;
     private static final Set<String> CHANNELS = Set.of("inApp", "email", "webhook");
     private final B5RiskRadarMapper mapper;
     private final PlatformConfigFacade config;
     private final B5RiskAlertDeliveryFinalizer finalizer;
-    @Value("${spring.profiles.active:}")
-    private final String activeProfiles;
 
     @Scheduled(fixedDelayString = "${nexion.b5.alert-delivery-delay-ms:30000}")
     public void scheduledDispatch() {
@@ -47,7 +43,7 @@ public class B5RiskAlertDeliveryService {
         if (!StringUtils.hasText(subscriber)) return;
         Set<String> configured = parseChannels(config.activeValue(CHANNELS_KEY).orElse(""));
         if (!CHANNELS.containsAll(configured)) throw new IllegalStateException("B5_ALERT_CHANNEL_CONFIG_INVALID");
-        if (configured.contains("email") && !emailSandboxEnabled()) {
+        if (configured.contains("email")) {
             throw new IllegalStateException("B5_EMAIL_PROVIDER_UNAVAILABLE");
         }
         for (String channel : configured) {
@@ -73,7 +69,7 @@ public class B5RiskAlertDeliveryService {
             outcome = switch (delivery.channel()) {
                 case "inApp" -> new DeliveryOutcome("durable-inbox", "inapp:" + delivery.id());
                 case "webhook" -> deliverWebhook(delivery);
-                case "email" -> deliverSandboxEmail(delivery);
+                case "email" -> throw new IllegalStateException("B5_EMAIL_PROVIDER_UNAVAILABLE");
                 default -> throw new IllegalStateException("B5_ALERT_CHANNEL_INVALID");
             };
         } catch (Exception ex) {
@@ -103,22 +99,6 @@ public class B5RiskAlertDeliveryService {
             throw new IllegalStateException("B5_WEBHOOK_HTTP_" + response.statusCode());
         }
         return new DeliveryOutcome("provider", "http:" + response.statusCode());
-    }
-
-    private DeliveryOutcome deliverSandboxEmail(AlertDeliveryRecord delivery) {
-        if (!emailSandboxEnabled()) throw new IllegalStateException("B5_EMAIL_PROVIDER_UNAVAILABLE");
-        return new DeliveryOutcome("mock", "sandbox:b5-email:" + delivery.id());
-    }
-
-    boolean emailSandboxEnabled() {
-        return sandboxProfileAllowed(activeProfiles)
-                && "sandbox".equalsIgnoreCase(config.activeValue(EMAIL_MODE_KEY).orElse("disabled").trim());
-    }
-
-    static boolean sandboxProfileAllowed(String profiles) {
-        if (!StringUtils.hasText(profiles)) return false;
-        return Arrays.stream(profiles.split(",")).map(String::trim)
-                .anyMatch(profile -> "test".equalsIgnoreCase(profile) || "dev".equalsIgnoreCase(profile));
     }
 
     HttpClient webhookHttpClient() {

@@ -197,11 +197,9 @@ public class LegalTermsService {
     private UserAuthEnvironment sourceEnvironment() { return UserAuthEnvironment.resolve(environment).orElseThrow(() -> new IllegalStateException("LEGAL_TERMS_ENVIRONMENT_UNAVAILABLE")); }
     private String acceptanceRunId() {
         String configured = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "");
-        // Dev is a real Java runtime profile even when no acceptance batch is
-        // configured. Keep the retained SANDBOX provenance internally
-        // consistent so clients can distinguish it from production without
-        // weakening their response validation.
-        return StringUtils.hasText(configured) ? configured.trim() : "dev";
+        // Sandbox is an explicit test rail. Keep a deterministic fallback for
+        // isolated tests that do not provide an acceptance batch identifier.
+        return StringUtils.hasText(configured) ? configured.trim() : "test";
     }
     private LocalDateTime now() { return LocalDateTime.now(clock); }
     private String operator() { return AdminActorResolver.resolve("system"); }

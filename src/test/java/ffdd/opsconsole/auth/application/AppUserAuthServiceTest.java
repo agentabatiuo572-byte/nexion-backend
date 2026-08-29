@@ -58,6 +58,7 @@ class AppUserAuthServiceTest {
     private final AppUserAuthService service;
 
     AppUserAuthServiceTest() {
+        environment.setActiveProfiles("dev");
         properties.setTtlMinutes(120);
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(otpDelivery.available()).thenReturn(true);
@@ -71,6 +72,7 @@ class AppUserAuthServiceTest {
 
     @Test
     void validDatabaseUserGetsSessionBackedUserToken() {
+        environment.setActiveProfiles("dev");
         UserEntity user = new UserEntity();
         user.setId(42L);
         user.setCountryCode("+81");
@@ -604,7 +606,7 @@ class AppUserAuthServiceTest {
 
     @Test
     void passwordResetCompletionRejectsBeforeMutatingACrossEnvironmentAccount() {
-        environment.setActiveProfiles("dev");
+        environment.setActiveProfiles("test");
         UserEntity user = activeUser();
         user.setSandbox(0);
         when(users.selectOne(any())).thenReturn(user);
@@ -639,7 +641,8 @@ class AppUserAuthServiceTest {
     private static Stream<Arguments> crossEnvironmentAccounts() {
         return Stream.of(
                 Arguments.of("prod", 1),
-                Arguments.of("dev", 0));
+                Arguments.of("dev", 1),
+                Arguments.of("test", 0));
     }
 
     private UserEntity activeUser() {

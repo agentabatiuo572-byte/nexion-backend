@@ -33,6 +33,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -500,6 +501,14 @@ class AppTrialLifecycleServiceTest {
                 eq("Trial"), eq(new BigDecimal("1299")));
         verify(mapper).insertPurchasedDevice(eq(7L), eq(orderNo), eq(9L), eq("stellarbox-s1"),
                 eq("Entry"), eq("CLOUD"), anyString(), eq("Trial"), any(), any(), any());
+        ArgumentCaptor<Map<String, Object>> redeemedEvent = ArgumentCaptor.forClass(Map.class);
+        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), redeemedEvent.capture());
+        assertThat(redeemedEvent.getValue()).containsKeys(
+                "shadow_usdt", "shadow_nex", "offset_usdt", "remainder_usdt",
+                "discount_applied", "discount_usdt", "amount_usdt", "early_purchase",
+                "order_no", "product_no", "payment_status", "order_status",
+                "payment_rail", "device_id");
     }
 
     @Test
@@ -559,6 +568,34 @@ class AppTrialLifecycleServiceTest {
         verify(mapper).cancelTrial(eq(1L), eq(3L), eq("auto_end"), any(), any());
         verify(mapper, never()).settleWallet(any(), any(), any(), any());
         verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-DUE"), eq("trial.cancelled"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
+    }
+
+    @Test
+    void staleDueSettlementCancelsInsteadOfExecutingADeferredAutomaticPurchase() {
+        LocalDateTime now = LocalDateTime.now();
+        TrialRow stale = new TrialRow(1L, 7L, "TRIAL-STALE", "ACTIVE", null, null, "Trial",
+                3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
+                new BigDecimal("1299"), "productCode=stellarbox-s1", now.minusDays(40), now.minusDays(37),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, null, 4L);
+        when(mapper.lockTrial(7L)).thenReturn(stale);
+        when(mapper.cancelTrial(eq(1L), eq(4L), eq("auto_settlement_window_expired"), any(), any()))
+                .thenReturn(1);
+        when(mapper.policies()).thenReturn(List.of(
+                new PolicyRow("phaseOpen", "true"),
+                new PolicyRow("graceDays", "7"),
+                new PolicyRow("cooldownDays", "30"),
+                new PolicyRow("autoChargeAtEnd", "true")));
+
+        ApiResult<Map<String, Object>> result =
+                service.settleDue(7L, "TRIAL-STALE", "h2-auto:TRIAL-STALE");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).cancelTrial(eq(1L), eq(4L), eq("auto_settlement_window_expired"), any(), any());
+        verify(mapper, never()).settleWallet(any(), any(), any(), any());
+        verify(mapper, never()).decrementProductStock(anyLong());
+        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-STALE"), eq("trial.cancelled"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
     }
 

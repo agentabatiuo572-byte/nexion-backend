@@ -70,17 +70,3 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CREATE TABLE IF NOT EXISTS nx_compute_sandbox_reward (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  task_no VARCHAR(96) NOT NULL,
-  user_id BIGINT NOT NULL,
-  user_device_id BIGINT NOT NULL,
-  source_environment VARCHAR(16) NOT NULL DEFAULT 'SANDBOX',
-  run_id VARCHAR(96) NOT NULL,
-  receipt_no VARCHAR(96) NOT NULL,
-  simulated_reward_usdt DECIMAL(18,6) NOT NULL,
-  proof_hash CHAR(64) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uk_compute_sandbox_reward_task (task_no),
-  UNIQUE KEY uk_compute_sandbox_reward_receipt (receipt_no)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

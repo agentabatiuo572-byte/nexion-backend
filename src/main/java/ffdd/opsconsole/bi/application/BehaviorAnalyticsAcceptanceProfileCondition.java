@@ -7,7 +7,7 @@ import org.springframework.core.type.AnnotatedTypeMetadata;
 
 /** Registers the L6 Sandbox observation surface only in one isolated profile. */
 public final class BehaviorAnalyticsAcceptanceProfileCondition implements Condition {
-    private static final Set<String> ALLOWED = Set.of("dev", "test");
+    private static final Set<String> ALLOWED = Set.of("test");
 
     public static boolean isStrictIsolatedProfile(String... activeProfiles) {
         return activeProfiles != null && activeProfiles.length == 1 && ALLOWED.contains(activeProfiles[0]);
@@ -16,7 +16,8 @@ public final class BehaviorAnalyticsAcceptanceProfileCondition implements Condit
     /** Null is fail-closed: only one named profile determines an environment. */
     public static String sourceEnvironmentFor(String... activeProfiles) {
         if (isStrictIsolatedProfile(activeProfiles)) return "SANDBOX";
-        return activeProfiles != null && activeProfiles.length == 1 && "prod".equals(activeProfiles[0])
+        return activeProfiles != null && activeProfiles.length == 1
+                && ("dev".equals(activeProfiles[0]) || "prod".equals(activeProfiles[0]))
                 ? "PRODUCTION" : null;
     }
 

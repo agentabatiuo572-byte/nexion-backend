@@ -90,8 +90,8 @@ class AppNetworkRankServiceTest {
 
     @Test
     void development_user_reads_canonical_rank_without_acceptance_run() {
-        when(mapper.userScope(7L)).thenReturn(new AppNetworkRankMapper.UserScope(1));
-        when(mapper.rankedDevelopmentUsers()).thenReturn(List.of(
+        when(mapper.userScope(7L)).thenReturn(new AppNetworkRankMapper.UserScope(0));
+        when(mapper.rankedUsers()).thenReturn(List.of(
                 new AppNetworkRankMapper.RankRow(8L, new BigDecimal("20")),
                 new AppNetworkRankMapper.RankRow(7L, new BigDecimal("10"))));
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});

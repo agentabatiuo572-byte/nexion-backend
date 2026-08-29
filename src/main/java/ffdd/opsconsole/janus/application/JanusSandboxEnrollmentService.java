@@ -18,7 +18,7 @@ import org.springframework.stereotype.Service;
 /** Issues short-lived, server-owned credentials for the isolated Janus sandbox. */
 @Service
 public class JanusSandboxEnrollmentService {
-    private static final Set<String> SANDBOX_PROFILES = Set.of("dev", "test");
+    private static final Set<String> SANDBOX_PROFILES = Set.of("test");
     private static final Pattern DEVICE_ID = Pattern.compile("^[A-Za-z0-9._:-]{3,128}$");
 
     private final Environment environment;

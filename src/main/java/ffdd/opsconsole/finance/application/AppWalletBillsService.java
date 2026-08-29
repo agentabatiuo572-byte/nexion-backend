@@ -19,8 +19,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppWalletBillsService {
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
-    private static final Set<String> DEVELOPMENT_PROFILES = Set.of("dev");
+    private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
     private static final Set<String> ISOLATED_PROFILES = Set.of("test");
     private final AppWalletBillsMapper mapper;
     private final Environment environment;
@@ -60,13 +59,12 @@ public class AppWalletBillsService {
                 .collect(Collectors.toSet());
         boolean production = profiles.isEmpty()
                 || (profiles.size() == 1 && PRODUCTION_PROFILES.contains(profiles.iterator().next()));
-        boolean development = profiles.size() == 1 && DEVELOPMENT_PROFILES.contains(profiles.iterator().next());
+        boolean development = false;
         boolean isolated = profiles.size() == 1 && ISOLATED_PROFILES.contains(profiles.iterator().next());
         if (isolated) throw new BizException(409, "WALLET_PRODUCTION_BILLS_FORBIDDEN");
         if (!production && !development) throw new BizException(503, "WALLET_PROFILE_INVALID");
         AppWalletBillsMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null) throw new BizException(403, "WALLET_USER_REQUIRED");
-        if (development && user.sandbox() != 1) throw new BizException(403, "WALLET_DEVELOPMENT_USER_REQUIRED");
         if (production && user.sandbox() != 0) throw new BizException(403, "WALLET_PRODUCTION_USER_REQUIRED");
     }
 

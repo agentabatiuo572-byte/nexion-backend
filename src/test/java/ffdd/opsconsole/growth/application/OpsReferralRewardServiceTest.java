@@ -224,11 +224,11 @@ class OpsReferralRewardServiceTest {
     @Test
     void developmentProfileSettlesPhysicalDevelopmentAccountsThroughCanonicalProductionLedger() {
         environment.setActiveProfiles("dev");
-        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(1), eq(true), eq(10), eq(null)))
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true), eq(10), eq(null)))
                 .thenReturn(List.of(new ReferralRewardMapper.ReferralRow(22L, 11L)));
         when(mapper.insertSettlement(anyString(), eq(22L), eq(11L), any(), any(), any(),
                 eq("risk_bucket"), anyString(), anyString(), anyString(), anyString(),
-                any(LocalDateTime.class), eq("PRODUCTION"), eq(1), eq(true))).thenReturn(1);
+                any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true))).thenReturn(1);
 
         Map<String, Object> result = service.runSettlements("idem-ref-dev-canonical",
                 request(10, "development canonical referral settlement"));

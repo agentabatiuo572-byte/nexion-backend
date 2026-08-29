@@ -211,9 +211,6 @@ public class AppPayoutAddressService {
     }
 
     private Scope scope() {
-        if (sandboxProfile != null && sandboxProfile.isStrictDevelopmentRuntime()) {
-            return new Scope("server", "PRODUCTION", "", false, true);
-        }
         if (sandboxProfile != null && sandboxProfile.isLocalSandboxEnabled()) {
             if (sandboxRun == null) throw new BizException(503, "PAYOUT_ADDRESS_SANDBOX_RUN_ID_REQUIRED");
             return new Scope("mock", "SANDBOX", sandboxRun.requireRunId(), true, false);

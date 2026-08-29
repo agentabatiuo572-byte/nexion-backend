@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 
 /** Operations-side proof surface. It never reads production M inbox tables. */
 @RestController
-@Profile({"dev", "test"})
+@Profile("test")
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/support/acceptance")
 @RequiredArgsConstructor
 public class OpsSupportAcceptanceSandboxController {

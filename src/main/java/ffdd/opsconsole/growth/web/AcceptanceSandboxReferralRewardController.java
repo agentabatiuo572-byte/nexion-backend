@@ -3,12 +3,11 @@ package ffdd.opsconsole.growth.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.application.H8AcceptanceSandboxRunScope;
-import ffdd.opsconsole.growth.application.H8AcceptanceSandboxProfileCondition;
 import ffdd.opsconsole.growth.dto.AcceptanceSandboxReferralSettlementRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
-import org.springframework.context.annotation.Conditional;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /** Registered only by the local acceptance runtime; it does not exist in production. */
 @RestController
-@Conditional(H8AcceptanceSandboxProfileCondition.class)
+@Profile("test")
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/growth/referral-rewards/acceptance")
 @RequiredArgsConstructor
 public class AcceptanceSandboxReferralRewardController {

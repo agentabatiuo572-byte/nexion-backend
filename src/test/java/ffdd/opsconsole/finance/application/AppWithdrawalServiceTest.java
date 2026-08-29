@@ -375,7 +375,7 @@ class AppWithdrawalServiceTest {
     @Test
     void developmentProfileAllowsCanonicalWithdrawalHistoryForAnActiveDevelopmentAccount() {
         environment.setActiveProfiles("dev");
-        when(mapper.isSandboxUser(7L)).thenReturn(1);
+        when(mapper.isSandboxUser(7L)).thenReturn(0);
         when(mapper.userWithdrawals(7L, 50)).thenReturn(java.util.List.of());
 
         ApiResult<java.util.Map<String, Object>> result = service.list(7L);
@@ -386,13 +386,13 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
-    void developmentProfileRejectsAProductionAccountBeforeFinancialInteraction() {
+    void developmentProfileRejectsARetiredSandboxAccountBeforeFinancialInteraction() {
         environment.setActiveProfiles("dev");
-        when(mapper.isSandboxUser(7L)).thenReturn(0);
+        when(mapper.isSandboxUser(7L)).thenReturn(1);
 
         assertThatThrownBy(() -> service.list(7L))
                 .isInstanceOf(BizException.class)
-                .hasMessage("WITHDRAWAL_DEVELOPMENT_USER_REQUIRED");
+                .hasMessage("WITHDRAWAL_SANDBOX_USER_FORBIDDEN");
     }
 
     @Test

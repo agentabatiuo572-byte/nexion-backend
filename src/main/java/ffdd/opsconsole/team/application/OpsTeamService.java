@@ -58,7 +58,6 @@ import java.util.function.Supplier;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -249,9 +248,6 @@ public class OpsTeamService implements AuditReplayable {
     private final F5CommissionService f5CommissionService;
     private final AdminIdempotencyService idempotencyService;
 
-    /** Optional because unit tests construct this service without a Spring context. */
-    private final Environment environment;
-
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -403,7 +399,6 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
         coverageOverview.put("coverageRatio", coverage.coverageRatio());
         coverageOverview.put("redlinePct", coverage.redlinePct());
-        coverageOverview.putAll(f2SandboxProvenance());
         response.put("coverage", coverageOverview);
         response.put("sources", List.of(
                 "nx_config_item:team.ui.F.influence.*",
@@ -2624,21 +2619,8 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private boolean coverageBelowRedline() {
-        if (F2SandboxCoveragePolicy.isOverrideActive(environment)) {
-            return false;
-        }
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
-    }
-
-    private Map<String, Object> f2SandboxProvenance() {
-        boolean sandbox = F2SandboxCoveragePolicy.isOverrideActive(environment);
-        Map<String, Object> provenance = new LinkedHashMap<>();
-        provenance.put("sourceEnvironment", sandbox ? "SANDBOX" : "PRODUCTION");
-        provenance.put("runId", sandbox && environment != null
-                ? environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim() : "");
-        provenance.put("sandboxOverrideEnabled", sandbox);
-        return provenance;
     }
 
     private BigDecimal configDecimal(String key, BigDecimal fallback) {

@@ -83,7 +83,7 @@ class AppVRankControllerTest {
         var commission = mock(TeamCommissionRepository.class);
         var performance = mock(VRankPerformanceRepository.class);
         var users = mock(AppTeamInsightsMapper.class);
-        when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(1, "V2"));
+        when(users.userScope(7L)).thenReturn(new AppTeamInsightsMapper.UserScope(0, "V2"));
         when(commission.currentMemberVRank(7L)).thenReturn("V2");
         when(performance.computeSnapshot(7L)).thenReturn(new VRankEvaluationSnapshot(
                 new BigDecimal("1198"), new BigDecimal("5240"), 5, Map.of(1, 3)));

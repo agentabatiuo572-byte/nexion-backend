@@ -110,7 +110,7 @@ class ComputeTaskProofVerifierTest {
                 "SANDBOX", "dev", "prod"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("SANDBOX_PROFILE_REQUIRED");
-        ComputeTaskProofVerifier.requireSandboxProfile("SANDBOX", "dev");
+        ComputeTaskProofVerifier.requireSandboxProfile("SANDBOX", "test");
     }
 
     @Test

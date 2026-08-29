@@ -8,7 +8,6 @@ import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
-import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -253,25 +252,11 @@ public class AppUserRegistrationService {
         return user != null && Integer.valueOf(1).equals(user.getSandbox()) ? 1 : 0;
     }
 
-    /**
-     * The server profile is the sole authority for registration isolation.
-     * Only explicit prod is a production write; every development write must
-     * use one exact allow-listed development profile.
-     * This decision happens before the OTP compare-and-set or any other write.
-     */
+    /** Use the same server-owned account rail as login, refresh, and JWT validation. */
     private Integer sandboxForNewRegistration() {
-        String[] activeProfiles = environment.getActiveProfiles();
-        if (FundsSandboxProfileGuard.isStrictIsolatedProfile(activeProfiles)) {
-            return 1;
-        }
-        if (activeProfiles == null || activeProfiles.length == 0) {
-            return 0;
-        }
-        if (activeProfiles.length == 1
-                && "prod".equals(activeProfiles[0])) {
-            return 0;
-        }
-        return null;
+        return UserAuthEnvironment.resolve(environment)
+                .map(audience -> audience == UserAuthEnvironment.SANDBOX ? 1 : 0)
+                .orElse(null);
     }
 
     private String nextReferralCode() {

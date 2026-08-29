@@ -56,9 +56,16 @@ public class AppUserOAuthService {
         var resolved = UserAuthEnvironment.resolve(environment);
         if (resolved.isEmpty()) return ApiResult.fail(503, "OAUTH_PROFILE_FORBIDDEN");
         UserAuthEnvironment authEnvironment = resolved.get();
-        if (!validRequest(request, authEnvironment)) return ApiResult.fail(422, "OAUTH_REQUEST_INVALID");
+        if (request == null || !StringUtils.hasText(request.provider())) {
+            return ApiResult.fail(422, "OAUTH_REQUEST_INVALID");
+        }
         String provider = request.provider().trim().toUpperCase(Locale.ROOT);
-        if (authEnvironment == UserAuthEnvironment.PRODUCTION) {
+        boolean developmentPasskey = UserAuthEnvironment.hasSingleActiveProfile(environment, "dev")
+                && PASSKEY.equals(provider);
+        if (!validRequest(request, authEnvironment, developmentPasskey)) {
+            return ApiResult.fail(422, "OAUTH_REQUEST_INVALID");
+        }
+        if (authEnvironment == UserAuthEnvironment.PRODUCTION && !developmentPasskey) {
             if (!providerConfigured(provider)) return ApiResult.fail(503, "OAUTH_PROVIDER_NOT_CONFIGURED");
             // A configured provider still needs a verified exchange adapter. Never trust
             // an arbitrary client subject and never silently fall back to the sandbox.
@@ -72,20 +79,25 @@ public class AppUserOAuthService {
         }
         String sourceEnvironment = authEnvironment.name();
         String subject = sandboxChallengeService.consume(provider, request.challengeNo()).orElse(null);
-        if (!StringUtils.hasText(subject)) return ApiResult.fail(401, "OAUTH_SANDBOX_CHALLENGE_INVALID");
+        if (!StringUtils.hasText(subject)) {
+            return ApiResult.fail(401, developmentPasskey
+                    ? "OAUTH_DEVELOPMENT_CHALLENGE_INVALID"
+                    : "OAUTH_SANDBOX_CHALLENGE_INVALID");
+        }
         if (PASSKEY.equals(provider)) {
-            UserEntity developmentUser = developmentPasskeyAccount();
-            if (!isSandboxActive(developmentUser)) {
+            UserEntity developmentUser = developmentPasskeyAccount(authEnvironment);
+            if (!isActiveInEnvironment(developmentUser, authEnvironment)) {
                 return ApiResult.fail(503, "OAUTH_DEVELOPMENT_ACCOUNT_NOT_FOUND");
             }
-            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress, false);
+            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress,
+                    false, authEnvironment == UserAuthEnvironment.SANDBOX);
         }
         UserOAuthIdentityEntity identity = identityMapper.findForUpdate(provider, subject, sourceEnvironment);
         UserEntity user;
         boolean created = false;
         if (identity != null) {
             user = userMapper.selectById(identity.getUserId());
-            if (!isSandboxActive(user)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+            if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
         } else {
             user = createSandboxUser(provider, subject, request.displayName(), clientAddress);
             userMapper.insert(user);
@@ -115,28 +127,30 @@ public class AppUserOAuthService {
                 }
                 identity = winner;
                 user = userMapper.selectById(identity.getUserId());
-                if (!isSandboxActive(user)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
+                if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
             }
         }
-        return issueDevelopmentSession(user, provider, subject, clientAddress, created);
+        return issueDevelopmentSession(user, provider, subject, clientAddress, created, true);
     }
 
     private ApiResult<UserOAuthExchangeResponse> issueDevelopmentSession(
-            UserEntity user, String provider, String subject, String clientAddress, boolean created) {
+            UserEntity user, String provider, String subject, String clientAddress, boolean created, boolean sandbox) {
         ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress);
         if (session.getCode() != 0 || session.getData() == null) {
             return ApiResult.fail(session.getCode(), session.getMessage());
         }
         UserLoginResponse login = session.getData();
+        String source = sandbox ? "mock" : "development";
         outboxService.publish("USER_SECURITY", String.valueOf(user.getId()),
-                created ? "auth.oauth_sandbox_account_created" : "auth.oauth_sandbox_login",
-                Map.of("userId", user.getId(), "provider", provider, "source", "mock", "sandbox", true,
+                created ? "auth.oauth_sandbox_account_created"
+                        : sandbox ? "auth.oauth_sandbox_login" : "auth.development_passkey_login",
+                Map.of("userId", user.getId(), "provider", provider, "source", source, "sandbox", sandbox,
                         "subjectHash", hashSubject(provider + ":" + subject)));
         return ApiResult.ok(new UserOAuthExchangeResponse(login.accessToken(), login.tokenType(), login.user(),
-                login.refreshToken(), "mock", true));
+                login.refreshToken(), source, sandbox));
     }
 
-    private UserEntity developmentPasskeyAccount() {
+    private UserEntity developmentPasskeyAccount(UserAuthEnvironment authEnvironment) {
         String countryCode = environment.getProperty(
                 "nexion.auth.development-passkey-account.country-code");
         String phone = environment.getProperty("nexion.auth.development-passkey-account.phone");
@@ -146,19 +160,26 @@ public class AppUserOAuthService {
         String normalizedPhone = phone.trim();
         if (!DEVELOPMENT_PASSKEY_COUNTRY_CODE.equals(normalizedCountryCode)
                 || !DEVELOPMENT_PASSKEY_PHONE.equals(normalizedPhone)) return null;
-        return userMapper.lockActiveDevelopmentUserByPhone(
+        if (authEnvironment == UserAuthEnvironment.SANDBOX) {
+            return userMapper.lockActiveDevelopmentUserByPhone(
+                    DEVELOPMENT_PASSKEY_COUNTRY_CODE,
+                    DEVELOPMENT_PASSKEY_COUNTRY_CODE.substring(1),
+                    DEVELOPMENT_PASSKEY_PHONE);
+        }
+        return userMapper.lockActiveCanonicalDevelopmentUserByPhone(
                 DEVELOPMENT_PASSKEY_COUNTRY_CODE,
                 DEVELOPMENT_PASSKEY_COUNTRY_CODE.substring(1),
                 DEVELOPMENT_PASSKEY_PHONE);
     }
 
-    private boolean validRequest(UserOAuthExchangeRequest request, UserAuthEnvironment authEnvironment) {
+    private boolean validRequest(
+            UserOAuthExchangeRequest request, UserAuthEnvironment authEnvironment, boolean developmentPasskey) {
         if (request == null || !StringUtils.hasText(request.provider())) {
             return false;
         }
         String provider = request.provider().trim().toUpperCase(Locale.ROOT);
         if (!Set.of(GOOGLE, APPLE, PASSKEY, TELEGRAM).contains(provider)) return false;
-        if (authEnvironment == UserAuthEnvironment.PRODUCTION) return true;
+        if (authEnvironment == UserAuthEnvironment.PRODUCTION && !developmentPasskey) return true;
         return StringUtils.hasText(request.challengeNo())
                 && request.challengeNo().trim().matches("OAUTH-[a-f0-9]{32}");
     }
@@ -196,8 +217,8 @@ public class AppUserOAuthService {
         return user;
     }
 
-    private boolean isSandboxActive(UserEntity user) {
-        return user != null && Integer.valueOf(1).equals(user.getSandbox())
+    private boolean isActiveInEnvironment(UserEntity user, UserAuthEnvironment authEnvironment) {
+        return user != null && authEnvironment.acceptsSandbox(user.getSandbox())
                 && Integer.valueOf(0).equals(user.getIsDeleted()) && "ACTIVE".equalsIgnoreCase(user.getStatus());
     }
 

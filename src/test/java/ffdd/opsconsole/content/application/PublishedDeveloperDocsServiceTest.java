@@ -10,16 +10,38 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 class PublishedDeveloperDocsServiceTest {
+    private static MockEnvironment productionEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+        return environment;
+    }
+
     @Test
     void resolvesPublishedLocaleAndNeverReturnsDraft() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         when(config.activeValue("developer.docs.published")).thenReturn(Optional.of("""
                 {"version":"2026.08.17","status":"PUBLISHED","locales":{"en":{"example":{"request":"POST /v1/jobs","response":"200"},"endpoints":[{"method":"POST","path":"/v1/jobs"}],"events":["job.completed"]},"zh":{"example":{"request":"POST /v1/jobs","response":"200"},"endpoints":[{"method":"POST","path":"/v1/jobs"}],"events":["job.completed"]}}}
                 """));
-        var result = new PublishedDeveloperDocsService(config, new MockEnvironment(), mock(AuditLogService.class)).publicDocument("zh");
+        var result = new PublishedDeveloperDocsService(config, productionEnvironment(), mock(AuditLogService.class)).publicDocument("zh");
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("version", "2026.08.17").containsEntry("locale", "zh");
         assertThat(result.getData().get("endpoints")).asList().hasSize(1);
+    }
+
+    @Test
+    void unknownRuntimeProfileCannotReadPublishedProductionContent() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("developer.docs.published")).thenReturn(Optional.of("""
+                {"version":"2026.08.17","status":"PUBLISHED","locales":{"en":{"example":{"request":"GET /v1","response":"200"},"endpoints":[{"method":"GET","path":"/v1"}],"events":["job.completed"]}}}
+                """));
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("staging");
+
+        var result = new PublishedDeveloperDocsService(config, environment, mock(AuditLogService.class))
+                .publicDocument("en");
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("DEVELOPER_DOCS_UNAVAILABLE");
     }
 
     @Test

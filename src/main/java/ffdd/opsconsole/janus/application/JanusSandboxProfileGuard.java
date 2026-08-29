@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class JanusSandboxProfileGuard {
-    private static final Set<String> ALLOWED_SANDBOX_PROFILES = Set.of("dev", "test");
+    private static final Set<String> ALLOWED_SANDBOX_PROFILES = Set.of("test");
 
     private final Environment environment;
     @Value("${nexion.janus.executor.mode:PRODUCTION}")

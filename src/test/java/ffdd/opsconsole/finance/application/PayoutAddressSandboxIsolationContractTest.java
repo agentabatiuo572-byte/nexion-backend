@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 
 class PayoutAddressSandboxIsolationContractTest {
     @Test
-    void sandboxAddressAndOtpTablesAreRunAndUserScopedAndInstalledAtStartup() throws Exception {
+    void historicalAddressFixturesRemainIsolatedAndCannotInstallAtStartup() throws Exception {
         String mapper = Files.readString(Path.of("src/main/java/ffdd/opsconsole/finance/mapper/AppPayoutAddressMapper.java"));
         String service = Files.readString(Path.of("src/main/java/ffdd/opsconsole/finance/application/AppPayoutAddressService.java"));
         String migration = Files.readString(Path.of("scripts/migrations/20260816_payout_address_sandbox.sql"));
@@ -23,7 +23,9 @@ class PayoutAddressSandboxIsolationContractTest {
                 "uk_user_payout_address_sandbox_otp (run_id,user_id,challenge_no)");
         assertThat(schema).contains("CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox",
                 "CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp");
-        assertThat(runner).contains("20260816_payout_address_sandbox.sql");
+        assertThat(runner).doesNotContain("20260816_payout_address_sandbox.sql");
+        assertThat(schema.lastIndexOf("nx_user_payout_address_sandbox_otp,"))
+                .isGreaterThan(schema.indexOf("CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp"));
         assertThat(mapper).contains("sandboxList", "sandboxLock", "insertSandboxOtp", "consumeSandboxOtp")
                 .contains("lockActiveSandboxUser")
                 .contains("run_id=#{runId} AND user_id=#{userId}");

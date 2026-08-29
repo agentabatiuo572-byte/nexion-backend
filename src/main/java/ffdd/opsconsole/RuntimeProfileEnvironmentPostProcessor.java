@@ -15,6 +15,10 @@ public final class RuntimeProfileEnvironmentPostProcessor implements Environment
 
     void validate(ConfigurableEnvironment environment) {
         RuntimeProfile.requireSingle(environment);
+        String acceptanceRunId = environment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
+        if (!acceptanceRunId.isEmpty()) {
+            throw new IllegalStateException("SANDBOX_RUNTIME_RETIRED: NEXION_ACCEPTANCE_RUN_ID is forbidden");
+        }
     }
 
     @Override

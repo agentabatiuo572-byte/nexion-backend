@@ -72,7 +72,7 @@ class AppAmbassadorApplicationServiceTest {
     void developmentAllowsAnyActiveDevelopmentAccountAndProductionProvenance() {
         var mapper = mock(AppAmbassadorApplicationMapper.class);
         var inserted = new AtomicReference<AppAmbassadorApplicationMapper.ApplicationWrite>();
-        when(mapper.lockUser(7L)).thenReturn(new AppAmbassadorApplicationMapper.UserScope(1, "V6", "Alice", "Tokyo"));
+        when(mapper.lockUser(7L)).thenReturn(new AppAmbassadorApplicationMapper.UserScope(0, "V6", "Alice", "Tokyo"));
         when(mapper.findByKey(7L, "PRODUCTION", "", "amb-key")).thenAnswer(ignored -> inserted.get() == null
                 ? null : row(inserted.get()));
         when(mapper.insertApplication(any())).thenAnswer(invocation -> { inserted.set(invocation.getArgument(0)); return 1; });

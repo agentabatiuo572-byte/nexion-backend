@@ -12,15 +12,22 @@ public enum UserAuthEnvironment {
     PRODUCTION;
 
     public static final String CLAIM = "authEnvironment";
-    private static final Set<String> DEVELOPMENT_PROFILES = Set.of("dev", "test");
+    private static final Set<String> CANONICAL_ACCOUNT_PROFILES = Set.of("dev", "prod");
 
     public static Optional<UserAuthEnvironment> resolve(Environment environment) {
         if (environment == null) return Optional.empty();
         String[] profiles = environment.getActiveProfiles();
-        if (profiles.length == 0) return Optional.of(PRODUCTION);
-        if (profiles.length == 1 && DEVELOPMENT_PROFILES.contains(profiles[0])) return Optional.of(SANDBOX);
-        if (profiles.length == 1 && "prod".equals(profiles[0])) return Optional.of(PRODUCTION);
+        if (profiles.length == 1 && CANONICAL_ACCOUNT_PROFILES.contains(profiles[0])) {
+            return Optional.of(PRODUCTION);
+        }
+        if (profiles.length == 1 && "test".equals(profiles[0])) return Optional.of(SANDBOX);
         return Optional.empty();
+    }
+
+    public static boolean hasSingleActiveProfile(Environment environment, String profile) {
+        if (environment == null || profile == null) return false;
+        String[] profiles = environment.getActiveProfiles();
+        return profiles.length == 1 && profile.equals(profiles[0]);
     }
 
     public static Optional<UserAuthEnvironment> fromClaim(String value) {

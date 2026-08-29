@@ -10,20 +10,14 @@ class StartupSchemaMigrationContractTest {
     @Test
     void startupSequenceIncludesEveryCurrentApplicationMigration() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
-        assertThat(runner).contains("20260812_commerce_acceptance_sandbox.sql",
-                "20260815_h4_wheel_local_sandbox.sql",
-                "20260816_team_ambassador_policy.sql",
+        assertThat(runner).contains("20260816_team_ambassador_policy.sql",
                 "20260817_onboarding_phone_activation.sql",
                 "20260817_p2_product_specifications.sql",
                 "20260817_notification_preferences.sql",
-                "20260817_g1_g7_market_sandbox.sql",
-                "20260817_market_app_sandbox_run_scope.sql",
                 "20260817_developer_access_governance.sql",
                 "20260817_genesis_holder_policy.sql",
                 "20260817_h7_voucher_cadence.sql",
                 "20260817_legal_terms_versioned.sql",
-                "20260818_h7_voucher_cadence_sandbox.sql",
-                "20260819_compute_sandbox_reward_run_scope.sql",
                 "20260820_e2_task_price_history.sql",
                 "20260820_home_grid_datacenter_metadata.sql",
                 "20260820_i4_homepage_trust_content.sql",
@@ -31,7 +25,14 @@ class StartupSchemaMigrationContractTest {
                 "20260823_withdrawal_terminal_refund_projection.sql",
                 "20260823_team_hardware_quota_product_alignment.sql",
                 "20260826_h2_trial_product_catalog.sql",
-                "20260826_trial_conversion_order_backfill.sql");
+                "20260826_trial_conversion_order_backfill.sql",
+                "20260828_cd_finance_canonical.sql");
+        assertThat(runner).doesNotContain("20260812_commerce_acceptance_sandbox.sql",
+                "20260815_h4_wheel_local_sandbox.sql",
+                "20260817_g1_g7_market_sandbox.sql",
+                "20260817_market_app_sandbox_run_scope.sql",
+                "20260818_h7_voucher_cadence_sandbox.sql",
+                "20260819_compute_sandbox_reward_run_scope.sql");
     }
 
     @Test
@@ -44,9 +45,10 @@ class StartupSchemaMigrationContractTest {
     }
 
     @Test
-    void developmentEnablesFundsAndLoopbackOnlyThroughExplicitEnvironment() throws Exception {
+    void developmentRetiresFundsSandboxWhileKeepingLoopbackGeoDevelopmentAccess() throws Exception {
         String profile = Files.readString(Path.of("src/main/resources/application-dev.yml"));
-        assertThat(profile).contains("mode: LOCAL_SANDBOX", "allow-loopback-without-country: true");
+        assertThat(profile).contains("funds-sandbox:", "mode: DISABLED", "allow-loopback-without-country: true")
+                .doesNotContain("mode: LOCAL_SANDBOX");
     }
 
     @Test
@@ -75,7 +77,7 @@ class StartupSchemaMigrationContractTest {
 
     @Test
     void paymentCardVersionHasAnUpgradeMigration() throws Exception {
-        String migrations = Files.readString(Path.of("scripts/migrations/20260810_cd_finance_sandbox.sql"));
+        String migrations = Files.readString(Path.of("scripts/migrations/20260828_cd_finance_canonical.sql"));
         assertThat(migrations).contains("nx_wallet_bank_card", "ADD COLUMN version");
     }
 

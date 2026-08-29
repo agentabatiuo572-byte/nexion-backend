@@ -38,8 +38,7 @@ class OpsRiskRadarServiceTest {
             mock(AdminIdempotencyService.class),
             mock(AuditLogService.class),
             mock(AdminOperatorRoleResolver.class),
-            Clock.fixed(Instant.parse("2026-07-23T04:00:00Z"), ZoneOffset.UTC),
-            "");
+            Clock.fixed(Instant.parse("2026-07-23T04:00:00Z"), ZoneOffset.UTC));
 
     @BeforeEach
     void setUp() {

@@ -52,27 +52,24 @@ class CregisSandboxControllerSecurityTest {
     }
 
     @Test
-    void anonymousAndUnrelatedUsersCannotReadOrRunProbe() throws Exception {
+    void developmentRuntimeDoesNotRegisterRetiredCregisSandboxRoutes() throws Exception {
         mockMvc.perform(get("/api/admin/finance/cregis/sandbox"))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/admin/finance/cregis/sandbox")
                         .with(user("other").authorities(() -> "finance_d2_read")))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isNotFound());
         mockMvc.perform(post("/api/admin/finance/cregis/sandbox/probes")
                         .with(user("reader").authorities(() -> "finance_d1_read")))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isNotFound());
     }
 
     @Test
-    void d1ReadAndConfigManageAuthoritiesAreSeparated() throws Exception {
+    void evenFormerlyAuthorizedAdminsReceiveNotFoundInDevelopment() throws Exception {
         mockMvc.perform(get("/api/admin/finance/cregis/sandbox")
                         .with(user("reader").authorities(() -> "finance_d1_read")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.productionReady").value(false));
+                .andExpect(status().isNotFound());
         mockMvc.perform(post("/api/admin/finance/cregis/sandbox/probes")
                         .with(user("operator").authorities(() -> "finance_d1_bank_config_manage")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.result").value("PASS"))
-                .andExpect(jsonPath("$.data.externalFundSideEffects").value(false));
+                .andExpect(status().isNotFound());
     }
 }

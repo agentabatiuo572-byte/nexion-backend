@@ -114,7 +114,7 @@ class JanusExecutorClaimVerifierTest {
     @Test
     void sandboxClaimAcceptsServerEnrollmentForAUserNotPresentInStaticFixtures() {
         var sandboxEnvironment = new MockEnvironment() {
-            @Override public String[] getActiveProfiles() { return new String[]{"dev"}; }
+            @Override public String[] getActiveProfiles() { return new String[]{"test"}; }
         };
         var enrollment = new JanusSandboxEnrollmentService(sandboxEnvironment, "SANDBOX", "approved",
                 60_000L, System::currentTimeMillis, new java.security.SecureRandom());

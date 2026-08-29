@@ -9,8 +9,8 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 public class FundsSandboxProfileGuard implements InitializingBean {
-    private static final Set<String> ALLOWED_PROFILES = Set.of("test", "dev");
-    private static final Set<String> PRODUCTION_PROFILES = Set.of("prod");
+    private static final Set<String> ALLOWED_PROFILES = Set.of("test");
+    private static final Set<String> CANONICAL_PROFILES = Set.of("dev", "prod");
     private final FundsSandboxProperties properties;
     private final Environment environment;
 
@@ -24,9 +24,8 @@ public class FundsSandboxProfileGuard implements InitializingBean {
 
     /**
      * Single authority for any domain that wants to mutate the isolated funds
-     * wallet. LOCAL_SANDBOX is usable only in exactly one declared development
-     * profile; callers must never infer availability from the properties mode
-     * alone.
+     * wallet. LOCAL_SANDBOX is retained only as an in-process automated-test
+     * harness. No deployable runtime profile is allowed to expose it.
      */
     public boolean isLocalSandboxEnabled() {
         return properties.getMode() == FundsSandboxProperties.Mode.LOCAL_SANDBOX
@@ -44,7 +43,7 @@ public class FundsSandboxProfileGuard implements InitializingBean {
         return activeProfiles != null
                 && activeProfiles.length == 1
                 && activeProfiles[0] != null
-                && PRODUCTION_PROFILES.contains(activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT));
+                && CANONICAL_PROFILES.contains(activeProfiles[0].trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     public static boolean isStrictDevelopmentProfile(String... activeProfiles) {

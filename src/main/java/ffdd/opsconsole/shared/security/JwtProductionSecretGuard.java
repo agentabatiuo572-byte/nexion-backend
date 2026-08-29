@@ -6,7 +6,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-/** Refuse the checked-in development secret in the production audience. */
+/** Refuse the checked-in development secret in a production deployment. */
 @Component
 @RequiredArgsConstructor
 public class JwtProductionSecretGuard implements InitializingBean {
@@ -17,9 +17,14 @@ public class JwtProductionSecretGuard implements InitializingBean {
 
     @Override
     public void afterPropertiesSet() {
-        if (UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.PRODUCTION
+        if (requiresProductionSecret()
                 && (!StringUtils.hasText(properties.getSecret()) || DEVELOPMENT_SECRET.equals(properties.getSecret()))) {
             throw new IllegalStateException("NEXION_JWT_SECRET_REQUIRED_IN_PRODUCTION");
         }
+    }
+
+    private boolean requiresProductionSecret() {
+        return !UserAuthEnvironment.hasSingleActiveProfile(environment, "dev")
+                && !UserAuthEnvironment.hasSingleActiveProfile(environment, "test");
     }
 }

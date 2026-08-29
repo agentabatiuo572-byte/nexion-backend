@@ -18,9 +18,9 @@ class JanusSandboxProfileGuardTest {
     }
 
     @Test
-    void developmentProfileExposesExplicitSandboxMarker() {
+    void internalTestProfileExposesExplicitSandboxMarker() {
         JanusSandboxProfileGuard guard = new JanusSandboxProfileGuard(
-                new MockEnvironment().withProperty("spring.profiles.active", "dev"), "SANDBOX");
+                new MockEnvironment().withProperty("spring.profiles.active", "test"), "SANDBOX");
 
         guard.validateProfileBoundary();
 

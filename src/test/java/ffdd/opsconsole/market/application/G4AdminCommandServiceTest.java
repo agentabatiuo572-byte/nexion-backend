@@ -57,7 +57,7 @@ class G4AdminCommandServiceTest {
     @Test
     void sandboxUnknownAndMixedRuntimeRejectEmissionBeforeIdempotencyOrAnyGenesisLock() {
         for (String[] profiles : List.of(
-                new String[] {"dev"},
+                new String[] {"test"},
                 new String[] {"qa"},
                 new String[] {"prod", "dev"})) {
             when(environment.getActiveProfiles()).thenReturn(profiles);

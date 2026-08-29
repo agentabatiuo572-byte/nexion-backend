@@ -17,7 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** Application transaction boundary backed only by the isolated MyBatis mapper. */
 @Repository
-@Profile({"dev", "test"})
+@Profile("test")
 @RequiredArgsConstructor
 public class G2AcceptanceSandboxRepository {
     private static final String SOURCE = "mock";
