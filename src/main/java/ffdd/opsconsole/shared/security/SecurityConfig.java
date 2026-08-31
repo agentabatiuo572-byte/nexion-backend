@@ -69,7 +69,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/config/commission/rates").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/commission/rates", "/api/config/commission/guide").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()

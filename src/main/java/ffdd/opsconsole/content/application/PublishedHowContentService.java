@@ -17,6 +17,7 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
 
 /** One server-owned publication document for all six How-it-works pages. */
@@ -109,7 +110,10 @@ public class PublishedHowContentService {
             String serialized = mapper.writeValueAsString(document);
             if (serialized.getBytes(StandardCharsets.UTF_8).length > 524_288) return ApiResult.fail(422, "HOW_CONTENT_TOO_LARGE");
             config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
+            boolean systemPublication = SecurityContextHolder.getContext().getAuthentication() == null;
             audit.recordRequired(AuditLogWriteRequest.builder().action("HOW_CONTENT_PUBLISHED_CHANGED")
+                    .actorType(systemPublication ? "SYSTEM" : "ADMIN")
+                    .actorUsername(systemPublication ? "development-baseline" : null)
                     .resourceType("PUBLISHED_CONTENT").resourceId(CONFIG_KEY).result("SUCCESS").riskLevel("MEDIUM")
                     .detail(Map.of("beforeRevision", currentRevision, "afterRevision", currentRevision + 1,
                             "status", status, "version", version.trim(), "contentKeys", contents.keySet(), "reason", reason.trim())).build());
