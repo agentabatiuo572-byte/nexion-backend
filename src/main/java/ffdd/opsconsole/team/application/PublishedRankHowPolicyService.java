@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 /** Structured publication of the Rank "How it works" policy. */
 @Service
@@ -25,6 +26,8 @@ public class PublishedRankHowPolicyService {
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
+    private final VRankPromotionEngine promotionEngine;
+    private final LeadershipPoolConfigGuard leadershipPoolConfigGuard;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
@@ -36,11 +39,18 @@ public class PublishedRankHowPolicyService {
             String locale = resolveLocale(locales, requestedLocale);
             Map<String, Object> policy = map(locales == null ? null : locales.get(locale));
             if (version == null || policy == null || !validPolicy(policy)) return unavailable();
-            Map<String, Object> out = new LinkedHashMap<>(policy);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("hero", policy.get("hero"));
+            out.put("sections", ((List<?>) policy.get("sections")).stream().map(raw -> {
+                Map<String, Object> section = map(raw);
+                return Map.of("id", section.get("id"), "title", section.get("title"),
+                        "body", section.get("body"), "order", section.get("order"));
+            }).toList());
             out.put("version", version);
             out.put("locale", locale);
             out.put("status", "PUBLISHED");
             out.put("source", "server");
+            out.put("rules", publicRuleFacts());
             String sourceEnvironment = sourceEnvironment();
             String runId = "";
             if ("SANDBOX".equals(sourceEnvironment)) {
@@ -90,7 +100,10 @@ public class PublishedRankHowPolicyService {
             if(serialized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>262_144)
                 return ApiResult.fail(422,"RANK_HOW_POLICY_TOO_LARGE");
             config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
+            boolean systemPublication = SecurityContextHolder.getContext().getAuthentication() == null;
             audit.recordRequired(AuditLogWriteRequest.builder().action("RANK_HOW_POLICY_CHANGED")
+                    .actorType(systemPublication ? "SYSTEM" : "ADMIN")
+                    .actorUsername(systemPublication ? "development-baseline" : null)
                     .resourceType("PUBLISHED_CONTENT").resourceId(CONFIG_KEY).result("SUCCESS").riskLevel("MEDIUM")
                     .detail(Map.of("beforeRevision",currentRevision,"afterRevision",currentRevision+1,
                             "status",status,"version",version.trim(),"reason",reason.trim())).build());
@@ -137,5 +150,13 @@ public class PublishedRankHowPolicyService {
             return "PRODUCTION";
         }
         throw new IllegalStateException("RANK_HOW_RUNTIME_PROFILE_INVALID");
+    }
+
+    private Map<String, Object> publicRuleFacts() {
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("permanentProtection", promotionEngine.permanentProtectionEnabled());
+        facts.put("qualifiedReferralSelfBuyUSD", promotionEngine.qualifiedReferralSelfBuyUsd());
+        facts.put("leadershipConfigured", leadershipPoolConfigGuard.isConfigured());
+        return facts;
     }
 }

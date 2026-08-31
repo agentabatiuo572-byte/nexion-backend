@@ -84,6 +84,15 @@ class LeadershipPoolConfigGuardTest {
     }
 
     @Test
+    void publicConfiguredFactProjectsReadinessWithoutReturningSettlementConfiguration() {
+        assertThat(guard(validValues()).isConfigured()).isTrue();
+
+        Map<String, String> incomplete = validValues();
+        incomplete.remove("team.ui.F.pool.settleCron");
+        assertThat(guard(incomplete).isConfigured()).isFalse();
+    }
+
+    @Test
     void writeAndReadParserShareTheSameThirtyPercentSafetyCeiling() {
         assertThat(LeadershipPoolConfigGuard.canonicalConfiguredPercent("1%"))
                 .isEqualTo("1%");

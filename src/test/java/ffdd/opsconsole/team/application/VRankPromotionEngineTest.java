@@ -205,6 +205,21 @@ class VRankPromotionEngineTest {
         assertThat(commissionRepository.userLevelLogs).hasSize(1);
     }
 
+    @Test
+    void publicPolicyFactsReuseTheLivePromotionEngineConfiguration() {
+        configFacade.values.put("team.ui.F.vrank.permanent", "on");
+
+        assertThat(engine.permanentProtectionEnabled()).isTrue();
+        assertThat(engine.qualifiedReferralSelfBuyUsd()).isEqualByComparingTo("500");
+    }
+
+    @Test
+    void qualifiedReferralFactPreservesAConfiguredZeroMinimum() {
+        commissionRepository.vRankConfigRows.set(1, row("V1", "0", 3, "0", null, 0, 1));
+
+        assertThat(engine.qualifiedReferralSelfBuyUsd()).isEqualByComparingTo("0");
+    }
+
     // ============================================================
     // 字段缺失 ≠ value=0 通过:V1 不配 teamVolume 不能用 0 阻断
     // ============================================================

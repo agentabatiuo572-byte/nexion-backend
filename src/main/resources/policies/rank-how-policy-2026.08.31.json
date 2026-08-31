@@ -1,0 +1,544 @@
+{
+  "version": "2026.08.31",
+  "status": "PUBLISHED",
+  "revision": 1,
+  "locales": {
+    "zh": {
+      "hero": "从购买、邀请到团队成长，了解每一阶所需的条件与奖励规则。",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "什么是等级体系？",
+          "body": "等级反映你的购买与团队成长情况，当前开放 {firstRank} 至 {lastRank}。晋升需要满足对应条件，单纯增加成员人数不一定会升级。",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "等级与奖励",
+          "body": "自购、有效直推、团队业绩和高等级直属共同参与评估。不同等级的权益由当前规则决定，奖励是否到账以实际发放记录为准。",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "{rankCount} 阶一览",
+          "body": "每一阶都有自己的条件与权益。下方头衔读取当前配置；点击页面底部按钮可查看你的实际等级进度。",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "如何升级",
+          "body": "系统从低到高逐阶核验已设置的正数门槛。相关条件必须同时满足，每次评估最多晋升一级；未设置正数门槛的维度不额外要求。",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. 自买金额",
+          "body": "按有效购买累计计算本人自购业绩，退款会相应扣减。以实际计入的订单和金额为准，不把示例或页面显示当作购买事实。",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. 有效直推人数",
+          "body": "直属成员按当前 V1 自购门槛 {referralThreshold} 判定，达到门槛才计入有效直推。目标等级另有所需人数，不能只看团队总人数。",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. 团队累计业绩",
+          "body": "按团队范围内符合条件的购买业绩累计，并扣除退款。所需业绩随目标等级不同而变化，具体缺口可在等级进度中查看。",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. 直属成员的等级",
+          "body": "部分等级还要求多个直属成员达到指定等级或更高等级。要求的等级和人数按目标等级配置核验，不以团队总人数替代。",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "不可越级",
+          "body": "即使一次已满足多个后续等级，每个触发事件也最多晋升一级；后续评估继续按阶进行，各阶奖励分别处理。",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "等级保护",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "每阶解锁什么",
+          "body": "不同等级可能对应网络版税、平级奖励、领导池票权和培育奖励。配置权益不等于已经到账，实际资格、限额、冷却与发放状态仍需满足对应规则。",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "网络版税",
+          "body": "合格下级订单可按适用层级和费率参与网络版税。可获奖层级还受网络规则与资格限制，不因头衔变高就承诺无限层级。",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "平级奖励",
+          "body": "平级奖励按当前适用规则展示；配置了比例不代表一定存在可发放的合格事件。是否实际触发，以奖励记录为准。",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "领导池票权",
+          "body": "票权是符合资格时分配领导池份额的依据，不是固定收益。{leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "培育与晋升奖励",
+          "body": "奖励金额、币种和收款人按该等级的奖励清单处理。培育类 NEX 通常发给直属推荐人；指定本人领取或没有推荐人时，按规则发给晋升会员。",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "完整范例：{fromRank} 升 {toRank}",
+          "body": "以下仅演示如何核对条件，不代表你的账户或已发生的交易。目标等级和数字随当前配置更新。",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "起点",
+          "body": "假设一名会员当前为 {fromRank}，希望晋升 {toRank}。先核对已达到等级的条件，再核对下面的目标等级门槛。",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "阶段 1 — 核对自购",
+          "body": "{toRank} 的自购门槛：{selfBuy}。若本阶没有额外要求，已有低等级门槛仍需由系统核验。",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "阶段 2 — 核对团队",
+          "body": "{toRank} 的团队业绩门槛：{teamVolume}；有效直推人数要求：{directRefs}。直属成员以当前 V1 自购门槛 {referralThreshold} 判定是否合格。",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "阶段 3 — 核对高等级直属",
+          "body": "{toRank} 的高等级直属要求：{rankLegs}。达到所要求等级及以上的直属成员才参与该项计数。",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "触发晋升评估",
+          "body": "假设以上以及前序等级的已启用条件全部满足，下一次相关业务事件或定时评估可将会员从 {fromRank} 晋升为 {toRank}；实际结果以等级记录为准。",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "{toRank} 的配置权益",
+          "body": "以下是当前配置的展示，不代表本次已产生或发放奖励。",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "网络版税",
+          "body": "当前 L1 USDT 基础比例为 {directRate}；其他层级、资格限制和最终金额按实际适用的网络规则计算。",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "平级奖励",
+          "body": "{toRank} 的平级奖励配置比例为 {peerRate}；配置比例本身不是奖励生成或到账保证。",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "领导池票权",
+          "body": "{toRank} 配置 {votes} 票。{leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "NEX 奖励",
+          "body": "该等级已配置的 NEX 奖励规则金额合计为 {cultivation}。实际收款人由奖励规则和直属推荐关系确定，不等于本人或推荐人已经到账。",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "为什么团队有人，我仍没有升级？",
+          "body": "成员数不等于有效直推数。直属成员需达到当前 V1 自购门槛 {referralThreshold}，你也需要同时满足相关自购、团队业绩及高等级直属条件。",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "团队业绩减少后会怎样？",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "在哪里看进度和到账结果？",
+          "body": "点击下方按钮可查看当前等级、下一阶进度及缺口。奖励是否发放、何时解锁及最终收款人，请结合奖励记录和钱包账单确认。",
+          "order": 29
+        }
+      ]
+    },
+    "en": {
+      "hero": "From purchases and referrals to team growth, understand the conditions and reward rules for every rank.",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "What is the rank system?",
+          "body": "Rank reflects your purchases and team growth. The currently visible ladder runs from {firstRank} to {lastRank}. More registered members alone do not necessarily qualify you for promotion.",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "Ranks and rewards",
+          "body": "Verified self-purchases, qualified direct referrals, team volume and ranked direct members are evaluated together. Benefits follow current rules; actual payments appear in reward records.",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "{rankCount} ranks at a glance",
+          "body": "Each rank has its own conditions and benefits. Titles below come from current configuration. Use the bottom button to view your own progress.",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "How to level up",
+          "body": "The system checks positive configured thresholds from lower ranks upward. Applicable conditions must be met together; each evaluation advances at most one rank. A dimension with no positive threshold adds no requirement.",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. Self-purchase",
+          "body": "Eligible purchases contribute to your cumulative self-purchase performance; refunds reduce it. Only recorded eligible orders and amounts count.",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. Qualified direct referrals",
+          "body": "A direct member qualifies against the current V1 self-purchase threshold {referralThreshold}. The target rank also sets a required count; total team size alone does not establish qualification.",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. Team volume",
+          "body": "Eligible purchases within your team contribute to volume, with refunds deducted. The required total depends on the target rank; your rank progress shows the remaining gap.",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. Ranked direct members",
+          "body": "Some ranks require several direct members at a specified rank or above. The configured rank and count are checked separately from total team size.",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "No skipping ranks",
+          "body": "Even if several later ranks are reachable, one triggering event advances at most one rank. Later evaluations continue step by step and rewards are handled separately.",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "Rank protection",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "What each rank unlocks",
+          "body": "A rank may offer network royalties, peer rewards, leadership votes and cultivation rewards. Configured benefits are not paid earnings: eligibility, limits, cooling and payment rules still apply.",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "Network royalties",
+          "body": "Eligible downstream orders participate at applicable levels and rates. Network rules and qualification still limit payable depth; a higher title does not promise unlimited levels.",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "Peer rewards",
+          "body": "Peer rewards follow applicable rules. A configured rate does not guarantee an eligible reward event; actual generation is shown in reward records.",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "Leadership votes",
+          "body": "Votes determine an eligible share of the leadership pool, not a fixed return. {leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "Cultivation and promotion rewards",
+          "body": "Amounts, currencies and recipients follow the rank reward list. Cultivation NEX normally goes to the direct sponsor; rules marked for self-payment or without a sponsor pay the promoted member.",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "Worked example: {fromRank} to {toRank}",
+          "body": "This illustrates how to check conditions, not your account or a completed transaction. The example rank and numbers update with current configuration.",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "Starting point",
+          "body": "Assume a member at {fromRank} is working toward {toRank}. Check conditions for ranks already reached as well as the target thresholds below.",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "Step 1 — Check self-purchase",
+          "body": "Self-purchase threshold for {toRank}: {selfBuy}. If this rank adds no threshold, earlier rank requirements must still be verified.",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "Step 2 — Check the team",
+          "body": "Team-volume threshold for {toRank}: {teamVolume}; qualified direct count: {directRefs}. Each direct qualifies against the current V1 self-purchase threshold {referralThreshold}.",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "Step 3 — Check ranked directs",
+          "body": "Ranked-direct requirement for {toRank}: {rankLegs}. Only direct members at the specified rank or above count toward this condition.",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "Promotion evaluation",
+          "body": "Assuming all enabled conditions for this and earlier ranks are met, the next relevant business event or scheduled evaluation may promote the member from {fromRank} to {toRank}. The actual rank record is authoritative.",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "Configured benefits at {toRank}",
+          "body": "These are current configuration values, not rewards generated or paid in this example.",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "Network royalties",
+          "body": "The current L1 USDT base rate is {directRate}. Other levels, qualification and final amounts follow the applicable network rules.",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "Peer rewards",
+          "body": "The configured peer rate at {toRank} is {peerRate}. A rate alone does not guarantee reward generation or payment.",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "Leadership votes",
+          "body": "{toRank} is configured with {votes} votes. {leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "NEX rewards",
+          "body": "NEX reward rules at this rank total {cultivation}. The reward rule and direct-sponsor relationship determine recipients; this is not an amount already paid to either party.",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "Why has my rank not increased even though I have members?",
+          "body": "Team size is not the qualified direct count. Each direct must meet the current V1 self-purchase threshold {referralThreshold}; your applicable self-purchase, team-volume and ranked-direct conditions must also be met.",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "What happens if team performance falls?",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "Where can I see progress and payments?",
+          "body": "Use the button below for your current rank, next-rank progress and gaps. Check reward records and wallet bills for payment, unlock timing and the final recipient.",
+          "order": 29
+        }
+      ]
+    },
+    "vi": {
+      "hero": "Từ mua hàng, giới thiệu đến phát triển đội, tìm hiểu điều kiện và quy tắc thưởng từng bậc.",
+      "sections": [
+        {
+          "id": "overview",
+          "title": "Hệ thống cấp bậc là gì?",
+          "body": "Cấp bậc phản ánh giao dịch mua và sự phát triển đội nhóm. Hiện có các bậc từ {firstRank} đến {lastRank}. Tăng số thành viên đăng ký chưa chắc đủ để thăng hạng.",
+          "order": 1
+        },
+        {
+          "id": "overview-detail",
+          "title": "Cấp bậc và phần thưởng",
+          "body": "Tự mua hợp lệ, tuyến trực tiếp đủ chuẩn, doanh số đội và cấp của thành viên trực tiếp được đánh giá cùng nhau. Quyền lợi theo quy tắc hiện tại; khoản đã trả được ghi trong lịch sử thưởng.",
+          "order": 2
+        },
+        {
+          "id": "ladder",
+          "title": "Tổng quan {rankCount} bậc",
+          "body": "Mỗi bậc có điều kiện và quyền lợi riêng. Danh hiệu bên dưới lấy từ cấu hình hiện tại. Nút cuối trang mở tiến độ tài khoản của bạn.",
+          "order": 3
+        },
+        {
+          "id": "promotion",
+          "title": "Cách thăng hạng",
+          "body": "Hệ thống kiểm tra các ngưỡng dương đã cấu hình từ bậc thấp lên cao. Phải đạt đồng thời các điều kiện áp dụng; mỗi lần đánh giá chỉ tăng tối đa một bậc. Mục không có ngưỡng dương không thêm yêu cầu.",
+          "order": 4
+        },
+        {
+          "id": "requirement-self",
+          "title": "1. Giá trị tự mua",
+          "body": "Giao dịch mua đủ điều kiện được cộng vào doanh số tự mua; hoàn tiền sẽ làm giảm số này. Chỉ tính đơn hàng và số tiền hợp lệ đã được ghi nhận.",
+          "order": 5
+        },
+        {
+          "id": "requirement-direct",
+          "title": "2. Tuyến trực tiếp đủ chuẩn",
+          "body": "Thành viên trực tiếp được xét theo ngưỡng tự mua V1 hiện tại {referralThreshold}. Bậc mục tiêu còn quy định số người cần đạt; không chỉ dựa vào tổng thành viên đội.",
+          "order": 6
+        },
+        {
+          "id": "requirement-team",
+          "title": "3. Doanh số đội",
+          "body": "Cộng giao dịch đủ điều kiện trong phạm vi đội và trừ hoàn tiền. Ngưỡng tùy bậc mục tiêu; trang tiến độ hiển thị phần còn thiếu.",
+          "order": 7
+        },
+        {
+          "id": "requirement-legs",
+          "title": "4. Cấp của thành viên trực tiếp",
+          "body": "Một số bậc yêu cầu nhiều thành viên trực tiếp đạt cấp chỉ định hoặc cao hơn. Cấp và số người được kiểm tra riêng, không thay bằng tổng thành viên đội.",
+          "order": 8
+        },
+        {
+          "id": "stepwise",
+          "title": "Không bỏ qua bậc",
+          "body": "Dù đã đạt nhiều bậc tiếp theo, mỗi sự kiện chỉ tăng tối đa một bậc. Các lần đánh giá sau tiếp tục từng bậc và xử lý thưởng riêng.",
+          "order": 9
+        },
+        {
+          "id": "protection",
+          "title": "Bảo vệ cấp bậc",
+          "body": "{protection}",
+          "order": 10
+        },
+        {
+          "id": "rewards",
+          "title": "Quyền lợi từng bậc",
+          "body": "Từng bậc có thể có thưởng mạng lưới, thưởng đồng cấp, phiếu quỹ lãnh đạo và thưởng đào tạo. Quyền lợi cấu hình chưa phải tiền đã nhận; điều kiện, hạn mức, thời gian chờ và quy tắc chi trả vẫn áp dụng.",
+          "order": 11
+        },
+        {
+          "id": "unlock-network",
+          "title": "Thưởng mạng lưới",
+          "body": "Đơn hàng tuyến dưới đủ điều kiện tham gia theo tầng và tỷ lệ áp dụng. Độ sâu nhận thưởng vẫn chịu quy tắc mạng lưới và điều kiện; cấp cao không có nghĩa số tầng vô hạn.",
+          "order": 12
+        },
+        {
+          "id": "unlock-peer",
+          "title": "Thưởng đồng cấp",
+          "body": "Thưởng đồng cấp theo quy tắc áp dụng. Có tỷ lệ cấu hình chưa bảo đảm phát sinh sự kiện thưởng đủ chuẩn; hãy xem lịch sử thưởng thực tế.",
+          "order": 13
+        },
+        {
+          "id": "unlock-leadership",
+          "title": "Phiếu quỹ lãnh đạo",
+          "body": "Phiếu xác định phần chia khi đủ điều kiện, không phải lợi nhuận cố định. {leadershipStatus}",
+          "order": 14
+        },
+        {
+          "id": "unlock-cultivation",
+          "title": "Thưởng đào tạo và thăng hạng",
+          "body": "Số tiền, loại tiền và người nhận theo danh sách thưởng của bậc. NEX đào tạo thường trả người giới thiệu trực tiếp; quy tắc tự nhận hoặc không có người giới thiệu sẽ trả thành viên thăng hạng.",
+          "order": 15
+        },
+        {
+          "id": "example",
+          "title": "Ví dụ: từ {fromRank} lên {toRank}",
+          "body": "Ví dụ hướng dẫn kiểm tra điều kiện, không phải tài khoản của bạn hay giao dịch đã diễn ra. Bậc và số liệu thay đổi theo cấu hình hiện tại.",
+          "order": 16
+        },
+        {
+          "id": "example-start",
+          "title": "Điểm bắt đầu",
+          "body": "Giả sử thành viên ở {fromRank} muốn lên {toRank}. Kiểm tra điều kiện các bậc đã đạt cùng với các ngưỡng mục tiêu dưới đây.",
+          "order": 17
+        },
+        {
+          "id": "example-self",
+          "title": "Bước 1 — Kiểm tra tự mua",
+          "body": "Ngưỡng tự mua của {toRank}: {selfBuy}. Nếu bậc này không thêm ngưỡng, điều kiện bậc thấp vẫn cần được kiểm tra.",
+          "order": 18
+        },
+        {
+          "id": "example-team",
+          "title": "Bước 2 — Kiểm tra đội",
+          "body": "Ngưỡng doanh số đội của {toRank}: {teamVolume}; số tuyến trực tiếp đủ chuẩn: {directRefs}. Mỗi tuyến được xét theo ngưỡng tự mua V1 hiện tại {referralThreshold}.",
+          "order": 19
+        },
+        {
+          "id": "example-legs",
+          "title": "Bước 3 — Kiểm tra cấp tuyến trực tiếp",
+          "body": "Yêu cầu cấp tuyến trực tiếp của {toRank}: {rankLegs}. Chỉ thành viên trực tiếp đạt cấp chỉ định hoặc cao hơn được tính.",
+          "order": 20
+        },
+        {
+          "id": "example-trigger",
+          "title": "Đánh giá thăng hạng",
+          "body": "Giả sử đạt mọi điều kiện đang áp dụng của bậc này và các bậc trước, sự kiện nghiệp vụ hoặc lần đánh giá định kỳ tiếp theo có thể nâng thành viên từ {fromRank} lên {toRank}. Kết quả theo bản ghi cấp thực tế.",
+          "order": 21
+        },
+        {
+          "id": "example-results",
+          "title": "Quyền lợi cấu hình tại {toRank}",
+          "body": "Đây là giá trị cấu hình hiện tại, không phải thưởng đã phát sinh hay đã trả trong ví dụ.",
+          "order": 22
+        },
+        {
+          "id": "result-network",
+          "title": "Thưởng mạng lưới",
+          "body": "Tỷ lệ cơ sở L1 USDT hiện tại là {directRate}. Tầng khác, điều kiện và số tiền cuối cùng theo quy tắc mạng lưới áp dụng.",
+          "order": 23
+        },
+        {
+          "id": "result-peer",
+          "title": "Thưởng đồng cấp",
+          "body": "Tỷ lệ thưởng đồng cấp của {toRank} là {peerRate}. Chỉ có tỷ lệ chưa bảo đảm phát sinh hoặc chi trả thưởng.",
+          "order": 24
+        },
+        {
+          "id": "result-leadership",
+          "title": "Phiếu lãnh đạo",
+          "body": "{toRank} được cấu hình {votes} phiếu. {leadershipStatus}",
+          "order": 25
+        },
+        {
+          "id": "result-cultivation",
+          "title": "Thưởng NEX",
+          "body": "Tổng số tiền trong quy tắc thưởng NEX của bậc này là {cultivation}. Quy tắc thưởng và quan hệ giới thiệu trực tiếp quyết định người nhận; đây không phải khoản đã trả.",
+          "order": 26
+        },
+        {
+          "id": "faq-members",
+          "title": "Vì sao có thành viên nhưng tôi chưa thăng hạng?",
+          "body": "Số thành viên không bằng số tuyến trực tiếp đủ chuẩn. Mỗi tuyến cần đạt ngưỡng tự mua V1 hiện tại {referralThreshold}; bạn cũng phải đạt điều kiện tự mua, doanh số đội và cấp tuyến trực tiếp áp dụng.",
+          "order": 27
+        },
+        {
+          "id": "faq-rank",
+          "title": "Nếu doanh số đội giảm thì sao?",
+          "body": "{protection}",
+          "order": 28
+        },
+        {
+          "id": "faq-rewards",
+          "title": "Xem tiến độ và tiền thưởng ở đâu?",
+          "body": "Dùng nút bên dưới để xem cấp hiện tại, tiến độ bậc tiếp theo và phần còn thiếu. Lịch sử thưởng và hóa đơn ví cho biết chi trả, thời điểm mở khóa và người nhận cuối cùng.",
+          "order": 29
+        }
+      ]
+    }
+  }
+}

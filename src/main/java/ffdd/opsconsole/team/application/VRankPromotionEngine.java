@@ -291,6 +291,27 @@ public class VRankPromotionEngine {
                 .orElse(false);
     }
 
+    /**
+     * Public policy fact from the same live promotion engine that evaluates rank changes.
+     * It deliberately exposes only the enabled/disabled outcome, never the backing config key.
+     */
+    public boolean permanentProtectionEnabled() {
+        return isPermanentProtectionEnabled();
+    }
+
+    /**
+     * Returns the V1 self-buy threshold used to qualify a direct referral, or {@code null}
+     * when V1 is absent. Null/zero self-buy on an existing V1 means no positive minimum,
+     * matching VRankPerformanceMapper.v1SelfBuyThreshold and its COALESCE semantics.
+     */
+    public BigDecimal qualifiedReferralSelfBuyUsd() {
+        VRankConfigRow v1 = rankByIndex(commissionRepository.vRankConfigRows(), 1);
+        if (v1 == null) return null;
+        BigDecimal threshold = v1.selfBuyUsd() == null ? BigDecimal.ZERO : v1.selfBuyUsd();
+        if (threshold.signum() < 0) throw new IllegalStateException("V_RANK_THRESHOLD_INVALID");
+        return threshold;
+    }
+
     private String serializeSnapshot(VRankEvaluationSnapshot snapshot) {
         if (snapshot == null) {
             return null;

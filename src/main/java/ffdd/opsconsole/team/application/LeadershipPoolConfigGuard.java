@@ -49,6 +49,18 @@ public class LeadershipPoolConfigGuard {
         return new SettlementConfig(version, injectRate, unlockRank, monthlyCap, springCron, sha256(canonical));
     }
 
+    /**
+     * Safe public readiness projection. Configuration details remain inside the settlement guard.
+     */
+    public boolean isConfigured() {
+        try {
+            requireValid();
+            return true;
+        } catch (ConfigUnavailableException unavailable) {
+            return false;
+        }
+    }
+
     private String required(String key) {
         return configFacade.activeValue(key)
                 .filter(value -> !value.isBlank())
