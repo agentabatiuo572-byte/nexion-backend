@@ -100,7 +100,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260827_genesis_unified_eligibility.sql"),
   # H2's two canonical conversion paths publish one trial.redeemed contract.
   # Register the shared settlement + order fields before the scheduler runs.
-  (Join-Path $root "scripts\migrations\20260829_trial_redeemed_event_schema_alignment.sql")
+  (Join-Path $root "scripts\migrations\20260829_trial_redeemed_event_schema_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20260829_commission_paid_schema_revision_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260829_vrank_projection_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260829_f5_commission_mutation_event_schema.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

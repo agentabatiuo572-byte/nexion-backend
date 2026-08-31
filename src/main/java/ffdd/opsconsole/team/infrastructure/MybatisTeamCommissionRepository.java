@@ -270,7 +270,13 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
 
     @Override
     public boolean updateMemberVRank(Long userId, String newRank) {
-        return mapper.updateMemberVRank(userId, newRank) > 0;
+        boolean canonicalUpdated = mapper.updateMemberVRank(userId, newRank) > 0;
+        if (!canonicalUpdated) {
+            return false;
+        }
+        mapper.syncUserVRank(userId, newRank);
+        mapper.syncMemberVRankProjections(userId, newRank);
+        return true;
     }
 
     @Override

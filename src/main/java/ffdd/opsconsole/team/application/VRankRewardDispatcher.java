@@ -1,10 +1,12 @@
 package ffdd.opsconsole.team.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantCommand;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantResult;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPromotionContext;
@@ -57,7 +59,7 @@ import org.springframework.util.StringUtils;
  * <h2>B1 备付金红线联动(D4)</h2>
  * <pre>
  * coverageFacade.snapshot() → coverageRatio < redlinePct?
- *   是 → 抛 IllegalStateException("COVERAGE_BELOW_REDLINE") → @Transactional 回滚
+ *   是 → 抛 BizException(422, "COVERAGE_BELOW_REDLINE") → @Transactional 回滚
  *                                                   → 整笔晋升(v_rank UPDATE + level_log + 前序 payout)全部撤销
  *   否 → 继续 INSERT commission_event + postLedgerEntry
  * </pre>
@@ -317,7 +319,9 @@ public class VRankRewardDispatcher {
         if (ratio.compareTo(redline) < 0) {
             log.warn("B1 coverage below redline, BLOCK V-Rank fund reward: user={}, rank={}, type={}, amount={}, ratio={}, redline={}",
                     userId, rankCode, rewardType, amount, ratio, redline);
-            throw new IllegalStateException("COVERAGE_BELOW_REDLINE");
+            throw new BizException(
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
     }
 

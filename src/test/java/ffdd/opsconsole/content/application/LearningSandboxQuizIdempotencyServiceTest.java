@@ -68,6 +68,27 @@ class LearningSandboxQuizIdempotencyServiceTest {
         verify(mapper, never()).completeSandboxQuizIdempotency(anyString(), anyLong(), anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void receiptDistinguishesAbsentPendingAndCommittedAttempts() throws Exception {
+        when(mapper.lockSandboxQuizIdempotency("run-1", 42L, "course", "v2", "absent-key"))
+                .thenReturn(null);
+        when(mapper.lockSandboxQuizIdempotency("run-1", 42L, "course", "v2", "pending-key"))
+                .thenReturn(new LearningSandboxIdempotencyRow("hash-pending", "PENDING", null));
+        when(mapper.lockSandboxQuizIdempotency("run-1", 42L, "course", "v2", "committed-key"))
+                .thenReturn(new LearningSandboxIdempotencyRow(
+                        "hash-committed", "COMPLETED", new ObjectMapper().writeValueAsString(result())));
+
+        assertThat(service.receipt("run-1", 42L, "course", "v2", "absent-key"))
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("ABSENT", false, null, null);
+        assertThat(service.receipt("run-1", 42L, "course", "v2", "pending-key"))
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("PENDING", false, "hash-pending", null);
+        assertThat(service.receipt("run-1", 42L, "course", "v2", "committed-key"))
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("COMMITTED", true, "hash-committed", result());
+    }
+
     private static AppLearningQuizResult result() {
         return new AppLearningQuizResult("course", "v2", 100, true, true, true, new BigDecimal("20.000000"), 1,
                 true, "SANDBOX", "run-1");

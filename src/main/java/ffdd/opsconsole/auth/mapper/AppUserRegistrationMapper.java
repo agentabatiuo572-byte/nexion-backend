@@ -229,4 +229,76 @@ public interface AppUserRegistrationMapper {
              FOR UPDATE
             """)
     UserEntity findSponsorForUpdate(@Param("sponsorCode") String sponsorCode);
+
+    /**
+     * Resolve the canonical sponsor chain from nx_user. The path guard makes a
+     * corrupted legacy cycle fail closed, and the depth limit matches F2 L1-L7.
+     */
+    @Select("""
+            WITH RECURSIVE sponsor_chain AS (
+                SELECT sponsor.id AS ownerUserId,
+                       1 AS level,
+                       CAST(CONCAT('/', child.id, '/', sponsor.id, '/') AS CHAR(512)) AS visited
+                  FROM nx_user child
+                  JOIN nx_user sponsor
+                    ON sponsor.id = child.sponsor_user_id
+                   AND sponsor.sandbox = child.sandbox
+                   AND sponsor.status = 'ACTIVE'
+                   AND sponsor.is_deleted = 0
+                 WHERE child.id = #{memberUserId}
+                   AND child.sandbox = #{sandbox}
+                   AND child.is_deleted = 0
+                UNION ALL
+                SELECT sponsor.id,
+                       chain_row.level + 1,
+                       CONCAT(chain_row.visited, sponsor.id, '/')
+                  FROM sponsor_chain chain_row
+                  JOIN nx_user current_owner
+                    ON current_owner.id = chain_row.ownerUserId
+                   AND current_owner.sandbox = #{sandbox}
+                   AND current_owner.is_deleted = 0
+                  JOIN nx_user sponsor
+                    ON sponsor.id = current_owner.sponsor_user_id
+                   AND sponsor.sandbox = current_owner.sandbox
+                   AND sponsor.status = 'ACTIVE'
+                   AND sponsor.is_deleted = 0
+                 WHERE chain_row.level < 7
+                   AND LOCATE(CONCAT('/', sponsor.id, '/'), chain_row.visited) = 0
+            )
+            SELECT ownerUserId, level
+              FROM sponsor_chain
+             ORDER BY level ASC
+            """)
+    List<TeamAncestorProjection> listActiveSponsorChain(
+            @Param("memberUserId") Long memberUserId,
+            @Param("sandbox") int sandbox);
+
+    /** Create one immutable owner/member/depth projection from canonical nx_user data. */
+    @Insert("""
+            INSERT INTO nx_team_member
+              (user_id,member_user_id,member_no,nickname,v_rank,level,volume,created_at,updated_at,is_deleted)
+            SELECT #{ownerUserId},
+                   member.id,
+                   CONCAT('U', LPAD(member.id, GREATEST(8, CHAR_LENGTH(CAST(member.id AS CHAR))), '0')),
+                   LEFT(COALESCE(NULLIF(member.nickname, ''), CONCAT('User ', member.id)), 64),
+                   COALESCE(NULLIF(UPPER(member.v_rank), ''), 'V0'),
+                   #{level},0,NOW(),NOW(),0
+              FROM nx_user member
+             WHERE member.id = #{memberUserId}
+               AND member.sandbox = #{sandbox}
+               AND member.is_deleted = 0
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM nx_team_member existing
+                    WHERE existing.user_id = #{ownerUserId}
+                      AND existing.member_user_id = #{memberUserId}
+                      AND existing.level = #{level}
+                      AND existing.is_deleted = 0
+               )
+            """)
+    int insertTeamMemberProjection(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("memberUserId") Long memberUserId,
+            @Param("level") int level,
+            @Param("sandbox") int sandbox);
 }

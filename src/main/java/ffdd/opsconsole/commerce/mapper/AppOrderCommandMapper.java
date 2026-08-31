@@ -60,7 +60,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    o.amount_usdt amountUsdt,o.payment_no paymentNo,o.payment_status paymentStatus,
                    o.order_status orderStatus,o.activation_status activationStatus
               FROM nx_order o
-              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
                AND u.status='ACTIVE' AND u.is_deleted=0
              LIMIT 1 FOR UPDATE
@@ -70,7 +70,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("""
             SELECT w.usdt_available usdtAvailable,w.version
               FROM nx_user_wallet w
-              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=0
              WHERE w.user_id=#{userId} AND w.is_deleted=0
                AND u.status='ACTIVE' AND u.is_deleted=0
              LIMIT 1 FOR UPDATE
@@ -79,7 +79,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_user_wallet w
-              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=w.user_id AND u.sandbox=0
                SET w.usdt_available=w.usdt_available-#{amount},w.version=w.version+1,w.updated_at=NOW(6)
              WHERE w.user_id=#{userId} AND w.is_deleted=0
                AND u.status='ACTIVE' AND u.is_deleted=0
@@ -104,7 +104,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Update("""
             UPDATE nx_order o
-              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
                SET o.payment_no=#{paymentNo},o.payment_status='PAID',o.order_status='COMPLETED',
                    o.activation_status='ACTIVATED',o.paid_at=COALESCE(o.paid_at,NOW(6)),
                    o.updated_at=GREATEST(NOW(6),o.updated_at + INTERVAL 1 MICROSECOND)
@@ -148,7 +148,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
                    NOW(6),NOW(6),NOW(6),0,0,NOW(6),NOW(6),0
               FROM nx_order o
-              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
               JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0

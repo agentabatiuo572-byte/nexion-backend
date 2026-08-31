@@ -141,6 +141,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> unilevelRates();
 
+    /** Serializes all F2 settlement attempts for one buyer before idempotency checks. */
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
+    Long lockUnilevelSettlementBuyer(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_commission_rule
                SET usdt_rate = #{value},
@@ -918,6 +922,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND member_user_id = #{userId}
                AND is_deleted = 0
              LIMIT 1
+             FOR UPDATE
             """)
     String currentMemberVRank(@Param("userId") Long userId);
 
@@ -932,6 +937,28 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int updateMemberVRank(@Param("userId") Long userId,
                           @Param("newRank") String newRank);
+
+    /** Keep the user projection aligned with the canonical self-loop rank used by the engine. */
+    @Update("""
+            UPDATE nx_user
+               SET v_rank = #{newRank},
+                   updated_at = NOW()
+             WHERE id = #{userId}
+               AND is_deleted = 0
+            """)
+    int syncUserVRank(@Param("userId") Long userId,
+                      @Param("newRank") String newRank);
+
+    /** Keep every ancestor-owned team row aligned for legacy readers and exports. */
+    @Update("""
+            UPDATE nx_team_member
+               SET v_rank = #{newRank},
+                   updated_at = NOW()
+             WHERE member_user_id = #{userId}
+               AND is_deleted = 0
+            """)
+    int syncMemberVRankProjections(@Param("userId") Long userId,
+                                   @Param("newRank") String newRank);
 
     /** INSERT nx_user_level_log 晋升流水(含 Sprint1 新增 operator/snapshot/trigger_event_id/audit_no/is_manual 列)。 */
     @Insert("""

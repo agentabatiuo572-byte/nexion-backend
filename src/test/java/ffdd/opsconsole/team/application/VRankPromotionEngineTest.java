@@ -8,10 +8,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantCommand;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantResult;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankConfigRow;
@@ -338,11 +340,12 @@ class VRankPromotionEngineTest {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(
                 new BigDecimal("80.00"), new BigDecimal("85.00"));
 
-        // when + then:抛 IllegalStateException 含 COVERAGE_BELOW_REDLINE
+        // when + then:以可识别的 422 业务错误回滚，不能泄漏为 HTTP 500。
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                         rewardDispatcher.dispatch(5002L, "V5", VRankEvaluationSnapshot.empty(),
                                 VRankPromotionContext.systemEvaluation(5002L)))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(BizException.class)
+                .hasFieldOrPropertyWithValue("code", OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus())
                 .hasMessageContaining("COVERAGE_BELOW_REDLINE");
         // 阻断后 commission_event/payout 都不应写入
         assertThat(commissionRepository.commissionEvents).isEmpty();

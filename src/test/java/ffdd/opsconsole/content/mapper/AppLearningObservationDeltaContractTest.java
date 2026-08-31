@@ -79,4 +79,20 @@ class AppLearningObservationDeltaContractTest {
         assertThat(String.join(" ", publish.value()).toLowerCase(Locale.ROOT)).contains("revision=#{expectedrevision}").contains("not exists").contains("published_authority");
         assertThat(String.join(" ", delete.value()).toLowerCase(Locale.ROOT)).contains("revision=#{expectedrevision}").contains("status='draft'");
     }
+
+    @Test
+    void quizReceiptReadsEveryDurableStateInsteadOfHidingInFlightRows() throws Exception {
+        Select receipt = java.util.Arrays.stream(AppLearningMapper.class.getMethods())
+                .filter(method -> method.getName().equals("findProductionQuizReceipt"))
+                .findFirst().orElseThrow().getAnnotation(Select.class);
+        String sql = String.join(" ", receipt.value()).toLowerCase(Locale.ROOT);
+
+        assertThat(sql).contains("request_hash as requesthash")
+                .contains("status")
+                .contains("response_json as resultjson")
+                .contains("scope=#{scope}")
+                .contains("idempotency_key=#{idempotencykey}")
+                .doesNotContain("status='succeeded'")
+                .doesNotContain("expires_at > now()");
+    }
 }

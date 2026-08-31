@@ -32,7 +32,8 @@ public class GlobalExceptionHandler {
     private final AuditLogService auditLogService;
 
     @ExceptionHandler(BizException.class)
-    public ApiResult<Void> handleBiz(BizException ex) {
+    public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
         return ApiResult.fail(ex.getCode(), ex.getMessage());
     }
 
@@ -131,5 +132,9 @@ public class GlobalExceptionHandler {
         } catch (RuntimeException ignored) {
             // Never let audit logging mask the permission denial response.
         }
+    }
+
+    private int normalizeHttpStatus(int code) {
+        return code >= 100 && code <= 599 ? code : OpsErrorCode.INTERNAL_ERROR.httpStatus();
     }
 }

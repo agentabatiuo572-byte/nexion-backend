@@ -15,6 +15,7 @@ import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -60,6 +61,8 @@ class AppUserRegistrationServiceTest {
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 transactionExecutor, environment, referralRewardService);
         when(environment.getActiveProfiles()).thenReturn(new String[] { "prod" });
+        when(mapper.insertTeamMemberProjection(anyLong(), anyLong(), anyInt(), anyInt())).thenReturn(1);
+        when(mapper.listActiveSponsorChain(anyLong(), anyInt())).thenReturn(List.of());
     }
 
     @Test
@@ -122,6 +125,7 @@ class AppUserRegistrationServiceTest {
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
+        verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 1);
         verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3");
         verify(outboxService).publish(
                 "USER_REGISTRATION", "99", "auth.register_completed", java.util.Map.of("userId", 99L));
@@ -273,6 +277,10 @@ class AppUserRegistrationServiceTest {
         UserEntity sponsor = user(41L, "NXAB12CD34EF");
         sponsor.setNickname("Alice Example");
         prepareSuccessfulRegistration(sponsor);
+        TeamAncestorProjection direct = new TeamAncestorProjection();
+        direct.setOwnerUserId(41L);
+        direct.setLevel(1);
+        when(mapper.listActiveSponsorChain(99L, 0)).thenReturn(List.of(direct));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
                 "+81", "81987654321", "REG-H003", "123456", "NexPass9a", "nx-ab12-cd34-ef"),
@@ -283,6 +291,8 @@ class AppUserRegistrationServiceTest {
         verify(mapper).findSponsorForUpdate(sponsorCode.capture());
         verify(userMapper).insert(inserted.capture());
         verify(userMapper).ensureRegisteredUserWallet(99L, 0);
+        verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 0);
+        verify(mapper).insertTeamMemberProjection(41L, 99L, 1, 0);
         verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"));
         assertThat(result.getCode()).isZero();
         assertThat(sponsorCode.getValue()).isEqualTo("NXAB12CD34EF");

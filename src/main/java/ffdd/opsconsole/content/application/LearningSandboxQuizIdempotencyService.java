@@ -44,10 +44,16 @@ public class LearningSandboxQuizIdempotencyService {
     public LearningQuizReceipt receipt(String runId, Long userId, String courseId, String courseVersion, String idempotencyKey) {
         LearningSandboxIdempotencyRow stored = learningMapper.lockSandboxQuizIdempotency(
                 runId, userId, courseId, courseVersion, idempotencyKey);
-        if (stored == null || !"COMPLETED".equals(stored.status()) || stored.resultJson() == null) {
-            return new LearningQuizReceipt(false, null, null);
+        if (stored == null) {
+            return new LearningQuizReceipt("ABSENT", false, null, null);
         }
-        return new LearningQuizReceipt(true, stored.requestHash(), read(stored.resultJson()));
+        if ("PENDING".equals(stored.status())) {
+            return new LearningQuizReceipt("PENDING", false, stored.requestHash(), null);
+        }
+        if ("COMPLETED".equals(stored.status()) && stored.resultJson() != null) {
+            return new LearningQuizReceipt("COMMITTED", true, stored.requestHash(), read(stored.resultJson()));
+        }
+        throw new IllegalStateException("LEARNING_SANDBOX_IDEMPOTENCY_RECEIPT_INVALID");
     }
 
     private String write(AppLearningQuizResult result) {

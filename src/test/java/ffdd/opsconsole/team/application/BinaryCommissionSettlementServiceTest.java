@@ -434,6 +434,17 @@ class BinaryCommissionSettlementServiceTest {
     }
 
     @Test
+    void adminSettlementAcceptsDocumentedReasonUpToTwoHundredCharacters() {
+        String reason = "R".repeat(65);
+
+        BinaryCommissionSettlementService.SettlementResult result = service.settleAsAdmin(
+                OWNER, DAY, reason, 7L, "superadmin", "f3-reason-65");
+
+        assertThat(result.status()).isEqualTo("PENDING");
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
     void systemAndAdminSettlementEntrypointsAreTransactional() throws Exception {
         var system = BinaryCommissionSettlementService.class
                 .getMethod("settle", Long.class, LocalDate.class)

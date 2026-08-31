@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
@@ -13,11 +14,14 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.content.domain.AppLearningQuizResult;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.domain.LearningSandboxCourseRow;
+import ffdd.opsconsole.content.domain.LearningSandboxIdempotencyRow;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -115,6 +119,39 @@ class AppLearningServiceTest {
         verify(mapper).sumGrantedReward(42L);
         verify(mapper, never()).listSandboxProgress(anyString(), anyLong());
         verify(mapper, never()).sumSandboxGrantedReward(anyString(), anyLong());
+    }
+
+    @Test
+    void productionReceiptExposesTheDurableIdempotencyState() throws Exception {
+        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.findProductionQuizReceipt(anyString(), eq("pending-key")))
+                .thenReturn(new LearningSandboxIdempotencyRow("hash-pending", "PROCESSING", null));
+        when(mapper.findProductionQuizReceipt(anyString(), eq("failed-key")))
+                .thenReturn(new LearningSandboxIdempotencyRow("hash-failed", "FAILED", null));
+        when(mapper.findProductionQuizReceipt(anyString(), eq("unknown-key")))
+                .thenReturn(new LearningSandboxIdempotencyRow("hash-unknown", "UNKNOWN", null));
+        AppLearningQuizResult committedResult = new AppLearningQuizResult(
+                "test-course", "v2", 100, true, true, true, new BigDecimal("20.000000"), 1,
+                true, "PRODUCTION", "");
+        when(mapper.findProductionQuizReceipt(anyString(), eq("committed-key")))
+                .thenReturn(new LearningSandboxIdempotencyRow("hash-committed", "SUCCEEDED",
+                        new ObjectMapper().findAndRegisterModules().writeValueAsString(committedResult)));
+
+        assertThat(service.quizReceipt(42L, "test-course", "v2", "absent-key").getData())
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("ABSENT", false, null, null);
+        assertThat(service.quizReceipt(42L, "test-course", "v2", "pending-key").getData())
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("PENDING", false, "hash-pending", null);
+        assertThat(service.quizReceipt(42L, "test-course", "v2", "failed-key").getData())
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("FAILED", false, "hash-failed", null);
+        assertThat(service.quizReceipt(42L, "test-course", "v2", "unknown-key").getData())
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("UNKNOWN", false, "hash-unknown", null);
+        assertThat(service.quizReceipt(42L, "test-course", "v2", "committed-key").getData())
+                .extracting("status", "committed", "requestHash", "result")
+                .containsExactly("COMMITTED", true, "hash-committed", committedResult);
     }
 
     @Test

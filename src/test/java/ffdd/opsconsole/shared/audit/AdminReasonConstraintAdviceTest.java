@@ -168,7 +168,7 @@ class AdminReasonConstraintAdviceTest {
             mvc.perform(post("/api/admin/test-reason")
                             .contentType("application/json")
                             .content("{\"reason\":\"1234567\"}"))
-                    .andExpect(status().isOk())
+                    .andExpect(status().isUnprocessableEntity())
                     .andExpect(jsonPath("$.code").value(422));
             mvc.perform(post("/api/admin/test-reason")
                             .contentType("application/json")
@@ -210,10 +210,10 @@ class AdminReasonConstraintAdviceTest {
                 new TestingAuthenticationToken("admin-1", "n/a", "high-risk-write"));
         try {
             mvc.perform(post("/api/admin/test-reason/annotated"))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(422));
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value(422));
             mvc.perform(post("/api/admin/test-reason/annotated")
                             .header("X-Operation-Reason", "1234567"))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(422));
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value(422));
             mvc.perform(post("/api/admin/test-reason/annotated")
                             .header("X-Operation-Reason", "12345678"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0));
@@ -233,7 +233,7 @@ class AdminReasonConstraintAdviceTest {
         try {
             mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
                             "/api/admin/test-reason/query").queryParam("reasonText", "1234567"))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(422));
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value(422));
             mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
                             "/api/admin/test-reason/query").queryParam("reasonText", "12345678"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0));

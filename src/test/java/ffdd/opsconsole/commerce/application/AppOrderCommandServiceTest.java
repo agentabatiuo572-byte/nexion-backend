@@ -77,6 +77,11 @@ class AppOrderCommandServiceTest {
                         && map.get("deviceId").equals(91L)
                         && map.get("instanceNo").equals("DEV-ORD-INSTANCE")
                         && map.get("mode").equals("DEVELOPMENT_LOCAL")));
+        verify(outbox).publishUserEvent(eq("ORDER"), eq("ORD-DEV-1"), eq("checkout.completed"), eq(7L),
+                eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
+                        && map.get("order_no").equals("ORD-DEV-1")
+                        && map.get("order_subtotal_usdt").equals(new BigDecimal("1199.000000"))
+                        && map.get("order_id").equals("ORD-DEV-1")));
         verify(audit).recordRequired(any());
         verifyNoInteractions(mock(CommerceAcceptanceSandboxMapper.class));
     }

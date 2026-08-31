@@ -320,9 +320,22 @@ public class AppLearningService {
         }
         LearningSandboxIdempotencyRow stored = learningMapper.findProductionQuizReceipt(
                 "APP_LEARNING_QUIZ:" + sha256(userId + "|" + course.id() + "|" + course.version()), idempotencyKey.trim());
-        if (stored == null || stored.resultJson() == null) return ApiResult.ok(new LearningQuizReceipt(false, null, null));
+        if (stored == null) return ApiResult.ok(new LearningQuizReceipt("ABSENT", false, null, null));
+        if ("PROCESSING".equals(stored.status())) {
+            return ApiResult.ok(new LearningQuizReceipt("PENDING", false, stored.requestHash(), null));
+        }
+        if ("FAILED".equals(stored.status())) {
+            return ApiResult.ok(new LearningQuizReceipt("FAILED", false, stored.requestHash(), null));
+        }
+        if ("UNKNOWN".equals(stored.status())) {
+            return ApiResult.ok(new LearningQuizReceipt("UNKNOWN", false, stored.requestHash(), null));
+        }
+        if (!"SUCCEEDED".equals(stored.status()) || stored.resultJson() == null) {
+            throw new IllegalStateException("LEARNING_QUIZ_RECEIPT_INVALID");
+        }
         try {
-            return ApiResult.ok(new LearningQuizReceipt(true, stored.requestHash(), JSON.readValue(stored.resultJson(), AppLearningQuizResult.class)));
+            return ApiResult.ok(new LearningQuizReceipt("COMMITTED", true, stored.requestHash(),
+                    JSON.readValue(stored.resultJson(), AppLearningQuizResult.class)));
         } catch (Exception ex) {
             throw new IllegalStateException("LEARNING_QUIZ_RECEIPT_INVALID", ex);
         }

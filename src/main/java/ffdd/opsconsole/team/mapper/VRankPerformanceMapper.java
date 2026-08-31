@@ -99,14 +99,18 @@ public interface VRankPerformanceMapper extends BaseMapper<Object> {
      * 引擎消费时:legCounts[targetV] = SUM(memberCount WHERE vLevel >= targetV)。
      */
     @Select("""
-            SELECT CAST(REPLACE(UPPER(m.v_rank), 'V', '') AS SIGNED) AS vLevel,
+            SELECT CAST(REPLACE(UPPER(canonical.v_rank), 'V', '') AS SIGNED) AS vLevel,
                    COUNT(DISTINCT m.member_user_id) AS memberCount
               FROM nx_team_member m
+              JOIN nx_team_member canonical
+                ON canonical.user_id = m.member_user_id
+               AND canonical.member_user_id = m.member_user_id
+               AND canonical.is_deleted = 0
              WHERE m.user_id = #{userId}
                AND m.level = 1
                AND m.is_deleted = 0
-               AND UPPER(m.v_rank) REGEXP '^V[0-9]{1,2}$'
-             GROUP BY CAST(REPLACE(UPPER(m.v_rank), 'V', '') AS SIGNED)
+               AND UPPER(canonical.v_rank) REGEXP '^V[0-9]{1,2}$'
+             GROUP BY CAST(REPLACE(UPPER(canonical.v_rank), 'V', '') AS SIGNED)
             """)
     List<Map<String, Object>> legCountsByLevel(@Param("userId") Long userId);
 

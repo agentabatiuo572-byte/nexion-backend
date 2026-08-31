@@ -8,6 +8,7 @@ import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
+import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -216,6 +217,7 @@ public class AppUserRegistrationService {
         } catch (DuplicateKeyException exception) {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
+        createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
         userMapper.ensureRegisteredUserWallet(user.getId(), sandbox);
         outboxService.publish(
@@ -237,6 +239,26 @@ public class AppUserRegistrationService {
         if (session.getData() == null || sponsor == null) return session;
         return new ApiResult<>(session.getCode(), session.getMessage(),
                 session.getData().withRegistrationReceipt(registrationReceipt(sponsor, sandbox)));
+    }
+
+    private void createTeamGraphProjection(Long memberUserId, int sandbox) {
+        if (mapper.insertTeamMemberProjection(memberUserId, memberUserId, 0, sandbox) != 1) {
+            throw new IllegalStateException("USER_TEAM_SELF_PROJECTION_INSERT_FAILED");
+        }
+        List<TeamAncestorProjection> ancestors = mapper.listActiveSponsorChain(memberUserId, sandbox);
+        if (ancestors == null) {
+            return;
+        }
+        for (TeamAncestorProjection ancestor : ancestors) {
+            if (ancestor == null || ancestor.getOwnerUserId() == null || ancestor.getLevel() == null
+                    || ancestor.getLevel() < 1 || ancestor.getLevel() > 7) {
+                throw new IllegalStateException("USER_TEAM_ANCESTOR_PROJECTION_INVALID");
+            }
+            if (mapper.insertTeamMemberProjection(
+                    ancestor.getOwnerUserId(), memberUserId, ancestor.getLevel(), sandbox) != 1) {
+                throw new IllegalStateException("USER_TEAM_ANCESTOR_PROJECTION_INSERT_FAILED");
+            }
+        }
     }
 
     private UserEntity findUser(String countryCode, String phone, int sandbox) {

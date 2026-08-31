@@ -93,6 +93,11 @@ public class UnilevelCommissionService {
                 || orderNo == null || orderNo.isBlank()) {
             return 0;
         }
+        // One paid order emits both USDT and NEX rows. Concurrent replay workers
+        // can otherwise interleave those unique-key inserts in opposite lock order
+        // and deadlock before the idempotency check becomes visible. The canonical
+        // buyer row is the stable transaction-scoped serialization fence.
+        teamCommissionMapper.lockUnilevelSettlementBuyer(buyerUserId);
         List<Map<String, Object>> upline = teamCommissionMapper.listUplineChain(buyerUserId, MAX_DEPTH);
         if (upline == null || upline.isEmpty()) {
             log.debug("F2 unilevel settle: no upline for buyer {}", buyerUserId);

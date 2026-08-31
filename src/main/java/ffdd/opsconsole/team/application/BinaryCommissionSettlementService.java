@@ -460,7 +460,10 @@ public class BinaryCommissionSettlementService {
     }
 
     private String reason(String value) {
-        String reason = text(value, "REASON_REQUIRED");
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalArgumentException("REASON_REQUIRED");
+        }
+        String reason = value.trim();
         if (reason.length() < 8 || reason.length() > 200) {
             throw new IllegalArgumentException("REASON_REQUIRED");
         }

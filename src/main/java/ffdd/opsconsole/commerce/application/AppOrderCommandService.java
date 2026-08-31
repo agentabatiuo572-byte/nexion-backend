@@ -172,6 +172,7 @@ public class AppOrderCommandService {
                 orderNo, "placed", "activated", "DEV-PAY-" + paymentNo) != 1) {
             throw new BizException(409, "ORDER_HISTORY_CONFLICT");
         }
+        publishDevelopmentCheckoutCompleted(userId, order);
         audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_DEVELOPMENT_WALLET_PAYMENT")
                 .resourceType("ORDER").resourceId(orderNo).bizNo(orderNo).userId(userId).actorId(userId)
                 .actorType("USER").method("POST").path("/api/orders/" + orderNo + "/pay")
@@ -180,6 +181,25 @@ public class AppOrderCommandService {
                         "amountUsdt", order.amountUsdt(), "walletBalanceAfterUsdt", balanceAfter,
                         "environment", "DEVELOPMENT", "canonical", true)).build());
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, false);
+    }
+
+    private void publishDevelopmentCheckoutCompleted(
+            Long userId, AppOrderCommandMapper.DevelopmentPayOrder order) {
+        if (outbox == null) return;
+        Map<String, Object> attribution = mapper.attribution(userId);
+        if (attribution == null || attribution.get("accountAgeMonths") == null
+                || !StringUtils.hasText(String.valueOf(attribution.get("cohort")))) {
+            throw new BizException(409, "CHECKOUT_COMPLETED_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        String phase = normalizePhase(attribution.get("phase"));
+        int accountAgeMonths = Integer.parseInt(String.valueOf(attribution.get("accountAgeMonths")));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("order_id", order.orderNo());
+        detail.put("order_no", order.orderNo());
+        detail.put("order_subtotal_usdt", order.amountUsdt());
+        detail.put("amount_usdt", order.amountUsdt());
+        outbox.publishUserEvent("ORDER", order.orderNo(), "checkout.completed",
+                userId, phase, accountAgeMonths, String.valueOf(attribution.get("cohort")), detail);
     }
 
     private void publishDevelopmentDeviceActivated(Long userId, String instanceNo) {

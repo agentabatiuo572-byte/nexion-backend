@@ -37,7 +37,7 @@ class AppOrderCommandMapperContractTest {
                 .getMethod("insertDevelopmentDevice", String.class, Long.class, String.class, Integer.class)
                 .getAnnotation(Insert.class).value());
 
-        assertThat(insert).contains("JOIN nx_user u ON u.id=o.user_id AND u.sandbox=1")
+        assertThat(insert).contains("JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0")
                 .contains("'PRODUCTION',''");
     }
 
@@ -54,9 +54,9 @@ class AppOrderCommandMapperContractTest {
                         java.math.BigDecimal.class, java.math.BigDecimal.class)
                 .getAnnotation(Insert.class).value());
 
-        assertThat(lock).contains("FROM nx_user_wallet", "u.sandbox=1", "FOR UPDATE");
+        assertThat(lock).contains("FROM nx_user_wallet", "u.sandbox=0", "FOR UPDATE");
         assertThat(debit).contains("w.usdt_available=w.usdt_available-#{amount}",
-                "w.version=#{expectedVersion}", "w.usdt_available>=#{amount}", "u.sandbox=1");
+                "w.version=#{expectedVersion}", "w.usdt_available>=#{amount}", "u.sandbox=0");
         assertThat(ledger).contains("INSERT INTO nx_wallet_ledger", "'ORDER_PURCHASE'", "'OUT'",
                 "'SUCCESS'", "#{balanceAfter}");
     }

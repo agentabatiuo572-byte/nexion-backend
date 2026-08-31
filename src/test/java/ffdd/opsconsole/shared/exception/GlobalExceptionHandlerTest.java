@@ -31,12 +31,25 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void bizExceptionKeepsDomainErrorCodeAndMessage() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
         ApiResult<Void> result = handler.handleBiz(new BizException(
                 OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                OpsErrorCode.INVALID_STATE_TRANSITION.name()));
+                OpsErrorCode.INVALID_STATE_TRANSITION.name()), response);
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        assertThat(response.getStatus()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void bizExceptionWithInvalidCodeUsesSafeTransportStatus() {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        ApiResult<Void> result = handler.handleBiz(new BizException(900, "INVALID_DOMAIN_CODE"), response);
+
+        assertThat(result.getCode()).isEqualTo(900);
+        assertThat(result.getMessage()).isEqualTo("INVALID_DOMAIN_CODE");
+        assertThat(response.getStatus()).isEqualTo(OpsErrorCode.INTERNAL_ERROR.httpStatus());
     }
 
     @Test

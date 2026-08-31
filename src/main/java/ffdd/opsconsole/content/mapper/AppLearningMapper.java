@@ -280,10 +280,10 @@ public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
                                        @Param("status") String status, @Param("resultJson") String resultJson);
 
     @Select("""
-            SELECT request_hash AS requestHash, response_json AS resultJson
+            SELECT request_hash AS requestHash, status, response_json AS resultJson
               FROM nx_admin_idempotency_record
              WHERE scope=#{scope} AND idempotency_key=#{idempotencyKey}
-               AND status='SUCCEEDED' AND is_deleted=0 AND expires_at > NOW()
+               AND is_deleted=0
              LIMIT 1
             """)
     LearningSandboxIdempotencyRow findProductionQuizReceipt(@Param("scope") String scope,
