@@ -91,6 +91,22 @@ class CommissionGuideRuleServiceTest {
     }
 
     @Test
+    void doesNotProjectAnInvalidDecimalDepthGateAsARealLayer() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        LeadershipPoolConfigGuard leadership = mock(LeadershipPoolConfigGuard.class);
+        Map<String, String> values = validValues();
+        values.put("team.ui.F.unilevel.depthGate", "0.4");
+        when(config.activeValue(anyString())).thenAnswer(call -> Optional.ofNullable(values.get(call.getArgument(0))));
+        when(leadership.requireValid()).thenThrow(new LeadershipPoolConfigGuard.ConfigUnavailableException(
+                "team.ui.F.pool.ratio", "MISSING", "absent"));
+
+        Map<String, Object> guide = new CommissionGuideRuleService(config, leadership)
+                .guide(productionEnvironment());
+
+        assertThat(group(guide, "network")).containsEntry("depthGateLayer", null);
+    }
+
+    @Test
     void rejectsBinaryAmountsThatSettlementCannotRepresentAtSixDecimals() {
         PlatformConfigFacade config = mock(PlatformConfigFacade.class);
         LeadershipPoolConfigGuard leadership = mock(LeadershipPoolConfigGuard.class);

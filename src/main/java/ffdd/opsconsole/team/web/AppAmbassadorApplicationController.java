@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -42,6 +43,16 @@ public class AppAmbassadorApplicationController {
     public ApiResult<Map<String, Object>> latest(Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.latest(userId);
+    }
+
+    @GetMapping
+    public ApiResult<Map<String, Object>> history(
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
+                : service.history(userId, pageNum, pageSize);
     }
 
     private Long userId(Authentication authentication) {

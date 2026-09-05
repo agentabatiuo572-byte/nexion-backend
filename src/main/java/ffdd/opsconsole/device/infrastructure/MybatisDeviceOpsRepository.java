@@ -161,6 +161,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public boolean lockUserForE5Activation(Long userId) {
+        return mapper.lockUserForE5Activation(userId) != null;
+    }
+
+    @Override
     public Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
         if (mapper.activateE5Device(deviceId, activatedAt) != 1) {
             return Optional.empty();
@@ -174,8 +179,13 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         if (mapper.deactivateE5Device(deviceId, unbind ? 1 : 0, now) != 1) {
             return Optional.empty();
         }
-        mapper.markRuntimeOffline(deviceId, now, unbind ? "unbind" : "deactivate");
-        return findDevice(deviceId);
+        DeviceOpsView updated = findDevice(deviceId).orElse(null);
+        if (updated == null) return Optional.empty();
+        if (!Integer.valueOf(1).equals(updated.pendingDeactivate())) {
+            mapper.markRuntimeOffline(deviceId, now, unbind ? "unbind" : "deactivate");
+            return findDevice(deviceId);
+        }
+        return Optional.of(updated);
     }
 
     @Override

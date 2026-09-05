@@ -24,7 +24,11 @@ public class AppTeamNetworkService {
     private final AppTeamNetworkMapper mapper;
     private final Environment environment;
 
-    public ApiResult<Map<String, Object>> snapshot(Long userId) {
+    public ApiResult<Map<String, Object>> snapshot(Long userId) { return snapshot(userId, 0L); }
+
+    /** Counters describe this page; callers accumulate until nextCursor is null. */
+    public ApiResult<Map<String, Object>> snapshot(Long userId, long afterId) {
+        if (afterId < 0) throw new BizException(422, "TEAM_NETWORK_CURSOR_INVALID");
         if (userId == null || userId <= 0) throw new BizException(403, "USER_AUTH_REQUIRED");
         AppTeamNetworkMapper.UserScope user = mapper.userScope(userId);
         if (user == null || user.sandbox() == null) throw new BizException(403, "TEAM_USER_REQUIRED");
@@ -41,13 +45,13 @@ public class AppTeamNetworkService {
             if (!RUN_ID.matcher(runId).matches()) throw new BizException(503, "TEAM_RUN_ID_REQUIRED");
             return ApiResult.ok(TeamSandboxFactGenerator.network(runId, userId));
         }
-        List<AppTeamNetworkMapper.MemberRow> rows = mapper.members(userId);
+        List<AppTeamNetworkMapper.MemberRow> rows = mapper.membersPage(userId, afterId, MAX_NETWORK_MEMBERS + 1);
         if (rows == null) {
             rows = List.of();
         }
-        if (rows.size() > MAX_NETWORK_MEMBERS) {
-            throw new BizException(503, "TEAM_NETWORK_MEMBER_LIMIT_EXCEEDED");
-        }
+        boolean hasMore = rows.size() > MAX_NETWORK_MEMBERS;
+        if (hasMore) rows = rows.subList(0, MAX_NETWORK_MEMBERS);
+        String nextCursor = hasMore ? String.valueOf(rows.get(rows.size() - 1).memberUserId()) : null;
         List<Map<String, Object>> members = new ArrayList<>();
         BigDecimal month = BigDecimal.ZERO;
         int direct = 0; int active = 0;
@@ -65,6 +69,7 @@ public class AppTeamNetworkService {
             item.put("status", row.status()); item.put("region", row.region()); members.add(item);
         }
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nextCursor", nextCursor);
         result.put("totalMembers", members.size()); result.put("directMembers", direct); result.put("activeMembers", active);
         result.put("monthVolumeUsdt", month); result.put("lifetimeVolumeUsdt", null); result.put("members", members);
         result.put("source", "server"); result.put("sourceEnvironment", "PRODUCTION");

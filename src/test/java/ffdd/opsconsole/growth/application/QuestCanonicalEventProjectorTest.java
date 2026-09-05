@@ -14,11 +14,13 @@ import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQuestEventBinding;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class QuestCanonicalEventProjectorTest {
+    private static final LocalDateTime EVENT_TS = LocalDateTime.of(2026, 9, 1, 9, 30);
     private final QuestCanonicalEventBindingMapper bindingMapper = mock(QuestCanonicalEventBindingMapper.class);
     private final QuestCompletionFactConsumer factConsumer = mock(QuestCompletionFactConsumer.class);
     private final EventConsumerDeliveryService deliveryService = mock(EventConsumerDeliveryService.class);
@@ -48,11 +50,11 @@ class QuestCanonicalEventProjectorTest {
         ArgumentCaptor<QuestCompletionCommand> commands = ArgumentCaptor.forClass(QuestCompletionCommand.class);
         verify(factConsumer, org.mockito.Mockito.times(5)).consume(commands.capture());
         assertThat(commands.getAllValues()).containsExactly(
-                new QuestCompletionCommand("ORDER", "evt-h3-1:ORDER_STARTED", 990725L, "H3_FIRST_ORDER_STARTED"),
-                new QuestCompletionCommand("REFERRAL", "evt-h3-2:REFERRAL_SETTLED", 990725L, "H3_REFERRAL_SETTLED"),
-                new QuestCompletionCommand("LEARNING", "evt-h3-3:LEARNING_COMPLETED", 990725L, "H3_LEARNING_COMPLETED"),
-                new QuestCompletionCommand("DEVICE", "evt-h3-4:DEVICE_ACTIVATED", 990725L, "H3_DEVICE_ACTIVATED"),
-                new QuestCompletionCommand("COMMISSION", "evt-h3-5:COMMISSION_UNLOCKED", 990725L, "H3_COMMISSION_UNLOCKED"));
+                new QuestCompletionCommand("ORDER", "evt-h3-1:ORDER_STARTED", 990725L, "H3_FIRST_ORDER_STARTED", EVENT_TS),
+                new QuestCompletionCommand("REFERRAL", "evt-h3-2:REFERRAL_SETTLED", 990725L, "H3_REFERRAL_SETTLED", EVENT_TS),
+                new QuestCompletionCommand("LEARNING", "evt-h3-3:LEARNING_COMPLETED", 990725L, "H3_LEARNING_COMPLETED", EVENT_TS),
+                new QuestCompletionCommand("DEVICE", "evt-h3-4:DEVICE_ACTIVATED", 990725L, "H3_DEVICE_ACTIVATED", EVENT_TS),
+                new QuestCompletionCommand("COMMISSION", "evt-h3-5:COMMISSION_UNLOCKED", 990725L, "H3_COMMISSION_UNLOCKED", EVENT_TS));
         for (int delivery = 1; delivery <= 5; delivery += 1) {
             verify(deliveryService).markSuccess(
                     QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-h3-" + delivery, 1);
@@ -74,6 +76,18 @@ class QuestCanonicalEventProjectorTest {
     }
 
     @Test
+    void retiredEventWithoutAnActiveMissionBindingIsAcknowledgedWithoutCompletingAnything() {
+        when(bindingMapper.listActiveBindings("checkout.started")).thenReturn(List.of());
+
+        projector.project(event("evt-retired-route", "checkout.started", "{\"user_id\":990725}"),
+                "evt-retired-route");
+
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markSuccess(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-retired-route", 0);
+    }
+
+    @Test
     void nonServerAuthoritativeMessageCannotCompleteAQuest() {
         EventOutboxMessage message = event(
                 "evt-client", "checkout.started", "{\"user_id\":990725}");
@@ -86,6 +100,19 @@ class QuestCanonicalEventProjectorTest {
         verify(deliveryService, never()).markSuccess(any(), any(), any(Integer.class));
     }
 
+    @Test
+    void missingDatabaseEventTimestampCannotCompleteAQuest() {
+        EventOutboxMessage message = event(
+                "evt-no-time", "checkout.started", "{\"user_id\":990725}");
+        message.setEventTs(null);
+
+        assertThatThrownBy(() -> projector.project(message, "evt-no-time"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("QUEST_CANONICAL_EVENT_TIMESTAMP_REQUIRED");
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService, never()).markSuccess(any(), any(), any(Integer.class));
+    }
+
     private EventOutboxMessage event(String eventId, String eventType, String payload) {
         EventOutboxMessage message = new EventOutboxMessage();
         message.setEventId(eventId);
@@ -94,6 +121,7 @@ class QuestCanonicalEventProjectorTest {
         message.setAggregateId(eventId);
         message.setPayload(payload);
         message.setServerAuthoritative(true);
+        message.setEventTs(EVENT_TS);
         return message;
     }
 

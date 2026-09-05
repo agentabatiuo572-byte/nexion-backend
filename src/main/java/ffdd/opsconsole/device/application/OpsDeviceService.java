@@ -39,6 +39,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceBundleDiscountUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
@@ -75,7 +76,10 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.canonical.BundleDiscountPolicy;
+import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -145,7 +149,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     /** Server-side release configuration; the E6 operator API cannot change this allow-list. */
     private static final String DOWNLOAD_ALLOWED_TARGETS_CONFIG_KEY = "platform.compute.download.allowedTargets";
     private static final String E1_PHASE_SCOPE = "E1";
-    private static final int E5_MAX_DEVICES_PER_USER = 6;
     private static final int SKU_IMAGE_ASSET_ID_MAX_LENGTH = 512;
     private static final int SKU_IMAGE_OBJECT_KEY_MAX_LENGTH = 255;
     private static final int SKU_IMAGE_PREVIEW_URL_MAX_LENGTH = 4096;
@@ -215,23 +218,36 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final ObjectStorageService storageService;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
         response.put("domain", "E");
         response.put("service", "nexion-backend");
         response.put("generatedAt", LocalDateTime.now(clock));
-        response.put("maxDevicesPerUser", E5_MAX_DEVICES_PER_USER);
+        response.put("maxDevicesPerUser", e5MaxDevicesPerUser());
         response.put("sources", List.of(
                 "nx_user_device",
                 "nx_user_device_runtime",
                 "nx_compute_datacenter",
-                "nx_compute_dc_ops_state"));
+                "nx_compute_dc_ops_state",
+                "nx_config_item:device.max_active_slots"));
         return ApiResult.ok(response);
     }
 
     public ApiResult<PageResult<DeviceOpsView>> devices(DeviceOpsQueryRequest request) {
         return ApiResult.ok(deviceRepository.pageDevices(request));
+    }
+
+    private int e5MaxDevicesPerUser() {
+        String raw = configFacade.activeValue("device.max_active_slots").orElse(null);
+        if (!StringUtils.hasText(raw)) return 3;
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value >= 1 && value <= 100 ? value : 1;
+        } catch (NumberFormatException ignored) {
+            return 1;
+        }
     }
 
     public ApiResult<List<DeviceDatacenterView>> datacenters() {
@@ -263,11 +279,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
+        // Sales is maintained exclusively by the order state machine. A new
+        // SKU always starts at zero; tolerate the legacy E1 round-trip field
+        // but never let it create a hand-entered sales history.
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request);
+        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
         return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", writeRequest, () -> {
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
         if (!A2ReplayContext.isReplaying()
@@ -311,7 +330,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409, revision.error());
         }
         LocalDateTime expectedRevision = revision.value();
-        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request);
+        // Exclude the order-managed counter from the idempotency payload as
+        // well as from persistence; the current value is restored below.
+        DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
         return e1Idempotent("E1_SKU_UPDATE", idempotencyKey, skuId,
                 Map.of("request", writeRequest, "expectedUpdatedAt", expectedRevision.toString()), () -> {
         if (!A2ReplayContext.isReplaying()
@@ -326,12 +347,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null) {
             return ApiResult.fail(404, "SKU_NOT_FOUND");
         }
+        long currentSold = before.sold() == null ? 0L : before.sold();
+        // Older E1 clients still round-trip sold. Ignore that input and retain
+        // the live order-managed count; the mapper also never updates it.
+        DeviceSkuUpsertRequest orderManagedWriteRequest = normalizeSkuPhaseRequest(writeRequest, currentSold);
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
-        DeviceSkuUpsertRequest effectiveWriteRequest = writeRequest.trialEligible() == null
-                ? withTrialEligible(writeRequest, Boolean.TRUE.equals(before.trialEligible()))
-                : writeRequest;
+        DeviceSkuUpsertRequest effectiveWriteRequest = orderManagedWriteRequest.trialEligible() == null
+                ? withTrialEligible(orderManagedWriteRequest, Boolean.TRUE.equals(before.trialEligible()))
+                : orderManagedWriteRequest;
         String nextStatus = normalizeSkuStatus(writeRequest.status());
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized, writeRequest.unlockPhase());
@@ -647,17 +672,28 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     /** App/H5 登录前可读的唯一 E6 服务端配置投影。 */
     public ApiResult<PlatformComputeConfigView> platformComputeConfig() {
         ComputeConfigView compute = computeConfig().getData();
-        boolean enabled = compute.flags().stream()
+        boolean configuredEnabled = compute.flags().stream()
                 .filter(flag -> "computeShareEnabled".equals(flag.key()))
                 .map(ComputeConfigView.FlagView::enabled)
                 .findFirst().orElse(false);
+        boolean enabled = configuredEnabled && compute.download() != null
+                && !sanitizeComputeDownloadUrl(compute.download().url()).isBlank();
+        List<ComputeConfigView.FlagView> publicFlags = compute.flags().stream()
+                .map(flag -> "computeShareEnabled".equals(flag.key())
+                        ? new ComputeConfigView.FlagView(
+                                flag.key(), flag.label(), flag.desc(), enabled, flag.frontendEffect())
+                        : flag)
+                .toList();
+        ComputeConfigView publicCompute = new ComputeConfigView(
+                compute.domain(), publicFlags, compute.coefficients(), compute.yieldEstimate(),
+                compute.gpuTiers(), compute.download(), compute.sources());
         return ApiResult.ok(new PlatformComputeConfigView(
                 new PlatformComputeConfigView.FeatureFlags(enabled, false, false),
                 null,
                 new PlatformComputeConfigView.OnlineBonus(
                         coefficientValue(compute, "h5BaseFactor", "0.6"),
                         coefficientValue(compute, "continuityFullHours", "2")),
-                compute,
+                publicCompute,
                 null,
                 LocalDateTime.now(clock).toString()));
     }
@@ -953,6 +989,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     /** 跨字段结构不变量：显卡档位算力严格递增，识别词在全部档位中不产生歧义。 */
     private String validateComputeInvariants(Map<String, String> values) {
+        String shareFlag = values.getOrDefault(ComputeConfigRegistry.flagKey("computeShareEnabled"), "off");
+        String installer = values.getOrDefault(ComputeConfigRegistry.downloadKey("url"), "");
+        if ("on".equals(shareFlag) && sanitizeComputeDownloadUrl(installer).isBlank()) {
+            return "COMPUTE_SHARE_INSTALLER_REQUIRED";
+        }
         BigDecimal previousTops = null;
         Set<String> keywords = new java.util.HashSet<>();
         for (String tierId : ComputeConfigRegistry.GPU_TIER_IDS) {
@@ -1109,6 +1150,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         DeviceTaskUpsertRequest trusted = trustedTaskRequest(request);
         return deviceIdempotent("E2_TASK_CREATE", idempotencyKey, "", trusted, () -> {
+            boolean enabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
+            if (enabled && (trusted.minReward().signum() > 0 || trusted.maxReward().signum() > 0)
+                    && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+            }
             String taskId = nextTaskId();
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
@@ -1140,9 +1187,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
             String normalized = normalizeId(taskId);
-            DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
+            DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
             if (before == null) {
                 return ApiResult.fail(404, "TASK_NOT_FOUND");
+            }
+            if (!before.status().equals(trusted.status())) {
+                return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                        "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
+            }
+            boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
+            boolean nextEnabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
+            if (e2TaskPricingAmplifiesFinancialOutflow(
+                    before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
+                    trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), nextEnabled)
+                    && coverageBelowRedline()) {
+                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
             LocalDateTime now = LocalDateTime.now(clock);
             DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, now).orElse(before);
@@ -1193,7 +1253,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_PRICE_INVALID");
         }
         String normalized = normalizeId(taskId);
-        DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
+        DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
@@ -1231,9 +1291,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_STATUS_INVALID");
         }
         String normalized = normalizeId(taskId);
-        DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
+        DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
+        }
+        boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
+        boolean nextEnabled = "active".equals(status) && !"已 kill".equals(before.killInit());
+        if (e2TaskPricingAmplifiesFinancialOutflow(
+                before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
+                before.minReward(), before.maxReward(), parseVram(before.minVram()), nextEnabled)
+                && coverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         ApiResult<DeviceTaskView> inUseGuard = requireTaskNotReferencedBySku(normalized, status);
         if (inUseGuard != null) {
@@ -1263,7 +1332,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(taskId);
-        DeviceTaskView before = catalogRepository.findTask(normalized).orElse(null);
+        DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "TASK_NOT_FOUND");
         }
@@ -1551,6 +1620,93 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(response);
     }
 
+    public ApiResult<Map<String, Object>> e1BundleDiscount() {
+        BundleDiscountPolicy policy = BundleDiscountPolicy.require(configFacade::activeValue);
+        long version = bundleDiscountVersion(configFacade.activeValue(BundleDiscountPolicy.VERSION_KEY));
+        return ApiResult.ok(detail(
+                "domain", "E1",
+                "version", version,
+                "twoItemsPct", policy.twoItems().movePointRight(2),
+                "threeItemsPct", policy.threeItems().movePointRight(2),
+                "fourPlusItemsPct", policy.fourPlusItems().movePointRight(2),
+                "source", "nx_config_item"));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateE1BundleDiscount(
+            String idempotencyKey, DeviceBundleDiscountUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireE1Command(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 1
+                || request.twoItemsPct() == null || request.threeItemsPct() == null
+                || request.fourPlusItemsPct() == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "BUNDLE_DISCOUNT_REQUEST_INVALID");
+        }
+        BundleDiscountPolicy proposed;
+        try {
+            proposed = new BundleDiscountPolicy(
+                    request.twoItemsPct().movePointLeft(2),
+                    request.threeItemsPct().movePointLeft(2),
+                    request.fourPlusItemsPct().movePointLeft(2));
+        } catch (IllegalArgumentException ex) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                    "BUNDLE_DISCOUNT_POLICY_INVALID");
+        }
+        String trustedOperator = operator(request.operator());
+        DeviceBundleDiscountUpdateRequest trusted = new DeviceBundleDiscountUpdateRequest(
+                proposed.twoItems().movePointRight(2),
+                proposed.threeItems().movePointRight(2),
+                proposed.fourPlusItems().movePointRight(2),
+                request.expectedVersion(), request.reason().trim(), trustedOperator);
+        return e1Idempotent("E1_BUNDLE_DISCOUNT_UPDATE", idempotencyKey, "store-bundle-discount", trusted, () -> {
+            Map<String, java.util.Optional<String>> locked = new LinkedHashMap<>();
+            for (String key : BundleDiscountPolicy.RATE_KEYS) {
+                locked.put(key, configFacade.activeValueForUpdate(key));
+            }
+            java.util.Optional<String> lockedVersion = configFacade.activeValueForUpdate(BundleDiscountPolicy.VERSION_KEY);
+            BundleDiscountPolicy before = BundleDiscountPolicy.require(locked::get);
+            long currentVersion = bundleDiscountVersion(lockedVersion);
+            if (currentVersion != trusted.expectedVersion()) {
+                return ApiResult.fail(409, "BUNDLE_DISCOUNT_VERSION_CONFLICT");
+            }
+            if (before.equals(proposed)) {
+                return ApiResult.fail(409, "BUNDLE_DISCOUNT_VALUE_UNCHANGED");
+            }
+            configFacade.upsertAdminValue(BundleDiscountPolicy.TWO_ITEMS_KEY,
+                    proposed.twoItems().toPlainString(), "NUMBER", "store", "E1 App bundle discount policy");
+            configFacade.upsertAdminValue(BundleDiscountPolicy.THREE_ITEMS_KEY,
+                    proposed.threeItems().toPlainString(), "NUMBER", "store", "E1 App bundle discount policy");
+            configFacade.upsertAdminValue(BundleDiscountPolicy.FOUR_PLUS_ITEMS_KEY,
+                    proposed.fourPlusItems().toPlainString(), "NUMBER", "store", "E1 App bundle discount policy");
+            long nextVersion = currentVersion + 1;
+            configFacade.upsertAdminValue(BundleDiscountPolicy.VERSION_KEY,
+                    String.valueOf(nextVersion), "NUMBER", "store", "E1 bundle discount policy CAS version");
+            auditRequired("E1_BUNDLE_DISCOUNT_CHANGED", "STORE_BUNDLE_DISCOUNT", "store-bundle-discount",
+                    trustedOperator, detail(
+                            "before", before,
+                            "after", proposed,
+                            "versionBefore", currentVersion,
+                            "versionAfter", nextVersion,
+                            "reason", trusted.reason(),
+                            "idempotencyKey", idempotencyKey.trim()));
+            return e1BundleDiscount();
+        });
+    }
+
+    private long bundleDiscountVersion(java.util.Optional<String> raw) {
+        try {
+            long version = Long.parseLong(raw.filter(StringUtils::hasText).orElseThrow().trim());
+            if (version < 1) throw new NumberFormatException("non-positive version");
+            return version;
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "BUNDLE_DISCOUNT_POLICY_UNAVAILABLE");
+        }
+    }
+
     @Transactional
     public ApiResult<Map<String, Object>> createE1Phase(String idempotencyKey, DevicePhaseUpsertRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(idempotencyKey, request == null ? null : request.reason());
@@ -1730,9 +1886,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (changedFields == 0 || (trusted.enabled() != null && changedFields > 1)) {
                 return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
             }
-            DeviceTaskView before = findE2TaskByClass(trusted.taskClass());
-            if (before == null) {
+            DeviceTaskView candidate = findE2TaskByClass(trusted.taskClass());
+            if (candidate == null) {
                 return ApiResult.fail(404, "TASK_CLASS_NOT_FOUND");
+            }
+            DeviceTaskView before = catalogRepository.findTaskForUpdate(candidate.taskId()).orElse(null);
+            if (before == null || !trusted.taskClass().equals(before.taskClass())) {
+                return ApiResult.fail(409, "TASK_CLASS_CHANGED");
             }
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
@@ -2645,9 +2805,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before.userId() == null || before.userId() <= 0) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DEVICE_USER_REQUIRED");
             }
-            if (deviceRepository.occupiesPhysicalSlot(deviceId)
-                    && deviceRepository.countActiveDevicesByUser(before.userId()) >= E5_MAX_DEVICES_PER_USER) {
-                return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
+            int slotCap = e5MaxDevicesPerUser();
+            boolean occupiesPhysicalSlot = deviceRepository.occupiesPhysicalSlot(deviceId);
+            if (occupiesPhysicalSlot) {
+                // The count is meaningful only while this owner's activation gate is locked:
+                // two E5 requests for different inventory rows must not both see the last slot.
+                if (!deviceRepository.lockUserForE5Activation(before.userId())) {
+                    return ApiResult.fail(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
+                }
+                if (deviceRepository.countActiveDevicesByUser(before.userId()) >= slotCap) {
+                    return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
+                }
             }
             DeviceOpsView updated = deviceRepository.activateDevice(deviceId, LocalDateTime.now(clock)).orElse(null);
             if (updated == null) {
@@ -2688,8 +2856,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         OpsErrorCode.INVALID_STATE_TRANSITION.name());
             }
-            recordE5DeviceEvent("admin.device_deactivated",
-                    updated, before.status(), updated.status(), unbind ? "unbind" : "manual",
+            boolean deferred = Integer.valueOf(1).equals(updated.pendingDeactivate());
+            recordE5DeviceEvent(deferred ? "admin.device_deactivation_requested" : "admin.device_deactivated",
+                    updated, before.status(), updated.status(),
+                    deferred ? "deferred_until_task_settlement" : unbind ? "unbind" : "manual",
                     trustedOperator, trusted.reason(), idempotencyKey);
             return ApiResult.ok(updated);
         });
@@ -2916,10 +3086,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         } else if (StringUtils.hasText(request.stock())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY");
         }
-        long sold = request.sold() == null ? 0L : request.sold();
-        if (sold < 0 || sold > Integer.MAX_VALUE || sold + stockValue > Integer.MAX_VALUE) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_SOLD_INVALID");
-        }
         ApiResult<DeviceSkuView> gateValidation = validatePurchaseGate(request.purchaseGate());
         if (gateValidation != null) return gateValidation;
         if (request.generation() != null && (request.generation() < 1 || request.generation() > 3)) {
@@ -2975,10 +3141,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!validMediaPreviewUrl(request.imagePreviewUrl())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_IMAGE_PREVIEW_URL_INVALID");
         }
+        if (!ManagedSkuMediaIdentity.isCanonicalPair(request.imageAssetId(), request.imageObjectKey())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_MEDIA_IDENTITY_MISMATCH");
+        }
+        if (StringUtils.hasText(request.imageObjectKey())
+                && !storageService.exists(request.imageObjectKey().trim())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_MEDIA_OBJECT_NOT_FOUND");
+        }
         return null;
     }
 
-    private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request) {
+    private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request, Long runtimeSold) {
         String tier = normalizeExact(request.tier());
         String unlockPhase = "Share".equals(tier) ? "" : normalizeE1Phase(request.unlockPhase());
         ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
@@ -3003,7 +3176,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.shareYieldMin(),
                 request.shareYieldMax(),
                 request.baseRate(),
-                request.sold(),
+                runtimeSold,
                 inventoryMode == ProductInventoryMode.UNLIMITED ? null : request.stock(),
                 request.rating(),
                 request.reviews(),
@@ -3021,7 +3194,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.purchaseGate(),
                 request.imageAssetId(),
                 request.imageObjectKey(),
-                request.imagePreviewUrl(),
+                null,
                 request.tag(),
                 request.status(),
                 request.reason(),
@@ -3164,6 +3337,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         E4OrderRefundSettlementFacade.Settlement settlement = null;
         if ("E4_ORDER_REFUNDED".equals(auditAction)) {
+            // Keep the same lock order as payment (catalog assets before wallet) so
+            // concurrent pay/refund transactions cannot deadlock by taking the two
+            // resource families in opposite order. Any later failure rolls both
+            // changes back with this service transaction.
+            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
+                throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
+            }
             settlement = refundSettlementFacade.settle(
                     normalizedOrderNo,
                     facts.userId(),
@@ -3172,9 +3352,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     request.reason().trim(),
                     request.operator(),
                     idempotencyKey.trim());
-            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
-                throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
-            }
         } else if (ORDER_STOCK_RELEASE_STATES.contains(toState)) {
             if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
@@ -4180,7 +4357,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private List<Map<String, Object>> e2Teaser(List<Map<String, Object>> rows) {
         Map<String, Integer> deviceVram = new LinkedHashMap<>();
-        deviceVram.put("cloud-share", 0);
+        deviceVram.put("cloud-share", 8);
         deviceVram.put("phone", 8);
         deviceVram.put("S1", 96);
         deviceVram.put("Pro", 192);
@@ -4538,6 +4715,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
+            case "e1_bundle_discount" -> {
+                DeviceBundleDiscountUpdateRequest req = new DeviceBundleDiscountUpdateRequest(
+                        decimal(p, "twoItemsPct"), decimal(p, "threeItemsPct"),
+                        decimal(p, "fourPlusItemsPct"), longVal(p, "expectedVersion"), reason, operator);
+                return updateE1BundleDiscount(idem, req);
+            }
             case "e1_sku_create" -> {
                 return createSku(idem, buildSkuUpsertRequest(p, reason, operator));
             }

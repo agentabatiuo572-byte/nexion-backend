@@ -134,11 +134,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern K3_NEW_ACCOUNT_RULE = Pattern.compile("^注册\\s*(<|<=)\\s*(\\d+)\\s*天$");
     private static final Map<String, String> OTP_CANONICAL_CONFIG_KEYS = Map.of(
-            "otpGate.resendSeconds", "auth.risk.otp_cooldown_seconds",
-            "otpGate.captchaAfterSends", "auth.risk.otp_max_24h",
+            "otpGate.resendSeconds", "auth.risk.otp_send_cooldown_seconds",
+            "otpGate.dayLimit", "auth.risk.otp_send_day_limit",
             "otpGate.otpTtlSeconds", "auth.risk.otp_ttl_minutes",
             "otpGate.maxVerifyAttempts", "auth.risk.otp_max_verify_attempts",
-            "otpGate.captchaTicketTtlSeconds", "auth.risk.captcha_ticket_ttl_seconds");
+            "captchaGate.alwaysScenes", "auth.risk.captcha_always_scenes",
+            "captchaGate.afterSends", "auth.risk.captcha_after_sends");
     private static final Set<String> RETIRED_K2_PARAM_KEYS = Set.of(
             "rewardRisk.lockMode", "rewardRisk.usdtAmount", "rewardRisk.nexAmount");
     private static final Map<String, K2ActionSpec> K2_ACTIONS = Map.of(
@@ -1033,7 +1034,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             normalizedKey, request.expectedVersion(), normalizedValue).orElse(null);
                     if (updated == null) throw new BizException(409, "K2_PARAM_CONCURRENT_UPDATE");
                     persistCanonicalOtpValue(normalizedKey, normalizedValue);
-                    RiskArbitrageParamView after = withCanonicalOtpValue(updated);
+                    // Return and audit the value accepted by this command. Re-reading the
+                    // canonical facade here can expose a stale cache immediately after the
+                    // successful write and make the operator see the previous value.
+                    RiskArbitrageParamView after = updated;
                     auditRequired("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", normalizedKey, actor, Map.of(
                             "key", normalizedKey,
                             "before", k2ParamSnapshot(beforeCanonical),
@@ -2075,10 +2079,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             case "welcomeGiftAnomalyThreshold" -> normalizeWelcomeGiftThreshold(value);
             case "leaderboardVelocityMultiplier" -> normalizeLeaderboardThreshold(value);
             case "otpGate.resendSeconds" -> normalizeBoundedInteger(value, 30, 300);
-            case "otpGate.captchaAfterSends" -> normalizeBoundedInteger(value, 1, 10);
+            case "otpGate.dayLimit" -> normalizeBoundedInteger(value, 5, 50);
             case "otpGate.otpTtlSeconds" -> normalizeOtpTtlSeconds(value);
             case "otpGate.maxVerifyAttempts" -> normalizeBoundedInteger(value, 1, 10);
-            case "otpGate.captchaTicketTtlSeconds" -> normalizeBoundedInteger(value, 30, 600);
+            case "captchaGate.alwaysScenes" -> normalizeCaptchaScenes(value);
+            case "captchaGate.afterSends" -> normalizeBoundedInteger(value, 0, 50);
             default -> "";
         };
     }
@@ -2099,6 +2104,21 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         int seconds = Integer.parseInt(normalized);
         return seconds % 60 == 0 ? normalized : "";
+    }
+
+    private String normalizeCaptchaScenes(String value) {
+        Set<String> scenes = Set.of("register", "login", "reset");
+        Set<String> requested = List.of(value.toLowerCase(Locale.ROOT).split(","))
+                .stream()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toSet());
+        if (requested.isEmpty() || !scenes.containsAll(requested)) {
+            return "";
+        }
+        return List.of("register", "login", "reset").stream()
+                .filter(requested::contains)
+                .collect(Collectors.joining(","));
     }
 
     private RiskArbitrageParamView withCanonicalOtpValue(RiskArbitrageParamView param) {
@@ -2129,7 +2149,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String canonicalValue = "otpGate.otpTtlSeconds".equals(key)
                 ? String.valueOf(Integer.parseInt(value) / 60)
                 : value;
-        configFacade.upsertAdminValue(configKey, canonicalValue, "NUMBER", "auth-risk", "K2 OTP gate canonical configuration");
+        String valueType = "captchaGate.alwaysScenes".equals(key) ? "STRING" : "NUMBER";
+        configFacade.upsertAdminValue(configKey, canonicalValue, valueType, "auth-risk", "K2 OTP gate canonical configuration");
     }
 
     private String normalizeWithdrawRuleCondition(String dimension, String value) {

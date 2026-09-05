@@ -83,14 +83,19 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                     OR c.last_message LIKE CONCAT('%', #{keyword}, '%'))
              </if>
              <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED'</if>
-            ORDER BY COALESCE(c.last_message_at,c.updated_at,c.created_at) DESC
+             <if test='stableCursor != null and stableCursor and beforeId != null'>AND c.id &lt; #{beforeId}</if>
+             <choose>
+               <when test='stableCursor != null and stableCursor'>ORDER BY c.id DESC</when>
+               <otherwise>ORDER BY COALESCE(c.last_message_at,c.updated_at,c.created_at) DESC, c.id DESC</otherwise>
+             </choose>
             LIMIT #{pageSize} OFFSET #{offset}
             </script>
             """)
     List<ContentConversationView> pageConversations(@Param("status") String status, @Param("type") String type,
-                                                    @Param("ownerAgentId") String ownerAgentId, @Param("keyword") String keyword,
-                                                    @Param("userId") Long userId, @Param("unreadOnly") Boolean unreadOnly,
-                                                    @Param("pageSize") long pageSize,
+                                                     @Param("ownerAgentId") String ownerAgentId, @Param("keyword") String keyword,
+                                                     @Param("userId") Long userId, @Param("unreadOnly") Boolean unreadOnly,
+                                                     @Param("beforeId") Long beforeId, @Param("stableCursor") Boolean stableCursor,
+                                                     @Param("pageSize") long pageSize,
                                                     @Param("offset") long offset);
 
     @Select("""

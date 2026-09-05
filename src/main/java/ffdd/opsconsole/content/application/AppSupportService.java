@@ -1,5 +1,8 @@
 package ffdd.opsconsole.content.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
@@ -9,9 +12,12 @@ import ffdd.opsconsole.content.domain.ConversationRepository;
 import ffdd.opsconsole.content.domain.ConversationTicketResult;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.domain.SupportTicketDetail;
 import ffdd.opsconsole.content.domain.SupportTicketRepository;
 import ffdd.opsconsole.content.domain.SupportTicketView;
+import ffdd.opsconsole.content.domain.SupportAgentRepository;
+import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.dto.ConversationQueryRequest;
 import ffdd.opsconsole.content.dto.SupportTicketQueryRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -19,6 +25,9 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
+import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -48,7 +57,9 @@ public class AppSupportService {
             "OPEN", "IN_PROGRESS", "PENDING_USER", "RESOLVED", "CLOSED");
     private static final Set<String> CONVERSATION_STATUSES = Set.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED");
     private static final Set<String> CONVERSATION_TYPES = Set.of("SUPPORT", "ADVISOR");
+    private static final Set<String> FAQ_SURFACES = Set.of("Help Center", "Ticket Create");
     private static final DateTimeFormatter NUMBER_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
+    private static final int APP_MESSAGE_WINDOW = 100;
 
     private final SupportTicketRepository ticketRepository;
     private final ConversationRepository conversationRepository;
@@ -58,6 +69,10 @@ public class AppSupportService {
     private final ApplicationEventPublisher eventPublisher;
     private final Clock clock;
     private final ProductionSupportPathGuard productionPathGuard;
+    private final AdminIdempotencyRecordMapper idempotencyRecordMapper;
+    private final ObjectMapper objectMapper;
+    private final SupportAgentRepository supportAgentRepository;
+    private final PlatformConfigFacade configFacade;
 
     public ApiResult<PageResult<SupportTicketView>> tickets(
             Long userId, String status, Long pageNum, Long pageSize) {
@@ -73,12 +88,47 @@ public class AppSupportService {
         return ApiResult.ok(ticketRepository.pageTickets(query));
     }
 
-    public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo) {
+    public ApiResult<PageResult<SupportTicketView>> ticketCursor(
+            Long userId, String status, Long beforeId, Long pageSize) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
+        if (!validHistoryCursor(beforeId)) return validation("SUPPORT_LIST_CURSOR_INVALID");
+        String normalizedStatus = normalizeUpper(status);
+        if (StringUtils.hasText(normalizedStatus) && !TICKET_STATUSES.contains(normalizedStatus)) {
+            return validation("SUPPORT_TICKET_STATUS_UNSUPPORTED");
+        }
+        SupportTicketQueryRequest query = new SupportTicketQueryRequest(
+                null, normalizedStatus, null, null, null, userId, null,
+                1L, bounded(pageSize, 1, 100, 50));
+        return ApiResult.ok(ticketRepository.pageTicketsBeforeId(query, beforeId));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<SupportTicketDetail> markTicketRead(Long userId, String ticketNo, CloseRequest request) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        if (request == null || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
+            return validation("SUPPORT_TICKET_READ_INVALID");
+        }
         SupportTicketView ticket = ownedTicket(userId, ticketNo);
         if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
-        return ApiResult.ok(new SupportTicketDetail(ticket, ticketRepository.userVisibleMessages(ticket.ticketNo())));
+        if (!matches(ticket.status(), ticket.version(), request.expectedStatus(), request.expectedVersion())) return conflict();
+        if (ticket.userUnreadCount() != null && ticket.userUnreadCount() > 0
+                && !ticketRepository.markUserReadCas(ticket, LocalDateTime.now(clock))) return conflict();
+        return ticket(userId, ticketNo);
+    }
+
+    public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo) {
+        return ticket(userId, ticketNo, null);
+    }
+
+    public ApiResult<SupportTicketDetail> ticket(Long userId, String ticketNo, Long beforeMessageId) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        if (!validHistoryCursor(beforeMessageId)) return validation("SUPPORT_HISTORY_CURSOR_INVALID");
+        SupportTicketView ticket = ownedTicket(userId, ticketNo);
+        if (ticket == null) return hiddenNotFound("SUPPORT_TICKET_NOT_FOUND");
+        return ApiResult.ok(ticketDetail(ticket, beforeMessageId));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -161,17 +211,38 @@ public class AppSupportService {
                 bounded(pageNum, 1, 100000, 1), bounded(pageSize, 1, 100, 50));
         PageResult<ContentConversationView> page = conversationRepository.pageConversations(query);
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
-                page.getRecords().stream().map(row -> appConversation(
-                        row, conversationRepository.userVisibleMessages(row.conversationNo()))).toList()));
+                page.getRecords().stream().map(this::appConversation).toList()));
+    }
+
+    public ApiResult<PageResult<ContentConversationView>> conversationCursor(
+            Long userId, String status, Long beforeId, Long pageSize) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        if (!validHistoryCursor(beforeId)) return validation("SUPPORT_LIST_CURSOR_INVALID");
+        String normalizedStatus = normalizeUpper(status);
+        if (StringUtils.hasText(normalizedStatus) && !CONVERSATION_STATUSES.contains(normalizedStatus)) {
+            return validation("CONVERSATION_STATUS_UNSUPPORTED");
+        }
+        ConversationQueryRequest query = new ConversationQueryRequest(
+                normalizedStatus, null, null, userId, null, false,
+                1L, bounded(pageSize, 1, 100, 50));
+        PageResult<ContentConversationView> page = conversationRepository
+                .pageConversationsBeforeId(query, beforeId);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                page.getRecords().stream().map(this::appConversation).toList()));
     }
 
     public ApiResult<ContentConversationDetail> conversation(Long userId, String conversationNo) {
+        return conversation(userId, conversationNo, null);
+    }
+
+    public ApiResult<ContentConversationDetail> conversation(Long userId, String conversationNo, Long beforeMessageId) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
+        if (!validHistoryCursor(beforeMessageId)) return validation("SUPPORT_HISTORY_CURSOR_INVALID");
         ContentConversationView conversation = ownedConversation(userId, conversationNo);
         if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
-        List<ContentConversationMessageView> messages = conversationRepository.userVisibleMessages(conversation.conversationNo());
-        return ApiResult.ok(new ContentConversationDetail(appConversation(conversation, messages), messages, null));
+        return ApiResult.ok(conversationDetail(conversation, beforeMessageId));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -186,14 +257,15 @@ public class AppSupportService {
         if (!matches(conversation.status(), conversation.version(), expectedStatus, expectedVersion)) return conversationConflict();
         if ("CLOSED".equals(normalizeUpper(conversation.status()))) return invalidConversationState();
         if (lastSeenMessageId == null || lastSeenMessageId <= 0) return validation("LAST_SEEN_MESSAGE_ID_REQUIRED");
-        List<ContentConversationMessageView> messages = conversationRepository.userVisibleMessages(conversation.conversationNo());
+        List<ContentConversationMessageView> messages = conversationRepository
+                .recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW + 1);
         boolean targetVisibleAgentMessage = messages.stream().anyMatch(message -> lastSeenMessageId.equals(message.id())
                 && "agent".equalsIgnoreCase(message.senderType()));
         if (!targetVisibleAgentMessage) return hiddenNotFound("CONVERSATION_AGENT_MESSAGE_NOT_FOUND");
         boolean changed = conversationRepository.markAgentMessagesReadThrough(
                 conversation.conversationNo(), lastSeenMessageId, "user:" + userId, LocalDateTime.now(clock),
                 expectedStatus, expectedVersion);
-        ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo());
+        ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo(), null);
         if (changed) {
             publishAfterCommit(ConversationMessageEvent.builder()
                     .conversationNo(conversation.conversationNo()).messageId(lastSeenMessageId)
@@ -213,10 +285,28 @@ public class AppSupportService {
                 || !boundedText(request.openingText(), 1, 2000)) {
             return validation("CONVERSATION_INPUT_INVALID");
         }
+        String requestedType = normalizeLower(request.conversationType());
+        boolean categoryEnabled = conversationCategoryEnabled(requestedType);
+        if (!categoryEnabled) {
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "CONVERSATION_CATEGORY_DISABLED");
+        }
         return idempotent("APP_CONVERSATION_CREATE:" + userId, idempotencyKey, hash(request), () -> {
             LocalDateTime now = LocalDateTime.now(clock);
+            String type = requestedType;
+            DedicatedAdvisorBindingView advisor = null;
+            if ("advisor".equals(type)) {
+                // The App can be the first caller after a clean deployment; ensure the
+                // M5 routing tables exist before issuing the dedicated-advisor lookup.
+                supportAgentRepository.ensureSchema();
+                advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
+            }
+            String ownerId = advisor == null && "advisor".equals(type)
+                    ? "standby-pool" : advisor == null ? null : String.valueOf(advisor.adminId());
+            String ownerName = advisor == null && "advisor".equals(type)
+                    ? "备勤池" : advisor == null ? "Unassigned" : advisor.name();
             ContentConversationView created = conversationRepository.createUserConversation(
-                    uniqueNo("CV-APP-", now), userId, normalizeLower(request.conversationType()), request.openingText().trim(), now);
+                    uniqueNo("CV-APP-", now), userId, type, request.openingText().trim(),
+                    ownerId, ownerName, now);
             audit("APP_CONVERSATION_CREATED", "CONVERSATION", created.conversationNo(), userId,
                     Map.of("type", created.conversationType(), "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, created.conversationNo());
@@ -271,7 +361,8 @@ public class AppSupportService {
             if (!conversationRepository.markConvertedToTicket(conversation, ticketNo, "user:" + userId, now)) {
                 return conversationConflict();
             }
-            String transcript = conversationRepository.userVisibleMessages(conversation.conversationNo()).stream()
+            String transcript = conversationRepository
+                    .recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW).stream()
                     .map(message -> message.senderName() + ": " + message.content())
                     .reduce((left, right) -> left + "\n" + right)
                     .orElse(conversation.lastMessage());
@@ -287,35 +378,162 @@ public class AppSupportService {
                     .senderType("SYSTEM").senderName("System").body("CONVERTED_TO_TICKET")
                     .ts(now).ownerAgentId(updated.ownerAgentId()).ownerAgentName(updated.ownerAgentName()).build());
             return ApiResult.ok(new ConversationTicketResult(
-                    appConversation(updated, conversationRepository.userVisibleMessages(updated.conversationNo())),
-                    new SupportTicketDetail(ticket, ticketRepository.userVisibleMessages(ticket.ticketNo()))));
+                    conversationDetail(updated, null).conversation(),
+                    ticketDetail(ticket, null)));
         });
     }
 
+    private SupportTicketDetail ticketDetail(SupportTicketView ticket, Long beforeMessageId) {
+        List<ffdd.opsconsole.content.domain.SupportTicketMessageView> fetched = beforeMessageId == null
+                ? ticketRepository.recentUserVisibleMessages(ticket.ticketNo(), APP_MESSAGE_WINDOW + 1)
+                : ticketRepository.recentUserVisibleMessagesBefore(ticket.ticketNo(), beforeMessageId, APP_MESSAGE_WINDOW + 1);
+        boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
+        List<ffdd.opsconsole.content.domain.SupportTicketMessageView> page = fetched.stream()
+                .skip(truncated ? 1 : 0).toList();
+        Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
+        return new SupportTicketDetail(ticket, page, null, truncated, nextCursor);
+    }
+
+    private ContentConversationDetail conversationDetail(ContentConversationView conversation, Long beforeMessageId) {
+        List<ContentConversationMessageView> fetched = beforeMessageId == null
+                ? conversationRepository.recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW + 1)
+                : conversationRepository.recentUserVisibleMessagesBefore(
+                        conversation.conversationNo(), beforeMessageId, APP_MESSAGE_WINDOW + 1);
+        boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
+        List<ContentConversationMessageView> page = fetched.stream().skip(truncated ? 1 : 0).toList();
+        Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
+        return new ContentConversationDetail(appConversation(conversation), page, null, truncated, nextCursor);
+    }
+
     public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category) {
+        return faqs(userId, language, category, "Help Center");
+    }
+
+    public ApiResult<List<ConversationCategoryAvailability>> conversationCategories(Long userId) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        return ApiResult.ok(List.of(
+                new ConversationCategoryAvailability("advisor", conversationCategoryEnabled("advisor")),
+                new ConversationCategoryAvailability("support", conversationCategoryEnabled("support")),
+                new ConversationCategoryAvailability("ai", conversationCategoryEnabled("ai"))));
+    }
+
+    private boolean conversationCategoryEnabled(String type) {
+        return ConversationCategoryPolicy.enabled(configFacade, type);
+    }
+
+    public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category, String surface) {
+        ApiResult<PageResult<SupportFaqView>> page = faqPage(userId, language, category, surface, 1L, 50L);
+        if (page.getCode() != 0) return ApiResult.fail(page.getCode(), page.getMessage());
+        if (page.getData().getTotal() > page.getData().getRecords().size()) {
+            return ApiResult.fail(409, "SUPPORT_FAQ_PAGE_REQUIRED");
+        }
+        return ApiResult.ok(page.getData().getRecords());
+    }
+
+    public ApiResult<PageResult<SupportFaqView>> faqPage(Long userId, String language, String category, String surface,
+                                                         Long pageNum, Long pageSize) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         String normalizedLanguage = normalizeLanguage(language);
         String normalizedCategory = normalizeLower(category);
-        List<SupportFaqView> published = knowledgeRepository.listFaqs().stream()
-                .filter(faq -> "PUBLISHED".equals(normalizeUpper(faq.status())))
-                .filter(faq -> "Help Center".equals(faq.surface()))
-                .filter(faq -> !StringUtils.hasText(normalizedCategory) || normalizedCategory.equals(normalizeLower(faq.category())))
-                .sorted(java.util.Comparator.comparing(SupportFaqView::sortOrder).thenComparing(SupportFaqView::id))
-                .toList();
-        List<SupportFaqView> localized = published.stream()
-                .filter(faq -> normalizedLanguage.equalsIgnoreCase(faq.language()))
-                .toList();
-        // Support knowledge has an explicit default-language contract. A user
-        // must not see an empty Help Center merely because the currently
-        // selected locale has not been translated yet; only published App rows
-        // are eligible for this fallback.
-        if (localized.isEmpty() && !"zh-CN".equalsIgnoreCase(normalizedLanguage)) {
-            localized = published.stream()
-                    .filter(faq -> "zh-CN".equalsIgnoreCase(faq.language()))
-                    .toList();
+        String normalizedSurface = FAQ_SURFACES.stream()
+                .filter(value -> value.equalsIgnoreCase(surface == null ? "Help Center" : surface.trim()))
+                .findFirst().orElse(null);
+        if (normalizedSurface == null) return validation("SUPPORT_FAQ_SURFACE_UNSUPPORTED");
+        long safePage = Math.max(1L, pageNum == null ? 1L : pageNum);
+        long safeSize = Math.max(1L, Math.min(50L, pageSize == null ? 20L : pageSize));
+        long requestedCount = knowledgeRepository.countPublishedFaqs(
+                normalizedLanguage, normalizedSurface, normalizedCategory);
+        String effectiveLanguage = requestedCount == 0L && !"zh-CN".equalsIgnoreCase(normalizedLanguage)
+                ? "zh-CN" : normalizedLanguage;
+        long total = effectiveLanguage.equalsIgnoreCase(normalizedLanguage) ? requestedCount
+                : knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
+        long offset;
+        try {
+            offset = Math.multiplyExact(safePage - 1L, safeSize);
+        } catch (ArithmeticException overflow) {
+            return validation("SUPPORT_FAQ_PAGE_INVALID");
         }
-        return ApiResult.ok(localized);
+        if (offset > Integer.MAX_VALUE) return validation("SUPPORT_FAQ_PAGE_INVALID");
+        List<SupportFaqView> records = knowledgeRepository.listPublishedFaqPage(
+                effectiveLanguage, normalizedSurface, normalizedCategory, offset, (int) safeSize);
+        return ApiResult.ok(new PageResult<>(total, safePage, safeSize, records));
+    }
+
+    /**
+     * Exposes configured M4 targets only.  They are not historical response statistics.
+     */
+    public ApiResult<List<AppSupportSlaTarget>> slaTargets(Long userId) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        return ApiResult.ok(knowledgeRepository.listSla().stream()
+                .filter(row -> validCategory(row.category()))
+                .filter(row -> row.firstResponseMins() != null && row.firstResponseMins() > 0)
+                .filter(row -> row.resolutionHours() != null && row.resolutionHours() > 0)
+                .sorted(java.util.Comparator.comparing(SupportSlaView::category))
+                .map(row -> new AppSupportSlaTarget(
+                        row.category(), row.firstResponseMins(), row.resolutionHours(), false))
+                .toList());
+    }
+
+    /**
+     * Read-only recovery for App support commands.  The opaque key is scoped to
+     * the authenticated user by the only command scopes the production API writes.
+     * A missing command is the only case returned as 404; in-flight, failed and
+     * unknown rows remain explicit so the client never treats them as safe to replay.
+     */
+    public ApiResult<Map<String, Object>> commandResult(Long userId, String idempotencyKey) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        if (!validKey(idempotencyKey) || idempotencyKey.trim().length() < 8) {
+            return validation("SUPPORT_COMMAND_KEY_INVALID");
+        }
+        List<AdminIdempotencyRecordEntity> records = idempotencyRecordMapper.selectSupportCommand(
+                commandScopes(userId), idempotencyKey.trim());
+        if (records.isEmpty()) return hiddenNotFound("SUPPORT_COMMAND_NOT_FOUND");
+        if (records.size() != 1) return conflict("SUPPORT_COMMAND_AMBIGUOUS");
+        AdminIdempotencyRecordEntity record = records.get(0);
+        return switch (normalizeUpper(record.getStatus())) {
+            case "SUCCEEDED" -> recoverSucceededCommand(record);
+            case "PROCESSING" -> conflict("SUPPORT_COMMAND_IN_PROGRESS");
+            case "FAILED" -> conflict("SUPPORT_COMMAND_FAILED_RETRYABLE");
+            case "UNKNOWN" -> conflict("SUPPORT_COMMAND_RESULT_UNKNOWN");
+            default -> conflict("SUPPORT_COMMAND_STATE_INVALID");
+        };
+    }
+
+    private ApiResult<Map<String, Object>> recoverSucceededCommand(AdminIdempotencyRecordEntity record) {
+        if (!StringUtils.hasText(record.getResponseJson())) return conflict("SUPPORT_COMMAND_RESULT_MISSING");
+        try {
+            JsonNode envelope = objectMapper.readTree(record.getResponseJson());
+            if (envelope == null || envelope.path("code").asInt(Integer.MIN_VALUE) != 0 || !envelope.hasNonNull("data")) {
+                return conflict("SUPPORT_COMMAND_NOT_COMMITTED");
+            }
+            String resultType = commandResultType(record.getScope());
+            if (resultType == null) return conflict("SUPPORT_COMMAND_SCOPE_INVALID");
+            return ApiResult.ok(Map.of("resultType", resultType, "result", objectMapper.convertValue(envelope.get("data"), Object.class)));
+        } catch (JsonProcessingException | IllegalArgumentException ex) {
+            return conflict("SUPPORT_COMMAND_RESULT_INVALID");
+        }
+    }
+
+    private List<String> commandScopes(Long userId) {
+        return List.of(
+                "APP_SUPPORT_TICKET_CREATE:" + userId,
+                "APP_SUPPORT_TICKET_REPLY:" + userId,
+                "APP_SUPPORT_TICKET_CLOSE:" + userId,
+                "APP_CONVERSATION_CREATE:" + userId,
+                "APP_CONVERSATION_REPLY:" + userId,
+                "APP_CONVERSATION_TO_TICKET:" + userId);
+    }
+
+    private String commandResultType(String scope) {
+        if (scope == null) return null;
+        if (scope.startsWith("APP_SUPPORT_TICKET_")) return "ticket";
+        if (scope.startsWith("APP_CONVERSATION_TO_TICKET:")) return "conversation-ticket";
+        if (scope.startsWith("APP_CONVERSATION_")) return "conversation";
+        return null;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -334,17 +552,19 @@ public class AppSupportService {
                 .filter(row -> userId.equals(row.userId())).orElse(null);
     }
 
-    private ContentConversationView appConversation(
-            ContentConversationView row, List<ContentConversationMessageView> messages) {
-        int userUnread = (int) messages.stream()
-                .filter(message -> "agent".equalsIgnoreCase(message.senderType()))
-                .filter(message -> !"read".equalsIgnoreCase(message.receiptStatus()))
-                .count();
+    private ContentConversationView appConversation(ContentConversationView row) {
+        // The operations header is not a customer unread projection. Count every
+        // visible agent receipt instead of deriving a badge from one latest row.
+        int userUnread = conversationRepository.unreadUserVisibleAgentMessageCount(row.conversationNo());
         return new ContentConversationView(
                 row.id(), row.conversationNo(), row.userId(), row.conversationType(), row.status(),
                 row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
                 row.transferFromAgentId(), row.transferFromAgentName(), row.transferToType(), row.transferToId(),
                 row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version());
+    }
+
+    private boolean validHistoryCursor(Long cursor) {
+        return cursor == null || cursor > 0;
     }
 
     private void publish(ContentConversationDetail detail, ConversationMessageEvent.EventType type, String body) {
@@ -437,6 +657,7 @@ public class AppSupportService {
     private <T> ApiResult<T> validation(String code) { return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), code); }
     private <T> ApiResult<T> idempotencyRequired() { return ApiResult.fail(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name()); }
     private <T> ApiResult<T> conflict() { return ApiResult.fail(409, "SUPPORT_TICKET_CONFLICT"); }
+    private <T> ApiResult<T> conflict(String code) { return ApiResult.fail(409, code); }
     private <T> ApiResult<T> conversationConflict() { return ApiResult.fail(409, "CONVERSATION_CONFLICT"); }
     private <T> ApiResult<T> invalidState() { return ApiResult.fail(409, "SUPPORT_TICKET_INVALID_STATE"); }
     private <T> ApiResult<T> invalidConversationState() { return ApiResult.fail(409, "CONVERSATION_INVALID_STATE"); }
@@ -445,5 +666,8 @@ public class AppSupportService {
     public record ReplyRequest(String body, String expectedStatus, Long expectedVersion) {}
     public record CloseRequest(String expectedStatus, Long expectedVersion) {}
     public record StartConversationRequest(String conversationType, String openingText) {}
+    public record ConversationCategoryAvailability(String type, boolean enabled) {}
     public record ConvertToTicketRequest(String category, String title, String expectedStatus, Long expectedVersion) {}
+    public record AppSupportSlaTarget(
+            String category, Integer firstResponseMins, Integer resolutionHours, boolean statisticsAvailable) {}
 }

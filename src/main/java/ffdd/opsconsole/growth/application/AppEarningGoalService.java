@@ -4,15 +4,24 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.mapper.AppEarningGoalMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.AppProductCatalogService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import java.util.HexFormat;
+import java.util.function.Supplier;
 
 @ApplicationService
 @RequiredArgsConstructor
@@ -22,6 +31,8 @@ public class AppEarningGoalService {
 
     private final AppEarningGoalMapper mapper;
     private final AppProductCatalogService productCatalogService;
+    private final AdminIdempotencyService idempotency;
+    private final Clock clock;
 
     public ApiResult<GoalListView> list(Long userId) {
         if (!validUser(userId) || mapper.activeUser(userId) == null) {
@@ -34,13 +45,20 @@ public class AppEarningGoalService {
                 rows.stream().map(row -> view(row, lifetime)).toList()));
     }
 
-    public ApiResult<GoalView> create(Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt) {
+    public ApiResult<GoalView> create(Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt, String idempotencyKey) {
         ApiResult<Void> validation = validate(userId, targetUsdt, deadlineAt);
         if (validation.getCode() != 0) return ApiResult.fail(validation.getCode(), validation.getMessage());
-        if (mapper.insert(userId, targetUsdt.setScale(6, RoundingMode.DOWN), deadlineAt) != 1) {
+        return once(userId, idempotencyKey, targetUsdt, deadlineAt,
+                () -> createOnce(userId, targetUsdt, deadlineAt));
+    }
+
+    private ApiResult<GoalView> createOnce(Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt) {
+        AppEarningGoalMapper.GoalInsert inserted = new AppEarningGoalMapper.GoalInsert(
+                userId, targetUsdt.setScale(6, RoundingMode.DOWN), deadlineAt);
+        if (mapper.insert(inserted) != 1 || inserted.getId() == null) {
             return ApiResult.fail(503, "GOAL_SAVE_FAILED");
         }
-        AppEarningGoalMapper.GoalRow row = mapper.latest(userId);
+        AppEarningGoalMapper.GoalRow row = mapper.findById(userId, inserted.getId());
         if (row == null) return ApiResult.fail(503, "GOAL_SAVE_UNCONFIRMED");
         return ApiResult.ok(view(row, nonNegative(mapper.lifetimeEarnings(userId))));
     }
@@ -74,7 +92,7 @@ public class AppEarningGoalService {
         Map<String, Object> data = catalog.getData();
         List<Map<String, Object>> products = productRows(data.get("products"));
         BigDecimal lifetime = nonNegative(mapper.lifetimeEarnings(userId));
-        long days = Math.max(1, java.time.Duration.between(LocalDateTime.now(), deadlineAt).toDays());
+        long days = remainingUtcDays(deadlineAt);
         BigDecimal requiredDaily = targetUsdt.subtract(lifetime).max(BigDecimal.ZERO)
                 .divide(BigDecimal.valueOf(days), 6, RoundingMode.CEILING);
         Map<String, Object> selected = products.stream()
@@ -99,8 +117,9 @@ public class AppEarningGoalService {
         if (target == null || target.compareTo(MIN_TARGET) < 0 || target.scale() > 6) {
             return ApiResult.fail(422, "GOAL_TARGET_INVALID");
         }
-        if (deadline == null || !deadline.isAfter(LocalDateTime.now())
-                || deadline.isAfter(LocalDateTime.now().plusDays(MAX_DEADLINE_DAYS))) {
+        LocalDateTime now = utcNow();
+        if (deadline == null || !deadline.isAfter(now)
+                || deadline.isAfter(now.plusDays(MAX_DEADLINE_DAYS))) {
             return ApiResult.fail(422, "GOAL_DEADLINE_INVALID");
         }
         return ApiResult.ok();
@@ -132,10 +151,33 @@ public class AppEarningGoalService {
     }
 
     private BigDecimal nonNegative(BigDecimal value) { return value == null ? BigDecimal.ZERO : value.max(BigDecimal.ZERO); }
+    private LocalDateTime utcNow() { return LocalDateTime.now(clock.withZone(ZoneOffset.UTC)); }
+    private long remainingUtcDays(LocalDateTime deadlineAt) {
+        long milliseconds = Duration.between(utcNow(), deadlineAt).toMillis();
+        return Math.max(1, Math.floorDiv(milliseconds + 86_400_000L - 1, 86_400_000L));
+    }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<GoalView> once(Long userId, String idempotencyKey, BigDecimal targetUsdt,
+                                     LocalDateTime deadlineAt, Supplier<ApiResult<GoalView>> action) {
+        return (ApiResult<GoalView>) (ApiResult) idempotency.execute(
+                "APP:GOAL_CREATE:USER:" + userId,
+                idempotencyKey,
+                sha256(targetUsdt.stripTrailingZeros().toPlainString() + "|" + deadlineAt),
+                ApiResult.class,
+                (Supplier) action);
+    }
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
     private boolean validUser(Long userId) { return userId != null && userId > 0; }
     private boolean truthy(Object value) { return Boolean.TRUE.equals(value) || value instanceof Number n && n.intValue() != 0 || "true".equalsIgnoreCase(String.valueOf(value)); }
     private String text(Object value, String fallback) { return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value); }
-    private Long epoch(LocalDateTime value) { return value == null ? null : value.toInstant(java.time.ZoneOffset.UTC).toEpochMilli(); }
+    private Long epoch(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC).toEpochMilli(); }
 
     public record GoalListView(boolean serverCanonical, String source, BigDecimal lifetimeEarningsUsdt,
                                List<GoalView> goals) { }

@@ -56,7 +56,8 @@ class AppGenesisServiceTest {
             case "market.genesis.ops.presale.maxPerUser" -> Optional.of("5");
             default -> Optional.empty();
         });
-        when(mapper.controlValue(anyString())).thenReturn(null);
+        when(mapper.controlValue(anyString())).thenAnswer(invocation ->
+                "killswitch.genesis".equals(invocation.getArgument(0)) ? "enabled" : null);
         when(mapper.activeSeries()).thenReturn(series());
         when(mapper.lockActiveSeries()).thenReturn(series());
         when(mapper.holdingCount("genesis-main")).thenReturn(0L);

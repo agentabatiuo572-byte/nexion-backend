@@ -16,6 +16,8 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
 
     String INTENT_COLUMNS = """
             i.intent_no AS intentNo, i.user_id AS userId,
+            i.settlement_target_type AS settlementTargetType,
+            i.target_order_no AS targetOrderNo,
             i.create_idempotency_key AS createIdempotencyKey,
             i.create_request_hash AS createRequestHash,
             i.requested_usdt AS requestedUsdt, i.payable_vnd AS payableVnd,

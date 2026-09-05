@@ -9,25 +9,36 @@ import ffdd.opsconsole.media.application.OpsMediaUploadService;
 import ffdd.opsconsole.media.dto.UploadedAsset;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.time.LocalDateTime;
+import java.util.Map;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsMediaControllerTest {
     private final OpsMediaUploadService uploadService = mock(OpsMediaUploadService.class);
     private final OpsMediaController controller = new OpsMediaController(uploadService);
 
     @Test
-    void uploadDelegatesToMediaService() {
+    void uploadUsesAuthenticatedActorInsteadOfRequestSuppliedOperator() {
         MockMultipartFile file = new MockMultipartFile("file", "sku.png", "image/png", new byte[] {1});
         UploadedAsset asset = new UploadedAsset("asset-1", "admin/e/sku.png", "nexion", "image/png", 1L,
                 "http://minio.local/sku.png", LocalDateTime.now(), "e", "sku-image");
-        when(uploadService.upload(file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "superadmin")).thenReturn(asset);
+        var authentication = new UsernamePasswordAuthenticationToken("trusted-admin", "n/a", List.of());
+        authentication.setDetails(Map.of("username", "trusted-admin"));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        when(uploadService.upload(file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "trusted-admin")).thenReturn(asset);
 
-        ApiResult<UploadedAsset> result = controller.upload(
-                file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "superadmin");
+        try {
+            ApiResult<UploadedAsset> result = controller.upload(
+                    file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "forged-operator");
 
-        assertThat(result.getData()).isSameAs(asset);
-        verify(uploadService).upload(file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "superadmin");
+            assertThat(result.getData()).isSameAs(asset);
+            verify(uploadService).upload(file, "idem-media-1", "E", "sku-image", "SKU", "sku-1", "trusted-admin");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     @Test

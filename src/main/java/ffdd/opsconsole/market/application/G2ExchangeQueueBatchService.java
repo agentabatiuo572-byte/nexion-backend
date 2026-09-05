@@ -69,6 +69,7 @@ public class G2ExchangeQueueBatchService {
             }
             if (mapper.geoBlocked(wallet.countryCode()) > 0) {
                 if (mapper.cancelQueuedBySystem(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
+                refundReservation(row, wallet);
                 outbox.publish("EXCHANGE_ORDER",row.exchangeNo(),"exchange.queue_cancelled",
                         linked("exchangeNo",row.exchangeNo(),"status","CANCELLED","cancelledBy","SYSTEM_G2_BATCH","reasonCode","GEO_BLOCKED"));
                 skipped.add(item(row.exchangeNo(),"SKIPPED","CANCELLED","GEO_BLOCKED","所在地域已封锁，本单已取消")); continue;
@@ -82,15 +83,21 @@ public class G2ExchangeQueueBatchService {
             BigDecimal net = money(gross.subtract(fee));
             String toAsset = "USDT".equals(row.fromAsset()) ? "NEX" : "USDT";
             BigDecimal toAmount = "NEX".equals(toAsset) ? net.divide(price,6,RoundingMode.DOWN) : net;
-            BigDecimal usdtDelta = "USDT".equals(row.fromAsset()) ? row.fromAmount().negate() : toAmount;
-            BigDecimal nexDelta = "NEX".equals(row.fromAsset()) ? row.fromAmount().negate() : toAmount;
+            boolean sourceReserved = mapper.sourceReservationExists(row.exchangeNo()) > 0;
+            BigDecimal usdtDelta = "USDT".equals(row.fromAsset())
+                    ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
+            BigDecimal nexDelta = "NEX".equals(row.fromAsset())
+                    ? (sourceReserved ? BigDecimal.ZERO : row.fromAmount().negate()) : toAmount;
             if (mapper.applyWalletDelta(row.userId(),usdtDelta,nexDelta) != 1) {
-                failed.add(item(row.exchangeNo(),"FAILED","QUEUED","WALLET_BALANCE_CONFLICT","钱包余额不足或状态已变化，本单仍在队列")); continue;
+                if (mapper.failQueuedInsufficient(row.exchangeNo()) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
+                failed.add(item(row.exchangeNo(),"FAILED","FAILED","WALLET_BALANCE_CONFLICT","钱包余额不足或状态已变化，本单已终止")); continue;
             }
             if (mapper.completeQueued(row.exchangeNo(),toAmount,price) != 1) throw new BizException(409,"EXCHANGE_QUEUE_STATE_CONFLICT");
-            BigDecimal fromAfter = "USDT".equals(row.fromAsset()) ? wallet.usdtAvailable().subtract(row.fromAmount()) : wallet.nexAvailable().subtract(row.fromAmount());
+            BigDecimal fromAfter = "USDT".equals(row.fromAsset())
+                    ? (sourceReserved ? wallet.usdtAvailable() : wallet.usdtAvailable().subtract(row.fromAmount()))
+                    : (sourceReserved ? wallet.nexAvailable() : wallet.nexAvailable().subtract(row.fromAmount()));
             BigDecimal toAfter = "USDT".equals(toAsset) ? wallet.usdtAvailable().add(toAmount) : wallet.nexAvailable().add(toAmount);
-            if (mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-OUT",row.fromAsset(),"OUT",row.fromAmount(),money(fromAfter),"G2 queued swap debit")) != 1
+            if ((!sourceReserved && mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-OUT",row.fromAsset(),"OUT",row.fromAmount(),money(fromAfter),"G2 queued swap debit")) != 1)
                     || mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-IN",toAsset,"IN",toAmount,money(toAfter),"G2 queued swap credit")) != 1)
                 throw new BizException(409,"EXCHANGE_LEDGER_CONFLICT");
             feeAllocationService.allocate(row.exchangeNo(),fee,price);
@@ -121,6 +128,21 @@ public class G2ExchangeQueueBatchService {
     private boolean swapEnabled() {
         return KillSwitchState.enabled(java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL)),
                 java.util.Optional.ofNullable(mapper.emergencyValue(EXCHANGE_KILL_LEGACY)));
+    }
+
+    private void refundReservation(AppExchangeMapper.QueuedRow row, AppExchangeMapper.WalletGateRow wallet) {
+        if (mapper.sourceReservationExists(row.exchangeNo()) <= 0) return;
+        BigDecimal usdtRefund = "USDT".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
+        BigDecimal nexRefund = "NEX".equals(row.fromAsset()) ? row.fromAmount() : BigDecimal.ZERO;
+        if (mapper.applyWalletDelta(row.userId(), usdtRefund, nexRefund) != 1) {
+            throw new BizException(409,"EXCHANGE_QUEUE_REFUND_CONFLICT");
+        }
+        BigDecimal after = "USDT".equals(row.fromAsset())
+                ? wallet.usdtAvailable().add(row.fromAmount()) : wallet.nexAvailable().add(row.fromAmount());
+        if (mapper.insertLedger(new AppExchangeMapper.LedgerWrite(row.userId(),row.exchangeNo()+"-REFUND",
+                row.fromAsset(),"IN",row.fromAmount(),money(after),"G2 queued swap source reservation refund")) != 1) {
+            throw new BizException(409,"EXCHANGE_LEDGER_CONFLICT");
+        }
     }
     private void requireProductionRuntime() {
         String[] profiles = environment == null ? new String[0] : environment.getActiveProfiles();

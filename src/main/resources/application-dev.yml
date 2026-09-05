@@ -17,6 +17,7 @@ nexion:
       allow-loopback: true
   auth:
     user-otp:
+      # Current local App rule: +86 uses 123456; +84 continues through ITNIO.
       local-fixed-code-enabled: true
     development-passkey-account:
       country-code: "+86"

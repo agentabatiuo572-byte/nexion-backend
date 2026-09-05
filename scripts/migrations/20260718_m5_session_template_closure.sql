@@ -12,7 +12,7 @@ INSERT INTO nx_config_item
 VALUES
   ('I.session.cat.advisor.enabled', 'on', 'BOOLEAN', 'content_session', 'ADMIN', 'M5 advisor conversation category', 1, 0),
   ('I.session.cat.support.enabled', 'on', 'BOOLEAN', 'content_session', 'ADMIN', 'M5 support conversation category', 1, 0),
-  ('I.session.advisor.policy.enabled', 'on', 'BOOLEAN', 'content_session', 'ADMIN', 'M5 advisor auto-push switch', 1, 0),
+  ('I.session.advisor.policy.enabled', 'off', 'BOOLEAN', 'content_session', 'ADMIN', 'M5 advisor auto-push switch; executor unavailable', 1, 0),
   ('I.session.advisor.policy.delayMs', '1500', 'NUMBER', 'content_session', 'ADMIN', 'M5 advisor first-push delay', 1, 0),
   ('I.session.advisor.policy.cooldownHours', '24', 'NUMBER', 'content_session', 'ADMIN', 'M5 advisor push cooldown', 1, 0),
   ('I.session.advisor.policy.maxPerSession', '1', 'NUMBER', 'content_session', 'ADMIN', 'M5 advisor per-session push limit', 1, 0),

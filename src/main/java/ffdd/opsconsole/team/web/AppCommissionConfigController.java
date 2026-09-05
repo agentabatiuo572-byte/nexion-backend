@@ -53,12 +53,24 @@ public class AppCommissionConfigController {
         projection.put("influenceClampMax", value(config, "F.influence.clampMax", "5"));
         projection.put("coolingDays", value(config, "F.cooldown", "30"));
         projection.put("promoMultiplier", value(config, "F.promo.weekMultiplier", "1"));
+        Map<String, Boolean> pausedLayers = new LinkedHashMap<>();
+        for (int layer = 1; layer <= 7; layer++) {
+            pausedLayers.put("L" + layer, enabled(config.get("F.unilevel.L" + layer + ".paused")));
+        }
+        projection.put("unilevelPaused", pausedLayers);
         return ApiResult.ok(projection);
     }
 
     private Object value(Map<?, ?> config, String key, Object fallback) {
         Object value = config.get(key);
         return value == null ? fallback : value;
+    }
+
+    private boolean enabled(Object raw) {
+        if (raw instanceof Boolean value) return value;
+        if (raw instanceof Number value) return value.intValue() == 1;
+        String value = raw == null ? "" : raw.toString().trim();
+        return "true".equalsIgnoreCase(value) || "on".equalsIgnoreCase(value) || "1".equals(value);
     }
 
     private boolean isStrictDevelopmentProfile() {

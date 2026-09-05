@@ -3,6 +3,7 @@ package ffdd.opsconsole.auth.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -14,10 +15,13 @@ import ffdd.opsconsole.auth.dto.AppPasswordChangeRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionRequest;
 import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
+import ffdd.opsconsole.auth.dto.AppTwoFactorChallengeRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.user.infrastructure.UserEntity;
+import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -33,15 +37,21 @@ class AppUserSecurityServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final UserOtpDeliveryService otpDelivery = mock(UserOtpDeliveryService.class);
     private final AppUserSecurityVerificationGuard verificationGuard = mock(AppUserSecurityVerificationGuard.class);
+    private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder();
     private final AppUserSecurityService service = new AppUserSecurityService(
-            security, sessions, passwords, audit, otpDelivery, verificationGuard);
+            security, sessions, passwords, audit, otpDelivery, verificationGuard, users);
 
     @BeforeEach
     void defaults() {
         when(security.passwordHashForUpdate(42L)).thenReturn(passwords.encode("OldPassword1"));
         when(security.twoFactorEnabled(42L)).thenReturn(false);
-        when(otpDelivery.available()).thenReturn(true);
+        UserEntity user = new UserEntity();
+        user.setId(42L);
+        user.setCountryCode("+84");
+        user.setPhone("901234567");
+        when(users.selectById(42L)).thenReturn(user);
+        when(otpDelivery.available(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(verificationGuard.allowed(eq(42L), any())).thenReturn(true);
         when(verificationGuard.recordFailure(eq(42L), any()))
                 .thenReturn(new AppUserSecurityVerificationGuard.VerificationFailure(1, false));
@@ -195,20 +205,75 @@ class AppUserSecurityServiceTest {
     }
 
     @Test
-    void twoFactorUpdateRequiresPasswordAndAvailableDeliveryBeforeEnabling() {
-        when(otpDelivery.available()).thenReturn(false);
-        assertThatThrownBy(() -> service.updateTwoFactor(
-                42L, new AppTwoFactorUpdateRequest(true, "OldPassword1")))
+    void twoFactorChallengeRequiresPasswordAndAvailableDelivery() {
+        when(otpDelivery.available("+84")).thenReturn(false);
+        assertThatThrownBy(() -> service.sendTwoFactorChallenge(
+                42L, new AppTwoFactorChallengeRequest(true, "OldPassword1")))
                 .hasMessage("USER_OTP_DELIVERY_UNAVAILABLE");
         verify(security, never()).upsertTwoFactor(any(), anyBoolean());
 
-        when(otpDelivery.available()).thenReturn(true);
+        when(otpDelivery.available("+84")).thenReturn(true);
+        when(otpDelivery.verificationCode("+84")).thenReturn("123456");
+        when(users.createLoginOtpChallenge(eq(42L), any(), eq("123456"), eq(10))).thenReturn(1);
+        Map<String, Object> challenge = service.sendTwoFactorChallenge(
+                42L, new AppTwoFactorChallengeRequest(true, "OldPassword1"));
+        assertThat(challenge).containsKeys("challengeNo", "expiresInSeconds", "phoneMasked");
+        verify(otpDelivery).deliver(eq("+84"), eq("901234567"), any(), eq("123456"), eq(10));
+
+        String challengeNo = String.valueOf(challenge.get("challengeNo"));
+        when(users.consumeValidSecurityOtp(42L, challengeNo, "123456")).thenReturn(1);
         when(security.upsertTwoFactor(42L, true)).thenReturn(1);
-        var result = service.updateTwoFactor(42L, new AppTwoFactorUpdateRequest(true, "OldPassword1"));
+        var result = service.updateTwoFactor(42L,
+                new AppTwoFactorUpdateRequest(true, "OldPassword1", challengeNo, "123456"));
 
         assertThat(result.twoFactorEnabled()).isTrue();
         verify(security).upsertTwoFactor(42L, true);
-        verify(audit).recordRequired(any());
+        verify(audit, org.mockito.Mockito.times(2)).recordRequired(any());
+    }
+
+    @Test
+    void twoFactorAvailabilityIsCheckedForTheUsersOwnCountry() {
+        UserEntity vietnamUser = new UserEntity();
+        vietnamUser.setId(42L);
+        vietnamUser.setCountryCode("+84");
+        vietnamUser.setPhone("901234567");
+        when(users.selectById(42L)).thenReturn(vietnamUser);
+        when(otpDelivery.available("+84")).thenReturn(false);
+
+        assertThatThrownBy(() -> service.sendTwoFactorChallenge(
+                42L, new AppTwoFactorChallengeRequest(true, "OldPassword1")))
+                .hasMessage("USER_OTP_DELIVERY_UNAVAILABLE");
+
+        verify(otpDelivery).available("+84");
+        verify(security, never()).upsertTwoFactor(any(), anyBoolean());
+    }
+
+    @Test
+    void twoFactorChallengeRejectsInvalidPhoneBeforeOtpStateMutation() {
+        UserEntity invalid = new UserEntity();
+        invalid.setId(42L);
+        invalid.setCountryCode("+86");
+        invalid.setPhone("12800138000");
+        when(users.selectById(42L)).thenReturn(invalid);
+
+        assertThatThrownBy(() -> service.sendTwoFactorChallenge(
+                42L, new AppTwoFactorChallengeRequest(true, "OldPassword1")))
+                .hasMessage("USER_PHONE_INVALID");
+
+        verify(otpDelivery, never()).available(any());
+        verify(users, never()).createLoginOtpChallenge(any(), any(), any(), anyInt());
+        verify(otpDelivery, never()).deliver(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void twoFactorMutationRequiresAValidOtpBoundToTheRequestedDirection() {
+        assertThatThrownBy(() -> service.updateTwoFactor(
+                42L, new AppTwoFactorUpdateRequest(true, "OldPassword1", "SEC2FA-D-foreign", "123456")))
+                .hasMessage("USER_TWO_FACTOR_OTP_REQUIRED");
+        assertThatThrownBy(() -> service.updateTwoFactor(
+                42L, new AppTwoFactorUpdateRequest(true, "OldPassword1", "SEC2FA-E-expired", "123456")))
+                .hasMessage("USER_TWO_FACTOR_OTP_INVALID_OR_EXPIRED");
+        verify(security, never()).upsertTwoFactor(any(), anyBoolean());
     }
 
     @Test

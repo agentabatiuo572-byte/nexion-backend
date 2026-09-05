@@ -42,8 +42,11 @@ public class LegalTermsService {
             String requestedLocale = normalizeLocale(locale);
             String requestedJurisdiction = normalizeJurisdiction(jurisdiction);
             Resolution resolved = resolve(requestedLocale, requestedJurisdiction);
-            if (resolved.version == null || !valid(resolved.version)) return unavailable();
             UserAuthEnvironment env = sourceEnvironment();
+            if (resolved.version == null || !valid(resolved.version)
+                    || (env == UserAuthEnvironment.PRODUCTION && isAcceptanceFixture(resolved.version))) {
+                return unavailable();
+            }
             String runId = env == UserAuthEnvironment.SANDBOX ? acceptanceRunId() : "";
             boolean acknowledged = false;
             LocalDateTime acknowledgedAt = null;
@@ -80,6 +83,7 @@ public class LegalTermsService {
         Resolution resolved;
         try { resolved = resolve(locale, jurisdiction); } catch (Exception ex) { return unavailable(); }
         if (resolved.version == null || !valid(resolved.version)) return unavailable();
+        if (env == UserAuthEnvironment.PRODUCTION && isAcceptanceFixture(resolved.version)) return unavailable();
         if (!resolved.version.version().equals(request.version().trim())
                 || !resolved.locale.equals(locale) || !resolved.jurisdiction.equals(jurisdiction))
             return ApiResult.fail(409, "LEGAL_TERMS_VERSION_CHANGED");
@@ -135,7 +139,21 @@ public class LegalTermsService {
     @Transactional
     public ApiResult<LegalTermsVersionView> publish(String locale, String jurisdiction, String version, long expectedRevision, String reason) {
         if (!StringUtils.hasText(reason) || reason.trim().length() < 8) return ApiResult.fail(422, "LEGAL_TERMS_REASON_REQUIRED");
-        try { LegalTermsVersionView saved = repository.publish(normalizeLocale(locale), normalizeJurisdiction(jurisdiction), version.trim(), expectedRevision, operator(), now()); auditAdmin("LEGAL_TERMS_PUBLISHED", saved, reason); return ApiResult.ok(saved); }
+        try {
+            String normalizedLocale = normalizeLocale(locale);
+            String normalizedJurisdiction = normalizeJurisdiction(jurisdiction);
+            String normalizedVersion = version == null ? "" : version.trim();
+            Optional<LegalTermsVersionView> candidate = repository.findVersion(
+                    normalizedLocale, normalizedJurisdiction, normalizedVersion);
+            if (candidate.isEmpty()) return ApiResult.fail(422, "LEGAL_TERMS_VERSION_NOT_FOUND");
+            if (sourceEnvironment() == UserAuthEnvironment.PRODUCTION && isAcceptanceFixture(candidate.get())) {
+                return ApiResult.fail(422, "LEGAL_TERMS_PLACEHOLDER_FORBIDDEN");
+            }
+            LegalTermsVersionView saved = repository.publish(normalizedLocale, normalizedJurisdiction,
+                    normalizedVersion, expectedRevision, operator(), now());
+            auditAdmin("LEGAL_TERMS_PUBLISHED", saved, reason);
+            return ApiResult.ok(saved);
+        }
         catch (org.springframework.dao.OptimisticLockingFailureException ex) { return ApiResult.fail(409, "LEGAL_TERMS_VERSION_CONFLICT"); }
         catch (Exception ex) { return ApiResult.fail(422, "LEGAL_TERMS_PUBLISH_INVALID"); }
     }
@@ -185,6 +203,22 @@ public class LegalTermsService {
                 && v.sections() != null && !v.sections().isEmpty()
                 && v.sections().stream().allMatch(s -> s != null && StringUtils.hasText(s.key())
                         && StringUtils.hasText(s.title()) && StringUtils.hasText(s.body()));
+    }
+    private boolean isAcceptanceFixture(LegalTermsVersionView v) {
+        StringBuilder text = new StringBuilder();
+        text.append(v.title() == null ? "" : v.title()).append('\n')
+                .append(v.summary() == null ? "" : v.summary());
+        if (v.sections() != null) {
+            v.sections().forEach(section -> {
+                if (section != null) text.append('\n').append(section.title()).append('\n').append(section.body());
+            });
+        }
+        String normalized = text.toString().toLowerCase(Locale.ROOT);
+        return normalized.contains("nexion acceptance terms")
+                || normalized.contains("seven-closures")
+                || normalized.contains("post-fix")
+                || normalized.contains("qa acceptance fixture")
+                || normalized.contains("for acceptance testing only");
     }
     private String normalizeLocale(String s) {
         if (!StringUtils.hasText(s)) return "en";

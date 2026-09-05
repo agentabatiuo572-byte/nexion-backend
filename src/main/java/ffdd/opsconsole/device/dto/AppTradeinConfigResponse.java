@@ -10,5 +10,7 @@ public record AppTradeinConfigResponse(
         List<BigDecimal> creditRatesPct,
         boolean requireHigherPrice,
         int maxDevicesPerOrder,
+        boolean earlyAccessEnabled,
+        int earlyAccessLeadDays,
         String source) {
 }

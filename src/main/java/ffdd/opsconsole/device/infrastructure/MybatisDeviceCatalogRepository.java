@@ -228,6 +228,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public Optional<DeviceTaskView> findTaskForUpdate(String taskId) {
+        return Optional.ofNullable(mapper.findTaskForUpdate(taskId));
+    }
+
+    @Override
     public DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
         mapper.insertTask(taskWrite(taskId, request, now, now));
         return findTask(taskId).orElseThrow();
@@ -386,7 +391,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         if (itemRows == 0L) {
             return "SINGLE".equals(orderType) && mapper.restockOrderProduct(orderNo, now) == 1;
         }
-        if (!java.util.Set.of("SINGLE", "BUNDLE", "TRADE_IN", "TRIAL_CONVERT").contains(orderType)) {
+        if (!java.util.Set.of("SINGLE", "BUNDLE", "TRADE_IN", "CAPACITY_KEEP", "TRIAL_CONVERT").contains(orderType)) {
             return false;
         }
         long validItemQuantity = plan.validItemQuantity() == null ? 0L : plan.validItemQuantity();
@@ -395,7 +400,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         boolean complete = invalidItemRows == 0L
                 && validItemQuantity == plan.orderQuantity().longValue()
                 && productGroups > 0L;
-        if ("BUNDLE".equals(orderType) || "TRADE_IN".equals(orderType)) {
+        if ("BUNDLE".equals(orderType) || "TRADE_IN".equals(orderType) || "CAPACITY_KEEP".equals(orderType)) {
             complete = complete
                     && plan.itemCount() != null
                     && plan.itemCount().longValue() == plan.orderQuantity().longValue()

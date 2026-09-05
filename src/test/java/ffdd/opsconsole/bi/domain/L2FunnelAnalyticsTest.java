@@ -76,7 +76,8 @@ class L2FunnelAnalyticsTest {
 
     @Test
     void reportsTheFixedBusinessTimezoneAndIncludesLateFactsOnTheNextCalculation() {
-        LocalDateTime registeredAt = LocalDateTime.now().minusDays(40);
+        // Keep the +5 minute late fact within D7, even when this test runs near midnight.
+        LocalDateTime registeredAt = java.time.LocalDate.now().minusDays(40).atTime(12, 0);
         Map<String, Object> before = L2FunnelAnalytics.calculate(List.of(
                 event("auth.register_completed", "late-user", registeredAt)));
         Map<String, Object> after = L2FunnelAnalytics.calculate(List.of(

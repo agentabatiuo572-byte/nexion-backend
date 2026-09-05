@@ -41,6 +41,19 @@ class MybatisDeviceCatalogRepositoryTest {
     }
 
     @Test
+    void rollbackOrderAssetsRestocksCapacityKeepOrdersFromTheirOrderItem() {
+        when(mapper.orderRestockPlan("OD-CAPACITY-KEEP")).thenReturn(
+                new DeviceCatalogMapper.OrderRestockPlan("CAPACITY_KEEP", 1, 1, 1L, 1L, 0L, 1L));
+        when(mapper.restockOrderItemProducts("OD-CAPACITY-KEEP", now)).thenReturn(1);
+
+        boolean restored = repository.rollbackOrderAssets("OD-CAPACITY-KEEP", now);
+
+        assertThat(restored).isTrue();
+        verify(mapper).rollbackOrderDevices("OD-CAPACITY-KEEP", now);
+        verify(mapper, never()).restockOrderProduct("OD-CAPACITY-KEEP", now);
+    }
+
+    @Test
     void rollbackOrderAssetsFallsBackForHistoricalSingleOrdersWithoutItems() {
         when(mapper.orderRestockPlan("OD-SINGLE")).thenReturn(
                 new DeviceCatalogMapper.OrderRestockPlan("SINGLE", 1, 1, 0L, 0L, 0L, 0L));

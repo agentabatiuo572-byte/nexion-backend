@@ -12,6 +12,7 @@ import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
 import ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -84,7 +85,8 @@ class AppVietQrIntentMySqlIntegrationTest {
                         session.getMapper(AppVietQrIntentMapper.class),
                         cipher,
                         Clock.system(ZoneId.of("Asia/Shanghai")),
-                        new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"));
+                        new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active", "prod"),
+                        mock(PlatformConfigFacade.class));
                 String createKey = "mysql-create-" + suffix;
 
                 ApiResult<Map<String, Object>> created =

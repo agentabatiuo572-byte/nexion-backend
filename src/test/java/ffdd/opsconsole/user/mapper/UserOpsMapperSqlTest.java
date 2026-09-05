@@ -9,11 +9,11 @@ class UserOpsMapperSqlTest {
     @Test
     void c1UserQueriesReadK4EffectiveRiskScore() throws Exception {
         String countSql = String.join("\n", UserOpsMapper.class
-                .getMethod("countUsersByQuery", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class)
+                .getMethod("countUsersByQuery", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class, String.class)
                 .getAnnotation(Select.class)
                 .value());
         String pageSql = String.join("\n", UserOpsMapper.class
-                .getMethod("pageUsers", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class, int.class, int.class)
+                .getMethod("pageUsers", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class, int.class, int.class, String.class)
                 .getAnnotation(Select.class)
                 .value());
         String detailSql = String.join("\n", UserOpsMapper.class

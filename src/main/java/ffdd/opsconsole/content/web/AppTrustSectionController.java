@@ -5,6 +5,8 @@ import ffdd.opsconsole.content.domain.AppTrustSectionsView;
 import ffdd.opsconsole.shared.api.ApiResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,7 +30,12 @@ public class AppTrustSectionController {
     @PreAuthorize("isAuthenticated()")
     public ApiResult<Void> recordSectionView(
             @PathVariable String sectionKey,
-            @RequestBody(required = false) TrustSectionViewEventRequest request) {
+            @RequestBody(required = false) TrustSectionViewEventRequest request,
+            Authentication authentication) {
+        if (!(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"USER".equals(String.valueOf(details.get("subjectType")))) {
+            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        }
         return service.recordSectionView(sectionKey, request == null ? null : request.locale());
     }
 

@@ -144,11 +144,29 @@ public class AppCanonicalBoundaryController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : bundleOrderService.create(userId, request == null ? null : request.productNos(), idempotencyKey);
+        return userId == null ? forbidden() : bundleOrderService.create(
+                userId,
+                request == null ? null : request.productNos(),
+                request == null ? null : request.policyVersion(),
+                idempotencyKey);
+    }
+
+    @GetMapping("/api/store/bundle-discount")
+    public ApiResult<Map<String, Object>> bundleDiscountPolicy() {
+        return bundleOrderService.discountPolicy();
     }
 
     @GetMapping("/api/orders")
-    public ApiResult<Map<String, Object>> orders(Authentication authentication) {
+    public ApiResult<Map<String, Object>> orders(
+            @RequestParam(required = false) String beforeOrderNo,
+            @RequestParam(required = false) Integer pageSize,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.orders(userId, beforeOrderNo, pageSize);
+    }
+
+    // Preserve the direct-call contract used by narrow controller tests and internal callers.
+    ApiResult<Map<String, Object>> orders(Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.orders(userId);
     }
@@ -206,7 +224,7 @@ public class AppCanonicalBoundaryController {
             String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
     }
 
-    public record BundleOrderCreateRequest(java.util.List<String> productNos) {
+    public record BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion) {
     }
 
     public record TrialChargeRequest(Boolean chargeSucceeded, BigDecimal chargeFailRate) {

@@ -34,9 +34,14 @@ public class QuestCanonicalEventProjector {
         if (!Boolean.TRUE.equals(message.getServerAuthoritative())) {
             throw new IllegalArgumentException("QUEST_CANONICAL_EVENT_NOT_SERVER_AUTHORITATIVE");
         }
+        if (message.getEventTs() == null) {
+            throw new IllegalArgumentException("QUEST_CANONICAL_EVENT_TIMESTAMP_REQUIRED");
+        }
         List<CanonicalQuestEventBinding> bindings = bindingMapper.listActiveBindings(message.getEventType());
         if (bindings == null || bindings.isEmpty()) {
-            throw new IllegalStateException("QUEST_CANONICAL_BINDING_DISAPPEARED");
+            deliveryService.markSuccess(
+                    QuestCanonicalEventConsumer.CONSUMER_GROUP, deliveryEventId, 0);
+            return;
         }
         Map<String, Object> payload = readPayload(message.getPayload());
         int processed = 0;
@@ -51,7 +56,7 @@ public class QuestCanonicalEventProjector {
                 throw new IllegalArgumentException("QUEST_CANONICAL_FACT_EVENT_ID_TOO_LONG");
             }
             factConsumer.consume(new QuestCompletionCommand(
-                    binding.producer(), factEventId, userId, binding.questCode()));
+                    binding.producer(), factEventId, userId, binding.questCode(), message.getEventTs()));
             processed += 1;
         }
         deliveryService.markSuccess(

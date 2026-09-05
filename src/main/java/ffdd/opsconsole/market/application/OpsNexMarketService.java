@@ -27,6 +27,7 @@ import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveFrame;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
@@ -57,6 +58,7 @@ import java.time.temporal.ChronoUnit;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -90,6 +92,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private static final String GENESIS_AIRDROP_PCT_KEY = "G.genesis.airdropPct";
     private static final String GENESIS_EMISSION_CURVE_KEY = "G.genesis.emissionCurve";
     private static final String GENESIS_AIRDROP_LOCK_DAYS_KEY = "G.genesis.airdropLockDays";
+    private static final String GENESIS_SHOWCASE_ENABLED_KEY = "market.genesis.ops.showcase_enabled";
     private static final String GENESIS_EMISSION_GATE_KEY = "growth.phase.genesis_emissions_open";
     private static final int GENESIS_NODE_DEFAULT_PAGE_SIZE = 10;
     private static final int GENESIS_NODE_MAX_PAGE_SIZE = 50;
@@ -132,6 +135,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             Map.entry("airdropPct", "finprod_g4_airdrop_pct_write"),
             Map.entry("emissionCurve", "finprod_g4_emission_curve_write"),
             Map.entry("airdropLockDays", "finprod_g4_airdrop_lock_days_write"),
+            Map.entry("showcaseEnabled", "finprod_g4_write"),
             Map.entry("divBase", "finprod_g4_write"));
     /** updateOverride overrideKey→精确权限码。对照 OpsNexMarketController updateOverride。 */
     private static final Map<String, String> OVERRIDE_PERMISSION = Map.ofEntries(
@@ -154,6 +158,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final AdminPermissionCache permissionCache;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
+    private final ExchangeOrderMapper exchangeOrderMapper;
 
     public ApiResult<Map<String, Object>> exchangeOverview() {
         BigDecimal platformCap = readDecimal(EXCHANGE_PLATFORM_DAILY_CAP_KEY, new BigDecimal("20000"));
@@ -289,6 +294,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> cancelExchangeQueueOrder(
             String idempotencyKey,
             String exchangeNo,
@@ -301,18 +307,49 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 && lockMapper.countActiveByTarget("G", "exchange_order", exchangeNo) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        Optional<ExchangeOrderView> before = marketRepository.findExchangeOrder(exchangeNo);
-        if (before.isEmpty()) {
-            return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
-        }
-        if (!"QUEUED".equalsIgnoreCase(before.get().status())) {
+        ExchangeOrderMapper.QueuedCancellationRow queued = exchangeOrderMapper.lockQueuedForCancellation(exchangeNo);
+        if (queued == null) {
+            Optional<ExchangeOrderView> existing = marketRepository.findExchangeOrder(exchangeNo);
+            if (existing.isEmpty()) {
+                return ApiResult.fail(404, "EXCHANGE_ORDER_NOT_FOUND");
+            }
+            if ("CANCELLED".equalsIgnoreCase(existing.get().status())) {
+                Map<String, Object> response = exchangeOverview().getData();
+                response.put("updated", map("exchangeNo", exchangeNo, "before", "CANCELLED", "after", "CANCELLED", "idempotent", true));
+                return ApiResult.ok(response);
+            }
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        marketRepository.cancelQueuedExchange(exchangeNo);
-        audit("G2_EXCHANGE_QUEUE_ORDER_CANCELLED", "EXCHANGE_ORDER", exchangeNo, request.operator(), map(
+        if (exchangeOrderMapper.cancelQueued(exchangeNo) != 1) {
+            return ApiResult.fail(409, "EXCHANGE_QUEUE_STATE_CONFLICT");
+        }
+        boolean reserved = exchangeOrderMapper.sourceReservationExists(exchangeNo) > 0;
+        if (reserved) {
+            ExchangeOrderMapper.WalletBalanceRow wallet = exchangeOrderMapper.lockWalletForQueuedCancellation(queued.userId());
+            if (wallet == null) {
+                throw new BizException(409, "EXCHANGE_QUEUE_REFUND_CONFLICT");
+            }
+            boolean usdtSource = "USDT".equalsIgnoreCase(queued.fromAsset());
+            BigDecimal usdtRefund = usdtSource ? queued.fromAmount() : BigDecimal.ZERO;
+            BigDecimal nexRefund = usdtSource ? BigDecimal.ZERO : queued.fromAmount();
+            if (exchangeOrderMapper.creditWalletForQueuedCancellation(queued.userId(), usdtRefund, nexRefund) != 1) {
+                throw new BizException(409, "EXCHANGE_QUEUE_REFUND_CONFLICT");
+            }
+            BigDecimal balanceAfter = usdtSource
+                    ? wallet.usdtAvailable().add(queued.fromAmount())
+                    : wallet.nexAvailable().add(queued.fromAmount());
+            if (exchangeOrderMapper.insertCancellationRefundLedger(new ExchangeOrderMapper.CancellationRefundLedgerWrite(
+                    queued.userId(), exchangeNo + "-REFUND", queued.fromAsset(), queued.fromAmount(), balanceAfter,
+                    "G2 queued swap source reservation refund by ops cancellation")) != 1) {
+                throw new BizException(409, "EXCHANGE_LEDGER_CONFLICT");
+            }
+        }
+        auditRequired("G2_EXCHANGE_QUEUE_ORDER_CANCELLED", "EXCHANGE_ORDER", exchangeNo, request.operator(), map(
                 "exchangeNo", exchangeNo,
-                "userId", before.get().userId(),
-                "amountUsdt", before.get().amountUsdt(),
+                "userId", queued.userId(),
+                "fromAsset", queued.fromAsset(),
+                "fromAmount", queued.fromAmount(),
+                "sourceReservationRefunded", reserved,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = exchangeOverview().getData();
@@ -748,17 +785,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         int sold = Math.toIntExact(Math.min(Integer.MAX_VALUE, Math.max(0L, holdingCount)));
         BigDecimal seriesSupply = BigDecimal.valueOf(series.totalSupply() == null || series.totalSupply() <= 0 ? 0 : series.totalSupply());
         supply = supply.max(seriesSupply).max(BigDecimal.valueOf(sold));
-        BigDecimal dailyVolumeBase = safeBig(secondaryStats.volume24hUsdt());
-        BigDecimal poolToday = dailyVolumeBase
+        BigDecimal perSlotPerDay = unitPrice
                 .multiply(dividendPct)
                 .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
-        BigDecimal perSlotPerDay = supply.compareTo(BigDecimal.ZERO) > 0
-                ? poolToday.divide(supply, 8, RoundingMode.HALF_UP)
-                : BigDecimal.ZERO;
-        BigDecimal floorPerNodePerDay = unitPrice
-                .multiply(dividendPct)
-                .divide(BigDecimal.valueOf(100), 8, RoundingMode.HALF_UP);
-        BigDecimal payoutToday = perSlotPerDay.multiply(BigDecimal.valueOf(sold)).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal dailyVolumeBase = unitPrice.multiply(BigDecimal.valueOf(sold));
+        BigDecimal poolToday = perSlotPerDay.multiply(BigDecimal.valueOf(sold));
+        BigDecimal floorPerNodePerDay = perSlotPerDay;
+        BigDecimal payoutToday = poolToday.setScale(2, RoundingMode.HALF_UP);
         BigDecimal genesisAccrual = emissionGateOpen
                 ? safeBig(marketRepository.genesisAccrualUsd()).setScale(2, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
@@ -1988,7 +2021,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean stakingGateOn() {
-        return ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+        return ffdd.opsconsole.emergency.domain.KillSwitchState.enabledFailClosed(
                 controlValue(STAKING_KILLSWITCH_KEY),
                 controlValue(STAKING_LEGACY_KILLSWITCH_KEY));
     }
@@ -2428,7 +2461,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 genesisParamDef("divBase"),
                 genesisParamDef("airdropPct"),
                 genesisParamDef("emissionCurve"),
-                genesisParamDef("airdropLockDays"));
+                genesisParamDef("airdropLockDays"),
+                genesisParamDef("showcaseEnabled"));
     }
 
     private GenesisParamDef genesisParamDef(String rawKey) {
@@ -2502,6 +2536,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "Genesis 排放优先倍率使用的锁仓时长",
                     "缩短锁仓会提前排放资格并触发 B1 覆盖率预检",
                     true, GenesisParamKind.DAYS);
+            case "showcaseEnabled" -> new GenesisParamDef(
+                    key, GENESIS_SHOWCASE_ENABLED_KEY, "BOOLEAN", "false",
+                    "App 商城展示",
+                    "控制正式 App 是否展示 Genesis 商城入口，不影响既有持仓与权益",
+                    "只控制入口展示；市场开放、熔断与购买资格仍由各自服务端闸门决定",
+                    false, GenesisParamKind.BOOLEAN);
             default -> null;
         };
     }
@@ -2530,6 +2570,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 return null;
             }
             return value;
+        }
+        if (def.kind() == GenesisParamKind.BOOLEAN) {
+            String value = rawValue.trim().toLowerCase(Locale.ROOT);
+            return List.of("true", "false").contains(value) ? value : null;
         }
         BigDecimal value = parseRepurchaseNumber(rawValue, null);
         if (value == null) {
@@ -2587,7 +2631,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private String genesisValue(GenesisParamDef def, GenesisPolicyView policy) {
-        if ("airdropPct".equals(def.key()) || "emissionCurve".equals(def.key()) || "airdropLockDays".equals(def.key())) {
+        if ("airdropPct".equals(def.key()) || "emissionCurve".equals(def.key())
+                || "airdropLockDays".equals(def.key()) || "showcaseEnabled".equals(def.key())) {
             return configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue());
         }
         if (policy == null) {
@@ -2610,7 +2655,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case "dividend" -> marketRepository.updateGenesisDailyDividendRate(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "royalty" -> marketRepository.updateGenesisRoyalty(parseRepurchaseNumber(value, BigDecimal.ZERO));
             case "divBase" -> marketRepository.updateGenesisDividendBaseFormula(value);
-            case "airdropPct", "emissionCurve", "airdropLockDays" -> {
+            case "airdropPct", "emissionCurve", "airdropLockDays", "showcaseEnabled" -> {
                 configFacade.upsertAdminValue(def.configKey(), value, def.valueType(), "market", "G4 Genesis emission policy");
                 yield true;
             }
@@ -2626,12 +2671,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!genesisEmissionGateOpen()) {
             return BigDecimal.ZERO;
         }
-        BigDecimal dividendPct = marketRepository.activeGenesisPolicy()
-                .map(GenesisPolicyView::dailyDividendRatePct)
-                .map(this::safeBig)
-                .orElse(BigDecimal.ZERO);
-        BigDecimal dailyVolumeBase = safeBig(marketRepository.genesisSecondaryStats(LocalDateTime.now(clock).minusHours(24)).volume24hUsdt());
-        return dailyVolumeBase
+        Optional<GenesisPolicyView> policy = marketRepository.activeGenesisPolicy();
+        BigDecimal dividendPct = policy.map(GenesisPolicyView::dailyDividendRatePct)
+                .map(this::safeBig).orElse(BigDecimal.ZERO);
+        BigDecimal unitPrice = policy.map(GenesisPolicyView::priceUsdt)
+                .map(this::safeBig).orElse(BigDecimal.ZERO);
+        return unitPrice
+                .multiply(BigDecimal.valueOf(Math.max(0L, marketRepository.genesisHoldingCount())))
                 .multiply(dividendPct)
                 .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
     }
@@ -2643,11 +2689,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             case PERCENT -> "dividend".equals(def.key()) ? value + "% / 日" : value + "%";
             case DAYS -> value + " 天";
             case TEXT -> value;
+            case BOOLEAN -> Boolean.parseBoolean(value) ? "已展示" : "已隐藏";
         };
     }
 
     private boolean genesisMarketOn() {
-        return !disclosureGateActive("genesis") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+        return !disclosureGateActive("genesis") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabledFailClosed(
                 controlValue(GENESIS_KILLSWITCH_KEY),
                 controlValue(GENESIS_LEGACY_KILLSWITCH_KEY));
     }
@@ -2868,7 +2915,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private boolean exchangeSwapEnabled() {
-        return !disclosureGateActive("exchange") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
+        return !disclosureGateActive("exchange") && ffdd.opsconsole.emergency.domain.KillSwitchState.enabledFailClosed(
                 controlValue(EXCHANGE_KILLSWITCH_KEY),
                 controlValue(EXCHANGE_LEGACY_KILLSWITCH_KEY));
     }
@@ -3135,7 +3182,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         DAYS,
         MONEY,
         PERCENT,
-        TEXT
+        TEXT,
+        BOOLEAN
     }
 
     private record ExchangeParamDef(

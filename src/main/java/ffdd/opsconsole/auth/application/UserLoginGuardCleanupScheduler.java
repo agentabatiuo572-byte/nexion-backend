@@ -17,5 +17,9 @@ public class UserLoginGuardCleanupScheduler {
         for (int batch = 0; batch < 10 && mapper.deleteExpired(before) == 1000; batch++) {
             // Bounded batches avoid one large delete transaction under hostile traffic.
         }
+        LocalDateTime eventBefore = LocalDateTime.now().minusHours(25);
+        for (int batch = 0; batch < 10 && mapper.deleteExpiredOtpSendEvents(eventBefore) == 1000; batch++) {
+            // Keep trailing-window evidence long enough for rate limiting, then bound retention.
+        }
     }
 }

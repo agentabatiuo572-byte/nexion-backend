@@ -7,6 +7,7 @@ import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
+import ffdd.opsconsole.auth.dto.AppTwoFactorChallengeRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
@@ -48,6 +49,14 @@ public class AppUserSecurityController {
             @RequestBody(required = false) AppTwoFactorUpdateRequest request) {
         UserContext context = requireUser(authentication);
         return ApiResult.ok(securityService.updateTwoFactor(context.userId(), request));
+    }
+
+    @PostMapping("/two-factor/challenge")
+    public ApiResult<Map<String, Object>> sendTwoFactorChallenge(
+            Authentication authentication,
+            @RequestBody(required = false) AppTwoFactorChallengeRequest request) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.sendTwoFactorChallenge(context.userId(), request));
     }
 
     @PostMapping("/sessions/{sessionId}/revoke")

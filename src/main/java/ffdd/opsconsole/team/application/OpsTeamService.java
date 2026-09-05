@@ -28,6 +28,7 @@ import ffdd.opsconsole.team.domain.VRankConfigRow;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPromotionContext;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
+import ffdd.opsconsole.team.dto.AmbassadorPolicyUpdateRequest;
 import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
 import ffdd.opsconsole.team.dto.F5CommissionReverseRequest;
 import ffdd.opsconsole.team.dto.F5CommissionSuspensionRequest;
@@ -56,6 +57,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.transaction.annotation.Transactional;
@@ -118,6 +120,7 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.partner.tiers", "network_f2_policy_amplify"),
             Map.entry("F.royalty.minPayout", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.depthGate", "network_f2_policy_amplify"),
+            Map.entry("F.unilevel.depthGateRank", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.nexCap", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.backfill", "network_f2_policy_amplify"),
             Map.entry("F.unilevel.depth", "network_f2_policy_amplify"),
@@ -222,7 +225,8 @@ public class OpsTeamService implements AuditReplayable {
             new F2PolicyParamSeed("promo", "promo 周倍率", "F.promo.weekMultiplier", "1.0×", "warn", "活动周对网络版税的倍率放大。放大佣金流出,受 B1 覆盖率约束。", true, true, "×"),
             new F2PolicyParamSeed("min", "版税支付阈值", "F.royalty.minPayout", "$10", "", "最小可提金额。调高 = 凑不够提不出。", false, false, ""),
             new F2PolicyParamSeed("peer", "peer 平级比例", "F.peer.rate", "5%", "brand", "同 V 级平级奖励比例(V3+)。放大佣金流出。", true, true, "%"),
-            new F2PolicyParamSeed("depth", "深度门槛", "F.unilevel.depthGate", "V2+", "cyan", "L4 以下层级需 V2 以上才解锁,防止低层级套利簇。", false, false, ""),
+            new F2PolicyParamSeed("depth", "深度起算层", "F.unilevel.depthGate", "L4", "cyan", "从该层起按阶位门槛校验；L1-L7。", false, false, ""),
+            new F2PolicyParamSeed("depthRank", "深度最低阶位", "F.unilevel.depthGateRank", "V2", "cyan", "深度起算层及以下的上级最低 V 阶；V0-V12。", false, false, ""),
             new F2PolicyParamSeed("nexcap", "NEX/USDT 折算上限", "F.unilevel.nexCap", "$50/d", "", "单用户单日 NEX 派发折算 USDT 的上限。", false, false, ""),
             new F2PolicyParamSeed("backfill", "回溯窗口", "F.unilevel.backfill", "0d", "", "改后是否回溯已计提,原则上不回溯。", true, false, "天"));
     private static final List<F2PolicyParamSeed> F_SHARED_POLICY_PARAM_SEEDS = List.of(
@@ -319,6 +323,169 @@ public class OpsTeamService implements AuditReplayable {
                 "nx_config_item:team.ui.F.pool.monthlyCap policy",
                 "B1 treasury coverage facade"));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> ambassadorPolicy() {
+        try {
+            return ApiResult.ok(requireAmbassadorPolicy());
+        } catch (IllegalArgumentException exception) {
+            return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        }
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateAmbassadorPolicy(
+            String idempotencyKey,
+            AmbassadorPolicyUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (request.expectedRevision() == null || request.expectedRevision() <= 0) {
+            return ApiResult.fail(422, "AMBASSADOR_POLICY_REVISION_REQUIRED");
+        }
+        List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(request.buckets());
+        String version = requireText(request.policyVersion(), "AMBASSADOR_POLICY_VERSION_REQUIRED");
+        if (!version.matches("[A-Za-z0-9][A-Za-z0-9._-]{2,63}")) {
+            return ApiResult.fail(422, "AMBASSADOR_POLICY_VERSION_INVALID");
+        }
+        BigDecimal defaultBudget = request.defaultBudgetUsdt();
+        if (defaultBudget == null || defaultBudget.signum() <= 0
+                || defaultBudget.compareTo(new BigDecimal("1000000")) > 0
+                || buckets.stream().noneMatch(bucket -> defaultBudget.compareTo((BigDecimal) bucket.get("minBudgetUsdt")) >= 0
+                && defaultBudget.compareTo((BigDecimal) bucket.get("maxBudgetUsdt")) <= 0)) {
+            return ApiResult.fail(422, "AMBASSADOR_POLICY_DEFAULT_BUDGET_INVALID");
+        }
+        String bucketsJson;
+        try {
+            bucketsJson = JSON_PROBE.writeValueAsString(buckets);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalStateException("AMBASSADOR_POLICY_JSON_WRITE_FAILED", exception);
+        }
+        return executeIdempotent(
+                "F4_AMBASSADOR_POLICY_UPDATE",
+                idempotencyKey,
+                requestHash(version, defaultBudget, bucketsJson, request.expectedRevision(), request.reason(), actor(request.operator())),
+                () -> updateAmbassadorPolicyInternal(idempotencyKey, request, version, defaultBudget, buckets, bucketsJson));
+    }
+
+    private ApiResult<Map<String, Object>> updateAmbassadorPolicyInternal(
+            String idempotencyKey,
+            AmbassadorPolicyUpdateRequest request,
+            String version,
+            BigDecimal defaultBudget,
+            List<Map<String, Object>> buckets,
+            String bucketsJson) {
+        Map<String, Object> before;
+        try {
+            before = requireAmbassadorPolicy();
+        } catch (IllegalArgumentException exception) {
+            return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        }
+        long currentRevision = parseLongFromMap(before.get("revision"));
+        if (currentRevision != request.expectedRevision()) {
+            return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
+        }
+        if (expandsAmbassadorBudget(before, defaultBudget, buckets) && coverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        if (!commissionRepository.updateAmbassadorPolicyCas(
+                currentRevision, version, defaultBudget, bucketsJson, actor(request.operator()))) {
+            return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
+        }
+        audit("F4_AMBASSADOR_POLICY_CHANGED", "nx_team_ambassador_policy:default", actor(request.operator()), Map.of(
+                "oldRevision", currentRevision,
+                "newRevision", currentRevision + 1,
+                "oldPolicyVersion", String.valueOf(before.get("policyVersion")),
+                "newPolicyVersion", version,
+                "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ambassadorPolicy();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> requireAmbassadorPolicy() {
+        Map<String, Object> row = commissionRepository.ambassadorPolicy();
+        String policyVersion = textValue(row, "policyVersion", "");
+        Long revision = parseLongFromMap(row.get("revision"));
+        BigDecimal defaultBudget = decimalValue(row.get("defaultBudgetUsdt"), BigDecimal.ZERO);
+        String bucketsJson = textValue(row, "bucketsJson", "");
+        if (!policyVersion.matches("[A-Za-z0-9][A-Za-z0-9._-]{2,63}")
+                || revision == null || revision <= 0 || defaultBudget.signum() <= 0 || bucketsJson.isBlank()) {
+            throw new IllegalArgumentException("AMBASSADOR_POLICY_UNAVAILABLE");
+        }
+        List<Map<String, Object>> raw;
+        try {
+            raw = JSON_PROBE.readValue(bucketsJson, new TypeReference<>() { });
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalArgumentException("AMBASSADOR_POLICY_UNAVAILABLE", exception);
+        }
+        List<AmbassadorPolicyUpdateRequest.Bucket> typed = raw.stream().map(bucket ->
+                new AmbassadorPolicyUpdateRequest.Bucket(
+                        String.valueOf(bucket.getOrDefault("id", "")),
+                        String.valueOf(bucket.getOrDefault("title", "")),
+                        String.valueOf(bucket.getOrDefault("range", "")),
+                        String.valueOf(bucket.getOrDefault("rule", "")),
+                        decimalValue(bucket.get("minBudgetUsdt"), BigDecimal.valueOf(-1)),
+                        decimalValue(bucket.get("maxBudgetUsdt"), BigDecimal.valueOf(-1)))).toList();
+        List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(typed);
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("policyVersion", policyVersion);
+        output.put("revision", revision);
+        output.put("defaultBudgetUsdt", defaultBudget);
+        output.put("buckets", buckets);
+        output.put("source", "nx_team_ambassador_policy");
+        output.put("serverCanonical", true);
+        return output;
+    }
+
+    private List<Map<String, Object>> normalizeAmbassadorPolicyBuckets(
+            List<AmbassadorPolicyUpdateRequest.Bucket> input) {
+        List<String> ids = List.of("venue", "kol", "print", "dev");
+        if (input == null || input.size() != ids.size() || input.stream().anyMatch(java.util.Objects::isNull)) {
+            throw new IllegalArgumentException("AMBASSADOR_POLICY_BUCKETS_INVALID");
+        }
+        Map<String, AmbassadorPolicyUpdateRequest.Bucket> byId = input.stream().collect(
+                java.util.stream.Collectors.toMap(
+                        bucket -> bucket == null || bucket.id() == null ? "" : bucket.id().trim().toLowerCase(Locale.ROOT),
+                        bucket -> bucket,
+                        (left, right) -> { throw new IllegalArgumentException("AMBASSADOR_POLICY_BUCKETS_INVALID"); },
+                        LinkedHashMap::new));
+        if (!byId.keySet().equals(new LinkedHashSet<>(ids))) {
+            throw new IllegalArgumentException("AMBASSADOR_POLICY_BUCKETS_INVALID");
+        }
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (String id : ids) {
+            var bucket = byId.get(id);
+            String title = requireText(bucket.title(), "AMBASSADOR_POLICY_BUCKET_TITLE_REQUIRED");
+            String range = requireText(bucket.range(), "AMBASSADOR_POLICY_BUCKET_RANGE_REQUIRED");
+            String rule = requireText(bucket.rule(), "AMBASSADOR_POLICY_BUCKET_RULE_REQUIRED");
+            BigDecimal min = bucket.minBudgetUsdt();
+            BigDecimal max = bucket.maxBudgetUsdt();
+            if (title.length() > 80 || range.length() > 80 || rule.length() > 500
+                    || min == null || max == null || min.compareTo(new BigDecimal("100")) < 0
+                    || max.compareTo(min) < 0 || max.compareTo(new BigDecimal("10000")) > 0) {
+                throw new IllegalArgumentException("AMBASSADOR_POLICY_BUCKETS_INVALID");
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", id); row.put("title", title); row.put("range", range); row.put("rule", rule);
+            row.put("minBudgetUsdt", min.stripTrailingZeros()); row.put("maxBudgetUsdt", max.stripTrailingZeros());
+            normalized.add(row);
+        }
+        return List.copyOf(normalized);
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean expandsAmbassadorBudget(
+            Map<String, Object> before,
+            BigDecimal nextDefault,
+            List<Map<String, Object>> nextBuckets) {
+        if (nextDefault.compareTo(decimalValue(before.get("defaultBudgetUsdt"), BigDecimal.ZERO)) > 0) return true;
+        Map<String, BigDecimal> oldMaximums = ((List<Map<String, Object>>) before.get("buckets")).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> String.valueOf(row.get("id")),
+                        row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)));
+        return nextBuckets.stream().anyMatch(row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)
+                .compareTo(oldMaximums.getOrDefault(String.valueOf(row.get("id")), BigDecimal.ZERO)) > 0);
     }
 
     public ApiResult<Map<String, Object>> commissions() {
@@ -725,9 +892,10 @@ public class OpsTeamService implements AuditReplayable {
         // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
         String configKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
         String oldValue = configFacade.activeValue(configKey).orElse("");
+        String effectiveOldValue = projectLegacyUiValue(key, oldValue);
         // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
         // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
-        if (loosensPayoutControlUiKey(key, oldValue, value) && coverageBelowRedline()) {
+        if (loosensPayoutControlUiKey(key, effectiveOldValue, value) && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
         String persistedValue;
@@ -1170,11 +1338,25 @@ public class OpsTeamService implements AuditReplayable {
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) < 0;
+                case "F.unilevel.depthGate" -> depthGateLayer(newValue) < depthGateLayer(oldValue);
+                case "F.unilevel.depthGateRank" -> depthGateRank(newValue) < depthGateRank(oldValue);
                 default -> false;
             };
         } catch (IllegalArgumentException ex) {
             return false;
         }
+    }
+
+    private int depthGateLayer(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (!normalized.matches("L[1-7]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_LAYER_INVALID");
+        return Integer.parseInt(normalized.substring(1));
+    }
+
+    private int depthGateRank(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (!normalized.matches("V(?:[0-9]|1[0-2])")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_RANK_INVALID");
+        return Integer.parseInt(normalized.substring(1));
     }
 
     private Optional<String> commissionStatusEventId(String key) {
@@ -2165,6 +2347,8 @@ public class OpsTeamService implements AuditReplayable {
                     throw new IllegalArgumentException("F_TEAM_DEPTH_OUT_OF_RANGE");
                 }
             }
+            case "F.unilevel.depthGate" -> depthGateLayer(value);
+            case "F.unilevel.depthGateRank" -> depthGateRank(value);
             // 批2a · 修复2:F.cooldown 佣金冷却期范围校验 · 单位"天",范围 0-90。
             // 越界(如 -1 / 100)拒绝,防止误填导致佣金永不解锁或冷却过长影响可提余额释放。
             case "F.cooldown" -> {
@@ -2292,9 +2476,13 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, String> values = new LinkedHashMap<>();
         for (String key : UI_CONFIG_KEYS) {
             String canonicalKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
-            configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, value));
+            configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, projectLegacyUiValue(key, value)));
         }
         return values;
+    }
+
+    private String projectLegacyUiValue(String key, String value) {
+        return value;
     }
 
     private List<String> sunsetExclusions() {
@@ -2558,6 +2746,7 @@ public class OpsTeamService implements AuditReplayable {
                 "F.royalty.minPayout",
                 "F.peer.rate",
                 "F.unilevel.depthGate",
+                "F.unilevel.depthGateRank",
                 "F.unilevel.nexCap",
                 "F.unilevel.backfill",
                 "F.sunset.exclusions",
@@ -2984,7 +3173,12 @@ public class OpsTeamService implements AuditReplayable {
         String cohort = query == null ? null : trimToNull(query.cohort());
         String from = query == null ? null : trimToNull(query.from());
         String to = query == null ? null : trimToNull(query.to());
-        List<Map<String, Object>> rows = commissionRepository.queryPromotionLog(userId, v, cohort, from, to).stream()
+        Long beforeId = positiveCursor(query == null ? null : query.cursor(), "F1_PROMOTION_CURSOR_INVALID");
+        List<Map<String, Object>> fetched = commissionRepository
+                .queryPromotionLogPage(userId, v, cohort, from, to, beforeId, 101);
+        boolean hasMore = fetched.size() > 100;
+        List<Map<String, Object>> rawPage = fetched.stream().limit(100).toList();
+        List<Map<String, Object>> rows = rawPage.stream()
                 .map(this::normalizePromotionLogRow)
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -2994,9 +3188,12 @@ public class OpsTeamService implements AuditReplayable {
                 "v", v == null ? "" : v,
                 "cohort", cohort == null ? "" : cohort,
                 "from", from == null ? "" : from,
-                "to", to == null ? "" : to));
-        response.put("total", rows.size());
+                "to", to == null ? "" : to,
+                "cursor", beforeId == null ? "" : beforeId));
+        response.put("total", Math.toIntExact(commissionRepository.countPromotionLog(userId, v, cohort, from, to)));
         response.put("limit", 100);
+        response.put("nextCursor", hasMore && !rawPage.isEmpty()
+                ? String.valueOf(rawPage.get(rawPage.size() - 1).get("id")) : "");
         response.put("items", rows);
         response.put("source", "nx_user_level_log LEFT JOIN nx_user + nx_janus_device");
         return ApiResult.ok(response);
@@ -3057,6 +3254,17 @@ public class OpsTeamService implements AuditReplayable {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private Long positiveCursor(String raw, String errorCode) {
+        String value = trimToNull(raw);
+        if (value == null) return null;
+        if (!value.matches("[1-9]\\d{0,18}")) throw new BizException(422, errorCode);
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException ex) {
+            throw new BizException(422, errorCode);
+        }
+    }
+
     /** 解析 operator:有值用值,缺省用上下文 admin id 或 "MANUAL"。 */
     private String resolveOperator(String fallback) {
         Long adminId = parseAdminIdFromContext();
@@ -3099,8 +3307,8 @@ public class OpsTeamService implements AuditReplayable {
     /**
      * 端点 4:F1-MD4 派发流水查询。
      *
-     * <p>查 nx_v_rank_reward_payout WHERE is_deleted=0 ORDER BY granted_at DESC LIMIT 100。
-     * 支持 type/v/status/userId/cursor 五维筛选。
+     * <p>查 nx_v_rank_reward_payout WHERE is_deleted=0 ORDER BY id DESC LIMIT 100。
+     * 支持 type/v/status/userId/cursor 五维筛选；cursor 是不透明的递减数字行 id。
      */
     public ApiResult<Map<String, Object>> queryRewardPayouts(String type,
                                                              String v,
@@ -3110,8 +3318,12 @@ public class OpsTeamService implements AuditReplayable {
         String normType = trimToNull(type);
         String normV = normalizeVRankCode(v);
         String normStatus = trimToNull(status) == null ? null : trimToNull(status).toUpperCase(Locale.ROOT);
-        String normCursor = trimToNull(cursor);
-        List<Map<String, Object>> rows = commissionRepository.queryRewardPayouts(normType, normV, normStatus, userId, normCursor).stream()
+        Long beforeId = positiveCursor(cursor, "F1_PAYOUT_CURSOR_INVALID");
+        List<Map<String, Object>> fetched = commissionRepository
+                .queryRewardPayoutsPage(normType, normV, normStatus, userId, beforeId, 101);
+        boolean hasMore = fetched.size() > 100;
+        List<Map<String, Object>> rawPage = fetched.stream().limit(100).toList();
+        List<Map<String, Object>> rows = rawPage.stream()
                 .map(this::normalizeRewardPayoutRow)
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
@@ -3121,12 +3333,11 @@ public class OpsTeamService implements AuditReplayable {
                 "v", normV == null ? "" : normV,
                 "status", normStatus == null ? "" : normStatus,
                 "userId", userId == null ? "" : userId,
-                "cursor", normCursor == null ? "" : normCursor));
-        response.put("total", rows.size());
+                "cursor", beforeId == null ? "" : beforeId));
+        response.put("total", Math.toIntExact(commissionRepository.countRewardPayouts(normType, normV, normStatus, userId)));
         response.put("limit", 100);
-        // nextCursor = 末尾行的 grantedAt(供前端下一页查询;无数据=null)
-        String nextCursor = rows.isEmpty() ? null : String.valueOf(rows.get(rows.size() - 1).get("grantedAt"));
-        response.put("nextCursor", nextCursor == null ? "" : nextCursor);
+        response.put("nextCursor", hasMore && !rawPage.isEmpty()
+                ? String.valueOf(rawPage.get(rawPage.size() - 1).get("rowId")) : "");
         response.put("items", rows);
         response.put("source", "nx_v_rank_reward_payout");
         return ApiResult.ok(response);

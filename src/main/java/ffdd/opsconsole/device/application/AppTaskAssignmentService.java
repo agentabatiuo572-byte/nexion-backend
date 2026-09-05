@@ -195,6 +195,15 @@ public class AppTaskAssignmentService {
                 sha256(String.valueOf(deviceId)), () -> claimInternal(userId, deviceId, runtime.sourceEnvironment()));
     }
 
+    /** Internal scheduler entrypoint. Device and user ownership are rechecked under lock in claimInternal. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppTaskAssignmentView> assignAutomatically(Long userId, Long deviceId) {
+        requireUser(userId);
+        if (deviceId == null || deviceId <= 0) throw new BizException(422, "TASK_ASSIGNMENT_DEVICE_REQUIRED");
+        RuntimeScope runtime = requireProductionRuntime(userId);
+        return claimInternal(userId, deviceId, runtime.sourceEnvironment());
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTaskAssignmentView> complete(
             Long userId, String taskNo, String idempotencyKey, AppTaskCompleteRequest request) {
@@ -212,6 +221,7 @@ public class AppTaskAssignmentService {
 
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment) {
         LocalDateTime now = now();
+        lockProductionUser(userId);
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
         validateDevice(device);
         DeviceLockRow lock = mapper.lockDeviceTaskLock(userId, deviceId, sourceEnvironment);
@@ -281,11 +291,17 @@ public class AppTaskAssignmentService {
     private ApiResult<AppTaskAssignmentView> completeInternal(
             Long userId, String taskNo, AppTaskCompleteRequest request, String sourceEnvironment) {
         LocalDateTime now = now();
+        // Match activation/deactivation and claim: user -> device -> task.
+        // The initial unlocked lookup is only for routing; recheck under lock.
+        lockProductionUser(userId);
+        Long deviceId = mapper.assignmentDeviceId(userId, taskNo, sourceEnvironment);
+        if (deviceId == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
+        DeviceRow activeBinding = mapper.lockOwnedDevice(userId, deviceId);
         AssignmentRow task = mapper.lockAssignment(userId, taskNo, sourceEnvironment);
         if (task == null) throw new BizException(404, "TASK_ASSIGNMENT_NOT_FOUND");
+        if (!deviceId.equals(task.deviceId())) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_BINDING_CHANGED");
         if (completed(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         if (!active(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_STATE_INVALID");
-        DeviceRow activeBinding = mapper.lockOwnedDevice(userId, task.deviceId());
         validateDevice(activeBinding);
         LocalDateTime completableAt = task.startedAt().plusSeconds(task.requiredSeconds());
         if (now.isBefore(completableAt)) throw new BizException(409, "TASK_ASSIGNMENT_NOT_COMPLETEABLE_UNTIL:" + completableAt);
@@ -326,10 +342,17 @@ public class AppTaskAssignmentService {
         if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         }
+        boolean deferredDeviceDeactivated = false;
+        Long deferredDeviceVersion = null;
         if ("PRODUCTION".equals(sourceEnvironment)) {
             mapper.clearRuntimeTask(userId, task.deviceId(), taskNo, now);
             if (mapper.deactivatePendingDevice(userId, task.deviceId(), now) > 0) {
                 mapper.markRuntimeDeactivated(userId, task.deviceId(), now);
+                deferredDeviceVersion = mapper.deviceRowVersion(userId, task.deviceId());
+                if (deferredDeviceVersion == null) {
+                    throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");
+                }
+                deferredDeviceDeactivated = true;
             }
         }
         LocalDateTime lockUntil = now.plusMinutes(Math.max(0, task.taskLockMinutes()));
@@ -351,11 +374,32 @@ public class AppTaskAssignmentService {
                     attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), payload);
             outboxService.publishUserEvent("COMPUTE_TASK", taskNo, "earnings.credited", userId,
                     attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), payload);
+            if (deferredDeviceDeactivated) {
+                Map<String, Object> deviceState = linked(
+                        "userId", userId, "deviceId", task.deviceId(), "instanceNo", activeBinding.instanceNo(),
+                        "previousStatus", "ACTIVE", "status", "DEACTIVATED", "rowVersion", deferredDeviceVersion);
+                outboxService.publishUserEvent("USER_DEVICE", activeBinding.instanceNo(), "device.deactivated", userId,
+                        attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), deviceState);
+                auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                        .action("USER_DEVICE_DEFERRED_DEACTIVATED").resourceType("USER_DEVICE")
+                        .resourceId(String.valueOf(task.deviceId())).bizNo(activeBinding.instanceNo())
+                        .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
+                        .method("POST").path("/api/tasks/" + taskNo + "/complete")
+                        .result("SUCCESS").riskLevel("MEDIUM")
+                        .detail(linked("trigger", "TASK_SETTLEMENT_COMPLETED", "state", deviceState))
+                        .build());
+            }
         }
         return ApiResult.ok(new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
                 task.taskName(), task.taskClass(), task.modelName(), task.clientName(), "COMPLETED",
                 task.rewardUsdt(), task.requiredSeconds(), task.startedAt(), completableAt, now, receiptNo,
                 null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+    }
+
+    private void lockProductionUser(Long userId) {
+        if (!userId.equals(mapper.lockProductionUser(userId))) {
+            throw new BizException(403, "TASK_ASSIGNMENT_PRODUCTION_USER_REQUIRED");
+        }
     }
 
     private void validateDevice(DeviceRow device) {

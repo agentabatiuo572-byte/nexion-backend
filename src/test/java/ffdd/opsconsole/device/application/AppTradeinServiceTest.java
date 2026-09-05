@@ -3,8 +3,11 @@ package ffdd.opsconsole.device.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -17,6 +20,7 @@ import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
 import ffdd.opsconsole.device.dto.AppTradeinEligibilityResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
+import ffdd.opsconsole.device.dto.AppCapacityKeepSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -51,6 +55,8 @@ class AppTradeinServiceTest {
         when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+        when(idempotency.executeRetained(anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(mapper.listTradeinConfig()).thenReturn(validConfig());
         when(mapper.findSourceDevice(7L, 11L)).thenReturn(source());
         when(mapper.findTargetProduct(22L, null)).thenReturn(target());
@@ -67,11 +73,12 @@ class AppTradeinServiceTest {
         when(mapper.userEventAttribution(7L)).thenReturn(
                 new AppTradeinMapper.UserEventAttribution("P3", 8, "2026-W30"));
         when(mapper.countActiveDevices(7L)).thenReturn(6);
+        when(mapper.deviceSlotCap()).thenReturn(6);
         when(mapper.findCapacityReplacementSource(7L)).thenReturn(source());
         when(mapper.lockCapacityReplacementSource(7L)).thenReturn(source());
-        when(releasePolicy.evaluate(anyString(), anyString()))
+        when(releasePolicy.evaluateTradein(anyString(), nullable(String.class), anyBoolean(), anyInt()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
-        when(releasePolicy.evaluate(anyString(), eq(null)))
+        when(releasePolicy.evaluate(anyString(), nullable(String.class)))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
     }
 
@@ -192,7 +199,7 @@ class AppTradeinServiceTest {
 
     @Test
     void eligibilityReportsReleaseAsStableTargetReason() {
-        when(releasePolicy.evaluate("SKU-NEW", null))
+        when(releasePolicy.evaluateTradein("SKU-NEW", null, true, 30))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
 
         var result = service.eligibility(7L, new AppTradeinEligibilityRequest("stellarbox-pro-v2"));
@@ -244,7 +251,7 @@ class AppTradeinServiceTest {
 
     @Test
     void quoteFailsClosedWhenTheTargetIsNoLongerReleased() {
-        when(releasePolicy.evaluate("SKU-NEW", null))
+        when(releasePolicy.evaluateTradein("SKU-NEW", null, true, 30))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
 
         assertThatThrownBy(() -> service.quote(7L, new AppTradeinQuoteRequest(11L, 22L)))
@@ -255,7 +262,7 @@ class AppTradeinServiceTest {
 
     @Test
     void capacityQuoteFailsClosedWhenTheTargetIsNoLongerReleased() {
-        when(releasePolicy.evaluate("SKU-NEW", null))
+        when(releasePolicy.evaluateTradein("SKU-NEW", null, true, 30))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", null));
 
         assertThatThrownBy(() -> service.capacityQuote(7L,
@@ -263,6 +270,20 @@ class AppTradeinServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TRADEIN_TARGET_NOT_RELEASED");
         verify(mapper, never()).walletBalanceUsdt(any());
+    }
+
+    @Test
+    void capacityQuoteUsesTheConfiguredTradeinEarlyAccessWindow() {
+        when(releasePolicy.evaluateTradein("SKU-NEW", null, true, 30))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.openEarly("P4"));
+
+        var result = service.capacityQuote(7L,
+                new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().decision()).isEqualTo("REPLACE_REQUIRED");
+        verify(releasePolicy).evaluateTradein("SKU-NEW", null, true, 30);
+        verify(releasePolicy, never()).evaluate(anyString(), nullable(String.class));
     }
 
     @Test
@@ -303,6 +324,8 @@ class AppTradeinServiceTest {
     void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers() {
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.lockPurchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
         when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
         when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
@@ -340,7 +363,8 @@ class AppTradeinServiceTest {
                 row("tradeinLadderCredit1", "100"), row("tradeinLadderCredit2", "90"),
                 row("tradeinLadderCredit3", "80"), row("tradeinLadderCredit4", "70"),
                 row("tradeinLadderCredit5", "60"), row("tradeinRequireHigherPrice", "false"),
-                row("tradeinMaxDevicesPerOrder", "1")));
+                row("tradeinMaxDevicesPerOrder", "1"), row("earlyAccessEnabled", "true"),
+                row("earlyAccessLeadDays", "30")));
         when(mapper.cumulativeDeviceOutputUsdt(11L)).thenReturn(new BigDecimal("100.00"));
         var samePriceTarget = new AppTradeinMapper.TargetProduct(
                 22L, "SKU-SAME", "Same", "PRO", "ACTIVE", new BigDecimal("1000"), 3,
@@ -417,6 +441,8 @@ class AppTradeinServiceTest {
     void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit() {
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.lockPurchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
@@ -478,6 +504,8 @@ class AppTradeinServiceTest {
     void quotaCasFailureBlocksSettlementBeforeWalletDebit() {
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
+        when(mapper.lockPurchaseGateJson("SKU-NEW"))
+                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(0);
 
         assertThatThrownBy(() -> service.submit(7L, "idem-quota-race",
@@ -497,7 +525,8 @@ class AppTradeinServiceTest {
                 row("tradeinLadderCredit1", "75"), row("tradeinLadderCredit2", "60"),
                 row("tradeinLadderCredit3", "45"), row("tradeinLadderCredit4", "30"),
                 row("tradeinLadderCredit5", "15"), row("tradeinRequireHigherPrice", "true"),
-                row("tradeinMaxDevicesPerOrder", "1"));
+                row("tradeinMaxDevicesPerOrder", "1"), row("earlyAccessEnabled", "true"),
+                row("earlyAccessLeadDays", "30"));
     }
 
     private AppTradeinMapper.ConfigRow row(String key, String value) {
@@ -508,6 +537,36 @@ class AppTradeinServiceTest {
         assertThatThrownBy(action)
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TRADEIN_PRODUCTION_USER_REQUIRED");
+    }
+
+    @Test
+    void capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice() {
+        when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
+        when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
+        when(mapper.insertCapacityKeepWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.decrementTargetStock(22L)).thenReturn(1);
+        when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);
+        when(mapper.insertPaidOrderItem(any())).thenReturn(1);
+        when(mapper.insertInventoryTargetDevice(any())).thenReturn(1);
+        when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(44L);
+
+        var result = service.capacityKeep(7L, "keep-idem-7",
+                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000")));
+
+        assertThat(result.getData().orderStatus()).isEqualTo("PAID");
+        assertThat(result.getData().deviceStatus()).isEqualTo("INACTIVE");
+        assertThat(result.getData().targetDeviceId()).isEqualTo(44L);
+        assertThat(result.getData().walletDebitUsdt()).isEqualByComparingTo("1500.000000");
+        verify(mapper).insertCapacityKeepOrder(any());
+        verify(mapper).insertInventoryTargetDevice(any());
+        verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
+        verify(mapper, never()).recycleSourceDevice(any(), any());
+        verify(mapper, never()).insertTradeinApplication(any());
+        verify(idempotency).executeRetained(eq("APP:E3_CAPACITY_KEEP:USER:7"), eq("keep-idem-7"),
+                anyString(), eq(ApiResult.class), any());
+        verify(idempotency, never()).execute(eq("APP:E3_CAPACITY_KEEP:USER:7"), anyString(),
+                anyString(), eq(ApiResult.class), any());
     }
 
     @Test

@@ -13,6 +13,7 @@ import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import java.math.BigDecimal;
@@ -44,11 +45,11 @@ class OpsGrowthControllerTest {
 
     @Test
     void trialOverviewDelegatesToService() {
-        when(growthService.trials()).thenReturn(ApiResult.ok(Map.of("domain", "H2")));
+        when(growthService.trials(1, 20)).thenReturn(ApiResult.ok(Map.of("domain", "H2")));
 
-        assertThat(controller.trials().getData()).containsEntry("domain", "H2");
+        assertThat(controller.trials(1, 20).getData()).containsEntry("domain", "H2");
 
-        verify(growthService).trials();
+        verify(growthService).trials(1, 20);
     }
 
     @Test
@@ -124,6 +125,10 @@ class OpsGrowthControllerTest {
     void missionLifecycleDelegatesEveryCommandWithItsIdempotencyHeader() {
         GrowthMissionEditRequest edit = new GrowthMissionEditRequest(
                 "MISSION", "Renamed task", "Original task", "approved rename", "superadmin");
+        GrowthMissionPresentationRequest presentation = new GrowthMissionPresentationRequest(
+                "identity", "/pages/me/profile",
+                "explore", "/pages/missions/missions",
+                "send profile task to its completion page", "superadmin");
         GrowthMissionStatusRequest pause = new GrowthMissionStatusRequest(
                 "MISSION", "paused", "active", "pause for review", "superadmin");
         GrowthMissionStatusRequest archive = new GrowthMissionStatusRequest(
@@ -132,6 +137,8 @@ class OpsGrowthControllerTest {
                 "MISSION", "deleted", "archived", "delete archived task", "superadmin");
         when(growthService.editMission("idem-h3-edit", "H3_TASK", edit))
                 .thenReturn(ApiResult.ok(Map.of("action", "edited")));
+        when(growthService.updateMissionPresentation("idem-h3-presentation", "H3_TASK", presentation))
+                .thenReturn(ApiResult.ok(Map.of("action", "presentation-updated")));
         when(growthService.transitionMission("idem-h3-status", "H3_TASK", pause))
                 .thenReturn(ApiResult.ok(Map.of("action", "status_changed")));
         when(growthService.archiveMission("idem-h3-archive", "H3_TASK", archive))
@@ -140,11 +147,14 @@ class OpsGrowthControllerTest {
                 .thenReturn(ApiResult.ok(Map.of("action", "deleted")));
 
         assertThat(controller.editMission("idem-h3-edit", "H3_TASK", edit).getCode()).isZero();
+        assertThat(controller.updateMissionPresentation(
+                "idem-h3-presentation", "H3_TASK", presentation).getCode()).isZero();
         assertThat(controller.transitionMission("idem-h3-status", "H3_TASK", pause).getCode()).isZero();
         assertThat(controller.archiveMission("idem-h3-archive", "H3_TASK", archive).getCode()).isZero();
         assertThat(controller.deleteMission("idem-h3-delete", "H3_TASK", delete).getCode()).isZero();
 
         verify(growthService).editMission("idem-h3-edit", "H3_TASK", edit);
+        verify(growthService).updateMissionPresentation("idem-h3-presentation", "H3_TASK", presentation);
         verify(growthService).transitionMission("idem-h3-status", "H3_TASK", pause);
         verify(growthService).archiveMission("idem-h3-archive", "H3_TASK", archive);
         verify(growthService).deleteMission("idem-h3-delete", "H3_TASK", delete);
@@ -153,7 +163,7 @@ class OpsGrowthControllerTest {
     @Test
     void missionLifecycleRequiresH3WriteAuthority() {
         for (String methodName : java.util.List.of(
-                "editMission", "transitionMission", "archiveMission", "deleteMission")) {
+                "editMission", "updateMissionPresentation", "transitionMission", "archiveMission", "deleteMission")) {
             PreAuthorize guard = java.util.Arrays.stream(OpsGrowthController.class.getMethods())
                     .filter(method -> method.getName().equals(methodName))
                     .findFirst()
@@ -198,6 +208,20 @@ class OpsGrowthControllerTest {
                 .containsEntry("ok", true);
 
         verify(growthService).updateQuestEventFeatured("idem-h4-featured", "ref-5", request);
+    }
+
+    @Test
+    void eventLocalizedContentUsesTheH4ScopedCommandAndAuthority() throws Exception {
+        GrowthConfigUpdateRequest request = new GrowthConfigUpdateRequest("name", "活动中文名", "operator authored", "superadmin");
+        when(growthService.updateEventLocalizedContent("idem-h4-content", "ref-5", "name", "zh", request))
+                .thenReturn(ApiResult.ok(Map.of("ok", true)));
+
+        assertThat(controller.updateEventLocalizedContent("idem-h4-content", "ref-5", "name", "zh", request).getCode()).isZero();
+        verify(growthService).updateEventLocalizedContent("idem-h4-content", "ref-5", "name", "zh", request);
+
+        java.lang.reflect.Method method = OpsGrowthController.class.getMethod(
+                "updateEventLocalizedContent", String.class, String.class, String.class, String.class, GrowthConfigUpdateRequest.class);
+        assertThat(method.getAnnotation(PreAuthorize.class).value()).isEqualTo("hasAuthority('growth_h4_write')");
     }
 
     @Test

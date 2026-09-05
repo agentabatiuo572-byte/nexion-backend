@@ -10,6 +10,15 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
+    @Update("""
+            UPDATE nx_support_ticket SET user_unread_count=0, updated_at=#{now}, version=version+1
+            WHERE ticket_no=#{ticketNo} AND user_id=#{userId} AND is_deleted=0
+              AND status=#{expectedStatus} AND version=#{expectedVersion}
+            """)
+    int markUserRead(@Param("ticketNo") String ticketNo, @Param("userId") Long userId,
+                     @Param("expectedStatus") String expectedStatus, @Param("expectedVersion") Long expectedVersion,
+                     @Param("now") LocalDateTime now);
+
     @Select("SELECT COUNT(*) FROM nx_support_ticket WHERE is_deleted=0 AND archived=0 AND status IN ('OPEN','IN_PROGRESS','PENDING_USER')")
     long countActive();
 
@@ -94,13 +103,18 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
                     OR t.assigned_admin_name LIKE CONCAT('%', #{keyword}, '%')
                     OR t.last_message LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-            ORDER BY COALESCE(t.last_message_at,t.updated_at,t.created_at) DESC
+             <if test='stableCursor != null and stableCursor and beforeId != null'>AND t.id &lt; #{beforeId}</if>
+             <choose>
+               <when test='stableCursor != null and stableCursor'>ORDER BY t.id DESC</when>
+               <otherwise>ORDER BY COALESCE(t.last_message_at,t.updated_at,t.created_at) DESC, t.id DESC</otherwise>
+             </choose>
             LIMIT #{pageSize} OFFSET #{offset}
             </script>
             """)
     List<SupportTicketView> pageTickets(@Param("scope") String scope, @Param("status") String status, @Param("category") String category,
                                         @Param("priority") String priority, @Param("assignedAdminId") Long assignedAdminId,
                                         @Param("userId") Long userId, @Param("keyword") String keyword,
+                                        @Param("beforeId") Long beforeId, @Param("stableCursor") Boolean stableCursor,
                                         @Param("pageSize") long pageSize, @Param("offset") long offset);
 
     @Select("""

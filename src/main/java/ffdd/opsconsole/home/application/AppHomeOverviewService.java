@@ -108,15 +108,16 @@ public class AppHomeOverviewService {
             result.put("generatedAt", clock.instant().toString());
             result.put("accountScope", "authenticated-account");
             Map<String, Object> earnings = new LinkedHashMap<>();
-            PeriodRow todayEarnings = mapper.earnings(userId, sourceEnvironment, dayStart, now);
-            PeriodRow yesterdaySameTimeEarnings = mapper.earnings(
-                    userId, sourceEnvironment, dayStart.minusDays(1), now.minusDays(1));
+            AppHomeOverviewMapper.EarningsSummaryRow summary = mapper.earningsSummary(
+                    userId, sourceEnvironment, dayStart, dayStart.minusDays(1), now.minusDays(1),
+                    weekStart, monthStart, now);
+            PeriodRow todayEarnings = summary == null ? null : summary.today();
+            PeriodRow yesterdaySameTimeEarnings = summary == null ? null : summary.yesterday();
             earnings.put("today", period(todayEarnings));
             earnings.put("todayVsYesterdayPct", percentageChange(todayEarnings, yesterdaySameTimeEarnings));
-            earnings.put("week", period(mapper.earnings(userId, sourceEnvironment, weekStart, now)));
-            earnings.put("month", period(mapper.earnings(userId, sourceEnvironment, monthStart, now)));
-            earnings.put("all", period(mapper.earnings(userId, sourceEnvironment,
-                    LocalDate.of(1970, 1, 1).atStartOfDay(), now)));
+            earnings.put("week", period(summary == null ? null : summary.week()));
+            earnings.put("month", period(summary == null ? null : summary.month()));
+            earnings.put("all", period(summary == null ? null : summary.all()));
             result.put("earnings", earnings);
             result.put("earningsLedgerMode", "SETTLED");
             result.put("earningsLedger", earningsLedger(mapper.earningsLedger(userId, sourceEnvironment)));

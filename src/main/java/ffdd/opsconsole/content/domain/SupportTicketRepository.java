@@ -14,6 +14,12 @@ public interface SupportTicketRepository {
 
     PageResult<SupportTicketView> pageTickets(SupportTicketQueryRequest request);
 
+    /** App keyset window ordered by immutable database id; production overrides with a SQL cursor. */
+    default PageResult<SupportTicketView> pageTicketsBeforeId(
+            SupportTicketQueryRequest request, Long beforeId) {
+        return pageTickets(request);
+    }
+
     Optional<SupportTicketView> findByTicketNo(String ticketNo);
 
     List<SupportTicketMessageView> messages(String ticketNo);
@@ -24,6 +30,17 @@ public interface SupportTicketRepository {
                 .filter(message -> "user".equalsIgnoreCase(message.senderType())
                         || "agent".equalsIgnoreCase(message.senderType()))
                 .toList();
+    }
+
+    default List<SupportTicketMessageView> recentUserVisibleMessages(String ticketNo, int limit) {
+        List<SupportTicketMessageView> all = userVisibleMessages(ticketNo);
+        return all.stream().skip(Math.max(0, all.size() - limit)).toList();
+    }
+
+    /** A cursor is always applied inside an already authorized ticket. */
+    default List<SupportTicketMessageView> recentUserVisibleMessagesBefore(
+            String ticketNo, Long beforeMessageId, int limit) {
+        return recentUserVisibleMessages(ticketNo, limit);
     }
 
     SupportTicketView createTicket(
@@ -48,6 +65,11 @@ public interface SupportTicketRepository {
     /** App user reply: reopens a non-closed ticket and increments the ops unread counter under CAS. */
     default boolean appendUserReplyCas(SupportTicketView ticket, String body, LocalDateTime now) {
         throw new UnsupportedOperationException("APP_SUPPORT_TICKET_REPLY_NOT_IMPLEMENTED");
+    }
+
+    /** Clears only the header version that the user actually opened. */
+    default boolean markUserReadCas(SupportTicketView ticket, LocalDateTime now) {
+        throw new UnsupportedOperationException("APP_SUPPORT_TICKET_READ_NOT_IMPLEMENTED");
     }
 
     void updateStatus(SupportTicketView ticket, String status, String operator, LocalDateTime now);

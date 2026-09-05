@@ -4,7 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import ffdd.opsconsole.shared.security.SecurityConfig;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +30,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 
 @WebMvcTest(AppTrustSectionController.class)
 @ActiveProfiles("dev")
@@ -101,12 +103,32 @@ class AppTrustSectionControllerSecurityTest {
         when(service.recordSectionView("leadership", "vi")).thenReturn(ApiResult.ok(null));
 
         mockMvc.perform(post("/api/content/trust/sections/leadership/view")
-                        .with(user("1"))
+                        .with(authentication(subject("1", "USER")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"locale\":\"vi\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0));
 
         verify(service).recordSectionView("leadership", "vi");
+    }
+
+    @Test
+    void adminSubjectCannotWriteUserTrustAnalytics() throws Exception {
+        mockMvc.perform(post("/api/content/trust/sections/leadership/view")
+                        .with(authentication(subject("1", "ADMIN")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"locale\":\"vi\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.message").value("USER_SUBJECT_REQUIRED"));
+
+        verifyNoInteractions(service);
+    }
+
+    private UsernamePasswordAuthenticationToken subject(String principal, String subjectType) {
+        var authentication = UsernamePasswordAuthenticationToken.authenticated(
+                principal, "n/a", List.of());
+        authentication.setDetails(Map.of("subjectType", subjectType));
+        return authentication;
     }
 }

@@ -151,6 +151,23 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> ambassadorPolicy() {
+        Map<String, Object> row = mapper.ambassadorPolicy();
+        return row == null ? new LinkedHashMap<>() : row;
+    }
+
+    @Override
+    public boolean updateAmbassadorPolicyCas(
+            long expectedRevision,
+            String policyVersion,
+            BigDecimal defaultBudgetUsdt,
+            String bucketsJson,
+            String operator) {
+        return mapper.updateAmbassadorPolicyCas(
+                expectedRevision, policyVersion, defaultBudgetUsdt, bucketsJson, operator) == 1;
+    }
+
+    @Override
     public boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) {
         return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 4;
     }
@@ -317,7 +334,7 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
                 text(raw, "rewardId"),
                 text(raw, "rankCode"),
                 text(raw, "rewardType"),
-                decimal(raw.get("amount")),
+                optionalDecimal(raw.get("amount")),
                 textOr(raw.get("voucherId"), null),
                 textOr(raw.get("skuId"), null),
                 textOr(raw.get("customLabel"), null),
@@ -431,7 +448,18 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
                                                        String cohort,
                                                        String from,
                                                        String to) {
-        return mapper.queryPromotionLog(userId, v, cohort, from, to);
+        return mapper.queryPromotionLogPage(userId, v, cohort, from, to, null, 100);
+    }
+
+    @Override
+    public List<Map<String, Object>> queryPromotionLogPage(
+            Long userId, String v, String cohort, String from, String to, Long beforeId, int limit) {
+        return mapper.queryPromotionLogPage(userId, v, cohort, from, to, beforeId, limit);
+    }
+
+    @Override
+    public long countPromotionLog(Long userId, String v, String cohort, String from, String to) {
+        return mapper.countPromotionLog(userId, v, cohort, from, to);
     }
 
     // ============================================================
@@ -439,12 +467,14 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     // ============================================================
 
     @Override
-    public List<Map<String, Object>> queryRewardPayouts(String type,
-                                                        String v,
-                                                        String status,
-                                                        Long userId,
-                                                        String cursor) {
-        return mapper.queryRewardPayouts(type, v, status, userId, cursor);
+    public List<Map<String, Object>> queryRewardPayoutsPage(
+            String type, String v, String status, Long userId, Long beforeId, int limit) {
+        return mapper.queryRewardPayoutsPage(type, v, status, userId, beforeId, limit);
+    }
+
+    @Override
+    public long countRewardPayouts(String type, String v, String status, Long userId) {
+        return mapper.countRewardPayouts(type, v, status, userId);
     }
 
     @Override
@@ -494,6 +524,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
         } catch (NumberFormatException ex) {
             return BigDecimal.ZERO;
         }
+    }
+
+    /** A missing entitlement amount is semantically different from a zero monetary reward. */
+    private BigDecimal optionalDecimal(Object raw) {
+        return raw == null ? null : decimal(raw);
     }
 
     private int integer(Object raw, int fallback) {

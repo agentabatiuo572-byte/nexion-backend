@@ -459,6 +459,28 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> ambassadorApplications(@Param("limit") int limit);
 
+    @Select("""
+            SELECT policy_version policyVersion,revision,default_budget_usdt defaultBudgetUsdt,
+                   buckets_json bucketsJson,updated_by updatedBy,updated_at updatedAt
+              FROM nx_team_ambassador_policy
+             WHERE policy_key='default' AND active=1 AND is_deleted=0
+             LIMIT 1
+            """)
+    Map<String, Object> ambassadorPolicy();
+
+    @Update("""
+            UPDATE nx_team_ambassador_policy
+               SET policy_version=#{policyVersion},default_budget_usdt=#{defaultBudgetUsdt},
+                   buckets_json=#{bucketsJson},revision=revision+1,updated_by=#{operator},updated_at=NOW()
+             WHERE policy_key='default' AND active=1 AND is_deleted=0 AND revision=#{expectedRevision}
+            """)
+    int updateAmbassadorPolicyCas(
+            @Param("expectedRevision") long expectedRevision,
+            @Param("policyVersion") String policyVersion,
+            @Param("defaultBudgetUsdt") BigDecimal defaultBudgetUsdt,
+            @Param("bucketsJson") String bucketsJson,
+            @Param("operator") String operator);
+
     @Insert("""
             INSERT INTO nx_team_ambassador_budget_grant
               (application_id, user_id, budget_type, amount_usdt, status, operator)
@@ -1346,60 +1368,79 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                </if>
                <if test="from != null and from != ''">AND l.created_at &gt;= #{from}</if>
                <if test="to != null and to != ''">AND l.created_at &lt;= CONCAT(#{to}, ' 23:59:59')</if>
-             ORDER BY l.created_at DESC, l.id DESC
-             LIMIT 100
+               <if test="beforeId != null">AND l.id &lt; #{beforeId}</if>
+             ORDER BY l.id DESC
+             LIMIT #{limit}
             </script>
             """)
-    List<Map<String, Object>> queryPromotionLog(@Param("userId") Long userId,
-                                                @Param("v") String v,
-                                                @Param("cohort") String cohort,
-                                                @Param("from") String from,
-                                                @Param("to") String to);
+    List<Map<String, Object>> queryPromotionLogPage(@Param("userId") Long userId,
+                                                    @Param("v") String v,
+                                                    @Param("cohort") String cohort,
+                                                    @Param("from") String from,
+                                                    @Param("to") String to,
+                                                    @Param("beforeId") Long beforeId,
+                                                    @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM nx_user_level_log l
+             WHERE l.is_deleted = 0 AND l.level_type = 'VRANK'
+               <if test="userId != null">AND l.user_id = #{userId}</if>
+               <if test="v != null and v != ''">AND (l.from_code = #{v} OR l.to_code = #{v})</if>
+               <if test="cohort != null and cohort != ''">
+                 AND EXISTS (SELECT 1 FROM nx_janus_device d WHERE d.user_id=l.user_id AND d.cohort_id LIKE CONCAT('%',#{cohort},'%'))
+               </if>
+               <if test="from != null and from != ''">AND l.created_at &gt;= #{from}</if>
+               <if test="to != null and to != ''">AND l.created_at &lt;= CONCAT(#{to}, ' 23:59:59')</if>
+            </script>
+            """)
+    long countPromotionLog(@Param("userId") Long userId,
+                           @Param("v") String v,
+                           @Param("cohort") String cohort,
+                           @Param("from") String from,
+                           @Param("to") String to);
 
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6):3 端点
     // ============================================================
 
-    /**
-     * 查 nx_v_rank_reward_payout 派发流水(is_deleted=0)。
-     * 支持 type/v/status/userId/cursor 筛选,ORDER BY granted_at DESC LIMIT 100。
-     * cursor 为 granted_at 上界(分页游标,null=首页)。
-     */
+    /** Stable keyset page ordered by descending row id; beforeId is the opaque cursor. */
     @Select("""
             <script>
-            SELECT payout_id        AS payoutId,
-                   user_id          AS userId,
-                   rank_code        AS rankCode,
-                   reward_type      AS rewardType,
-                   amount,
-                   voucher_id       AS voucherId,
-                   sku_id           AS skuId,
-                   custom_label     AS customLabel,
-                   sponsor_user_id  AS sponsorUserId,
-                   status,
-                   commission_event_id AS commissionEventId,
-                   bill_id          AS billId,
-                   trigger_event_id AS triggerEventId,
-                   operator,
-                   reason,
+            SELECT id AS rowId,
+                   payout_id AS payoutId,user_id AS userId,rank_code AS rankCode,reward_type AS rewardType,
+                   amount,voucher_id AS voucherId,sku_id AS skuId,custom_label AS customLabel,
+                   sponsor_user_id AS sponsorUserId,status,commission_event_id AS commissionEventId,
+                   bill_id AS billId,trigger_event_id AS triggerEventId,operator,reason,
                    DATE_FORMAT(granted_at, '%Y-%m-%d %H:%i:%s') AS grantedAt,
                    DATE_FORMAT(reversed_at, '%Y-%m-%d %H:%i:%s') AS reversedAt
               FROM nx_v_rank_reward_payout
-             WHERE is_deleted = 0
-               <if test="type != null and type != ''">AND LOWER(reward_type) = LOWER(#{type})</if>
-               <if test="v != null and v != ''">AND rank_code = #{v}</if>
-               <if test="status != null and status != ''">AND UPPER(status) = UPPER(#{status})</if>
-               <if test="userId != null">AND user_id = #{userId}</if>
-               <if test="cursor != null and cursor != ''">AND granted_at &lt; #{cursor}</if>
-             ORDER BY granted_at DESC, id DESC
-             LIMIT 100
+             WHERE is_deleted=0
+               <if test="type != null and type != ''">AND LOWER(reward_type)=LOWER(#{type})</if>
+               <if test="v != null and v != ''">AND rank_code=#{v}</if>
+               <if test="status != null and status != ''">AND UPPER(status)=UPPER(#{status})</if>
+               <if test="userId != null">AND user_id=#{userId}</if>
+               <if test="beforeId != null">AND id &lt; #{beforeId}</if>
+             ORDER BY id DESC LIMIT #{limit}
             </script>
             """)
-    List<Map<String, Object>> queryRewardPayouts(@Param("type") String type,
-                                                  @Param("v") String v,
-                                                  @Param("status") String status,
-                                                  @Param("userId") Long userId,
-                                                  @Param("cursor") String cursor);
+    List<Map<String, Object>> queryRewardPayoutsPage(
+            @Param("type") String type,@Param("v") String v,@Param("status") String status,
+            @Param("userId") Long userId,@Param("beforeId") Long beforeId,@Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM nx_v_rank_reward_payout
+             WHERE is_deleted=0
+               <if test="type != null and type != ''">AND LOWER(reward_type)=LOWER(#{type})</if>
+               <if test="v != null and v != ''">AND rank_code=#{v}</if>
+               <if test="status != null and status != ''">AND UPPER(status)=UPPER(#{status})</if>
+               <if test="userId != null">AND user_id=#{userId}</if>
+            </script>
+            """)
+    long countRewardPayouts(@Param("type") String type,@Param("v") String v,
+                            @Param("status") String status,@Param("userId") Long userId);
 
     /** 按 payout_id 精确查单条 payout(忽略软删,用于 reissue/reverse 锁定原流水)。 */
     @Select("""

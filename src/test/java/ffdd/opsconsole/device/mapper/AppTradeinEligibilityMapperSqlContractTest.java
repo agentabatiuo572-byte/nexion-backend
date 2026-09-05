@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.lang.reflect.Method;
 import java.util.List;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Insert;
 import org.junit.jupiter.api.Test;
 
 class AppTradeinEligibilityMapperSqlContractTest {
@@ -72,5 +73,22 @@ class AppTradeinEligibilityMapperSqlContractTest {
                 .contains("store_visible=1")
                 .contains("UPPER(status) IN ('ACTIVE','ON_SALE')")
                 .contains("unlock_phase AS unlockPhase");
+    }
+
+    @Test
+    void capacityKeepPersistsAPaidOrderAndAnInactiveOwnedDevice() throws Exception {
+        Method order = AppTradeinMapper.class.getMethod(
+                "insertCapacityKeepOrder", AppTradeinMapper.PaidOrderWrite.class);
+        String orderSql = String.join(" ", order.getAnnotation(Insert.class).value());
+        assertThat(orderSql)
+                .contains("'CAPACITY_KEEP'")
+                .contains("'PAID','PAID','WAITING_PROVISIONING'");
+
+        Method device = AppTradeinMapper.class.getMethod(
+                "insertInventoryTargetDevice", AppTradeinMapper.DeliveredDeviceWrite.class);
+        String deviceSql = String.join(" ", device.getAnnotation(Insert.class).value());
+        assertThat(deviceSql)
+                .contains("'OWNED','ORDER','INACTIVE'")
+                .contains("NOW(),NULL,NULL");
     }
 }

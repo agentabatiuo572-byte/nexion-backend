@@ -41,6 +41,53 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             """)
     List<ContentConversationMessageView> listUserVisibleByConversationNo(@Param("conversationNo") String conversationNo);
 
+    @Select("""
+            SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
+                   recent.content,
+                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+                   recent.created_at AS createdAt
+              FROM (
+                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
+                  FROM nx_conversation_message
+                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                 ORDER BY id DESC LIMIT #{limit}
+              ) recent
+              LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
+             ORDER BY recent.id ASC
+            """)
+    List<ContentConversationMessageView> listRecentUserVisibleByConversationNo(
+            @Param("conversationNo") String conversationNo, @Param("limit") int limit);
+
+    @Select("""
+            SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
+                   recent.content,
+                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+                   recent.created_at AS createdAt
+              FROM (
+                SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
+                  FROM nx_conversation_message
+                 WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
+                   AND (#{beforeMessageId} IS NULL OR id < #{beforeMessageId})
+                 ORDER BY id DESC LIMIT #{limit}
+              ) recent
+              LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
+             ORDER BY recent.id ASC
+            """)
+    List<ContentConversationMessageView> listRecentUserVisibleByConversationNoBefore(
+            @Param("conversationNo") String conversationNo, @Param("beforeMessageId") Long beforeMessageId,
+            @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_conversation_message msg
+              LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
+             WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo} AND msg.sender_type='agent'
+               AND (receipt.message_id IS NULL OR receipt.receipt_status<>'read')
+            """)
+    int countUnreadUserVisibleAgentMessages(@Param("conversationNo") String conversationNo);
+
     @Insert("""
             INSERT INTO nx_conversation_message_receipt(message_id,conversation_no,receipt_status,read_by,read_at)
             SELECT msg.id,msg.conversation_no,'read',#{operator},#{now}

@@ -22,6 +22,16 @@ public class AdminIdempotencyService {
     private final Clock clock;
 
     public <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, false);
+    }
+
+    /** Financial intents can be recovered long after the processing lease expires. */
+    public <T> T executeRetained(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, true);
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -29,8 +39,9 @@ public class AdminIdempotencyService {
         LocalDateTime expiresAt = LocalDateTime.now(clock)
                 .truncatedTo(ChronoUnit.SECONDS)
                 .plus(DEFAULT_TTL);
-        AdminIdempotencyTransactionExecutor.Claim<T> claim = transactionExecutor.claim(
-                normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType);
+        AdminIdempotencyTransactionExecutor.Claim<T> claim = retainSuccess
+                ? transactionExecutor.claimRetained(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType)
+                : transactionExecutor.claim(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType);
         if (!claim.executeAction()) {
             return claim.replayResponse();
         }

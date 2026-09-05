@@ -8,16 +8,23 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @RestController
 @RequestMapping("/api/app/team")
 @RequiredArgsConstructor
 public class AppTeamNetworkController {
     private final AppTeamNetworkService service;
-    @GetMapping("/network")
+
+    /** Keeps direct controller tests and non-HTTP callers source-compatible. */
     public ApiResult<Map<String, Object>> network(Authentication authentication) {
+        return network(authentication, 0L);
+    }
+
+    @GetMapping("/network")
+    public ApiResult<Map<String, Object>> network(Authentication authentication, @RequestParam(defaultValue = "0") long afterId) {
         Long userId = authenticatedUserId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.snapshot(userId);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.snapshot(userId, afterId);
     }
 
     private Long authenticatedUserId(Authentication authentication) {

@@ -9,7 +9,7 @@ class UserLoginResponseTest {
     @Test
     void registrationReceiptIsOptionalAndContainsOnlySafeFacts() {
         var response = new UserLoginResponse("access", "Bearer",
-                new UserLoginResponse.UserSession(1L, "+81", "81987654321", "Nexion"));
+                new UserLoginResponse.UserSession(1L, "+84", "912345678", "NexGrid"));
         var receipt = new UserLoginResponse.RegistrationReceipt(
                 "NXAB12CD34EF", "A•••", "PRODUCTION", "PENDING_REVIEW",
                 new BigDecimal("1.25"), new BigDecimal("20"));

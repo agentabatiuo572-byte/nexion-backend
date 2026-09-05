@@ -14,6 +14,12 @@ public interface ConversationRepository {
 
     PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request);
 
+    /** App keyset window ordered by immutable database id; production overrides with a SQL cursor. */
+    default PageResult<ContentConversationView> pageConversationsBeforeId(
+            ConversationQueryRequest request, Long beforeId) {
+        return pageConversations(request);
+    }
+
     Optional<ContentConversationView> findByConversationNo(String conversationNo);
 
     /** Locks the conversation header first and its active transfer second. */
@@ -128,5 +134,30 @@ public interface ConversationRepository {
             String openingText,
             LocalDateTime now) {
         throw new UnsupportedOperationException("APP_CONVERSATION_CREATE_NOT_IMPLEMENTED");
+    }
+
+    default List<ContentConversationMessageView> recentUserVisibleMessages(String conversationNo, int limit) {
+        List<ContentConversationMessageView> all = userVisibleMessages(conversationNo);
+        return all.stream().skip(Math.max(0, all.size() - limit)).toList();
+    }
+
+    /** A cursor is always applied inside an already authorized conversation. */
+    default List<ContentConversationMessageView> recentUserVisibleMessagesBefore(
+            String conversationNo, Long beforeMessageId, int limit) {
+        return recentUserVisibleMessages(conversationNo, limit);
+    }
+
+    /** Counts every public agent message which has not been acknowledged by this user. */
+    default int unreadUserVisibleAgentMessageCount(String conversationNo) {
+        return (int) userVisibleMessages(conversationNo).stream()
+                .filter(message -> "agent".equalsIgnoreCase(message.senderType()))
+                .filter(message -> !"read".equalsIgnoreCase(message.receiptStatus()))
+                .count();
+    }
+
+    default ContentConversationView createUserConversation(
+            String conversationNo, Long userId, String conversationType, String openingText,
+            String ownerAgentId, String ownerAgentName, LocalDateTime now) {
+        return createUserConversation(conversationNo, userId, conversationType, openingText, now);
     }
 }

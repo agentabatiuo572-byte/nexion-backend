@@ -201,9 +201,9 @@ public class AppUserOAuthService {
     private UserEntity createSandboxUser(String provider, String subject, String requestedName, String clientAddress) {
         String key = provider + ":" + subject;
         String digits = hashSubject(key).replaceAll("[^0-9]", "");
-        String phone = "900" + (digits + "000000000000").substring(0, 12);
+        String phone = "139" + (digits + "00000000").substring(0, 8);
         UserEntity user = new UserEntity();
-        user.setCountryCode("+1");
+        user.setCountryCode("+86");
         user.setPhone(phone);
         user.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
         user.setPasswordHash(passwordEncoder.encode(UUID.randomUUID().toString()));

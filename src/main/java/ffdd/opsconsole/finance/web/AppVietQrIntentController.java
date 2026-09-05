@@ -1,9 +1,11 @@
 package ffdd.opsconsole.finance.web;
 
-import ffdd.opsconsole.finance.application.AppVietQrIntentService;
+import ffdd.opsconsole.finance.hdpay.HdPayHostedDepositService;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCancelRequest;
 import ffdd.opsconsole.finance.dto.AppVietQrIntentCreateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -20,7 +22,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/app")
 @RequiredArgsConstructor
 public class AppVietQrIntentController {
-    private final AppVietQrIntentService service;
+    private final HdPayHostedDepositService service;
+    private final GatewaySecurityProperties gatewaySecurity;
 
     @GetMapping("/payments/config")
     public ApiResult<Map<String, Object>> paymentConfig(Authentication authentication) {
@@ -41,10 +44,15 @@ public class AppVietQrIntentController {
     public ApiResult<Map<String, Object>> create(
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody(required = false) AppVietQrIntentCreateRequest request,
-            Authentication authentication) {
+            Authentication authentication,
+            HttpServletRequest httpRequest) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : service.create(userId, idempotencyKey, request == null ? null : request.usdtAmount());
+                : service.create(
+                        userId,
+                        idempotencyKey,
+                        request == null ? null : request.usdtAmount(),
+                        clientIp(httpRequest));
     }
 
     @GetMapping("/deposits/vietqr/intents")
@@ -101,5 +109,23 @@ public class AppVietQrIntentController {
 
     private ApiResult<Map<String, Object>> forbidden() {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+    }
+
+    private String clientIp(HttpServletRequest request) {
+        String remoteAddress = request == null ? "" : request.getRemoteAddr();
+        if (request == null || !gatewaySecurity.isTrustedProxy(remoteAddress)) return remoteAddress;
+        String clientAddress = validIpLiteral(request.getHeader("X-Nexion-Client-IP"));
+        if (clientAddress == null) {
+            String forwarded = request.getHeader("X-Forwarded-For");
+            clientAddress = validIpLiteral(forwarded == null ? null : forwarded.split(",", 2)[0]);
+        }
+        return clientAddress == null ? remoteAddress : clientAddress;
+    }
+
+    private String validIpLiteral(String value) {
+        if (value == null) return null;
+        String candidate = value.trim();
+        return candidate.isEmpty() || candidate.length() > 64 || !candidate.matches("[0-9A-Fa-f:.]+")
+                ? null : candidate;
     }
 }

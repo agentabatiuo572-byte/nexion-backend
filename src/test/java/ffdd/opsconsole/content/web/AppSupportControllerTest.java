@@ -45,6 +45,39 @@ class AppSupportControllerTest {
     }
 
     @Test
+    void authenticatedUserAcknowledgesOnlyTheirTicketHeader() {
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        auth.setDetails(Map.of("subjectType", "USER"));
+        AppSupportService.CloseRequest request = new AppSupportService.CloseRequest("OPEN", 3L);
+        when(service.markTicketRead(42L, "TK-1", request)).thenReturn(ApiResult.ok(null));
+
+        assertThat(controller.markTicketRead("TK-1", request, auth).getCode()).isZero();
+        verify(service).markTicketRead(42L, "TK-1", request);
+    }
+
+    @Test
+    void authenticatedUserCanReadOnlyTheirOwnCommandRecoveryProjection() {
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        auth.setDetails(Map.of("subjectType", "USER"));
+        when(service.commandResult(42L, "support-command-123"))
+                .thenReturn(ApiResult.ok(Map.of("resultType", "ticket", "result", Map.of())));
+
+        assertThat(controller.commandResult("support-command-123", auth).getCode()).isZero();
+        verify(service).commandResult(42L, "support-command-123");
+    }
+
+    @Test
+    void authenticatedUserCanReadM5ConversationCategoryAvailability() {
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
+        auth.setDetails(Map.of("subjectType", "USER"));
+        var rows = List.of(new AppSupportService.ConversationCategoryAvailability("advisor", false));
+        when(service.conversationCategories(42L)).thenReturn(ApiResult.ok(rows));
+
+        assertThat(controller.conversationCategories(auth).getData()).isEqualTo(rows);
+        verify(service).conversationCategories(42L);
+    }
+
+    @Test
     void isolatedProfileRejectsAProductionSupportPathBeforeAnySharedServiceReadOrWrite() {
         UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("42", null, List.of());
         auth.setDetails(Map.of("subjectType", "USER"));

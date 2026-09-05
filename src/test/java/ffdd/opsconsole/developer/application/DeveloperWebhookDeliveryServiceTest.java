@@ -130,7 +130,7 @@ class DeveloperWebhookDeliveryServiceTest {
         service.deliverDue(10);
 
         verifyNoInteractions(transport);
-        verify(deliveries).markNotDelivered(eq(1L), eq("ENDPOINT_DISABLED"), any());
+        verify(deliveries).markNotDelivered(eq(1L), eq(1), eq("ENDPOINT_DISABLED"), any());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -212,6 +213,40 @@ class UnilevelCommissionServiceTest {
                 eq(4), eq("ORD-G2"), eq(new BigDecimal("1000")), eq("USDT"),
                 eq(new BigDecimal("20.000000")), any(BigDecimal.class),
                 eq("COOLING"), anyInt(), anyString());
+    }
+
+    @Test
+    void settleFailsClosedWhenConfiguredDepthGateIsNotALayer() {
+        when(configFacade.activeValue(anyString())).thenAnswer(invocation ->
+                "team.ui.F.unilevel.depthGate".equals(invocation.getArgument(0))
+                        ? java.util.Optional.of("0.4") : java.util.Optional.empty());
+        when(teamCommissionMapper.listUplineChain(990686L, 7))
+                .thenReturn(List.of(upline(990685L, 1, "V1")));
+        when(teamCommissionMapper.unilevelRates()).thenReturn(List.of(rate("L1", 10)));
+
+        assertThatThrownBy(() -> service.settle(990686L, new BigDecimal("1000"), "ORD-BAD-GATE"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("F_TEAM_DEPTH_GATE_CONFIG_INVALID");
+        verify(commissionRepository, never()).insertNetworkCommissionEvent(anyLong(), anyString(),
+                anyLong(), any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString());
+    }
+
+    @Test
+    void settleFailsClosedWhenConfiguredDepthGateRankIsInvalid() {
+        when(configFacade.activeValue(anyString())).thenAnswer(invocation ->
+                "team.ui.F.unilevel.depthGateRank".equals(invocation.getArgument(0))
+                        ? java.util.Optional.of("oops") : java.util.Optional.empty());
+        when(teamCommissionMapper.listUplineChain(990686L, 7))
+                .thenReturn(List.of(upline(990685L, 4, "V0")));
+        when(teamCommissionMapper.unilevelRates()).thenReturn(List.of(rate("L4", 2)));
+
+        assertThatThrownBy(() -> service.settle(990686L, new BigDecimal("1000"), "ORD-BAD-RANK-GATE"))
+                .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
+                .hasMessage("F_TEAM_DEPTH_GATE_CONFIG_INVALID");
+        verify(commissionRepository, never()).insertNetworkCommissionEvent(anyLong(), anyString(),
+                anyLong(), any(), anyString(), any(BigDecimal.class), anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), anyString(), anyInt(), anyString());
     }
 
     // ============================================================

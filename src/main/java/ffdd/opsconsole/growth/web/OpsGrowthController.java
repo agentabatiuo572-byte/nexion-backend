@@ -13,8 +13,10 @@ import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventBindingRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
@@ -31,6 +33,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -80,8 +83,10 @@ public class OpsGrowthController {
 
     @GetMapping("/trials")
     @PreAuthorize("hasAuthority('growth_h2_read')")
-    public ApiResult<Map<String, Object>> trials() {
-        return growthService.trials();
+    public ApiResult<Map<String, Object>> trials(
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return growthService.trials(pageNum, pageSize);
     }
 
     @PatchMapping("/trials/params/{paramKey}")
@@ -136,6 +141,12 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> questTasks() {
         return growthService.questTasks();
     }
+    @PostMapping("/quest-events/bindings/{bindingCode}") @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String,Object>> createQuestBinding(@RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,@PathVariable String bindingCode,@RequestBody GrowthQuestEventBindingRequest request){return commandBoundary.execute("H3","QUEST_EVENT_BINDING_CREATE",bindingCode,key,request,()->growthService.createQuestEventBinding(key,bindingCode,request));}
+    @PatchMapping("/quest-events/bindings/{bindingCode}") @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String,Object>> updateQuestBinding(@RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,@PathVariable String bindingCode,@RequestBody GrowthQuestEventBindingRequest request){return commandBoundary.execute("H3","QUEST_EVENT_BINDING_UPDATE",bindingCode,key,request,()->growthService.updateQuestEventBinding(key,bindingCode,request));}
+    @DeleteMapping("/quest-events/bindings/{bindingCode}") @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String,Object>> deleteQuestBinding(@RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,@PathVariable String bindingCode,@RequestBody GrowthQuestEventBindingRequest request){return commandBoundary.execute("H3","QUEST_EVENT_BINDING_DELETE",bindingCode,key,request,()->growthService.deleteQuestEventBinding(key,bindingCode,request));}
 
     @GetMapping("/quest-events/events-overview")
     @PreAuthorize("hasAuthority('growth_h4_read')")
@@ -151,6 +162,18 @@ public class OpsGrowthController {
             @RequestBody GrowthConfigUpdateRequest request) {
         return commandBoundary.execute("H3", "QUEST_CONFIG_UPDATE", configKey, idempotencyKey, request,
                 () -> growthService.updateQuestConfig(idempotencyKey, configKey, request));
+    }
+
+    @PatchMapping("/quest-events/events/{eventCode}/content/{field}/{locale}")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
+    public ApiResult<Map<String, Object>> updateEventLocalizedContent(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String eventCode,
+            @PathVariable String field,
+            @PathVariable String locale,
+            @RequestBody GrowthConfigUpdateRequest request) {
+        return commandBoundary.execute("H4", "EVENT_LOCALIZED_CONTENT_UPDATE", eventCode, idempotencyKey, request,
+                () -> growthService.updateEventLocalizedContent(idempotencyKey, eventCode, field, locale, request));
     }
 
     @PostMapping("/quest-events/events")
@@ -191,6 +214,18 @@ public class OpsGrowthController {
                 () -> growthService.editMission(idempotencyKey, taskCode, authenticated));
     }
 
+    @PatchMapping("/quest-events/tasks/{taskCode}/presentation")
+    @PreAuthorize("hasAuthority('growth_h3_write')")
+    public ApiResult<Map<String, Object>> updateMissionPresentation(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String taskCode,
+            @RequestBody GrowthMissionPresentationRequest request) {
+        GrowthMissionPresentationRequest authenticated = authenticated(request);
+        return commandBoundary.execute("H3", "MISSION_PRESENTATION_UPDATE", taskCode,
+                idempotencyKey, authenticated,
+                () -> growthService.updateMissionPresentation(idempotencyKey, taskCode, authenticated));
+    }
+
     @PatchMapping("/quest-events/tasks/{taskCode}/status")
     @PreAuthorize("hasAuthority('growth_h3_write')")
     public ApiResult<Map<String, Object>> transitionMission(
@@ -228,6 +263,14 @@ public class OpsGrowthController {
         if (request == null) return null;
         return new GrowthMissionEditRequest(
                 request.taskKind(), request.name(), request.expectedName(), request.reason(),
+                AdminActorResolver.resolve(request.operator()));
+    }
+
+    private GrowthMissionPresentationRequest authenticated(GrowthMissionPresentationRequest request) {
+        if (request == null) return null;
+        return new GrowthMissionPresentationRequest(
+                request.category(), request.actionRoute(),
+                request.expectedCategory(), request.expectedActionRoute(), request.reason(),
                 AdminActorResolver.resolve(request.operator()));
     }
 

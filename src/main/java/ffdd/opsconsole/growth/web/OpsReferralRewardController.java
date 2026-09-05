@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -25,8 +26,10 @@ public class OpsReferralRewardController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('growth_h8_read')")
-    public ApiResult<Map<String, Object>> overview() {
-        return ApiResult.ok(service.overview());
+    public ApiResult<Map<String, Object>> overview(
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false, defaultValue = "20") Integer pageSize) {
+        return ApiResult.ok(service.overview(cursor, pageSize));
     }
 
     @PatchMapping("/params/{paramKey}")

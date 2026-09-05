@@ -11,6 +11,7 @@ import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -21,6 +22,185 @@ import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 
 class AppOrderCommandServiceTest {
+    @Test
+    void expiryReturnsStockQuotaAndVoucherBeforeMarkingTheOrderExpired() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var audit = mock(AuditLogService.class);
+        when(mapper.lockOrder("ORD-EXPIRED-1")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-EXPIRED-1", 7L, 1L, 1, "SINGLE", 1,
+                "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockItems("ORD-EXPIRED-1")).thenReturn(List.of(
+                new AppOrderCommandMapper.ItemRow("ORD-EXPIRED-1", 1L, "S1", 1, true, 7L)));
+        when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 1));
+        when(mapper.returnStock(1L, 1)).thenReturn(1);
+        when(mapper.lockLifetimeQuotaState("S1"))
+                .thenReturn(new AppOrderCommandMapper.QuotaState(1, 7L));
+        when(mapper.releaseLifetimeQuota("S1", 1, 7L)).thenReturn(1);
+        when(mapper.lockUsedVouchersForOrder(7L, "ORD-EXPIRED-1")).thenReturn(List.of(
+                new AppOrderCommandMapper.VoucherGrantRow("VGR-19")));
+        when(mapper.expireOrder("ORD-EXPIRED-1", 7L)).thenReturn(1);
+        when(mapper.restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1")).thenReturn(1);
+
+        var service = new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class), audit,
+                guard, null, null, null);
+
+        assertThat(service.expirePendingOrder(7L, "ORD-EXPIRED-1")).isTrue();
+        verify(mapper).returnStock(1L, 1);
+        verify(mapper).releaseLifetimeQuota("S1", 1, 7L);
+        verify(mapper).restoreVoucher("VGR-19", 7L, "ORD-EXPIRED-1");
+        verify(mapper).expireOrder("ORD-EXPIRED-1", 7L);
+        verify(audit).recordRequired(argThat(row -> "APP_ORDER_EXPIRED".equals(row.getAction())));
+    }
+
+    @Test
+    void fullyDiscountedOrderActivatesWithoutDebitingOrWritingAnOutflowLedger() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var audit = mock(AuditLogService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-FREE-1")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-FREE-1", 7L, 18L, 1, new BigDecimal("0.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockUsedVouchersForOrder(7L, "ORD-FREE-1")).thenReturn(List.of(
+                new AppOrderCommandMapper.VoucherGrantRow("VGR-FREE-1")));
+        when(mapper.markDevelopmentOrderActivated(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-")))
+                .thenReturn(1);
+        when(mapper.insertDevelopmentPayment(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-"),
+                eq(new BigDecimal("0.000000")))).thenReturn(1);
+        when(mapper.insertDevelopmentDevice(eq("ORD-FREE-1"), eq(7L), startsWith("NEX-ORD-"), eq(0)))
+                .thenReturn(1);
+        when(mapper.insertDevelopmentOrderHistory(eq("ORD-FREE-1"), eq("placed"), eq("activated"),
+                anyString())).thenReturn(1);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null)
+                .pay(7L, "ORD-FREE-1", "fully-discounted-payment");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("amountUsdt", new BigDecimal("0.000000"))
+                .containsEntry("walletBalanceAfterUsdt", null)
+                .containsEntry("paymentMethod", "VOUCHER")
+                .containsEntry("canonicalStatus", "activated");
+        verify(mapper, never()).lockDevelopmentWallet(anyLong());
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
+        verify(mapper).markDevelopmentOrderActivated(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-"));
+        verify(mapper).insertDevelopmentPayment(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-"),
+                eq(new BigDecimal("0.000000")));
+        verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void zeroAmountOrderWithoutExactlyOneConsumedVoucherIsRejectedBeforeSettlement() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-FREE-NO-VOUCHER")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-FREE-NO-VOUCHER", 7L, 18L, 1, new BigDecimal("0.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockUsedVouchersForOrder(7L, "ORD-FREE-NO-VOUCHER")).thenReturn(List.of());
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-FREE-NO-VOUCHER", "free-without-voucher");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_VOUCHER_SETTLEMENT_INVALID");
+        verify(mapper, never()).lockDevelopmentWallet(anyLong());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+    }
+
+    @Test
+    void pendingPaymentIsRejectedWithoutDebitWhenE1HasUnlistedTheCurrentProduct() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-E1-UNLISTED")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-E1-UNLISTED", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("500.000000"), 2L));
+        when(mapper.hasNonPayableOrderProduct("ORD-E1-UNLISTED")).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-E1-UNLISTED", "payment-e1-unlisted");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_PRODUCT_NOT_PAYABLE");
+        var productLockOrder = org.mockito.Mockito.inOrder(mapper);
+        productLockOrder.verify(mapper).lockOrderProductsForPayment("ORD-E1-UNLISTED");
+        productLockOrder.verify(mapper).lockOrderSkusForPayment("ORD-E1-UNLISTED");
+        productLockOrder.verify(mapper).hasNonPayableOrderProduct("ORD-E1-UNLISTED");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+    }
+
+    @Test
+    void expiredPendingPaymentIsRejectedBeforeAnyWalletDebit() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-EXPIRED-PAY")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-EXPIRED-PAY", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("500.000000"), 2L));
+        when(mapper.countExpiredPayableOrder("ORD-EXPIRED-PAY", 7L, 30)).thenReturn(1);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-EXPIRED-PAY", "payment-expired");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_PAYMENT_EXPIRED");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+    }
+
+    @Test
+    void pendingPaymentIsRejectedWithoutDebitWhenGlobalMaintenanceStopIsActive() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-EMERGENCY-STOP")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-EMERGENCY-STOP", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("500.000000"), 2L));
+        when(mapper.emergencyValue("killswitch.maintenance")).thenReturn("enabled");
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-EMERGENCY-STOP", "payment-emergency-stop");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COMMERCE_PAYMENT_EMERGENCY_STOPPED");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+    }
+
     @Test
     void developmentPaymentUsesCanonicalBusinessTablesAndImmediateLocalFulfillment() {
         var mapper = mock(AppOrderCommandMapper.class);
@@ -39,14 +219,14 @@ class AppOrderCommandServiceTest {
         when(mapper.debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L)).thenReturn(1);
         when(mapper.insertDevelopmentPurchaseLedger(eq("ORD-DEV-1"), eq(7L),
                 eq(new BigDecimal("1199.000000")), eq(new BigDecimal("801.000000")))).thenReturn(1);
-        when(mapper.markDevelopmentOrderActivated(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-DEV-")))
+        when(mapper.markDevelopmentOrderActivated(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-WALLET-")))
                 .thenReturn(1);
-        when(mapper.insertDevelopmentPayment(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-DEV-"),
+        when(mapper.insertDevelopmentPayment(eq("ORD-DEV-1"), eq(7L), startsWith("PAY-WALLET-"),
                 eq(new BigDecimal("1199.000000")))).thenReturn(1);
-        when(mapper.insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("DEV-ORD-"), eq(0)))
+        when(mapper.insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("NEX-ORD-"), eq(0)))
                 .thenReturn(1);
-        when(mapper.developmentDeviceFact(startsWith("DEV-ORD-"))).thenReturn(
-                new AppOrderCommandMapper.DevelopmentDeviceFact(91L, "DEV-ORD-INSTANCE"));
+        when(mapper.developmentDeviceFact(startsWith("NEX-ORD-"))).thenReturn(
+                new AppOrderCommandMapper.DevelopmentDeviceFact(91L, "NEX-ORD-INSTANCE"));
         when(mapper.attribution(7L)).thenReturn(Map.of(
                 "phase", "P3", "accountAgeMonths", 0, "cohort", "2026-W34"));
         when(mapper.insertDevelopmentOrderHistory(eq("ORD-DEV-1"), eq("placed"), eq("activated"),
@@ -71,12 +251,12 @@ class AppOrderCommandServiceTest {
         verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("1199.000000"), 4L);
         verify(mapper).insertDevelopmentPurchaseLedger("ORD-DEV-1", 7L,
                 new BigDecimal("1199.000000"), new BigDecimal("801.000000"));
-        verify(mapper).insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("DEV-ORD-"), eq(0));
+        verify(mapper).insertDevelopmentDevice(eq("ORD-DEV-1"), eq(7L), startsWith("NEX-ORD-"), eq(0));
         verify(outbox).publishUserEvent(eq("DEVICE"), eq("91"), eq("admin.device_activated"), eq(7L),
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
                         && map.get("deviceId").equals(91L)
-                        && map.get("instanceNo").equals("DEV-ORD-INSTANCE")
-                        && map.get("mode").equals("DEVELOPMENT_LOCAL")));
+                        && map.get("instanceNo").equals("NEX-ORD-INSTANCE")
+                        && map.get("mode").equals("NEXGRID_WALLET")));
         verify(outbox).publishUserEvent(eq("ORDER"), eq("ORD-DEV-1"), eq("checkout.completed"), eq(7L),
                 eq("P3"), eq(0), eq("2026-W34"), argThat(payload -> payload instanceof Map<?, ?> map
                         && map.get("order_no").equals("ORD-DEV-1")
@@ -102,15 +282,72 @@ class AppOrderCommandServiceTest {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
-        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
-                null, null, null).pay(7L, "ORD-DEV-LOW", "development-pay-low");
+        var service = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null);
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("ORDER_WALLET_INSUFFICIENT");
+        assertThatThrownBy(() -> service.pay(7L, "ORD-DEV-LOW", "development-pay-low"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("ORDER_WALLET_INSUFFICIENT");
         verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
         verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
         verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
         verify(mapper, never()).insertDevelopmentPayment(anyString(), anyLong(), anyString(), any());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
+    @Test
+    void walletCasLossDoesNotActivateOrRecordASecondConcurrentPayment() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-WALLET-CAS")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-WALLET-CAS", 7L, 18L, 1, new BigDecimal("20.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("30.000000"), 4L));
+        when(mapper.debitDevelopmentWallet(7L, new BigDecimal("20.000000"), 4L)).thenReturn(0);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        assertThatThrownBy(() -> new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-WALLET-CAS", "wallet-cas-key"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("ORDER_WALLET_CONFLICT");
+        verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("20.000000"), 4L);
+        verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+        verify(mapper, never()).insertDevelopmentPayment(anyString(), anyLong(), anyString(), any());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
+    @Test
+    void pendingOrderWithLegacyHdPaySessionIsQuarantinedBeforeWalletDebit() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-HDPAY-LEGACY")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-HDPAY-LEGACY", 7L, 18L, 1, new BigDecimal("199.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("500.000000"), 2L));
+        when(mapper.countNonCancellableHdPaySessions("ORD-HDPAY-LEGACY")).thenReturn(1L);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-HDPAY-LEGACY", "wallet-pay-legacy");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("HDPAY_COMMERCE_PAYMENT_REVIEW_REQUIRED");
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
         verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
     }
 
@@ -124,10 +361,11 @@ class AppOrderCommandServiceTest {
         when(mapper.lockDevelopmentPayOrder("ORD-DEV-PAID")).thenReturn(
                 new AppOrderCommandMapper.DevelopmentPayOrder(
                         "ORD-DEV-PAID", 7L, 18L, 1, new BigDecimal("199.000000"),
-                        "PAY-DEV-AF2D80199A1F88C85A3C8B75AEC54D43",
+                        "PAY-WALLET-AF2D80199A1F88C85A3C8B75AEC54D43",
                         "PAID", "COMPLETED", "ACTIVATED"));
         when(mapper.lockDevelopmentWallet(7L)).thenReturn(
                 new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("801.000000"), 5L));
+        when(mapper.countNonCancellableHdPaySessions("ORD-DEV-PAID")).thenReturn(1L);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
 
@@ -141,6 +379,7 @@ class AppOrderCommandServiceTest {
         verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
         verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
         verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+        verify(mapper, never()).countNonCancellableHdPaySessions("ORD-DEV-PAID");
     }
 
     @Test
@@ -157,12 +396,15 @@ class AppOrderCommandServiceTest {
         when(mapper.lockOrder("BND-1")).thenReturn(new AppOrderCommandMapper.OrderRow(
                 "BND-1", 7L, 1L, 2, "BUNDLE", 2, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
         when(mapper.lockItems("BND-1")).thenReturn(List.of(
-                new AppOrderCommandMapper.ItemRow("BND-1", 1L, "S1", 1),
-                new AppOrderCommandMapper.ItemRow("BND-1", 2L, "PRO", 1)));
+                new AppOrderCommandMapper.ItemRow("BND-1", 1L, "S1", 1, true, 7L),
+                new AppOrderCommandMapper.ItemRow("BND-1", 2L, "PRO", 1, false)));
         when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 1));
         when(mapper.lockProduct(2L)).thenReturn(new AppOrderCommandMapper.ProductRow(2L, 0, 1));
         when(mapper.returnStock(1L, 1)).thenReturn(1);
         when(mapper.returnStock(2L, 1)).thenReturn(1);
+        when(mapper.lockLifetimeQuotaState("S1"))
+                .thenReturn(new AppOrderCommandMapper.QuotaState(1, 7L));
+        when(mapper.releaseLifetimeQuota("S1", 1, 7L)).thenReturn(1);
         when(mapper.cancelOrder("BND-1", 7L)).thenReturn(1);
 
         var result = new AppOrderCommandService(mapper, idempotency, audit, guard, null, null, null)
@@ -174,7 +416,123 @@ class AppOrderCommandServiceTest {
                 .containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
         verify(mapper).returnStock(1L, 1);
         verify(mapper).returnStock(2L, 1);
+        verify(mapper).releaseLifetimeQuota("S1", 1, 7L);
+        verify(mapper, never()).lockLifetimeQuotaState("PRO");
+        verify(mapper, never()).releaseLifetimeQuota("PRO", 1, 0L);
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void cancellingAnUnpaidOrderRestoresItsConsumedVoucherInTheSameTransaction() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-VOUCHER")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-VOUCHER", 7L, 1L, 1, "SINGLE", 1,
+                "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockItems("ORD-VOUCHER")).thenReturn(List.of(
+                new AppOrderCommandMapper.ItemRow("ORD-VOUCHER", 1L, "S1", 1)));
+        when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 1));
+        when(mapper.returnStock(1L, 1)).thenReturn(1);
+        when(mapper.lockUsedVouchersForOrder(7L, "ORD-VOUCHER")).thenReturn(List.of(
+                new AppOrderCommandMapper.VoucherGrantRow("VGR-19")));
+        when(mapper.cancelOrder("ORD-VOUCHER", 7L)).thenReturn(1);
+        when(mapper.restoreVoucher("VGR-19", 7L, "ORD-VOUCHER")).thenReturn(1);
+
+        var result = new AppOrderCommandService(
+                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null)
+                .cancel(7L, "ORD-VOUCHER", "cancel-key-voucher");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).restoreVoucher("VGR-19", 7L, "ORD-VOUCHER");
+    }
+
+    @Test
+    void activeCommercePaymentIntentMakesOrderNonCancellableBeforeProviderRowExists() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-HDPAY-PREPARING")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-HDPAY-PREPARING", 7L, 1L, 1, "SINGLE", 1,
+                "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.countNonCancellableHdPaySessions("ORD-HDPAY-PREPARING")).thenReturn(1L);
+
+        var result = new AppOrderCommandService(
+                mapper, idempotency, mock(AuditLogService.class), guard, null, null, null)
+                .cancel(7L, "ORD-HDPAY-PREPARING", "cancel-key-hdpay-preparing");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("HDPAY_ORDER_NOT_CANCELLABLE");
+        verify(mapper, never()).lockItems(anyString());
+        verify(mapper, never()).returnStock(anyLong(), anyInt());
+        verify(mapper, never()).cancelOrder(anyString(), anyLong());
+    }
+
+    @Test
+    void cancelsReservedOrderAfterOperatorResetsQuotaWithoutDecrementingTheNewQuota() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-RESET")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-RESET", 7L, 1L, 1, "SINGLE", 1, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockItems("ORD-RESET")).thenReturn(List.of(
+                new AppOrderCommandMapper.ItemRow("ORD-RESET", 1L, "S1", 1, true, 7L)));
+        when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 1));
+        when(mapper.returnStock(1L, 1)).thenReturn(1);
+        when(mapper.lockLifetimeQuotaState("S1"))
+                .thenReturn(new AppOrderCommandMapper.QuotaState(3, 8L));
+        when(mapper.cancelOrder("ORD-RESET", 7L)).thenReturn(1);
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null)
+                .cancel(7L, "ORD-RESET", "cancel-key-reset");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).returnStock(1L, 1);
+        verify(mapper, never()).releaseLifetimeQuota(anyString(), anyInt(), anyLong());
+        verify(mapper).cancelOrder("ORD-RESET", 7L);
+    }
+
+    @Test
+    void cancelsReservedOrderAfterOperatorDeletesQuotaConfigurationWithoutRollback() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isLocalSandboxEnabled()).thenReturn(false);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new CanonicalStateMapper.UserLock(7L, false));
+        when(mapper.lockOrder("ORD-GATE-DELETED")).thenReturn(new AppOrderCommandMapper.OrderRow(
+                "ORD-GATE-DELETED", 7L, 1L, 1, "SINGLE", 1, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockItems("ORD-GATE-DELETED")).thenReturn(List.of(
+                new AppOrderCommandMapper.ItemRow("ORD-GATE-DELETED", 1L, "S1", 1, true, 7L)));
+        when(mapper.lockProduct(1L)).thenReturn(new AppOrderCommandMapper.ProductRow(1L, 0, 1));
+        when(mapper.returnStock(1L, 1)).thenReturn(1);
+        when(mapper.lockLifetimeQuotaState("S1")).thenReturn(null);
+        when(mapper.cancelOrder("ORD-GATE-DELETED", 7L)).thenReturn(1);
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard, null, null, null)
+                .cancel(7L, "ORD-GATE-DELETED", "cancel-key-gate-deleted");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).returnStock(1L, 1);
+        verify(mapper, never()).releaseLifetimeQuota(anyString(), anyInt(), anyLong());
+        verify(mapper).cancelOrder("ORD-GATE-DELETED", 7L);
     }
 
     @Test
@@ -452,17 +810,103 @@ class AppOrderCommandServiceTest {
     }
 
     @Test
-    void productionPaymentFailsClosedWithoutReadingCanonicalOrderOrWallet() {
+    void productionPaymentDebitsTheNexGridWalletAndActivatesTheOrder() {
         var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var audit = mock(AuditLogService.class);
         var guard = mock(FundsSandboxProfileGuard.class);
         when(guard.isLocalSandboxEnabled()).thenReturn(false);
-        var service = new AppOrderCommandService(mapper, mock(AdminIdempotencyService.class),
-                mock(AuditLogService.class), guard, null, null, null);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-1")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "ORD-1", 7L, 18L, 1, new BigDecimal("10.000000"),
+                        null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("25.000000"), 2L));
+        when(mapper.debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L)).thenReturn(1);
+        when(mapper.insertDevelopmentPurchaseLedger(
+                "ORD-1", 7L, new BigDecimal("10.000000"), new BigDecimal("15.000000"))).thenReturn(1);
+        when(mapper.markDevelopmentOrderActivated(eq("ORD-1"), eq(7L), startsWith("PAY-WALLET-")))
+                .thenReturn(1);
+        when(mapper.insertDevelopmentPayment(eq("ORD-1"), eq(7L), startsWith("PAY-WALLET-"),
+                eq(new BigDecimal("10.000000")))).thenReturn(1);
+        when(mapper.insertDevelopmentDevice(eq("ORD-1"), eq(7L), startsWith("NEX-ORD-"), eq(0)))
+                .thenReturn(1);
+        when(mapper.developmentDeviceFact(startsWith("NEX-ORD-"))).thenReturn(
+                new AppOrderCommandMapper.DevelopmentDeviceFact(92L, "NEX-ORD-PROD"));
+        when(mapper.attribution(7L)).thenReturn(Map.of(
+                "phase", "P3", "accountAgeMonths", 1, "cohort", "2026-W35"));
+        when(mapper.insertDevelopmentOrderHistory(eq("ORD-1"), eq("placed"), eq("activated"),
+                anyString())).thenReturn(1);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        var outbox = mock(EventOutboxService.class);
+        var service = new AppOrderCommandService(
+                mapper, idempotency, audit, guard, null, null, null, outbox);
 
         var result = service.pay(7L, "ORD-1", "pay-key");
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("PAYMENT_PROVIDER_UNAVAILABLE");
-        verify(mapper, never()).lockOrder(anyString());
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("orderNo", "ORD-1")
+                .containsEntry("paymentStatus", "PAID")
+                .containsEntry("canonicalStatus", "activated")
+                .containsEntry("walletBalanceAfterUsdt", new BigDecimal("15.000000"));
+        verify(mapper).debitDevelopmentWallet(7L, new BigDecimal("10.000000"), 2L);
+        verify(mapper).insertDevelopmentPurchaseLedger(
+                "ORD-1", 7L, new BigDecimal("10.000000"), new BigDecimal("15.000000"));
+        verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void bundleWalletPaymentActivatesEachCanonicalOrderItemExactlyOnce() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("BND-WALLET-1")).thenReturn(
+                new AppOrderCommandMapper.DevelopmentPayOrder(
+                        "BND-WALLET-1", 7L, 18L, 2, "BUNDLE", 2,
+                        new BigDecimal("30.000000"), null,
+                        "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockDevelopmentPaymentItems("BND-WALLET-1")).thenReturn(List.of(
+                new AppOrderCommandMapper.DevelopmentPaymentItem(18L, "SKU-A", 1, 0),
+                new AppOrderCommandMapper.DevelopmentPaymentItem(19L, "SKU-B", 1, 1)));
+        when(mapper.lockDevelopmentWallet(7L)).thenReturn(
+                new AppOrderCommandMapper.DevelopmentWallet(new BigDecimal("50.000000"), 4L));
+        when(mapper.debitDevelopmentWallet(7L, new BigDecimal("30.000000"), 4L)).thenReturn(1);
+        when(mapper.insertDevelopmentPurchaseLedger(
+                "BND-WALLET-1", 7L, new BigDecimal("30.000000"), new BigDecimal("20.000000")))
+                .thenReturn(1);
+        when(mapper.markDevelopmentOrderActivated(eq("BND-WALLET-1"), eq(7L), anyString()))
+                .thenReturn(1);
+        when(mapper.insertDevelopmentPayment(eq("BND-WALLET-1"), eq(7L), anyString(),
+                eq(new BigDecimal("30.000000")))).thenReturn(1);
+        when(mapper.insertWalletDevice(eq("BND-WALLET-1"), eq(7L), anyLong(), anyString(), eq(0)))
+                .thenReturn(1);
+        when(mapper.developmentDeviceFact(anyString())).thenAnswer(invocation ->
+                new AppOrderCommandMapper.DevelopmentDeviceFact(
+                        invocation.getArgument(0, String.class).hashCode() & 0x7fffffffL,
+                        invocation.getArgument(0, String.class)));
+        when(mapper.attribution(7L)).thenReturn(Map.of(
+                "phase", "P3", "accountAgeMonths", 1, "cohort", "2026-W35"));
+        when(mapper.insertDevelopmentOrderHistory(
+                eq("BND-WALLET-1"), eq("placed"), eq("activated"), anyString())).thenReturn(1);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(
+                mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null, mock(EventOutboxService.class))
+                .pay(7L, "BND-WALLET-1", "bundle-wallet-pay-key");
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).insertWalletDevice(
+                eq("BND-WALLET-1"), eq(7L), eq(18L), startsWith("NEX-ORD-"), eq(0));
+        verify(mapper).insertWalletDevice(
+                eq("BND-WALLET-1"), eq(7L), eq(19L), startsWith("NEX-ORD-"), eq(0));
+        verify(mapper, times(2)).insertWalletDevice(
+                eq("BND-WALLET-1"), eq(7L), anyLong(), anyString(), anyInt());
     }
 }

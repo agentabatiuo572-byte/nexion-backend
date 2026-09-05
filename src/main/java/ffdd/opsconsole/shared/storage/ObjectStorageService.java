@@ -10,6 +10,8 @@ import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
+import io.minio.StatObjectArgs;
+import io.minio.errors.ErrorResponseException;
 import io.minio.http.Method;
 import java.io.InputStream;
 import java.time.Duration;
@@ -80,6 +82,37 @@ public class ObjectStorageService {
                     properties.getEndpoint(), bucket(), objectKey,
                     ex.getClass().getName(), ex.getMessage(), ex);
             throw new BizException(500, storageFailureMessage("下载", ex));
+        }
+    }
+
+    /**
+     * Checks the storage authority instead of trusting a syntactically valid
+     * asset id supplied by an administrative client.
+     */
+    public boolean exists(String objectKey) {
+        validateObjectKey(objectKey);
+        try {
+            minioClient.statObject(StatObjectArgs.builder()
+                    .bucket(bucket())
+                    .object(objectKey.trim())
+                    .build());
+            return true;
+        } catch (ErrorResponseException ex) {
+            String code = ex.errorResponse() == null ? "" : ex.errorResponse().code();
+            if ("NoSuchKey".equalsIgnoreCase(code)
+                    || "NoSuchObject".equalsIgnoreCase(code)
+                    || "NotFound".equalsIgnoreCase(code)) {
+                return false;
+            }
+            log.warn("Object storage existence check failed, endpoint={}, bucket={}, objectKey={}, errorType={}, error={}",
+                    properties.getEndpoint(), bucket(), objectKey,
+                    ex.getClass().getName(), ex.getMessage(), ex);
+            throw new BizException(500, storageFailureMessage("校验", ex));
+        } catch (Exception ex) {
+            log.warn("Object storage existence check failed, endpoint={}, bucket={}, objectKey={}, errorType={}, error={}",
+                    properties.getEndpoint(), bucket(), objectKey,
+                    ex.getClass().getName(), ex.getMessage(), ex);
+            throw new BizException(500, storageFailureMessage("校验", ex));
         }
     }
 

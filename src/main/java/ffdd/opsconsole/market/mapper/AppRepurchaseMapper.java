@@ -106,8 +106,13 @@ public interface AppRepurchaseMapper {
               FROM nx_staking_position
              WHERE user_id=#{userId} AND product_code='REPURCHASE_90D' AND is_deleted=0
              ORDER BY created_at DESC,id DESC
+             LIMIT #{offset},#{limit}
             """)
-    List<PositionRow> positions(@Param("userId") Long userId);
+    List<PositionRow> positions(
+            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND product_code='REPURCHASE_90D' AND is_deleted=0")
+    long countPositions(@Param("userId") Long userId);
 
     @Select("""
             <script>

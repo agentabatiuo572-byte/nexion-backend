@@ -53,7 +53,7 @@ class AppWithdrawalServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC());
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -65,12 +65,13 @@ class AppWithdrawalServiceTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         attempts.clear();
+        when(mapper.emergencyValue("killswitch.withdraw")).thenReturn("enabled");
         environment.setActiveProfiles("prod");
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.findActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
                 "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
-        when(mapper.countLast24Hours(7L)).thenReturn(0);
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(0);
         when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         45, "k4-v13", LocalDateTime.now(), 41, 73, 91));
@@ -376,7 +377,7 @@ class AppWithdrawalServiceTest {
     void developmentProfileAllowsCanonicalWithdrawalHistoryForAnActiveDevelopmentAccount() {
         environment.setActiveProfiles("dev");
         when(mapper.isSandboxUser(7L)).thenReturn(0);
-        when(mapper.userWithdrawals(7L, 50)).thenReturn(java.util.List.of());
+        when(mapper.userWithdrawals(7L, 0L, 50)).thenReturn(java.util.List.of());
 
         ApiResult<java.util.Map<String, Object>> result = service.list(7L);
 
@@ -500,6 +501,41 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
+    void eligibilityRejectsAStalePolicyVersionBeforeReadingWalletOrRiskFacts() {
+        ApiResult<java.util.Map<String, Object>> result = service.eligibility(
+                7L, new BigDecimal("20"), "USDT-TRC20", "TR7NHqExampleAddress", "stale-policy");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_POLICY_VERSION_CONFLICT");
+        verify(mapper, never()).walletForEligibility(anyLong());
+        verify(mapper, never()).withdrawalRiskFacts(anyLong(), anyString());
+    }
+
+    @Test
+    void eligibilityFailsClosedWhenDailyLimitConfigurationIsOutsideD5Bounds() {
+        String policyVersion = String.valueOf(service.policy(7L).getData().get("policyVersion"));
+        when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("11"));
+
+        assertThatThrownBy(() -> service.eligibility(
+                7L, new BigDecimal("20"), "USDT-TRC20", "TR7NHqExampleAddress", policyVersion))
+                .isInstanceOf(BizException.class)
+                .hasMessage("D5_DAILY_LIMIT_INVALID");
+        verify(mapper, never()).walletForEligibility(anyLong());
+    }
+
+    @Test
+    void eligibilityFailsClosedWhenBalanceRatioConfigurationIsOutsideD5Bounds() {
+        String policyVersion = String.valueOf(service.policy(7L).getData().get("policyVersion"));
+        when(config.activeValue("withdrawal.max_balance_pct")).thenReturn(Optional.of("1.01"));
+
+        assertThatThrownBy(() -> service.eligibility(
+                7L, new BigDecimal("20"), "USDT-TRC20", "TR7NHqExampleAddress", policyVersion))
+                .isInstanceOf(BizException.class)
+                .hasMessage("D5_BALANCE_RATIO_INVALID");
+        verify(mapper, never()).walletForEligibility(anyLong());
+    }
+
+    @Test
     void amountAboveSmallThresholdAlsoHonorsTheNewAddressDelay() {
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
                 "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().plusHours(12),
@@ -515,7 +551,7 @@ class AppWithdrawalServiceTest {
 
     @Test
     void enforcesServerDailyLimitBeforeFundsMove() {
-        when(mapper.countLast24Hours(7L)).thenReturn(2);
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(2);
 
         ApiResult<java.util.Map<String, Object>> result = service.submit(
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-3");

@@ -21,6 +21,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
 import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
+import ffdd.opsconsole.device.dto.DeviceBundleDiscountUpdateRequest;
 import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
@@ -84,6 +85,20 @@ public class OpsDeviceController {
     @PreAuthorize("hasAuthority('device_e1_read')")
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
         return deviceService.skus(request);
+    }
+
+    @GetMapping("/bundle-discount")
+    @PreAuthorize("hasAuthority('device_e1_read')")
+    public ApiResult<Map<String, Object>> bundleDiscount() {
+        return deviceService.e1BundleDiscount();
+    }
+
+    @PutMapping("/bundle-discount")
+    @PreAuthorize("hasAuthority('device_e1_write')")
+    public ApiResult<Map<String, Object>> updateBundleDiscount(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody DeviceBundleDiscountUpdateRequest request) {
+        return deviceService.updateE1BundleDiscount(idempotencyKey, request);
     }
 
     @GetMapping("/skus/{skuId}")

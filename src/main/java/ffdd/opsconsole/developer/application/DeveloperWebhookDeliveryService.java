@@ -96,11 +96,11 @@ public class DeveloperWebhookDeliveryService {
         LocalDateTime at = now();
         var endpoint = webhooks.byIdForDelivery(delivery.webhookId());
         if (endpoint == null || !sameScope(endpoint, delivery)) {
-            deliveries.markNotDelivered(delivery.id(), "SCOPED_MISMATCH", at);
+            deliveries.markNotDelivered(delivery.id(), attempt, "SCOPED_MISMATCH", at);
             return;
         }
         if (!"ACTIVE".equals(endpoint.status())) {
-            deliveries.markNotDelivered(delivery.id(), "ENDPOINT_DISABLED", at);
+            deliveries.markNotDelivered(delivery.id(), attempt, "ENDPOINT_DISABLED", at);
             return;
         }
         URI uri;

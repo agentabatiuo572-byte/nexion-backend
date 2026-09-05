@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @RestController
 @RequestMapping("/api/withdrawals")
@@ -21,9 +22,12 @@ public class AppWithdrawalController {
     private final AppWithdrawalService service;
 
     @GetMapping
-    public ApiResult<Map<String, Object>> list(Authentication authentication) {
+    public ApiResult<Map<String, Object>> list(
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "50") int pageSize,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? unauthorized() : service.list(userId);
+        return userId == null ? unauthorized() : service.list(userId, pageNum, pageSize);
     }
 
     @GetMapping("/policy")

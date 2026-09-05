@@ -11,6 +11,8 @@ import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
+import java.time.temporal.WeekFields;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -89,40 +91,54 @@ public class QuestCompletionFactConsumer {
         if (activeUser == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
-        MissionDefinition mission = mapper.lockMission(questCode);
-        if (mission == null) throw new BizException(409, "QUEST_NOT_CONFIGURED");
+        MissionDefinition mission = mapper.lockMissionInstance(userId, questCode);
+        if (mission == null) {
+            if (mapper.activeMissionCount(questCode) > 0) {
+                throw new BizException(409, "QUEST_NOT_ELIGIBLE_FOR_CURRENT_INSTANCE");
+            }
+            throw new BizException(409, "QUEST_NOT_CONFIGURED");
+        }
+        validateEventInstance(command.occurredAt(), mission);
 
-        String currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId());
+        String currentStatus = mapper.lockUserMissionStatus(
+                userId, mission.missionId(), mission.instanceKey());
         if (currentStatus != null && Set.of("COMPLETED", "CLAIMABLE", "CLAIMED")
                 .contains(currentStatus.trim().toUpperCase(Locale.ROOT))) {
             if ("SHARE".equals(producer)
                     && mapper.lockFactForUserMission(producer, eventId, userId,
-                            mission.missionId(), questCode) == null) {
+                            mission.missionId(), questCode, mission.instanceKey()) == null) {
                 throw new BizException(429, "SHARE_EVENT_RATE_LIMITED");
             }
             return new CompletionResult(questCode, currentStatus.trim().toUpperCase(Locale.ROOT), true);
         }
-        String payloadHash = sha256(producer + "|" + eventId + "|" + userId + "|"
-                + mission.missionId() + "|" + questCode);
-        if (mapper.insertFact(producer, eventId, payloadHash, userId, mission.missionId(), questCode) == 0) {
+        String payloadBasis = producer + "|" + eventId + "|" + userId + "|"
+                + mission.missionId() + "|" + questCode;
+        if (command.occurredAt() != null) payloadBasis += "|" + command.occurredAt();
+        String payloadHash = sha256(payloadBasis);
+        if (mapper.insertFact(producer, eventId, payloadHash, userId, mission.missionId(), questCode,
+                mission.instanceKey()) == 0) {
             CompletionFact existing = mapper.lockFact(producer, eventId);
             if (existing == null || !payloadHash.equals(existing.payloadHash())) {
                 throw new BizException(409, "QUEST_COMPLETION_FACT_CONFLICT");
             }
+            if (!mission.instanceKey().equals(existing.instanceKey())) {
+                throw new BizException(409, "QUEST_COMPLETION_STALE_INSTANCE_REPLAY");
+            }
             return new CompletionResult(questCode, "COMPLETED", true);
         }
-        currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId());
+        currentStatus = mapper.lockUserMissionStatus(userId, mission.missionId(), mission.instanceKey());
         if (currentStatus != null && Set.of("COMPLETED", "CLAIMABLE", "CLAIMED")
                 .contains(currentStatus.trim().toUpperCase(Locale.ROOT))) {
             return new CompletionResult(questCode, currentStatus.trim().toUpperCase(Locale.ROOT), true);
         }
-        if (mapper.markMissionCompleted(userId, mission.missionId()) < 1) {
+        if (mapper.markMissionCompleted(userId, mission.missionId(), mission.instanceKey()) < 1) {
             throw new BizException(409, "QUEST_COMPLETION_STATE_CONFLICT");
         }
 
         Map<String, Object> detail = linked(
                 "questId", questCode, "layer", mission.layer(),
-                "producer", producer, "sourceEventId", eventId);
+                "producer", producer, "sourceEventId", eventId,
+                "instanceKey", mission.instanceKey());
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("H3_QUEST_COMPLETED").resourceType("USER_MISSION")
                 .resourceId(questCode).bizNo(producer + ":" + eventId)
@@ -146,6 +162,20 @@ public class QuestCompletionFactConsumer {
         String phase = raw == null ? "P1" : String.valueOf(raw).trim().toUpperCase(Locale.ROOT);
         if (phase.matches("[1-6]")) phase = "P" + phase;
         return phase.matches("P[1-6]") ? phase : "P1";
+    }
+
+    private void validateEventInstance(LocalDateTime occurredAt, MissionDefinition mission) {
+        if (occurredAt == null || mission == null || mission.layer() == null
+                || !mission.layer().toUpperCase(Locale.ROOT).startsWith("WEEKLY")) {
+            return;
+        }
+        WeekFields iso = WeekFields.ISO;
+        int year = occurredAt.toLocalDate().get(iso.weekBasedYear());
+        int week = occurredAt.toLocalDate().get(iso.weekOfWeekBasedYear());
+        String occurredInstance = "WEEK:" + String.format(Locale.ROOT, "%04d-W%02d", year, week);
+        if (!occurredInstance.equals(mission.instanceKey())) {
+            throw new BizException(409, "QUEST_COMPLETION_STALE_INSTANCE_EVENT");
+        }
     }
 
     private String reference(String value, int maxLength, String error) {
@@ -172,7 +202,15 @@ public class QuestCompletionFactConsumer {
         return result;
     }
 
-    public record QuestCompletionCommand(String producer, String eventId, Long userId, String questCode) {
+    public record QuestCompletionCommand(
+            String producer,
+            String eventId,
+            Long userId,
+            String questCode,
+            LocalDateTime occurredAt) {
+        public QuestCompletionCommand(String producer, String eventId, Long userId, String questCode) {
+            this(producer, eventId, userId, questCode, null);
+        }
     }
 
     public record CompletionResult(String questCode, String status, boolean replay) {

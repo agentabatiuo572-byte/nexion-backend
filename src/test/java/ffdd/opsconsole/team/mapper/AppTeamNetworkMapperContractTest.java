@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 class AppTeamNetworkMapperContractTest {
     @Test
     void binaryMembersConsumeCanonicalABLegAssignments() throws Exception {
-        Method method = AppTeamNetworkMapper.class.getMethod("members", Long.class);
+        Method method = AppTeamNetworkMapper.class.getMethod("membersPage", Long.class, long.class, int.class);
         String sql = String.join("\n", method.getAnnotation(Select.class).value());
 
         assertThat(sql)
@@ -19,7 +19,8 @@ class AppTeamNetworkMapperContractTest {
                 .contains("WHEN 'LEFT' THEN 'A'")
                 .contains("WHEN 'RIGHT' THEN 'B'")
                 .contains("a.member_user_id=n.root_user_id")
-                .contains("LIMIT 501")
-                .doesNotContain("LIMIT 500");
+                .contains("WHERE u.id>#{afterId}")
+                .contains("ORDER BY u.id")
+                .contains("LIMIT #{limit}");
     }
 }

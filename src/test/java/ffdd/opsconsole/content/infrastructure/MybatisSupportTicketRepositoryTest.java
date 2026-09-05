@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.mapper.SupportTicketMapper;
 import ffdd.opsconsole.content.mapper.SupportTicketMessageMapper;
+import ffdd.opsconsole.content.domain.SupportTicketView;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -48,5 +49,19 @@ class MybatisSupportTicketRepositoryTest {
         verify(messageMapper).insert(messageCaptor.capture());
         assertThat(messageCaptor.getValue().getContent()).isEqualTo(transcript);
         assertThat(result.lastMessage()).isEqualTo(ticketCaptor.getValue().getLastMessage());
+    }
+
+    @Test
+    void readAcknowledgementUsesTicketOwnerStatusAndVersionInTheCas() {
+        SupportTicketView ticket = new SupportTicketView(
+                88L, "TK-READ", 1001L, "TECHNICAL", "NORMAL", "OPEN", "title", "reply",
+                null, "Unassigned", 1, 0, 1, LocalDateTime.of(2026, 8, 31, 12, 0),
+                null, LocalDateTime.of(2026, 8, 31, 11, 0), LocalDateTime.of(2026, 8, 31, 12, 0),
+                false, null, 7L, true);
+        LocalDateTime now = LocalDateTime.of(2026, 8, 31, 12, 1);
+        when(ticketMapper.markUserRead("TK-READ", 1001L, "OPEN", 7L, now)).thenReturn(1);
+
+        assertThat(repository.markUserReadCas(ticket, now)).isTrue();
+        verify(ticketMapper).markUserRead("TK-READ", 1001L, "OPEN", 7L, now);
     }
 }

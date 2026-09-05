@@ -13,6 +13,8 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.DayOfWeek;
+import java.time.Clock;
+import java.time.ZoneOffset;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -45,13 +47,20 @@ public class AppBinaryProjectionService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final TreasuryCoverageFacade coverageFacade;
     private final Environment environment;
+    private final Clock clock;
+
+    private static LocalDateTime storageMidnight(LocalDate utcDate) {
+        return utcDate.atStartOfDay(ZoneOffset.UTC)
+                .withZoneSameInstant(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE)
+                .toLocalDateTime();
+    }
 
     public Map<String, Object> snapshot(Long userId) {
         if (userId == null || userId <= 0) throw new IllegalArgumentException("F3_APP_USER_REQUIRED");
         Scope scope = scope(userId);
-        LocalDate today = LocalDate.now();
-        LocalDateTime monthStart = today.withDayOfMonth(1).atStartOfDay();
-        LocalDateTime windowEnd = today.plusDays(1).atStartOfDay();
+        LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        LocalDateTime monthStart = storageMidnight(today.withDayOfMonth(1));
+        LocalDateTime windowEnd = storageMidnight(today.plusDays(1));
 
         BigDecimal threshold = positiveMoney(config("team.ui.F.binary.threshold"));
         BigDecimal matchRate = rate(config("team.ui.F.binary.matchRate"));
@@ -121,7 +130,7 @@ public class AppBinaryProjectionService {
         result.put("threshold", threshold);
         result.put("dailyCap", money(rhythm.binaryDailyCap()));
         result.put("periodCap", periodCap);
-        result.put("estimatedAmountUsdt", estimate);
+        result.put("estimatedAmountUsdt", blockedReason.isBlank() ? estimate : ZERO);
         result.put("settlePeriod", canonicalPeriod(settlePeriod));
         result.put("residualPolicy", canonicalResidual(residualPolicy));
         result.put("spilloverEnabled", spilloverEnabled);

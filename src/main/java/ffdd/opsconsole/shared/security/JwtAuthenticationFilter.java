@@ -66,14 +66,20 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 }
             } catch (SessionStoreUnavailableException ex) {
                 SecurityContextHolder.clearContext();
-                writeSessionStoreUnavailable(response);
+                writeSessionStoreUnavailable(response, ex.subjectType());
                 return;
             } catch (Exception ignored) {
                 SecurityContextHolder.clearContext();
             }
         }
         if (token == null) {
-            authenticateFromGatewayHeaders(request);
+            try {
+                authenticateFromGatewayHeaders(request);
+            } catch (SessionStoreUnavailableException ex) {
+                SecurityContextHolder.clearContext();
+                writeSessionStoreUnavailable(response, ex.subjectType());
+                return;
+            }
         }
         filterChain.doFilter(request, response);
     }
@@ -100,15 +106,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if ("USER".equals(normalizedSubjectType)) {
             UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
             if (audience == null) return;
+            Long userId;
             try {
-                Long userId = Long.valueOf(subjectId);
+                userId = Long.valueOf(subjectId);
+            } catch (NumberFormatException ignored) {
+                return;
+            }
+            try {
                 String sessionId = request.getHeader(AuthHeaders.SESSION_ID);
                 if (!StringUtils.hasText(sessionId)) return;
                 UserEntity user = userMapper.selectById(userId);
                 if (user == null || !audience.acceptsSandbox(user.getSandbox())) return;
+                if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
+                    authSessionMapper.revokeAllUserSessions(userId);
+                    return;
+                }
                 if (authSessionMapper.countActiveUserSession(sessionId.trim(), userId) <= 0) return;
-            } catch (RuntimeException ignored) {
-                return;
+            } catch (RuntimeException ex) {
+                throw new SessionStoreUnavailableException(ex, "USER");
             }
         }
         List<SimpleGrantedAuthority> authorities = List.of();
@@ -153,7 +168,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 return adminSessionRegistry.isSessionActive(Long.valueOf(claims.getSubject()), sessionId);
             } catch (RuntimeException ex) {
-                throw new SessionStoreUnavailableException(ex);
+                throw new SessionStoreUnavailableException(ex, "ADMIN");
             }
         }
         if (!"USER".equals(subjectType)) {
@@ -185,12 +200,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 authSessionMapper.revokeOwnedUserSession(userId, sessionId);
                 return false;
             }
+            if (!SupportedUserPhonePolicy.isSupportedDestination(user.getCountryCode(), user.getPhone())) {
+                authSessionMapper.revokeAllUserSessions(userId);
+                return false;
+            }
             int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
             int activeCount = authSessionMapper.touchActiveUserSession(
                     sessionId, userId, idleDays);
             return activeCount > 0;
         } catch (RuntimeException ex) {
-            throw new SessionStoreUnavailableException(ex);
+            throw new SessionStoreUnavailableException(ex, "USER");
         }
     }
 
@@ -207,19 +226,23 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
     }
 
-    private void writeSessionStoreUnavailable(HttpServletResponse response) throws IOException {
+    private void writeSessionStoreUnavailable(HttpServletResponse response, String subjectType) throws IOException {
         response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
         response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
         response.setContentType("application/json");
         response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
-        response.getWriter().write(
-                "{\"code\":503,\"message\":\"ADMIN_SESSION_STORE_UNAVAILABLE\",\"data\":null}");
+        String code = "ADMIN".equals(subjectType) ? "ADMIN_SESSION_STORE_UNAVAILABLE"
+                : "IMPERSONATION".equals(subjectType) ? "IMPERSONATION_SESSION_STORE_UNAVAILABLE"
+                : "USER_SESSION_STORE_UNAVAILABLE";
+        response.getWriter().write("{\"code\":503,\"message\":\"" + code + "\",\"data\":null}");
     }
 
     private static final class SessionStoreUnavailableException extends RuntimeException {
-        private SessionStoreUnavailableException(RuntimeException cause) {
-            super(cause);
+        private SessionStoreUnavailableException(RuntimeException cause, String subjectType) {
+            super(subjectType, cause);
         }
+
+        private String subjectType() { return getMessage(); }
     }
 
     private List<SimpleGrantedAuthority> extractAuthorities(Claims claims) {

@@ -118,6 +118,26 @@ class RagNovaAiGatewayTest {
         assertThat(new RagNovaAiGateway(properties, objectMapper).available()).isTrue();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"429,NOVA_AI_BUSY", "504,NOVA_AI_TIMEOUT", "409,NOVA_AI_TURN_CONFLICT"})
+    void distinguishesRetryableResponsesAndForwardsStableTurnHeader(int status, String code) throws Exception {
+        AtomicReference<String> turn = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> {
+            turn.set(exchange.getRequestHeaders().getFirst("X-Nova-Turn-Id"));
+            respond(exchange, status, "{}");
+        });
+        server.start();
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        String id = "8c12eaf3-744d-405e-b2fb-64b3d81267be";
+        assertThatThrownBy(() -> new RagNovaAiGateway(properties, objectMapper).chat(
+                new NovaAiGateway.ChatRequest(MODEL, "zh", RAG_SESSION_ID,
+                        List.of(new NovaAiGateway.Message("user", "question")), 128, id)))
+                .isInstanceOf(BizException.class).hasMessage(code);
+        assertThat(turn.get()).isEqualTo(id);
+    }
+
     @Test
     void acceptsTheBracketedIpv6LoopbackUsedByTheControlledRuntime() throws Exception {
         server = HttpServer.create(new InetSocketAddress(InetAddress.getByName("::1"), 0), 0);

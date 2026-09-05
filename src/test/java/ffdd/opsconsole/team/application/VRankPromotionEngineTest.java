@@ -853,16 +853,6 @@ class VRankPromotionEngineTest {
             return List.of();
         }
 
-        // Sprint6 端点第二组接口契约补全 — 引擎测试不直接消费,提供空/no-op 实现保持接口编译通过
-        @Override
-        public List<Map<String, Object>> queryRewardPayouts(String type,
-                                                            String v,
-                                                            String status,
-                                                            Long userId,
-                                                            String cursor) {
-            return List.of();
-        }
-
         @Override
         public Map<String, Object> findRewardPayoutByPayoutId(String payoutId) {
             return null;

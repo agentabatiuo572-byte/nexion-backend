@@ -32,4 +32,36 @@ public interface SupportTicketMessageMapper extends BaseMapper<SupportTicketMess
              ORDER BY created_at ASC,id ASC
             """)
     List<SupportTicketMessageView> listUserVisibleByTicketNo(@Param("ticketNo") String ticketNo);
+
+    @Select("""
+            SELECT recent.id,recent.ticket_id AS ticketId,recent.ticket_no AS ticketNo,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,
+                   recent.sender_name AS senderName,recent.content,recent.created_at AS createdAt
+              FROM (
+                SELECT id,ticket_id,ticket_no,sender_id,sender_type,sender_name,content,created_at
+                  FROM nx_support_ticket_message
+                 WHERE is_deleted=0 AND ticket_no=#{ticketNo} AND sender_type IN ('user','agent')
+                 ORDER BY id DESC LIMIT #{limit}
+              ) recent
+             ORDER BY recent.id ASC
+            """)
+    List<SupportTicketMessageView> listRecentUserVisibleByTicketNo(
+            @Param("ticketNo") String ticketNo, @Param("limit") int limit);
+
+    @Select("""
+            SELECT recent.id,recent.ticket_id AS ticketId,recent.ticket_no AS ticketNo,
+                   recent.sender_id AS senderId,recent.sender_type AS senderType,
+                   recent.sender_name AS senderName,recent.content,recent.created_at AS createdAt
+              FROM (
+                SELECT id,ticket_id,ticket_no,sender_id,sender_type,sender_name,content,created_at
+                  FROM nx_support_ticket_message
+                 WHERE is_deleted=0 AND ticket_no=#{ticketNo} AND sender_type IN ('user','agent')
+                   AND (#{beforeMessageId} IS NULL OR id < #{beforeMessageId})
+                 ORDER BY id DESC LIMIT #{limit}
+              ) recent
+             ORDER BY recent.id ASC
+            """)
+    List<SupportTicketMessageView> listRecentUserVisibleByTicketNoBefore(
+            @Param("ticketNo") String ticketNo, @Param("beforeMessageId") Long beforeMessageId,
+            @Param("limit") int limit);
 }

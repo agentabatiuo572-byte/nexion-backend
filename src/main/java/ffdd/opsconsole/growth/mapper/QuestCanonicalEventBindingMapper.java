@@ -13,17 +13,19 @@ public interface QuestCanonicalEventBindingMapper {
 
     @Select("""
             SELECT COUNT(*)
-              FROM nx_growth_quest_event_binding
-             WHERE event_type=#{eventType} AND status=1 AND is_deleted=0
+              FROM nx_growth_quest_event_binding b
+              JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
+             WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
             """)
     int countActiveBindings(@Param("eventType") String eventType);
 
     @Select("""
             SELECT binding_code bindingCode,producer,event_type eventType,
                    quest_code questCode,user_id_field userIdField
-              FROM nx_growth_quest_event_binding
-             WHERE event_type=#{eventType} AND status=1 AND is_deleted=0
-             ORDER BY id
+              FROM nx_growth_quest_event_binding b
+              JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
+             WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
+             ORDER BY b.id
             """)
     List<CanonicalQuestEventBinding> listActiveBindings(@Param("eventType") String eventType);
 

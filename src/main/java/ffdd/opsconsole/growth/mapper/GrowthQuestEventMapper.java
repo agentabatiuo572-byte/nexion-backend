@@ -153,11 +153,13 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                      ELSE 'ongoing'
                    END AS state,
                    reward_name AS reward,
+                   reward_name AS rewardName,
                    reward_type AS rewardType,
                    reward_amount AS rewardAmount,
                    CASE WHEN badge_achievement_code = 'FEATURED' THEN 1 ELSE 0 END AS featured,
                    CASE WHEN LOWER(target_type) <> 'wheel' AND target_value > 0 THEN 1 ELSE 0 END AS trackable,
                    COALESCE(description, '') AS `condition`,
+                   COALESCE(description, '') AS description,
                    COALESCE(geo_scope, '') AS geo,
                    COALESCE(cta_href, '') AS href,
                    starts_at AS startsAt,
@@ -279,6 +281,49 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> trialSessions(@Param("limit") int limit);
 
+    @Select("SELECT COUNT(*) FROM nx_trial_claim WHERE is_deleted = 0")
+    Long countTrialSessions();
+
+    @Select("""
+            SELECT CONCAT('trial-', claim_no) AS sid,
+                   LOWER(status) AS state,
+                   CONCAT(
+                     ROUND(
+                       CASE
+                         WHEN UPPER(status) IN ('CANCELLED','FAILED','REDEEMED')
+                           THEN COALESCE(shadow_accrued_usdt, 0)
+                         ELSE daily_usdt * LEAST(
+                           GREATEST(duration_days, 0),
+                           GREATEST(TIMESTAMPDIFF(SECOND, claimed_at, LEAST(NOW(), expires_at)), 0) / 86400.0
+                         )
+                       END,
+                       2
+                     ),
+                     ' + ',
+                     ROUND(
+                       CASE
+                         WHEN UPPER(status) IN ('CANCELLED','FAILED','REDEEMED')
+                           THEN COALESCE(shadow_accrued_nex, 0)
+                         ELSE daily_nex * LEAST(
+                           GREATEST(duration_days, 0),
+                           GREATEST(TIMESTAMPDIFF(SECOND, claimed_at, LEAST(NOW(), expires_at)), 0) / 86400.0
+                         )
+                       END,
+                       2
+                     ),
+                     ' NEX'
+                   ) AS shadow,
+                   claim_no AS cardTok,
+                   claimed_at AS claimedAt,
+                   expires_at AS expiresAt,
+                   cooldown_until AS cooldownUntil
+              FROM nx_trial_claim
+             WHERE is_deleted = 0
+             ORDER BY claimed_at DESC, id DESC
+             LIMIT #{offset}, #{limit}
+            """)
+    List<Map<String, Object>> trialSessionsPage(@Param("offset") long offset, @Param("limit") int limit);
+
     @Select("""
             SELECT CONCAT('trial-', claim_no) AS sid,
                    LOWER(status) AS state,
@@ -384,13 +429,60 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
                    'event' AS completionType,
                    mission_code AS completionEvent,
-                   '' AS href
+                   LOWER(mission_category) AS category,
+                   action_route AS href
               FROM nx_mission
              WHERE is_deleted = 0
                AND mission_type = #{missionType}
              ORDER BY id ASC
             """)
     List<Map<String, Object>> missionRows(@Param("missionType") String missionType);
+
+    @Select("""
+            SELECT binding_code bindingCode, producer, event_type eventType, quest_code questCode,
+                   user_id_field userIdField, status
+              FROM nx_growth_quest_event_binding WHERE is_deleted=0 ORDER BY id
+            """)
+    List<Map<String, Object>> questEventBindings();
+
+    @Select("""
+            SELECT binding_code bindingCode, producer, event_type eventType, quest_code questCode,
+                   user_id_field userIdField, status
+              FROM nx_growth_quest_event_binding
+             WHERE binding_code=#{bindingCode} AND is_deleted=0 LIMIT 1 FOR UPDATE
+            """)
+    Map<String, Object> lockQuestEventBinding(@Param("bindingCode") String bindingCode);
+
+    @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND status=1 AND is_deleted=0")
+    int activeMissionByCode(@Param("questCode") String questCode);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE producer=#{producer} AND event_type=#{eventType} AND user_id_field=#{userIdField} AND status=1 AND is_deleted=0 AND binding_code<>#{bindingCode}")
+    int activeBindingSlotCount(@Param("producer") String producer, @Param("eventType") String eventType,
+            @Param("userIdField") String userIdField, @Param("bindingCode") String bindingCode);
+
+    @Insert("""
+            INSERT INTO nx_growth_quest_event_binding(binding_code,producer,event_type,quest_code,user_id_field,status,created_at,updated_at,is_deleted)
+            VALUES(#{bindingCode},#{producer},#{eventType},#{questCode},#{userIdField},#{status},NOW(),NOW(),0)
+            """)
+    int insertQuestEventBinding(@Param("bindingCode") String bindingCode, @Param("producer") String producer,
+            @Param("eventType") String eventType, @Param("questCode") String questCode,
+            @Param("userIdField") String userIdField, @Param("status") int status);
+
+    @Update("""
+            UPDATE nx_growth_quest_event_binding SET producer=#{producer},event_type=#{eventType},quest_code=#{questCode},user_id_field=#{userIdField},status=#{status},updated_at=NOW()
+             WHERE binding_code=#{bindingCode} AND producer=#{expectedProducer} AND event_type=#{expectedEventType}
+               AND quest_code=#{expectedQuestCode} AND user_id_field=#{expectedUserIdField} AND status=#{expectedStatus} AND is_deleted=0
+            """)
+    int updateQuestEventBindingCas(@Param("bindingCode") String bindingCode, @Param("producer") String producer,
+            @Param("eventType") String eventType, @Param("questCode") String questCode, @Param("userIdField") String userIdField,
+            @Param("status") int status, @Param("expectedProducer") String expectedProducer,
+            @Param("expectedEventType") String expectedEventType, @Param("expectedQuestCode") String expectedQuestCode,
+            @Param("expectedUserIdField") String expectedUserIdField, @Param("expectedStatus") int expectedStatus);
+
+    @Update("UPDATE nx_growth_quest_event_binding SET is_deleted=1,updated_at=NOW() WHERE binding_code=#{bindingCode} AND producer=#{expectedProducer} AND event_type=#{expectedEventType} AND quest_code=#{expectedQuestCode} AND user_id_field=#{expectedUserIdField} AND status=#{expectedStatus} AND is_deleted=0")
+    int deleteQuestEventBindingCas(@Param("bindingCode") String bindingCode, @Param("expectedProducer") String expectedProducer,
+            @Param("expectedEventType") String expectedEventType, @Param("expectedQuestCode") String expectedQuestCode,
+            @Param("expectedUserIdField") String expectedUserIdField, @Param("expectedStatus") int expectedStatus);
 
     @Insert("""
             INSERT INTO nx_admin_operation_mutex(lock_key, updated_at)
@@ -424,7 +516,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                                   @Param("rewardPoints") int rewardPoints);
 
     @Select("""
-            SELECT mission_code AS taskCode, mission_name AS taskName, 'MISSION' AS taskKind, status
+            SELECT mission_code AS taskCode, mission_name AS taskName, 'MISSION' AS taskKind, status,
+                   mission_category AS category, action_route AS actionRoute
               FROM nx_mission
              WHERE mission_code = #{taskCode} AND is_deleted = 0
              LIMIT 1 FOR UPDATE
@@ -439,6 +532,20 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     int updateMissionNameCas(@Param("taskCode") String taskCode,
                              @Param("expectedName") String expectedName,
                              @Param("name") String name);
+
+    @Update("""
+            UPDATE nx_mission
+               SET mission_category=#{category}, action_route=#{actionRoute}, updated_at=NOW()
+             WHERE mission_code=#{taskCode}
+               AND mission_category=#{expectedCategory}
+               AND action_route=#{expectedActionRoute}
+               AND status<>2 AND is_deleted=0
+            """)
+    int updateMissionPresentationCas(@Param("taskCode") String taskCode,
+                                     @Param("expectedCategory") String expectedCategory,
+                                     @Param("expectedActionRoute") String expectedActionRoute,
+                                     @Param("category") String category,
+                                     @Param("actionRoute") String actionRoute);
 
     @Update("""
             UPDATE nx_mission SET status=#{targetStatus}, updated_at=NOW()
@@ -1014,15 +1121,19 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_mission (
-                mission_code, mission_name, mission_type, reward_points, status, created_at, updated_at, is_deleted
+                mission_code, mission_name, mission_type, mission_category, action_route,
+                reward_points, status, created_at, updated_at, is_deleted
             ) VALUES (
-                #{missionCode}, #{missionName}, #{missionType}, #{rewardPoints}, #{status}, #{now}, #{now}, 0
+                #{missionCode}, #{missionName}, #{missionType}, #{category}, #{actionRoute},
+                #{rewardPoints}, #{status}, #{now}, #{now}, 0
             )
             """)
     int insertMission(
             @Param("missionCode") String missionCode,
             @Param("missionName") String missionName,
             @Param("missionType") String missionType,
+            @Param("category") String category,
+            @Param("actionRoute") String actionRoute,
             @Param("rewardPoints") int rewardPoints,
             @Param("status") int status,
             @Param("now") LocalDateTime now);

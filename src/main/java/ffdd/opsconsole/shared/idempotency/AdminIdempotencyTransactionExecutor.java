@@ -32,12 +32,23 @@ public class AdminIdempotencyTransactionExecutor {
     private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public <T> Claim<T> claimRetained(String scope, String idempotencyKey, String requestHash,
+                                    LocalDateTime expiresAt, Class<T> responseType) {
+        return claimInternal(scope, idempotencyKey, requestHash, expiresAt, responseType, true);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public <T> Claim<T> claim(
             String scope,
             String idempotencyKey,
             String requestHash,
             LocalDateTime expiresAt,
         Class<T> responseType) {
+        return claimInternal(scope, idempotencyKey, requestHash, expiresAt, responseType, false);
+    }
+
+    private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
+                                      LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess) {
         AdminIdempotencyRecordEntity record = null;
         AdminIdempotencyRecordEntity existing = recordMapper.selectActive(scope, idempotencyKey);
         if (existing != null) {
@@ -47,7 +58,12 @@ public class AdminIdempotencyTransactionExecutor {
         AdminIdempotencyRecordEntity current = record == null
                 ? recordMapper.selectCurrent(scope, idempotencyKey)
                 : null;
-        if (record == null && current != null && STATUS_UNKNOWN.equals(current.getStatus())) {
+        if (retainSuccess && current != null
+                && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
+            // Never recycle a retained success; FAILED retries use a status CAS,
+            // so a concurrent completion cannot be overwritten by an expiry reset.
+            return resolveKnownRecord(current, requestHash, expiresAt, responseType);
+        } else if (record == null && current != null && STATUS_UNKNOWN.equals(current.getStatus())) {
             throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
         } else if (record == null && current != null && STATUS_PROCESSING.equals(current.getStatus())
                 && Integer.valueOf(0).equals(current.getIsDeleted())) {

@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -30,9 +31,12 @@ public class AppExchangeController {
     public ApiResult<Map<String,Object>> externalMarket() { return service.externalMarket(); }
 
     @GetMapping("/api/exchange")
-    public ApiResult<Map<String,Object>> state(Authentication authentication) {
+    public ApiResult<Map<String,Object>> state(
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.state(userId);
+        return userId == null ? forbidden() : service.state(userId, pageNum, pageSize);
     }
 
     @PostMapping("/api/exchange")

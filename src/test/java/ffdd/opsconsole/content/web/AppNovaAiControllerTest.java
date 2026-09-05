@@ -64,13 +64,13 @@ class AppNovaAiControllerTest {
         when(authentication.isAuthenticated()).thenReturn(true);
         when(authentication.getPrincipal()).thenReturn("42");
         when(authentication.getDetails()).thenReturn(Map.of("subjectType", "USER", "sessionId", AUTH_SESSION_ID));
-        var history = new AppNovaAiService.HistoryResponse(CONVERSATION_ID, List.of());
-        when(service.history(42L, null)).thenReturn(history);
+        var history = new AppNovaAiService.HistoryResponse(CONVERSATION_ID, List.of(), false, null);
+        when(service.history(42L, null, null)).thenReturn(history);
 
-        var result = controller.history(null, authentication);
+        var result = controller.history(null, null, authentication);
 
         assertThat(result.getData()).isSameAs(history);
-        verify(service).history(42L, null);
+        verify(service).history(42L, null, null);
     }
 
     @Test
@@ -80,12 +80,12 @@ class AppNovaAiControllerTest {
         String chat = mapper.writeValueAsString(
                 new AppNovaAiService.ChatResponse("回答", CONVERSATION_ID, TURN_ID));
         String history = mapper.writeValueAsString(
-                new AppNovaAiService.HistoryResponse(CONVERSATION_ID, List.of()));
+                new AppNovaAiService.HistoryResponse(CONVERSATION_ID, List.of(), false, null));
 
         assertThat(status).isEqualTo("{\"available\":true}");
         assertThat(chat).containsOnlyOnce("\"reply\"")
                 .contains("\"conversationId\"", "\"turnId\"");
-        assertThat(history).contains("\"conversationId\"", "\"messages\"");
+        assertThat(history).contains("\"conversationId\"", "\"messages\"", "\"truncated\"");
         assertThat(status + chat + history).doesNotContain(
                 "provider", "model", "privacy", "source", "sourceEnvironment", "runId", "serverCanonical");
     }

@@ -9,6 +9,16 @@ public record GrowthMissionRequest(
         String missionName,
         String missionType,
         Integer rewardPoints,
+        String category,
+        String actionRoute,
         String reason,
         String operator) {
+
+    /** Compatibility constructor for internal callers that predate PC-owned presentation fields. */
+    public GrowthMissionRequest(
+            String missionCode, String missionName, String missionType, Integer rewardPoints,
+            String reason, String operator) {
+        this(missionCode, missionName, missionType, rewardPoints,
+                "EXPLORE", "/pages/missions/missions", reason, operator);
+    }
 }

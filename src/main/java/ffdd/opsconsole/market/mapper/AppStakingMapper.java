@@ -84,8 +84,13 @@ public interface AppStakingMapper {
               FROM nx_staking_position
              WHERE user_id=#{userId} AND is_deleted=0
              ORDER BY created_at DESC,id DESC
+             LIMIT #{offset},#{limit}
             """)
-    List<PositionRow> listUserPositions(@Param("userId") Long userId);
+    List<PositionRow> listUserPositions(
+            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0")
+    long countUserPositions(@Param("userId") Long userId);
 
     @Select("""
             SELECT id,user_id AS userId,position_no AS positionNo,product_id AS productId,

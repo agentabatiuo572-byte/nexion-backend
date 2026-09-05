@@ -51,8 +51,27 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         String keyword = request == null ? null : trim(request.keyword());
         long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword);
         List<SupportTicketView> records =
-                ticketMapper.pageTickets(scope, status, category, priority, assignedAdminId, userId, keyword, pageSize, (pageNum - 1) * pageSize);
+                ticketMapper.pageTickets(scope, status, category, priority, assignedAdminId, userId, keyword,
+                        null, false, pageSize, (pageNum - 1) * pageSize);
         return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
+    public PageResult<SupportTicketView> pageTicketsBeforeId(
+            SupportTicketQueryRequest request, Long beforeId) {
+        long pageSize = normalizeSize(request == null ? null : request.pageSize());
+        String scope = normalizeScope(request == null ? null : request.scope());
+        String status = request == null ? null : trim(request.status());
+        String category = request == null ? null : trim(request.category());
+        String priority = request == null ? null : trim(request.priority());
+        Long assignedAdminId = request == null ? null : request.assignedAdminId();
+        Long userId = request == null ? null : request.userId();
+        String keyword = request == null ? null : trim(request.keyword());
+        long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword);
+        List<SupportTicketView> records = ticketMapper.pageTickets(
+                scope, status, category, priority, assignedAdminId, userId, keyword,
+                beforeId, true, pageSize, 0);
+        return new PageResult<>(total, 1, pageSize, records);
     }
 
     @Override
@@ -68,6 +87,17 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
     @Override
     public List<SupportTicketMessageView> userVisibleMessages(String ticketNo) {
         return messageMapper.listUserVisibleByTicketNo(ticketNo);
+    }
+
+    @Override
+    public List<SupportTicketMessageView> recentUserVisibleMessages(String ticketNo, int limit) {
+        return messageMapper.listRecentUserVisibleByTicketNo(ticketNo, limit);
+    }
+
+    @Override
+    public List<SupportTicketMessageView> recentUserVisibleMessagesBefore(
+            String ticketNo, Long beforeMessageId, int limit) {
+        return messageMapper.listRecentUserVisibleByTicketNoBefore(ticketNo, beforeMessageId, limit);
     }
 
     @Override
@@ -134,6 +164,11 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         }
         insertMessage(ticket.id(), ticket.ticketNo(), ticket.userId(), "user", "用户", body, now);
         return true;
+    }
+
+    @Override
+    public boolean markUserReadCas(SupportTicketView ticket, LocalDateTime now) {
+        return ticketMapper.markUserRead(ticket.ticketNo(), ticket.userId(), ticket.status(), safeVersion(ticket), now) == 1;
     }
 
     @Override

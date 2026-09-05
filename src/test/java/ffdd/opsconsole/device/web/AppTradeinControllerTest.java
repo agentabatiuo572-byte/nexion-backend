@@ -10,6 +10,7 @@ import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
 import ffdd.opsconsole.device.dto.AppTradeinEligibilityRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
+import ffdd.opsconsole.device.dto.AppCapacityKeepSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -26,7 +27,8 @@ class AppTradeinControllerTest {
     void configUsesAuthenticatedUserSubject() {
         var auth = userAuth("7");
         when(service.config(7L)).thenReturn(ApiResult.ok(new AppTradeinConfigResponse(
-                true, "全部用户", List.of(), List.of(), true, 1, "nx_compute_e3_config")));
+                true, "全部用户", List.of(), List.of(), true, 1, true, 30,
+                "nx_compute_e3_config")));
 
         assertThat(controller.config(auth).getCode()).isZero();
         verify(service).config(7L);
@@ -61,12 +63,15 @@ class AppTradeinControllerTest {
     void capacityEndpointsPassAuthenticatedUserAndIdempotencyHeader() {
         var quote = new AppCapacityReplaceQuoteRequest("stellarbox-pro-v2");
         var submit = new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", null);
+        var keep = new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", null);
 
         controller.capacityQuote(quote, userAuth("7"));
         controller.capacityReplace(submit, "capacity-idem", userAuth("7"));
+        controller.capacityKeep(keep, "keep-idem", userAuth("7"));
 
         verify(service).capacityQuote(7L, quote);
         verify(service).capacityReplace(7L, "capacity-idem", submit);
+        verify(service).capacityKeep(7L, "keep-idem", keep);
     }
 
     @Test

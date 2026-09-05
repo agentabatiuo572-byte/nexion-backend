@@ -25,6 +25,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
@@ -238,6 +239,7 @@ class OpsGrowthServiceTest {
 
     @BeforeEach
     void stubLocksNoActive() {
+        emergencyRepository.settings.put("killswitch.trial", "enabled");
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,常规写方法直通,replay 路径也无阻塞
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
         when(questEventMapper.lockGrowthMutation(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -651,15 +653,15 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void missingJ1RowsKeepTheRealH2TrialGateEnabledLikeTheJ1DisplayDefault() {
+    void missingJ1RowsFailClosedForTheRealH2TrialGate() {
         emergencyRepository.settings.remove("killswitch.trial");
         emergencyRepository.settings.remove("emergency.killswitch.trial");
 
         ApiResult<Map<String, Object>> overview = service.trials();
 
         assertThat(detailMap(overview.getData().get("j1TrialGate")))
-                .containsEntry("enabled", true)
-                .containsEntry("blockedBy", null);
+                .containsEntry("enabled", false)
+                .containsEntry("blockedBy", "J1_TRIAL_KILL_SWITCH");
     }
 
     @Test
@@ -821,6 +823,13 @@ class OpsGrowthServiceTest {
                 .singleElement()
                 .extracting(row -> ((Map<?, ?>) row).get("name"))
                 .isEqualTo("DB 活动");
+        assertThat(result.getData().get("events")).asList()
+                .singleElement()
+                .satisfies(row -> {
+                    Map<?, ?> event = (Map<?, ?>) row;
+                    assertThat(event.containsKey("description")).isTrue();
+                    assertThat(event.containsKey("rewardName")).isTrue();
+                });
         assertThat(result.getData().get("events").toString()).doesNotContain("配置活动不应生效");
         assertThat(result.getData().get("wheelTiers")).asList()
                 .singleElement()
@@ -849,6 +858,83 @@ class OpsGrowthServiceTest {
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H3_QUEST_CONFIG_CHANGED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-h3-config");
+    }
+
+    @Test
+    void localizedContentWritesOnlyTheRequestedLanguageLeafAndKeepsOriginalContentUntouched() throws Exception {
+        seedQuestBusinessRows();
+        when(questEventMapper.countByMissionCode("H3_DEVICE_ACTIVATED")).thenReturn(1L);
+
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h3-localized-name",
+                "content.mission.H3_DEVICE_ACTIVATED.name.zh",
+                new GrowthConfigUpdateRequest(
+                        "content.mission.H3_DEVICE_ACTIVATED.name.zh",
+                        "激活首台设备",
+                        "author a Chinese operator label",
+                        "superadmin",
+                        "__MISSING__"));
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> stored = new ObjectMapper().readValue(
+                configFacade.values.get("growth.content.localized"), Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mission = (Map<String, Object>) stored.get("mission");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> localizedTask = (Map<String, Object>) mission.get("H3_DEVICE_ACTIVATED");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> zh = (Map<String, Object>) localizedTask.get("zh");
+        assertThat(zh).containsEntry("name", "激活首台设备");
+        assertThat(result.getData().get("dayOneTasks").toString()).contains("DB 首日任务");
+        verify(questEventMapper).lockH3ConfigMutex();
+        verify(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void localizedMissionContentRejectsAnUnknownBusinessCodeBeforeWritingJson() {
+        seedQuestBusinessRows();
+        when(questEventMapper.countByMissionCode("NO_SUCH_MISSION")).thenReturn(0L);
+
+        ApiResult<Map<String, Object>> result = service.updateQuestConfig(
+                "idem-h3-localized-missing",
+                "content.mission.NO_SUCH_MISSION.name.zh",
+                new GrowthConfigUpdateRequest(
+                        "content.mission.NO_SUCH_MISSION.name.zh",
+                        "不存在任务",
+                        "reject an unbound localization",
+                        "superadmin",
+                        "__MISSING__"));
+
+        assertThat(result.getCode()).isNotZero();
+        assertThat(result.getMessage()).isEqualTo("MISSION_NOT_FOUND");
+        assertThat(configFacade.values).doesNotContainKey("growth.content.localized");
+    }
+
+    @Test
+    void eventLocalizedContentRequiresAnExistingEventAndWritesOnlyTheH4Leaf() throws Exception {
+        seedQuestBusinessRows();
+        when(questEventMapper.countById("regional-pk")).thenReturn(1L);
+
+        ApiResult<Map<String, Object>> result = service.updateEventLocalizedContent(
+                "idem-h4-localized-description",
+                "regional-pk",
+                "description",
+                "vi",
+                new GrowthConfigUpdateRequest("description", "Mô tả hoạt động", "author Vietnamese detail", "superadmin", "__MISSING__"));
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> stored = new ObjectMapper().readValue(
+                configFacade.values.get("growth.content.localized"), Map.class);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> event = (Map<String, Object>) stored.get("event");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> localizedEvent = (Map<String, Object>) event.get("regional-pk");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> vi = (Map<String, Object>) localizedEvent.get("vi");
+        assertThat(vi).containsEntry("description", "Mô tả hoạt động");
+        verify(questEventMapper).lockH3ConfigMutex();
     }
 
     @Test
@@ -1046,7 +1132,35 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getMessage()).isEqualTo("MISSION_CODE_RESERVED_FOR_DAY_ONE");
         verify(questEventMapper, never()).insertMission(
-                anyString(), anyString(), anyString(), anyInt(), anyInt(), any(LocalDateTime.class));
+                anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyInt(), anyInt(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void missionPresentationUpdatePersistsPcCategoryAndDirectRouteWithCas() {
+        when(questEventMapper.lockMission("setup_profile")).thenReturn(row(
+                "taskCode", "setup_profile",
+                "taskName", "设置个人资料",
+                "taskKind", "MISSION",
+                "status", 1,
+                "category", "EXPLORE",
+                "actionRoute", "/pages/missions/missions"));
+        when(questEventMapper.updateMissionPresentationCas(
+                "setup_profile", "EXPLORE", "/pages/missions/missions",
+                "IDENTITY", "/pages/me/profile")).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.updateMissionPresentation(
+                "idem-h3-presentation",
+                "setup_profile",
+                new GrowthMissionPresentationRequest(
+                        "identity", "/pages/me/profile",
+                        "explore", "/pages/missions/missions",
+                        "route profile task directly", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).updateMissionPresentationCas(
+                "setup_profile", "EXPLORE", "/pages/missions/missions",
+                "IDENTITY", "/pages/me/profile");
     }
 
     @Test

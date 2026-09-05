@@ -38,6 +38,8 @@ public class AppUserProfileService {
             "Ranger", "Comet", "Relay", "Spark", "Drift", "Core", "Harbor", "Summit");
     private static final Set<String> ALLOWED_ADJECTIVES = Set.copyOf(ADJECTIVES);
     private static final Set<String> ALLOWED_NOUNS = Set.copyOf(NOUNS);
+    private static final Set<String> ALLOWED_LANGUAGES = Set.of(
+            "en", "vi", "zh", "ja", "ko", "ru", "es", "pt", "ar", "de", "fr");
 
     private final AppUserProfileMapper mapper;
     private final AdminIdempotencyService idempotency;
@@ -53,7 +55,8 @@ public class AppUserProfileService {
                 "nickname", text(row.get("nickname")),
                 "avatarUrl", StringUtils.hasText(objectKey)
                         ? avatarUrl(objectKey) : "",
-                "avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "");
+                "avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "",
+                "language", normalizedLanguage(row.get("language")));
     }
 
     @Transactional(readOnly = true)
@@ -79,6 +82,31 @@ public class AppUserProfileService {
         return idempotency.execute("APP:PROFILE:NICKNAME:USER:" + userId, idempotencyKey,
                 hash(expected + "|" + nickname), Map.class,
                 () -> updateNicknameClaimed(userId, expected, nickname));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> updateLanguage(Long userId, String language) {
+        requireActiveUser(userId);
+        String normalized = language == null ? "" : language.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!ALLOWED_LANGUAGES.contains(normalized)) {
+            throw new BizException(422, "USER_LANGUAGE_INVALID");
+        }
+        if (mapper.updateLanguage(userId, normalized) != 1) {
+            throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
+        }
+        audit.recordRequired(AuditLogWriteRequest.builder()
+                .action("USER_LANGUAGE_UPDATED")
+                .resourceType("USER_PROFILE")
+                .resourceId(String.valueOf(userId))
+                .userId(userId)
+                .actorId(userId)
+                .actorType("USER")
+                .actorUsername("user:" + userId)
+                .result("SUCCESS")
+                .riskLevel("LOW")
+                .detail(Map.of("language", normalized))
+                .build());
+        return Map.of("language", normalized, "status", "UPDATED");
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -155,6 +183,13 @@ public class AppUserProfileService {
         if (userId == null || userId <= 0 || mapper.activeUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
+    }
+
+    private String normalizedLanguage(Object value) {
+        String language = text(value).toLowerCase(java.util.Locale.ROOT);
+        if (!language.matches("[a-z]{2,3}(?:-[a-z0-9]{2,8})*")) return "en";
+        String base = language.split("-", 2)[0];
+        return ALLOWED_LANGUAGES.contains(base) ? base : "en";
     }
 
     private boolean isCurated(String value) {

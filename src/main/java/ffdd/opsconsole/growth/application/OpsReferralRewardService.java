@@ -32,8 +32,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
+import java.time.Clock;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
@@ -44,15 +45,18 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class OpsReferralRewardService {
+    private static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
     private static final String SETTLEMENT_ENVIRONMENT = "PRODUCTION";
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";
+    private static final String ENABLED_KEY = "K.rewards.referral.enabled";
     // This product ceiling is exact in JavaScript and remains below DECIMAL(18,6).
     private static final BigDecimal MAX_EFFECTIVE_REWARD = new BigDecimal("999999999.000000");
     // H1 payout multipliers are bounded to 4x. Capping the editable base here
     // prevents a later valid H1 change from making H8 unreadable or unpayable.
     private static final BigDecimal MAX_INVITER_BASE = new BigDecimal("249999999.750000");
     private static final Map<String, String> STORAGE_KEYS = Map.of(
+            "enabled", ENABLED_KEY,
             "newcomer.usdt", "K.rewards.welcomeGift.usdtAmount",
             "newcomer.nex", "K.rewards.welcomeGift.nexAmount",
             "newcomer.lockMode", "K.rewards.welcomeGift.lockMode",
@@ -60,6 +64,7 @@ public class OpsReferralRewardService {
     // Money defaults must be fail-safe. Product prototypes used 5/20/200 as display
     // samples; carrying those values into the real ledger would create unapproved awards.
     private static final Map<String, String> SAFE_DEFAULTS = Map.of(
+            "enabled", "false",
             "newcomer.usdt", "0", "newcomer.nex", "0",
             "newcomer.lockMode", "risk_bucket", "inviter.nex", "0");
     private static final Set<String> PARAMS = STORAGE_KEYS.keySet();
@@ -73,25 +78,37 @@ public class OpsReferralRewardService {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
+    private final Clock clock;
     private final H8AcceptanceSandboxRunScope sandboxRunScope;
     private final H8AcceptanceSandboxCommandService sandboxCommands;
     private final H8AcceptanceSandboxAuditService sandboxAudit;
 
     public Map<String, Object> overview() {
+        return overview(null, 20);
+    }
+
+    public Map<String, Object> overview(Long cursor, Integer requestedPageSize) {
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_OVERVIEW_FORBIDDEN_IN_SANDBOX");
+        if (cursor != null && cursor <= 0) {
+            throw new BizException(422, "H8_SETTLEMENT_CURSOR_INVALID");
+        }
+        int pageSize = requestedPageSize == null ? 20 : Math.max(1, Math.min(100, requestedPageSize));
         int accountSandbox = canonicalAccountSandbox();
         Map<String, Object> params = new LinkedHashMap<>();
         PARAMS.stream().sorted().forEach(key -> params.put(key,
-                "newcomer.lockMode".equals(key) ? lockMode() : amount(key)));
+                "enabled".equals(key) ? referralEnabled()
+                        : "newcomer.lockMode".equals(key) ? lockMode() : amount(key)));
+        boolean enabled = referralEnabled();
         EffectiveRewards effectiveRewards = effectiveRewards();
         LocalDateTime effectiveAt = effectiveAtRequired();
         String currentLockMode = lockMode();
         long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
         String snapshotHash = rewardSnapshotHash(
-                currentVersion, effectiveAt, currentLockMode, effectiveRewards);
+                currentVersion, enabled, effectiveAt, currentLockMode, effectiveRewards);
         boolean holdRisky = "risk_bucket".equals(currentLockMode);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("params", params);
+        result.put("enabled", enabled);
         result.put("rhythmMonth", effectiveRewards.rhythmMonth());
         result.put("newcomerMultiplier", effectiveRewards.newcomerMultiplier());
         result.put("inviterMultiplier", effectiveRewards.inviterMultiplier());
@@ -102,10 +119,23 @@ public class OpsReferralRewardService {
         result.put("pending", mapper.totalPending(effectiveAt, accountSandbox, holdRisky));
         result.put("settled", mapper.totalSettled(accountSandbox));
         result.put("blockedByK2", mapper.totalBlockedByK2(effectiveAt, accountSandbox, holdRisky));
-        result.put("recentSettlements", mapper.recentSettlements(accountSandbox, 20));
+        List<Map<String, Object>> queried = mapper.recentSettlementsPage(accountSandbox, cursor, pageSize + 1);
+        List<Map<String, Object>> fetched = queried == null ? List.of() : queried;
+        boolean hasMore = fetched.size() > pageSize;
+        List<Map<String, Object>> page = fetched.stream().limit(pageSize).map(row -> {
+            Map<String, Object> publicRow = new LinkedHashMap<>(row);
+            publicRow.remove("rowId");
+            return publicRow;
+        }).toList();
+        String nextCursor = hasMore && !fetched.isEmpty()
+                ? String.valueOf(fetched.get(pageSize - 1).get("rowId")) : "";
+        result.put("recentSettlements", page);
+        result.put("settlementPageSize", pageSize);
+        result.put("settlementHasMore", hasMore);
+        result.put("settlementNextCursor", nextCursor);
         result.put("source", "nx_user.sponsor_user_id");
         result.put("settlementMode", "REAL_WALLET_LEDGER");
-        result.put("effectiveAt", effectiveAt.toInstant(ZoneOffset.UTC));
+        result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toInstant());
         result.put("version", currentVersion);
         result.put("rewardSnapshotHash", snapshotHash);
         return result;
@@ -119,16 +149,19 @@ public class OpsReferralRewardService {
         requireAcceptanceSandboxProfile();
         String runId = sandboxRunScope.requireCurrentRunId(rawRunId);
         EffectiveRewards rewards = effectiveRewards();
+        boolean enabled = referralEnabled();
         LocalDateTime effectiveAt = effectiveAtRequired();
         long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
         List<ReferralRewardMapper.ReferralRow> fixtures = mapper.findPendingSandboxReferral(effectiveAt, runId, null);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("params", Map.of(
+                "enabled", enabled,
                 "newcomer.usdt", amount("newcomer.usdt"),
                 "newcomer.nex", amount("newcomer.nex"),
                 "newcomer.lockMode", lockMode(),
                 "inviter.nex", amount("inviter.nex")));
         result.put("rhythmMonth", rewards.rhythmMonth());
+        result.put("enabled", enabled);
         result.put("newcomerMultiplier", rewards.newcomerMultiplier());
         result.put("inviterMultiplier", rewards.inviterMultiplier());
         result.put("effectiveRewards", Map.of(
@@ -145,9 +178,9 @@ public class OpsReferralRewardService {
         result.put("sourceType", "MOCK_REFERRAL");
         result.put("settlementMode", "SANDBOX");
         result.put("runId", runId);
-        result.put("effectiveAt", effectiveAt.toInstant(ZoneOffset.UTC));
+        result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toInstant());
         result.put("version", currentVersion);
-        result.put("rewardSnapshotHash", rewardSnapshotHash(currentVersion, effectiveAt, lockMode(), rewards));
+        result.put("rewardSnapshotHash", rewardSnapshotHash(currentVersion, enabled, effectiveAt, lockMode(), rewards));
         return result;
     }
 
@@ -159,14 +192,19 @@ public class OpsReferralRewardService {
      */
     public ReferralRewardPublicConfigView publicConfig() {
         EffectiveRewards rewards = effectiveRewards();
+        boolean enabled = referralEnabled();
+        BigDecimal newcomerUsdt = enabled ? rewards.newcomerUsdt() : BigDecimal.ZERO;
+        BigDecimal newcomerNex = enabled ? rewards.newcomerNex() : BigDecimal.ZERO;
+        BigDecimal inviterNex = enabled ? rewards.inviterNex() : BigDecimal.ZERO;
         return new ReferralRewardPublicConfigView(
+                enabled,
                 new ReferralRewardPublicConfigView.WelcomeGift(
-                        lockMode(), rewards.newcomerUsdt(), rewards.newcomerNex()),
-                new ReferralRewardPublicConfigView.InviterReward(rewards.inviterNex()),
+                        lockMode(), newcomerUsdt, newcomerNex),
+                new ReferralRewardPublicConfigView.InviterReward(inviterNex),
                 rewards.rhythmMonth(),
                 rewards.newcomerMultiplier(),
                 rewards.inviterMultiplier(),
-                effectiveAtRequired().toInstant(ZoneOffset.UTC),
+                effectiveAtRequired().atZone(DATABASE_ZONE).toInstant(),
                 List.of(
                         "nx_config_item:K.rewards.*",
                         "nx_config_item:growth.phase.month.*",
@@ -196,22 +234,37 @@ public class OpsReferralRewardService {
                                     "H8_CONFIG_VERSION_CONFLICT");
                         }
                         String before = rawValue(paramKey);
-                        if (amplifies(paramKey, before, value)) requireHealthyCoverage();
-                        if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
-                            config.upsertAdminValue(EFFECTIVE_AT_KEY, Instant.now().toString(), "DATETIME", "GROWTH_REFERRAL",
+                        boolean amplification = amplifies(paramKey, before, value);
+                        Map<String, Object> coverageEvidence;
+                        if (amplification) {
+                            coverageEvidence = coverageDetail(requireHealthyCoverage());
+                        } else {
+                            coverageEvidence = Map.of(
+                                    "checked", false,
+                                    "reason", "NOT_REQUIRED_FOR_NON_AMPLIFYING_CHANGE");
+                        }
+                        long nextVersion = Math.addExact(currentVersion, 1L);
+                        boolean startsNewRewardPolicy = ("enabled".equals(paramKey) && !Boolean.parseBoolean(before)
+                                && Boolean.parseBoolean(value)) || !"enabled".equals(paramKey);
+                        if (startsNewRewardPolicy) {
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
+                                    "H8 reward policy version " + nextVersion
+                                            + " effective time; earlier pending referrals are never repriced");
+                        } else if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
                                     "H8 first effective time; historical referrals are never retroactively paid");
                         }
                         config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
-                                "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
+                                "enabled".equals(paramKey) ? "BOOLEAN"
+                                        : "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
                                 "H8 邀请奖励真实发奖参数；" + reason);
-                        long nextVersion = Math.addExact(currentVersion, 1L);
                         config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER",
                                 "GROWTH_REFERRAL", "H8 referral reward configuration version");
                         String operator = actor(request.operator());
                         audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
                                 Map.of("before", before, "after", value, "reason", reason,
                                         "versionBefore", currentVersion, "versionAfter", nextVersion,
-                                        "coverage", coverageDetail()));
+                                        "coverage", coverageEvidence));
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
                                 Map.of("paramKey", paramKey, "before", before, "after", value,
                                         "version", nextVersion, "operator", operator, "reason", reason,
@@ -307,6 +360,9 @@ public class OpsReferralRewardService {
             String runId,
             Long onlyInvitedUserId) {
         EffectiveRewards rewards = snapshot.rewards();
+        if (!snapshot.enabled()) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_DISABLED");
+        }
         if (rewards.newcomerUsdt().signum() == 0
                 && rewards.newcomerNex().signum() == 0
                 && rewards.inviterNex().signum() == 0) {
@@ -370,6 +426,9 @@ public class OpsReferralRewardService {
             RewardSnapshot snapshot,
             int accountSandbox,
             Long onlyInvitedUserId) {
+        if (!snapshot.enabled()) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_DISABLED");
+        }
         requireHealthyCoverage();
         LocalDateTime effectiveAt = snapshot.effectiveAt();
         EffectiveRewards effectiveRewards = snapshot.rewards();
@@ -477,6 +536,7 @@ public class OpsReferralRewardService {
 
     private record RewardSnapshot(
             long h8Version,
+            boolean enabled,
             LocalDateTime effectiveAt,
             String lockMode,
             EffectiveRewards rewards,
@@ -485,23 +545,27 @@ public class OpsReferralRewardService {
 
     private RewardSnapshot rewardSnapshot() {
         long currentVersion = version(config.activeValue(VERSION_KEY).orElse("1"));
+        boolean enabled = referralEnabled();
         LocalDateTime effectiveAt = effectiveAtRequired();
         String currentLockMode = lockMode();
         EffectiveRewards rewards = effectiveRewards();
         return new RewardSnapshot(
                 currentVersion,
+                enabled,
                 effectiveAt,
                 currentLockMode,
                 rewards,
-                rewardSnapshotHash(currentVersion, effectiveAt, currentLockMode, rewards));
+                rewardSnapshotHash(currentVersion, enabled, effectiveAt, currentLockMode, rewards));
     }
 
     private String rewardSnapshotHash(
             long h8Version,
+            boolean enabled,
             LocalDateTime effectiveAt,
             String currentLockMode,
             EffectiveRewards rewards) {
         String canonical = "h8Version=" + h8Version
+                + "|enabled=" + enabled
                 + "|effectiveAt=" + effectiveAt
                 + "|lockMode=" + currentLockMode
                 + "|rhythmMonth=" + rewards.rhythmMonth()
@@ -562,7 +626,22 @@ public class OpsReferralRewardService {
         return mode;
     }
 
+    private boolean referralEnabled() {
+        String value = rawValue("enabled").trim().toLowerCase();
+        if (!Set.of("true", "false").contains(value)) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REFERRAL_REWARD_ENABLED_INVALID");
+        }
+        return Boolean.parseBoolean(value);
+    }
+
     private String normalizeParam(String key, String value) {
+        if ("enabled".equals(key)) {
+            String normalized = value == null ? "" : value.trim().toLowerCase();
+            if (!Set.of("true", "false").contains(normalized)) {
+                throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REFERRAL_REWARD_ENABLED_INVALID");
+            }
+            return normalized;
+        }
         if ("newcomer.lockMode".equals(key)) {
             String normalized = value == null ? "" : value.trim().toLowerCase();
             if (!Set.of("risk_bucket", "direct").contains(normalized)) {
@@ -588,6 +667,9 @@ public class OpsReferralRewardService {
     }
 
     private boolean amplifies(String key, String before, String after) {
+        if ("enabled".equals(key)) {
+            return !Boolean.parseBoolean(before) && Boolean.parseBoolean(after);
+        }
         if ("newcomer.lockMode".equals(key)) return !"direct".equalsIgnoreCase(before) && "direct".equalsIgnoreCase(after);
         return parseAmount(key, after).compareTo(parseAmount(key, before)) > 0;
     }
@@ -606,7 +688,10 @@ public class OpsReferralRewardService {
     }
 
     private Map<String, Object> coverageDetail() {
-        TreasuryCoverageSnapshot snapshot = coverage.snapshot();
+        return coverageDetail(coverage.snapshot());
+    }
+
+    private Map<String, Object> coverageDetail(TreasuryCoverageSnapshot snapshot) {
         return Map.of("coverageRatio", snapshot.coverageRatio(), "redlinePct", snapshot.redlinePct(),
                 "reliable", snapshot.reliable());
     }
@@ -617,7 +702,7 @@ public class OpsReferralRewardService {
                         OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "REFERRAL_REWARD_EFFECTIVE_AT_MISSING"));
         try {
-            return LocalDateTime.ofInstant(Instant.parse(raw), ZoneOffset.UTC);
+            return LocalDateTime.ofInstant(Instant.parse(raw), DATABASE_ZONE);
         } catch (RuntimeException ex) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
         }

@@ -44,6 +44,46 @@ public class StorefrontProductReleasePolicy {
     }
 
     /**
+     * Applies the E1 release gate to the trade-in side door. Early access is
+     * deliberately narrower than ordinary storefront release: it can only
+     * relax the release-month check of an otherwise eligible, already-reached
+     * generation gate. It never bypasses phase, eligibility, or malformed
+     * configuration failures.
+     */
+    public Decision evaluateTradein(
+            String productNo, String unlockPhaseId, boolean earlyAccessEnabled, int earlyAccessLeadDays) {
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        if (rhythm == null || rhythm.currentMonth() < 1) {
+            return Decision.closed("H1_RHYTHM_UNAVAILABLE", unlockPhaseId);
+        }
+        int platformMonth = Math.min(12, rhythm.currentMonth());
+        List<DevicePhaseView> phases = catalogRepository.listPhases(E1_SCOPE, false);
+        if (phases == null || phases.isEmpty()) {
+            return Decision.closed("E1_PHASE_CONFIG_UNAVAILABLE", unlockPhaseId);
+        }
+        int currentIndex = Math.min(phases.size() - 1, ((platformMonth - 1) * phases.size()) / 12);
+        DeviceGenerationGateView gate = StringUtils.hasText(productNo)
+                ? catalogRepository.findGenerationGate(productNo).orElse(null)
+                : null;
+        Decision ordinary = evaluateWithContext(unlockPhaseId, platformMonth, phases, currentIndex, gate);
+        if (ordinary.available()
+                || !earlyAccessEnabled
+                || gate == null
+                || !"E1_GENERATION_RELEASE_MONTH_NOT_REACHED".equals(ordinary.reason())) {
+            return ordinary;
+        }
+
+        int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
+        int phaseOffset = gate.phaseOffset() == null ? 0 : gate.phaseOffset();
+        int releaseAtMonth = releaseMonth + phaseOffset;
+        int elapsedDaysInMonth = Math.floorDiv(Math.max(0, Math.min(100, rhythm.phaseProgressPct())) * 30, 100);
+        int remainingDays = Math.max(0, (releaseAtMonth - platformMonth) * 30 - elapsedDaysInMonth);
+        return remainingDays > 0 && remainingDays <= earlyAccessLeadDays
+                ? Decision.openEarly(unlockPhaseId)
+                : ordinary;
+    }
+
+    /**
      * Evaluates a storefront candidate set from one rhythm snapshot, one phase
      * snapshot and one generation-gate snapshot. Home/Earn uses this path so a
      * conversion card does not multiply E1 reads by the number of candidates.
@@ -132,6 +172,10 @@ public class StorefrontProductReleasePolicy {
     public record Decision(boolean available, String reason, String releasePhaseId) {
         public static Decision open(String releasePhaseId) {
             return new Decision(true, "AVAILABLE", releasePhaseId);
+        }
+
+        public static Decision openEarly(String releasePhaseId) {
+            return new Decision(true, "TRADEIN_EARLY_ACCESS_AVAILABLE", releasePhaseId);
         }
 
         public static Decision closed(String reason, String releasePhaseId) {

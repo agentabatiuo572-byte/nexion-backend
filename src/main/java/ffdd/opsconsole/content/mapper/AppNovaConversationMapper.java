@@ -30,16 +30,36 @@ public interface AppNovaConversationMapper extends BaseMapper<Object> {
     String latestConversationId(@Param("userId") Long userId);
 
     @Select("""
-            SELECT turn_id turnId, conversation_id conversationId, language,
-                   user_message userMessage, assistant_reply assistantReply,
-                   provider, model,
-                   CAST(UNIX_TIMESTAMP(created_at) * 1000 AS UNSIGNED) createdAtEpochMs
+            SELECT recent.turn_id turnId, recent.conversation_id conversationId, recent.language,
+                   recent.user_message userMessage, recent.assistant_reply assistantReply,
+                   recent.provider, recent.model,
+                   CAST(UNIX_TIMESTAMP(recent.created_at) * 1000 AS UNSIGNED) createdAtEpochMs
+              FROM (
+                    SELECT id, turn_id, conversation_id, language, user_message, assistant_reply,
+                           provider, model, created_at
+                      FROM nx_nova_conversation_turn
+                     WHERE user_id=#{userId} AND conversation_id=#{conversationId}
+                       AND (#{beforeTurnId} IS NULL OR id < (
+                           SELECT cursor_row.id FROM (
+                             SELECT id FROM nx_nova_conversation_turn
+                              WHERE user_id=#{userId} AND conversation_id=#{conversationId} AND turn_id=#{beforeTurnId}
+                              LIMIT 1
+                           ) cursor_row
+                       ))
+                     ORDER BY id DESC
+                     LIMIT #{limit}
+              ) recent
+             ORDER BY recent.id ASC
+            """)
+    List<TurnRow> turns(@Param("userId") Long userId, @Param("conversationId") String conversationId,
+            @Param("beforeTurnId") String beforeTurnId, @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*)
               FROM nx_nova_conversation_turn
              WHERE user_id=#{userId} AND conversation_id=#{conversationId}
-             ORDER BY id ASC
-             LIMIT 200
             """)
-    List<TurnRow> turns(@Param("userId") Long userId, @Param("conversationId") String conversationId);
+    long countTurns(@Param("userId") Long userId, @Param("conversationId") String conversationId);
 
     @Insert("""
             INSERT INTO nx_nova_conversation_turn (

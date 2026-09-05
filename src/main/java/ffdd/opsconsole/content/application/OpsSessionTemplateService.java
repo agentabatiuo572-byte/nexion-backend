@@ -172,6 +172,9 @@ public class OpsSessionTemplateService {
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
+        if ("enabled".equals(normalizedField) && "on".equals(value)) {
+            return ApiResult.fail(409, "SESSION_ADVISOR_AUTOPUSH_EXECUTOR_UNAVAILABLE");
+        }
         String current = configValueForUpdate(policyKey(normalizedField), defaultPolicyValue(normalizedField));
         if (StringUtils.hasText(request.expectedValue()) && !current.equals(request.expectedValue().trim())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SESSION_POLICY_STALE");
@@ -468,7 +471,7 @@ public class OpsSessionTemplateService {
 
     private SessionAdvisorPolicyView advisorPolicy() {
         return new SessionAdvisorPolicyView(
-                "on".equalsIgnoreCase(configValue(policyKey("enabled"), "on")),
+                false,
                 intConfig(policyKey("delayMs"), 1500),
                 intConfig(policyKey("cooldownHours"), 24),
                 intConfig(policyKey("maxPerSession"), 1),
@@ -595,7 +598,7 @@ public class OpsSessionTemplateService {
 
     private String defaultPolicyValue(String field) {
         return switch (field) {
-            case "enabled" -> "on";
+            case "enabled" -> "off";
             case "delayMs" -> "1500";
             case "cooldownHours" -> "24";
             case "maxPerSession" -> "1";

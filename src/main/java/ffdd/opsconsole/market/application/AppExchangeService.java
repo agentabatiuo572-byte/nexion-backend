@@ -10,6 +10,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -29,6 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -41,6 +43,7 @@ import org.springframework.core.env.Environment;
 public class AppExchangeService {
     private static final long MARKET_MAX_AGE_MINUTES = 5;
     private static final long MARKET_MAX_FUTURE_SKEW_MINUTES = 1;
+    private static final long MARKET_HISTORY_CACHE_MS = 60_000;
     private static final String USER_CAP = "wallet.exchange.user_daily_cap_usdt";
     private static final String PLATFORM_CAP = "wallet.exchange.platform_daily_cap_usdt";
     private static final String FEE_PCT = "wallet.exchange.fee_pct";
@@ -74,6 +77,8 @@ public class AppExchangeService {
 
     /** The sandbox ledger is absent from production-only deployments. */
     private final Optional<AppMarketSandboxService> sandbox;
+    private final Object marketHistoryCacheLock = new Object();
+    private final AtomicReference<CachedMarketHistory> marketHistoryCache = new AtomicReference<>();
 
     public ApiResult<Map<String, Object>> caps() {
         if (isStrictIsolatedRuntime() && !isDevelopmentRuntime()) return ApiResult.ok(sandboxCaps());
@@ -95,23 +100,49 @@ public class AppExchangeService {
         requireCanonicalReadRuntime();
         List<NexMarketCurveFrame> frames = curveFrames();
         BigDecimal price = requirePublicPrice();
-        List<AppExchangeMapper.MarketPoint> recentPoints = mapper.recentMarketPoints();
+        List<AppExchangeMapper.MarketPoint> historyPoints = marketHistoryPoints();
         LocalDateTime now = LocalDateTime.now(clock);
-        List<Map<String,Object>> history24h = (recentPoints == null ? List.<AppExchangeMapper.MarketPoint>of() : recentPoints).stream()
+        List<AppExchangeMapper.MarketPoint> verifiedHistory = (historyPoints == null
+                ? List.<AppExchangeMapper.MarketPoint>of() : historyPoints).stream()
                 .filter(point -> point != null && point.priceUsdt() != null
                         && point.priceUsdt().compareTo(BigDecimal.ZERO) > 0 && point.sampledAt() != null
-                        && !point.sampledAt().isBefore(now.minusHours(24))
                         && !point.sampledAt().isAfter(now.plusMinutes(MARKET_MAX_FUTURE_SKEW_MINUTES)))
-                .map(point -> linked("price", point.priceUsdt(), "sampledAt", point.sampledAt()))
+                .toList();
+        List<Map<String,Object>> history = verifiedHistory.stream()
+                .map(this::marketHistoryPoint)
+                .toList();
+        List<Map<String,Object>> history24h = verifiedHistory.stream()
+                .filter(point -> !point.sampledAt().isBefore(now.minusHours(24)))
+                .map(this::marketHistoryPoint)
                 .toList();
         return ApiResult.ok(linked(
                 "asset", "NEX", "currency", "USDT", "currentPrice", price,
                 "costBasis", number(COST_BASIS, "0.085"),
                 "frames", frames, "sparkline", frames.stream().map(NexMarketCurveFrame::targetPrice).toList(),
-                "history24h", history24h,
+                "history", history, "history24h", history24h, "historyMaxDays", 365,
                 "sampledAt", LocalDateTime.now(clock), "serverCanonical", true,
-                "source", "G3 weekly_curve + nx_price_index 24h history",
+                "source", "G3 weekly_curve + nx_price_index sampled history",
                 "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
+    private Map<String, Object> marketHistoryPoint(AppExchangeMapper.MarketPoint point) {
+        return linked("price", point.priceUsdt(), "sampledAt", point.sampledAt(),
+                "sampledAtEpochMs", point.sampledAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE)
+                        .toInstant().toEpochMilli());
+    }
+
+    private List<AppExchangeMapper.MarketPoint> marketHistoryPoints() {
+        long now = clock.millis();
+        CachedMarketHistory cached = marketHistoryCache.get();
+        if (cached != null && now - cached.loadedAtMillis() < MARKET_HISTORY_CACHE_MS) return cached.points();
+        synchronized (marketHistoryCacheLock) {
+            cached = marketHistoryCache.get();
+            if (cached != null && now - cached.loadedAtMillis() < MARKET_HISTORY_CACHE_MS) return cached.points();
+            List<AppExchangeMapper.MarketPoint> loaded = mapper.marketHistoryPoints();
+            List<AppExchangeMapper.MarketPoint> points = loaded == null ? List.of() : List.copyOf(loaded);
+            marketHistoryCache.set(new CachedMarketHistory(now, points));
+            return points;
+        }
     }
 
     public ApiResult<Map<String, Object>> externalMarket() {
@@ -176,11 +207,15 @@ public class AppExchangeService {
     }
 
     public ApiResult<Map<String, Object>> state(Long userId) {
-        if (sandboxRuntime()) return sandbox.orElseThrow().exchangeState(userId);
+        return state(userId, 1, 50);
+    }
+
+    public ApiResult<Map<String, Object>> state(Long userId, int requestedPageNum, int requestedPageSize) {
+        if (sandboxRuntime()) return sandbox.orElseThrow().exchangeState(userId, requestedPageNum, requestedPageSize);
         requireExchangeSubject(userId);
         AppExchangeMapper.WalletGateRow wallet = mapper.lockWalletGate(userId);
         if (wallet == null) throw new BizException(409, "EXCHANGE_WALLET_NOT_FOUND");
-        return ApiResult.ok(stateMap(userId, wallet));
+        return ApiResult.ok(stateMap(userId, wallet, requestedPageNum, requestedPageSize));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -269,7 +304,10 @@ public class AppExchangeService {
         String normalized = StringUtils.hasText(exchangeNo) ? exchangeNo.trim() : "";
         if (!normalized.matches("EX-[A-Za-z0-9-]{8,90}")) throw new BizException(422, "EXCHANGE_NO_INVALID");
         return executeOnce("CANCEL:" + normalized + ":USER:" + userId, idempotencyKey, normalized, () -> {
+            AppExchangeMapper.QueuedRow queued = mapper.lockOwnQueued(userId, normalized);
+            if (queued == null) throw new BizException(409, "EXCHANGE_NOT_CANCELLABLE");
             if (mapper.cancelOwnQueued(userId, normalized) != 1) throw new BizException(409, "EXCHANGE_NOT_CANCELLABLE");
+            refundReservedSource(queued);
             Map<String, Object> event = linked("exchangeNo", normalized, "status", "CANCELLED", "cancelledBy", "USER");
             String receiptId = outbox.publish("EXCHANGE_ORDER", normalized, "exchange.queue_cancelled", event);
             recordUserAudit(userId, normalized, idempotencyKey, event, "/api/exchange/" + normalized + "/cancel");
@@ -291,7 +329,23 @@ public class AppExchangeService {
         AppExchangeMapper.ExchangeWrite write = new AppExchangeMapper.ExchangeWrite(userId, exchangeNo,
                 request.fromAsset(), "USDT".equals(request.fromAsset()) ? "NEX" : "USDT",
                 request.fromAmount(), toAmount, price, status);
+        if (queueable) {
+            BigDecimal usdtHold = "USDT".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
+            BigDecimal nexHold = "NEX".equals(request.fromAsset()) ? request.fromAmount().negate() : BigDecimal.ZERO;
+            if (mapper.applyWalletDelta(userId, usdtHold, nexHold) != 1) {
+                throw new BizException(409, "EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
+            }
+        }
         if (mapper.insertOrder(write) != 1) throw new BizException(409, "EXCHANGE_ORDER_CONFLICT");
+        if (queueable) {
+            BigDecimal fromAfter = "USDT".equals(request.fromAsset())
+                    ? walletBalance(userId, true) : walletBalance(userId, false);
+            if (mapper.insertLedger(new AppExchangeMapper.LedgerWrite(userId, exchangeNo + "-HOLD",
+                    request.fromAsset(), "OUT", request.fromAmount(), fromAfter,
+                    "G2 queued swap source reservation")) != 1) {
+                throw new BizException(409, "EXCHANGE_LEDGER_CONFLICT");
+            }
+        }
         Map<String, Object> event = linked("exchangeNo", exchangeNo, "gate", gate, "status", status,
                 "grossUsdt", grossUsdt);
         String receiptId = outbox.publish("EXCHANGE_ORDER", exchangeNo, "exchange.gated", event);
@@ -303,6 +357,27 @@ public class AppExchangeService {
         return ApiResult.ok(result);
     }
 
+    private BigDecimal walletBalance(Long userId, boolean usdt) {
+        AppExchangeMapper.WalletGateRow current = mapper.lockWalletGate(userId);
+        if (current == null) throw new BizException(409, "EXCHANGE_WALLET_NOT_FOUND");
+        return money(usdt ? current.usdtAvailable() : current.nexAvailable());
+    }
+
+    private void refundReservedSource(AppExchangeMapper.QueuedRow queued) {
+        if (mapper.sourceReservationExists(queued.exchangeNo()) <= 0) return;
+        BigDecimal usdtRefund = "USDT".equals(queued.fromAsset()) ? queued.fromAmount() : BigDecimal.ZERO;
+        BigDecimal nexRefund = "NEX".equals(queued.fromAsset()) ? queued.fromAmount() : BigDecimal.ZERO;
+        if (mapper.applyWalletDelta(queued.userId(), usdtRefund, nexRefund) != 1) {
+            throw new BizException(409, "EXCHANGE_QUEUE_REFUND_CONFLICT");
+        }
+        BigDecimal after = walletBalance(queued.userId(), "USDT".equals(queued.fromAsset()));
+        if (mapper.insertLedger(new AppExchangeMapper.LedgerWrite(queued.userId(), queued.exchangeNo() + "-REFUND",
+                queued.fromAsset(), "IN", queued.fromAmount(), after,
+                "G2 queued swap source reservation refund")) != 1) {
+            throw new BizException(409, "EXCHANGE_LEDGER_CONFLICT");
+        }
+    }
+
     private String gate(
             Long userId, AppExchangeMapper.WalletGateRow wallet, BigDecimal grossUsdt) {
         if (mapper.geoBlocked(wallet.countryCode()) > 0) return "GEO_BLOCKED";
@@ -312,12 +387,23 @@ public class AppExchangeService {
     }
 
     private Map<String, Object> stateMap(Long userId, AppExchangeMapper.WalletGateRow wallet) {
+        return stateMap(userId, wallet, 1, 50);
+    }
+
+    private Map<String, Object> stateMap(
+            Long userId, AppExchangeMapper.WalletGateRow wallet, int requestedPageNum, int requestedPageSize) {
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        long total = Math.max(0L, mapper.countUserOrders(userId));
+        long offset = (long) (pageNum - 1) * pageSize;
         return linked("caps", caps().getData(), "wallet", linked("usdtAvailable", money(wallet.usdtAvailable()),
                         "nexAvailable", money(wallet.nexAvailable())),
                 "todayUserUsedUsdt", money(mapper.userTodayUsdt(userId)),
                 "todayPlatformUsedUsdt", money(mapper.platformTodayUsdt()),
                 "lifetimeExchangedUsdt", money(mapper.userLifetimeUsdt(userId)),
-                "orders", mapper.userOrders(userId), "serverCanonical", true,
+                "orders", mapper.userOrders(userId, offset, pageSize),
+                "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
+                "serverCanonical", true,
                 "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
@@ -470,7 +556,7 @@ public class AppExchangeService {
                 "asset", "NEX", "currency", "USDT",
                 "currentPrice", sandboxNumber("nexion.exchange.sandbox.current-price", "0.125"),
                 "costBasis", sandboxNumber("nexion.exchange.sandbox.cost-basis", "0.085"),
-                "frames", frames, "sparkline", sparkline, "history24h", List.of(),
+                "frames", frames, "sparkline", sparkline, "history", List.of(), "history24h", List.of(), "historyMaxDays", 365,
                 "sampledAt", LocalDateTime.now(clock), "serverCanonical", true,
                 "source", "mock",
                 "sourceEnvironment", "SANDBOX", "runId", sandboxRunId());
@@ -574,4 +660,5 @@ public class AppExchangeService {
     public record SwapRequest(String direction,BigDecimal fromAmount,Boolean queueIfCapped) {}
     private record NormalizedSwap(String fromAsset,BigDecimal fromAmount,boolean queueIfCapped) {}
     private record ExternalAsset(String symbol,String name,String category) {}
+    private record CachedMarketHistory(long loadedAtMillis,List<AppExchangeMapper.MarketPoint> points) {}
 }

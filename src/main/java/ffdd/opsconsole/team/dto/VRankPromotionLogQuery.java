@@ -17,5 +17,9 @@ public record VRankPromotionLogQuery(
         String v,
         String cohort,
         String from,
-        String to) {
+        String to,
+        String cursor) {
+    public VRankPromotionLogQuery(Long userId, String v, String cohort, String from, String to) {
+        this(userId, v, cohort, from, to, null);
+    }
 }

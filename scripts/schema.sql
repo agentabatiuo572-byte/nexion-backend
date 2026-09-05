@@ -1469,6 +1469,8 @@ CREATE TABLE IF NOT EXISTS nx_order_item (
   quantity INT NOT NULL DEFAULT 1,
   unit_price_usdt DECIMAL(18,6) NOT NULL,
   line_amount_usdt DECIMAL(18,6) NOT NULL,
+  lifetime_quota_reserved TINYINT NOT NULL DEFAULT 0,
+  lifetime_quota_gate_generation BIGINT NULL,
   sort_order INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -3300,6 +3302,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   unlock_phase VARCHAR(32) NOT NULL DEFAULT '',
   unlock_phase_id BIGINT NULL,
   purchase_gate_json TEXT NULL,
+  purchase_gate_generation BIGINT NOT NULL DEFAULT 1,
   image_asset_id VARCHAR(512) NULL,
   image_object_key VARCHAR(255) NULL,
   image_preview_url TEXT NULL,
@@ -3759,6 +3762,8 @@ CREATE TABLE IF NOT EXISTS nx_mission (
   mission_code VARCHAR(64) NOT NULL,
   mission_name VARCHAR(128) NOT NULL,
   mission_type VARCHAR(32) NOT NULL,
+  mission_category VARCHAR(32) NOT NULL DEFAULT 'EXPLORE',
+  action_route VARCHAR(255) NOT NULL DEFAULT '/pages/missions/missions',
   reward_points INT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3791,12 +3796,14 @@ CREATE TABLE IF NOT EXISTS nx_user_mission (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
   mission_id BIGINT NOT NULL,
+  instance_key VARCHAR(48) NOT NULL DEFAULT 'LEGACY',
   mission_status VARCHAR(32) NOT NULL,
   completed_at DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_user_mission (user_id, mission_id)
+  UNIQUE KEY uk_user_mission (user_id, mission_id, instance_key),
+  KEY idx_user_mission_current (user_id, instance_key, is_deleted, mission_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_daily_check_in (

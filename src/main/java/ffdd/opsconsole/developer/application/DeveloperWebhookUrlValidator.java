@@ -60,14 +60,32 @@ public final class DeveloperWebhookUrlValidator {
         boolean loopbackOptIn = environment != null && isLoopbackOptIn(uri, environment);
         InetAddress[] addresses = InetAddress.getAllByName(uri.getHost());
         for (InetAddress address : addresses) {
-            if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
-                    || address.isSiteLocalAddress() || address.isMulticastAddress()
-                    || "169.254.169.254".equals(address.getHostAddress())) {
+            if (isForbiddenAddress(address)) {
                 if (loopbackOptIn && address.isLoopbackAddress()) continue;
                 throw invalid("DEVELOPER_WEBHOOK_PRIVATE_ADDRESS_FORBIDDEN");
             }
         }
         return addresses;
+    }
+
+    /**
+     * Reject every non-public address range that can be reached after DNS resolution.
+     * Java's site-local predicate omits RFC 6598 carrier-grade NAT, RFC 2544
+     * benchmarking, and RFC 4193 IPv6 unique-local addresses.
+     */
+    static boolean isForbiddenAddress(InetAddress address) {
+        if (address == null) return true;
+        if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress() || address.isMulticastAddress()
+                || "169.254.169.254".equals(address.getHostAddress())) return true;
+        byte[] bytes = address.getAddress();
+        if (bytes.length == 4) {
+            int first = Byte.toUnsignedInt(bytes[0]);
+            int second = Byte.toUnsignedInt(bytes[1]);
+            return first == 100 && second >= 64 && second <= 127
+                    || first == 198 && (second == 18 || second == 19);
+        }
+        return bytes.length == 16 && (bytes[0] & 0xFE) == 0xFC;
     }
 
     private static boolean isForbiddenLiteral(String host) {

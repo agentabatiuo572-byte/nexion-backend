@@ -166,6 +166,30 @@ class LegalTermsServiceTest {
     }
 
     @Test
+    void productionNeverExposesOrPublishesAcceptanceFixtureTerms() {
+        LegalTermsVersionView fixture = new LegalTermsVersionView(9L, "en", "GLOBAL", "v4",
+                LocalDateTime.parse("2026-08-17T00:00:00"), "PUBLISHED",
+                "Nexion Acceptance Terms seven-closures-20260817 post-fix-v4", "QA acceptance fixture",
+                List.of(new LegalTermsSection("acceptance", "Acceptance", "For acceptance testing only", 10)),
+                2L, LocalDateTime.parse("2026-08-17T00:00:00"), null);
+        when(repository.findPublished("en", "GLOBAL")).thenReturn(java.util.Optional.of(fixture));
+        assertThat(service.current("en", "GLOBAL", null).getMessage()).isEqualTo("LEGAL_TERMS_UNAVAILABLE");
+        assertThat(service.acknowledge(42L,
+                new LegalTermsAckRequest("en", "GLOBAL", "v4", true, "fixture-ack", "")).getMessage())
+                .isEqualTo("LEGAL_TERMS_UNAVAILABLE");
+        verify(repository, never()).saveAck(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(audit, never()).recordRequired(any());
+
+        LegalTermsVersionView draft = new LegalTermsVersionView(9L, "en", "GLOBAL", "v4",
+                fixture.effectiveAt(), "DRAFT", fixture.title(), fixture.summary(), fixture.sections(),
+                1L, null, null);
+        when(repository.findVersion("en", "GLOBAL", "v4")).thenReturn(java.util.Optional.of(draft));
+        assertThat(service.publish("en", "GLOBAL", "v4", 1L, "legal release review").getMessage())
+                .isEqualTo("LEGAL_TERMS_PLACEHOLDER_FORBIDDEN");
+        verify(repository, never()).publish(eq("en"), eq("GLOBAL"), eq("v4"), eq(1L), any(), any());
+    }
+
+    @Test
     void explicitTestRunSupportsSandboxAcknowledgementAndAcknowledgedReadback() {
         LegalTermsVersionView current = version("en", "GLOBAL", "v4");
         when(repository.findPublished("en", "GLOBAL")).thenReturn(java.util.Optional.of(current));
@@ -213,6 +237,7 @@ class LegalTermsServiceTest {
         when(repository.revoke("en", "VN", "v6", 2L, "system", LocalDateTime.parse("2026-08-17T00:00:00"))).thenReturn(revoked);
         when(repository.publish("en", "VN", "v6", 99L, "system", LocalDateTime.parse("2026-08-17T00:00:00")))
                 .thenThrow(new org.springframework.dao.OptimisticLockingFailureException("conflict"));
+        when(repository.findVersion("en", "VN", "v6")).thenReturn(java.util.Optional.of(draft));
         assertThat(service.publish("en", "VN", "v6", 1L, "legal approves release").getData()).isEqualTo(published);
         assertThat(service.revoke("en", "VN", "v6", 2L, "legal withdraws release").getData()).isEqualTo(revoked);
         assertThat(service.publish("en", "VN", "v6", 99L, "legal approves release").getMessage()).isEqualTo("LEGAL_TERMS_VERSION_CONFLICT");

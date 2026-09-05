@@ -9,13 +9,17 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
+import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
 import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.security.core.Authentication;
@@ -54,6 +58,45 @@ class AppVRankControllerTest {
                 .containsEntry("source", "VRankPromotionEngine")
                 .containsEntry("promotionMode", "STEPWISE")
                 .containsEntry("conditionSemantics", "POSITIVE_FIELDS_ONLY");
+    }
+
+    @Test
+    void rankLadderPreservesEveryConfiguredRewardTypeForSemanticDisplay() {
+        var commission = mock(TeamCommissionRepository.class);
+        when(commission.vRankRows()).thenReturn(List.of(Map.of(
+                "v", "V3", "label", "Captain", "visible", 1,
+                "unilevelDepth", "L1", "peerBonusRate", BigDecimal.ZERO, "votes", 1)));
+        when(commission.unilevelRates()).thenReturn(List.of());
+        when(commission.selectVRankRewardRulesByRank("V3")).thenReturn(List.of(
+                new VRankRewardRuleRow("r-usdt", "V3", "usdt", new BigDecimal("10"), null, null, null, 1),
+                new VRankRewardRuleRow("r-voucher", "V3", "voucher", null, "V-1", null, null, 2),
+                new VRankRewardRuleRow("r-sku", "V3", "sku", null, null, "SKU-1", null, 3),
+                new VRankRewardRuleRow("r-custom", "V3", "custom", null, null, null, "Priority support", 4)));
+
+        var result = new AppVRankController(commission, mock(VRankPerformanceRepository.class),
+                mock(AppTeamInsightsMapper.class), new MockEnvironment()).ranks();
+
+        assertThat(result.getData().get("ranks").toString())
+                .contains("USDT", "VOUCHER", "SKU", "CUSTOM", "V-1", "SKU-1", "Priority support");
+    }
+
+    @Test
+    void rankLadderUsesPcPublishedPrizeNameAndTitles() {
+        var commission = mock(TeamCommissionRepository.class);
+        when(commission.vRankRows()).thenReturn(List.of(Map.of(
+                "v", "V3", "label", "Captain", "visible", 1,
+                "unilevelDepth", "L1", "peerBonusRate", BigDecimal.ZERO, "votes", 1)));
+        when(commission.unilevelRates()).thenReturn(List.of());
+        when(commission.selectVRankRewardRulesByRank("V3")).thenReturn(List.of());
+        var config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("team.ui.F.prize.name")).thenReturn(Optional.of("NexGrid Champions"));
+        when(config.activeValue("team.ui.F.vrank.titles")).thenReturn(Optional.of("{\"V3\":\"Navigator\"}"));
+
+        var result = new AppVRankController(commission, mock(VRankPerformanceRepository.class),
+                mock(AppTeamInsightsMapper.class), new MockEnvironment(), config, new ObjectMapper()).ranks();
+
+        assertThat(result.getData()).containsEntry("prizeName", "NexGrid Champions");
+        assertThat(result.getData().get("ranks").toString()).contains("Navigator");
     }
 
     @Test

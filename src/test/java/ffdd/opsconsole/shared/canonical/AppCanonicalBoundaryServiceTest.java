@@ -6,12 +6,14 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
@@ -86,7 +88,8 @@ class AppCanonicalBoundaryServiceTest {
         when(fundsSandboxProfileGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.activeUserEnvironment(42L)).thenReturn(0);
-        when(mapper.insertOrderItem(anyString(), anyLong(), anyInt(), any(BigDecimal.class))).thenReturn(1);
+        when(mapper.insertOrderItem(anyString(), anyLong(), anyInt(), any(BigDecimal.class), anyBoolean(), any())).thenReturn(1);
+        when(mapper.lockPurchaseGateGeneration(anyString())).thenReturn(1L);
         when(mapper.userCanonicalProfile(42L)).thenReturn(new CanonicalStateMapper.UserCanonicalProfile(
                 new BigDecimal("500"), new BigDecimal("80"), LocalDateTime.of(2026, 1, 1, 0, 0)));
     }
@@ -240,6 +243,33 @@ class AppCanonicalBoundaryServiceTest {
         verify(mapper, never()).insertOrder(anyLong(), anyString(), anyLong(), anyInt(),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class));
         verify(growthLifecyclePublisher, never()).prepareVoucher(any(), any(), any(), any());
+    }
+
+    @Test
+    void fullyDiscountedOrderCreatesAPayableZeroValueOrder() {
+        when(mapper.lockProduct(8L, null)).thenReturn(
+                new CanonicalStateMapper.ProductStock(8L, "BOX-8", new BigDecimal("1299"), 4, null));
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+        when(growthLifecyclePublisher.prepareVoucher(42L, "voucher-100", "BOX-8", new BigDecimal("1299.000000")))
+                .thenReturn(new AppGrowthLifecyclePublisher.VoucherRedemption(
+                        "grant-100", "voucher-100", new BigDecimal("1299.000000")));
+        when(mapper.decrementProductStock(8L, 1)).thenReturn(1);
+        when(mapper.insertOrder(eq(42L), anyString(), eq(8L), eq(1),
+                eq(new BigDecimal("1299.000000")), eq(new BigDecimal("1299.000000")),
+                eq(new BigDecimal("0.000000")))).thenReturn(1);
+
+        var result = service.createOrder(42L, null, 8L, null, 1, "voucher-100", "zero-order-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("amountUsdt", new BigDecimal("0.000000"));
+        verify(mapper).decrementProductStock(8L, 1);
+        verify(mapper).insertOrder(eq(42L), anyString(), eq(8L), eq(1),
+                eq(new BigDecimal("1299.000000")), eq(new BigDecimal("1299.000000")),
+                eq(new BigDecimal("0.000000")));
+        verify(growthLifecyclePublisher).redeemVoucher(eq(42L), any(), anyString(), eq("BOX-8"), any());
+        verify(outbox).publishUserEvent(eq("ORDER"), anyString(), eq("checkout.started"),
+                eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
     }
 
     @Test
@@ -575,6 +605,51 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void pendingOrdersExposeTheServerAuthoritativePaymentDeadline() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(userOrder(
+                "PENDING", "PENDING", "WAITING_PAYMENT")));
+
+        var result = service.orders(42L);
+
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        long expectedExpiry = LocalDateTime.of(2026, 7, 21, 5, 59)
+                .atZone(ZoneId.of("Asia/Shanghai"))
+                .toInstant()
+                .toEpochMilli();
+        assertThat(orders.get(0)).containsEntry("expiresAt", expectedExpiry);
+    }
+
+    @Test
+    void returnsBundleOrderItemsAsStructuredSkuLines() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(new CanonicalStateMapper.UserOrder(
+                "BND-1", 5L, "bundle", "NexGrid bundle", 2,
+                new BigDecimal("2589"), BigDecimal.ZERO, new BigDecimal("2589"),
+                "USDT_WALLET", "PAID", "PAID", "ACTIVATED", "BUNDLE",
+                LocalDateTime.of(2026, 7, 21, 5, 29), null, null,
+                null, null, null, null, null)));
+        when(mapper.userOrderLineItems("BND-1")).thenReturn(List.of(
+                new CanonicalStateMapper.UserOrderLineItem("S1", "NexGridBox S1", 1,
+                        new BigDecimal("1299"), new BigDecimal("1299")),
+                new CanonicalStateMapper.UserOrderLineItem("PRO", "NexGridBox Pro", 1,
+                        new BigDecimal("1290"), new BigDecimal("1290"))));
+
+        var result = service.orders(42L);
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        @SuppressWarnings("unchecked")
+        var lines = (List<Map<String, Object>>) orders.get(0).get("lineItems");
+        assertThat(lines).containsExactly(
+                Map.of("sku", "S1", "name", "NexGridBox S1", "quantity", 1,
+                        "unitPriceUsdt", new BigDecimal("1299"), "lineAmountUsdt", new BigDecimal("1299")),
+                Map.of("sku", "PRO", "name", "NexGridBox Pro", "quantity", 1,
+                        "unitPriceUsdt", new BigDecimal("1290"), "lineAmountUsdt", new BigDecimal("1290")));
+        verify(mapper).userOrderLineItems("BND-1");
+    }
+
+    @Test
     void acceptanceSandboxCheckoutCreatesOnlySandboxFactsAndNeverMutatesCanonicalCommerce() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
@@ -778,6 +853,53 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void normalizesOnlyCoherentHistoricalPaidPaidActiveOrdersIntoActivatedCanonicalRows() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(
+                legacyPaidPaidActiveOrder("TRC-LEGACY-781", LocalDateTime.of(2026, 7, 22, 13, 20, 57),
+                        LocalDateTime.of(2026, 7, 22, 13, 20, 57)),
+                legacyPaidPaidActiveOrder("TRC-LEGACY-782", LocalDateTime.of(2026, 7, 22, 13, 35, 9),
+                        LocalDateTime.of(2026, 7, 22, 13, 35, 9))));
+
+        var result = service.orders(42L);
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders).hasSize(2).allSatisfy(order -> assertThat(order)
+                .containsEntry("paymentStatus", "PAID")
+                .containsEntry("orderStatus", "COMPLETED")
+                .containsEntry("activationStatus", "ACTIVATED")
+                .containsEntry("canonicalStatus", "activated"));
+        assertThat(orders).allSatisfy(order -> {
+            assertThat(order.get("paidAt")).isInstanceOf(Long.class);
+            assertThat(order.get("activatedAt")).isInstanceOf(Long.class);
+        });
+        verify(mapper).userOrders(42L);
+    }
+
+    @Test
+    void doesNotNormalizeHistoricalPaidPaidActiveRowsWithoutCoherentLifecycleTimestamps() {
+        when(mapper.userOrders(42L)).thenReturn(List.of(
+                legacyPaidPaidActiveOrder("TRC-LEGACY-MISSING", null, null),
+                legacyPaidPaidActiveOrder("TRC-LEGACY-REVERSED", LocalDateTime.of(2026, 7, 22, 13, 35, 9),
+                        LocalDateTime.of(2026, 7, 22, 13, 20, 57))));
+
+        var result = service.orders(42L);
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        var orders = (List<Map<String, Object>>) result.getData().get("orders");
+        assertThat(orders).hasSize(2).allSatisfy(order -> assertThat(order)
+                .containsEntry("paymentStatus", "PAID")
+                .containsEntry("orderStatus", "PAID")
+                .containsEntry("activationStatus", "ACTIVE")
+                .containsEntry("canonicalStatus", "paid"));
+        assertThat(orders.get(0)).containsEntry("paidAt", null).containsEntry("activatedAt", null);
+        assertThat(orders.get(1).get("activatedAt")).isInstanceOf(Long.class);
+        assertThat(orders.get(1).get("paidAt")).isInstanceOf(Long.class);
+    }
+
+    @Test
     void acceptanceSandboxCheckoutCannotBypassTheStorefrontSpecsGate() {
         when(fundsSandboxProfileGuard.isLocalSandboxEnabled()).thenReturn(true);
         when(commerceSandboxMapper.isSandboxUser(42L)).thenReturn(true);
@@ -834,7 +956,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.insertOrder(eq(42L), anyString(), eq(18L), eq(1),
                 any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class))).thenReturn(1);
         when(mapper.insertOrderItem(anyString(), eq(18L), eq(1),
-                eq(new BigDecimal("1199.000000")))).thenReturn(1);
+                eq(new BigDecimal("1199.000000")), eq(false), eq((Long) null))).thenReturn(1);
 
         var result = service.createOrder(42L, null, 18L, 1, "development-order-key");
 
@@ -1315,10 +1437,30 @@ class AppCanonicalBoundaryServiceTest {
                 .containsEntry("rowVersion", 8L)
                 .containsEntry("alreadyDeactivated", false);
         verify(mapper).deactivateOwnedDeviceCas(42L, 9L, 7L);
+        verify(mapper).cancelActiveDeviceTasks(42L, 9L);
         verify(mapper).markDeviceRuntimeDeactivated(9L);
         verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-9"), eq("device.deactivated"),
                 eq(42L), eq("P3"), eq(5), eq("2026-W06"), any());
         verify(audit).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void deactivationAcceptsEveryCanonicalSlotOccupyingRuntimeState() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.deactivateOwnedDeviceCas(42L, 9L, 7L)).thenReturn(1);
+        when(mapper.userEventAttribution(42L)).thenReturn(
+                new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
+
+        for (String status : List.of("ACTIVE", "ONLINE", "BUSY", "RUNNING")) {
+            when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                    new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", status, "OWNED", 7L));
+
+            var result = service.deactivateDevice(42L, 9L, 7L, "deactivate-" + status.toLowerCase());
+
+            assertThat(result.getCode()).as(status).isZero();
+            assertThat(result.getData()).as(status).containsEntry("status", "DEACTIVATED");
+        }
+        verify(mapper, times(4)).deactivateOwnedDeviceCas(42L, 9L, 7L);
     }
 
     @Test
@@ -1364,6 +1506,23 @@ class AppCanonicalBoundaryServiceTest {
         verify(audit, never()).recordRequiredForTrustedActor(any());
     }
 
+    @Test
+    void deferredCommandReturnsCompleteProtocolOnFirstRequestAndReplay() {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 7L, false, "DEVICE"),
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 7L, true, "DEVICE"),
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "DEACTIVATED", "OWNED", 8L));
+        when(mapper.hasActiveTask(42L, 9L)).thenReturn(true);
+        when(mapper.markDevicePendingDeactivate(42L, 9L, 7L)).thenReturn(1);
+
+        assertThat(service.deactivateAfterTask(42L, 9L, 7L, "first").getData())
+                .containsEntry("instanceNo", "DEV-9").containsEntry("alreadyPending", false);
+        assertThat(service.deactivateAfterTask(42L, 9L, 7L, "replay").getData())
+                .containsEntry("instanceNo", "DEV-9").containsEntry("alreadyPending", true);
+        assertThat(service.deactivateAfterTask(42L, 9L, 7L, "completed").getData())
+                .containsEntry("instanceNo", "DEV-9").containsEntry("alreadyDeactivated", true);
+    }
+
     private void assertRejected(ffdd.opsconsole.shared.api.ApiResult<?> result, String code) {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo(code);
@@ -1376,6 +1535,16 @@ class AppCanonicalBoundaryServiceTest {
                 new BigDecimal("2589"), BigDecimal.ZERO, new BigDecimal("2589"),
                 "USDT_WALLET", paymentStatus, orderStatus, activationStatus, "SINGLE",
                 LocalDateTime.of(2026, 7, 21, 5, 29), null, null,
+                null, null, null, null, null);
+    }
+
+    private CanonicalStateMapper.UserOrder legacyPaidPaidActiveOrder(
+            String orderNo, LocalDateTime paidAt, LocalDateTime activatedAt) {
+        return new CanonicalStateMapper.UserOrder(
+                orderNo, 4L, "stellarbox-s1", "NexGridBox S1", 1,
+                new BigDecimal("1299"), new BigDecimal("100"), new BigDecimal("1199"),
+                "USDT_WALLET", "PAID", "PAID", "ACTIVE", "SINGLE",
+                LocalDateTime.of(2026, 7, 22, 13, 20, 57), paidAt, activatedAt,
                 null, null, null, null, null);
     }
 

@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @RestController
 @RequiredArgsConstructor
@@ -23,9 +24,12 @@ public class AppStakingController {
     }
 
     @GetMapping("/api/stakes")
-    public ApiResult<Map<String, Object>> positions(Authentication authentication) {
+    public ApiResult<Map<String, Object>> positions(
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "50") int pageSize,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.positions(userId);
+        return userId == null ? forbidden() : service.positions(userId, pageNum, pageSize);
     }
 
     @PostMapping("/api/stakes")

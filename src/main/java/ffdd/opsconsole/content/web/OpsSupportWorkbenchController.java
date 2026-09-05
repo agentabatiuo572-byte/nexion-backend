@@ -1,6 +1,8 @@
 package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
+import ffdd.opsconsole.content.application.OpsSupportAgentService;
+import ffdd.opsconsole.content.domain.SupportAdvisorUserOption;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsSupportWorkbenchController {
     private final OpsDeviceService deviceService;
     private final OpsUserService userService;
+    private final OpsSupportAgentService supportAgentService;
 
     // 设备 SKU 列表 — M1 客服总览 读
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
@@ -44,6 +47,24 @@ public class OpsSupportWorkbenchController {
                 ? List.of()
                 : page.getRecords().stream()
                         .map(record -> UserProfileListView.from(record, "SUPPORT"))
+                        .toList();
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
+    }
+
+    @PreAuthorize("hasAuthority('service_m1_write')")
+    @GetMapping("/advisor-users")
+    public ApiResult<PageResult<SupportAdvisorUserOption>> advisorUsers(UserQueryRequest request) {
+        if (!supportAgentService.canManageSupportSeats()) {
+            return ApiResult.fail(403, "SUPPORT_SEAT_MANAGEMENT_FORBIDDEN");
+        }
+        ApiResult<PageResult<UserAccountView>> result = userService.supportProfilePage(request);
+        if (result.getCode() != 0 || result.getData() == null) {
+            return ApiResult.fail(result.getCode(), result.getMessage());
+        }
+        PageResult<UserAccountView> page = result.getData();
+        List<SupportAdvisorUserOption> records = page.getRecords() == null ? List.of()
+                : page.getRecords().stream()
+                        .map(user -> new SupportAdvisorUserOption(user.userId(), user.userNo(), user.nickname(), user.phoneMasked()))
                         .toList();
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
     }

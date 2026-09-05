@@ -67,6 +67,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260813_developer_access_request.sql"),
   (Join-Path $root "scripts\migrations\20260814_team_ambassador_application.sql"),
   (Join-Path $root "scripts\migrations\20260816_team_ambassador_policy.sql"),
+  # Upgraded F4 databases may predate the mapper's audit projections.
+  (Join-Path $root "scripts\migrations\20260905_team_ambassador_policy_audit_columns.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_self_service.sql"),
   (Join-Path $root "scripts\migrations\20260816_withdrawal_attempt_authority.sql"),
   (Join-Path $root "scripts\migrations\20260816_developer_api_keys_webhooks.sql"),
@@ -78,6 +80,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260817_notification_preferences.sql"),
   (Join-Path $root "scripts\migrations\20260817_developer_access_governance.sql"),
   (Join-Path $root "scripts\migrations\20260817_legal_terms_versioned.sql"),
+  # The local canonical PRODUCTION rail must never depend on an acceptance
+  # placeholder. Publish the conservative vi/zh/en v6 baseline without
+  # overwriting later operator-owned CMS edits or revocations.
+  (Join-Path $root "scripts\migrations\20260902_legal_terms_formal_publish.sql"),
   (Join-Path $root "scripts\migrations\20260817_h7_voucher_cadence.sql"),
   (Join-Path $root "scripts\migrations\20260817_genesis_holder_policy.sql"),
   (Join-Path $root "scripts\migrations\20260820_home_grid_datacenter_metadata.sql"),
@@ -103,7 +109,45 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260829_trial_redeemed_event_schema_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260829_commission_paid_schema_revision_closure.sql"),
   (Join-Path $root "scripts\migrations\20260829_vrank_projection_closure.sql"),
-  (Join-Path $root "scripts\migrations\20260829_f5_commission_mutation_event_schema.sql")
+  # App device commands require their own canonical A4 schemas, not admin.* aliases.
+  (Join-Path $root "scripts\migrations\20260831_app_device_command_event_schema.sql"),
+  # Six audited business publishers require exact A4 fields before accepting writes.
+  (Join-Path $root "scripts\migrations\20260831_business_event_schema_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260829_f5_commission_mutation_event_schema.sql"),
+  # State reads also publish H2 transitions. Register the grace event and its
+  # exact properties before the backend accepts requests or starts schedulers.
+  (Join-Path $root "scripts\migrations\20260831_trial_grace_entered_event_schema.sql"),
+  # Read-path performance only; preserves receipt/ledger truth and verifies exact index shapes.
+  (Join-Path $root "scripts\migrations\20260831_app_statistics_read_indexes.sql"),
+  # App wallet bill keyset reads retain scope and ordering without deep offset scans.
+  (Join-Path $root "scripts\migrations\20260831_app_wallet_bills_cursor_index.sql"),
+  # Globe reads active jobs and last-hour completions without scanning task history.
+  (Join-Path $root "scripts\migrations\20260831_globe_task_read_index.sql"),
+  # H3 mission category and direct App route are configured in PC and persisted by Java.
+  (Join-Path $root "scripts\migrations\20260901_h3_mission_presentation_config.sql"),
+  (Join-Path $root "scripts\migrations\20260901_genesis_showcase_authority.sql"),
+  # Store bundle prices and App checkout read the same operator-owned E1 ladder.
+  (Join-Path $root "scripts\migrations\20260902_bundle_discount_authority.sql"),
+  # H3 current-instance authority and H8 public reward gate close two App P1 findings.
+  (Join-Path $root "scripts\migrations\20260901_h3_instances_h8_referral_gate.sql"),
+  # Only the currently active H3 mission set may consume new canonical facts.
+  (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
+  # Lifetime purchase quota release must follow the reservation made by the
+  # exact order line, never today's mutable SKU policy.
+  (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),
+  (Join-Path $root "scripts\migrations\20260902_order_quota_gate_generation.sql"),
+  # HDPay hosted pay-in dispatch and signed callback observations are durable
+  # before the App is allowed to receive or resume a provider payment page.
+  (Join-Path $root "scripts\migrations\20260901_hdpay_hosted_payin.sql"),
+  # Signed callback + provider query confirmation settles wallet, ledger and
+  # canonical intent atomically; mismatches are retained for manual review.
+  (Join-Path $root "scripts\migrations\20260902_hdpay_callback_settlement.sql"),
+  # A commerce order binds to one hosted pay-in intent; callback settlement
+  # pays the order and activates devices without passing through the wallet.
+  (Join-Path $root "scripts\migrations\20260903_hdpay_commerce_direct_purchase.sql"),
+  # Submission becomes durably unknown before any network call. Legacy
+  # PENDING rows are query-only recovery candidates and are never resubmitted.
+  (Join-Path $root "scripts\migrations\20260904_hdpay_submission_unknown_before_network.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
@@ -164,6 +208,14 @@ try {
   }
 
   $databaseSqlLiteral = $database.Replace("'", "''")
+  # INSERT IGNORE keeps operator-owned versions immutable. Pair it with an
+  # explicit postcondition so a conflicting draft/revoked v6 cannot be
+  # silently mistaken for a usable production publication.
+  $requiredLegalTermsLocaleCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(DISTINCT locale) FROM nx_legal_terms_version WHERE locale IN ('vi','zh','en') AND jurisdiction='GLOBAL' AND status='PUBLISHED' AND is_deleted=0 AND JSON_LENGTH(sections_json) >= 1 AND NOT (locale='en' AND version_label='v4' AND title='Nexion Acceptance Terms seven-closures-20260817 post-fix-v4' AND summary='QA acceptance fixture') AND NOT (version_label='v5' AND last_operator='migration:formal-terms-v5');"
+  if ($LASTEXITCODE -ne 0 -or $requiredLegalTermsLocaleCount.Trim() -ne "3") {
+    throw "Legal terms startup postcondition failed: published vi, zh, and en production terms are required. Backend startup has been stopped."
+  }
+
   $requiredIndexCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS indexed_columns FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '$databaseSqlLiteral' AND TABLE_NAME = 'nx_admin_idempotency_record' AND INDEX_NAME IN ('idx_admin_idem_status_expires_deleted', 'idx_admin_idem_expiry_claim') GROUP BY INDEX_NAME) actual WHERE (INDEX_NAME = 'idx_admin_idem_status_expires_deleted' AND indexed_columns = 'status,expires_at,is_deleted') OR (INDEX_NAME = 'idx_admin_idem_expiry_claim' AND indexed_columns = 'status,is_deleted,expires_at,id');"
   if ($LASTEXITCODE -ne 0 -or $requiredIndexCount.Trim() -ne "2") {
     throw "Both required idempotency expiry-recovery indexes with their exact column order must exist after migrations. Backend startup has been stopped."

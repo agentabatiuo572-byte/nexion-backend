@@ -114,6 +114,20 @@ class OpsMediaUploadServiceTest {
     }
 
     @Test
+    void rejectsDomainOrUsageThatCannotLaterPassTheManagedPreviewKeyPolicy() {
+        MultipartFile file = new MockMultipartFile("file", "sku.png", "image/png", new byte[] {1});
+        String tooLong = "a".repeat(65);
+
+        assertThatThrownBy(() -> service.upload(file, "idem-long-domain", tooLong, "sku", null, null, "admin"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("MEDIA_OBJECT_SEGMENT_INVALID");
+        assertThatThrownBy(() -> service.upload(file, "idem-long-usage", "e", tooLong, null, null, "admin"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("MEDIA_OBJECT_SEGMENT_INVALID");
+        verifyNoInteractions(storageService, auditLogService, idempotencyService);
+    }
+
+    @Test
     void rejectsOversizedImageBeforeObjectStorage() {
         MultipartFile file = oversizedFile("hero.png", "image/png", 10L * 1024 * 1024 + 1);
 
@@ -135,7 +149,7 @@ class OpsMediaUploadServiceTest {
 
     @Test
     void refreshPreviewUrlDecodesAssetIdAndPresignsStoredObject() {
-        String objectKey = "admin/e/sku-image/20260617/asset.png";
+        String objectKey = "admin/e/sku-image/20260617/8bbef0bd-8f4e-4c89-a7be-57238a041a36.png";
         String assetId = Base64.getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
@@ -147,6 +161,28 @@ class OpsMediaUploadServiceTest {
         assertThat(asset.objectKey()).isEqualTo(objectKey);
         assertThat(asset.previewUrl()).isEqualTo("http://minio.local/fresh-preview");
         assertThat(asset.expiresAt()).isEqualTo(LocalDateTime.parse("2026-06-17T08:15:00"));
+    }
+
+    @Test
+    void rejectsAssetIdThatNamesAnObjectOutsideTheManagedAdminNamespace() {
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("finance/private/settlement.csv".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.refreshPreviewUrl(assetId))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("ASSET_ID_INVALID");
+        verifyNoInteractions(storageService);
+    }
+
+    @Test
+    void rejectsTraversalAndNonCanonicalManagedObjectKeys() {
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("admin/e/sku-image/20260617/../../secret.png".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.refreshPreviewUrl(assetId))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("ASSET_ID_INVALID");
+        verifyNoInteractions(storageService);
     }
 
     @SuppressWarnings("unchecked")

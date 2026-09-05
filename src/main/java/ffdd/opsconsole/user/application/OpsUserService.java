@@ -185,7 +185,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "otpCooldown",
                     "重发冷却",
                     "防短信轰炸的第一道闸",
-                    "auth.risk.otp_cooldown_seconds",
+                    "auth.risk.otp_send_cooldown_seconds",
                     "秒",
                     30,
                     300,
@@ -201,17 +201,17 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "otpMax24h",
                     "同号 24h 上限",
                     "超过就要先过人机验证才发",
-                    "auth.risk.otp_max_24h",
+                    "auth.risk.otp_send_day_limit",
                     "次",
-                    1,
+                    5,
+                    50,
                     10,
-                    3,
                     null,
                     null,
                     0,
                     0,
                     0,
-                    "范围 1-10 次，同时作为 CAPTCHA 触发阈值"),
+                    "范围 5-50 次，App 注册/登录/找回密码共同执行"),
             new RegistrationRiskParamDefinition(
                     "lock",
                     "lockShort",
@@ -277,15 +277,24 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     public ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request) {
-        String validationError = validateProfileQuery(request);
+        return profilePage(request, false);
+    }
+
+    public ApiResult<PageResult<UserAccountView>> supportProfilePage(UserQueryRequest request) {
+        return profilePage(request, true);
+    }
+
+    private ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request, boolean supportPhoneSearch) {
+        String validationError = validateProfileQuery(request, supportPhoneSearch);
         if (validationError != null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), validationError);
         }
-        PageResult<UserAccountView> page = userRepository.pageProfiles(request);
+        PageResult<UserAccountView> page = supportPhoneSearch
+                ? userRepository.pageSupportProfiles(request) : userRepository.pageProfiles(request);
         requiredAudit(
                 "ADMIN.USER_PROFILE_SEARCHED",
                 "USER_PROFILE_SEARCH",
-                "C1",
+                supportPhoneSearch ? "M5_ADVISOR_BINDING" : "C1",
                 null,
                 Map.of(
                         "filterHash", filterHash(request),
@@ -441,10 +450,14 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private String validateProfileQuery(UserQueryRequest request) {
+        return validateProfileQuery(request, false);
+    }
+
+    private String validateProfileQuery(UserQueryRequest request, boolean supportPhoneSearch) {
         if (request == null) {
             return null;
         }
-        if (looksLikeRawPhone(request.keyword())) {
+        if (!supportPhoneSearch && looksLikeRawPhone(request.keyword())) {
             return "C1_RAW_PHONE_SEARCH_FORBIDDEN";
         }
         if (StringUtils.hasText(request.phoneHash())

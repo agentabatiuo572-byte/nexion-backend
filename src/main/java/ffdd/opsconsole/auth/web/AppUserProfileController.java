@@ -43,6 +43,14 @@ public class AppUserProfileController {
         return ApiResult.ok(profileService.updateNickname(requireUser(authentication), idempotencyKey, request));
     }
 
+    @PutMapping("/language")
+    public ApiResult<Map<String, Object>> updateLanguage(
+            Authentication authentication,
+            @RequestBody(required = false) UpdateLanguageRequest request) {
+        return ApiResult.ok(profileService.updateLanguage(
+                requireUser(authentication), request == null ? null : request.language()));
+    }
+
     @PostMapping(value = "/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResult<Map<String, Object>> uploadAvatar(
             Authentication authentication,
@@ -65,4 +73,6 @@ public class AppUserProfileController {
             throw new BizException(401, "USER_AUTH_REQUIRED");
         }
     }
+
+    public record UpdateLanguageRequest(String language) { }
 }

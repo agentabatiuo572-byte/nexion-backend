@@ -1,5 +1,8 @@
 package ffdd.opsconsole.team.web;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
@@ -13,10 +16,11 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.Arrays;
 import java.util.stream.Collectors;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,13 +35,36 @@ import java.util.regex.Pattern;
  * 在 remote 模式继续以本地 seed/localStorage 作为等级结论。
  */
 @RestController
-@RequiredArgsConstructor
 public class AppVRankController {
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final TeamCommissionRepository commissionRepository;
     private final VRankPerformanceRepository performanceRepository;
     private final AppTeamInsightsMapper userMapper;
     private final Environment environment;
+    private final PlatformConfigFacade configFacade;
+    private final ObjectMapper objectMapper;
+
+    @Autowired
+    public AppVRankController(TeamCommissionRepository commissionRepository,
+                              VRankPerformanceRepository performanceRepository,
+                              AppTeamInsightsMapper userMapper,
+                              Environment environment,
+                              PlatformConfigFacade configFacade,
+                              ObjectMapper objectMapper) {
+        this.commissionRepository = commissionRepository;
+        this.performanceRepository = performanceRepository;
+        this.userMapper = userMapper;
+        this.environment = environment;
+        this.configFacade = configFacade;
+        this.objectMapper = objectMapper;
+    }
+
+    AppVRankController(TeamCommissionRepository commissionRepository,
+                       VRankPerformanceRepository performanceRepository,
+                       AppTeamInsightsMapper userMapper,
+                       Environment environment) {
+        this(commissionRepository, performanceRepository, userMapper, environment, null, null);
+    }
 
     @GetMapping("/api/config/v-ranks")
     public ApiResult<Map<String, Object>> ranks() {
@@ -53,7 +80,8 @@ public class AppVRankController {
                 "source", "VRankPromotionEngine",
                 "promotionMode", "STEPWISE",
                 "conditionSemantics", "POSITIVE_FIELDS_ONLY"));
-        response.put("ranks", rankRows());
+        response.put("prizeName", configuredPrizeName());
+        response.put("ranks", rankRows(configuredRankTitles()));
         return ApiResult.ok(response);
     }
 
@@ -116,7 +144,7 @@ public class AppVRankController {
         throw new BizException(503, "V_RANK_PROFILE_INVALID");
     }
 
-    private List<Map<String, Object>> rankRows() {
+    private List<Map<String, Object>> rankRows(Map<Integer, String> titleOverrides) {
         BigDecimal directBonus = directBonus();
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> source : commissionRepository.vRankRows()) {
@@ -125,10 +153,13 @@ public class AppVRankController {
                 continue;
             }
             int rank = Integer.parseInt(rankCode.substring(1));
+            List<VRankRewardRuleRow> rewardRules = commissionRepository.selectVRankRewardRulesByRank(rankCode);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("v", rank);
-            row.put("title", String.valueOf(source.getOrDefault("label", rankCode)));
-            row.put("cnTitle", String.valueOf(source.getOrDefault("label", rankCode)));
+            String title = titleOverrides.getOrDefault(rank,
+                    String.valueOf(source.getOrDefault("label", rankCode)));
+            row.put("title", title);
+            row.put("cnTitle", title);
             row.put("selfBuyUSD", source.get("selfBuyUsd"));
             row.put("directRefs", source.get("directRefs"));
             row.put("teamVolumeUSD", source.get("teamGvUsd"));
@@ -138,11 +169,39 @@ public class AppVRankController {
             row.put("unilevelDepth", parseDepth(source.get("unilevelDepth")));
             row.put("peerBonus", decimal(source.get("peerBonusRate")));
             row.put("leadershipVotes", integer(source.get("votes")));
-            row.put("cultivationBonus", cultivationBonus(rankCode));
+            row.put("cultivationBonus", cultivationBonus(rewardRules));
+            row.put("rewards", rewardProjection(rewardRules));
             row.put("visible", booleanValue(source.get("visible")));
             rows.add(row);
         }
         return rows;
+    }
+
+    private String configuredPrizeName() {
+        if (configFacade == null) return "NexGrid V-Rank";
+        return configFacade.activeValue("team.ui.F.prize.name")
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .orElse("NexGrid V-Rank");
+    }
+
+    private Map<Integer, String> configuredRankTitles() {
+        if (configFacade == null || objectMapper == null) return Map.of();
+        String raw = configFacade.activeValue("team.ui.F.vrank.titles").orElse("").trim();
+        if (raw.isBlank()) return Map.of();
+        try {
+            Map<String, String> parsed = objectMapper.readValue(raw, new TypeReference<>() { });
+            Map<Integer, String> result = new LinkedHashMap<>();
+            for (int rank = 0; rank <= 12; rank++) {
+                String title = parsed.getOrDefault("V" + rank, "").trim();
+                if (!title.isBlank()) result.put(rank, title);
+            }
+            return result;
+        } catch (RuntimeException | java.io.IOException ignored) {
+            // PC validation normally prevents malformed values. If the row was
+            // edited out of band, keep serving the enforced rank definition.
+            return Map.of();
+        }
     }
 
     private BigDecimal directBonus() {
@@ -153,11 +212,26 @@ public class AppVRankController {
                 .orElse(BigDecimal.ZERO);
     }
 
-    private BigDecimal cultivationBonus(String rankCode) {
-        return commissionRepository.selectVRankRewardRulesByRank(rankCode).stream()
+    private BigDecimal cultivationBonus(List<VRankRewardRuleRow> rewardRules) {
+        return rewardRules.stream()
                 .filter(rule -> "nex".equalsIgnoreCase(rule.rewardType()))
                 .map(VRankRewardRuleRow::amount)
+                .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private List<Map<String, Object>> rewardProjection(List<VRankRewardRuleRow> rewardRules) {
+        return rewardRules.stream().map(rule -> {
+            Map<String, Object> reward = new LinkedHashMap<>();
+            String type = rule.rewardType() == null || rule.rewardType().isBlank()
+                    ? "CUSTOM" : rule.rewardType().trim().toUpperCase(java.util.Locale.ROOT);
+            reward.put("type", type);
+            reward.put("amount", rule.amount());
+            reward.put("voucherId", rule.voucherId());
+            reward.put("skuId", rule.skuId());
+            reward.put("customLabel", rule.customLabel());
+            return reward;
+        }).toList();
     }
 
     private int parseDepth(Object value) {

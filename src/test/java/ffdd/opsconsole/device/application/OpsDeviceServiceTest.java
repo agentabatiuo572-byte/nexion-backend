@@ -22,9 +22,11 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
+import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
@@ -92,6 +94,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -106,13 +109,15 @@ class OpsDeviceServiceTest {
     private final FakeDeviceCatalogRepository catalogRepository = new FakeDeviceCatalogRepository();
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
-    private final FakeE4OrderRefundSettlementFacade refundSettlementFacade = new FakeE4OrderRefundSettlementFacade();
+    private final FakeE4OrderRefundSettlementFacade refundSettlementFacade =
+            new FakeE4OrderRefundSettlementFacade(() -> catalogRepository.rollbackOrderAssetsCalls > 0);
     private final TreasuryCoverageFacade coverageFacade = mock(TreasuryCoverageFacade.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
     private final E2TaskPriceHistoryService taskPriceHistoryService = mock(E2TaskPriceHistoryService.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
+    private final ObjectStorageService storageService = mock(ObjectStorageService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsDeviceService service = service();
 
@@ -134,7 +139,8 @@ class OpsDeviceServiceTest {
                 taskPriceHistoryService,
                 clock,
                 seedPolicy,
-                lockMapper);
+                lockMapper,
+                storageService);
     }
 
     private OpsDeviceService serviceWithDownloadPublicationResult(String result) {
@@ -151,7 +157,8 @@ class OpsDeviceServiceTest {
                 taskPriceHistoryService,
                 clock,
                 ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-                lockMapper) {
+                lockMapper,
+                storageService) {
             @Override
             protected String verifyComputeDownloadPublication(String paramKey, String value) {
                 return result;
@@ -167,6 +174,7 @@ class OpsDeviceServiceTest {
                 .thenAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get());
         when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
                 BigDecimal.valueOf(200), BigDecimal.valueOf(100), true));
+        when(storageService.exists(anyString())).thenReturn(true);
     }
 
     @AfterEach
@@ -358,13 +366,16 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void e5OverviewAlwaysReturnsHardSixDeviceLimit() {
+    void e5OverviewReturnsServerOwnedDeviceSlotLimit() {
         ApiResult<Map<String, Object>> result = service.overview();
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("maxDevicesPerUser", 6);
+        assertThat(result.getData()).containsEntry("maxDevicesPerUser", 3);
         assertThat((List<?>) result.getData().get("sources"))
-                .noneMatch(source -> String.valueOf(source).contains("maxDevicesPerUser"));
+                .anyMatch(source -> "nx_config_item:device.max_active_slots".equals(source));
+
+        configFacade.values.put("device.max_active_slots", "8");
+        assertThat(service.overview().getData()).containsEntry("maxDevicesPerUser", 8);
     }
 
     @Test
@@ -419,6 +430,20 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("OFFLINE");
+    }
+
+    @Test
+    void e5ActivateFailsClosedWhenThePerUserActivationLockCannotBeHeld() {
+        deviceRepository.device = device("INVENTORY", 0, null);
+        deviceRepository.activationLockHeld = false;
+
+        ApiResult<DeviceOpsView> result = service.activateE5Device(
+                1L, false, "idem-e5-activation-lock",
+                new DeviceE5ActionRequest("activate inventory device", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
+        assertThat(deviceRepository.device.status()).isEqualTo("INVENTORY");
     }
 
     @Test
@@ -484,6 +509,7 @@ class OpsDeviceServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("DEACTIVATED");
+        assertThat(deviceRepository.cancelledActiveTaskDeviceIds).isEmpty();
         verify(outboxService).publish(eq("E5_DEVICE"), eq("1"),
                 eq("admin.device_deactivated"), argThat(payload -> payload instanceof Map<?, ?> map
                         && "manual".equals(map.get("mode"))));
@@ -998,17 +1024,27 @@ class OpsDeviceServiceTest {
                         "idem-sku",
                         withStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), ""))
                 .getMessage()).isEqualTo("SKU_STOCK_INVALID");
-        assertThat(service.createSku(
-                        "idem-sku",
-                        withSoldAndStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), -1L, "10"))
-                .getMessage()).isEqualTo("SKU_SOLD_INVALID");
-        assertThat(service.createSku(
-                        "idem-sku",
-                        withSoldAndStock(
-                                skuRequest("stellarbox-test", "NexionBox Test", "pending"),
-                                (long) Integer.MAX_VALUE,
-                                "1"))
-                .getMessage()).isEqualTo("SKU_SOLD_INVALID");
+    }
+
+    @Test
+    void skuSalesAreInitializedByTheOrderLifecycleAndCannotBeChangedByAnE1Edit() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        ApiResult<DeviceSkuView> created = service.createSku(
+                "idem-sku-sales-create", skuRequest("stellarbox-sales", "Sales SKU", "pending"));
+
+        assertThat(created.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.sold()).isZero();
+
+        catalogRepository.sku = sku("stellarbox-sales", "Sales SKU", "pending", "P1");
+        catalogRepository.skus.put("stellarbox-sales", catalogRepository.sku);
+        long liveOrderSales = catalogRepository.sku.sold();
+        catalogRepository.lastSkuRequest = null;
+        ApiResult<DeviceSkuView> edited = service.updateSku(
+                "stellarbox-sales", catalogRepository.sku.updatedAt().toString(), "idem-sku-sales-edit",
+                withSoldAndStock(skuRequest("stellarbox-sales", "Sales SKU", "pending"), 1L, "10"));
+
+        assertThat(edited.getCode()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.sold()).isEqualTo(liveOrderSales);
     }
 
     @Test
@@ -1081,6 +1117,66 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(catalogRepository.lastSkuRequest.imageAssetId()).isEqualTo(assetId);
         assertThat(catalogRepository.lastSkuRequest.imageObjectKey()).isEqualTo(objectKey);
+        assertThat(catalogRepository.lastSkuRequest.imagePreviewUrl()).isNull();
+    }
+
+    @Test
+    void updateSkuRejectsMediaWhoseAssetIdentityDoesNotMatchTheManagedObjectKey() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        String objectKey = "admin/e/sku-image/20260903/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String otherKey = "admin/e/sku-image/20260903/11234567-89ab-cdef-0123-456789abcdef.webp";
+        String mismatchedAssetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(otherKey.getBytes(StandardCharsets.UTF_8));
+        DeviceSkuUpsertRequest mismatched = skuRequest(
+                "stellarrack-p1", "StellarRack P1", "on", "Entry", "HK-1", 1, "active", "P1",
+                mismatchedAssetId, objectKey, "https://attacker.example/" + objectKey);
+
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1", catalogRepository.sku.updatedAt().toString(), "idem-sku-media-mismatch", mismatched);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SKU_MEDIA_IDENTITY_MISMATCH");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
+    void updateSkuRejectsManagedIdentityWhenTheUploadedObjectDoesNotExist() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        String objectKey = "admin/e/sku-image/20260903/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        when(storageService.exists(objectKey)).thenReturn(false);
+        DeviceSkuUpsertRequest missing = skuRequest(
+                "stellarrack-p1", "StellarRack P1", "on", "Entry", "HK-1", 1, "active", "P1",
+                assetId, objectKey, "https://minio.local/preview");
+
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1", catalogRepository.sku.updatedAt().toString(), "idem-sku-media-missing", missing);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SKU_MEDIA_OBJECT_NOT_FOUND");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
+    void updateSkuRejectsMediaOutsideTheManagedSkuNamespaces() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
+        String objectKey = "admin/finance/receipts/20260903/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        DeviceSkuUpsertRequest outsideNamespace = skuRequest(
+                "stellarrack-p1", "StellarRack P1", "on", "Entry", "HK-1", 1, "active", "P1",
+                assetId, objectKey, "https://storage.example/" + objectKey);
+
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarrack-p1", catalogRepository.sku.updatedAt().toString(), "idem-sku-media-namespace", outsideNamespace);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SKU_MEDIA_IDENTITY_MISMATCH");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
     }
 
     @Test
@@ -1552,6 +1648,32 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e1BundleDiscountSupportsA2ReplayWithVersionCheck() {
+        configFacade.values.put("store.bundle.discount.2.rate", "0.05");
+        configFacade.values.put("store.bundle.discount.3.rate", "0.08");
+        configFacade.values.put("store.bundle.discount.4plus.rate", "0.12");
+        configFacade.values.put("store.bundle.discount.version", "7");
+
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("E", "e1_bundle_discount", Map.of(
+                        "twoItemsPct", 6,
+                        "threeItemsPct", 9,
+                        "fourPlusItemsPct", 13,
+                        "expectedVersion", 7)),
+                new AuditReplayContext("superadmin", "A2 批准组合购阶梯折扣", "idem-bundle-discount-replay"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("store.bundle.discount.2.rate", "0.06")
+                .containsEntry("store.bundle.discount.3.rate", "0.09")
+                .containsEntry("store.bundle.discount.4plus.rate", "0.13")
+                .containsEntry("store.bundle.discount.version", "8");
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getAction()).isEqualTo("E1_BUNDLE_DISCOUNT_CHANGED");
+    }
+
+    @Test
     void legacySetCurrentPhaseReplayIsDisabled() {
         configFacade.values.put("growth.phase.current", "3");
 
@@ -1991,6 +2113,22 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void updateTaskRejectsLifecycleStatusChangesFromTheGeneralEditEndpoint() {
+        catalogRepository.task = task("TK-PAUSED", "Embedding", new BigDecimal("0.12"), "paused");
+
+        ApiResult<DeviceTaskView> result = service.updateTask(
+                "TK-PAUSED",
+                "idem-task-edit-must-preserve-status",
+                taskRequest("Embedding v2", "/1k", "手机+"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
+        assertThat(catalogRepository.task.status()).isEqualTo("paused");
+        assertThat(catalogRepository.task.name()).isEqualTo("Embedding");
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
     void updateTaskRecordsHistoryWhenCatalogEditChangesPrice() {
         catalogRepository.task = task("TK-1", "LLM 推理 70B", new BigDecimal("0.46"), "active");
         DeviceTaskUpsertRequest request = new DeviceTaskUpsertRequest(
@@ -2043,6 +2181,59 @@ class OpsDeviceServiceTest {
         assertThat(result.getData().taskId()).startsWith("TK-");
         verify(taskPriceHistoryService).recordCurrentPrice(
                 eq(result.getData().taskId()), eq(E2TaskPriceHistoryService.SOURCE_PC_CREATE), any(LocalDateTime.class));
+    }
+
+    @Test
+    void createTaskFailsClosedBelowB1RedlineBeforePersistence() {
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+
+        ApiResult<DeviceTaskView> result = service.createTask(
+                "idem-task-redline", taskRequest("LLM 推理 70B", "/1k", "手机+"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(catalogRepository.tasks).isEmpty();
+        verify(taskPriceHistoryService, never()).recordCurrentPrice(anyString(), anyString(), any());
+    }
+
+    @Test
+    void updateTaskFailsClosedForFinancialAmplificationButAllowsRestriction() {
+        catalogRepository.task = taskWithClass("TK-IG", "IG", 12);
+        catalogRepository.tasks.put("TK-IG", catalogRepository.task);
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+        DeviceTaskUpsertRequest amplified = new DeviceTaskUpsertRequest(
+                "Image generation", new BigDecimal("0.46"), "/job", "手机+", new BigDecimal("0.50"),
+                "active", "IG", "SDXL", new BigDecimal("0.02"), new BigDecimal("0.50"), "8GB",
+                "派发中", "broaden task exposure", "superadmin");
+        DeviceTaskUpsertRequest restricted = new DeviceTaskUpsertRequest(
+                "Image generation", new BigDecimal("0.46"), "/job", "手机+", new BigDecimal("0.50"),
+                "active", "IG", "SDXL", BigDecimal.ZERO, new BigDecimal("0.01"), "16GB",
+                "派发中", "restrict task exposure", "superadmin");
+
+        ApiResult<DeviceTaskView> blocked = service.updateTask("TK-IG", "idem-task-amplify", amplified);
+        ApiResult<DeviceTaskView> allowed = service.updateTask("TK-IG", "idem-task-restrict", restricted);
+
+        assertThat(blocked.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(allowed.getCode()).isZero();
+        assertThat(catalogRepository.tasks.get("TK-IG").minVram()).isEqualTo("16GB");
+    }
+
+    @Test
+    void updateTaskStatusCannotResumeDispatchBelowB1Redline() {
+        catalogRepository.task = task("TK-PAUSED", "Embedding", new BigDecimal("0.12"), "paused");
+        catalogRepository.tasks.put("TK-PAUSED", catalogRepository.task);
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                BigDecimal.valueOf(99), BigDecimal.valueOf(100), true));
+
+        ApiResult<DeviceTaskView> result = service.updateTaskStatus(
+                "TK-PAUSED", "idem-task-status-redline",
+                new DeviceTaskStatusRequest("active", "resume dispatch after review", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(catalogRepository.tasks.get("TK-PAUSED").status()).isEqualTo("paused");
     }
 
     @Test
@@ -2135,6 +2326,7 @@ class OpsDeviceServiceTest {
                 .containsEntry("orderNo", "OD-1")
                 .containsEntry("userId", 1L)
                 .containsEntry("channel", "WALLET");
+        assertThat(refundSettlementFacade.assetsRolledBackBeforeSettle).isTrue();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -2341,6 +2533,21 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void publicComputeProjectionCannotExposeAnEnabledInnerFlagWithoutAPublishedInstaller() {
+        configFacade.values.clear();
+        configFacade.values.put(ComputeConfigRegistry.flagKey("computeShareEnabled"), "on");
+
+        PlatformComputeConfigView projection = serviceWithDownloadPublicationResult(null)
+                .platformComputeConfig().getData();
+
+        assertThat(projection.featureFlags().computeShareEnabled()).isFalse();
+        assertThat(projection.computerCompute().flags())
+                .filteredOn(flag -> "computeShareEnabled".equals(flag.key()))
+                .allMatch(flag -> !flag.enabled());
+        assertThat(projection.computerCompute().download().url()).isEmpty();
+    }
+
+    @Test
     void updateComputeConfigParamRejectsMissingReason() {
         ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "   ", "superadmin");
 
@@ -2396,6 +2603,8 @@ class OpsDeviceServiceTest {
     @Test
     void replayComputeConfigFlagIsIdempotentAuditedAndPublished() {
         String paramKey = ComputeConfigRegistry.flagKey("computeShareEnabled");
+        configFacade.values.put("platform.compute.download.allowedTargets", "https://downloads.nexion.example/releases/");
+        configFacade.values.put(ComputeConfigRegistry.downloadKey("url"), "https://downloads.nexion.example/releases/janus.msi");
         ComputeConfigParamUpdateRequest request = new ComputeConfigParamUpdateRequest("on", "enable share", "spoofed-client");
         authenticate("device_e6_flag_toggle");
         A2ReplayContext.enterReplay();
@@ -2786,6 +2995,10 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat((List<?>) result.getData().get("taskClasses")).hasSize(6);
         assertThat((List<?>) result.getData().get("teaser")).hasSize(5);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> teaser = (List<Map<String, Object>>) result.getData().get("teaser");
+        assertThat(teaser).filteredOn(row -> "cloud-share".equals(row.get("deviceClass")))
+                .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 8));
         assertThat((BigDecimal) result.getData().get("queueSaturation")).isEqualByComparingTo("0.35");
     }
 
@@ -3199,6 +3412,8 @@ class OpsDeviceServiceTest {
         private String lastConfigOperator;
         private long activeDevicesByUser;
         private boolean targetOccupiesPhysicalSlot = true;
+        private boolean activationLockHeld = true;
+        private final List<Long> cancelledActiveTaskDeviceIds = new ArrayList<>();
         private Long pausedUserId;
         // 删除数据中心跨域引用计数(默认全零,测试按需覆写)
         private long referenceDevices;
@@ -3280,6 +3495,11 @@ class OpsDeviceServiceTest {
         @Override
         public boolean occupiesPhysicalSlot(Long deviceId) {
             return targetOccupiesPhysicalSlot;
+        }
+
+        @Override
+        public boolean lockUserForE5Activation(Long userId) {
+            return activationLockHeld;
         }
 
         @Override
@@ -3852,6 +4072,11 @@ class OpsDeviceServiceTest {
         }
 
         @Override
+        public Optional<DeviceTaskView> findTaskForUpdate(String taskId) {
+            return findTask(taskId);
+        }
+
+        @Override
         public DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now) {
             task = new DeviceTaskView(
                     taskId,
@@ -4170,10 +4395,17 @@ class OpsDeviceServiceTest {
 
     private static final class FakeE4OrderRefundSettlementFacade implements E4OrderRefundSettlementFacade {
         private final List<Map<String, Object>> entries = new ArrayList<>();
+        private final BooleanSupplier assetsRolledBack;
+        private boolean assetsRolledBackBeforeSettle;
+
+        private FakeE4OrderRefundSettlementFacade(BooleanSupplier assetsRolledBack) {
+            this.assetsRolledBack = assetsRolledBack;
+        }
 
         @Override
         public Settlement settle(String orderNo, Long userId, BigDecimal amount, String refundChannel,
                                  String reason, String operator, String idempotencyKey) {
+            assetsRolledBackBeforeSettle = assetsRolledBack.getAsBoolean();
             String channel = refundChannel == null ? "WALLET" : refundChannel;
             entries.add(Map.of("orderNo", orderNo, "userId", userId, "amount", amount, "channel", channel));
             return new Settlement(channel, "E4-REFUND-" + orderNo, "E4-BILL-" + orderNo,

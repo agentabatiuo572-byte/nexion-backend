@@ -123,7 +123,7 @@ public class OpsAdminAuthService {
                         enrollment ? "ENROLL" : "VERIFY",
                         Math.max(60, mfaProperties.getChallengeTtlSeconds()),
                         enrollment ? totpService.provisioningUri(mfaProperties.getIssuer(), admin.getUsername(), secret) : null,
-                        enrollment ? secret : null)));
+                        null)));
     }
 
     @Transactional

@@ -5,6 +5,7 @@ import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.infrastructure.ExchangeOrderEntity;
 import java.math.BigDecimal;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -212,6 +213,74 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
             @Param("status") String status,
             @Param("currentStatuses") List<String> currentStatuses);
 
+    @Select("""
+            SELECT user_id AS userId,
+                   exchange_no AS exchangeNo,
+                   UPPER(from_asset) AS fromAsset,
+                   from_amount AS fromAmount
+              FROM nx_exchange_order
+             WHERE exchange_no=#{exchangeNo}
+               AND UPPER(status)='QUEUED'
+               AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    QueuedCancellationRow lockQueuedForCancellation(@Param("exchangeNo") String exchangeNo);
+
+    @Select("""
+            SELECT COUNT(1)
+              FROM nx_wallet_ledger
+             WHERE biz_no=CONCAT(#{exchangeNo},'-HOLD')
+               AND biz_type='EXCHANGE_SWAP'
+               AND direction='OUT'
+               AND status='SUCCESS'
+               AND is_deleted=0
+            """)
+    int sourceReservationExists(@Param("exchangeNo") String exchangeNo);
+
+    @Select("""
+            SELECT usdt_available AS usdtAvailable,nex_available AS nexAvailable
+              FROM nx_user_wallet w
+              JOIN nx_user u ON u.id=w.user_id
+             WHERE w.user_id=#{userId}
+               AND w.is_deleted=0
+               AND COALESCE(w.sandbox,0)=0
+               AND u.is_deleted=0
+               AND COALESCE(u.sandbox,0)=0
+             LIMIT 1 FOR UPDATE
+            """)
+    WalletBalanceRow lockWalletForQueuedCancellation(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_wallet w
+               SET usdt_available=usdt_available+#{usdtDelta},
+                   nex_available=nex_available+#{nexDelta},
+                   version=version+1,
+                   updated_at=NOW()
+             WHERE w.user_id=#{userId}
+               AND w.is_deleted=0
+               AND COALESCE(w.sandbox,0)=0
+               AND EXISTS (
+                   SELECT 1 FROM nx_user u
+                    WHERE u.id=w.user_id
+                      AND u.is_deleted=0
+                      AND COALESCE(u.sandbox,0)=0)
+            """)
+    int creditWalletForQueuedCancellation(
+            @Param("userId") Long userId,
+            @Param("usdtDelta") BigDecimal usdtDelta,
+            @Param("nexDelta") BigDecimal nexDelta);
+
+    @Insert("""
+            INSERT INTO nx_wallet_ledger
+              (user_id,biz_no,biz_type,asset,direction,amount,balance_after,status,remark,created_at,updated_at,is_deleted)
+            SELECT #{userId},#{bizNo},'EXCHANGE_SWAP',#{asset},'IN',#{amount},#{balanceAfter},'SUCCESS',#{remark},NOW(),NOW(),0
+              FROM nx_user u
+             WHERE u.id=#{userId}
+               AND u.is_deleted=0
+               AND COALESCE(u.sandbox,0)=0
+            """)
+    int insertCancellationRefundLedger(CancellationRefundLedgerWrite row);
+
     @Update("""
             UPDATE nx_exchange_order
                SET status = 'CANCELLED',
@@ -221,4 +290,19 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                AND is_deleted = 0
             """)
     int cancelQueued(@Param("exchangeNo") String exchangeNo);
+
+    record QueuedCancellationRow(Long userId, String exchangeNo, String fromAsset, BigDecimal fromAmount) {
+    }
+
+    record WalletBalanceRow(BigDecimal usdtAvailable, BigDecimal nexAvailable) {
+    }
+
+    record CancellationRefundLedgerWrite(
+            Long userId,
+            String bizNo,
+            String asset,
+            BigDecimal amount,
+            BigDecimal balanceAfter,
+            String remark) {
+    }
 }

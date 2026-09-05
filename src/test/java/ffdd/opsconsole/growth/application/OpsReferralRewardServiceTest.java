@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
@@ -36,7 +37,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.time.Instant;
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -57,10 +61,12 @@ class OpsReferralRewardServiceTest {
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy = mock(OpsReadTimeSeedPolicy.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final MockEnvironment environment = productionEnvironment();
+    private final Clock clock = Clock.fixed(
+            Instant.parse("2026-08-31T16:00:00Z"), ZoneId.of("Asia/Shanghai"));
     private final H8AcceptanceSandboxCommandService sandboxCommands = mock(H8AcceptanceSandboxCommandService.class);
     private final H8AcceptanceSandboxAuditService sandboxAudit = mock(H8AcceptanceSandboxAuditService.class);
     private final OpsReferralRewardService service = new OpsReferralRewardService(
-            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, earningsRelease, environment,
+            mapper, config, ledger, audit, idempotency, coverage, outbox, readTimeSeedPolicy, earningsRelease, environment, clock,
             new H8AcceptanceSandboxRunScope(environment), sandboxCommands, sandboxAudit);
 
     private static MockEnvironment productionEnvironment() {
@@ -81,6 +87,7 @@ class OpsReferralRewardServiceTest {
         when(config.activeValue("K.rewards.welcomeGift.nexAmount")).thenReturn(Optional.of("20"));
         when(config.activeValue("K.rewards.welcomeGift.lockMode")).thenReturn(Optional.of("risk_bucket"));
         when(config.activeValue("K.rewards.inviterReward.nexAmount")).thenReturn(Optional.of("10"));
+        when(config.activeValue("K.rewards.referral.enabled")).thenReturn(Optional.of("true"));
         when(config.activeValue("K.rewards.referral.effectiveAt")).thenReturn(Optional.of("2026-07-17T00:00:00Z"));
         when(config.activeValue("K.rewards.referral.version")).thenReturn(Optional.of("1"));
         when(config.activeValueForUpdate("K.rewards.referral.version")).thenReturn(Optional.of("1"));
@@ -194,7 +201,68 @@ class OpsReferralRewardServiceTest {
         assertThat(result.welcomeGift().usdtAmount().scale()).isEqualTo(6);
         assertThat(result.welcomeGift().nexAmount().scale()).isEqualTo(6);
         assertThat(result.inviterReward().nexAmount().scale()).isEqualTo(6);
+        assertThat(result.effectiveAt()).isEqualTo(Instant.parse("2026-07-17T00:00:00Z"));
         assertThat(result.sources()).contains("nx_user.sponsor_user_id");
+    }
+
+    @Test
+    void disabledGatePublishesNoRewardPromiseAndBlocksAllSettlementWrites() {
+        when(config.activeValue("K.rewards.referral.enabled")).thenReturn(Optional.of("false"));
+
+        ReferralRewardPublicConfigView publicConfig = service.publicConfig();
+        assertThat(publicConfig.enabled()).isFalse();
+        assertThat(publicConfig.welcomeGift().usdtAmount()).isZero();
+        assertThat(publicConfig.welcomeGift().nexAmount()).isZero();
+        assertThat(publicConfig.inviterReward().nexAmount()).isZero();
+
+        assertThatThrownBy(() -> service.runSettlements("idem-ref-disabled",
+                request(10, "disabled gate must prevent any reward write")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("REFERRAL_REWARD_DISABLED");
+
+        verify(coverage, never()).snapshot();
+        verify(mapper, never()).findPendingReferrals(any(LocalDateTime.class), anyString(), anyInt(),
+                anyBoolean(), anyInt(), any());
+        verify(earningsRelease, never()).creditReward(any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
+        verify(ledger, never()).postLedgerEntry(anyString(), any(), anyString(), anyString(), anyString(),
+                any(), anyString(), anyString());
+    }
+
+    @Test
+    void reEnablingGateStartsANewForwardOnlyRewardWindowAtTheInjectedClock() {
+        when(config.activeValue("K.rewards.referral.enabled"))
+                .thenReturn(Optional.of("true"), Optional.of("false"));
+        when(config.activeValueForUpdate("K.rewards.referral.version"))
+                .thenReturn(Optional.of("1"), Optional.of("2"));
+
+        service.updateParam("enabled", "idem-disable-rewards",
+                new ReferralRewardParamUpdateRequest("enabled", "false", 1L,
+                        "pause rewards", "superadmin"));
+        Map<String, Object> result = service.updateParam("enabled", "idem-reenable-rewards",
+                new ReferralRewardParamUpdateRequest("enabled", "true", 2L,
+                        "enable rewards from this point forward", "superadmin"));
+
+        assertThat(result).containsEntry("value", "true").containsEntry("version", 3L);
+        verify(config).upsertAdminValue(eq("K.rewards.referral.effectiveAt"), eq("2026-08-31T16:00:00Z"), eq("DATETIME"),
+                eq("GROWTH_REFERRAL"), anyString());
+        verify(config).upsertAdminValue("K.rewards.referral.enabled", "true", "BOOLEAN",
+                "GROWTH_REFERRAL", "H8 邀请奖励真实发奖参数；enable rewards from this point forward");
+    }
+
+    @Test
+    void settlementSelectionUsesTheShanghaiLocalBoundaryForTheEffectiveInstant() {
+        when(config.activeValue("K.rewards.referral.effectiveAt"))
+                .thenReturn(Optional.of("2026-08-31T16:00:00Z"));
+        when(mapper.findPendingReferrals(any(LocalDateTime.class), eq("PRODUCTION"), eq(0), eq(true),
+                eq(10), eq(null))).thenReturn(List.of());
+
+        Map<String, Object> result = service.runSettlements("idem-midnight-boundary",
+                request(10, "verify forward-only boundary"));
+
+        assertThat(result).containsEntry("settled", 0);
+        verify(mapper).findPendingReferrals(eq(LocalDateTime.of(2026, 9, 1, 0, 0)),
+                eq("PRODUCTION"), eq(0), eq(true), eq(10), eq(null));
     }
 
     @Test
@@ -333,6 +401,23 @@ class OpsReferralRewardServiceTest {
     }
 
     @Test
+    void overviewPaginatesSettlementHistoryWithAnOpaqueForwardCursor() {
+        when(mapper.recentSettlementsPage(0, null, 3)).thenReturn(List.of(
+                Map.of("rowId", 12L, "settlementNo", "SET-12"),
+                Map.of("rowId", 11L, "settlementNo", "SET-11"),
+                Map.of("rowId", 10L, "settlementNo", "SET-10")));
+
+        Map<String, Object> overview = service.overview(null, 2);
+
+        assertThat(overview.get("recentSettlements")).asList().hasSize(2);
+        assertThat(overview).containsEntry("settlementHasMore", true)
+                .containsEntry("settlementNextCursor", "11")
+                .containsEntry("settlementPageSize", 2);
+        assertThat(((Map<?, ?>) ((List<?>) overview.get("recentSettlements")).get(0)).containsKey("rowId"))
+                .isFalse();
+    }
+
+    @Test
     void missingDatabaseMutexFailsClosedBeforeSettlement() {
         when(mapper.lockRewardMutation()).thenReturn(null);
 
@@ -428,6 +513,17 @@ class OpsReferralRewardServiceTest {
         assertThat(updated).containsEntry("version", 2L);
         verify(config).upsertAdminValue("K.rewards.referral.version", "2", "NUMBER",
                 "GROWTH_REFERRAL", "H8 referral reward configuration version");
+    }
+
+    @Test
+    void economicPolicyChangeStartsANewEffectiveBoundary() {
+        service.updateParam("inviter.nex", "idem-ref-effective-boundary",
+                new ReferralRewardParamUpdateRequest("inviter.nex", "11", 1L,
+                        "raise future inviter reward", "superadmin"));
+
+        verify(config).upsertAdminValue(eq("K.rewards.referral.effectiveAt"),
+                eq("2026-08-31T16:00:00Z"), eq("DATETIME"), eq("GROWTH_REFERRAL"),
+                contains("policy version 2"));
     }
 
     @Test

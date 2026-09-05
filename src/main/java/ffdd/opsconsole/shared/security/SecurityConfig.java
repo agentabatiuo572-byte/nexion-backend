@@ -9,6 +9,9 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -18,6 +21,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpMethod;
+import org.springframework.core.env.Environment;
+import org.springframework.util.StringUtils;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -35,6 +40,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final AdminRbacAuthorizationFilter adminRbacAuthorizationFilter;
+    private final Environment environment;
 
     @Bean
     public SecurityFilterChain securityFilterChain(
@@ -42,7 +48,8 @@ public class SecurityConfig {
             ImpersonationReadOnlyEnforcementFilter impersonationReadOnlyEnforcementFilter,
             ObjectProvider<DeveloperApiKeyAuthenticationFilter> developerApiKeyAuthenticationFilterProvider,
             ObjectProvider<AuthenticatedPrincipalRateLimitFilter> principalRateLimitFilterProvider,
-            ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider) throws Exception {
+            ObjectProvider<UserBlocklistEnforcementFilter> userBlocklistFilterProvider,
+            ObjectProvider<UserBusinessWriteGateFilter> userBusinessWriteGateFilterProvider) throws Exception {
         UserBlocklistEnforcementFilter userBlocklistEnforcementFilter = userBlocklistFilterProvider.getIfAvailable(
                 () -> new UserBlocklistEnforcementFilter(userId -> false));
         AuthenticatedPrincipalRateLimitFilter authenticatedPrincipalRateLimitFilter =
@@ -68,7 +75,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current", "/api/legal/privacy-policy/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/commission/rates", "/api/config/commission/guide").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
@@ -81,7 +88,13 @@ public class SecurityConfig {
                                 "/openapi/v1/topups/card/failures",
                                 "/openapi/v1/topups/card/chargebacks",
                                 "/openapi/v1/topups/provider-statements",
-                                "/openapi/v1/withdrawals/cregis/callbacks/payout")
+                                "/openapi/v1/withdrawals/cregis/callbacks/payout",
+                                "/openapi/v1/payments/hdpay/pay-in/callback")
+                        .permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                "/auth/users/password-reset/otp/send",
+                                "/auth/users/password-reset/otp/verify",
+                                "/auth/users/password-reset/otp/complete")
                         .permitAll()
                         .requestMatchers(
                                 "/api/admin/auth/login",
@@ -97,7 +110,6 @@ public class SecurityConfig {
                                 "/auth/users/oauth/exchange",
                                 "/auth/users/refresh",
                                 "/auth/users/logout",
-                                "/auth/users/password-reset/complete",
                                 "/auth/users/referrals/**",
                                 "/auth/users/register/**",
                                 "/auth/users/register",
@@ -111,13 +123,17 @@ public class SecurityConfig {
         // intentionally have no API-key filter bean. Do not add a null filter.
         if (developerApiKeyAuthenticationFilter != null) {
             configured.addFilterAfter(developerApiKeyAuthenticationFilter, JwtAuthenticationFilter.class);
+            configured.addFilterAfter(authenticatedPrincipalRateLimitFilter, DeveloperApiKeyAuthenticationFilter.class);
+        } else {
+            configured.addFilterAfter(authenticatedPrincipalRateLimitFilter, JwtAuthenticationFilter.class);
         }
-        return configured
-                .addFilterAfter(authenticatedPrincipalRateLimitFilter, JwtAuthenticationFilter.class)
+        configured
                 .addFilterAfter(impersonationReadOnlyEnforcementFilter, AuthenticatedPrincipalRateLimitFilter.class)
                 .addFilterAfter(userBlocklistEnforcementFilter, ImpersonationReadOnlyEnforcementFilter.class)
-                .addFilterAfter(adminRbacAuthorizationFilter, UserBlocklistEnforcementFilter.class)
-                .build();
+                .addFilterAfter(adminRbacAuthorizationFilter, UserBlocklistEnforcementFilter.class);
+        userBusinessWriteGateFilterProvider.ifAvailable(
+                filter -> configured.addFilterAfter(filter, AdminRbacAuthorizationFilter.class));
+        return configured.build();
     }
 
     @Bean
@@ -158,28 +174,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of(
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-                "http://[::1]:*",
-                "http://10.*:*",
-                "http://172.16.*:*",
-                "http://172.17.*:*",
-                "http://172.18.*:*",
-                "http://172.19.*:*",
-                "http://172.20.*:*",
-                "http://172.21.*:*",
-                "http://172.22.*:*",
-                "http://172.23.*:*",
-                "http://172.24.*:*",
-                "http://172.25.*:*",
-                "http://172.26.*:*",
-                "http://172.27.*:*",
-                "http://172.28.*:*",
-                "http://172.29.*:*",
-                "http://172.30.*:*",
-                "http://172.31.*:*",
-                "http://192.168.*:*"));
+        if (developmentCorsEnabled()) {
+            configuration.setAllowedOrigins(configuredDevelopmentOrigins());
+        } else {
+            configuration.setAllowedOrigins(configuredProductionOrigins());
+        }
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setExposedHeaders(List.of("Authorization"));
@@ -188,6 +187,36 @@ public class SecurityConfig {
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    private boolean developmentCorsEnabled() {
+        if (environment == null) return false;
+        return Arrays.stream(environment.getActiveProfiles())
+                .map(value -> value.toLowerCase(Locale.ROOT))
+                .anyMatch(Set.of("dev", "local", "test")::contains);
+    }
+
+    private List<String> configuredProductionOrigins() {
+        if (environment == null) return List.of();
+        String value = environment.getProperty("nexion.cors.allowed-origins", "");
+        return Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .filter(origin -> origin.startsWith("https://"))
+                .distinct()
+                .toList();
+    }
+
+    private List<String> configuredDevelopmentOrigins() {
+        if (environment == null) return List.of();
+        String value = environment.getProperty("nexion.cors.development-allowed-origins",
+                "http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173");
+        return Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .filter(origin -> origin.matches("https?://[^/*]+"))
+                .distinct()
+                .toList();
     }
 
 }

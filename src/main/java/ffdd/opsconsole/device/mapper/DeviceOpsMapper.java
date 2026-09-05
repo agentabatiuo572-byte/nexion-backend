@@ -49,14 +49,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             (SELECT COUNT(*) FROM nx_user_device a
               WHERE a.user_id=d.user_id AND a.is_deleted=0
                 AND a.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+                AND UPPER(COALESCE(NULLIF(a.device_type,''),'DEVICE')) != 'SHARE'
                 AND a.deactivated_at IS NULL) AS activeDevicesForUser,
-            (
-              SELECT COUNT(*)
-                FROM nx_user_device s
-               WHERE s.is_deleted = 0
-                 AND s.user_id = d.user_id
-                 AND NOT s.id > d.id
-            ) AS userDeviceSlotNo
+            CASE
+              WHEN UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) = 'SHARE' THEN NULL
+              WHEN d.status NOT IN ('ONLINE','BUSY','OFFLINE','ACTIVE') OR d.deactivated_at IS NOT NULL THEN NULL
+              ELSE (
+                SELECT COUNT(*)
+                  FROM nx_user_device s
+                 WHERE s.is_deleted = 0
+                   AND s.user_id = d.user_id
+                   AND s.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+                   AND s.deactivated_at IS NULL
+                   AND UPPER(COALESCE(NULLIF(s.device_type,''),'DEVICE')) != 'SHARE'
+                   AND NOT s.id > d.id
+              )
+            END AS userDeviceSlotNo
             """;
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
@@ -140,6 +148,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                  <when test='status == "ACTIVE"'>AND d.status IN ('ONLINE','ACTIVE')</when>
                  <when test='status == "UNBOUND"'>AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','INACTIVE','RETIRED')</when>
                  <when test='status == "ABNORMAL"'>AND r.online_status IN ('ERROR','ABNORMAL','LOST')</when>
+                 <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
                  <otherwise>AND d.status = #{status}</otherwise>
                </choose>
              </if>
@@ -177,6 +186,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                  <when test='status == "ACTIVE"'>AND d.status IN ('ONLINE','ACTIVE')</when>
                  <when test='status == "UNBOUND"'>AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','INACTIVE','RETIRED')</when>
                  <when test='status == "ABNORMAL"'>AND r.online_status IN ('ERROR','ABNORMAL','LOST')</when>
+                 <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
                  <otherwise>AND d.status = #{status}</otherwise>
                </choose>
              </if>
@@ -250,6 +260,13 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             """)
     Boolean occupiesPhysicalSlot(@Param("deviceId") Long deviceId);
 
+    @Select("""
+            SELECT id FROM nx_user
+             WHERE id = #{userId} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    Long lockUserForE5Activation(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_user_device
                SET status = 'OFFLINE', activated_at = COALESCE(activated_at, #{now}),
@@ -262,11 +279,38 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     @Update("""
             UPDATE nx_user_device
-               SET status = CASE WHEN #{unbind} = 1 THEN 'UNBOUND' ELSE 'DEACTIVATED' END,
+               SET status = CASE
+                     WHEN #{unbind} = 0 AND EXISTS (
+                       SELECT 1 FROM nx_compute_task t
+                        WHERE t.user_device_id = nx_user_device.id AND t.is_deleted = 0
+                          AND t.source_environment = 'PRODUCTION'
+                          AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+                     ) THEN status
+                     WHEN #{unbind} = 1 THEN 'UNBOUND' ELSE 'DEACTIVATED' END,
                    ownership_status = CASE WHEN #{unbind} = 1 THEN 'UNBOUND' ELSE ownership_status END,
-                   deactivated_at = #{now}, pending_deactivate = 0, updated_at = NOW()
+                   deactivated_at = CASE
+                     WHEN #{unbind} = 0 AND EXISTS (
+                       SELECT 1 FROM nx_compute_task t
+                        WHERE t.user_device_id = nx_user_device.id AND t.is_deleted = 0
+                          AND t.source_environment = 'PRODUCTION'
+                          AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+                     ) THEN deactivated_at ELSE #{now} END,
+                   pending_deactivate = CASE
+                     WHEN #{unbind} = 0 AND EXISTS (
+                       SELECT 1 FROM nx_compute_task t
+                        WHERE t.user_device_id = nx_user_device.id AND t.is_deleted = 0
+                          AND t.source_environment = 'PRODUCTION'
+                          AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+                     ) THEN 1 ELSE 0 END,
+                   updated_at = NOW()
              WHERE id = #{deviceId} AND is_deleted = 0
                AND status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+               AND (#{unbind} = 0 OR NOT EXISTS (
+                 SELECT 1 FROM nx_compute_task t
+                  WHERE t.user_device_id = nx_user_device.id AND t.is_deleted = 0
+                    AND t.source_environment = 'PRODUCTION'
+                    AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               ))
             """)
     int deactivateE5Device(@Param("deviceId") Long deviceId, @Param("unbind") int unbind,
                            @Param("now") LocalDateTime now);
@@ -550,6 +594,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             ON DUPLICATE KEY UPDATE
                    online_status = VALUES(online_status),
                    paused_reason = VALUES(paused_reason),
+                   active_task_no = NULL,
                    heartbeat_at = VALUES(heartbeat_at),
                    updated_at = NOW()
             """)

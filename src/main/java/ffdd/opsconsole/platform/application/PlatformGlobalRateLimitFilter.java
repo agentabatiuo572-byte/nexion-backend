@@ -32,8 +32,11 @@ public class PlatformGlobalRateLimitFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String uri = request.getRequestURI();
+        boolean protectedProviderCallback =
+                "/openapi/v1/payments/hdpay/pay-in/callback".equals(uri);
         return "OPTIONS".equalsIgnoreCase(request.getMethod())
-                || !(uri.startsWith("/api/") || uri.startsWith("/auth/"));
+                || !(uri.startsWith("/api/") || uri.startsWith("/auth/")
+                || protectedProviderCallback);
     }
 
     @Override

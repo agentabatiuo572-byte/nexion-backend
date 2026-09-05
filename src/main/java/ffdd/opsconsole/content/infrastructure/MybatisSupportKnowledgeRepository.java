@@ -32,6 +32,17 @@ public class MybatisSupportKnowledgeRepository implements SupportKnowledgeReposi
     }
 
     @Override
+    public long countPublishedFaqs(String language, String surface, String category) {
+        return helpArticleMapper.countPublishedFaqs(language, surface, category);
+    }
+
+    @Override
+    public List<SupportFaqView> listPublishedFaqPage(
+            String language, String surface, String category, long offset, int limit) {
+        return helpArticleMapper.listPublishedFaqPage(language, surface, category, offset, limit);
+    }
+
+    @Override
     public Optional<SupportFaqView> findFaq(String faqId) {
         return Optional.ofNullable(helpArticleMapper.findFaq(faqId));
     }

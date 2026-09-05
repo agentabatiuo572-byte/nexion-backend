@@ -19,9 +19,20 @@ public class AppWalletBillsController {
     @GetMapping
     public ApiResult<Map<String, Object>> list(Authentication authentication,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "50") int pageSize) {
+            @RequestParam(defaultValue = "50") int pageSize,
+            @RequestParam(required = false) String asset,
+            @RequestParam(required = false) String direction,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String cursor) {
         Long userId = userId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.list(userId, page, pageSize);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
+                : service.list(userId, page, pageSize, asset, direction, category, cursor);
+    }
+
+    @GetMapping("/summary")
+    public ApiResult<Map<String, Object>> summary(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED") : service.summary(userId);
     }
 
     private Long userId(Authentication authentication) {

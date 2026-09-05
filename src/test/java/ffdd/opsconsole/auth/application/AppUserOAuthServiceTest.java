@@ -62,7 +62,7 @@ class AppUserOAuthServiceTest {
         when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
-                                301L, "+1", "900123456789012", "Sandbox Alice"), "refresh")));
+                                301L, "+86", "13900123001", "Sandbox Alice"), "refresh")));
 
         ApiResult<UserOAuthExchangeResponse> result = service.exchange(
                 sandboxRequest("GOOGLE", "browser-a", "Sandbox Alice"),
@@ -92,7 +92,7 @@ class AppUserOAuthServiceTest {
                     return ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                             "access-" + user.getId(), "Bearer",
                             new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
-                                    user.getId(), "+1", user.getPhone(), user.getNickname()), "refresh"));
+                                    user.getId(), "+86", user.getPhone(), user.getNickname()), "refresh"));
                 });
 
         ApiResult<UserOAuthExchangeResponse> result = service.exchange(
@@ -273,14 +273,14 @@ class AppUserOAuthServiceTest {
         existing.setSandbox(1);
         existing.setIsDeleted(0);
         existing.setStatus("ACTIVE");
-        existing.setCountryCode("+1");
-        existing.setPhone("900123456789");
+        existing.setCountryCode("+86");
+        existing.setPhone("13900123001");
         existing.setNickname("Sandbox Alice");
         when(userMapper.selectById(301L)).thenReturn(existing);
         when(authService.issueRegisteredSession(existing, "127.0.0.1"))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
-                                301L, "+1", "900123456789", "Sandbox Alice"), "refresh")));
+                                301L, "+86", "13900123001", "Sandbox Alice"), "refresh")));
 
         ApiResult<UserOAuthExchangeResponse> result = service.exchange(
                 sandboxRequest("GOOGLE", "app-google-sandbox", "Changed Name"),
@@ -316,14 +316,14 @@ class AppUserOAuthServiceTest {
         winner.setSandbox(1);
         winner.setIsDeleted(0);
         winner.setStatus("ACTIVE");
-        winner.setCountryCode("+1");
-        winner.setPhone("900222222222");
+        winner.setCountryCode("+86");
+        winner.setPhone("13900222002");
         winner.setNickname("Winner");
         when(userMapper.selectById(302L)).thenReturn(winner);
         when(authService.issueRegisteredSession(winner, "127.0.0.1"))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
-                                302L, "+1", "900222222222", "Winner"), "refresh")));
+                                302L, "+86", "13900222002", "Winner"), "refresh")));
 
         ApiResult<UserOAuthExchangeResponse> result = service.exchange(
                 sandboxRequest("GOOGLE", "race-subject", "Race"),
@@ -350,8 +350,8 @@ class AppUserOAuthServiceTest {
         winner.setSandbox(1);
         winner.setIsDeleted(0);
         winner.setStatus("ACTIVE");
-        winner.setCountryCode("+1");
-        winner.setPhone("900333333333");
+        winner.setCountryCode("+86");
+        winner.setPhone("13900333003");
         winner.setNickname("Parallel Winner");
 
         when(identityMapper.findForUpdate("APPLE", "parallel-subject", "SANDBOX"))
@@ -385,7 +385,7 @@ class AppUserOAuthServiceTest {
                     return ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                             "access-" + user.getId(), "Bearer",
                             new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
-                                    user.getId(), "+1", user.getPhone(), user.getNickname()), "refresh"));
+                                    user.getId(), "+86", user.getPhone(), user.getNickname()), "refresh"));
                 });
 
         var firstRequest = sandboxRequest("APPLE", "parallel-subject", "Parallel");
@@ -499,7 +499,8 @@ class AppUserOAuthServiceTest {
             UserEntity user = captor.getValue();
             assertThat(user.getSandbox()).isEqualTo(1);
             assertThat(user.getStatus()).isEqualTo("ACTIVE");
-            assertThat(user.getPhone()).matches("900\\d{12}");
+            assertThat(user.getCountryCode()).isEqualTo("+86");
+            assertThat(user.getPhone()).matches("139\\d{8}");
             assertThat(user.getPasswordHash()).isEqualTo("oauth-hash");
         }
     }

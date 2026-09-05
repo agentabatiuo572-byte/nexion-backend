@@ -52,36 +52,139 @@ public interface AppGrowthEngagementMapper {
             @Param("nowMillis") long nowMillis);
 
     @Select("""
-            SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,m.reward_points rewardNex
+            SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,m.reward_points rewardNex,
+                   um.instance_key instanceKey,
+                   CASE WHEN m.mission_type='DAY_ONE' THEN (SELECT c.config_value FROM nx_config_item c
+                     WHERE c.config_key='growth.quest.day_one.tri_reward' AND c.status=1 AND c.is_deleted=0 LIMIT 1) END triReward,
+                   GREATEST(TIMESTAMPDIFF(HOUR,u.created_at,NOW()),0) accountAgeHours,
+                   COALESCE((SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                         AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                    THEN CAST(c.config_value AS UNSIGNED) END
+                      FROM nx_config_item c WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                       AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) eligibilityHours
               FROM nx_user_mission um
               JOIN nx_mission m ON m.id=um.mission_id AND m.status=1 AND m.is_deleted=0
+              JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
+               AND um.instance_key=CASE
+                     WHEN m.mission_type='DAY_ONE' THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
+                     ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                   END
+               AND (m.mission_type<>'DAY_ONE' OR NOW()<DATE_ADD(u.created_at,INTERVAL COALESCE((
+                     SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                      AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                 THEN CAST(c.config_value AS UNSIGNED) END
+                       FROM nx_config_item c
+                      WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                        AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR))
                AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE') AND um.is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
     QuestReward lockClaimableQuest(@Param("userId") Long userId, @Param("questCode") String questCode);
 
     @Select("""
-            SELECT m.mission_code questCode,
-                   m.mission_name name,
-                   m.mission_type layer,
-                   m.reward_points rewardNex,
-                   CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
-                     WHEN 'COMPLETED' THEN 'COMPLETED'
-                     WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
-                     WHEN 'CLAIMED' THEN 'CLAIMED'
-                     ELSE 'PENDING'
-                   END status,
-                   m.updated_at updatedAt
+            SELECT m.id missionId,UPPER(COALESCE(um.mission_status,'PENDING')) missionStatus
               FROM nx_mission m
               LEFT JOIN nx_user_mission um
-                ON um.mission_id=m.id AND um.user_id=#{userId} AND um.is_deleted=0
-             WHERE m.status=1
-               AND m.is_deleted=0
-               AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
-             ORDER BY FIELD(m.mission_type,'DAY_ONE','WEEKLY_T1','WEEKLY_T2'),m.id
+                ON um.mission_id=m.id AND um.user_id=#{userId}
+               AND um.instance_key=#{instanceKey} AND um.is_deleted=0
+             WHERE m.mission_type='DAY_ONE' AND m.status=1 AND m.is_deleted=0
+             ORDER BY m.id
+             FOR UPDATE
             """)
-    List<Map<String, Object>> questState(@Param("userId") Long userId);
+    List<DayOneQuestState> lockDayOneGroup(
+            @Param("userId") Long userId,
+            @Param("instanceKey") String instanceKey);
+
+    @Update("""
+            UPDATE nx_user_mission um
+              JOIN nx_mission m ON m.id=um.mission_id
+               AND m.mission_type='DAY_ONE' AND m.status=1 AND m.is_deleted=0
+               SET um.mission_status='CLAIMED',um.updated_at=NOW()
+             WHERE um.user_id=#{userId} AND um.instance_key=#{instanceKey}
+               AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE') AND um.is_deleted=0
+            """)
+    int claimDayOneGroup(
+            @Param("userId") Long userId,
+            @Param("instanceKey") String instanceKey);
+
+    @Select("""
+            SELECT q.mission_code questCode,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.mission.\"', q.mission_code, '\".\"', #{locale}, '\".name'))),''),q.mission_name) name,
+                   q.mission_type layer,
+                   q.reward_points rewardNex,
+                   q.tri_reward triReward,
+                   q.account_age_hours accountAgeHours,
+                   q.eligibility_hours eligibilityHours,
+                   LOWER(q.mission_category) category,
+                   q.action_route actionRoute,
+                   q.instance_key instanceKey,
+                   DATE_FORMAT(q.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
+                   DATE_FORMAT(q.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
+                   CASE WHEN q.definition_status<>1 THEN 0
+                        WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until THEN 0 ELSE 1 END eligible,
+                   CASE WHEN q.definition_status<>1 THEN CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
+                          WHEN 'CLAIMED' THEN 'CLAIMED'
+                          ELSE 'EXPIRED'
+                        END
+                        WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until
+                                  AND UPPER(COALESCE(um.mission_status, 'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
+                        ELSE CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
+                          WHEN 'COMPLETED' THEN 'COMPLETED'
+                          WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
+                          WHEN 'CLAIMED' THEN 'CLAIMED'
+                          ELSE 'PENDING'
+                        END
+                   END status,
+                   q.updated_at updatedAt
+              FROM (
+                    SELECT m.*,m.status definition_status,
+                           CASE WHEN m.mission_type='DAY_ONE' THEN (SELECT c.config_value FROM nx_config_item c
+                             WHERE c.config_key='growth.quest.day_one.tri_reward' AND c.status=1 AND c.is_deleted=0 LIMIT 1) END tri_reward,
+                           GREATEST(TIMESTAMPDIFF(HOUR,u.created_at,NOW()),0) account_age_hours,
+                           COALESCE((SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                                 AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                            THEN CAST(c.config_value AS UNSIGNED) END
+                              FROM nx_config_item c WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                               AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) eligibility_hours,
+                           CASE
+                             WHEN m.status<>1 THEN historical.instance_key
+                             WHEN m.mission_type='DAY_ONE' THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
+                             ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                           END instance_key,
+                           CASE WHEN m.mission_type='DAY_ONE' THEN u.created_at
+                                WHEN m.status<>1 THEN STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w')
+                                ELSE DATE_SUB(DATE(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')),
+                                              INTERVAL WEEKDAY(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')) DAY)
+                           END eligible_from,
+                           CASE WHEN m.mission_type='DAY_ONE' THEN DATE_ADD(u.created_at,INTERVAL COALESCE((
+                                  SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                                   AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                              THEN CAST(c.config_value AS UNSIGNED) END
+                                    FROM nx_config_item c
+                                   WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                                     AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR)
+                                WHEN m.status<>1 THEN DATE_ADD(
+                                      STR_TO_DATE(CONCAT(SUBSTRING(historical.instance_key,6),'-1'),'%x-W%v-%w'),INTERVAL 7 DAY)
+                                ELSE DATE_ADD(DATE_SUB(DATE(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')),
+                                                       INTERVAL WEEKDAY(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')) DAY),INTERVAL 7 DAY)
+                           END eligible_until
+                     FROM nx_mission m
+                      JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+                      LEFT JOIN nx_user_mission historical
+                        ON historical.id=(SELECT candidate.id FROM nx_user_mission candidate
+                           WHERE candidate.user_id=#{userId} AND candidate.mission_id=m.id
+                             AND candidate.is_deleted=0
+                           ORDER BY candidate.updated_at DESC,candidate.id DESC LIMIT 1)
+                     WHERE m.is_deleted=0 AND (m.status=1 OR historical.id IS NOT NULL)
+                       AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+                   ) q
+              LEFT JOIN nx_user_mission um
+                ON um.mission_id=q.id AND um.user_id=#{userId}
+               AND um.instance_key=q.instance_key AND um.is_deleted=0
+             ORDER BY FIELD(q.mission_type,'DAY_ONE','WEEKLY_T1','WEEKLY_T2'),q.id
+            """)
+    List<Map<String, Object>> questState(@Param("userId") Long userId, @Param("locale") String locale);
 
     @Select("""
             SELECT q.quest_code eventCode,
@@ -91,9 +194,9 @@ public interface AppGrowthEngagementMapper {
                      WHEN q.status=0 OR (q.starts_at IS NOT NULL AND q.starts_at>UTC_TIMESTAMP()) THEN 'upcoming'
                      ELSE 'ongoing'
                    END state,
-                   q.quest_name title,
-                   COALESCE(q.description,'') subtitle,
-                   q.reward_name rewardName,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".name'))),''),q.quest_name) title,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".description'))),''),COALESCE(q.description,'')) subtitle,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),''),q.reward_name) rewardName,
                    UPPER(q.reward_type) rewardType,
                    q.reward_amount rewardAmount,
                    CASE WHEN q.badge_achievement_code='FEATURED' THEN 1 ELSE 0 END featured,
@@ -120,7 +223,7 @@ public interface AppGrowthEngagementMapper {
              WHERE q.is_deleted=0
              ORDER BY q.sort_order,q.id
             """)
-    List<Map<String, Object>> eventState(@Param("userId") Long userId);
+    List<Map<String, Object>> eventState(@Param("userId") Long userId, @Param("locale") String locale);
 
     @Select("""
             SELECT banner_code bannerCode,
@@ -141,10 +244,13 @@ public interface AppGrowthEngagementMapper {
 
     @Update("""
             UPDATE nx_user_mission SET mission_status='CLAIMED',updated_at=NOW()
-             WHERE user_id=#{userId} AND mission_id=#{missionId}
+             WHERE user_id=#{userId} AND mission_id=#{missionId} AND instance_key=#{instanceKey}
                AND UPPER(mission_status) IN ('COMPLETED','CLAIMABLE') AND is_deleted=0
             """)
-    int claimQuest(@Param("userId") Long userId, @Param("missionId") Long missionId);
+    int claimQuest(
+            @Param("userId") Long userId,
+            @Param("missionId") Long missionId,
+            @Param("instanceKey") String instanceKey);
 
     @Select("""
             SELECT id questId,quest_code eventCode,target_value targetValue,reward_type rewardType,
@@ -440,6 +546,27 @@ public interface AppGrowthEngagementMapper {
     List<Map<String, Object>> topStreakers();
 
     @Select("""
+            SELECT a.achievement_code achievementCode,
+                   a.achievement_name name,
+                   COALESCE(a.description,'') description,
+                   UPPER(a.category) category,
+                   COALESCE(a.icon_key,'') iconKey,
+                   COALESCE(a.accent_color,'') accentColor,
+                   a.reward_points rewardPoints,
+                   CASE WHEN ua.id IS NULL THEN 'LOCKED' ELSE 'UNLOCKED' END status,
+                   ua.unlocked_at unlockedAt
+              FROM nx_achievement a
+              LEFT JOIN nx_user_achievement ua
+                ON ua.user_id=#{userId}
+               AND ua.achievement_code=a.achievement_code
+               AND ua.is_deleted=0
+             WHERE a.is_deleted=0
+               AND (a.status=1 OR ua.id IS NOT NULL)
+             ORDER BY a.category,a.sort_order,a.id
+            """)
+    List<Map<String, Object>> achievementState(@Param("userId") Long userId);
+
+    @Select("""
             SELECT p.id powerUpId,p.power_up_code powerUpCode,
                    p.badge_achievement_code badgeCode,p.duration_days durationDays
               FROM nx_streak_power_up p
@@ -652,7 +779,18 @@ public interface AppGrowthEngagementMapper {
     }
 
     record QuestReward(
-            Long missionId, String questCode, String layer, BigDecimal rewardNex) {
+            Long missionId, String questCode, String layer, BigDecimal rewardNex, String instanceKey,
+            String triReward, Long accountAgeHours, Long eligibilityHours) {
+        public QuestReward(Long missionId, String questCode, String layer, BigDecimal rewardNex) {
+            this(missionId, questCode, layer, rewardNex, "TEST-INSTANCE", null, 0L, 72L);
+        }
+
+        public QuestReward(Long missionId, String questCode, String layer, BigDecimal rewardNex, String instanceKey) {
+            this(missionId, questCode, layer, rewardNex, instanceKey, null, 0L, 72L);
+        }
+    }
+
+    record DayOneQuestState(Long missionId, String missionStatus) {
     }
 
     record EventReward(

@@ -56,7 +56,7 @@ class AppWithdrawalK3RoutingServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC());
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -68,10 +68,11 @@ class AppWithdrawalK3RoutingServiceTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         attempts.clear();
+        when(mapper.emergencyValue("killswitch.withdraw")).thenReturn("enabled");
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
                 "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
-        when(mapper.countLast24Hours(7L)).thenReturn(3);
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(3);
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("5000.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
         when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(

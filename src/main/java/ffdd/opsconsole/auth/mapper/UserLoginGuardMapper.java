@@ -31,8 +31,9 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
               last_sent_at DATETIME(3) DEFAULT NULL,
               window_started_at DATETIME(3) NOT NULL,
               window_send_count INT NOT NULL DEFAULT 0,
-              day_started_at DATE NOT NULL,
+              day_started_at DATETIME(3) NOT NULL,
               day_send_count INT NOT NULL DEFAULT 0,
+              legacy_window_until DATETIME(3) DEFAULT NULL,
               updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
               KEY idx_user_otp_send_guard_updated (updated_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -42,14 +43,15 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     @Insert("""
             INSERT IGNORE INTO nx_user_otp_send_guard(
                 login_key,window_started_at,window_send_count,day_started_at,day_send_count)
-            VALUES(#{loginKey},#{now},0,DATE(#{now}),0)
+            VALUES(#{loginKey},#{now},0,#{now},0)
             """)
     void initializeOtpSendGuard(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT login_key AS loginKey,last_sent_at AS lastSentAt,
                    window_started_at AS windowStartedAt,window_send_count AS windowSendCount,
-                   day_started_at AS dayStartedAt,day_send_count AS daySendCount
+                   day_started_at AS dayStartedAt,day_send_count AS daySendCount,
+                   legacy_window_until AS legacyWindowUntil
             FROM nx_user_otp_send_guard WHERE login_key=#{loginKey} FOR UPDATE
             """)
     UserOtpSendGuardRecord lockOtpSendGuard(@Param("loginKey") String loginKey);
@@ -57,15 +59,53 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     @Update("""
             UPDATE nx_user_otp_send_guard
                SET last_sent_at=#{now},window_started_at=#{windowStartedAt},
-                   window_send_count=#{windowSendCount},day_started_at=#{dayStartedAt},
-                   day_send_count=#{daySendCount}
+                   window_send_count=#{windowSendCount},
+                   day_started_at=CASE WHEN legacy_window_until IS NULL OR legacy_window_until<=#{now}
+                                       THEN #{dayStartedAt} ELSE day_started_at END,
+                   day_send_count=CASE WHEN legacy_window_until IS NULL OR legacy_window_until<=#{now}
+                                       THEN #{daySendCount} ELSE day_send_count END,
+                   legacy_window_until=CASE WHEN legacy_window_until<=#{now} THEN NULL ELSE legacy_window_until END
              WHERE login_key=#{loginKey}
             """)
     int recordOtpSend(@Param("loginKey") String loginKey, @Param("now") LocalDateTime now,
                       @Param("windowStartedAt") LocalDateTime windowStartedAt,
                       @Param("windowSendCount") int windowSendCount,
-                      @Param("dayStartedAt") java.time.LocalDate dayStartedAt,
+                      @Param("dayStartedAt") java.time.LocalDateTime dayStartedAt,
                       @Param("daySendCount") int daySendCount);
+
+    @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_otp_send_guard' AND COLUMN_NAME='day_started_at' AND DATA_TYPE='date'")
+    int countOtpSendGuardDateWindowColumn();
+
+    @Update("ALTER TABLE nx_user_otp_send_guard MODIFY COLUMN day_started_at DATETIME(3) NOT NULL")
+    void migrateOtpSendGuardWindowToTimestamp();
+
+    @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_otp_send_guard' AND COLUMN_NAME='legacy_window_until'")
+    int countOtpSendGuardLegacyWindowColumn();
+
+    @Update("ALTER TABLE nx_user_otp_send_guard ADD COLUMN legacy_window_until DATETIME(3) NULL AFTER day_send_count")
+    void addOtpSendGuardLegacyWindowColumn();
+
+    @Update("UPDATE nx_user_otp_send_guard SET legacy_window_until=DATE_ADD(day_started_at, INTERVAL 2 DAY) WHERE legacy_window_until IS NULL AND day_send_count>0")
+    int preserveLegacyOtpSendGuardQuota();
+
+    @Update("""
+            CREATE TABLE IF NOT EXISTS nx_user_otp_send_event (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              login_key CHAR(64) NOT NULL,
+              sent_at DATETIME(3) NOT NULL,
+              KEY idx_user_otp_send_event_key_time (login_key,sent_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    void createOtpSendEventTable();
+
+    @Select("SELECT COUNT(1) FROM nx_user_otp_send_event WHERE login_key=#{loginKey} AND sent_at>=#{since}")
+    int countRecentOtpSendEvents(@Param("loginKey") String loginKey, @Param("since") LocalDateTime since);
+
+    @Insert("INSERT INTO nx_user_otp_send_event(login_key,sent_at) VALUES(#{loginKey},#{sentAt})")
+    int insertOtpSendEvent(@Param("loginKey") String loginKey, @Param("sentAt") LocalDateTime sentAt);
+
+    @Delete("DELETE FROM nx_user_otp_send_event WHERE sent_at<#{before} LIMIT 10000")
+    int deleteExpiredOtpSendEvents(@Param("before") LocalDateTime before);
 
     @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND COLUMN_NAME='user_id'")
     int countUserIdColumn();

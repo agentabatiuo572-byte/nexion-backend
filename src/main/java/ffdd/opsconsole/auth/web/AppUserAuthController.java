@@ -12,7 +12,6 @@ import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
 import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
-import ffdd.opsconsole.auth.dto.UserPasswordResetCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserPasswordResetOtpCompleteRequest;
 import ffdd.opsconsole.auth.dto.UserTwoFactorLoginRequest;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
@@ -93,16 +92,6 @@ public class AppUserAuthController {
                 servletRequest, servletResponse);
     }
 
-    @PostMapping("/password-reset/complete")
-    public ApiResult<UserLoginResponse> completePasswordReset(
-            @RequestBody(required = false) UserPasswordResetCompleteRequest request,
-            HttpServletRequest servletRequest,
-            HttpServletResponse servletResponse) {
-        return refreshCookieService.issue(
-                authService.completePasswordReset(request, servletRequest.getRemoteAddr()),
-                servletRequest, servletResponse);
-    }
-
     @PostMapping("/password-reset/otp/send")
     public ApiResult<UserOtpLoginChallengeResponse> sendPasswordResetOtp(
             @RequestBody(required = false) UserOtpLoginRequest request,
@@ -115,6 +104,12 @@ public class AppUserAuthController {
             @RequestBody(required = false) UserPasswordResetOtpCompleteRequest request,
             HttpServletRequest servletRequest) {
         return passwordResetService.complete(request, servletRequest.getRemoteAddr());
+    }
+
+    @PostMapping("/password-reset/otp/verify")
+    public ApiResult<Map<String, Object>> verifyPasswordResetOtp(
+            @RequestBody(required = false) UserOtpLoginVerifyRequest request) {
+        return passwordResetService.verify(request);
     }
 
     @PostMapping("/login/2fa")

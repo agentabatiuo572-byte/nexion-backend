@@ -13,8 +13,9 @@ class KillSwitchStateTest {
     }
 
     @Test
-    void legacyIsUsedOnlyWhenPrimaryIsMissingAndBothMissingDefaultToEnabled() {
+    void legacyIsUsedOnlyWhenPrimaryIsMissingAndMissingStateFailsClosed() {
         assertThat(KillSwitchState.enabled(Optional.empty(), Optional.of("disabled"))).isFalse();
-        assertThat(KillSwitchState.enabled(Optional.empty(), Optional.empty())).isTrue();
+        assertThat(KillSwitchState.enabled(Optional.empty(), Optional.empty())).isFalse();
+        assertThat(KillSwitchState.enabledFailClosed(Optional.empty(), Optional.empty())).isFalse();
     }
 }

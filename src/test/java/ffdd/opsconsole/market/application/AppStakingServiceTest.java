@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.springframework.mock.env.MockEnvironment;
@@ -53,12 +54,13 @@ class AppStakingServiceTest {
     void setUp() {
         environment.setActiveProfiles("dev");
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
+        when(mapper.controlValue("killswitch.staking")).thenReturn("enabled");
         when(mapper.listCanonicalProducts()).thenReturn(List.of(product()));
         when(mapper.lockProductByTier("usdt30d")).thenReturn(product());
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(mapper.lockWalletBalance(42L)).thenReturn(new BigDecimal("1000"));
         when(mapper.walletBalance(42L)).thenReturn(new BigDecimal("900"));
-        when(mapper.listUserPositions(42L)).thenReturn(List.of());
+        when(mapper.listUserPositions(42L, 0L, 50)).thenReturn(List.of());
         when(mapper.debitWallet(42L, new BigDecimal("100.000000"))).thenReturn(1);
         when(mapper.insertPosition(any())).thenReturn(1);
         when(mapper.insertLedger(any())).thenReturn(1);
@@ -94,6 +96,18 @@ class AppStakingServiceTest {
     }
 
     @Test
+    void missingStakingKillSwitchFailsClosed() {
+        when(mapper.controlValue("killswitch.staking")).thenReturn(null);
+        when(mapper.controlValue("J.killswitch.staking")).thenReturn(null);
+
+        ApiResult<java.util.Map<String, Object>> result = service.pools();
+
+        @SuppressWarnings("unchecked")
+        List<java.util.Map<String, Object>> pools = (List<java.util.Map<String, Object>>) result.getData().get("pools");
+        assertThat(pools).singleElement().satisfies(pool -> assertThat(pool).containsEntry("enabled", false));
+    }
+
+    @Test
     void localSandboxUsesRunScopedPersistentStateWithoutCanonicalWrites() {
         environment.setActiveProfiles("test");
         environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-STAKING-TEST-001");
@@ -107,6 +121,25 @@ class AppStakingServiceTest {
         verifyNoInteractions(mapper, disclosureGate, config, idempotency, outbox, audit, earningsReleaseService);
         verify(sandboxMapper).insertAccountIfAbsent("staking", "RUN-STAKING-TEST-001", 42L);
         verify(sandboxMapper).updateWallet(eq("staking"), eq("RUN-STAKING-TEST-001"), eq(42L), any(), any());
+    }
+
+    @Test
+    void sandboxPositionsHonorRequestedPagination() {
+        environment.setActiveProfiles("test");
+        environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-STAKING-PAGE-001");
+        LocalDateTime lockedAt = LocalDateTime.now(clock).minusDays(1);
+        when(sandboxMapper.listPositions("staking", "RUN-STAKING-PAGE-001", 42L)).thenReturn(List.of(
+                new MarketSandboxMapper.PositionRow(1L, "STK-SBX-ONE", "STAKING-USDT-30D", "Stake",
+                        BigDecimal.TEN, BigDecimal.ONE, BigDecimal.ONE, 30, lockedAt,
+                        lockedAt.plusDays(30), BigDecimal.ONE, "ACTIVE", 0L),
+                new MarketSandboxMapper.PositionRow(2L, "STK-SBX-TWO", "STAKING-USDT-30D", "Stake",
+                        BigDecimal.TEN, BigDecimal.ONE, BigDecimal.ONE, 30, lockedAt,
+                        lockedAt.plusDays(30), BigDecimal.ONE, "ACTIVE", 0L)));
+
+        Map<String,Object> data = service.positions(42L, 2, 1).getData();
+
+        assertThat(data.get("positionsPage")).isEqualTo(Map.of("total", 2, "pageNum", 2, "pageSize", 1));
+        assertThat((List<?>) data.get("positions")).hasSize(1);
     }
 
     @Test
@@ -234,7 +267,7 @@ class AppStakingServiceTest {
         when(mapper.lockUserPosition(42L, "STK-9")).thenReturn(active);
         when(mapper.markClaimed(any(), any(), any())).thenReturn(1);
         when(mapper.creditWallet(42L, new BigDecimal("100.000000"))).thenReturn(1);
-        when(mapper.listUserPositions(42L)).thenReturn(List.of(claimed));
+        when(mapper.listUserPositions(42L, 0L, 50)).thenReturn(List.of(claimed));
         when(mapper.walletBalance(42L)).thenReturn(new BigDecimal("1002.500000"));
 
         assertThat(service.claim(42L, "STK-9", "claim-9").getCode()).isZero();

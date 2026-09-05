@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -32,11 +33,12 @@ public class AppEarningGoalController {
 
     @PostMapping
     public ApiResult<AppEarningGoalService.GoalView> create(@RequestBody(required = false) GoalRequest request,
+                                                             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
                                                              Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.create(userId, request == null ? null : request.targetUsdt(),
-                        request == null ? null : epoch(request.deadlineAt()));
+                        request == null ? null : epoch(request.deadlineAt()), idempotencyKey);
     }
 
     @GetMapping("/recommendation")

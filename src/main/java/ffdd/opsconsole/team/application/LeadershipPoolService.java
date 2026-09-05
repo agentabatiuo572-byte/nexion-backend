@@ -37,7 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
  * → 按配置门槛以上用户的 leadership_votes 票权比例分配
  * → commission_event(leadership,UNLOCKED)+ D4 + A4。
  *
- * <p>PRD(落地规格 line234/130/737-739):leadershipPoolInjectRate 5%· V_VOTES{V3:1..V12:512}· poolSettleCron 周日 23:59 UTC· poolUnlockVRank V3+。
+ * <p>历史 PRD 示例曾列出 5% 与 V3+；当前运行规格不采用这些默认值，所有比例、门槛与票权
+ * 必须通过 {@link LeadershipPoolConfigGuard} 的权威配置校验后才能结算，缺失时保持阻断。
  *
  * <p>同一周先锁定数据库 mutex,再检查历史事件,避免并发 check-then-insert 双发。
  * 运营提前结算只允许从 A2 审批 replay 进入;调度器仍可作为 SYSTEM 入口执行。

@@ -32,8 +32,5 @@ public record VRankRewardRuleRow(
         if (rewardType == null || rewardType.isBlank()) {
             throw new IllegalArgumentException("rewardType must not be blank");
         }
-        if (amount == null) {
-            amount = BigDecimal.ZERO;
-        }
     }
 }

@@ -62,7 +62,7 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     public List<UserAccountView> search(String keyword, String status, int limit) {
         UserQueryRequest query = UserQueryRequest.basic(
                 trim(keyword), status, null, 1, cappedLimit(limit), null);
-        return mapper.pageUsers(query, statusList(status), 0, cappedLimit(limit));
+        return mapper.pageUsers(query, statusList(status), 0, cappedLimit(limit), null);
     }
 
     @Override
@@ -77,16 +77,36 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
 
     @Override
     public PageResult<UserAccountView> pageProfiles(UserQueryRequest request) {
+        return pageProfiles(request, null, false);
+    }
+
+    @Override
+    public PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request) {
+        return pageProfiles(request, supportPhoneKeyword(request == null ? null : request.keyword()), true);
+    }
+
+    private PageResult<UserAccountView> pageProfiles(UserQueryRequest request, String phoneKeyword, boolean supportSearch) {
         List<String> statuses = statusList(request == null ? null : request.status());
         int pageNum = page(request == null ? null : request.pageNum());
-        int pageSize = profilePageSize(request == null ? null : request.pageSize());
+        Integer requestedSize = request == null ? null : request.pageSize();
+        int pageSize = supportSearch
+                ? requestedSize == null ? 20 : Math.max(1, Math.min(200, requestedSize))
+                : profilePageSize(requestedSize);
         UserQueryRequest query = normalizeProfileQuery(request, pageNum, pageSize);
         int offset = (pageNum - 1) * pageSize;
-        long total = mapper.countUsersByQuery(query, statuses);
+        long total = mapper.countUsersByQuery(query, statuses, phoneKeyword);
         List<UserAccountView> records = total == 0
                 ? List.of()
-                : mapper.pageUsers(query, statuses, offset, pageSize);
+                : mapper.pageUsers(query, statuses, offset, pageSize, phoneKeyword);
         return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    private String supportPhoneKeyword(String keyword) {
+        if (keyword == null || !keyword.trim().matches("[+0-9()\\s-]+")) {
+            return null;
+        }
+        String digits = keyword.replaceAll("[^0-9]", "");
+        return digits.length() >= 4 && digits.length() <= 15 ? digits : null;
     }
 
     @Override

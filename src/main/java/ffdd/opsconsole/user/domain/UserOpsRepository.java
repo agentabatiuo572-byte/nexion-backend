@@ -20,6 +20,8 @@ public interface UserOpsRepository {
 
     PageResult<UserAccountView> pageProfiles(UserQueryRequest request);
 
+    PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request);
+
     Optional<UserAccountView> findById(Long userId);
 
     List<UserReadonlyDeviceView> readonlyDevices(Long userId, int limit);

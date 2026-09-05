@@ -8,6 +8,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -51,6 +53,7 @@ class AppExchangeServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(mapper.userSandbox(7L)).thenReturn(0);
         when(mapper.lockExchangeExecutionMutex()).thenReturn("G2_EXCHANGE_EXECUTION");
+        when(mapper.emergencyValue("killswitch.exchange")).thenReturn("enabled");
         when(mapper.currentPrice()).thenReturn(BigDecimal.ONE);
         when(mapper.lockActiveUserNo(7L)).thenReturn("U00000007");
         when(mapper.lockWalletGate(7L)).thenReturn(
@@ -83,6 +86,50 @@ class AppExchangeServiceTest {
         capOrder.verify(mapper).lockExchangeExecutionMutex();
         capOrder.verify(mapper).platformTodayUsdt();
         capOrder.verify(mapper).applyWalletDelta(eq(7L), any(), any());
+    }
+
+    @Test
+    void reservesSourceFundsBeforeCreatingACappedQueueOrder() {
+        when(mapper.userTodayUsdt(7L)).thenReturn(new BigDecimal("990"));
+
+        var result = service.swap(7L, "idem-g2-queue-reserve",
+                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), true));
+
+        assertThat(((java.util.Map<?, ?>) result.getData().get("order")).get("status"))
+                .isEqualTo("QUEUED");
+        InOrder order = inOrder(mapper);
+        order.verify(mapper).applyWalletDelta(eq(7L),
+                org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(new BigDecimal("-20")) == 0),
+                org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(BigDecimal.ZERO) == 0));
+        order.verify(mapper).insertOrder(any());
+        verify(mapper).insertLedger(any(AppExchangeMapper.LedgerWrite.class));
+    }
+
+    @Test
+    void rejectsCappedQueueOrderWhenSourceFundsCannotBeReserved() {
+        when(mapper.userTodayUsdt(7L)).thenReturn(new BigDecimal("990"));
+        when(mapper.applyWalletDelta(eq(7L),
+                org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(new BigDecimal("-20")) == 0),
+                org.mockito.ArgumentMatchers.argThat(value -> value.compareTo(BigDecimal.ZERO) == 0))).thenReturn(0);
+
+        assertThatThrownBy(() -> service.swap(7L, "idem-g2-queue-no-funds",
+                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), true)))
+                .hasMessageContaining("EXCHANGE_WALLET_INSUFFICIENT_OR_CONFLICT");
+        verify(mapper, never()).insertOrder(any());
+    }
+
+    @Test
+    void cancellingReservedQueueOrderRefundsTheHeldSourceAsset() {
+        when(mapper.lockOwnQueued(7L, "EX-RESERVED-1234")).thenReturn(
+                new AppExchangeMapper.QueuedRow(7L, "EX-RESERVED-1234", "USDT", new BigDecimal("20")));
+        when(mapper.sourceReservationExists("EX-RESERVED-1234")).thenReturn(1);
+        when(mapper.cancelOwnQueued(7L, "EX-RESERVED-1234")).thenReturn(1);
+        when(mapper.applyWalletDelta(7L, new BigDecimal("20"), BigDecimal.ZERO)).thenReturn(1);
+
+        assertThat(service.cancel(7L, "EX-RESERVED-1234", "idem-g2-cancel-refund").getCode()).isZero();
+
+        verify(mapper).applyWalletDelta(7L, new BigDecimal("20"), BigDecimal.ZERO);
+        verify(mapper).insertLedger(any(AppExchangeMapper.LedgerWrite.class));
     }
 
     @Test
@@ -149,7 +196,7 @@ class AppExchangeServiceTest {
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
         assertThat(service.market().getData())
-                .containsEntry("source", "G3 weekly_curve + nx_price_index 24h history")
+                .containsEntry("source", "G3 weekly_curve + nx_price_index sampled history")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
     }
@@ -255,7 +302,7 @@ class AppExchangeServiceTest {
                  {"dayIndex":5,"targetPrice":0.15,"pumpProbability":0.1,"volatilityPct":1},
                  {"dayIndex":6,"targetPrice":0.16,"pumpProbability":0.1,"volatilityPct":1}]
                 """));
-        when(mapper.recentMarketPoints()).thenReturn(List.of(
+        when(mapper.marketHistoryPoints()).thenReturn(List.of(
                 new AppExchangeMapper.MarketPoint(new BigDecimal("0.12"), java.time.LocalDateTime.parse("2026-07-22T09:55:00")),
                 new AppExchangeMapper.MarketPoint(new BigDecimal("99"), java.time.LocalDateTime.parse("2026-07-22T10:01:01"))));
 
@@ -264,6 +311,7 @@ class AppExchangeServiceTest {
         assertThat(history).singleElement().satisfies(value -> {
             var point = (java.util.Map<?, ?>) value;
             assertThat(point.get("price")).isEqualTo(new BigDecimal("0.12"));
+            assertThat(point.get("sampledAtEpochMs")).isEqualTo(Instant.parse("2026-07-22T01:55:00Z").toEpochMilli());
         });
     }
 

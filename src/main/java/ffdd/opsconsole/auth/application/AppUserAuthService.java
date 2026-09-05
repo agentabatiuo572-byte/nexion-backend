@@ -2,6 +2,8 @@ package ffdd.opsconsole.auth.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserLoginRequest;
+import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
+import ffdd.opsconsole.auth.captcha.CaptchaScene;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginRequest;
@@ -25,7 +27,6 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.time.LocalDateTime;
-import java.time.LocalDate;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -64,6 +65,7 @@ public class AppUserAuthService {
     private final JwtProperties jwtProperties;
     private final UserAccountBlocklistVerifier blocklistVerifier;
     private final PlatformConfigFacade configFacade;
+    private final CaptchaOtpGate captchaGate;
     private final UserOtpDeliveryService otpDeliveryService;
     private final EventOutboxService outboxService;
     private final Environment environment;
@@ -72,7 +74,6 @@ public class AppUserAuthService {
     @PostConstruct
     void ensureLoginGuardSchema() {
         loginGuardMapper.createTable();
-        loginGuardMapper.createOtpSendGuardTable();
         if (loginGuardMapper.countUserIdColumn() == 0) loginGuardMapper.addUserIdColumn();
         if (loginGuardMapper.countUpdatedAtIndex() == 0) loginGuardMapper.addUpdatedAtIndex();
     }
@@ -84,8 +85,11 @@ public class AppUserAuthService {
 
     @Transactional
     public ApiResult<UserLoginResponse> login(UserLoginRequest request, String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
-                || !StringUtils.hasText(request.password())) {
+        if (request == null || !validCountryCode(request.countryCode())
+                || !validPhone(request.countryCode(), request.phone())) {
+            return ApiResult.fail(422, "USER_LOGIN_PHONE_INVALID");
+        }
+        if (!StringUtils.hasText(request.password())) {
             return invalidCredential();
         }
         if (UserAuthEnvironment.resolve(environment).isEmpty()) {
@@ -126,7 +130,7 @@ public class AppUserAuthService {
             return ApiResult.fail(428, "USER_PASSWORD_RESET_REQUIRED");
         }
         if (userMapper.isTwoFactorEnabled(user.getId())) {
-            return issueTwoFactorChallenge(user, countryCode, phone);
+            return issueTwoFactorChallenge(user, countryCode, phone, request.captchaTicket(), clientAddress);
         }
 
         return issueSession(user, countryCode, phone, clientAddress);
@@ -146,14 +150,18 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserOtpLoginChallengeResponse> beginOtpLogin(
             UserOtpLoginRequest request, String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())) {
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())) {
             return ApiResult.fail(422, "USER_OTP_LOGIN_REQUEST_INVALID");
+        }
+        if (UserAuthEnvironment.resolve(environment).isEmpty()) {
+            return ApiResult.fail(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN");
         }
         LocalDateTime now = LocalDateTime.now();
         if (!consumeClientRate(clientAddress, now)) return ApiResult.fail(429, "USER_LOGIN_RATE_LIMITED");
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
         String loginKey = loginKey(countryCode, phone, authNamespace());
+        String otpSendKey = otpSendKey(countryCode, phone, authNamespace());
         loginGuardMapper.initialize(loginKey, now);
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         UserEntity user = findUser(countryCode, phone);
@@ -161,8 +169,11 @@ public class AppUserAuthService {
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
             return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
         }
-        if (!consumeOtpSendRate(loginKey, now)) {
-            return ApiResult.fail(429, "USER_OTP_SEND_RATE_LIMITED");
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
+        OtpSendRateDecision otpRate = consumeOtpSendRate(otpSendKey, now, policy,
+                CaptchaScene.LOGIN, request.captchaTicket(), clientAddress);
+        if (otpRate != OtpSendRateDecision.ALLOWED) {
+            return captchaOrRateFailure(otpRate);
         }
         boolean eligible = user != null
                 && "ACTIVE".equalsIgnoreCase(user.getStatus())
@@ -170,11 +181,11 @@ public class AppUserAuthService {
                 && !userMapper.isPasswordResetRequired(user.getId())
                 && !userMapper.isTwoFactorEnabled(user.getId())
                 && UserAuthEnvironmentPolicy.evaluate(environment, user) == UserAuthEnvironmentPolicy.Decision.ALLOW
-                && otpDeliveryService.available();
-        if (!eligible) return ApiResult.ok(disposableOtpLoginChallenge(phone));
+                && otpDeliveryService.available(countryCode);
+        if (!eligible) return ApiResult.ok(disposableOtpLoginChallenge(phone, policy));
         String challengeNo = "LOGIN-" + UUID.randomUUID().toString().replace("-", "");
-        String code = otpDeliveryService.verificationCode();
-        int ttlMinutes = configInt("auth.risk.otp_ttl_minutes", 5, 1, 15);
+        String code = otpDeliveryService.verificationCode(countryCode);
+        int ttlMinutes = policy.ttlMinutes();
         userMapper.invalidateOpenLoginOtpChallenges(user.getId());
         if (userMapper.createLoginOtpChallenge(user.getId(), challengeNo, code, ttlMinutes) != 1) {
             throw new IllegalStateException("USER_OTP_LOGIN_CHALLENGE_CREATE_FAILED");
@@ -182,10 +193,10 @@ public class AppUserAuthService {
         try {
             otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes);
         } catch (RuntimeException exception) {
-            // Do not expose delivery availability as an account-existence oracle.
-            return ApiResult.ok(disposableOtpLoginChallenge(phone));
+            userMapper.invalidateOpenLoginOtpChallenges(user.getId());
+            return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
         }
-        return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, 60, maskPhone(phone)));
+        return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
     }
 
     @Transactional
@@ -196,7 +207,7 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.challengeNo()) || !request.challengeNo().trim().matches("LOGIN-[a-f0-9]{32}")
                 || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
             return ApiResult.fail(422, "USER_OTP_LOGIN_CHALLENGE_INVALID");
@@ -242,7 +253,7 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completePasswordReset(
             UserPasswordResetCompleteRequest request, String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.currentPassword()) || !strongPassword(request.newPassword())) {
             return ApiResult.fail(422, "USER_NEW_PASSWORD_POLICY_REJECTED");
         }
@@ -290,7 +301,7 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.password()) || !StringUtils.hasText(request.challengeNo())
                 || !request.challengeNo().trim().matches("OTP-[a-f0-9]{32}")
                 || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
@@ -334,26 +345,36 @@ public class AppUserAuthService {
     }
 
     private ApiResult<UserLoginResponse> issueTwoFactorChallenge(
-            UserEntity user, String countryCode, String phone) {
-        if (!otpDeliveryService.available()) {
+            UserEntity user, String countryCode, String phone, String captchaTicket, String clientAddress) {
+        if (!otpDeliveryService.available(countryCode)) {
             return ApiResult.fail(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
+        OtpSendRateDecision otpRate = consumeOtpSendRate(
+                otpSendKey(countryCode, phone, authNamespace()), LocalDateTime.now(), policy,
+                CaptchaScene.LOGIN, captchaTicket, clientAddress);
+        if (otpRate != OtpSendRateDecision.ALLOWED) {
+            return captchaOrRateFailure(otpRate);
+        }
         String challengeNo = "OTP-" + UUID.randomUUID().toString().replace("-", "");
-        String code = otpDeliveryService.verificationCode();
-        int ttlMinutes = configInt("auth.risk.otp_ttl_minutes", 5, 1, 15);
+        String code = otpDeliveryService.verificationCode(countryCode);
+        int ttlMinutes = policy.ttlMinutes();
+        userMapper.invalidateOpenLoginOtpChallenges(user.getId());
         if (userMapper.createLoginOtpChallenge(user.getId(), challengeNo, code, ttlMinutes) != 1) {
             throw new IllegalStateException("USER_TWO_FACTOR_CHALLENGE_CREATE_FAILED");
         }
         try {
             otpDeliveryService.deliver(countryCode, phone, challengeNo, code, ttlMinutes);
         } catch (RuntimeException exception) {
-            throw new BizException(503, "USER_OTP_DELIVERY_FAILED");
+            userMapper.invalidateOpenLoginOtpChallenges(user.getId());
+            return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
         }
         String hint = phone.length() <= 4 ? "****" : "****" + phone.substring(phone.length() - 4);
         return new ApiResult<>(428, "USER_TWO_FACTOR_VERIFICATION_REQUIRED",
                 UserLoginResponse.challenge(
                         new UserLoginResponse.UserSession(
-                                user.getId(), countryCode, hint, user.getNickname()),
+                                user.getId(), countryCode, hint, user.getNickname(),
+                                userMapper.isOnboardingComplete(user.getId())),
                         challengeNo,
                         hint));
     }
@@ -380,7 +401,8 @@ public class AppUserAuthService {
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         String token = tokenProvider.createUserToken(user.getId(), phone, List.of(), sessionId, accessTtl, audience);
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
-                new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname()),
+                new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
+                        userMapper.isOnboardingComplete(user.getId())),
                 rawRefreshToken));
     }
 
@@ -395,9 +417,13 @@ public class AppUserAuthService {
         if (user == null || user.getId() == null || !StringUtils.hasText(user.getPhone())) {
             throw new BizException(422, "USER_REGISTRATION_SESSION_INVALID");
         }
-        String countryCode = StringUtils.hasText(user.getCountryCode())
-                ? normalizeCountryCode(user.getCountryCode())
-                : "+1";
+        if (!validCountryCode(user.getCountryCode())) {
+            throw new BizException(422, "USER_REGISTRATION_COUNTRY_CODE_FORBIDDEN");
+        }
+        if (!validPhone(user.getCountryCode(), user.getPhone())) {
+            throw new BizException(422, "USER_REGISTRATION_PHONE_INVALID");
+        }
+        String countryCode = normalizeCountryCode(user.getCountryCode());
         return issueSession(user, countryCode, user.getPhone(), clientAddress);
     }
 
@@ -440,6 +466,14 @@ public class AppUserAuthService {
             sessionMapper.revokeRefreshChain(current.getSessionChainId());
             return environmentFailure;
         }
+        if (!validCountryCode(user.getCountryCode())) {
+            sessionMapper.revokeAllUserSessions(user.getId());
+            return ApiResult.fail(403, "USER_REFRESH_COUNTRY_CODE_FORBIDDEN");
+        }
+        if (!validPhone(user.getCountryCode(), user.getPhone())) {
+            sessionMapper.revokeAllUserSessions(user.getId());
+            return ApiResult.fail(403, "USER_REFRESH_PHONE_INVALID");
+        }
         String rawNext = randomRefreshToken();
         String nextId = hashToken(rawNext);
         if (sessionMapper.markRefreshRotated(current.getId(), nextId) != 1) {
@@ -457,14 +491,15 @@ public class AppUserAuthService {
         next.setIsDeleted(0);
         sessionMapper.insert(next);
         String phone = user.getPhone() == null ? "" : user.getPhone();
-        String countryCode = StringUtils.hasText(user.getCountryCode()) ? normalizeCountryCode(user.getCountryCode()) : "+1";
+        String countryCode = normalizeCountryCode(user.getCountryCode());
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         String access = tokenProvider.createUserToken(
                 user.getId(), phone, List.of(), nextId,
                 Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)), audience);
         return ApiResult.ok(new UserLoginResponse(access, "Bearer",
-                new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname()), rawNext));
+                new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
+                        userMapper.isOnboardingComplete(user.getId())), rawNext));
     }
 
     @Transactional
@@ -529,10 +564,10 @@ public class AppUserAuthService {
         };
     }
 
-    private UserOtpLoginChallengeResponse disposableOtpLoginChallenge(String phone) {
+    private UserOtpLoginChallengeResponse disposableOtpLoginChallenge(String phone, AppOtpPolicy policy) {
         return new UserOtpLoginChallengeResponse(
                 "LOGIN-" + UUID.randomUUID().toString().replace("-", ""),
-                60,
+                policy.cooldownSeconds(),
                 maskPhone(phone));
     }
 
@@ -541,11 +576,16 @@ public class AppUserAuthService {
     }
 
     private boolean validCountryCode(String value) {
-        return StringUtils.hasText(value) && normalizeCountryCode(value).matches("\\+[0-9]{1,4}");
+        return StringUtils.hasText(value) && OtpPhoneCanonicalizer.isSupportedCountryCode(value);
     }
 
-    private boolean validPhone(String value) {
-        return StringUtils.hasText(value) && value.trim().matches("[0-9]{6,15}");
+    private boolean validPhone(String countryCode, String value) {
+        try {
+            OtpPhoneCanonicalizer.toE164Digits(countryCode, value);
+            return true;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     private String normalizeCountryCode(String value) {
@@ -601,31 +641,49 @@ public class AppUserAuthService {
         return true;
     }
 
-    private boolean consumeOtpSendRate(String loginKey, LocalDateTime now) {
-        int cooldownSeconds = configInt("auth.risk.otp_send_cooldown_seconds", OTP_SEND_COOLDOWN_SECONDS, 30, 300);
+    private OtpSendRateDecision consumeOtpSendRate(String loginKey, LocalDateTime now, AppOtpPolicy policy,
+            CaptchaScene scene, String captchaTicket, String clientAddress) {
+        int cooldownSeconds = policy.cooldownSeconds();
         int windowMinutes = configInt("auth.risk.otp_send_window_minutes", OTP_SEND_WINDOW_MINUTES, 5, 60);
         int windowLimit = configInt("auth.risk.otp_send_window_limit", OTP_SEND_WINDOW_LIMIT, 2, 20);
-        int dayLimit = configInt("auth.risk.otp_send_day_limit", OTP_SEND_DAY_LIMIT, 5, 50);
+        int dayLimit = policy.max24h();
         loginGuardMapper.initializeOtpSendGuard(loginKey, now);
         UserOtpSendGuardRecord guard = loginGuardMapper.lockOtpSendGuard(loginKey);
         if (guard == null) throw new IllegalStateException("USER_OTP_SEND_GUARD_UNAVAILABLE");
         if (guard.getLastSentAt() != null && guard.getLastSentAt().plusSeconds(cooldownSeconds).isAfter(now)) {
-            return false;
+            return OtpSendRateDecision.RATE_LIMITED;
         }
         boolean newWindow = guard.getWindowStartedAt() == null
                 || !guard.getWindowStartedAt().plusMinutes(windowMinutes).isAfter(now);
-        boolean newDay = guard.getDayStartedAt() == null || !guard.getDayStartedAt().equals(now.toLocalDate());
         int windowCount = newWindow ? 1 : guard.getWindowSendCount() + 1;
-        int dayCount = newDay ? 1 : guard.getDaySendCount() + 1;
-        if (windowCount > windowLimit || dayCount > dayLimit) return false;
+        int legacyCount = guard.getLegacyWindowUntil() != null && guard.getLegacyWindowUntil().isAfter(now)
+                ? guard.getDaySendCount() : 0;
+        int trailing24hCount = loginGuardMapper.countRecentOtpSendEvents(loginKey, now.minusHours(24));
+        if (windowCount > windowLimit || legacyCount + trailing24hCount >= dayLimit) return OtpSendRateDecision.RATE_LIMITED;
+        CaptchaOtpGate.Decision captcha = captchaGate.checkAndConsume(scene, captchaTicket, clientAddress, trailing24hCount);
+        if (!captcha.allowed()) return "USER_CAPTCHA_VERIFIER_UNAVAILABLE".equals(captcha.code())
+                ? OtpSendRateDecision.CAPTCHA_VERIFIER_UNAVAILABLE : OtpSendRateDecision.CAPTCHA_REJECTED;
+        if (loginGuardMapper.insertOtpSendEvent(loginKey, now) != 1) {
+            throw new IllegalStateException("USER_OTP_SEND_EVENT_CREATE_FAILED");
+        }
         LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
-        LocalDate dayStartedAt = newDay ? now.toLocalDate() : guard.getDayStartedAt();
+        LocalDateTime dayStartedAt = now;
         if (loginGuardMapper.recordOtpSend(
-                loginKey, now, windowStartedAt, windowCount, dayStartedAt, dayCount) != 1) {
+                loginKey, now, windowStartedAt, windowCount, dayStartedAt, trailing24hCount + 1) != 1) {
             throw new IllegalStateException("USER_OTP_SEND_GUARD_STATE_CHANGED");
         }
-        return true;
+        return OtpSendRateDecision.ALLOWED;
     }
+
+    private <T> ApiResult<T> captchaOrRateFailure(OtpSendRateDecision decision) {
+        return switch (decision) {
+            case CAPTCHA_VERIFIER_UNAVAILABLE -> ApiResult.fail(503, "USER_CAPTCHA_VERIFIER_UNAVAILABLE");
+            case CAPTCHA_REJECTED -> ApiResult.fail(428, "USER_CAPTCHA_REQUIRED");
+            default -> ApiResult.fail(429, "USER_OTP_SEND_RATE_LIMITED");
+        };
+    }
+
+    private enum OtpSendRateDecision { ALLOWED, RATE_LIMITED, CAPTCHA_REJECTED, CAPTCHA_VERIFIER_UNAVAILABLE }
 
     private String authNamespace() {
         return UserAuthEnvironment.resolve(environment).map(Enum::name).orElse("FORBIDDEN");
@@ -643,6 +701,10 @@ public class AppUserAuthService {
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);
         }
+    }
+
+    private String otpSendKey(String countryCode, String phone, String namespace) {
+        return OtpPhoneRateLimitKey.from(namespace, countryCode, phone);
     }
 
     private boolean safePasswordMatches(String rawPassword, String encodedPassword) {

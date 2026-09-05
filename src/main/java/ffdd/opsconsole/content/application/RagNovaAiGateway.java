@@ -3,25 +3,40 @@ package ffdd.opsconsole.content.application;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.content.domain.SupportFaqView;
+import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Local Nova adapter backed by the authoritative Qdrant + Gemma RAG service. */
 @Component
-@RequiredArgsConstructor
 public class RagNovaAiGateway implements NovaAiGateway {
     private final NovaAiProperties properties;
     private final ObjectMapper objectMapper;
+    private final SupportKnowledgeRepository knowledgeRepository;
+
+    @Autowired
+    public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
+                            SupportKnowledgeRepository knowledgeRepository) {
+        this.properties = properties;
+        this.objectMapper = objectMapper;
+        this.knowledgeRepository = knowledgeRepository;
+    }
+
+    public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, null);
+    }
 
     @Override
     public String chat(ChatRequest request) {
@@ -33,16 +48,23 @@ public class RagNovaAiGateway implements NovaAiGateway {
             }
             Message current = request.messages().get(currentIndex);
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("question", current.content());
+            body.put("question", novaQuestion(current.content(), request.language()));
             body.put("response_language", request.language());
             body.put("session_id", request.sessionId());
 
-            HttpRequest httpRequest = HttpRequest.newBuilder(target.resolve("/chat"))
+            HttpRequest.Builder builder = HttpRequest.newBuilder(target.resolve("/chat"))
                     .timeout(Duration.ofMillis(bounded(properties.getReadTimeoutMs(), 1_000, 300_000)))
                     .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)));
+            if (request.turnId() != null) builder.header("X-Nova-Turn-Id", request.turnId());
+            if (request.queueScope() != null) builder.header("X-Nova-Queue-Scope", request.queueScope());
+            HttpRequest httpRequest = builder.build();
             HttpResponse<String> response = httpClient().send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 429) throw new BizException(429, "NOVA_AI_BUSY");
+            if (response.statusCode() == 409) throw new BizException(409, "NOVA_AI_TURN_CONFLICT");
+            if (response.statusCode() == 504 || response.statusCode() == 408) {
+                throw new BizException(504, "NOVA_AI_TIMEOUT");
+            }
             if (response.statusCode() != 200 || response.body() == null || response.body().length() > 128_000) {
                 throw unavailable();
             }
@@ -59,6 +81,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw unavailable();
+        } catch (HttpTimeoutException ex) {
+            throw new BizException(504, "NOVA_AI_TIMEOUT");
         } catch (IOException | RuntimeException ex) {
             throw unavailable();
         }
@@ -128,6 +152,26 @@ public class RagNovaAiGateway implements NovaAiGateway {
 
     private BizException invalidResponse() {
         return new BizException(502, "NOVA_AI_RESPONSE_INVALID");
+    }
+
+    private String novaQuestion(String question, String language) {
+        if (knowledgeRepository == null) return question;
+        String normalizedLanguage = language == null ? "" : language.trim();
+        String context = knowledgeRepository.listFaqs().stream()
+                .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
+                .filter(faq -> "Nova".equalsIgnoreCase(faq.surface()))
+                .filter(faq -> normalizedLanguage.isBlank() || normalizedLanguage.equalsIgnoreCase(faq.language()))
+                .sorted(java.util.Comparator.comparing(SupportFaqView::sortOrder).thenComparing(SupportFaqView::id))
+                .limit(20)
+                .map(faq -> "Q: " + boundedText(faq.question(), 500) + "\nA: " + boundedText(faq.answer(), 2_000))
+                .collect(java.util.stream.Collectors.joining("\n\n"));
+        if (context.isBlank()) return question;
+        return "Published Nova knowledge (use only when relevant):\n" + context + "\n\nUser question:\n" + question;
+    }
+
+    private String boundedText(String value, int max) {
+        String text = value == null ? "" : value.trim();
+        return text.length() <= max ? text : text.substring(0, max);
     }
 
     private boolean isAcceptedPublicRoute(String value) {

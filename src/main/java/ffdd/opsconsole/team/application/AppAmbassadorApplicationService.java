@@ -11,23 +11,36 @@ import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-@RequiredArgsConstructor
 public class AppAmbassadorApplicationService {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
-    private static final Set<String> BUCKETS = Set.of("venue", "kol", "print", "dev");
     private final AppAmbassadorApplicationMapper mapper;
     private final Environment environment;
+    private final AppAmbassadorPolicyService policyService;
+
+    @Autowired
+    public AppAmbassadorApplicationService(AppAmbassadorApplicationMapper mapper, Environment environment,
+                                           AppAmbassadorPolicyService policyService) {
+        this.mapper = mapper;
+        this.environment = environment;
+        this.policyService = policyService;
+    }
+
+    /** Kept for isolated legacy unit fixtures; production always uses the Spring constructor above. */
+    AppAmbassadorApplicationService(AppAmbassadorApplicationMapper mapper, Environment environment) {
+        this(mapper, environment, null);
+    }
 
     @Transactional
     public ApiResult<Map<String, Object>> submit(Long userId, LocalDate eventDate, String city,
@@ -40,9 +53,8 @@ public class AppAmbassadorApplicationService {
         if (eventDate == null || eventDate.isBefore(today) || eventDate.isAfter(today.plusYears(1))
                 || normalizedCity == null || normalizedCity.length() < 2 || normalizedCity.length() > 64
                 || normalizedCity.chars().anyMatch(Character::isISOControl)
-                || budget == null || budget.scale() > 6 || budget.compareTo(new BigDecimal("100")) < 0
-                || budget.compareTo(new BigDecimal("10000")) > 0
-                || normalizedBucket == null || !BUCKETS.contains(normalizedBucket.toLowerCase())
+                || budget == null || budget.scale() > 6 || budget.signum() < 0
+                || normalizedBucket == null
                 || key == null || key.length() > 128) {
             return ApiResult.fail(422, "AMBASSADOR_APPLICATION_INVALID");
         }
@@ -52,6 +64,11 @@ public class AppAmbassadorApplicationService {
         if (rank < 5) return ApiResult.fail(403, "AMBASSADOR_V5_REQUIRED");
         String canonicalBucket = normalizedBucket.toLowerCase();
         BigDecimal canonicalBudget = budget.setScale(6);
+        if (policyService == null) throw new BizException(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        AppAmbassadorPolicyService.PolicySnapshot policy = policyService.requiredPolicy(userId);
+        if (!policyService.budgetAllowed(policy, canonicalBucket, canonicalBudget)) {
+            return ApiResult.fail(422, "AMBASSADOR_APPLICATION_INVALID");
+        }
         String requestHash = hash(eventDate + "\n" + normalizedCity + "\n" + canonicalBudget.toPlainString() + "\n" + canonicalBucket);
         var existing = mapper.findByKey(userId, scope.sourceEnvironment(), scope.runId(), key);
         if (existing != null) return existing.requestHash().equals(requestHash)
@@ -83,6 +100,29 @@ public class AppAmbassadorApplicationService {
         none.put("status", "NONE"); none.put("source", "server");
         none.put("sourceEnvironment", scope.sourceEnvironment()); none.put("runId", scope.runId());
         return ApiResult.ok(none);
+    }
+
+    public ApiResult<Map<String, Object>> history(Long userId, int requestedPageNum, int requestedPageSize) {
+        if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        var user = mapper.user(userId);
+        Scope scope = scope(userId, user);
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(100, requestedPageSize));
+        long total = mapper.count(userId, scope.sourceEnvironment(), scope.runId());
+        long offset = (long) (pageNum - 1) * pageSize;
+        List<Map<String, Object>> rows = offset >= total ? List.of() : mapper
+                .list(userId, scope.sourceEnvironment(), scope.runId(), offset, pageSize)
+                .stream().map(this::view).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("rows", rows);
+        result.put("pageNum", pageNum);
+        result.put("pageSize", pageSize);
+        result.put("total", total);
+        result.put("hasMore", offset + rows.size() < total);
+        result.put("source", "server");
+        result.put("sourceEnvironment", scope.sourceEnvironment());
+        result.put("runId", scope.runId());
+        return ApiResult.ok(result);
     }
 
     private Map<String, Object> view(AppAmbassadorApplicationMapper.ApplicationRow row) {

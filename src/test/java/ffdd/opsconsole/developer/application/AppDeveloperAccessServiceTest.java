@@ -22,7 +22,7 @@ class AppDeveloperAccessServiceTest {
         when(mapper.findByKey(7L, "PRODUCTION", "", "key-1")).thenAnswer(ignored -> requestHash.get() == null
                 ? null
                 : new AppDeveloperAccessMapper.AccessRow(
-                        "DEV-1", 7L, "key-1", requestHash.get(), "PENDING", LocalDateTime.of(2026, 8, 13, 0, 0),
+                        "DEV-1", 7L, "key-1", requestHash.get(), "PENDING", null, LocalDateTime.of(2026, 8, 13, 0, 0),
                         "PRODUCTION", ""));
         when(mapper.insertRequest(any())).thenAnswer(invocation -> {
             requestHash.set(invocation.getArgument(0, AppDeveloperAccessMapper.AccessWrite.class).requestHash());
@@ -40,7 +40,7 @@ class AppDeveloperAccessServiceTest {
         AppDeveloperAccessMapper mapper = mock(AppDeveloperAccessMapper.class);
         when(mapper.lockUserSandbox(7L)).thenReturn(0);
         when(mapper.pending(7L, "PRODUCTION", "")).thenReturn(new AppDeveloperAccessMapper.AccessRow(
-                "DEV-OLD", 7L, "old-key", "different-hash", "PENDING",
+                "DEV-OLD", 7L, "old-key", "different-hash", "PENDING", null,
                 LocalDateTime.of(2026, 8, 13, 0, 0), "PRODUCTION", ""));
         var result = new AppDeveloperAccessService(mapper, new MockEnvironment()).submit(
                 7L, "Nexion", "dev@example.com", "Inference workloads", "new-key");
@@ -56,7 +56,7 @@ class AppDeveloperAccessServiceTest {
         when(mapper.lockUserSandbox(7L)).thenReturn(1);
         when(mapper.findByKey(7L, "SANDBOX", "run-1", "key-1")).thenAnswer(ignored -> requestHash.get() == null
                 ? null : new AppDeveloperAccessMapper.AccessRow(
-                "DEV-1", 7L, "key-1", requestHash.get(), "PENDING",
+                "DEV-1", 7L, "key-1", requestHash.get(), "PENDING", null,
                 LocalDateTime.of(2026, 8, 13, 0, 0), "SANDBOX", "run-1"));
         when(mapper.insertRequest(any())).thenAnswer(invocation -> {
             var write = invocation.getArgument(0, AppDeveloperAccessMapper.AccessWrite.class);
@@ -71,5 +71,33 @@ class AppDeveloperAccessServiceTest {
                 7L, "Nexion", "dev@example.com", "Inference workloads", "key-1");
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("sourceEnvironment", "SANDBOX").containsEntry("runId", "run-1");
+    }
+
+    @Test
+    void preventsASecondApplicationWhenAccessIsAlreadyApproved() {
+        AppDeveloperAccessMapper mapper = mock(AppDeveloperAccessMapper.class);
+        when(mapper.lockUserSandbox(7L)).thenReturn(0);
+        when(mapper.approved(7L, "PRODUCTION", "")).thenReturn(1);
+        var result = new AppDeveloperAccessService(mapper, new MockEnvironment()).submit(
+                7L, "Nexion", "dev@example.com", "Inference workloads", "new-key");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DEVELOPER_ACCESS_ALREADY_APPROVED");
+        verify(mapper, never()).insertRequest(any());
+    }
+
+    @Test
+    void exposesOnlyAnAllowlistedReviewReasonToTheRequestOwner() {
+        AppDeveloperAccessMapper mapper = mock(AppDeveloperAccessMapper.class);
+        when(mapper.userSandbox(7L)).thenReturn(0);
+        when(mapper.latest(7L, "PRODUCTION", "")).thenReturn(new AppDeveloperAccessMapper.AccessRow(
+                "DEV-1", 7L, "key", "hash", "REVOKED", "ACCESS_REVOKED_BY_POLICY",
+                LocalDateTime.of(2026, 8, 13, 0, 0), "PRODUCTION", ""));
+        assertThat(new AppDeveloperAccessService(mapper, new MockEnvironment()).latest(7L).getData())
+                .containsEntry("reviewReason", "ACCESS_REVOKED_BY_POLICY");
+        when(mapper.latest(7L, "PRODUCTION", "")).thenReturn(new AppDeveloperAccessMapper.AccessRow(
+                "DEV-1", 7L, "key", "hash", "REVOKED", "internal operator note",
+                LocalDateTime.of(2026, 8, 13, 0, 0), "PRODUCTION", ""));
+        assertThat(new AppDeveloperAccessService(mapper, new MockEnvironment()).latest(7L).getData())
+                .doesNotContainKey("reviewReason");
     }
 }

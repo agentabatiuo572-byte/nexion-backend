@@ -187,8 +187,7 @@ public class OpsDomainRuntimeService {
                 api("AdminCommand", "/api/admin/commands", "platform_a1_read", "platform_a1_write", false),
                 api("DynamicOptions", "/api/admin/options/{domain}/{name}", "platform_a1_read", "platform_a1_write", false),
                 api("GlobalSearch", "/api/admin/platform/search", "platform_a1_read", "platform_a1_write", false),
-                api("RuntimeContracts", "/api/admin/platform/runtime/contracts", "platform_a1_read", "platform_a1_write", false),
-                api("MediaUpload", "/api/admin/media/uploads", "platform_a1_read", "platform_a1_write", false)));
+                api("RuntimeContracts", "/api/admin/platform/runtime/contracts", "platform_a1_read", "platform_a1_write", false)));
         map.put(DomainCode.B, List.of(
                 api("ReserveCoverage", "/api/admin/treasury/overview", "finance_d3_read", "finance_d3_write", true),
                 api("DualLedger", "/api/admin/treasury/dual-ledger", "finance_d3_read", "finance_d3_write", true),
@@ -213,6 +212,7 @@ public class OpsDomainRuntimeService {
                 api("WithdrawalParam", "/api/admin/withdraw/limits", "finance_d5_read", "finance_d5_daily_limit_write", false)));
         map.put(DomainCode.E, List.of(
                 api("Device", "/api/admin/devices", "device_e1_read", "device_e1_write", false),
+                api("MediaUpload", "/api/admin/media/uploads", "device_e1_read", "device_e1_write", false),
                 api("DeviceSku", "/api/admin/devices/skus", "device_e1_read", "device_e1_write", false),
                 api("DeviceReview", "/api/admin/devices/reviews", "device_e1_read", "device_e1_write", false),
                 api("DeviceTask", "/api/admin/devices/tasks", "device_e2_read", "device_e2_write", false),

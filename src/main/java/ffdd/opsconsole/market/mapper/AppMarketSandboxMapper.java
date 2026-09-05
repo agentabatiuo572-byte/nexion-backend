@@ -88,8 +88,14 @@ public interface AppMarketSandboxMapper {
     @Update("UPDATE nx_exchange_sandbox_order SET status='CANCELLED',updated_at=NOW() WHERE run_id=#{runId} AND user_id=#{userId} AND exchange_no=#{exchangeNo} AND status='QUEUED'")
     int cancelExchange(@Param("runId") String runId,@Param("userId") Long userId,@Param("exchangeNo") String exchangeNo);
 
-    @Select("SELECT exchange_no AS exchangeNo,from_asset AS fromAsset,to_asset AS toAsset,from_amount AS fromAmount,to_amount AS toAmount,rate,status,created_at AS createdAt FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} ORDER BY id DESC LIMIT 50")
-    List<ExchangeOrderView> exchangeOrders(@Param("runId") String runId,@Param("userId") Long userId);
+    @Select("SELECT COUNT(*) FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId}")
+    long countExchangeOrders(@Param("runId") String runId,@Param("userId") Long userId);
+
+    @Select("SELECT exchange_no AS exchangeNo,from_asset AS fromAsset,to_asset AS toAsset,from_amount AS fromAmount,to_amount AS toAmount,rate,status,created_at AS createdAt FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}")
+    List<ExchangeOrderView> exchangeOrdersPage(@Param("runId") String runId,
+                                                @Param("userId") Long userId,
+                                                @Param("offset") long offset,
+                                                @Param("limit") int limit);
 
     @Select("SELECT run_id AS runId,user_id AS userId,idempotency_key AS idempotencyKey,request_hash AS requestHash,exchange_no AS exchangeNo FROM nx_exchange_sandbox_operation WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{key} LIMIT 1 FOR UPDATE")
     ExchangeOperation exchangeOperation(@Param("runId") String runId,@Param("userId") Long userId,@Param("key") String key);

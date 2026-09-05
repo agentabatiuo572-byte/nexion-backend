@@ -18,6 +18,11 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
             <script>
             SELECT p.id,p.product_no productNo,p.name,p.price_usdt priceUsdt,p.stock,
                    p.product_type AS productType,p.inventory_mode AS inventoryMode,
+                   p.gpu_model AS gpuModel,p.vram_total_gb AS vramTotalGb,
+                   (SELECT s.power_text FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) power,
+                   (SELECT s.datacenter FROM nx_admin_device_sku s
+                     WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) datacenter,
                    p.unlock_phase unlockPhase,
                    (SELECT s.purchase_gate_json FROM nx_admin_device_sku s
                      WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) purchaseGateJson
@@ -70,7 +75,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
-              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),6)
+              WHERE config_key='device.max_active_slots' AND status=1 AND is_deleted=0 LIMIT 1),3)
             """)
     int deviceSlotCap();
 
@@ -98,9 +103,18 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Select("""
             SELECT s.purchase_gate_json
               FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1
+             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     String purchaseGateJson(@Param("productNo") String productNo);
+
+    /** Read after the quota CAS while its row lock is retained by the bundle transaction. */
+    @Select("""
+            SELECT purchase_gate_generation
+              FROM nx_admin_device_sku
+             WHERE sku_id=#{productNo} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockPurchaseGateGeneration(@Param("productNo") String productNo);
 
     /** Same canonical quantity-aware lifetime quota CAS used by bundle items. */
     @Update("""
@@ -149,17 +163,20 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT INTO nx_order_item(order_no,product_id,product_no,product_name,quantity,
-              unit_price_usdt,line_amount_usdt,sort_order,created_at,updated_at,is_deleted)
+              unit_price_usdt,line_amount_usdt,lifetime_quota_reserved,lifetime_quota_gate_generation,sort_order,created_at,updated_at,is_deleted)
             VALUES(#{orderNo},#{product.id},#{product.productNo},#{product.name},1,
-              #{product.priceUsdt},#{product.priceUsdt},#{sortOrder},NOW(),NOW(),0)
+              #{product.priceUsdt},#{product.priceUsdt},#{quotaReserved},#{quotaGateGeneration},#{sortOrder},NOW(),NOW(),0)
             """)
     int insertBundleItem(@Param("orderNo") String orderNo,
                          @Param("product") ProductRow product,
-                         @Param("sortOrder") Integer sortOrder);
+                         @Param("sortOrder") Integer sortOrder,
+                         @Param("quotaReserved") boolean quotaReserved,
+                         @Param("quotaGateGeneration") Long quotaGateGeneration);
 
     record UserLock(Long id, boolean sandbox) { }
     record ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
-                      String purchaseGateJson, String unlockPhase, String productType, String inventoryMode) {
+                      String purchaseGateJson, String unlockPhase, String productType, String inventoryMode,
+                      String gpuModel, Integer vramTotalGb, String power, String datacenter) {
         public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock) {
             this(id, productNo, name, priceUsdt, stock, null, null, "DEVICE", "FINITE");
         }
@@ -170,6 +187,14 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
         public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
                           String purchaseGateJson, String unlockPhase) {
             this(id, productNo, name, priceUsdt, stock, purchaseGateJson, unlockPhase, "DEVICE", "FINITE");
+        }
+        public ProductRow(Long id, String productNo, String name, BigDecimal priceUsdt, Integer stock,
+                          String purchaseGateJson, String unlockPhase, String productType, String inventoryMode) {
+            this(id, productNo, name, priceUsdt, stock, purchaseGateJson, unlockPhase, productType, inventoryMode,
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured",
+                    "SHARE".equalsIgnoreCase(productType) ? null : 1,
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured",
+                    "SHARE".equalsIgnoreCase(productType) ? null : "configured");
         }
     }
     record Attribution(String phase, Integer accountAgeMonths, String cohort) { }

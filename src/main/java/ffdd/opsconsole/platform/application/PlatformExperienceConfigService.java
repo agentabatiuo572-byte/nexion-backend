@@ -151,10 +151,9 @@ public class PlatformExperienceConfigService {
             }
             String urlTemplate = trim(channel.urlTemplate());
             String textTemplate = trim(channel.textTemplate());
-            if ("web".equals(trim(channel.intentType())) && (urlTemplate == null || !hasPlaceholder(urlTemplate))) {
+            if (!validChannelUrlTemplate(trim(channel.key()), trim(channel.intentType()), urlTemplate)) {
                 return "PLATFORM_EXPERIENCE_URL_TEMPLATE_INVALID";
             }
-            if (urlTemplate != null && !hasPlaceholder(urlTemplate)) return "PLATFORM_EXPERIENCE_URL_TEMPLATE_INVALID";
             if (Boolean.TRUE.equals(channel.enabled()) && !Set.of("copy", "poster", "system").contains(trim(channel.intentType()))
                     && textTemplate == null) return "PLATFORM_EXPERIENCE_TEXT_TEMPLATE_REQUIRED";
         }
@@ -247,8 +246,7 @@ public class PlatformExperienceConfigService {
         for (PlatformComputeConfigView.ShareChannel channel : share.channels()) {
             if (channel == null || !CHANNEL_KEYS.contains(channel.key()) || !INTENT_TYPES.contains(channel.intentType())
                     || !seen.add(channel.key())) return false;
-            if ("web".equals(channel.intentType()) && !hasPlaceholder(channel.urlTemplate())) return false;
-            if (channel.urlTemplate() != null && !channel.urlTemplate().isBlank() && !hasPlaceholder(channel.urlTemplate())) return false;
+            if (!validChannelUrlTemplate(channel.key(), channel.intentType(), channel.urlTemplate())) return false;
             if (channel.enabled() && !Set.of("copy", "poster", "system").contains(channel.intentType())
                     && !StringUtils.hasText(channel.textTemplate())) return false;
         }
@@ -285,6 +283,28 @@ public class PlatformExperienceConfigService {
 
     private boolean hasPlaceholder(String value) {
         return value != null && (value.contains("{link}") || value.contains("{text}"));
+    }
+
+    private boolean validChannelUrlTemplate(String channelKey, String intentType, String value) {
+        if (!StringUtils.hasText(value)) return !"web".equals(intentType);
+        if (!"web".equals(intentType) || !hasPlaceholder(value) || value.matches(".*[\\s#].*")) return false;
+        try {
+            URI uri = URI.create(value.trim()
+                    .replace("{link}", "https%3A%2F%2Fnexgrid.invalid%2Fref%2Fcode")
+                    .replace("{text}", "share-text"));
+            if ("sms".equals(channelKey)) {
+                return "sms".equalsIgnoreCase(uri.getScheme())
+                        && uri.getRawSchemeSpecificPart() != null
+                        && uri.getRawSchemeSpecificPart().startsWith("?body=")
+                        && uri.getFragment() == null;
+            }
+            return "https".equalsIgnoreCase(uri.getScheme())
+                    && StringUtils.hasText(uri.getHost())
+                    && uri.getUserInfo() == null
+                    && uri.getFragment() == null;
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     private String requestHash(PlatformExperienceConfigUpdateRequest request) {

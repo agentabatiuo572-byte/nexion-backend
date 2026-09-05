@@ -38,6 +38,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -58,8 +59,16 @@ class OpsKillSwitchServiceTest {
         when(outboxService.publish(anyString(), anyString(), anyString(), any())).thenReturn("event-test");
     }
 
+    @BeforeEach
+    void seedExplicitlyEnabledCanonicalGates() {
+        for (String key : List.of("withdraw", "staking", "genesis", "exchange", "trial")) {
+            emergencyRepository.settings.put("killswitch." + key, "enabled");
+        }
+    }
+
     @Test
     void matrixHasFiveActiveGatesAndRetiredSunsetGatesWithoutWritingConfig() {
+        emergencyRepository.settings.clear();
         var result = service.matrix();
 
         assertThat(result.getCode()).isZero();
@@ -70,6 +79,7 @@ class OpsKillSwitchServiceTest {
 
     @Test
     void disabledReadTimeSeedsExposeJ1EnumMatrixWithoutWritingConfig() {
+        emergencyRepository.settings.clear();
         OpsKillSwitchService realOnlyService = new OpsKillSwitchService(
                 emergencyRepository,
                 coverageFacade,
@@ -89,10 +99,10 @@ class OpsKillSwitchServiceTest {
                 .extracting(gate -> String.valueOf(gate.get("key")))
                 .containsExactly("withdraw", "staking", "genesis", "exchange", "trial");
         assertThat(activeGates)
-                .allSatisfy(gate -> assertThat(gate).containsEntry("enabled", true));
+                .allSatisfy(gate -> assertThat(gate).containsEntry("enabled", false));
         assertThat(detailMap(result.getData().get("stats")))
-                .containsEntry("liveGateCount", 5L)
-                .containsEntry("killedGateCount", 0L);
+                .containsEntry("liveGateCount", 0L)
+                .containsEntry("killedGateCount", 5L);
         assertThat(emergencyRepository.settings).isEmpty();
     }
 
@@ -156,6 +166,7 @@ class OpsKillSwitchServiceTest {
 
     @Test
     void missingGateSettingsMatchTheSharedDownstreamDefaultForEveryJ1Gate() {
+        emergencyRepository.settings.clear();
         var result = service.matrix();
 
         @SuppressWarnings("unchecked")
@@ -163,7 +174,7 @@ class OpsKillSwitchServiceTest {
         boolean downstreamDefault = ffdd.opsconsole.emergency.domain.KillSwitchState.enabled(
                 Optional.empty(), Optional.empty());
 
-        assertThat(downstreamDefault).isTrue();
+        assertThat(downstreamDefault).isFalse();
         assertThat(gates)
                 .extracting(gate -> gate.get("enabled"))
                 .containsOnly(downstreamDefault);
@@ -852,7 +863,9 @@ class OpsKillSwitchServiceTest {
         assertThat(missingBasis.getMessage()).isEqualTo("TRIGGER_BASIS_REQUIRED");
         assertThat(missingPlan.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(missingPlan.getMessage()).isEqualTo("DISPOSITION_PLAN_REQUIRED");
-        assertThat(emergencyRepository.settings).doesNotContainKeys("killswitch.withdraw", "killswitch.staking");
+        assertThat(emergencyRepository.settings)
+                .containsEntry("killswitch.withdraw", "enabled")
+                .containsEntry("killswitch.staking", "enabled");
     }
 
     @Test
@@ -894,7 +907,7 @@ class OpsKillSwitchServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported J1 kill switch key");
 
-        assertThat(emergencyRepository.settings).doesNotContainKey("killswitch.withdraw");
+        assertThat(emergencyRepository.settings).containsEntry("killswitch.withdraw", "enabled");
     }
 
     @Test
@@ -908,7 +921,7 @@ class OpsKillSwitchServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("KILL_SWITCH_BATCH_CONFLICT");
-        assertThat(emergencyRepository.settings).doesNotContainKey("killswitch.withdraw");
+        assertThat(emergencyRepository.settings).containsEntry("killswitch.withdraw", "enabled");
         verify(auditLogService).recordRequired(argThat(request ->
                 "J1_EMERGENCY_KILLSWITCH_BLOCKED".equals(request.getAction())
                         && "BLOCKED".equals(request.getResult())));

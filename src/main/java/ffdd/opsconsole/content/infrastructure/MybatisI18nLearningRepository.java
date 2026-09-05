@@ -1026,7 +1026,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                     row.correctOptionIndex() == null ? 0 : row.correctOptionIndex(),
                     row.questionVi(), row.optionsVi())).toList();
         } catch (Exception ex) {
-            return List.of();
+            throw new IllegalStateException("LEARNING_COURSE_QUIZ_INVALID", ex);
         }
     }
 

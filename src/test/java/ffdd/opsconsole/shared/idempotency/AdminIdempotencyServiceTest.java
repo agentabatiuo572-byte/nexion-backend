@@ -12,6 +12,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -139,6 +142,98 @@ class AdminIdempotencyServiceTest {
                 .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH")
                 .extracting("code")
                 .isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test
+    void questClaimRejectsTheSameKeyWhenTheMissionInstanceChanges() {
+        String scope = "APP:QUEST_CLAIM:USER:42";
+        String key = "weekly-quest-key";
+        AdminIdempotencyRecordEntity prior = existing(
+                sha256("H3_DEVICE_ACTIVATED|WEEK:2026-W35"), "SUCCEEDED", "{\"status\":\"CLAIMED\"}");
+        prior.setScope(scope);
+        prior.setIdempotencyKey(key);
+        when(recordMapper.selectActive(scope, key)).thenReturn(prior);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        assertThatThrownBy(() -> service.execute(
+                scope, key, sha256("H3_DEVICE_ACTIVATED|WEEK:2026-W36"), Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of("status", "CLAIMED");
+                }))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+
+        assertThat(actionCalled).isFalse();
+        verify(recordMapper, never()).markSucceeded(any(), any());
+    }
+
+    @Test
+    void retainedReplayKeepsAnExpiredSucceededFinancialReceiptOutOfTheActionPath() {
+        AdminIdempotencyRecordEntity succeeded = existing("hash-g7", "SUCCEEDED", "{\"amount\":200}");
+        succeeded.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        when(recordMapper.selectActive("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-expired"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-expired"))
+                .thenReturn(succeeded);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        Map<?, ?> replayed = service.executeRetained(
+                "APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-expired", "hash-g7", Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of("amount", 999);
+                });
+
+        assertThat(replayed.get("amount")).isEqualTo(200);
+        assertThat(actionCalled).isFalse();
+        verify(recordMapper, never()).resetExpiredById(any(), any(), any());
+        verify(recordMapper, never()).insert(any(AdminIdempotencyRecordEntity.class));
+    }
+
+    @Test
+    void retainedExpiredSuccessRejectsAnyPayloadMismatchWithoutExecutingAgain() {
+        AdminIdempotencyRecordEntity succeeded = existing("hash-g7-original", "SUCCEEDED", "{\"amount\":200}");
+        succeeded.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        when(recordMapper.selectActive("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-mismatch"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-mismatch"))
+                .thenReturn(succeeded);
+        AtomicBoolean actionCalled = new AtomicBoolean(false);
+
+        assertThatThrownBy(() -> service.executeRetained(
+                "APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-mismatch", "hash-g7-rewritten", Map.class,
+                () -> {
+                    actionCalled.set(true);
+                    return Map.of("amount", 999);
+                }))
+                .isInstanceOf(BizException.class)
+                .hasMessage("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+
+        assertThat(actionCalled).isFalse();
+        verify(recordMapper, never()).resetExpiredById(any(), any(), any());
+    }
+
+    @Test
+    void retainedFailedRequestRetriesOnlyThroughTheFailedStatusCas() {
+        AdminIdempotencyRecordEntity failed = existing("hash-g7-failed", "FAILED", null);
+        failed.setId(47L);
+        failed.setExpiresAt(LocalDateTime.of(2026, 6, 17, 0, 0));
+        when(recordMapper.selectActive("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-failed"))
+                .thenReturn(null);
+        when(recordMapper.selectCurrent("APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-failed"))
+                .thenReturn(failed);
+        when(recordMapper.resetFailedById(eq(47L), eq("hash-g7-failed"), any(LocalDateTime.class)))
+                .thenReturn(1);
+
+        Map<?, ?> retried = service.executeRetained(
+                "APP:G7_REPURCHASE_OPEN:USER:7", "g7-open-failed", "hash-g7-failed", Map.class,
+                () -> Map.of("retried", true));
+
+        assertThat(retried.get("retried")).isEqualTo(true);
+        verify(recordMapper).resetFailedById(eq(47L), eq("hash-g7-failed"), any(LocalDateTime.class));
+        verify(recordMapper, never()).resetExpiredById(any(), any(), any());
+        verify(recordMapper).markSucceeded(eq(47L), org.mockito.ArgumentMatchers.contains("retried"));
     }
 
     @Test
@@ -522,5 +617,15 @@ class AdminIdempotencyServiceTest {
         entity.setStatus(status);
         entity.setResponseJson(responseJson);
         return entity;
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
     }
 }

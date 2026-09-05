@@ -43,6 +43,7 @@ public class AppGenesisService {
     private static final String DISCLOSURE_KEY = "disclosure.gate.genesis";
     private static final String EMISSION_GATE_KEY = "growth.phase.genesis_emissions_open";
     private static final String SALE_PREFIX = "market.genesis.ops.";
+    private static final String SHOWCASE_ENABLED_KEY = SALE_PREFIX + "showcase_enabled";
     private static final String HOLDER_PREFIX = SALE_PREFIX + "holder.";
 
     private final AppGenesisMapper mapper;
@@ -80,6 +81,7 @@ public class AppGenesisService {
                 "listings", mapper.listings().stream().map(this::listingView).toList(),
                 "transactions", mapper.transactions().stream().map(this::transactionView).toList(),
                 "marketStats", statsView(),
+                "showcaseEnabled", showcaseEnabled(),
                 "serverCanonical", true,
                 "halted", killSwitch.halted(),
                 "revision", killSwitch.revision(),
@@ -677,8 +679,16 @@ public class AppGenesisService {
                 "tiers", List.of(), "tiersVersion", 1L,
                 "marketOpenState", "closed", "marketOpenStateVersion", 1L,
                 "closedNoticeKey", "GENESIS_SANDBOX_HOLD",
+                "showcaseEnabled", false,
                 "catalogAvailable", false, "tradeAvailable", false,
                 "tradeBlockedReason", "GENESIS_SANDBOX_HOLD");
+    }
+
+    private boolean showcaseEnabled() {
+        return Optional.ofNullable(config.activeValue(SHOWCASE_ENABLED_KEY)).orElse(Optional.empty())
+                .map(String::trim)
+                .map("true"::equalsIgnoreCase)
+                .orElse(false);
     }
 
     private Map<String, Object> sandboxAccountState() {

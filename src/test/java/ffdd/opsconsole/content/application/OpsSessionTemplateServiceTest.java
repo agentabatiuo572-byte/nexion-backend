@@ -78,6 +78,15 @@ class OpsSessionTemplateServiceTest {
     }
 
     @Test
+    void overviewKeepsAdvisorAutopushEffectivelyOffWithoutAnExecutor() {
+        assertThat(service.overview().getData().advisorPolicy().enabled()).isFalse();
+
+        configFacade.values.put("I.session.advisor.policy.enabled", "on");
+
+        assertThat(service.overview().getData().advisorPolicy().enabled()).isFalse();
+    }
+
+    @Test
     void scriptsReturnPagedBackendRows() {
         templateRepository.scripts.add(new SessionScriptView("AS-002", "升级", "升级设备收益更稳。", "/store", "draft", "全量用户", now()));
         templateRepository.scripts.add(new SessionScriptView("AS-003", "复投", "需要我帮你看复投方案吗?", "/staking", "published", "P3 阶段活跃", now()));
@@ -149,6 +158,20 @@ class OpsSessionTemplateServiceTest {
         assertThat(result.getData().cooldownHours()).isEqualTo(48);
         assertThat(configFacade.values).containsEntry("I.session.advisor.policy.cooldownHours", "48");
         assertAuditAction("M5_SESSION_ADVISOR_POLICY_UPDATED");
+    }
+
+    @Test
+    void policyCannotEnableAutopushWithoutAnInstalledExecutor() {
+        configFacade.values.put("I.session.advisor.policy.enabled", "off");
+
+        var result = service.updateAdvisorPolicy("enabled", "idem-m5-enable", new SessionAdvisorPolicyUpdateRequest(
+                "on",
+                "Marina K.",
+                "开启顾问自动推送"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SESSION_ADVISOR_AUTOPUSH_EXECUTOR_UNAVAILABLE");
+        assertThat(configFacade.values).containsEntry("I.session.advisor.policy.enabled", "off");
     }
 
     @Test

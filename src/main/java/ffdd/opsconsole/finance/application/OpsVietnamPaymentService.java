@@ -92,7 +92,7 @@ public class OpsVietnamPaymentService {
         requireId(id, "VIETQR_RECONCILIATION_ID_REQUIRED");
         validateMutation(idempotencyKey, request == null ? null : request.expectedVersion(),
                 request == null ? null : request.reason());
-        validateEvidence(request == null ? null : request.evidenceRef());
+        validateReceiptUploadEvidence(request == null ? null : request.evidenceRef());
         String normalizedAction = normalizeAction(action);
         String requestHash = hash(id + ":" + normalizedAction + ":" + request.expectedVersion() + ":"
                 + request.userId() + ":" + clean(request.intentNo()) + ":"
@@ -387,6 +387,10 @@ public class OpsVietnamPaymentService {
         BigDecimal amount = credit
                 ? reconciliationAmount(row, canonicalIntent, viewType)
                 : BigDecimal.ZERO.setScale(6);
+        receiptEvidenceService.claim(
+                request.evidenceRef(),
+                text(row.get("reconciliationNo")) + ":" + action + ":v" + request.expectedVersion(),
+                operator(request.operator()));
         if (credit) {
             Map<String, Object> wallet = requiredMap(mapper.findUsdtWalletForUpdate(userId),
                     "VIETQR_TARGET_WALLET_NOT_FOUND", 404);
@@ -768,14 +772,6 @@ public class OpsVietnamPaymentService {
         }
         if (reason.trim().length() > 200) {
             validation("OPERATION_REASON_TOO_LONG");
-        }
-    }
-
-    private void validateEvidence(String evidenceRef) {
-        String value = clean(evidenceRef);
-        if (value.length() < 3 || value.length() > 128
-                || !value.matches("[A-Za-z0-9][A-Za-z0-9._:/-]*")) {
-            validation("VIETQR_EVIDENCE_REFERENCE_INVALID");
         }
     }
 

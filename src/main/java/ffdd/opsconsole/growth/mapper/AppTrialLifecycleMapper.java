@@ -54,6 +54,10 @@ public interface AppTrialLifecycleMapper {
             """)
     String emergencyValue(@Param("settingKey") String settingKey);
 
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key='growth.trial.auto_push_killed' "
+            + "AND status=1 AND is_deleted=0 LIMIT 1")
+    String autoPushKilled();
+
     @Select("""
             SELECT id,user_id userId,claim_no claimNo,status,user_device_id userDeviceId,
                    payment_method_id paymentMethodId,device_name deviceName,duration_days durationDays,

@@ -45,13 +45,14 @@ public interface AppDeveloperWebhookDeliveryMapper extends BaseMapper<Object> {
     @Update("UPDATE nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id SET d.status='DEAD',d.last_status_code=#{code},d.last_error=#{error},d.next_retry_at=#{at},d.updated_at=#{at},w.delivery_status='DEAD',w.updated_at=#{at} WHERE d.id=#{id} AND d.status='DELIVERING' AND d.attempt_count=#{attempts}")
     int markDead(@Param("id") Long id, @Param("attempts") int attempts, @Param("code") Integer code, @Param("error") String error, @Param("at") LocalDateTime at);
 
-    @Update("UPDATE nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id SET d.status='NOT_DELIVERED',d.last_error=#{error},d.next_retry_at=#{at},d.updated_at=#{at},w.delivery_status='NOT_DELIVERED',w.updated_at=#{at} WHERE d.id=#{id} AND d.status='DELIVERING'")
-    int markNotDelivered(@Param("id") Long id, @Param("error") String error, @Param("at") LocalDateTime at);
+    @Update("UPDATE nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id SET d.status='NOT_DELIVERED',d.last_error=#{error},d.next_retry_at=#{at},d.updated_at=#{at},w.delivery_status='NOT_DELIVERED',w.updated_at=#{at} WHERE d.id=#{id} AND d.status='DELIVERING' AND d.attempt_count=#{attempts}")
+    int markNotDelivered(@Param("id") Long id, @Param("attempts") int attempts,
+                         @Param("error") String error, @Param("at") LocalDateTime at);
 
-    @Select("SELECT d.id,d.webhook_id webhookId,d.user_id userId,d.source_environment sourceEnvironment,d.run_id runId,d.event_id eventId,d.event_type eventType,d.payload_json payloadJson,d.status,d.attempt_count attemptCount,d.max_attempts maxAttempts,d.last_status_code lastStatusCode,d.last_error lastError,d.next_retry_at nextRetryAt,d.created_at createdAt,d.updated_at updatedAt FROM nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id WHERE d.webhook_id=#{webhookId} AND w.user_id=#{userId} AND w.source_environment=#{sourceEnvironment} AND w.run_id=#{runId} ORDER BY d.id DESC LIMIT #{limit}")
-    List<DeliveryRow> listForWebhook(@Param("webhookId") Long webhookId, @Param("userId") Long userId,
-                                      @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId,
-                                      @Param("limit") int limit);
+    @Select("SELECT d.id,d.webhook_id webhookId,d.user_id userId,d.source_environment sourceEnvironment,d.run_id runId,d.event_id eventId,d.event_type eventType,d.payload_json payloadJson,d.status,d.attempt_count attemptCount,d.max_attempts maxAttempts,d.last_status_code lastStatusCode,d.last_error lastError,d.next_retry_at nextRetryAt,d.created_at createdAt,d.updated_at updatedAt FROM nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id WHERE d.webhook_id=#{webhookId} AND w.user_id=#{userId} AND w.source_environment=#{sourceEnvironment} AND w.run_id=#{runId} AND (#{beforeId} IS NULL OR d.id&lt;#{beforeId}) ORDER BY d.id DESC LIMIT #{limit}")
+    List<DeliveryRow> listForWebhookBefore(@Param("webhookId") Long webhookId, @Param("userId") Long userId,
+                                            @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId,
+                                            @Param("beforeId") Long beforeId, @Param("limit") int limit);
 
     record DeliveryWrite(Long webhookId, Long userId, String sourceEnvironment, String runId, String eventId,
                          String eventType, String payloadJson, int maxAttempts, LocalDateTime nextRetryAt) { }

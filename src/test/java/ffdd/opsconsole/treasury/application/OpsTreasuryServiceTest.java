@@ -139,7 +139,7 @@ class OpsTreasuryServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void missingKillSwitchRowsStillExposeTheFiveCanonicalDefaultOnlineGates() {
+    void missingKillSwitchRowsExposeTheFiveCanonicalFailClosedGates() {
         OpsTreasuryService realOnlyService = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         ApiResult<Map<String, Object>> result = realOnlyService.bDomainDashboard();
@@ -149,10 +149,10 @@ class OpsTreasuryServiceTest {
         assertThat((List<Map<String, Object>>) riskRadar.get("gates"))
                 .hasSize(5)
                 .allSatisfy(gate -> {
-                    assertThat(gate).containsEntry("on", true);
-                    assertThat(gate).containsEntry("state", "default_on");
+                    assertThat(gate).containsEntry("on", false);
+                    assertThat(gate).containsEntry("state", "default_off");
                 });
-        assertThat(riskRadar).containsEntry("trippedGateCount", 0L);
+        assertThat(riskRadar).containsEntry("trippedGateCount", 5L);
     }
 
     @Test
@@ -297,6 +297,9 @@ class OpsTreasuryServiceTest {
         ledgerRepository.countValue = 10L;
         emergencyRepository.settings.put("killswitch.withdraw", "disabled");
         emergencyRepository.settings.put("emergency.killswitch.exchange", "off");
+        emergencyRepository.settings.put("killswitch.staking", "enabled");
+        emergencyRepository.settings.put("killswitch.genesis", "enabled");
+        emergencyRepository.settings.put("killswitch.trial", "enabled");
         configFacade.values.put("treasury.b.liquidity.runway", "[{\"day\":\"D0\",\"cash\":\"1,000\",\"need\":\"120\",\"gap\":\"880\"}]");
         configFacade.values.put("treasury.b.funnel.stages", "[{\"key\":\"reg\",\"label\":\"注册\",\"count\":10},{\"key\":\"cash\",\"label\":\"入金\",\"count\":3}]");
         configFacade.values.put("treasury.b.risk.rules", "[{\"dom\":\"manual\",\"state\":\"on\",\"on\":true}]");

@@ -279,6 +279,28 @@ class OpsUserServiceTest {
     }
 
     @Test
+    void supportProfilePageAcceptsPhoneAndAuditsOnlyItsHash() {
+        ApiResult<PageResult<UserAccountView>> result = service.supportProfilePage(
+                UserQueryRequest.basic("+86 138-0013-8000", null, null, 1, 8, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(userRepository.supportProfileSearch).isTrue();
+        assertThat(result.getData().getRecords()).containsExactly(userRepository.user);
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(audit.capture());
+        assertThat(audit.getValue().getDetail().toString()).contains("filterHash").doesNotContain("138", "8000");
+        assertThat(audit.getValue().getResourceId()).isEqualTo("M5_ADVISOR_BINDING");
+    }
+
+    @Test
+    void supportProfilePageKeepsPaginationValidation() {
+        assertThat(service.supportProfilePage(UserQueryRequest.basic("3775", null, null, 0, 8, null)).getCode())
+                .isEqualTo(422);
+        assertThat(userRepository.supportProfileSearch).isFalse();
+        assertThat(userRepository.lastProfileRequest).isNull();
+    }
+
+    @Test
     void profilePageRejectsOutOfRangePaginationBeforeRepositoryAccess() {
         ApiResult<PageResult<UserAccountView>> invalidPage = service.profilePage(
                 UserQueryRequest.basic(null, null, null, 0, 20, null));
@@ -1415,7 +1437,7 @@ class OpsUserServiceTest {
 
     @Test
     void registrationRiskOverviewComesFromBackendConfigAndK1Guards() {
-        configFacade.values.put("auth.risk.otp_max_24h", "4");
+        configFacade.values.put("auth.risk.otp_send_day_limit", "10");
         configFacade.values.put("auth.risk.c6.version", "7");
         userRepository.registrationOtpToday = 12L;
         userRepository.registrationCaptchaToday = 3L;
@@ -1438,10 +1460,10 @@ class OpsUserServiceTest {
         assertThat(result.getData().params()).filteredOn(param -> "otpMax24h".equals(param.key()))
                 .singleElement()
                 .satisfies(param -> {
-                    assertThat(param.value()).isEqualTo("4 次");
+                    assertThat(param.value()).isEqualTo("10 次");
                     assertThat(param.readOnly()).isTrue();
                 });
-        assertThat(configFacade.values).containsEntry("auth.risk.otp_max_24h", "4");
+        assertThat(configFacade.values).containsEntry("auth.risk.otp_send_day_limit", "10");
         assertThat(result.getData().k1RejectCode()).isEqualTo("MULTI_ACCOUNT_PARAM_BELONGS_TO_K1");
         assertThat(result.getData().sources())
                 .contains("nx_user_otp_challenge", "nx_event_outbox:auth.login_locked", "nx_admin_risk_multi_account_cluster");
@@ -1553,7 +1575,7 @@ class OpsUserServiceTest {
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("OTP_CONFIG_BELONGS_TO_K2");
-        assertThat(configFacade.values).doesNotContainKey("auth.risk.otp_cooldown_seconds");
+        assertThat(configFacade.values).doesNotContainKey("auth.risk.otp_send_cooldown_seconds");
     }
 
     @Test
@@ -1950,6 +1972,7 @@ class OpsUserServiceTest {
         private long registrationStuffingClusters7d;
         private String passwordResetMarker;
         private UserQueryRequest lastProfileRequest;
+        private boolean supportProfileSearch;
         private UserAssetAdjustmentQueryRequest lastAssetAdjustmentRequest;
         private Long lastSessionPageUserId;
         private long nextLedgerId = 9001L;
@@ -2024,6 +2047,12 @@ class OpsUserServiceTest {
             }
             int to = Math.min(from + pageSize, rows.size());
             return new PageResult<>(rows.size(), pageNum, pageSize, rows.subList(from, to));
+        }
+
+        @Override
+        public PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request) {
+            supportProfileSearch = true;
+            return pageProfiles(request);
         }
 
         public Optional<UserAccountView> findById(Long userId) {

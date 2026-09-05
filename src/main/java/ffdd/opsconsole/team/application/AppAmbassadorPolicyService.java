@@ -30,26 +30,44 @@ public class AppAmbassadorPolicyService {
 
     public ApiResult<Map<String, Object>> policy(Long userId) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
-        AppAmbassadorPolicyMapper.UserScope user = mapper.user(userId);
-        Scope scope = scope(userId, user);
+        try {
+            PolicySnapshot snapshot = requiredPolicy(userId);
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("policyVersion", snapshot.policyVersion());
+            output.put("revision", snapshot.revision());
+            output.put("defaultBudgetUsdt", snapshot.defaultBudgetUsdt());
+            output.put("buckets", snapshot.buckets());
+            output.put("source", "server");
+            output.put("sourceEnvironment", snapshot.sourceEnvironment());
+            output.put("runId", snapshot.runId());
+            return ApiResult.ok(output);
+        } catch (BizException exception) {
+            return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        }
+    }
+
+    /** The command path consumes this exact parsed snapshot instead of duplicating limits. */
+    public PolicySnapshot requiredPolicy(Long userId) {
+        if (userId == null || userId <= 0) throw new BizException(403, "USER_AUTH_REQUIRED");
+        Scope scope = scope(userId, mapper.user(userId));
         AppAmbassadorPolicyMapper.PolicyRow row = mapper.policy();
-        if (!validRow(row)) return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        if (!validRow(row)) throw new BizException(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         List<Map<String, Object>> buckets;
         try {
             buckets = JSON.readValue(row.bucketsJson(), new TypeReference<>() { });
         } catch (JsonProcessingException exception) {
-            return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+            throw new BizException(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         }
-        if (!validBuckets(buckets)) return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("policyVersion", row.policyVersion());
-        output.put("revision", row.revision());
-        output.put("defaultBudgetUsdt", row.defaultBudgetUsdt());
-        output.put("buckets", buckets);
-        output.put("source", "server");
-        output.put("sourceEnvironment", scope.sourceEnvironment());
-        output.put("runId", scope.runId());
-        return ApiResult.ok(output);
+        if (!validBuckets(buckets)) throw new BizException(503, "AMBASSADOR_POLICY_UNAVAILABLE");
+        return new PolicySnapshot(row.policyVersion(), row.revision(), row.defaultBudgetUsdt(),
+                List.copyOf(buckets), scope.sourceEnvironment(), scope.runId());
+    }
+
+    public boolean budgetAllowed(PolicySnapshot policy, String bucket, BigDecimal budget) {
+        if (policy == null || bucket == null || budget == null) return false;
+        return policy.buckets().stream().anyMatch(row -> bucket.equalsIgnoreCase(String.valueOf(row.get("id")))
+                && budget.compareTo(new BigDecimal(String.valueOf(row.get("minBudgetUsdt")))) >= 0
+                && budget.compareTo(new BigDecimal(String.valueOf(row.get("maxBudgetUsdt")))) <= 0);
     }
 
     private boolean validRow(AppAmbassadorPolicyMapper.PolicyRow row) {
@@ -98,4 +116,7 @@ public class AppAmbassadorPolicyService {
     }
 
     private record Scope(String sourceEnvironment, String runId) { }
+
+    public record PolicySnapshot(String policyVersion, Long revision, BigDecimal defaultBudgetUsdt,
+                                 List<Map<String, Object>> buckets, String sourceEnvironment, String runId) { }
 }

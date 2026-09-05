@@ -33,6 +33,11 @@ public interface DeviceOpsRepository {
         return true;
     }
 
+    /** Serializes E5 physical-device activations for one owner before capacity is read. */
+    default boolean lockUserForE5Activation(Long userId) {
+        return false;
+    }
+
     default Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
         return Optional.empty();
     }

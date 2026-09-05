@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class AppTaskAssignmentMapperContractTest {
@@ -50,5 +51,49 @@ class AppTaskAssignmentMapperContractTest {
         assertThat(source).doesNotContain("insertSandboxReward", "nx_compute_sandbox_reward");
         assertThat(migration).contains("uk_compute_device_task_lock_device_env");
         assertThat(BaseMapper.class).isAssignableFrom(AppTaskAssignmentMapper.class);
+    }
+
+    @Test
+    void productionAssignmentCandidatesExcludeSandboxPausedLockedAndAlreadyAssignedDevices() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));
+
+        assertThat(source).contains("List<AssignmentCandidate> assignmentCandidates");
+        assertThat(source).contains("u.sandbox = 0");
+        assertThat(source).contains("d.source_environment = 'PRODUCTION'");
+        assertThat(source).contains("COALESCE(dc.dispatch_paused, 0) = 0");
+        assertThat(source).contains("NOT EXISTS (SELECT 1 FROM nx_compute_task t");
+        assertThat(source).contains("NOT EXISTS (SELECT 1 FROM nx_compute_device_task_lock l");
+        assertThat(source).contains("d.id > #{afterDeviceId}", "ORDER BY d.id", "LIMIT #{limit}");
+    }
+
+    @Test
+    void taskConfigurationIsLockedAcrossClaimAndCompletionDecisions() throws Exception {
+        String eligible = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("eligibleTasks", Integer.class)
+                .getAnnotation(Select.class).value());
+        String runtime = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("taskRuntimeGate", Long.class, Long.class, String.class)
+                .getAnnotation(Select.class).value());
+
+        assertThat(eligible).contains("FROM nx_admin_device_task", "FOR UPDATE");
+        assertThat(runtime).contains("FROM nx_admin_device_task", "FOR UPDATE");
+    }
+
+    @Test
+    void settlementWritersAllowOnlyAStillActiveDeferredDeactivationToFinishItsAlreadyClaimedTask()
+            throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));
+
+        var settlementWriters = java.util.Arrays.stream(source.split("(?=@(?:Insert|Update))"))
+                .filter(block -> block.contains("d.pending_deactivate IN (0, 1)"))
+                .toList();
+        assertThat(settlementWriters).hasSize(4).allSatisfy(block -> assertThat(block).contains(
+                "d.deactivated_at IS NULL", "UPPER(d.ownership_status) = 'OWNED'",
+                "d.source_environment='PRODUCTION'", "d.run_id=''", "d.activated_at IS NOT NULL",
+                "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')"));
+        // A device marked to stop after its current task must not claim a new task.
+        assertThat(source).contains("d.deactivated_at IS NULL AND d.pending_deactivate = 0");
     }
 }

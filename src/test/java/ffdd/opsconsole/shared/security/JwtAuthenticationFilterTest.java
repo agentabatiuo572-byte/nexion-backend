@@ -258,6 +258,39 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void legacyCountryBearerRevokesSessionBeforeTouchAndDoesNotAuthenticate() throws Exception {
+        when(userMapper.selectById(42L)).thenReturn(user(0, "+1", "4155552671"));
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
+                42L, "user-42", List.of(), "legacy-country-session", java.time.Duration.ofHours(1),
+                UserAuthEnvironment.PRODUCTION));
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        org.mockito.Mockito.verify(authSessionMapper).revokeAllUserSessions(42L);
+        org.mockito.Mockito.verify(authSessionMapper, never()).touchActiveUserSession(any(), any(), anyInt());
+    }
+
+    @Test
+    void trustedGatewayLegacyCountryRevokesSessionAndDoesNotAuthenticate() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
+        when(userMapper.selectById(1001L)).thenReturn(user(0, "+81", "09012345678"));
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/content/app/test");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID, "1001");
+        request.addHeader(AuthHeaders.SUBJECT_TYPE, "USER");
+        request.addHeader(AuthHeaders.SESSION_ID, "gateway-legacy-country-session");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        org.mockito.Mockito.verify(authSessionMapper).revokeAllUserSessions(1001L);
+        org.mockito.Mockito.verify(authSessionMapper, never())
+                .countActiveUserSession("gateway-legacy-country-session", 1001L);
+    }
+
+    @Test
     void rejectsLegacyUserBearerWithoutAudienceClaim() throws Exception {
         MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
                 42L, "USER", "user-42", List.of(), "legacy-session"));
@@ -288,6 +321,21 @@ class JwtAuthenticationFilterTest {
         assertThat(response.getStatus()).isEqualTo(503);
         assertThat(response.getContentAsString()).contains("ADMIN_SESSION_STORE_UNAVAILABLE");
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void userSessionStoreFailureDoesNotExposeAnAdminOnlyErrorCode() throws Exception {
+        when(userMapper.selectById(42L)).thenThrow(new IllegalStateException("database down"));
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
+                42L, "user-42", List.of(), "user-session-1", java.time.Duration.ofHours(1),
+                UserAuthEnvironment.PRODUCTION));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) -> { });
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("USER_SESSION_STORE_UNAVAILABLE")
+                .doesNotContain("ADMIN_SESSION_STORE_UNAVAILABLE");
     }
 
     @Test
@@ -324,9 +372,38 @@ class JwtAuthenticationFilterTest {
     }
 
     private static UserEntity user(int sandbox) {
+        return user(sandbox, "+84", "901234567");
+    }
+
+    @Test
+    void trustedGatewayUserSessionStoreFailureReturnsUserScopedServiceUnavailable() throws Exception {
+        gatewayProperties.setHeaderAuthenticationEnabled(true);
+        gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");
+        when(userMapper.selectById(1001L)).thenReturn(user(0));
+        when(authSessionMapper.countActiveUserSession("gateway-user-session", 1001L))
+                .thenThrow(new IllegalStateException("session database down"));
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/trial/eligibility");
+        request.addHeader(AuthHeaders.GATEWAY_SECRET, gatewayProperties.getInternalSecret());
+        request.addHeader(AuthHeaders.SUBJECT_ID, "1001");
+        request.addHeader(AuthHeaders.SUBJECT_TYPE, "USER");
+        request.addHeader(AuthHeaders.SESSION_ID, "gateway-user-session");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean invoked = new AtomicBoolean(false);
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) -> invoked.set(true));
+
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("USER_SESSION_STORE_UNAVAILABLE")
+                .doesNotContain("ADMIN_SESSION_STORE_UNAVAILABLE");
+    }
+
+    private static UserEntity user(int sandbox, String countryCode, String phone) {
         UserEntity user = new UserEntity();
         user.setId(42L);
         user.setSandbox(sandbox);
+        user.setCountryCode(countryCode);
+        user.setPhone(phone);
         return user;
     }
 }

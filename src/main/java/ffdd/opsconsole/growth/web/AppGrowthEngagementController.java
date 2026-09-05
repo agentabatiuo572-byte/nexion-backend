@@ -33,15 +33,17 @@ public class AppGrowthEngagementController {
     }
 
     @GetMapping("/api/quests/state")
-    public ApiResult<Map<String, Object>> questState(Authentication authentication) {
+    public ApiResult<Map<String, Object>> questState(
+            @RequestParam(required = false) String locale, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.questState(userId);
+        return userId == null ? forbidden() : service.questState(userId, locale);
     }
 
     @GetMapping("/api/events")
-    public ApiResult<Map<String, Object>> eventState(Authentication authentication) {
+    public ApiResult<Map<String, Object>> eventState(
+            @RequestParam(required = false) String locale, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.eventState(userId);
+        return userId == null ? forbidden() : service.eventState(userId, locale);
     }
 
     @GetMapping("/api/events/{eventCode}/spin/state")
@@ -74,10 +76,12 @@ public class AppGrowthEngagementController {
     @PostMapping("/api/quests/{questCode}/claim")
     public ApiResult<Map<String, Object>> claimQuest(
             @PathVariable String questCode,
+            @RequestBody QuestClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.claimQuest(userId, questCode, idempotencyKey);
+        return userId == null ? forbidden() : service.claimQuest(
+                userId, questCode, request == null ? null : request.instanceKey(), idempotencyKey);
     }
 
     @PostMapping("/api/share/event")
@@ -154,10 +158,11 @@ public class AppGrowthEngagementController {
 
     @PostMapping("/api/earnings/milestones/evaluate")
     public ApiResult<Map<String, Object>> evaluateEarningMilestones(
+            @RequestBody(required = false) EarningMilestoneClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.evaluateEarningMilestones(userId, idempotencyKey);
+        return userId == null ? forbidden() : service.evaluateEarningMilestones(userId, idempotencyKey, request == null ? null : request.milestoneId());
     }
 
     @PostMapping("/api/vouchers/{voucherId}/claim")
@@ -187,6 +192,10 @@ public class AppGrowthEngagementController {
     private ApiResult<Map<String, Object>> forbidden() {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
+
+    public record EarningMilestoneClaimRequest(String milestoneId) {}
+
+    public record QuestClaimRequest(String instanceKey) {}
 
     public record VoucherClaimRequest(String surface) {
     }

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.application;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
@@ -111,7 +112,7 @@ public class UnilevelCommissionService {
         Map<String, BigDecimal> nexPerUsdByLevel = loadNexPerUsdByLevel();
         int coolingDays = resolveCoolingDays();
         int depthGateLayer = resolveDepthGateLayer();
-        int depthGateRankNum = parseRankNum(resolveDepthGateRank());
+        int depthGateRankNum = resolveDepthGateRankNum();
         BigDecimal promoMultiplier = resolvePromoMultiplier();
         BigDecimal mergeExitMaxPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"));
         BigDecimal mergeExitCap = orderSubtotalUsdt.multiply(mergeExitMaxPct)
@@ -272,25 +273,29 @@ public class UnilevelCommissionService {
                 || "1".equals(value.trim());
     }
 
-    /** F2 depthGate 层(读 F.unilevel.depthGate,默认 "L4"→解析 4;非法回退 4)。 */
+    /** F2 depthGate 层(读 F.unilevel.depthGate,缺失时默认 L4；显式非法值必须阻断结算)。 */
     private int resolveDepthGateLayer() {
         String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_LAYER).orElse(DEFAULT_DEPTH_GATE_LAYER);
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
         if (!normalized.matches("L?[1-7]")) {
-            return 4;
+            throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
         }
         String digits = normalized.replaceAll("[^0-9]", "");
         try {
-            int n = Integer.parseInt(digits);
-            return n > 0 ? n : Integer.parseInt(DEFAULT_DEPTH_GATE_LAYER.replaceAll("[^0-9]", ""));
+            return Integer.parseInt(digits);
         } catch (NumberFormatException e) {
-            return 4;
+            throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
         }
     }
 
-    /** F2 depthGate 阶位(读 F.unilevel.depthGateRank,默认 "V2")。 */
-    private String resolveDepthGateRank() {
-        return configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_RANK).orElse(DEFAULT_DEPTH_GATE_RANK);
+    /** F2 depthGate 阶位(读 F.unilevel.depthGateRank,缺失时默认 V2；显式非法值必须阻断结算)。 */
+    private int resolveDepthGateRankNum() {
+        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_RANK).orElse(DEFAULT_DEPTH_GATE_RANK);
+        String normalized = raw == null ? "" : raw.trim().toUpperCase();
+        if (!normalized.matches("V(?:[0-9]|1[0-2])")) {
+            throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
+        }
+        return Integer.parseInt(normalized.substring(1));
     }
 
     /** F5 coolingDays(读 commission/cooling-days,默认30;PRD line231)。 */

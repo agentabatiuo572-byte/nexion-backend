@@ -13,6 +13,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -65,38 +67,19 @@ public class AppTrialLifecycleService {
     private final TreasuryCoverageFacade coverageFacade;
     private final AuditLogService audit;
     private final EventOutboxService outbox;
+    private final StorefrontProductReleasePolicy productReleasePolicy;
+    private final CanonicalStateMapper canonicalStateMapper;
     private final Environment environment;
     private final Clock clock;
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> state(Long userId) {
         if (userId == null || invalidUser(activeUser(userId, false))) {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         LocalDateTime now = businessNow();
         Map<String, String> policy = policyMap();
-        TrialRow row = mapper.lockTrial(userId);
-        row = advanceExpiredActiveToGrace(userId, row, policy, now);
-        return ApiResult.ok(project(userId, row, policy, now));
-    }
-
-    private TrialRow advanceExpiredActiveToGrace(
-            Long userId, TrialRow row, Map<String, String> policy, LocalDateTime now) {
-        if (row == null || !List.of("CLAIMED", "ACTIVE").contains(normalize(row.status()))
-                || row.expiresAt() == null || row.expiresAt().isAfter(now)) {
-            return row;
-        }
-        Settlement frozen = settlement(row, policy, false, now);
-        if (mapper.enterGrace(row.id(), row.version(), now) == 1) {
-            Attribution attr = requireAttribution(userId);
-            publish("TRIAL", row.claimNo(), "trial.grace_entered", userId, attr,
-                    linked("grace_days", nonNegativeInt(policy, "graceDays", 7),
-                            "shadow_usdt", frozen.shadowUsdt(), "shadow_nex", frozen.shadowNex()));
-            record("H2_TRIAL_GRACE_ENTERED", row.claimNo(), userId,
-                    linked("shadowUsdt", frozen.shadowUsdt(), "shadowNex", frozen.shadowNex()));
-        }
-        TrialRow refreshed = mapper.lockTrial(userId);
-        return refreshed == null ? row : refreshed;
+        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -143,6 +126,7 @@ public class AppTrialLifecycleService {
         if (!availablePhysicalTrialProduct(product)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
+        if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
         LocalDate quotaDate = businessDate();
@@ -255,6 +239,7 @@ public class AppTrialLifecycleService {
 
     private ApiResult<Map<String, Object>> convertOnce(
             Long userId, String productNo, BigDecimal expectedAmountUsdt) {
+        if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
@@ -274,6 +259,10 @@ public class AppTrialLifecycleService {
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
         if (!availablePhysicalTrialProduct(product)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        }
+        if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        if (!withinPhysicalSlotCapacity(userId, product)) {
+            return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         Settlement settlement = settlement(row, policy, false, now);
         BigDecimal subtotal = row.priceUsdt();
@@ -369,6 +358,7 @@ public class AppTrialLifecycleService {
     }
 
     private ApiResult<Map<String, Object>> settleDueOnce(Long userId, String expectedClaimNo) {
+        if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status()) || !row.claimNo().equals(expectedClaimNo)) {
             return ApiResult.fail(409, "TRIAL_DUE_STATE_CONFLICT");
@@ -395,6 +385,7 @@ public class AppTrialLifecycleService {
     }
 
     private ApiResult<Map<String, Object>> redeemOnce(Long userId, boolean early, String trigger) {
+        if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CHARGEABLE");
         Map<String, String> policy = policyMap();
@@ -403,6 +394,10 @@ public class AppTrialLifecycleService {
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(productCode);
         if (!availablePhysicalTrialProduct(product)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        }
+        if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        if (!withinPhysicalSlotCapacity(userId, product)) {
+            return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
         LocalDateTime now = businessNow();
         Settlement value = settlement(row, policy, early, now);
@@ -537,7 +532,7 @@ public class AppTrialLifecycleService {
                 ? null : mapper.catalogProduct(configuredProductCode);
         AppTrialLifecycleMapper.ConversionProduct startProduct = configuredProductCode == null
                 ? null : mapper.conversionProduct(configuredProductCode);
-        boolean productAvailable = availablePhysicalTrialProduct(startProduct);
+        boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct);
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         result.put("authoritative", true);
         result.put("serverCanonical", true);
@@ -651,6 +646,13 @@ public class AppTrialLifecycleService {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
         });
+        // H2 emergency auto-push stop lives outside the regular policy table.
+        // It suppresses only unsolicited prompts, never the manual trial lifecycle.
+        String killed = mapper.autoPushKilled();
+        if (killed != null && List.of("true", "1", "yes", "on", "enabled", "active")
+                .contains(killed.trim().toLowerCase(Locale.ROOT))) {
+            result.put("autoPushEnabled", false);
+        }
         if (StringUtils.hasText(productCode)) result.put("trialProductId", productCode);
         if (StringUtils.hasText(productName)) result.put("trialProductName", productName.trim());
         if (productPrice != null && productPrice.signum() > 0) {
@@ -702,6 +704,22 @@ public class AppTrialLifecycleService {
                 && product.stock() != null
                 && product.stock() > 0
                 && StringUtils.hasText(product.name());
+    }
+
+    private boolean productReleased(AppTrialLifecycleMapper.ConversionProduct product) {
+        if (product == null) return false;
+        StorefrontProductReleasePolicy.Decision release =
+                productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
+        return release != null && release.available();
+    }
+
+    /** The user row was locked by requireUser before this check, serializing it with ordinary checkout. */
+    private boolean withinPhysicalSlotCapacity(Long userId, AppTrialLifecycleMapper.ConversionProduct product) {
+        if (product == null || "SHARE".equalsIgnoreCase(product.productType())) return true;
+        int active = Math.max(0, canonicalStateMapper.activeDeviceCount(userId));
+        int reserved = Math.max(0, canonicalStateMapper.reservedDeviceOrderCount(userId));
+        int cap = Math.max(1, canonicalStateMapper.deviceSlotCap());
+        return (long) active + reserved + 1 <= cap;
     }
 
     private void requireCoverage(BigDecimal remainderUsdt, BigDecimal rewardNex) {

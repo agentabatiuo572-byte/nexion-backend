@@ -68,7 +68,11 @@ public interface AppPayoutAddressMapper {
              WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
                AND challenge_no LIKE 'PAYOUT-%'
                AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256)
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int consumeOtp(@Param("userId") Long userId, @Param("challengeNo") String challengeNo,
                    @Param("code") String code);
@@ -78,7 +82,11 @@ public interface AppPayoutAddressMapper {
                SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW()
              WHERE run_id=#{runId} AND user_id=#{userId} AND challenge_no=#{challengeNo}
                AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256)
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int consumeSandboxOtp(@Param("runId") String runId, @Param("userId") Long userId,
                           @Param("challengeNo") String challengeNo, @Param("code") String code);
@@ -86,14 +94,22 @@ public interface AppPayoutAddressMapper {
     @Update("""
             UPDATE nx_user_otp_challenge SET attempts=attempts+1,updated_at=NOW()
              WHERE user_id=#{userId} AND challenge_no=#{challengeNo} AND challenge_no LIKE 'PAYOUT-%'
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int incrementOtpFailure(@Param("userId") Long userId, @Param("challengeNo") String challengeNo);
 
     @Update("""
             UPDATE nx_user_payout_address_sandbox_otp SET attempts=attempts+1,updated_at=NOW()
              WHERE run_id=#{runId} AND user_id=#{userId} AND challenge_no=#{challengeNo}
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int incrementSandboxOtpFailure(@Param("runId") String runId, @Param("userId") Long userId,
                                    @Param("challengeNo") String challengeNo);

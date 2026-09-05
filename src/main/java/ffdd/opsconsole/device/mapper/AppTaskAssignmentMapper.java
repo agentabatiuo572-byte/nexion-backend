@@ -55,6 +55,47 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     List<DeviceRow> ownedDevices(@Param("userId") Long userId);
 
     @Select("""
+            SELECT d.user_id AS userId, d.id AS deviceId
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id = d.user_id
+                AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+              LEFT JOIN nx_user_device_runtime r
+                ON r.user_device_id = d.id AND r.is_deleted = 0
+              LEFT JOIN nx_compute_dc_ops_state dc
+                ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
+             WHERE d.is_deleted = 0
+               AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
+               AND UPPER(d.ownership_status) = 'OWNED'
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND d.pending_deactivate = 0
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND d.vram_total_gb IS NOT NULL AND d.vram_total_gb >= 0
+               AND COALESCE(dc.dispatch_paused, 0) = 0
+               AND COALESCE(TRIM(r.paused_reason), '') = ''
+               AND (r.online_status IS NULL OR UPPER(r.online_status) = 'ONLINE')
+               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                                WHERE oc.user_device_id = d.id AND oc.user_id = d.user_id
+                                  AND oc.activation_status = 'ACTIVE'
+                                  AND oc.source_environment = 'PRODUCTION' AND oc.run_id = ''
+                                  AND oc.is_deleted = 0))
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t
+                                WHERE t.user_id = d.user_id AND t.user_device_id = d.id
+                                  AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
+                                  AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+                                  AND (t.lease_expires_at IS NULL OR t.lease_expires_at > CURRENT_TIMESTAMP))
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_device_task_lock l
+                                WHERE l.user_id = d.user_id AND l.user_device_id = d.id
+                                  AND l.source_environment = 'PRODUCTION' AND l.is_deleted = 0
+                                  AND l.lock_until > CURRENT_TIMESTAMP)
+               AND d.id > #{afterDeviceId}
+             ORDER BY d.id
+             LIMIT #{limit}
+            """)
+    List<AssignmentCandidate> assignmentCandidates(@Param("afterDeviceId") Long afterDeviceId,
+                                                    @Param("limit") int limit);
+
+    @Select("""
             SELECT d.id, d.instance_no AS instanceNo, d.device_type AS deviceType,
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
@@ -99,6 +140,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
              WHERE is_deleted = 0 AND LOWER(TRIM(status)) = 'active'
                AND LOWER(TRIM(COALESCE(kill_init, ''))) NOT IN ('kill','killed','已 kill','已kill')
              ORDER BY updated_at DESC, id DESC
+             FOR UPDATE
             """)
     List<TaskConfigRow> eligibleTasks(@Param("vramTotalGb") Integer vramTotalGb);
 
@@ -402,6 +444,23 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     AssignmentRow lockAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
                                  @Param("sourceEnvironment") String sourceEnvironment);
 
+    @Select("""
+            SELECT id FROM nx_user
+             WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0 AND sandbox = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockProductionUser(@Param("userId") Long userId);
+
+    // Routing hint only; revalidate the task after locking its device.
+    @Select("""
+            SELECT user_device_id FROM nx_compute_task
+             WHERE user_id = #{userId} AND task_no = #{taskNo} AND is_deleted = 0
+               AND source_environment = 'PRODUCTION' AND source_environment = #{sourceEnvironment}
+             LIMIT 1
+            """)
+    Long assignmentDeviceId(@Param("userId") Long userId, @Param("taskNo") String taskNo,
+                            @Param("sourceEnvironment") String sourceEnvironment);
+
     @Select("SELECT sandbox FROM nx_user WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0 LIMIT 1")
     UserScope userScope(@Param("userId") Long userId);
 
@@ -501,7 +560,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                AND d.source_environment='PRODUCTION' AND d.run_id=''
                                AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
                                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate IN (0, 1)
                                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                                     OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
                                                 WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
@@ -527,7 +586,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                AND d.source_environment='PRODUCTION' AND d.run_id=''
                                AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
                                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate IN (0, 1)
                                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                                     OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
                                                 WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
@@ -556,7 +615,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                AND d.source_environment='PRODUCTION' AND d.run_id=''
                                AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
                                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate IN (0, 1)
                                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                                     OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
                                                 WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
@@ -581,7 +640,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                AND d.source_environment='PRODUCTION' AND d.run_id=''
                                AND UPPER(d.ownership_status) = 'OWNED' AND d.activated_at IS NOT NULL
                                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                               AND d.deactivated_at IS NULL AND d.pending_deactivate IN (0, 1)
                                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                                     OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
                                                 WHERE oc.user_device_id=d.id AND oc.user_id=#{userId}
@@ -612,7 +671,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE'
                 AND u.is_deleted = 0 AND u.sandbox = 0
              WHERE c.task_id = #{taskId} AND c.is_deleted = 0
-             LIMIT 1
+             LIMIT 1 FOR UPDATE
             """)
     TaskRuntimeGateRow taskRuntimeGate(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                        @Param("taskId") String taskId);
@@ -633,12 +692,18 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    pending_deactivate=0,row_version=row_version+1,updated_at=#{now}
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
                AND source_environment='PRODUCTION' AND run_id=''
-               AND UPPER(status)='ACTIVE' AND pending_deactivate=1
+               AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND pending_deactivate=1
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id = #{userId}
                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
             """)
     int deactivatePendingDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                 @Param("now") LocalDateTime now);
+
+    @Select("SELECT row_version FROM nx_user_device WHERE id=#{deviceId} AND user_id=#{userId} "
+            + "AND status='DEACTIVATED' AND pending_deactivate=0 AND is_deleted=0 "
+            + "AND source_environment='PRODUCTION' AND run_id='' LIMIT 1")
+    Long deviceRowVersion(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Update("""
             UPDATE nx_user_device_runtime SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',updated_at=#{now}
@@ -679,6 +744,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                      String status, String productCode, LocalDateTime purchasedAt,
                      LocalDateTime activatedAt, Integer vramTotalGb, String dcLocation,
                      String onlineStatus, String pausedReason, Boolean dispatchPaused) {}
+    record AssignmentCandidate(Long userId, Long deviceId) {}
     record TaskConfigRow(String taskId, String name, String taskClass, String modelName,
                          BigDecimal minReward, BigDecimal maxReward, Integer minVram,
                          String status, String killInit) {}

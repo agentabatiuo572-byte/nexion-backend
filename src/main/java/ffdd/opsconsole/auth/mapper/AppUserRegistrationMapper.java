@@ -42,9 +42,9 @@ public interface AppUserRegistrationMapper {
             @Param("countryCode") String countryCode,
             @Param("phone") String phone);
 
-    @Select("SELECT COUNT(*) FROM nx_user_registration_otp WHERE country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND created_at>=DATE_SUB(NOW(),INTERVAL 60 SECOND) AND is_deleted=0")
+    @Select("SELECT COUNT(*) FROM nx_user_registration_otp WHERE country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND created_at>=DATE_SUB(NOW(),INTERVAL #{cooldownSeconds} SECOND) AND is_deleted=0")
     int countRecentPhoneInEnvironment(@Param("countryCode") String countryCode, @Param("phone") String phone,
-            @Param("authEnvironment") String authEnvironment);
+            @Param("authEnvironment") String authEnvironment, @Param("cooldownSeconds") int cooldownSeconds);
 
     @Select("""
             SELECT COUNT(*)
@@ -122,17 +122,19 @@ public interface AppUserRegistrationMapper {
                AND country_code=#{countryCode} AND phone=#{phone}
                AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256)
                AND consumed_at IS NULL AND expires_at>=NOW()
-               AND attempts<5 AND is_deleted=0
+               AND attempts<#{maxAttempts} AND is_deleted=0
             """)
     int consumeValidChallenge(
             @Param("challengeNo") String challengeNo,
             @Param("countryCode") String countryCode,
             @Param("phone") String phone,
-            @Param("code") String code);
+            @Param("code") String code,
+            @Param("maxAttempts") int maxAttempts);
 
-    @Update("UPDATE nx_user_registration_otp SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256) AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0")
+    @Update("UPDATE nx_user_registration_otp SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND code_hash=SHA2(CONCAT(#{code},':',challenge_no),256) AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<#{maxAttempts} AND is_deleted=0")
     int consumeValidChallengeInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
-            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment, @Param("code") String code);
+            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment, @Param("code") String code,
+            @Param("maxAttempts") int maxAttempts);
 
     @Update("""
             UPDATE nx_user_registration_otp
@@ -140,16 +142,18 @@ public interface AppUserRegistrationMapper {
              WHERE challenge_no=#{challengeNo}
                AND country_code=#{countryCode} AND phone=#{phone}
                AND consumed_at IS NULL AND expires_at>=NOW()
-               AND attempts<5 AND is_deleted=0
+               AND attempts<#{maxAttempts} AND is_deleted=0
             """)
     int recordInvalidAttempt(
             @Param("challengeNo") String challengeNo,
             @Param("countryCode") String countryCode,
-            @Param("phone") String phone);
+            @Param("phone") String phone,
+            @Param("maxAttempts") int maxAttempts);
 
-    @Update("UPDATE nx_user_registration_otp SET attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0")
+    @Update("UPDATE nx_user_registration_otp SET attempts=attempts+1,updated_at=NOW() WHERE challenge_no=#{challengeNo} AND country_code=#{countryCode} AND phone=#{phone} AND auth_environment=#{authEnvironment} AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<#{maxAttempts} AND is_deleted=0")
     int recordInvalidAttemptInEnvironment(@Param("challengeNo") String challengeNo, @Param("countryCode") String countryCode,
-            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment);
+            @Param("phone") String phone, @Param("authEnvironment") String authEnvironment,
+            @Param("maxAttempts") int maxAttempts);
 
     @Select("""
             SELECT client_ip

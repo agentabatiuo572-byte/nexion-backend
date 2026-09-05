@@ -38,7 +38,16 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                            SUM(CASE WHEN UPPER(t.status) IN ('ASSIGNED','RUNNING','PROCESSING') THEN 1 ELSE 0 END) AS activeJobs,
                            SUM(CASE WHEN UPPER(t.status) = 'COMPLETED'
                                      AND t.completed_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) AS jobsPerHour
-                      FROM nx_compute_task t
+                      FROM (
+                            SELECT user_device_id, status, completed_at, source_environment, is_deleted
+                              FROM nx_compute_task
+                             WHERE status IN ('ASSIGNED','RUNNING','PROCESSING')
+                            UNION ALL
+                            SELECT user_device_id, status, completed_at, source_environment, is_deleted
+                              FROM nx_compute_task
+                             WHERE status = 'COMPLETED'
+                               AND completed_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                      ) t
                       JOIN nx_user_device d ON d.id = t.user_device_id AND d.is_deleted = 0
                       JOIN nx_user owner ON owner.id = d.user_id AND owner.is_deleted = 0
                       JOIN nx_user viewer ON viewer.id = #{userId} AND viewer.is_deleted = 0

@@ -25,7 +25,7 @@ public interface AppUserProfileMapper extends BaseMapper<UserEntity> {
                        @Param("expectedNickname") String expectedNickname);
 
     @Select("""
-            SELECT nickname,avatar_url AS avatarObjectKey,updated_at AS updatedAt
+            SELECT nickname,avatar_url AS avatarObjectKey,language,updated_at AS updatedAt
               FROM nx_user
              WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0
              LIMIT 1
@@ -45,4 +45,11 @@ public interface AppUserProfileMapper extends BaseMapper<UserEntity> {
             @Param("userId") Long userId,
             @Param("avatarObjectKey") String avatarObjectKey,
             @Param("expectedAvatarObjectKey") String expectedAvatarObjectKey);
+
+    @Update("""
+            UPDATE nx_user
+               SET language=#{language},updated_at=NOW()
+             WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0
+            """)
+    int updateLanguage(@Param("userId") Long userId, @Param("language") String language);
 }

@@ -40,7 +40,10 @@ public class DeveloperApiKeyAuthenticationFilter extends OncePerRequestFilter {
                     Map<String, String> details = new LinkedHashMap<>(); details.put("subjectType", "DEVELOPER_API_KEY"); details.put("keyId", String.valueOf(identity.get("keyId")));
                     authentication.setDetails(Map.copyOf(details)); SecurityContextHolder.getContext().setAuthentication(authentication);
                 } catch (BizException ex) {
-                    SecurityContextHolder.clearContext(); response.setStatus(HttpServletResponse.SC_UNAUTHORIZED); response.setContentType("application/json"); response.getWriter().write("{\"code\":401,\"message\":\"DEVELOPER_API_KEY_INVALID\",\"data\":null}"); return;
+                    int status = ex.getCode() == 503 ? HttpServletResponse.SC_SERVICE_UNAVAILABLE
+                            : HttpServletResponse.SC_UNAUTHORIZED;
+                    SecurityContextHolder.clearContext(); response.setStatus(status); response.setContentType("application/json");
+                    response.getWriter().write("{\"code\":" + status + ",\"message\":\"DEVELOPER_API_KEY_INVALID\",\"data\":null}"); return;
                 }
             }
         }

@@ -8,6 +8,7 @@ import java.time.ZoneId;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +22,9 @@ import org.springframework.transaction.annotation.Transactional;
 public class AppDeveloperAccessService {
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]{1,128}@[^\\s@]{1,190}\\.[^\\s@]{2,63}$");
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Set<String> PUBLIC_REVIEW_REASONS = Set.of(
+            "IDENTITY_VERIFICATION_REQUIRED", "BUSINESS_INFORMATION_INSUFFICIENT",
+            "POLICY_REQUIREMENTS_NOT_MET", "ACCESS_REVOKED_BY_POLICY");
     private final AppDeveloperAccessMapper mapper;
     private final Environment environment;
 
@@ -46,6 +50,9 @@ public class AppDeveloperAccessService {
             return existing.requestHash().equals(requestHash)
                     ? ApiResult.ok(view(existing))
                     : ApiResult.fail(409, "IDEMPOTENCY_PAYLOAD_CONFLICT");
+        }
+        if (mapper.approved(userId, scope.sourceEnvironment(), scope.runId()) > 0) {
+            return ApiResult.fail(409, "DEVELOPER_ACCESS_ALREADY_APPROVED");
         }
         var pending = mapper.pending(userId, scope.sourceEnvironment(), scope.runId());
         if (pending != null) {
@@ -96,7 +103,15 @@ public class AppDeveloperAccessService {
         out.put("source", "server");
         out.put("sourceEnvironment", value.sourceEnvironment());
         out.put("runId", value.runId());
+        String reason = publicReviewReason(value.reviewReason());
+        if (reason != null) out.put("reviewReason", reason);
         return out;
+    }
+
+    private String publicReviewReason(String value) {
+        if (value == null) return null;
+        String normalized = value.trim().toUpperCase(java.util.Locale.ROOT);
+        return PUBLIC_REVIEW_REASONS.contains(normalized) ? normalized : null;
     }
 
     private Scope scope(Long userId, boolean lock) {

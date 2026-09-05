@@ -6,12 +6,16 @@ import ffdd.opsconsole.auth.dto.AppAccountDeletionCancelRequest;
 import ffdd.opsconsole.auth.dto.AppSecurityMutationResponse;
 import ffdd.opsconsole.auth.dto.AppSecurityStateResponse;
 import ffdd.opsconsole.auth.dto.AppTwoFactorUpdateRequest;
+import ffdd.opsconsole.auth.dto.AppTwoFactorChallengeRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import ffdd.opsconsole.user.infrastructure.UserEntity;
+import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
@@ -35,6 +39,7 @@ public class AppUserSecurityService {
     private static final Set<String> WEAK_PASSWORDS = Set.of(
             "12345678", "123456789", "password", "password1", "passw0rd",
             "qwerty123", "admin123", "welcome1", "letmein1");
+    private static final int TWO_FACTOR_OTP_TTL_MINUTES = 10;
 
     private final AppUserSecurityMapper securityMapper;
     private final AuthSessionMapper sessionMapper;
@@ -42,6 +47,7 @@ public class AppUserSecurityService {
     private final AuditLogService auditLogService;
     private final UserOtpDeliveryService otpDeliveryService;
     private final AppUserSecurityVerificationGuard verificationGuard;
+    private final UserOpsMapper userMapper;
 
     @Transactional(readOnly = true)
     public AppSecurityStateResponse overview(Long userId, String currentSessionId) {
@@ -110,6 +116,46 @@ public class AppUserSecurityService {
     }
 
     @Transactional(noRollbackFor = PreWriteRejection.class)
+    public Map<String, Object> sendTwoFactorChallenge(Long userId, AppTwoFactorChallengeRequest request) {
+        if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
+        if (request == null || request.enabled() == null || !StringUtils.hasText(request.currentPassword())) {
+            throw new BizException(422, "CURRENT_PASSWORD_REQUIRED");
+        }
+        verifyCurrentPassword(userId, request.currentPassword(), "TWO_FACTOR_CHALLENGE");
+        UserEntity user = userMapper.selectById(userId);
+        if (user == null || !SupportedUserPhonePolicy.isSupportedDestination(
+                user.getCountryCode(), user.getPhone())) {
+            throw new PreWriteRejection(422, "USER_PHONE_INVALID");
+        }
+        if (!otpDeliveryService.available(user.getCountryCode())) {
+            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+        }
+        String direction = request.enabled() ? "E" : "D";
+        String challengeNo = "SEC2FA-" + direction + "-" + UUID.randomUUID().toString().replace("-", "");
+        String code;
+        try {
+            code = otpDeliveryService.verificationCode(user.getCountryCode());
+        } catch (RuntimeException ex) {
+            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+        }
+        userMapper.invalidateOpenSecurityOtpChallenges(userId);
+        if (userMapper.createLoginOtpChallenge(userId, challengeNo, code, TWO_FACTOR_OTP_TTL_MINUTES) != 1) {
+            throw new IllegalStateException("USER_TWO_FACTOR_CHALLENGE_NOT_CREATED");
+        }
+        try {
+            otpDeliveryService.deliver(user.getCountryCode(), user.getPhone(), challengeNo, code,
+                    TWO_FACTOR_OTP_TTL_MINUTES);
+        } catch (RuntimeException ex) {
+            userMapper.invalidateOpenSecurityOtpChallenges(userId);
+            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+        }
+        recordRequired(userId, "USER_TWO_FACTOR_CHALLENGE_SENT", "USER_SECURITY", String.valueOf(userId),
+                Map.of("targetEnabled", request.enabled(), "challengeNo", shortId(challengeNo)));
+        return Map.of("challengeNo", challengeNo, "expiresInSeconds", TWO_FACTOR_OTP_TTL_MINUTES * 60,
+                "phoneMasked", maskPhone(user.getPhone()));
+    }
+
+    @Transactional(noRollbackFor = PreWriteRejection.class)
     public AppSecurityMutationResponse updateTwoFactor(Long userId, AppTwoFactorUpdateRequest request) {
         if (userId == null || userId <= 0) {
             throw new BizException(401, "USER_AUTH_REQUIRED");
@@ -119,8 +165,13 @@ public class AppUserSecurityService {
         }
         verifyCurrentPassword(userId, request.currentPassword(), "TWO_FACTOR_UPDATE");
         boolean enabled = request.enabled();
-        if (enabled && !otpDeliveryService.available()) {
-            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+        String expectedPrefix = enabled ? "SEC2FA-E-" : "SEC2FA-D-";
+        if (!StringUtils.hasText(request.challengeNo()) || !request.challengeNo().startsWith(expectedPrefix)
+                || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
+            throw new BizException(422, "USER_TWO_FACTOR_OTP_REQUIRED");
+        }
+        if (userMapper.consumeValidSecurityOtp(userId, request.challengeNo().trim(), request.code().trim()) != 1) {
+            throw new PreWriteRejection(401, "USER_TWO_FACTOR_OTP_INVALID_OR_EXPIRED");
         }
         if (securityMapper.twoFactorEnabled(userId) == enabled) {
             return AppSecurityMutationResponse.twoFactor(enabled);
@@ -230,6 +281,13 @@ public class AppUserSecurityService {
         String[] parts = ip.split(":");
         if (parts.length > 2) return String.join(":", java.util.Arrays.copyOf(parts, Math.min(4, parts.length))) + ":*";
         return "";
+    }
+
+    private String maskPhone(String value) {
+        if (!StringUtils.hasText(value)) return "";
+        String phone = value.trim();
+        if (phone.length() <= 4) return "****";
+        return "****" + phone.substring(phone.length() - 4);
     }
 
     private void requireContext(Long userId, String currentSessionId) {

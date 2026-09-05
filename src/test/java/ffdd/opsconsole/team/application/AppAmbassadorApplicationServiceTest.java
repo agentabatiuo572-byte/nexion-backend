@@ -11,6 +11,7 @@ import ffdd.opsconsole.team.mapper.AppAmbassadorApplicationMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -27,7 +28,7 @@ class AppAmbassadorApplicationServiceTest {
             inserted.set(invocation.getArgument(0));
             return 1;
         });
-        var service = new AppAmbassadorApplicationService(mapper, new MockEnvironment());
+        var service = service(mapper, new MockEnvironment());
 
         var first = service.submit(7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
         var replay = service.submit(7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
@@ -42,7 +43,7 @@ class AppAmbassadorApplicationServiceTest {
     void rejectsIneligibleRankBeforeInsert() {
         var mapper = mock(AppAmbassadorApplicationMapper.class);
         when(mapper.lockUser(7L)).thenReturn(new AppAmbassadorApplicationMapper.UserScope(0, "V4", "Alice", "Tokyo"));
-        var result = new AppAmbassadorApplicationService(mapper, new MockEnvironment()).submit(
+        var result = service(mapper, new MockEnvironment()).submit(
                 7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("AMBASSADOR_V5_REQUIRED");
@@ -60,7 +61,7 @@ class AppAmbassadorApplicationServiceTest {
         var environment = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "sandbox-run-20260816");
         environment.setActiveProfiles("test");
 
-        var result = new AppAmbassadorApplicationService(mapper, environment).submit(
+        var result = service(mapper, environment).submit(
                 7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
 
         assertThat(result.getCode()).isZero();
@@ -79,7 +80,7 @@ class AppAmbassadorApplicationServiceTest {
         var environment = new MockEnvironment();
         environment.setActiveProfiles("dev");
 
-        var result = new AppAmbassadorApplicationService(mapper, environment).submit(
+        var result = service(mapper, environment).submit(
                 7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
 
         assertThat(result.getCode()).isZero();
@@ -94,12 +95,40 @@ class AppAmbassadorApplicationServiceTest {
         when(mapper.findByKey(7L, "PRODUCTION", "", "amb-key")).thenReturn(new AppAmbassadorApplicationMapper.ApplicationRow(
                 1L, 7L, "amb-key", "different", "PENDING", "Tokyo", LocalDate.now().plusDays(7),
                 new BigDecimal("3000"), "venue", LocalDateTime.now(), "PRODUCTION", ""));
-        var result = new AppAmbassadorApplicationService(mapper, new MockEnvironment()).submit(
+        var result = service(mapper, new MockEnvironment()).submit(
                 7L, LocalDate.now().plusDays(7), "Tokyo", new BigDecimal("3000"), "venue", "amb-key");
         assertThat(result.getCode()).isEqualTo(409);
         verify(mapper, never()).insertApplication(any());
     }
 
+    @Test
+    void historyReturnsTheRequestedServerPageAndStableMetadata() {
+        var mapper = mock(AppAmbassadorApplicationMapper.class);
+        when(mapper.user(7L)).thenReturn(new AppAmbassadorApplicationMapper.UserScope(0, "V5", "Alice", "Tokyo"));
+        when(mapper.count(7L, "PRODUCTION", "")).thenReturn(3L);
+        var historyRow = new AppAmbassadorApplicationMapper.ApplicationRow(
+                2L, 7L, "amb-old", "hash", "APPROVED", "Osaka", LocalDate.now().plusDays(30),
+                new BigDecimal("1000"), "travel", LocalDateTime.now().minusDays(1), "PRODUCTION", "");
+        when(mapper.list(7L, "PRODUCTION", "", 1L, 1)).thenReturn(List.of(historyRow));
+
+        var result = service(mapper, new MockEnvironment()).history(7L, 2, 1);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("pageNum", 2).containsEntry("pageSize", 1)
+                .containsEntry("total", 3L).containsEntry("hasMore", true)
+                .containsEntry("sourceEnvironment", "PRODUCTION");
+        assertThat(result.getData().get("rows").toString()).contains("APPROVED", "Osaka");
+        verify(mapper).list(7L, "PRODUCTION", "", 1L, 1);
+    }
+
+    private AppAmbassadorApplicationService service(AppAmbassadorApplicationMapper mapper, MockEnvironment environment) {
+        var policy = mock(AppAmbassadorPolicyService.class);
+        var snapshot = new AppAmbassadorPolicyService.PolicySnapshot(
+                "test-policy", 1L, new BigDecimal("3000"), java.util.List.of(), "PRODUCTION", "");
+        when(policy.requiredPolicy(7L)).thenReturn(snapshot);
+        when(policy.budgetAllowed(any(), any(), any())).thenReturn(true);
+        return new AppAmbassadorApplicationService(mapper, environment, policy);
+    }
     private AppAmbassadorApplicationMapper.ApplicationRow row(AppAmbassadorApplicationMapper.ApplicationWrite write) {
         return new AppAmbassadorApplicationMapper.ApplicationRow(1L, write.userId(), write.idempotencyKey(), write.requestHash(),
                 "PENDING", write.city(), write.eventDate(), write.budget(), write.bucket(), LocalDateTime.now(),

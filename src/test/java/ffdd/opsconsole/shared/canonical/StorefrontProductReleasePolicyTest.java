@@ -61,6 +61,30 @@ class StorefrontProductReleasePolicyTest {
     }
 
     @Test
+    void tradeinEarlyAccessOpensOnlyTheConfiguredWindowBeforeTheReleaseMonth() {
+        when(rhythm.snapshot()).thenReturn(snapshotAtMonth(3, 50));
+        when(catalog.findGenerationGate("box-gen2")).thenReturn(Optional.of(new DeviceGenerationGateView(
+                "box-gen2", "Gen2", 4, "52", BigDecimal.ZERO, true, 0, false, "active", null, null)));
+
+        assertThat(policy.evaluateTradein("box-gen2", "52", false, 30).reason())
+                .isEqualTo("E1_GENERATION_RELEASE_MONTH_NOT_REACHED");
+        assertThat(policy.evaluateTradein("box-gen2", "52", true, 14).available()).isFalse();
+        assertThat(policy.evaluateTradein("box-gen2", "52", true, 30)).satisfies(decision -> {
+            assertThat(decision.available()).isTrue();
+            assertThat(decision.reason()).isEqualTo("TRADEIN_EARLY_ACCESS_AVAILABLE");
+        });
+    }
+
+    @Test
+    void tradeinEarlyAccessNeverBypassesEligibilityOrPhaseGates() {
+        when(catalog.findGenerationGate("box-gen2")).thenReturn(Optional.of(new DeviceGenerationGateView(
+                "box-gen2", "Gen2", 4, "77", BigDecimal.ZERO, false, 0, false, "active", null, null)));
+
+        assertThat(policy.evaluateTradein("box-gen2", "77", true, 90).reason())
+                .isEqualTo("E1_GENERATION_ELIGIBILITY_REQUIRED");
+    }
+
+    @Test
     void batchEvaluationReadsRhythmPhasesAndGenerationGatesOnlyOnce() {
         when(catalog.listGenerationGates(false)).thenReturn(List.of(new DeviceGenerationGateView(
                 "box-gen2", "Gen2", 7, "52", BigDecimal.ZERO, true, 0, false, "active", null, null)));
@@ -83,8 +107,12 @@ class StorefrontProductReleasePolicyTest {
     }
 
     private GrowthRhythmSnapshot snapshotAtMonth(int month) {
+        return snapshotAtMonth(month, 0);
+    }
+
+    private GrowthRhythmSnapshot snapshotAtMonth(int month, int phaseProgressPct) {
         return new GrowthRhythmSnapshot(
-                12, month, "P2", 0,
+                12, month, "P2", phaseProgressPct,
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
                 BigDecimal.ZERO, 1, new BigDecimal("100"), BigDecimal.ONE,
                 false, List.of("test"));

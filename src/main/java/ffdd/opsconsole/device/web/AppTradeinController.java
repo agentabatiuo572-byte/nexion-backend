@@ -7,6 +7,8 @@ import ffdd.opsconsole.device.dto.AppTradeinEligibilityResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
+import ffdd.opsconsole.device.dto.AppCapacityKeepSubmitRequest;
+import ffdd.opsconsole.device.dto.AppCapacityKeepSubmitResponse;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteRequest;
 import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
@@ -66,6 +68,16 @@ public class AppTradeinController {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : tradeinService.capacityReplace(userId, idempotencyKey, request);
+    }
+
+    @PostMapping("/api/app/trade-in/capacity-keep")
+    public ApiResult<AppCapacityKeepSubmitResponse> capacityKeep(
+            @RequestBody AppCapacityKeepSubmitRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
+                : tradeinService.capacityKeep(userId, idempotencyKey, request);
     }
 
     @PostMapping({"/api/app/trade-in/submit", "/api/devices/replace"})

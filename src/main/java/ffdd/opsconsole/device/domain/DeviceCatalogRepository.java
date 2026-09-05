@@ -48,6 +48,8 @@ public interface DeviceCatalogRepository {
 
     Optional<DeviceTaskView> findTask(String taskId);
 
+    Optional<DeviceTaskView> findTaskForUpdate(String taskId);
+
     DeviceTaskView createTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now);
 
     Optional<DeviceTaskView> updateTask(String taskId, DeviceTaskUpsertRequest request, LocalDateTime now);

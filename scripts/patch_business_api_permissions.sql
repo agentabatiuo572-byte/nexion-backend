@@ -22,8 +22,8 @@ VALUES
   (117, 'PERM_USERS_WRITE', 'Write user operations', 'API', '/api/admin/users/**', NULL, 1),
   (103, 'PERM_FINANCE_READ', 'Read finance and treasury operations', 'API', '/api/admin/finance/**,/api/admin/treasury/**', NULL, 1),
   (104, 'PERM_FINANCE_WRITE', 'Write finance and treasury operations', 'API', '/api/admin/finance/**,/api/admin/treasury/**', NULL, 1),
-  (105, 'PERM_DEVICES_READ', 'Read device and commerce operations', 'API', '/api/admin/devices/**', NULL, 1),
-  (112, 'PERM_DEVICES_WRITE', 'Write device and commerce operations', 'API', '/api/admin/devices/**', NULL, 1),
+  (105, 'PERM_DEVICES_READ', 'Read device and commerce operations', 'API', '/api/admin/devices/**,/api/admin/media/**', NULL, 1),
+  (112, 'PERM_DEVICES_WRITE', 'Write device and commerce operations', 'API', '/api/admin/devices/**,/api/admin/media/**', NULL, 1),
   (106, 'PERM_MARKET_READ', 'Read financial product operations', 'API', '/api/admin/market/**', NULL, 1),
   (118, 'PERM_MARKET_WRITE', 'Write financial product operations', 'API', '/api/admin/market/**', NULL, 1),
   (107, 'PERM_CONTENT_READ', 'Read content and support operations', 'API', '/api/admin/content/**', NULL, 1),
@@ -34,8 +34,8 @@ VALUES
   (121, 'PERM_GROWTH_WRITE', 'Write growth operations', 'API', '/api/admin/growth/**', NULL, 1),
   (110, 'PERM_RISK_READ', 'Read risk and emergency operations', 'API', '/api/admin/risk/**,/api/admin/emergency/**', NULL, 1),
   (113, 'PERM_RISK_WRITE', 'Write risk and emergency operations', 'API', '/api/admin/risk/**,/api/admin/emergency/**', NULL, 1),
-  (111, 'PERM_SYSTEM_READ', 'Read platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/media/**,/api/admin/auth/**', NULL, 1),
-  (115, 'PERM_SYSTEM_WRITE', 'Write platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/media/**,/api/admin/commands/**', NULL, 1),
+  (111, 'PERM_SYSTEM_READ', 'Read platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/auth/**', NULL, 1),
+  (115, 'PERM_SYSTEM_WRITE', 'Write platform operations', 'API', '/api/admin/platform/**,/api/admin/options/**,/api/admin/commands/**', NULL, 1),
   (114, 'PERM_BI_READ', 'Read BI and reporting operations', 'API', '/api/admin/bi/**', NULL, 1),
   (120, 'PERM_AUDIT_READ', 'Read platform audit logs', 'API', '/api/admin/platform/audit/**', NULL, 1)
 ON DUPLICATE KEY UPDATE

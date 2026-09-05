@@ -76,6 +76,33 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             @Param("scope") String scope,
             @Param("idempotencyKey") String idempotencyKey);
 
+    @Select("""
+            <script>
+            SELECT id,
+                   scope,
+                   idempotency_key AS idempotencyKey,
+                   request_hash AS requestHash,
+                   status,
+                   response_json AS responseJson,
+                   error_message AS errorMessage,
+                   expires_at AS expiresAt,
+                   created_at AS createdAt,
+                   updated_at AS updatedAt,
+                   is_deleted AS isDeleted
+              FROM nx_admin_idempotency_record
+             WHERE idempotency_key = #{idempotencyKey}
+               AND is_deleted = 0
+               AND scope IN
+             <foreach collection='scopes' item='scope' open='(' separator=',' close=')'>
+               #{scope}
+             </foreach>
+             ORDER BY id ASC
+            </script>
+            """)
+    List<AdminIdempotencyRecordEntity> selectSupportCommand(
+            @Param("scopes") List<String> scopes,
+            @Param("idempotencyKey") String idempotencyKey);
+
     @Update("""
             UPDATE nx_admin_idempotency_record
                SET request_hash = #{requestHash},

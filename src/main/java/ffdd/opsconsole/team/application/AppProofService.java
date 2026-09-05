@@ -175,6 +175,7 @@ public class AppProofService {
                 "environment", environment,
                 "runId", runId,
                 "timeZone", BUSINESS_ZONE.getId(),
+                "businessDateBoundary", "Vietnam business date at Asia/Ho_Chi_Minh (UTC+07:00), not UTC+08:00",
                 "streakRule", "H5 business date; a missing date breaks current streak; longest is persisted maximum",
                 "percentileRule", "USDT earnings against active production users; strict-greater tie-aware top share; unavailable below 5 samples");
     }

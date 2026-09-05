@@ -54,10 +54,14 @@ public interface AppTeamNetworkMapper extends BaseMapper<Object> {
               FROM network n JOIN nx_user u ON u.id=n.member_user_id
               LEFT JOIN nx_team_member tm ON tm.user_id=#{userId} AND tm.member_user_id=u.id AND tm.is_deleted=0
               LEFT JOIN nx_binary_leg_assignment a ON a.owner_user_id=#{userId} AND a.member_user_id=n.root_user_id
-             ORDER BY n.level,u.created_at,u.id
-             LIMIT 501
+             WHERE u.id>#{afterId}
+             ORDER BY u.id
+             LIMIT #{limit}
             """)
-    List<MemberRow> members(@Param("userId") Long userId);
+    List<MemberRow> membersPage(@Param("userId") Long userId, @Param("afterId") long afterId,
+                                @Param("limit") int limit);
+
+    default List<MemberRow> members(Long userId) { return membersPage(userId, 0, 501); }
 
     record MemberRow(Long memberUserId, String nickname, String avatarUrl, String vRank, Integer level,
                      String leg, Long sponsorUserId, LocalDateTime joinedAt, BigDecimal monthVolumeUsdt,

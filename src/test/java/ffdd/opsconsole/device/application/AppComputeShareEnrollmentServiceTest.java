@@ -40,6 +40,7 @@ class AppComputeShareEnrollmentServiceTest {
         when(mapper.isProductionUser(42L)).thenReturn(1);
         when(mapper.lockProductionUser(42L)).thenReturn(42L);
         when(config.activeValue("E.compute.computeShareEnabled")).thenReturn(Optional.of("on"));
+        when(config.activeValue("E.compute.download.url")).thenReturn(Optional.of("https://downloads.nexion.example/janus"));
         when(mapper.activeDeviceCount(42L)).thenReturn(1);
         when(mapper.activeEnrollmentCount(42L, clock.instant())).thenReturn(0);
         when(mapper.deviceSlotCap()).thenReturn(6);
@@ -78,7 +79,7 @@ class AppComputeShareEnrollmentServiceTest {
     void trustedClaimCreatesCanonicalDeviceExactlyOnce() {
         var row = new AppComputeShareEnrollmentMapper.EnrollmentRow(
                 9L, "CSE-1", 42L, "NVIDIA RTX 4070", AppComputeShareEnrollmentService.hashPairingCode("CSE-1", "731904"),
-                "PENDING", null, clock.instant().plusSeconds(600), 0L);
+                "PENDING", null, null, clock.instant().plusSeconds(600), 0L);
         when(mapper.lockEnrollment("CSE-1")).thenReturn(row);
         when(mapper.findCanonicalDevice("JANUS-PC-1")).thenReturn(
                 null, new AppComputeShareEnrollmentMapper.CanonicalDeviceRow(77L, 42L, "JANUS-PC-1"));
@@ -91,16 +92,51 @@ class AppComputeShareEnrollmentServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat((java.util.Map) result.getData())
                 .containsEntry("status", "CONNECTED")
+                .containsEntry("deviceInstanceNo", "JANUS-PC-1")
                 .containsEntry("deviceId", 77L);
         verify(mapper).insertCanonicalDevice(any());
         verify(mapper).completeEnrollment(9L, 0L, "JANUS-PC-1", 77L);
     }
 
     @Test
+    void alreadyConnectedClaimReturnsTheAuthoritativeExecutorInstance() {
+        var row = new AppComputeShareEnrollmentMapper.EnrollmentRow(
+                9L, "CSE-1", 42L, "NVIDIA RTX 4070", null,
+                "CONNECTED", 77L, "JANUS-PC-1", clock.instant().plusSeconds(600), 1L);
+        when(mapper.lockEnrollment("CSE-1")).thenReturn(row);
+
+        ApiResult<?> result = service.claim(42L, "CSE-1", "731904", "JANUS-PC-1",
+                "NVIDIA RTX 4070", 12, 240);
+
+        assertThat(result.getCode()).isZero();
+        assertThat((java.util.Map) result.getData())
+                .containsEntry("status", "CONNECTED")
+                .containsEntry("deviceInstanceNo", "JANUS-PC-1")
+                .containsEntry("deviceId", 77L);
+        verify(mapper, never()).insertCanonicalDevice(any());
+    }
+
+    @Test
+    void disabledFeatureRejectsAStillPendingClaimWithoutCreatingADevice() {
+        when(config.activeValue("E.compute.computeShareEnabled")).thenReturn(Optional.of("off"));
+        var row = new AppComputeShareEnrollmentMapper.EnrollmentRow(
+                9L, "CSE-1", 42L, "NVIDIA RTX 4070", AppComputeShareEnrollmentService.hashPairingCode("CSE-1", "731904"),
+                "PENDING", null, null, clock.instant().plusSeconds(600), 0L);
+        when(mapper.lockEnrollment("CSE-1")).thenReturn(row);
+
+        ApiResult<?> result = service.claim(42L, "CSE-1", "731904", "JANUS-PC-1",
+                "NVIDIA RTX 4070", 12, 240);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COMPUTE_SHARE_DISABLED");
+        verify(mapper, never()).insertCanonicalDevice(any());
+    }
+
+    @Test
     void wrongPairingCodeCannotCreateDevice() {
         var row = new AppComputeShareEnrollmentMapper.EnrollmentRow(
                 9L, "CSE-1", 42L, "NVIDIA RTX 4070", AppComputeShareEnrollmentService.hashPairingCode("CSE-1", "731904"),
-                "PENDING", null, clock.instant().plusSeconds(600), 0L);
+                "PENDING", null, null, clock.instant().plusSeconds(600), 0L);
         when(mapper.lockEnrollment("CSE-1")).thenReturn(row);
 
         assertThat(service.claim(42L, "CSE-1", "000000", "JANUS-PC-1",

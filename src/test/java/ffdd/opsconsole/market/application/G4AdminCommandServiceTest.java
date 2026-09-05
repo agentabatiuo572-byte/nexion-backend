@@ -50,6 +50,7 @@ class G4AdminCommandServiceTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
+        when(config.activeValue("killswitch.genesis")).thenReturn(Optional.of("enabled"));
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }

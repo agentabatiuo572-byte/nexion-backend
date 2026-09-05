@@ -1,10 +1,15 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
+import ffdd.opsconsole.auth.captcha.CaptchaScene;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
+import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
+import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
@@ -22,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.PessimisticLockingFailureException;
@@ -36,8 +42,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 @Slf4j
 public class AppUserRegistrationService {
-    private static final int OTP_TTL_MINUTES = 5;
-    private static final int RESEND_AFTER_SECONDS = 60;
     private static final String K1_MAX_SIGNUP_PER_IP_24H = "maxSignupPerIp24h";
     private static final Set<String> WEAK_PASSWORDS = Set.of(
             "12345678", "123456789", "1234567890", "password", "password1",
@@ -52,53 +56,125 @@ public class AppUserRegistrationService {
     private final AppUserRegistrationTransactionExecutor transactionExecutor;
     private final Environment environment;
     private final OpsReferralRewardService referralRewardService;
+    private final PlatformConfigFacade configFacade;
+    private final UserLoginGuardMapper loginGuardMapper;
+    private final CaptchaOtpGate captchaGate;
 
     @PostConstruct
     void ensureSchema() {
         mapper.createTable();
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = BizException.class)
     public ApiResult<UserRegistrationOtpResponse> sendOtp(
             UserRegistrationOtpRequest request,
             String clientAddress) {
-        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.phone())) {
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_PHONE_INVALID");
         }
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
         if (audience == null) return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
-        if (!otpDeliveryService.available()) {
-            return ApiResult.fail(503, "USER_OTP_DELIVERY_UNAVAILABLE");
-        }
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
+        if (!otpDeliveryService.available(countryCode)) {
+            return ApiResult.fail(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+        }
         String clientIp = normalizeClientAddress(clientAddress);
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
         if (mapper.countRecentClient(clientIp) >= 10 || mapper.countDailyClient(clientIp) >= 100) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_CLIENT_RATE_LIMIT");
         }
-        if (mapper.countRecentPhoneInEnvironment(countryCode, phone, audience.name()) > 0) {
+        if (mapper.countRecentPhoneInEnvironment(countryCode, phone, audience.name(), policy.cooldownSeconds()) > 0) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_COOLDOWN");
         }
-        if (mapper.countDailyPhoneInEnvironment(countryCode, phone, audience.name()) >= 10) {
+        if (mapper.countDailyPhoneInEnvironment(countryCode, phone, audience.name()) >= policy.max24h()) {
             return ApiResult.fail(429, "USER_REGISTRATION_OTP_DAILY_LIMIT");
+        }
+        OtpSendRateDecision rateDecision = consumeOtpSendRate(
+                registrationKey(audience, countryCode, phone), LocalDateTime.now(), policy,
+                request.captchaTicket(), clientIp);
+        if (rateDecision == OtpSendRateDecision.COOLDOWN) {
+            return ApiResult.fail(429, "USER_REGISTRATION_OTP_COOLDOWN");
+        }
+        if (rateDecision == OtpSendRateDecision.DAILY_LIMIT) {
+            return ApiResult.fail(429, "USER_REGISTRATION_OTP_DAILY_LIMIT");
+        }
+        if (rateDecision == OtpSendRateDecision.CAPTCHA_REQUIRED) {
+            return ApiResult.fail(428, "USER_CAPTCHA_REQUIRED");
+        }
+        if (rateDecision == OtpSendRateDecision.CAPTCHA_VERIFIER_UNAVAILABLE) {
+            return ApiResult.fail(503, "USER_CAPTCHA_VERIFIER_UNAVAILABLE");
+        }
+        if (rateDecision == OtpSendRateDecision.CAPTCHA_TICKET_REJECTED) {
+            return ApiResult.fail(428, "USER_CAPTCHA_TICKET_INVALID");
         }
         mapper.invalidateActiveInEnvironment(countryCode, phone, audience.name());
         String challengeNo = "REG-" + UUID.randomUUID().toString().replace("-", "");
-        String code = otpDeliveryService.verificationCode();
+        String code = otpDeliveryService.verificationCode(countryCode);
         if (mapper.insertChallengeInEnvironment(
-                challengeNo, countryCode, phone, clientIp, audience.name(), code, OTP_TTL_MINUTES) != 1) {
+                challengeNo, countryCode, phone, clientIp, audience.name(), code, policy.ttlMinutes()) != 1) {
             throw new IllegalStateException("USER_REGISTRATION_OTP_CREATE_FAILED");
         }
         try {
             otpDeliveryService.deliver(
-                    countryCode, phone, challengeNo, code, OTP_TTL_MINUTES);
+                    countryCode, phone, challengeNo, code, policy.ttlMinutes());
         } catch (RuntimeException exception) {
+            mapper.invalidateActiveInEnvironment(countryCode, phone, audience.name());
             throw new BizException(503, "USER_OTP_DELIVERY_FAILED");
         }
         return ApiResult.ok(new UserRegistrationOtpResponse(
                 challengeNo,
-                RESEND_AFTER_SECONDS,
+                policy.cooldownSeconds(),
                 maskPhone(phone)));
+    }
+
+    /**
+     * Serializes per-phone registration sends before challenge invalidation and insert.  The
+     * registration table has no unique open-challenge key, so the count queries alone race.
+     */
+    private OtpSendRateDecision consumeOtpSendRate(String key, LocalDateTime now, AppOtpPolicy policy,
+            String captchaTicket, String clientAddress) {
+        loginGuardMapper.initializeOtpSendGuard(key, now);
+        UserOtpSendGuardRecord guard = loginGuardMapper.lockOtpSendGuard(key);
+        if (guard == null) throw new IllegalStateException("USER_OTP_SEND_GUARD_UNAVAILABLE");
+        if (guard.getLastSentAt() != null && guard.getLastSentAt().plusSeconds(policy.cooldownSeconds()).isAfter(now)) {
+            return OtpSendRateDecision.COOLDOWN;
+        }
+        int legacyCount = guard.getLegacyWindowUntil() != null && guard.getLegacyWindowUntil().isAfter(now)
+                ? guard.getDaySendCount() : 0;
+        int trailing24hCount = loginGuardMapper.countRecentOtpSendEvents(key, now.minusHours(24));
+        if (legacyCount + trailing24hCount >= policy.max24h()) {
+            return OtpSendRateDecision.DAILY_LIMIT;
+        }
+        CaptchaOtpGate.Decision captcha = captchaGate.checkAndConsume(
+                CaptchaScene.REGISTER, captchaTicket, clientAddress, trailing24hCount);
+        if (!captcha.allowed()) {
+            return switch (captcha.code()) {
+                case "USER_CAPTCHA_REQUIRED" -> OtpSendRateDecision.CAPTCHA_REQUIRED;
+                case "USER_CAPTCHA_VERIFIER_UNAVAILABLE" -> OtpSendRateDecision.CAPTCHA_VERIFIER_UNAVAILABLE;
+                default -> OtpSendRateDecision.CAPTCHA_TICKET_REJECTED;
+            };
+        }
+        if (loginGuardMapper.insertOtpSendEvent(key, now) != 1) {
+            throw new IllegalStateException("USER_OTP_SEND_EVENT_CREATE_FAILED");
+        }
+        if (loginGuardMapper.recordOtpSend(key, now, now, 0, now, trailing24hCount + 1) != 1) {
+            throw new IllegalStateException("USER_OTP_SEND_GUARD_STATE_CHANGED");
+        }
+        return OtpSendRateDecision.ALLOWED;
+    }
+
+    private enum OtpSendRateDecision {
+        ALLOWED,
+        COOLDOWN,
+        DAILY_LIMIT
+        , CAPTCHA_REQUIRED
+        , CAPTCHA_VERIFIER_UNAVAILABLE
+        , CAPTCHA_TICKET_REJECTED
+    }
+
+    private String registrationKey(UserAuthEnvironment audience, String countryCode, String phone) {
+        return OtpPhoneRateLimitKey.from(audience.name(), countryCode, phone);
     }
 
     public ApiResult<UserLoginResponse> register(
@@ -124,7 +200,7 @@ public class AppUserRegistrationService {
             int sandbox) {
         if (request == null
                 || !validCountryCode(request.countryCode())
-                || !validPhone(request.phone())
+                || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.challengeNo())
                 || !StringUtils.hasText(request.code())
                 || !request.code().trim().matches("\\d{6}")
@@ -137,8 +213,11 @@ public class AppUserRegistrationService {
         String code = request.code().trim();
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
         if (audience == null) return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
-        if (mapper.consumeValidChallengeInEnvironment(challengeNo, countryCode, phone, audience.name(), code) != 1) {
-            mapper.recordInvalidAttemptInEnvironment(challengeNo, countryCode, phone, audience.name());
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
+        if (mapper.consumeValidChallengeInEnvironment(
+                challengeNo, countryCode, phone, audience.name(), code, policy.maxVerifyAttempts()) != 1) {
+            mapper.recordInvalidAttemptInEnvironment(
+                    challengeNo, countryCode, phone, audience.name(), policy.maxVerifyAttempts());
             return ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID");
         }
         UserEntity existing = findUser(countryCode, phone, sandbox);
@@ -296,7 +375,7 @@ public class AppUserRegistrationService {
         if (referralRewardService != null) {
             try {
                 ReferralRewardPublicConfigView config = referralRewardService.publicConfig();
-                if (config != null && config.welcomeGift() != null
+                if (config != null && config.enabled() && config.welcomeGift() != null
                         && config.welcomeGift().usdtAmount() != null
                         && config.welcomeGift().nexAmount() != null) {
                     giftUsdt = config.welcomeGift().usdtAmount();
@@ -339,11 +418,16 @@ public class AppUserRegistrationService {
     }
 
     private boolean validCountryCode(String value) {
-        return StringUtils.hasText(value) && normalizeCountryCode(value).matches("\\+[0-9]{1,4}");
+        return StringUtils.hasText(value) && OtpPhoneCanonicalizer.isSupportedCountryCode(value);
     }
 
-    private boolean validPhone(String value) {
-        return StringUtils.hasText(value) && value.trim().matches("[0-9]{6,15}");
+    private boolean validPhone(String countryCode, String value) {
+        try {
+            OtpPhoneCanonicalizer.toE164Digits(countryCode, value);
+            return true;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     private String normalizeCountryCode(String value) {

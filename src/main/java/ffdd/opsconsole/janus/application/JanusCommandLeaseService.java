@@ -36,9 +36,12 @@ public class JanusCommandLeaseService {
         if (row == null) return Lease.rejected("JANUS_COMMAND_LEASE_READBACK_FAILED");
         String currentToken = text(row, "leaseToken");
         long fence = number(row, "fencingToken");
-        if (TOKEN.matcher(trim(resumeLeaseToken)).matches()
-                && trim(resumeLeaseToken).equals(currentToken)
-                && executorId.equals(text(row, "executorId"))) {
+        // The controller has already verified a fresh device-bound native claim.  A lost pending
+        // response must not strand that same executor for a full lease window; only a different
+        // attested executor remains blocked until expiry or it presents the current resume token.
+        boolean sameAttestedExecutor = executorId.equals(text(row, "executorId"));
+        if (sameAttestedExecutor && (TOKEN.matcher(trim(resumeLeaseToken)).matches()
+                ? trim(resumeLeaseToken).equals(currentToken) : true)) {
             if (mapper.renew(deviceId, commandId, commandVersion, executorId, currentToken, fence,
                     claimNonce, until) != 1) return Lease.rejected("JANUS_COMMAND_LEASE_CONFLICT");
             return readback(deviceId, commandId, commandVersion, currentToken, fence);

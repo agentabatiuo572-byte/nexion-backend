@@ -1518,7 +1518,7 @@ public class OpsTreasuryService {
             boolean on = KillSwitchState.enabled(primary, legacy);
             boolean configuredPresent = primary.isPresent() || legacy.isPresent();
             String sourceKey = primary.isPresent() ? configKey : legacy.isPresent() ? legacyKey : configKey;
-            String state = configuredPresent ? (on ? "on" : "off") : "default_on";
+            String state = configuredPresent ? (on ? "on" : "off") : "default_off";
             gates.add(section("nm", seed.name(), "dom", key, "on", on, "state", state, "configKey", sourceKey));
         }
         return gates;

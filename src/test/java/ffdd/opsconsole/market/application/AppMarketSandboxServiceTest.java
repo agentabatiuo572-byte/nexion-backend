@@ -47,7 +47,7 @@ class AppMarketSandboxServiceTest {
         when(mapper.lockExchangeRun("run-alpha")).thenReturn("run-alpha");
         when(mapper.userCompletedGrossToday("run-alpha",7L)).thenReturn(BigDecimal.ZERO);
         when(mapper.platformCompletedGrossToday("run-alpha")).thenReturn(BigDecimal.ZERO);
-        when(mapper.exchangeOrders("run-alpha",7L)).thenReturn(List.of()); when(mapper.exchangeLedger("run-alpha",7L)).thenReturn(List.of());
+        when(mapper.exchangeLedger("run-alpha",7L)).thenReturn(List.of());
         when(mapper.exchangeWallet("run-alpha",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet("run-alpha",7L,new BigDecimal("100"),BigDecimal.ZERO,0L));
         when(mapper.insertExchangeOrder(any())).thenReturn(1); when(mapper.updateExchangeWallet(anyString(),anyLong(),any(),any(),anyLong())).thenReturn(1); when(mapper.insertExchangeLedger(any())).thenReturn(1);
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
@@ -60,9 +60,55 @@ class AppMarketSandboxServiceTest {
     void sandboxUserCannotBeReadFromAnotherRun() {
         MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-beta"); env.setActiveProfiles("test"); AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
         when(mapper.userSandbox(7L)).thenReturn(1); when(mapper.exchangeWallet("run-beta",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet("run-beta",7L,BigDecimal.ZERO,BigDecimal.ZERO,0L));
-        when(mapper.exchangeOrders("run-beta",7L)).thenReturn(List.of()); when(mapper.exchangeLedger("run-beta",7L)).thenReturn(List.of());
+        when(mapper.exchangeLedger("run-beta",7L)).thenReturn(List.of());
         new AppMarketSandboxService(mapper,env,Optional.empty()).exchangeState(7L);
         verify(mapper).exchangeWallet("run-beta",7L); verify(mapper,never()).exchangeWallet("run-alpha",7L);
+    }
+
+    @Test
+    void exchangeSandboxStateHonorsRequestedPageInsteadOfReturningAllHistory() {
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-page");
+        env.setActiveProfiles("test");
+        AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        when(mapper.userSandbox(7L)).thenReturn(1);
+        when(mapper.exchangeWallet("run-page",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet(
+                "run-page",7L,BigDecimal.TEN,BigDecimal.ONE,0L));
+        var first = new AppMarketSandboxMapper.ExchangeOrderView("EX-1","USDT","NEX",BigDecimal.ONE,
+                BigDecimal.TEN,BigDecimal.ONE,"COMPLETED",LocalDateTime.now().minusMinutes(1));
+        var second = new AppMarketSandboxMapper.ExchangeOrderView("EX-2","NEX","USDT",BigDecimal.TEN,
+                BigDecimal.ONE,BigDecimal.ONE,"COMPLETED",LocalDateTime.now());
+        when(mapper.countExchangeOrders("run-page",7L)).thenReturn(2L);
+        when(mapper.exchangeOrdersPage("run-page",7L,1L,1)).thenReturn(List.of(second));
+        when(mapper.exchangeLedger("run-page",7L)).thenReturn(List.of());
+
+        Map<String,Object> data = new AppMarketSandboxService(mapper,env,Optional.empty())
+                .exchangeState(7L,2,1).getData();
+
+        assertThat(data.get("orders")).isEqualTo(List.of(second));
+        assertThat(data.get("ordersPage")).isEqualTo(Map.of("total",2L,"pageNum",2,"pageSize",1));
+        verify(mapper).exchangeOrdersPage("run-page",7L,1L,1);
+    }
+
+    @Test
+    void exchangeSandboxCanReachRowsBeyondTheFormerFiftyRowCap() {
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-deep-page");
+        env.setActiveProfiles("test");
+        AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        when(mapper.userSandbox(7L)).thenReturn(1);
+        when(mapper.exchangeWallet("run-deep-page",7L)).thenReturn(new AppMarketSandboxMapper.ExchangeWallet(
+                "run-deep-page",7L,BigDecimal.TEN,BigDecimal.ONE,0L));
+        var oldest = new AppMarketSandboxMapper.ExchangeOrderView("EX-51","USDT","NEX",BigDecimal.ONE,
+                BigDecimal.TEN,BigDecimal.ONE,"COMPLETED",LocalDateTime.now().minusDays(1));
+        when(mapper.countExchangeOrders("run-deep-page",7L)).thenReturn(51L);
+        when(mapper.exchangeOrdersPage("run-deep-page",7L,50L,50)).thenReturn(List.of(oldest));
+        when(mapper.exchangeLedger("run-deep-page",7L)).thenReturn(List.of());
+
+        Map<String,Object> data = new AppMarketSandboxService(mapper,env,Optional.empty())
+                .exchangeState(7L,2,50).getData();
+
+        assertThat(data.get("orders")).isEqualTo(List.of(oldest));
+        assertThat(data.get("ordersPage")).isEqualTo(Map.of("total",51L,"pageNum",2,"pageSize",50));
+        verify(mapper).exchangeOrdersPage("run-deep-page",7L,50L,50);
     }
 
     @Test

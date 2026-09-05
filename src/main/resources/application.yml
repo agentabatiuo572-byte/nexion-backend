@@ -41,12 +41,12 @@ nexion:
       # Production must explicitly configure exact hosts or parent domains.
       allowed-hosts: ${NEXION_DEVELOPER_WEBHOOK_ALLOWED_HOSTS:}
       allow-loopback: ${NEXION_DEVELOPER_WEBHOOK_ALLOW_LOOPBACK:false}
+      max-per-account: ${NEXION_DEVELOPER_WEBHOOK_MAX_PER_ACCOUNT:20}
   auth:
     user-otp:
-      # Local-only convenience. The fixed code is enabled by application-dev.yml.
-      # Production and unknown profiles require real delivery and fail closed.
+      # Local-only China fallback: +86 uses 123456 when application-dev.yml enables it.
+      # +84 and every other provider route still require ITNIO; production remains fail closed.
       local-fixed-code-enabled: ${NEXION_USER_OTP_LOCAL_FIXED_CODE_ENABLED:false}
-      delivery-url: ${NEXION_USER_OTP_DELIVERY_URL:}
   nova:
     ai:
       # Local RAG is opt-in and uses loopback Qdrant + Ollama only.
@@ -108,6 +108,27 @@ nexion:
       api-key: ${NEXION_CREGIS_API_KEY:}
       connect-timeout-ms: ${NEXION_CREGIS_CONNECT_TIMEOUT_MS:1000}
       read-timeout-ms: ${NEXION_CREGIS_READ_TIMEOUT_MS:2000}
+    hdpay:
+      # DISABLED preserves the existing manual VietQR rail. PROVIDER enables
+      # hosted BANKQR order creation only when every server-side field is ready.
+      mode: ${NEXION_HDPAY_MODE:DISABLED}
+      base-url: ${NEXION_HDPAY_BASE_URL:}
+      callback-base-url: ${NEXION_HDPAY_CALLBACK_BASE_URL:}
+      # Exact callback host allowlist. Temporary tunnel suffixes also require
+      # the explicit local-acceptance seam below and must stay false in production.
+      callback-hosts: ${NEXION_HDPAY_CALLBACK_HOSTS:}
+      allow-temporary-callback-hosts-for-tests: ${NEXION_HDPAY_ALLOW_TEMPORARY_CALLBACK_HOSTS_FOR_TESTS:false}
+      merchant-id: ${NEXION_HDPAY_MERCHANT_ID:}
+      # Server-only signing credential. Never expose it to UniApp, Janus, PC or logs.
+      md5-key: ${NEXION_HDPAY_MD5_KEY:}
+      pay-type: ${NEXION_HDPAY_PAY_TYPE:BANKQR}
+      country-code: ${NEXION_HDPAY_COUNTRY_CODE:VN}
+      payment-page-hosts: ${NEXION_HDPAY_PAYMENT_PAGE_HOSTS:api.hdpayadmin.com}
+      # Optional server-side egress proxy used only by the HDPay HTTP client.
+      proxy-host: ${NEXION_HDPAY_PROXY_HOST:}
+      proxy-port: ${NEXION_HDPAY_PROXY_PORT:0}
+      connect-timeout-ms: ${NEXION_HDPAY_CONNECT_TIMEOUT_MS:1000}
+      read-timeout-ms: ${NEXION_HDPAY_READ_TIMEOUT_MS:10000}
   gateway:
     # Header-based subject impersonation is opt-in for trusted internal gateways only.
     # Production must inject a unique secret and enumerate the exact ingress peers.
@@ -134,6 +155,20 @@ nexion:
     access-key: ${NEXION_MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${NEXION_MINIO_SECRET_KEY:}
     bucket: ${NEXION_MINIO_BUCKET:nexion}
+
+nexgrid:
+  sms:
+    itnio:
+      # Real provider delivery is explicit and fail-closed. Credentials are injected
+      # from protected runtime configuration and must never be committed or logged.
+      enabled: ${NEXGRID_SMS_ITNIO_ENABLED:false}
+      api-key: ${NEXGRID_SMS_ITNIO_API_KEY:}
+      api-secret: ${NEXGRID_SMS_ITNIO_API_SECRET:}
+      app-id: ${NEXGRID_SMS_ITNIO_APP_ID:}
+      # Optional provider-approved ASCII sender ID (maximum 32 characters).
+      sender-id: ${NEXGRID_SMS_ITNIO_SENDER_ID:}
+      connect-timeout-ms: ${NEXGRID_SMS_ITNIO_CONNECT_TIMEOUT_MS:3000}
+      read-timeout-ms: ${NEXGRID_SMS_ITNIO_READ_TIMEOUT_MS:5000}
 
 management:
   endpoints:

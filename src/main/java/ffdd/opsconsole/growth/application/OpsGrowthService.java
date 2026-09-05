@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -19,7 +20,9 @@ import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventBindingRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
+import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
@@ -89,6 +92,26 @@ public class OpsGrowthService implements AuditReplayable {
     private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
     private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
     private static final String QUEST_PREFIX = "growth.quest.";
+    private static final Set<String> MISSION_CATEGORIES = Set.of(
+            "WALLET", "EXPLORE", "RECOMMEND", "IDENTITY", "SOCIAL");
+    private static final Set<String> MISSION_ACTION_ROUTES = Set.of(
+            "/pages/missions/missions",
+            "/pages/me/profile",
+            "/pages/me/wallet-cards-new",
+            "/pages/me/wallet-topup",
+            "/pages/me/wallet-exchange",
+            "/pages/me/wallet-repurchase",
+            "/pages/me/devices",
+            "/pages/earn/earn",
+            "/pages/store/store",
+            "/pages/store/detail?id=stellarbox-s1",
+            "/pages/team/team",
+            "/pages/team/commissions",
+            "/pages/learn/courses",
+            "/pages/staking/staking",
+            "/pages/genesis/genesis",
+            "/pages/genesis/marketplace");
+    private static final String LOCALIZED_CONTENT_KEY = "growth.content.localized";
     private static final String WHEEL_PREFIX = "growth.wheel.";
     private static final String VOUCHER_SKUS_KEY = "growth.voucher.sku_options";
     private static final String SUNSET_EXCLUSIONS_KEY = "growth.sunset.exclusions";
@@ -138,6 +161,13 @@ public class OpsGrowthService implements AuditReplayable {
             "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
+    private static final Map<String, String> H3_BINDING_EVENT_TYPES = Map.of(
+            "ORDER", "checkout.started",
+            "REFERRAL", "H8_REFERRAL_REWARD_SETTLED",
+            "LEARNING", "LEARNING_COURSE_COMPLETED",
+            "DEVICE", "admin.device_activated",
+            "COMMISSION", "COMMISSION_UNLOCKED");
+    private static final Set<String> H3_BINDING_USER_FIELDS = Set.of("user_id", "inviter_user_id");
     private static final Set<String> SANDBOX_DAY_ONE_MISSION_CODES = Set.of(
             "bind_bank_card", "visit_earn", "visit_store", "view_product_roi", "setup_profile", "invite_friend");
 
@@ -388,7 +418,14 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     public ApiResult<Map<String, Object>> trials() {
+        return trials(1, 100);
+    }
+
+    public ApiResult<Map<String, Object>> trials(int requestedPageNum, int requestedPageSize) {
         ensureTrialSeedData();
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        long totalSessions = growthCount(GrowthQuestEventMapper::countTrialSessions);
         List<Map<String, Object>> trialProducts = trialProductOptions();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "H2");
@@ -398,7 +435,11 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("trialProducts", trialProducts);
         response.put("gates", trialGates());
         response.put("states", trialStates());
-        response.put("sessions", trialSessions());
+        response.put("sessions", trialSessions(pageNum, pageSize));
+        response.put("sessionsPage", Map.of(
+                "total", totalSessions,
+                "pageNum", pageNum,
+                "pageSize", pageSize));
         response.put("autoPushKilled", trialAutoPushKilled());
         response.put("j1TrialGate", trialKillSwitch());
         response.put("serverOnlyFields", List.of("chargeFailRate"));
@@ -642,6 +683,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("h3Stats", questStats());
         response.put("h4Stats", eventStats());
         response.put("dayOneWindow", dayOneWindow());
+        response.put("dayOneEligibilityHours", questConfig("dayOne.eligibilityHours"));
         response.put("dayOneTriReward", questConfig("dayOne.triReward"));
         response.put("dayOneTasks", dayOneTasks());
         response.put("dayOneStates", dayOneStates());
@@ -653,6 +695,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("taskMonitor", taskMonitor());
         response.put("taskContracts", taskContracts());
         response.put("promoBanner", promoBanner());
+        response.put("contentLocales", localizedContent());
         response.put("phaseMultiplierReadonly", phaseMultiplierReadonly());
         response.put("events", questEventsList());
         response.put("eventStates", eventStateLegend());
@@ -682,7 +725,106 @@ public class OpsGrowthService implements AuditReplayable {
                         "wheelGuards", "trackables")
                 .forEach(response::remove);
         response.put("domain", "H3");
+        response.put("eventBindings", growthRows(GrowthQuestEventMapper::questEventBindings));
         return ApiResult.ok(response);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> createQuestEventBinding(String idempotencyKey, String bindingCode, GrowthQuestEventBindingRequest request) {
+        return mutateQuestEventBinding(idempotencyKey, bindingCode, request, "created", false, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> updateQuestEventBinding(String idempotencyKey, String bindingCode, GrowthQuestEventBindingRequest request) {
+        return mutateQuestEventBinding(idempotencyKey, bindingCode, request, "updated", true, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> deleteQuestEventBinding(String idempotencyKey, String bindingCode, GrowthQuestEventBindingRequest request) {
+        return mutateQuestEventBinding(idempotencyKey, bindingCode, request, "deleted", true, true);
+    }
+
+    private ApiResult<Map<String, Object>> mutateQuestEventBinding(
+            String key, String rawCode, GrowthQuestEventBindingRequest request,
+            String action, boolean exists, boolean deleting) {
+        ApiResult<Map<String, Object>> guard = requireCommand(key, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            GrowthQuestEventMapper mapper = questEventMapper.get();
+            mapper.ensureH3ConfigMutex();
+            if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
+            String code = normalizePlainText(rawCode, 48);
+            if (!code.matches("[A-Z0-9_-]{2,48}")) throw new IllegalArgumentException("H3_BINDING_CODE_INVALID");
+            Map<String, Object> current = mapper.lockQuestEventBinding(code);
+            if (exists && current == null) return validation("H3_BINDING_NOT_FOUND");
+            if (!exists && current != null) return validation("H3_BINDING_EXISTS");
+
+            String expectedProducer = null;
+            String expectedEventType = null;
+            String expectedQuestCode = null;
+            String expectedUserIdField = null;
+            int expectedStatus = -1;
+            if (exists) {
+                expectedProducer = normalizePlainText(request.expectedProducer(), 32).toUpperCase(Locale.ROOT);
+                expectedEventType = normalizePlainText(request.expectedEventType(), 128);
+                expectedQuestCode = normalizeMissionCode(request.expectedQuestCode());
+                expectedUserIdField = normalizePlainText(request.expectedUserIdField(), 64);
+                if (request.expectedEnabled() == null) throw new IllegalArgumentException("H3_BINDING_EXPECTED_STATUS_REQUIRED");
+                expectedStatus = request.expectedEnabled() ? 1 : 0;
+                if (!expectedProducer.equals(stringValue(current.get("producer"), ""))
+                        || !expectedEventType.equals(stringValue(current.get("eventType"), ""))
+                        || !expectedQuestCode.equals(stringValue(current.get("questCode"), ""))
+                        || !expectedUserIdField.equals(stringValue(current.get("userIdField"), ""))
+                        || expectedStatus != intValue(current.get("status"), -1)) {
+                    return ApiResult.fail(409, "H3_BINDING_STALE");
+                }
+            }
+
+            Map<String, Object> before = exists ? bindingSnapshot(current) : Map.of();
+            if (deleting) {
+                if (mapper.deleteQuestEventBindingCas(code, expectedProducer, expectedEventType, expectedQuestCode,
+                        expectedUserIdField, expectedStatus) != 1) return ApiResult.fail(409, "H3_BINDING_STALE");
+            } else {
+                String producer = normalizePlainText(request.producer(), 32).toUpperCase(Locale.ROOT);
+                String eventType = normalizePlainText(request.eventType(), 128);
+                String questCode = normalizeMissionCode(request.questCode());
+                String userIdField = normalizePlainText(request.userIdField(), 64);
+                int status = Boolean.TRUE.equals(request.enabled()) ? 1 : 0;
+                if (!eventType.equals(H3_BINDING_EVENT_TYPES.get(producer))
+                        || !H3_BINDING_USER_FIELDS.contains(userIdField)) {
+                    throw new IllegalArgumentException("H3_BINDING_EVENT_INVALID");
+                }
+                if (mapper.activeMissionByCode(questCode) != 1) {
+                    throw new IllegalArgumentException("H3_BINDING_TARGET_NOT_ACTIVE");
+                }
+                if (status == 1 && mapper.activeBindingSlotCount(producer, eventType, userIdField, code) > 0) {
+                    throw new IllegalArgumentException("H3_BINDING_EVENT_ALREADY_MAPPED");
+                }
+                int changed = exists
+                        ? mapper.updateQuestEventBindingCas(code, producer, eventType, questCode, userIdField, status,
+                                expectedProducer, expectedEventType, expectedQuestCode, expectedUserIdField, expectedStatus)
+                        : mapper.insertQuestEventBinding(code, producer, eventType, questCode, userIdField, status);
+                if (changed != 1) return ApiResult.fail(409, "H3_BINDING_STALE");
+            }
+            Map<String, Object> after = deleting ? Map.of() : bindingSnapshot(mapper.lockQuestEventBinding(code));
+            audit("H3_QUEST_EVENT_BINDING_" + action.toUpperCase(Locale.ROOT), "GROWTH_QUEST_EVENT_BINDING", code,
+                    request.operator(), row("action", action, "before", before, "after", after,
+                            "reason", request.reason().trim(), "idempotencyKey", key.trim()));
+            Map<String, Object> response = questTasks().getData();
+            response.put("updated", Map.of("bindingCode", code, "action", action));
+            return ApiResult.ok(response);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    private Map<String, Object> bindingSnapshot(Map<String, Object> binding) {
+        return row("producer", stringValue(binding.get("producer"), ""),
+                "eventType", stringValue(binding.get("eventType"), ""),
+                "questCode", stringValue(binding.get("questCode"), ""),
+                "userIdField", stringValue(binding.get("userIdField"), ""),
+                "enabled", intValue(binding.get("status"), 0) == 1);
     }
 
     public ApiResult<Map<String, Object>> questEventOverview() {
@@ -835,6 +977,8 @@ public class OpsGrowthService implements AuditReplayable {
                     && SANDBOX_DAY_ONE_MISSION_CODES.contains(code.toLowerCase(Locale.ROOT))) {
                 throw new IllegalArgumentException("MISSION_CODE_RESERVED_FOR_DAY_ONE");
             }
+            String category = normalizeMissionCategory(request.category());
+            String actionRoute = normalizeMissionActionRoute(request.actionRoute());
             int rewardPoints = request.rewardPoints() == null ? 0 : request.rewardPoints();
             if (rewardPoints < 0) {
                 throw new IllegalArgumentException("MISSION_REWARD_INVALID");
@@ -842,11 +986,14 @@ public class OpsGrowthService implements AuditReplayable {
             if (rewardPoints > 0 && coverageBelowRedline()) {
                 return coverageRedline();
             }
-            questEventMapper.get().insertMission(code, name, type, rewardPoints, 1, LocalDateTime.now());
+            questEventMapper.get().insertMission(
+                    code, name, type, category, actionRoute, rewardPoints, 1, LocalDateTime.now());
             audit("H3_MISSION_CREATED", "GROWTH_MISSION", code, request.operator(), Map.of(
                     "missionCode", code,
                     "missionName", name,
                     "missionType", type,
+                    "category", category,
+                    "actionRoute", actionRoute,
                     "rewardPoints", rewardPoints,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
@@ -942,6 +1089,47 @@ public class OpsGrowthService implements AuditReplayable {
                     "taskCode", code, "taskKind", kind, "before", expectedName, "after", name,
                     "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim()));
             return missionMutationResponse(code, kind, "edited");
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> updateMissionPresentation(
+            String idempotencyKey, String taskCode, GrowthMissionPresentationRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(
+                idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        try {
+            String code = normalizeMissionCode(taskCode);
+            String category = normalizeMissionCategory(request.category());
+            String actionRoute = normalizeMissionActionRoute(request.actionRoute());
+            String expectedCategory = normalizeMissionCategory(request.expectedCategory());
+            String expectedActionRoute = normalizeMissionActionRoute(request.expectedActionRoute());
+            Map<String, Object> current = questEventMapper.get().lockMission(code);
+            if (current == null) return validation("H3_MISSION_NOT_FOUND");
+            if (intValue(current.get("status"), -1) == 2) return invalidMissionTransition();
+            if (!expectedCategory.equals(stringValue(current.get("category"), ""))
+                    || !expectedActionRoute.equals(stringValue(current.get("actionRoute"), ""))) {
+                return ApiResult.fail(409, "H3_MISSION_STALE");
+            }
+            if (category.equals(expectedCategory) && actionRoute.equals(expectedActionRoute)) {
+                return validation("H3_MISSION_NO_CHANGE");
+            }
+            if (questEventMapper.get().updateMissionPresentationCas(
+                    code, expectedCategory, expectedActionRoute, category, actionRoute) != 1) {
+                return ApiResult.fail(409, "H3_MISSION_STALE");
+            }
+            audit("H3_MISSION_PRESENTATION_CHANGED", "GROWTH_MISSION", code, request.operator(), row(
+                    "taskCode", code,
+                    "beforeCategory", expectedCategory,
+                    "afterCategory", category,
+                    "beforeActionRoute", expectedActionRoute,
+                    "afterActionRoute", actionRoute,
+                    "reason", request.reason().trim(),
+                    "idempotencyKey", idempotencyKey.trim()));
+            return missionMutationResponse(code, "MISSION", "presentation-updated");
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
         }
@@ -1044,6 +1232,23 @@ public class OpsGrowthService implements AuditReplayable {
             throw new IllegalArgumentException("H3_MISSION_KIND_INVALID");
         }
         return kind;
+    }
+
+    private String normalizeMissionCategory(String raw) {
+        String category = normalizePlainText(raw, 32).toUpperCase(Locale.ROOT);
+        if (!MISSION_CATEGORIES.contains(category)) {
+            throw new IllegalArgumentException("MISSION_CATEGORY_INVALID");
+        }
+        return category;
+    }
+
+    private String normalizeMissionActionRoute(String raw) {
+        String route = normalizePlainText(raw, 255);
+        if (!route.matches("^/pages/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*(?:\\?[A-Za-z0-9._~%=&-]+)?$")
+                || !MISSION_ACTION_ROUTES.contains(route)) {
+            throw new IllegalArgumentException("MISSION_ACTION_ROUTE_INVALID");
+        }
+        return route;
     }
 
     private int missionStatusCode(String status) {
@@ -1531,6 +1736,15 @@ public class OpsGrowthService implements AuditReplayable {
                 .matcher(configKey == null ? "" : configKey);
         if (promoConfig.matches()) {
             return updatePromoBannerConfig(mapper, promoConfig.group(1), configKey, idempotencyKey, request);
+        }
+        Matcher localizedContent = Pattern.compile("^content\\.mission\\.([A-Za-z0-9_-]{2,64})\\.name\\.(en|zh|vi)$")
+                .matcher(configKey == null ? "" : configKey);
+        if (localizedContent.matches()) {
+            if (mapper.countByMissionCode(localizedContent.group(1)) != 1L) {
+                return validation("MISSION_NOT_FOUND");
+            }
+            return updateLocalizedContent("mission", localizedContent.group(1), "name",
+                    localizedContent.group(2), configKey, idempotencyKey, request);
         }
         String normalizedKey;
         try {
@@ -2726,6 +2940,8 @@ public class OpsGrowthService implements AuditReplayable {
                     event.put("kind", stringValue(row.get("kind"), "EVENT_ACTIONS"));
                     event.put("state", stringValue(row.get("state"), "ongoing"));
                     event.put("reward", stringValue(row.get("reward"), "0 NEX"));
+                    event.put("rewardName", stringValue(row.get("rewardName"), ""));
+                    event.put("description", stringValue(row.get("description"), ""));
                     event.put("featured", truthy(row.get("featured")));
                     event.put("trackable", truthy(row.get("trackable")));
                     event.put("condition", stringValue(row.get("condition"), ""));
@@ -2935,6 +3151,30 @@ public class OpsGrowthService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> updateEventLocalizedContent(
+            String idempotencyKey,
+            String eventCode,
+            String field,
+            String locale,
+            GrowthConfigUpdateRequest request) {
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()) return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
+        if (eventCode == null || !eventCode.matches("[A-Za-z0-9_-]{2,64}")
+                || !Set.of("name", "description", "rewardName").contains(field)
+                || !Set.of("en", "zh", "vi").contains(locale)) {
+            return validation("CONTENT_LOCALE_INVALID");
+        }
+        GrowthQuestEventMapper mapper = questEventMapper.get();
+        mapper.ensureH3ConfigMutex();
+        if (!"H3_CONFIG".equals(mapper.lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
+        ensureQuestEventSeedData();
+        if (mapper.countById(eventCode) != 1L) return validation("EVENT_NOT_FOUND");
+        return updateLocalizedContent("event", eventCode, field, locale,
+                "content.event." + eventCode + "." + field + "." + locale, idempotencyKey, request);
+    }
+
     private List<Map<String, Object>> trialProductOptions() {
         if (deviceCatalogRepository.isEmpty()) {
             return List.of();
@@ -3040,7 +3280,12 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> trialSessions() {
-        return growthRows(mapper -> mapper.trialSessions(100));
+        return trialSessions(1, 100);
+    }
+
+    private List<Map<String, Object>> trialSessions(int pageNum, int pageSize) {
+        long offset = (long) (pageNum - 1) * pageSize;
+        return growthRows(mapper -> mapper.trialSessionsPage(offset, pageSize));
     }
 
     private boolean trialAutoPushKilled() {
@@ -3317,6 +3562,7 @@ public class OpsGrowthService implements AuditReplayable {
             return;
         }
         seedIfMissing(questConfigStorageKey("dayOne.windowMs"), defaultQuestConfigValue("dayOne.windowMs"), "STRING", "growth", "H3 day-one seed");
+        seedIfMissing(questConfigStorageKey("dayOne.eligibilityHours"), defaultQuestConfigValue("dayOne.eligibilityHours"), "INTEGER", "growth", "H3 day-one eligibility seed");
         seedIfMissing(questConfigStorageKey("dayOne.triReward"), defaultQuestConfigValue("dayOne.triReward"), "STRING", "growth", "H3 day-one seed");
         seedIfMissing(questConfigStorageKey("weekly.champBonus"), defaultQuestConfigValue("weekly.champBonus"), "STRING", "growth", "H3 weekly champion seed");
         for (String phase : List.of("P1", "P2", "P3", "P4", "P5", "P6")) {
@@ -4277,7 +4523,7 @@ public class OpsGrowthService implements AuditReplayable {
             }
             return "weekly.mult." + phase;
         }
-        if (Set.of("dayOne.windowMs", "dayOne.triReward", "weekly.champBonus", "wheel.pool").contains(key)) {
+        if (Set.of("dayOne.windowMs", "dayOne.eligibilityHours", "dayOne.triReward", "weekly.champBonus", "wheel.pool").contains(key)) {
             return key;
         }
         if (key.startsWith("wheel.guard.")) {
@@ -4295,6 +4541,25 @@ public class OpsGrowthService implements AuditReplayable {
 
     private String normalizeQuestValue(String key, String raw) {
         String value = normalizePlainText(raw, key.startsWith("wheel.") ? 300 : 160);
+        if ("dayOne.eligibilityHours".equals(key)) {
+            int hours;
+            try {
+                hours = Integer.parseInt(value);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("QUEST_DAY_ONE_ELIGIBILITY_HOURS_INVALID");
+            }
+            if (hours < 24 || hours > 720) {
+                throw new IllegalArgumentException("QUEST_DAY_ONE_ELIGIBILITY_HOURS_INVALID");
+            }
+            return String.valueOf(hours);
+        }
+        if ("dayOne.triReward".equals(key)) {
+            try {
+                return DayOneTriRewardPolicy.normalizePolicy(value);
+            } catch (BizException ex) {
+                throw new IllegalArgumentException("QUEST_DAY_ONE_TRI_REWARD_INVALID");
+            }
+        }
         if (key.startsWith("weekly.mult.")) {
             BigDecimal multiplier = bounded(parseDecimal(value.replace("×", "").replace("x", "")),
                     new BigDecimal("0.1"), new BigDecimal("5"));
@@ -4356,6 +4621,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
         return switch (key) {
             case "dayOne.windowMs" -> QUEST_PREFIX + "day_one.window_ms";
+            case "dayOne.eligibilityHours" -> QUEST_PREFIX + "day_one.eligibility_hours";
             case "dayOne.triReward" -> QUEST_PREFIX + "day_one.tri_reward";
             case "weekly.champBonus" -> QUEST_PREFIX + "weekly.champ_bonus";
             case "wheel.pool" -> WHEEL_PREFIX + "pool_signature";
@@ -4384,6 +4650,7 @@ public class OpsGrowthService implements AuditReplayable {
         }
         return switch (key) {
             case "dayOne.windowMs" -> "24h 全额 / 72h 宽限";
+            case "dayOne.eligibilityHours" -> "72";
             case "dayOne.triReward" -> "500 / 200 / 0 NEX";
             case "weekly.champBonus" -> "+500 NEX × P3 1.1×";
             case "wheel.pool" -> "8 档 · EV $" + wheelEvUsd().toPlainString() + "/spin";
@@ -4670,6 +4937,64 @@ public class OpsGrowthService implements AuditReplayable {
             throw new IllegalArgumentException("Days value is out of range");
         }
         return whole;
+    }
+
+    private long growthCount(Function<GrowthQuestEventMapper, Long> reader) {
+        if (questEventMapper.isEmpty()) return 0L;
+        try {
+            Long count = reader.apply(questEventMapper.get());
+            return count == null ? 0L : Math.max(0L, count);
+        } catch (RuntimeException ex) {
+            return 0L;
+        }
+    }
+
+    private Map<String, Object> localizedContent() {
+        Optional<String> raw = configFacade.activeValue(LOCALIZED_CONTENT_KEY).filter(StringUtils::hasText);
+        if (raw.isEmpty()) return Map.of();
+        try {
+            Map<String, Object> parsed = objectMapper.readValue(raw.get(), new TypeReference<LinkedHashMap<String, Object>>() {});
+            return parsed == null ? Map.of() : parsed;
+        } catch (JsonProcessingException ex) {
+            return Map.of();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> localizedBranch(Map<String, Object> root, String key) {
+        Object value = root.get(key);
+        if (value instanceof Map<?, ?> map) return new LinkedHashMap<>((Map<String, Object>) map);
+        return new LinkedHashMap<>();
+    }
+
+    private ApiResult<Map<String, Object>> updateLocalizedContent(
+            String entity, String code, String field, String locale,
+            String configKey, String idempotencyKey, GrowthConfigUpdateRequest request) {
+        String value;
+        try {
+            value = normalizePlainText(request.value(), 512);
+        } catch (IllegalArgumentException ex) {
+            return validation(ex.getMessage());
+        }
+        Map<String, Object> root = new LinkedHashMap<>(localizedContent());
+        Map<String, Object> entities = localizedBranch(root, entity);
+        Map<String, Object> item = localizedBranch(entities, code);
+        Map<String, Object> languages = localizedBranch(item, locale);
+        String oldValue = String.valueOf(languages.getOrDefault(field, ""));
+        if (!expectedTextMatches(request.expectedValue(), oldValue)) return validation("CONTENT_LOCALE_STALE");
+        if (oldValue.equals(value)) return validation("CONTENT_LOCALE_NO_CHANGE");
+        languages.put(field, value);
+        item.put(locale, languages);
+        entities.put(code, item);
+        root.put(entity, entities);
+        writeJsonConfig(LOCALIZED_CONTENT_KEY, root, "H3/H4 operator-authored localized content", "growth");
+        audit("H3_H4_LOCALIZED_CONTENT_CHANGED", "GROWTH_CONTENT", entity + ":" + code, request.operator(), Map.of(
+                "key", configKey, "locale", locale, "field", field, "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> response = "event".equals(entity)
+                ? questEventOverview().getData() : questTasks().getData();
+        response.put("updated", Map.of("key", configKey, "locale", locale, "field", field));
+        return ApiResult.ok(response);
     }
 
     private BigDecimal percent(BigDecimal ratio) {

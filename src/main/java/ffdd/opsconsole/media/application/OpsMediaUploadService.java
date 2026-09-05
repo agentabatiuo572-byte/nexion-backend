@@ -36,6 +36,10 @@ public class OpsMediaUploadService {
     private static final long MAX_IMAGE_BYTES = 10L * 1024 * 1024;
     private static final long MAX_VIDEO_BYTES = 200L * 1024 * 1024;
     private static final Pattern SEGMENT_PATTERN = Pattern.compile("[^a-z0-9-]");
+    private static final Pattern MANAGED_OBJECT_KEY = Pattern.compile(
+            "^admin/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?/"
+                    + "\\d{8}/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+                    + "\\.(?:jpg|png|webp|gif|mp4|webm|mov)$");
     private static final Set<String> IMAGE_TYPES = Set.of("image/jpeg", "image/png", "image/webp", "image/gif");
     private static final Set<String> VIDEO_TYPES = Set.of("video/mp4", "video/webm", "video/quicktime");
 
@@ -103,6 +107,9 @@ public class OpsMediaUploadService {
 
     public UploadedAsset refreshPreviewUrl(String assetId) {
         String objectKey = decodeAssetId(assetId);
+        if (objectKey.length() > 256 || !MANAGED_OBJECT_KEY.matcher(objectKey).matches()) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ASSET_ID_INVALID");
+        }
         String previewUrl = storageService.presignGet(objectKey, PREVIEW_EXPIRY);
         return new UploadedAsset(
                 assetId,
@@ -230,7 +237,11 @@ public class OpsMediaUploadService {
         String normalized = StringUtils.hasText(value) ? value.trim().toLowerCase(Locale.ROOT) : fallback;
         normalized = SEGMENT_PATTERN.matcher(normalized.replace("_", "-")).replaceAll("-");
         normalized = normalized.replaceAll("-+", "-").replaceAll("^-|-$", "");
-        return StringUtils.hasText(normalized) ? normalized : fallback;
+        normalized = StringUtils.hasText(normalized) ? normalized : fallback;
+        if (normalized.length() > 64) {
+            throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "MEDIA_OBJECT_SEGMENT_INVALID");
+        }
+        return normalized;
     }
 
     private String requireIdempotencyKey(String idempotencyKey) {

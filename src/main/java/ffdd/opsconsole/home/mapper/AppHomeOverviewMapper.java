@@ -38,6 +38,41 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                        @Param("startAt") LocalDateTime startAt,
                        @Param("endAt") LocalDateTime endAt);
 
+    /** One snapshot/scan; SUM without ELSE preserves the existing null-for-empty contract. */
+    @Select("""
+            SELECT SUM(CASE WHEN r.completed_at >= #{dayStart} THEN r.reward_usdt END) AS todayUsdt,
+                   SUM(CASE WHEN r.completed_at >= #{dayStart} THEN r.reward_nex END) AS todayNex,
+                   COUNT(CASE WHEN r.completed_at >= #{dayStart} THEN 1 END) AS todayJobCount,
+                   SUM(CASE WHEN r.completed_at >= #{yesterdayStart} AND r.completed_at < #{yesterdayEnd}
+                            THEN r.reward_usdt END) AS yesterdayUsdt,
+                   SUM(CASE WHEN r.completed_at >= #{yesterdayStart} AND r.completed_at < #{yesterdayEnd}
+                            THEN r.reward_nex END) AS yesterdayNex,
+                   COUNT(CASE WHEN r.completed_at >= #{yesterdayStart} AND r.completed_at < #{yesterdayEnd}
+                              THEN 1 END) AS yesterdayJobCount,
+                   SUM(CASE WHEN r.completed_at >= #{weekStart} THEN r.reward_usdt END) AS weekUsdt,
+                   SUM(CASE WHEN r.completed_at >= #{weekStart} THEN r.reward_nex END) AS weekNex,
+                   COUNT(CASE WHEN r.completed_at >= #{weekStart} THEN 1 END) AS weekJobCount,
+                   SUM(CASE WHEN r.completed_at >= #{monthStart} THEN r.reward_usdt END) AS monthUsdt,
+                   SUM(CASE WHEN r.completed_at >= #{monthStart} THEN r.reward_nex END) AS monthNex,
+                   COUNT(CASE WHEN r.completed_at >= #{monthStart} THEN 1 END) AS monthJobCount,
+                   SUM(r.reward_usdt) AS allUsdt, SUM(r.reward_nex) AS allNex, COUNT(*) AS allJobCount
+              FROM nx_compute_receipt r
+             WHERE r.user_id = #{userId}
+               AND r.source_environment = #{sourceEnvironment}
+               AND r.is_deleted = 0
+               AND r.earning_status IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.completed_at >= '1970-01-01 00:00:00'
+               AND r.completed_at < #{endAt}
+            """)
+    EarningsSummaryRow earningsSummary(@Param("userId") Long userId,
+                                      @Param("sourceEnvironment") String sourceEnvironment,
+                                      @Param("dayStart") LocalDateTime dayStart,
+                                      @Param("yesterdayStart") LocalDateTime yesterdayStart,
+                                      @Param("yesterdayEnd") LocalDateTime yesterdayEnd,
+                                      @Param("weekStart") LocalDateTime weekStart,
+                                      @Param("monthStart") LocalDateTime monthStart,
+                                      @Param("endAt") LocalDateTime endAt);
+
     @Select("""
             SELECT COALESCE(NULLIF(r.task_no, ''), r.receipt_no) AS id,
                    r.client_name AS client,
@@ -49,9 +84,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                                          AND t.user_id = #{userId}
                                          AND t.is_deleted = 0
              WHERE r.user_id = #{userId}
-               AND COALESCE(r.source_environment, 'PRODUCTION') = #{sourceEnvironment}
+               AND r.source_environment = #{sourceEnvironment}
                AND r.is_deleted = 0
-               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.earning_status IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
              ORDER BY r.completed_at DESC, r.id DESC
              LIMIT 5
             """)
@@ -160,13 +195,15 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                             AND u.sandbox = #{sandbox}
                             AND u.status = 'ACTIVE'
                             AND u.is_deleted = 0
-             WHERE COALESCE(t.source_environment, 'PRODUCTION') = #{sourceEnvironment}
+             WHERE t.source_environment = #{sourceEnvironment}
                AND t.is_deleted = 0
-               AND UPPER(t.status) IN ('ASSIGNED','CLAIMED','RUNNING','PROCESSING')
+               AND t.status IN ('ASSIGNED','CLAIMED','RUNNING','PROCESSING')
             """)
     OnGridSummary onGrid(@Param("sourceEnvironment") String sourceEnvironment,
                          @Param("sandbox") boolean sandbox);
 
+    // The virtual column preserves COALESCE(completed_at, updated_at, created_at).
+    // Equality-bound prefix fields keep MySQL's dependent lookup in index order.
     @Select("""
             SELECT CONCAT('client_', LEFT(SHA2(CONCAT(
                          COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|',
@@ -182,19 +219,14 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                             AND u.is_deleted = 0
               LEFT JOIN nx_compute_datacenter dc
                 ON dc.dc_location = d.dc_location AND dc.is_deleted = 0
-              LEFT JOIN (
-                SELECT ranked.user_device_id, ranked.client_name
-                  FROM (
-                    SELECT t.user_device_id, t.client_name,
-                           ROW_NUMBER() OVER (
-                             PARTITION BY t.user_device_id
-                             ORDER BY COALESCE(t.completed_at, t.updated_at, t.created_at) DESC, t.id DESC
-                            ) AS task_rank
-                      FROM nx_compute_task t
-                     WHERE t.is_deleted = 0 AND NULLIF(TRIM(t.client_name), '') IS NOT NULL
-                  ) ranked
-                 WHERE ranked.task_rank = 1
-              ) current_client ON current_client.user_device_id = d.id
+              LEFT JOIN nx_compute_task current_client ON current_client.id = (
+                SELECT t.id
+                  FROM nx_compute_task t
+                 WHERE t.user_device_id = d.id AND t.is_deleted = 0
+                   AND NULLIF(TRIM(t.client_name), '') IS NOT NULL
+                 ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC
+                 LIMIT 1
+              )
              WHERE d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
@@ -283,6 +315,17 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
 
     record UserEnvironmentRow(boolean sandbox) { }
     record PeriodRow(BigDecimal usdt, BigDecimal nex, Long jobCount) { }
+    record EarningsSummaryRow(BigDecimal todayUsdt, BigDecimal todayNex, Long todayJobCount,
+                              BigDecimal yesterdayUsdt, BigDecimal yesterdayNex, Long yesterdayJobCount,
+                              BigDecimal weekUsdt, BigDecimal weekNex, Long weekJobCount,
+                              BigDecimal monthUsdt, BigDecimal monthNex, Long monthJobCount,
+                              BigDecimal allUsdt, BigDecimal allNex, Long allJobCount) {
+        public PeriodRow today() { return new PeriodRow(todayUsdt, todayNex, todayJobCount); }
+        public PeriodRow yesterday() { return new PeriodRow(yesterdayUsdt, yesterdayNex, yesterdayJobCount); }
+        public PeriodRow week() { return new PeriodRow(weekUsdt, weekNex, weekJobCount); }
+        public PeriodRow month() { return new PeriodRow(monthUsdt, monthNex, monthJobCount); }
+        public PeriodRow all() { return new PeriodRow(allUsdt, allNex, allJobCount); }
+    }
     record PaidSummary(BigDecimal amountUsdt, Long orderCount) { }
     record OwnedDeviceRow(String name, String productCode, String productTier,
                           String deviceType, BigDecimal dailyUsdt) { }

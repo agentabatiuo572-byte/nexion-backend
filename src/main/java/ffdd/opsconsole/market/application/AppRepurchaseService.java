@@ -88,12 +88,17 @@ public class AppRepurchaseService {
 
     @Transactional
     public ApiResult<Map<String, Object>> orders(Long userId) {
-        if (isSandbox()) return sandboxOrders(userId);
+        return orders(userId, 1, 100);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> orders(Long userId, int requestedPageNum, int requestedPageSize) {
+        if (isSandbox()) return sandboxOrders(userId, requestedPageNum, requestedPageSize);
         requireCanonicalProductionRuntime();
         requireUser(userId);
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         mapper.matureDue(userId, LocalDateTime.now(clock));
-        return response(userId, null, null, null, null, null);
+        return response(userId, null, null, null, null, null, requestedPageNum, requestedPageSize);
     }
 
     @Transactional
@@ -104,15 +109,16 @@ public class AppRepurchaseService {
         BigDecimal amount = request == null ? null : request.amountUsdt();
         if (amount == null || amount.signum() <= 0) throw new BizException(422, "REPURCHASE_AMOUNT_INVALID");
         OpenRequest normalized = new OpenRequest(money(amount));
-        if (!globalGateEnabled()) throw new BizException(409, "REPURCHASE_GLOBAL_GATE_DISABLED");
-        ApiResult<Void> userDisclosureGate = disclosureGate.checkUserGate(userId, "staking", key);
-        if (userDisclosureGate.getCode() != 0) {
-            return ApiResult.fail(userDisclosureGate.getCode(), userDisclosureGate.getMessage());
-        }
         return once("OPEN", userId, key, normalized, () -> openInternal(userId, key, normalized));
     }
 
     private ApiResult<Map<String, Object>> openInternal(Long userId, String key, OpenRequest request) {
+        if (!globalGateEnabled()) throw new BizException(409, "REPURCHASE_GLOBAL_GATE_DISABLED");
+        ApiResult<Void> userDisclosureGate = disclosureGate.checkUserGate(userId, "staking", key);
+        if (userDisclosureGate.getCode() != 0) {
+            // Reject before any effect, without caching a failure as a success receipt.
+            throw new BizException(userDisclosureGate.getCode(), userDisclosureGate.getMessage());
+        }
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         AppRepurchaseMapper.ProductRow product = requireProduct(mapper.lockProduct());
         if (!"ACTIVE".equals(product.status())) throw new BizException(409, "REPURCHASE_PRODUCT_STOPPED");
@@ -275,13 +281,14 @@ public class AppRepurchaseService {
         return runId.trim();
     }
 
-    private ApiResult<Map<String, Object>> sandboxOrders(Long userId) {
+    private ApiResult<Map<String, Object>> sandboxOrders(Long userId, int requestedPageNum, int requestedPageSize) {
         requireUser(userId);
         String runId = sandboxRunId();
         requireSandboxMapper();
         sandboxMapper.insertAccountIfAbsent("repurchase", runId, userId);
         sandboxMapper.maturePositions("repurchase", runId, userId, LocalDateTime.now(clock));
-        return ApiResult.ok(sandboxResponse(runId, userId, null, null, null));
+        return ApiResult.ok(sandboxResponse(runId, userId, null, null, null,
+                requestedPageNum, requestedPageSize));
     }
 
     private ApiResult<Map<String, Object>> sandboxOpen(Long userId, String key, OpenRequest request) {
@@ -369,9 +376,21 @@ public class AppRepurchaseService {
 
     private Map<String, Object> sandboxResponse(String runId, Long userId,
             String focus, BigDecimal credited, BigDecimal penalty) {
+        return sandboxResponse(runId, userId, focus, credited, penalty, 1, 50);
+    }
+
+    private Map<String, Object> sandboxResponse(String runId, Long userId,
+            String focus, BigDecimal credited, BigDecimal penalty, int requestedPageNum, int requestedPageSize) {
         MarketSandboxMapper.AccountRow account = sandboxMapper.account("repurchase", runId, userId);
-        Map<String, Object> result = linked("orders", sandboxMapper.listPositions("repurchase", runId, userId).stream()
-                        .map(this::sandboxPositionView).toList(), "walletBalanceUsdt",
+        List<MarketSandboxMapper.PositionRow> rows = sandboxMapper.listPositions("repurchase", runId, userId);
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        int from = (int) Math.min((long) (pageNum - 1) * pageSize, rows.size());
+        int to = Math.min(from + pageSize, rows.size());
+        Map<String, Object> result = linked("orders", rows.subList(from, to).stream()
+                        .map(this::sandboxPositionView).toList(),
+                "ordersPage", linked("total", rows.size(), "pageNum", pageNum, "pageSize", pageSize),
+                "walletBalanceUsdt",
                 money(account == null ? null : account.walletUsdt()),
                 "serverTime", LocalDateTime.now(clock), "serverCanonical", true, "source", "mock",
                 "sourceEnvironment", "SANDBOX", "runId", runId);
@@ -447,7 +466,7 @@ public class AppRepurchaseService {
     }
 
     private boolean globalGateEnabled() {
-        return KillSwitchState.enabled(java.util.Optional.ofNullable(mapper.controlValue(STAKING_KILLSWITCH_KEY)),
+        return KillSwitchState.enabledFailClosed(java.util.Optional.ofNullable(mapper.controlValue(STAKING_KILLSWITCH_KEY)),
                 java.util.Optional.ofNullable(mapper.controlValue(STAKING_LEGACY_KILLSWITCH_KEY)));
     }
 
@@ -460,8 +479,19 @@ public class AppRepurchaseService {
 
     private ApiResult<Map<String, Object>> response(Long userId, String focus, String billNo, String receipt,
                                                      BigDecimal credited, BigDecimal penalty) {
+        return response(userId, focus, billNo, receipt, credited, penalty, 1, 100);
+    }
+
+    private ApiResult<Map<String, Object>> response(Long userId, String focus, String billNo, String receipt,
+                                                     BigDecimal credited, BigDecimal penalty,
+                                                     int requestedPageNum, int requestedPageSize) {
         mapper.matureDue(userId, LocalDateTime.now(clock));
-        Map<String, Object> data = linked("orders", mapper.positions(userId).stream().map(this::positionView).toList(),
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        long total = Math.max(0L, mapper.countPositions(userId));
+        long offset = (long) (pageNum - 1) * pageSize;
+        Map<String, Object> data = linked("orders", mapper.positions(userId, offset, pageSize).stream().map(this::positionView).toList(),
+                "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "serverTime", LocalDateTime.now(clock),
                 "serverCanonical", true,
                 "source", "nx_repurchase_product + nx_config_item + nx_emergency_control_setting",
@@ -547,7 +577,7 @@ public class AppRepurchaseService {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ApiResult<Map<String, Object>> once(String op, Long userId, String key, Object request,
                                                 Supplier<ApiResult<Map<String, Object>>> action) {
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
                 "APP:G7_REPURCHASE_" + op + ":USER:" + userId, key, sha256(String.valueOf(request)),
                 ApiResult.class, (Supplier) action);
     }

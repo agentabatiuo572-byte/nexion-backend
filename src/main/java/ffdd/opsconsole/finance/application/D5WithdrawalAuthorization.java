@@ -29,7 +29,7 @@ public class D5WithdrawalAuthorization {
             case "dailyLimitCount" -> "finance_d5_daily_limit_write";
             case "smallAmountThresholdUsd", "payoutSlaHours" -> "finance_d5_daily_limit_write";
             case "balanceMaxRatio" -> "finance_d5_balance_max_write";
-            case "networkFee", "networkFeeRatio", "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd" -> "finance_d5_fee_write";
+            case "networkFee", "networkFeeRatio", "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd", "networkEnabled" -> "finance_d5_fee_write";
             default -> "D5_PARAM_INVALID";
         };
     }

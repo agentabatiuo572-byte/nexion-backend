@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.inOrder;
@@ -38,7 +39,8 @@ class G2ExchangeQueueBatchServiceTest {
         when(mapper.lockExchangeExecutionMutex()).thenReturn("G2_EXCHANGE_EXECUTION");
         when(mapper.currentPrice()).thenReturn(BigDecimal.ONE);
         when(mapper.platformTodayUsdt()).thenReturn(BigDecimal.ZERO);
-        when(mapper.emergencyValue(anyString())).thenReturn(null);
+        when(mapper.emergencyValue("killswitch.exchange")).thenReturn("enabled");
+        when(mapper.emergencyValue("G2.killswitch.exchange")).thenReturn(null);
         when(mapper.countQueued()).thenReturn(0);
         when(config.activeValue(anyString())).thenAnswer(invocation -> switch ((String) invocation.getArgument(0)) {
             case "wallet.exchange.platform_daily_cap_usdt", "wallet.exchange.user_daily_cap_usdt" -> Optional.of("1000");
@@ -67,6 +69,7 @@ class G2ExchangeQueueBatchServiceTest {
         when(mapper.userTodayUsdt(3L)).thenReturn(BigDecimal.ZERO);
         when(mapper.applyWalletDelta(any(), any(), any())).thenAnswer(invocation ->
                 Long.valueOf(1L).equals(invocation.getArgument(0)) ? 1 : 0);
+        when(mapper.failQueuedInsufficient("EX-3")).thenReturn(1);
         when(mapper.completeQueued(anyString(), any(), any())).thenReturn(1);
         when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.userAttribution(1L)).thenReturn(new AppExchangeMapper.UserAttribution("P1", 1, "2026-W32"));
@@ -89,8 +92,9 @@ class G2ExchangeQueueBatchServiceTest {
         assertThat((List<Map<String, Object>>) result.get("failed"))
                 .singleElement().satisfies(row -> assertThat(row)
                         .containsEntry("exchangeNo", "EX-3")
-                        .containsEntry("orderStatus", "QUEUED")
+                        .containsEntry("orderStatus", "FAILED")
                         .containsEntry("reasonCode", "WALLET_BALANCE_CONFLICT"));
+        verify(mapper).failQueuedInsufficient("EX-3");
         InOrder capOrder = inOrder(mapper);
         capOrder.verify(mapper).lockExchangeExecutionMutex();
         capOrder.verify(mapper).platformTodayUsdt();
@@ -158,10 +162,31 @@ class G2ExchangeQueueBatchServiceTest {
     }
 
     @Test
+    void completesReservedQueueOrderWithoutDebitingSourceTwice() {
+        when(mapper.lockQueuedBatch(1)).thenReturn(List.of(
+                new AppExchangeMapper.QueuedRow(1L, "EX-RESERVED", "USDT", BigDecimal.TEN)));
+        when(mapper.lockActiveUserNo(1L)).thenReturn("U00000001");
+        when(mapper.lockWalletGate(1L)).thenReturn(
+                new AppExchangeMapper.WalletGateRow(new BigDecimal("90"), new BigDecimal("100"), "VN"));
+        when(mapper.sourceReservationExists("EX-RESERVED")).thenReturn(1);
+        when(mapper.userTodayUsdt(1L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.completeQueued(anyString(), any(), any())).thenReturn(1);
+        when(mapper.applyWalletDelta(any(), any(), any())).thenReturn(1);
+        when(mapper.insertLedger(any())).thenReturn(1);
+        when(mapper.userAttribution(1L)).thenReturn(new AppExchangeMapper.UserAttribution("P1", 1, "2026-W32"));
+
+        assertThat(service.process(1)).containsEntry("completedCount", 1);
+
+        verify(mapper).applyWalletDelta(eq(1L),
+                org.mockito.ArgumentMatchers.argThat((BigDecimal value) -> value.compareTo(BigDecimal.ZERO) == 0),
+                org.mockito.ArgumentMatchers.argThat((BigDecimal value) -> value.compareTo(BigDecimal.TEN) == 0));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void rechecksKillSwitchBeforeEveryQueuedOrder() {
         executableRows("EX-KILL-1", "EX-KILL-2");
-        when(mapper.emergencyValue("killswitch.exchange")).thenReturn(null, null, "disabled", "disabled");
+        when(mapper.emergencyValue("killswitch.exchange")).thenReturn("enabled", "enabled", "disabled");
 
         Map<String,Object> result = service.process(2);
 

@@ -10,8 +10,12 @@ import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -21,9 +25,10 @@ class AppProductCatalogServiceTest {
     private final CommerceAcceptanceSandboxMapper sandboxMapper = mock(CommerceAcceptanceSandboxMapper.class);
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
     private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
+    private final ObjectStorageService storageService = mock(ObjectStorageService.class);
     private final AppProductCatalogService service = new AppProductCatalogService(
             mapper, sandboxMapper, sandboxGuard, new CommerceAcceptanceRun("test-run-0001"),
-            new ObjectMapper(), releasePolicy);
+            new ObjectMapper(), releasePolicy, storageService);
 
     AppProductCatalogServiceTest() {
         when(releasePolicy.evaluate(any(), any()))
@@ -256,6 +261,87 @@ class AppProductCatalogServiceTest {
                 .containsEntry("warranty", "36 months")
                 .containsEntry("phoneDailyEarn", "0.06 USDT/day")
                 .containsEntry("phoneDailyEarnNEX", "12 NEX/day");
+    }
+
+    @Test
+    void catalogIssuesFreshUrlOnlyForAnApprovedSkuImageWithMatchingStoredIdentity() {
+        String objectKey = "admin/e/sku-image/20260831/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String assetId = Base64.getUrlEncoder().withoutPadding().encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
+                "sku-image", "Image SKU", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
+                null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
+                null, null, null, null, null, assetId, objectKey, "FINITE")));
+        when(storageService.presignGet(objectKey, Duration.ofMinutes(15)))
+                .thenReturn("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
+
+        assertThat(product.get("imageUrl")).isEqualTo("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+    }
+
+    @Test
+    void catalogIssuesFreshUrlsForControlledSkuVideosAndAllowsAnAuthorizedReuseAcrossProducts() {
+        String objectKey = "admin/e/sku-video/20260831/01234567-89ab-cdef-0123-456789abcdef.mp4";
+        String assetId = Base64.getUrlEncoder().withoutPadding().encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(
+                new AppTradeinMapper.CatalogTargetProduct(
+                        "sku-video-a", "Video SKU A", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                        "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
+                        null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
+                        null, null, null, null, null, assetId, objectKey, "FINITE"),
+                new AppTradeinMapper.CatalogTargetProduct(
+                        "sku-video-b", "Video SKU B", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                        "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
+                        null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
+                        null, null, null, null, null, assetId, objectKey, "FINITE")));
+        when(storageService.presignGet(objectKey, Duration.ofMinutes(15)))
+                .thenReturn("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> products = (List<Map<String, Object>>) service.catalog(42L).getData().get("products");
+
+        assertThat(products).allSatisfy(product -> {
+            assertThat(product.get("imageUrl")).isNull();
+            assertThat(product.get("videoUrl")).isEqualTo("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+        });
+        org.mockito.Mockito.verify(storageService, org.mockito.Mockito.times(2)).presignGet(objectKey, Duration.ofMinutes(15));
+    }
+
+    @Test
+    void catalogDoesNotExposeAStoredPreviewOrUnrelatedPrivateObject() {
+        String approvedKey = "admin/e/sku-image/20260831/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String unrelatedKey = "admin/finance/vietqr-receipt/20260831/private.png";
+        String assetId = Base64.getUrlEncoder().withoutPadding().encodeToString(approvedKey.getBytes(StandardCharsets.UTF_8));
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
+                "sku-private", "Private SKU", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
+                null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
+                null, null, null, null, null, assetId, unrelatedKey, "FINITE")));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
+
+        assertThat(product.get("imageUrl")).isNull();
+        org.mockito.Mockito.verifyNoInteractions(storageService);
+    }
+
+    @Test
+    void catalogDoesNotPresignAPathThatEscapesTheApprovedSkuImageNamespace() {
+        String traversalKey = "admin/e/sku-image/20260831/../../finance/receipt.png";
+        String assetId = Base64.getUrlEncoder().withoutPadding().encodeToString(traversalKey.getBytes(StandardCharsets.UTF_8));
+        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
+                "sku-traversal", "Traversal SKU", "Pro", new BigDecimal("100"), 1, "SERVER", 2,
+                "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
+                null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
+                null, null, null, null, null, assetId, traversalKey, "FINITE")));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
+
+        assertThat(product.get("imageUrl")).isNull();
+        org.mockito.Mockito.verifyNoInteractions(storageService);
     }
 
     @Test

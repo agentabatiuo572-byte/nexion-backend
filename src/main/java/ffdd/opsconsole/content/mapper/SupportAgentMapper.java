@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
+import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.infrastructure.SupportAgentProfileEntity;
 import java.time.LocalDateTime;
@@ -12,6 +13,38 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity> {
+    @Select("""
+            SELECT routed.adminId,routed.name
+              FROM (
+                SELECT a.id AS adminId,
+                       COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
+                       0 routePriority,ua.id routeOrder
+                  FROM nx_support_agent_user_assignment ua
+                  JOIN nx_support_agent_profile p
+                    ON p.admin_id=ua.agent_admin_id AND p.enabled=1 AND p.transferable=1 AND p.busy=0
+                   AND p.is_deleted=0 AND p.seat_type='DEDICATED'
+                   AND FIND_IN_SET('advisor', REPLACE(LOWER(p.service_types), ' ', '')) > 0
+                  JOIN nx_admin a ON a.id=ua.agent_admin_id AND a.status=1 AND a.is_deleted=0
+                 WHERE ua.user_id=#{userId} AND ua.status='ACTIVE' AND ua.is_deleted=0
+                UNION ALL
+                SELECT a.id AS adminId,
+                       COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
+                       1 routePriority,a.id routeOrder
+                  FROM nx_support_agent_profile p
+                  JOIN nx_admin a ON a.id=p.admin_id AND a.status=1 AND a.is_deleted=0
+                 WHERE p.enabled=1 AND p.transferable=1 AND p.busy=0 AND p.is_deleted=0
+                   AND p.seat_type='DEDICATED'
+                   AND FIND_IN_SET('advisor', REPLACE(LOWER(p.service_types), ' ', '')) > 0
+                   AND (p.max_concurrent IS NULL OR (SELECT COUNT(*)
+                         FROM nx_support_agent_user_assignment load_row
+                        WHERE load_row.agent_admin_id=p.admin_id AND load_row.status='ACTIVE'
+                          AND load_row.is_deleted=0) < p.max_concurrent)
+              ) routed
+             ORDER BY routed.routePriority,routed.routeOrder DESC
+             LIMIT 1
+            """)
+    DedicatedAdvisorBindingView findActiveDedicatedAdvisor(@Param("userId") Long userId);
+
     @Select("""
             SELECT DISTINCT a.id AS adminId,
                    COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name

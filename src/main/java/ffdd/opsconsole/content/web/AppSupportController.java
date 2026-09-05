@@ -40,10 +40,28 @@ public class AppSupportController {
         return guarded(userId) ? service.tickets(userId, status, pageNum, pageSize) : forbidden();
     }
 
-    @GetMapping("/tickets/{ticketNo}")
-    public ApiResult<SupportTicketDetail> ticket(@PathVariable String ticketNo, Authentication authentication) {
+    @GetMapping("/tickets/cursor")
+    public ApiResult<PageResult<SupportTicketView>> ticketCursor(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long beforeId,
+            @RequestParam(required = false) Long pageSize,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return guarded(userId) ? service.ticket(userId, ticketNo) : forbidden();
+        return guarded(userId) ? service.ticketCursor(userId, status, beforeId, pageSize) : forbidden();
+    }
+
+    @PostMapping("/tickets/{ticketNo}/read")
+    public ApiResult<SupportTicketDetail> markTicketRead(@PathVariable String ticketNo,
+            @RequestBody AppSupportService.CloseRequest request, Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.markTicketRead(userId, ticketNo, request) : forbidden();
+    }
+
+    @GetMapping("/tickets/{ticketNo}")
+    public ApiResult<SupportTicketDetail> ticket(@PathVariable String ticketNo,
+            @RequestParam(required = false) Long beforeMessageId, Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.ticket(userId, ticketNo, beforeMessageId) : forbidden();
     }
 
     @PostMapping("/tickets")
@@ -85,11 +103,29 @@ public class AppSupportController {
         return guarded(userId) ? service.conversations(userId, status, pageNum, pageSize) : forbidden();
     }
 
+    @GetMapping("/conversations/cursor")
+    public ApiResult<PageResult<ContentConversationView>> conversationCursor(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long beforeId,
+            @RequestParam(required = false) Long pageSize,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.conversationCursor(userId, status, beforeId, pageSize) : forbidden();
+    }
+
+    @GetMapping("/conversation-categories")
+    public ApiResult<List<AppSupportService.ConversationCategoryAvailability>> conversationCategories(
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.conversationCategories(userId) : forbidden();
+    }
+
     @GetMapping("/conversations/{conversationNo}")
     public ApiResult<ContentConversationDetail> conversation(
-            @PathVariable String conversationNo, Authentication authentication) {
+            @PathVariable String conversationNo, @RequestParam(required = false) Long beforeMessageId,
+            Authentication authentication) {
         Long userId = userId(authentication);
-        return guarded(userId) ? service.conversation(userId, conversationNo) : forbidden();
+        return guarded(userId) ? service.conversation(userId, conversationNo, beforeMessageId) : forbidden();
     }
 
     @PostMapping("/conversations/{conversationNo}/read")
@@ -141,9 +177,39 @@ public class AppSupportController {
     public ApiResult<List<SupportFaqView>> faqs(
             @RequestParam(required = false) String language,
             @RequestParam(required = false) String category,
+            @RequestParam(required = false) String surface,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return guarded(userId) ? service.faqs(userId, language, category) : forbidden();
+        return guarded(userId) ? service.faqs(userId, language, category, surface) : forbidden();
+    }
+
+    @GetMapping("/faqs/page")
+    public ApiResult<ffdd.opsconsole.shared.api.PageResult<SupportFaqView>> faqPage(
+            @RequestParam(required = false) String language,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) String surface,
+            @RequestParam(required = false) Long pageNum,
+            @RequestParam(required = false) Long pageSize,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.faqPage(userId, language, category, surface, pageNum, pageSize) : forbidden();
+    }
+
+    // Kept for direct controller callers compiled against the original three-argument contract.
+    ApiResult<List<SupportFaqView>> faqs(String language, String category, Authentication authentication) {
+        return faqs(language, category, null, authentication);
+    }
+
+    @GetMapping("/sla-targets")
+    public ApiResult<List<AppSupportService.AppSupportSlaTarget>> slaTargets(Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.slaTargets(userId) : forbidden();
+    }
+
+    @GetMapping("/commands/{key}")
+    public ApiResult<Map<String, Object>> commandResult(@PathVariable String key, Authentication authentication) {
+        Long userId = userId(authentication);
+        return guarded(userId) ? service.commandResult(userId, key) : forbidden();
     }
 
     private Long userId(Authentication authentication) {

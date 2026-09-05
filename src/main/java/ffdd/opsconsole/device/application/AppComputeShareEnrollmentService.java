@@ -50,6 +50,7 @@ public class AppComputeShareEnrollmentService {
             return ApiResult.fail(403, "COMPUTE_SHARE_PRODUCTION_USER_REQUIRED");
         }
         if (!featureEnabled()) return ApiResult.fail(409, "COMPUTE_SHARE_DISABLED");
+        if (!installerAvailable()) return ApiResult.fail(409, "COMPUTE_SHARE_INSTALLER_UNAVAILABLE");
         String gpuModel = normalizeGpuModel(requestedGpuModel);
         if (gpuModel == null) return ApiResult.fail(422, "COMPUTE_SHARE_GPU_MODEL_INVALID");
         String key = normalizeIdempotencyKey(idempotencyKey);
@@ -72,7 +73,7 @@ public class AppComputeShareEnrollmentService {
         if (mapper.insertEnrollment(write) != 1) return ApiResult.fail(409, "COMPUTE_SHARE_ENROLLMENT_CONFLICT");
 
         Map<String, Object> result = enrollmentReceipt(
-                enrollmentNo, pairingCode, "PENDING", gpuModel, expiresAt, null);
+                enrollmentNo, pairingCode, "PENDING", gpuModel, expiresAt, null, null);
         outbox.publish("COMPUTE_SHARE_ENROLLMENT", enrollmentNo, "COMPUTE_SHARE_ENROLLMENT_CREATED",
                 Map.of("userId", userId, "enrollmentNo", enrollmentNo, "status", "PENDING"));
         audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
@@ -97,7 +98,7 @@ public class AppComputeShareEnrollmentService {
         if (row == null) return ApiResult.fail(404, "COMPUTE_SHARE_ENROLLMENT_NOT_FOUND");
         String state = enrollmentState(row);
         return ApiResult.ok(enrollmentReceipt(row.enrollmentNo(), null, state, row.requestedGpuModel(),
-                row.expiresAt(), row.deviceId()));
+                row.expiresAt(), row.deviceId(), row.deviceInstanceNo()));
     }
 
     @Transactional
@@ -122,8 +123,12 @@ public class AppComputeShareEnrollmentService {
         if (row == null || !userId.equals(row.userId())) return ApiResult.fail(404, "COMPUTE_SHARE_ENROLLMENT_NOT_FOUND");
         if ("CONNECTED".equalsIgnoreCase(row.status())) {
             return ApiResult.ok(enrollmentReceipt(row.enrollmentNo(), null, "CONNECTED", row.requestedGpuModel(),
-                    row.expiresAt(), row.deviceId()));
+                    row.expiresAt(), row.deviceId(), row.deviceInstanceNo()));
         }
+        // The admin kill switch applies again at the irreversible write boundary.
+        // Existing CONNECTED enrollments remain idempotently readable above, while
+        // an earlier PENDING token cannot bypass a later disable operation.
+        if (!featureEnabled()) return ApiResult.fail(409, "COMPUTE_SHARE_DISABLED");
         if (!"PENDING".equalsIgnoreCase(row.status()) || !clock.instant().isBefore(row.expiresAt())) {
             return ApiResult.fail(409, "COMPUTE_SHARE_ENROLLMENT_EXPIRED");
         }
@@ -153,7 +158,7 @@ public class AppComputeShareEnrollmentService {
             return ApiResult.fail(409, "COMPUTE_SHARE_ENROLLMENT_STATE_CONFLICT");
         }
         Map<String, Object> result = enrollmentReceipt(row.enrollmentNo(), null, "CONNECTED",
-                row.requestedGpuModel(), row.expiresAt(), deviceId);
+                row.requestedGpuModel(), row.expiresAt(), deviceId, normalizedInstance);
         outbox.publish("COMPUTE_SHARE_ENROLLMENT", row.enrollmentNo(), "COMPUTE_SHARE_DEVICE_CONNECTED",
                 Map.of("userId", userId, "enrollmentNo", row.enrollmentNo(), "deviceId", deviceId,
                         "instanceNo", normalizedInstance, "status", "CONNECTED"));
@@ -182,6 +187,21 @@ public class AppComputeShareEnrollmentService {
                 .orElse(false);
     }
 
+    private boolean installerAvailable() {
+        return config.activeValue("E.compute.download.url")
+                .map(String::trim)
+                .filter(value -> value.startsWith("https://"))
+                .filter(value -> {
+                    try {
+                        java.net.URI uri = java.net.URI.create(value);
+                        return uri.getHost() != null && !uri.getHost().isBlank()
+                                && uri.getUserInfo() == null && uri.getFragment() == null;
+                    } catch (RuntimeException ignored) {
+                        return false;
+                    }
+                }).isPresent();
+    }
+
     private boolean productionSurfaceAllowed() {
         Set<String> profiles = Arrays.stream(environment.getActiveProfiles())
                 .map(value -> value.trim().toLowerCase(Locale.ROOT)).filter(value -> !value.isBlank())
@@ -197,7 +217,8 @@ public class AppComputeShareEnrollmentService {
     }
 
     private Map<String, Object> enrollmentReceipt(String enrollmentNo, String pairingCode, String status,
-                                                  String gpuModel, Instant expiresAt, Long deviceId) {
+                                                  String gpuModel, Instant expiresAt, Long deviceId,
+                                                  String deviceInstanceNo) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("enrollmentNo", enrollmentNo);
         result.put("pairingCode", pairingCode);
@@ -205,6 +226,7 @@ public class AppComputeShareEnrollmentService {
         result.put("requestedGpuModel", gpuModel);
         result.put("expiresAt", expiresAt.toString());
         result.put("deviceId", deviceId);
+        result.put("deviceInstanceNo", deviceInstanceNo);
         result.put("source", "server");
         return result;
     }

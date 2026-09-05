@@ -25,6 +25,7 @@ import ffdd.opsconsole.team.domain.VRankConfigRow;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
+import ffdd.opsconsole.team.dto.AmbassadorPolicyUpdateRequest;
 import ffdd.opsconsole.team.dto.F5CommissionReissueRequest;
 import ffdd.opsconsole.team.dto.F5CommissionReverseRequest;
 import ffdd.opsconsole.team.dto.F5CommissionSuspensionRequest;
@@ -154,6 +155,48 @@ class OpsTeamServiceTest {
                 .contains("Premium")
                 .contains("Points")
                 .contains("NEX v2");
+    }
+
+    @Test
+    void ambassadorPolicyUpdateUsesRevisionCasAndReturnsTheServerCanonicalSnapshot() {
+        commissionRepository.ambassadorPolicy.putAll(policyRow(3L, new BigDecimal("1000"), "ambassador-v1"));
+        var buckets = List.of(
+                bucket("venue", "场地", "100-1000", "场地规则", "100", "1000"),
+                bucket("kol", "达人", "500-2000", "达人规则", "500", "2000"),
+                bucket("print", "印刷", "100-1500", "印刷规则", "100", "1500"),
+                bucket("dev", "开发", "1000-5000", "开发规则", "1000", "5000"));
+
+        ApiResult<Map<String, Object>> result = service.updateAmbassadorPolicy(
+                "idem-ambassador-policy-1",
+                new AmbassadorPolicyUpdateRequest(
+                        "ambassador-v2", new BigDecimal("1200"), buckets, 3L,
+                        "approved regional budget policy", "risk-ops"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("policyVersion", "ambassador-v2")
+                .containsEntry("revision", 4L).containsEntry("serverCanonical", true);
+        assertThat(service.updateAmbassadorPolicy(
+                "idem-ambassador-policy-stale",
+                new AmbassadorPolicyUpdateRequest(
+                        "ambassador-v3", new BigDecimal("1200"), buckets, 3L,
+                        "stale regional budget policy", "risk-ops")).getCode()).isEqualTo(409);
+    }
+
+    private static AmbassadorPolicyUpdateRequest.Bucket bucket(
+            String id, String title, String range, String rule, String min, String max) {
+        return new AmbassadorPolicyUpdateRequest.Bucket(
+                id, title, range, rule, new BigDecimal(min), new BigDecimal(max));
+    }
+
+    private static Map<String, Object> policyRow(long revision, BigDecimal defaultBudget, String version) {
+        return new LinkedHashMap<>(Map.of(
+                "policyVersion", version,
+                "revision", revision,
+                "defaultBudgetUsdt", defaultBudget,
+                "bucketsJson", "[{\"id\":\"venue\",\"title\":\"场地\",\"range\":\"100-1000\",\"rule\":\"场地规则\",\"minBudgetUsdt\":100,\"maxBudgetUsdt\":1000},"
+                        + "{\"id\":\"kol\",\"title\":\"达人\",\"range\":\"500-2000\",\"rule\":\"达人规则\",\"minBudgetUsdt\":500,\"maxBudgetUsdt\":2000},"
+                        + "{\"id\":\"print\",\"title\":\"印刷\",\"range\":\"100-1500\",\"rule\":\"印刷规则\",\"minBudgetUsdt\":100,\"maxBudgetUsdt\":1500},"
+                        + "{\"id\":\"dev\",\"title\":\"开发\",\"range\":\"1000-5000\",\"rule\":\"开发规则\",\"minBudgetUsdt\":1000,\"maxBudgetUsdt\":5000}]"));
     }
 
     @Test
@@ -668,6 +711,32 @@ class OpsTeamServiceTest {
         assertThat(configFacade.values)
                 .containsEntry("commission/cooling-days", "30")
                 .doesNotContainKey("team.ui.F.cooldown");
+    }
+
+    @Test
+    void depthGateLayerAndRankAreIndependentlyValidatedAndPersisted() {
+        ApiResult<Map<String, Object>> layer = service.updateConfig(
+                "idem-f2-depth-layer", new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L5", "move depth gate", "superadmin"));
+        ApiResult<Map<String, Object>> rank = service.updateConfig(
+                "idem-f2-depth-rank", new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGateRank", "V3", "raise rank gate", "superadmin"));
+
+        assertThat(layer.getCode()).isZero();
+        assertThat(rank.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L5")
+                .containsEntry("team.ui.F.unilevel.depthGateRank", "V3");
+    }
+
+    @Test
+    void ratesExposeInvalidLegacyDecimalDepthGateForOperatorCorrection() {
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "0.4");
+
+        ApiResult<Map<String, Object>> result = service.rates();
+
+        @SuppressWarnings("unchecked")
+        Map<String, String> values = (Map<String, String>) result.getData().get("configValues");
+        assertThat(values).containsEntry("F.unilevel.depthGate", "0.4");
     }
 
     @Test
@@ -1449,6 +1518,7 @@ class OpsTeamServiceTest {
         private final List<Map<String, Object>> quotaRows = new ArrayList<>();
         private final List<Map<String, Object>> ambassadorBands = new ArrayList<>();
         private final Map<String, Object> ambassadorSummary = new LinkedHashMap<>();
+        private final Map<String, Object> ambassadorPolicy = new LinkedHashMap<>();
         private final List<Map<String, Object>> leaderboardPodium = new ArrayList<>();
         private final Map<String, Object> leaderboardSummary = new LinkedHashMap<>();
         private final List<Map<String, Object>> commissionEvents = new ArrayList<>();
@@ -1626,6 +1696,26 @@ class OpsTeamServiceTest {
         @Override
         public Map<String, Object> ambassadorSummary() {
             return ambassadorSummary;
+        }
+
+        @Override
+        public Map<String, Object> ambassadorPolicy() {
+            return ambassadorPolicy;
+        }
+
+        @Override
+        public boolean updateAmbassadorPolicyCas(
+                long expectedRevision,
+                String policyVersion,
+                BigDecimal defaultBudgetUsdt,
+                String bucketsJson,
+                String operator) {
+            if (((Number) ambassadorPolicy.getOrDefault("revision", 0L)).longValue() != expectedRevision) return false;
+            ambassadorPolicy.put("policyVersion", policyVersion);
+            ambassadorPolicy.put("defaultBudgetUsdt", defaultBudgetUsdt);
+            ambassadorPolicy.put("bucketsJson", bucketsJson);
+            ambassadorPolicy.put("revision", expectedRevision + 1);
+            return true;
         }
 
         @Override
@@ -1862,12 +1952,10 @@ class OpsTeamServiceTest {
         // insertCommissionEvent 自增计数(覆盖默认 null 实现,供 reissue 落 D4 测试)
         private long nextCommissionEventId = 9001L;
 
-        @Override
-        public List<Map<String, Object>> queryRewardPayouts(String type,
-                                                            String v,
-                                                            String status,
-                                                            Long userId,
-                                                            String cursor) {
+        private List<Map<String, Object>> filteredRewardPayouts(String type,
+                                                                String v,
+                                                                String status,
+                                                                Long userId) {
             return rewardPayouts.stream()
                     .filter(row -> type == null || type.isEmpty()
                             || type.equalsIgnoreCase(String.valueOf(row.get("rewardType"))))
@@ -1876,13 +1964,29 @@ class OpsTeamServiceTest {
                     .filter(row -> status == null || status.isEmpty()
                             || status.equalsIgnoreCase(String.valueOf(row.get("status"))))
                     .filter(row -> userId == null || userId.equals(row.get("userId")))
-                    .filter(row -> cursor == null || cursor.isEmpty()
-                            || String.valueOf(row.getOrDefault("grantedAt", "")).compareTo(cursor) < 0)
-                    // 内存 fake 不保证顺序,排序由 SQL 层做;这里按 grantedAt desc 近似
+                    // 内存 fake 用 rowId 模拟正式 SQL 的稳定倒序。
                     .sorted((a, b) -> String.valueOf(b.getOrDefault("grantedAt", ""))
                             .compareTo(String.valueOf(a.getOrDefault("grantedAt", ""))))
-                    .limit(100)
                     .toList();
+        }
+
+        @Override
+        public List<Map<String, Object>> queryRewardPayoutsPage(String type,
+                                                                String v,
+                                                                String status,
+                                                                Long userId,
+                                                                Long beforeId,
+                                                                int limit) {
+            return filteredRewardPayouts(type, v, status, userId).stream()
+                    .filter(row -> beforeId == null || row.get("rowId") == null
+                            || Long.parseLong(String.valueOf(row.get("rowId"))) < beforeId)
+                    .limit(limit)
+                    .toList();
+        }
+
+        @Override
+        public long countRewardPayouts(String type, String v, String status, Long userId) {
+            return filteredRewardPayouts(type, v, status, userId).size();
         }
 
         @Override

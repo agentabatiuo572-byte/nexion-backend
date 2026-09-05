@@ -17,7 +17,10 @@ class AppCommissionConfigControllerTest {
         var service = mock(OpsTeamService.class);
         when(service.rates()).thenReturn(ApiResult.ok(Map.of(
                 "unilevelRates", List.of(Map.of("level", "L1", "usdtPct", 10, "nexReward", 50)),
-                "configValues", Map.of("F.cooldown", "21", "F.promo.weekMultiplier", "1.25"))));
+                "configValues", Map.of(
+                        "F.cooldown", "21",
+                        "F.promo.weekMultiplier", "1.25",
+                        "F.unilevel.L1.paused", "true"))));
 
         var environment = new MockEnvironment();
         environment.setActiveProfiles("prod");
@@ -28,7 +31,10 @@ class AppCommissionConfigControllerTest {
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", null)
                 .containsEntry("coolingDays", "21")
-                .containsEntry("promoMultiplier", "1.25");
+                .containsEntry("promoMultiplier", "1.25")
+                .containsEntry("unilevelPaused", Map.of(
+                        "L1", true, "L2", false, "L3", false, "L4", false,
+                        "L5", false, "L6", false, "L7", false));
         assertThat(result.getData().get("unilevel")).isEqualTo(List.of(Map.of("level", "L1", "usdtPct", 10, "nexReward", 50)));
     }
 

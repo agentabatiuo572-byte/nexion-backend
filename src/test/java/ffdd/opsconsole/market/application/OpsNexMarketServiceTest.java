@@ -28,6 +28,7 @@ import ffdd.opsconsole.market.domain.RepurchaseStatsView;
 import ffdd.opsconsole.market.domain.RepurchaseStatusView;
 import ffdd.opsconsole.market.domain.StakingPositionView;
 import ffdd.opsconsole.market.domain.StakingProductView;
+import ffdd.opsconsole.market.mapper.ExchangeOrderMapper;
 import ffdd.opsconsole.market.dto.ExchangeParamUpdateRequest;
 import ffdd.opsconsole.market.dto.ExchangeQueueCancelRequest;
 import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
@@ -68,6 +69,7 @@ class OpsNexMarketServiceTest {
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final FakeTreasuryCoverageFacade coverageFacade = new FakeTreasuryCoverageFacade();
     private final FakeNexMarketRepository marketRepository = new FakeNexMarketRepository();
+    private final ExchangeOrderMapper exchangeOrderMapper = mock(ExchangeOrderMapper.class);
     private final FakeEmergencyControlRepository emergencyRepository = new FakeEmergencyControlRepository();
     private final OpsKillSwitchService killSwitchService = mock(OpsKillSwitchService.class);
     private final FakeTreasuryLedgerPostingFacade ledgerPostingFacade = new FakeTreasuryLedgerPostingFacade();
@@ -94,7 +96,8 @@ class OpsNexMarketServiceTest {
                 clock,
                 seedPolicy,
                 permissionCache,
-                lockMapper);
+                lockMapper,
+                exchangeOrderMapper);
         return service;
     }
 
@@ -118,6 +121,7 @@ class OpsNexMarketServiceTest {
         when(killSwitchService.changeFromLinkedDomain(
                 anyString(), org.mockito.ArgumentMatchers.anyBoolean(), anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(ApiResult.ok(Map.of()));
+        emergencyRepository.settings.put("killswitch.staking", "enabled");
     }
 
     @AfterEach
@@ -204,16 +208,16 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void missingJ1RowsKeepTheRealG1G2G4SurfacesEnabledLikeTheJ1DisplayDefault() {
+    void missingJ1RowsFailClosedForTheRealG1G2G4Surfaces() {
         emergencyRepository.settings.clear();
 
         ApiResult<Map<String, Object>> staking = service.stakingOverview();
         ApiResult<Map<String, Object>> exchange = service.exchangeOverview();
         ApiResult<Map<String, Object>> genesis = service.genesisOverview();
 
-        assertThat(detailMap(staking.getData().get("gate"))).containsEntry("enabled", true);
-        assertThat(detailMap(exchange.getData().get("swap"))).containsEntry("enabled", true);
-        assertThat(detailMap(genesis.getData().get("market"))).containsEntry("enabled", true);
+        assertThat(detailMap(staking.getData().get("gate"))).containsEntry("enabled", false);
+        assertThat(detailMap(exchange.getData().get("swap"))).containsEntry("enabled", false);
+        assertThat(detailMap(genesis.getData().get("market"))).containsEntry("enabled", false);
     }
 
     @Test
@@ -337,8 +341,16 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
-    void cancelQueuedExchangeUpdatesOrderAndAudits() {
+    void cancelQueuedExchangeAtomicallyRefundsReservedUsdtAndAuditsAfterCas() {
         marketRepository.orders = List.of(exchange("EX-Q-1", "QUEUED"));
+        when(exchangeOrderMapper.lockQueuedForCancellation("EX-Q-1")).thenReturn(
+                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-Q-1", "USDT", new BigDecimal("20")));
+        when(exchangeOrderMapper.sourceReservationExists("EX-Q-1")).thenReturn(1);
+        when(exchangeOrderMapper.lockWalletForQueuedCancellation(10001L)).thenReturn(
+                new ExchangeOrderMapper.WalletBalanceRow(new BigDecimal("80"), new BigDecimal("300")));
+        when(exchangeOrderMapper.cancelQueued("EX-Q-1")).thenReturn(1);
+        when(exchangeOrderMapper.creditWalletForQueuedCancellation(10001L, new BigDecimal("20"), BigDecimal.ZERO)).thenReturn(1);
+        when(exchangeOrderMapper.insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any())).thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.cancelExchangeQueueOrder(
                 "idem-cancel",
@@ -346,11 +358,105 @@ class OpsNexMarketServiceTest {
                 new ExchangeQueueCancelRequest("geo blocked", "superadmin"));
 
         assertThat(result.getCode()).isZero();
-        assertThat(marketRepository.cancelled).containsExactly("EX-Q-1");
+        verify(exchangeOrderMapper).cancelQueued("EX-Q-1");
+        verify(exchangeOrderMapper).creditWalletForQueuedCancellation(10001L, new BigDecimal("20"), BigDecimal.ZERO);
+        ArgumentCaptor<ExchangeOrderMapper.CancellationRefundLedgerWrite> refund = ArgumentCaptor.forClass(ExchangeOrderMapper.CancellationRefundLedgerWrite.class);
+        verify(exchangeOrderMapper).insertCancellationRefundLedger(refund.capture());
+        assertThat(refund.getValue()).extracting(
+                ExchangeOrderMapper.CancellationRefundLedgerWrite::asset,
+                ExchangeOrderMapper.CancellationRefundLedgerWrite::amount,
+                ExchangeOrderMapper.CancellationRefundLedgerWrite::balanceAfter)
+                .containsExactly("USDT", new BigDecimal("20"), new BigDecimal("100"));
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).record(captor.capture());
+        verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("G2_EXCHANGE_QUEUE_ORDER_CANCELLED");
+    }
+
+    @Test
+    void cancelQueuedExchangeAtomicallyRefundsReservedNex() {
+        marketRepository.orders = List.of(exchange("EX-Q-NEX", "QUEUED"));
+        when(exchangeOrderMapper.lockQueuedForCancellation("EX-Q-NEX")).thenReturn(
+                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-Q-NEX", "NEX", new BigDecimal("100")));
+        when(exchangeOrderMapper.sourceReservationExists("EX-Q-NEX")).thenReturn(1);
+        when(exchangeOrderMapper.lockWalletForQueuedCancellation(10001L)).thenReturn(
+                new ExchangeOrderMapper.WalletBalanceRow(new BigDecimal("80"), new BigDecimal("300")));
+        when(exchangeOrderMapper.cancelQueued("EX-Q-NEX")).thenReturn(1);
+        when(exchangeOrderMapper.creditWalletForQueuedCancellation(10001L, BigDecimal.ZERO, new BigDecimal("100"))).thenReturn(1);
+        when(exchangeOrderMapper.insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any())).thenReturn(1);
+
+        assertThat(service.cancelExchangeQueueOrder("idem-cancel-nex", "EX-Q-NEX",
+                new ExchangeQueueCancelRequest("operator cancellation", "superadmin")).getCode()).isZero();
+
+        verify(exchangeOrderMapper).creditWalletForQueuedCancellation(10001L, BigDecimal.ZERO, new BigDecimal("100"));
+        ArgumentCaptor<ExchangeOrderMapper.CancellationRefundLedgerWrite> refund = ArgumentCaptor.forClass(ExchangeOrderMapper.CancellationRefundLedgerWrite.class);
+        verify(exchangeOrderMapper).insertCancellationRefundLedger(refund.capture());
+        assertThat(refund.getValue().balanceAfter()).isEqualByComparingTo("400");
+    }
+
+    @Test
+    void concurrentBatchCasWinnerDoesNotRefundOrAuditSuccess() {
+        marketRepository.orders = List.of(exchange("EX-RACE-1", "QUEUED"));
+        when(exchangeOrderMapper.lockQueuedForCancellation("EX-RACE-1")).thenReturn(
+                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-RACE-1", "USDT", new BigDecimal("20")));
+        when(exchangeOrderMapper.cancelQueued("EX-RACE-1")).thenReturn(0);
+
+        ApiResult<Map<String, Object>> result = service.cancelExchangeQueueOrder(
+                "idem-race", "EX-RACE-1", new ExchangeQueueCancelRequest("batch won", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(exchangeOrderMapper, never()).creditWalletForQueuedCancellation(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(exchangeOrderMapper, never()).insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any());
+        verify(auditLogService, never()).recordRequired(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void repeatedCancelledQueueRequestIsIdempotentWithoutSecondRefundOrAudit() {
+        marketRepository.orders = List.of(exchange("EX-IDEMPOTENT-1", "QUEUED"));
+        ExchangeOrderMapper.QueuedCancellationRow row = new ExchangeOrderMapper.QueuedCancellationRow(
+                10001L, "EX-IDEMPOTENT-1", "USDT", new BigDecimal("20"));
+        when(exchangeOrderMapper.lockQueuedForCancellation("EX-IDEMPOTENT-1"))
+                .thenReturn(row)
+                .thenReturn((ExchangeOrderMapper.QueuedCancellationRow) null);
+        when(exchangeOrderMapper.sourceReservationExists("EX-IDEMPOTENT-1")).thenReturn(1);
+        when(exchangeOrderMapper.lockWalletForQueuedCancellation(10001L)).thenReturn(
+                new ExchangeOrderMapper.WalletBalanceRow(new BigDecimal("80"), new BigDecimal("300")));
+        when(exchangeOrderMapper.cancelQueued("EX-IDEMPOTENT-1")).thenAnswer(invocation -> {
+            marketRepository.updateExchangeStatus("EX-IDEMPOTENT-1", "CANCELLED");
+            return 1;
+        });
+        when(exchangeOrderMapper.creditWalletForQueuedCancellation(10001L, new BigDecimal("20"), BigDecimal.ZERO)).thenReturn(1);
+        when(exchangeOrderMapper.insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any())).thenReturn(1);
+
+        assertThat(service.cancelExchangeQueueOrder("idem-once", "EX-IDEMPOTENT-1",
+                new ExchangeQueueCancelRequest("operator cancellation", "superadmin")).getCode()).isZero();
+        ApiResult<Map<String, Object>> replay = service.cancelExchangeQueueOrder("idem-retry", "EX-IDEMPOTENT-1",
+                new ExchangeQueueCancelRequest("operator cancellation", "superadmin"));
+
+        assertThat(replay.getCode()).isZero();
+        assertThat(detailMap(replay.getData().get("updated"))).containsEntry("idempotent", true);
+        verify(exchangeOrderMapper).creditWalletForQueuedCancellation(10001L, new BigDecimal("20"), BigDecimal.ZERO);
+        verify(exchangeOrderMapper).insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any());
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void refundLedgerFailurePropagatesForTransactionalRollbackWithoutAudit() {
+        marketRepository.orders = List.of(exchange("EX-ROLLBACK-1", "QUEUED"));
+        when(exchangeOrderMapper.lockQueuedForCancellation("EX-ROLLBACK-1")).thenReturn(
+                new ExchangeOrderMapper.QueuedCancellationRow(10001L, "EX-ROLLBACK-1", "USDT", new BigDecimal("20")));
+        when(exchangeOrderMapper.sourceReservationExists("EX-ROLLBACK-1")).thenReturn(1);
+        when(exchangeOrderMapper.lockWalletForQueuedCancellation(10001L)).thenReturn(
+                new ExchangeOrderMapper.WalletBalanceRow(new BigDecimal("80"), new BigDecimal("300")));
+        when(exchangeOrderMapper.cancelQueued("EX-ROLLBACK-1")).thenReturn(1);
+        when(exchangeOrderMapper.creditWalletForQueuedCancellation(10001L, new BigDecimal("20"), BigDecimal.ZERO)).thenReturn(1);
+        when(exchangeOrderMapper.insertCancellationRefundLedger(org.mockito.ArgumentMatchers.any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.cancelExchangeQueueOrder("idem-rollback", "EX-ROLLBACK-1",
+                new ExchangeQueueCancelRequest("ledger failure", "superadmin")))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("EXCHANGE_LEDGER_CONFLICT");
+        verify(auditLogService, never()).recordRequired(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -682,7 +788,7 @@ class OpsNexMarketServiceTest {
         assertThat(detailMap(result.getData().get("market"))).containsEntry("enabled", false);
         assertThat((List<?>) result.getData().get("params"))
                 .extracting("key")
-                .contains("supply", "price", "dividend", "royalty", "divBase", "airdropPct", "emissionCurve", "airdropLockDays");
+                .contains("supply", "price", "dividend", "royalty", "divBase", "airdropPct", "emissionCurve", "airdropLockDays", "showcaseEnabled");
         assertThat((List<?>) result.getData().get("nodes"))
                 .extracting("id")
                 .contains("#0042", "#0117", "#0233");
@@ -692,6 +798,21 @@ class OpsNexMarketServiceTest {
         assertThat(result.getData().get("sunsetExclusions"))
                 .asList()
                 .contains("Premium", "NEX v2", "Points");
+    }
+
+    @Test
+    void genesisOverviewUsesTheSameUnitPriceTimesHoldingFormulaAsEmissionExecution() {
+        configFacade.values.put("growth.phase.genesis_emissions_open", "true");
+        marketRepository.genesisSecondaryStats = new GenesisSecondaryStatsView(
+                new BigDecimal("12400"), new BigDecimal("999999999"), 38L, 612L);
+
+        ApiResult<Map<String, Object>> result = service.genesisOverview();
+
+        assertThat(detailMap(result.getData().get("dividend")))
+                .containsEntry("dailyVolumeBase", new BigDecimal("29997"))
+                .containsEntry("perSlotPerDay", new BigDecimal("10.00"))
+                .containsEntry("poolToday", new BigDecimal("30.00"))
+                .containsEntry("payoutToday", new BigDecimal("30.00"));
     }
 
     @Test
@@ -771,7 +892,6 @@ class OpsNexMarketServiceTest {
                 BigDecimal.ZERO,
                 0L,
                 0L);
-
         ApiResult<Map<String, Object>> result = service.genesisOverview();
 
         assertThat(result.getCode()).isZero();
@@ -860,6 +980,7 @@ class OpsNexMarketServiceTest {
                 BigDecimal.ZERO,
                 0L,
                 0L);
+        marketRepository.genesisNodes = List.of();
 
         ApiResult<Map<String, Object>> result = realOnlyService.rerunGenesisDividendBatch(
                 "idem-g4-rerun-empty",
@@ -874,7 +995,7 @@ class OpsNexMarketServiceTest {
 
     @Test
     void stakingOverviewExposesServerCanonicalPoolsPositionsAndJ1Switch() {
-        emergencyRepository.settings.put("J.killswitch.staking", "off");
+        emergencyRepository.settings.put("killswitch.staking", "disabled");
         configFacade.values.put("G.staking.usdt180d.killed", "true");
         seedSunsetExclusions();
 

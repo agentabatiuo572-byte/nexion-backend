@@ -435,25 +435,31 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
-    void permitsMediaReadForAnyAuthenticatedAdmin() throws Exception {
+    void rejectsMediaReadWithoutDeviceCatalogPermission() throws Exception {
         AtomicBoolean invoked = new AtomicBoolean(false);
         authenticate();
 
+        MockHttpServletResponse response = new MockHttpServletResponse();
         filter.doFilter(
                 request("GET", "/api/admin/media/uploads/asset-1/preview-url"),
-                new MockHttpServletResponse(),
+                response,
                 mark(invoked));
 
-        assertThat(invoked).isTrue();
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
     }
 
     @Test
-    void permitsMediaWriteWhenAnyAdminWriteAuthorityIsPresent() throws Exception {
+    void permitsMediaOnlyWithDeviceCatalogPermissions() throws Exception {
+        AtomicBoolean readInvoked = new AtomicBoolean(false);
         AtomicBoolean invoked = new AtomicBoolean(false);
-        authenticate("content_i1_write");
+        authenticate("device_e1_read", "device_e1_write");
 
+        filter.doFilter(request("GET", "/api/admin/media/uploads/asset-1/preview-url"),
+                new MockHttpServletResponse(), mark(readInvoked));
         filter.doFilter(request("POST", "/api/admin/media/uploads"), new MockHttpServletResponse(), mark(invoked));
 
+        assertThat(readInvoked).isTrue();
         assertThat(invoked).isTrue();
     }
 
@@ -516,6 +522,22 @@ class AdminRbacAuthorizationFilterTest {
 
         assertThat(usersInvoked).isTrue();
         assertThat(skusInvoked).isTrue();
+    }
+
+    @Test
+    void advisorPhoneLookupRequiresTheExactBindingWriteAuthority() throws Exception {
+        for (String authority : java.util.List.of("service_m1_read", "service_m3_read", "service_m5_write")) {
+            authenticate(authority);
+            AtomicBoolean invoked = new AtomicBoolean(false);
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request("GET", "/api/admin/content/support-workbench/advisor-users"), response, mark(invoked));
+            assertThat(invoked).isFalse();
+            assertThat(response.getStatus()).isEqualTo(403);
+        }
+        authenticate("service_m1_write");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        filter.doFilter(request("GET", "/api/admin/content/support-workbench/advisor-users"), new MockHttpServletResponse(), mark(invoked));
+        assertThat(invoked).isTrue();
     }
 
     @Test

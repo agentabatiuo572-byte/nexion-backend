@@ -69,10 +69,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore");
     private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
-            new RiskArbitrageParamView("otpGate.captchaAfterSends", "滑块验证触发次数", "2", "24h 发送达到阈值后要求滑块", "单位:次/24h"),
+            new RiskArbitrageParamView("otpGate.dayLimit", "验证码 24h 发送上限", "10", "注册、登录与找回密码共同执行", "单位:次/24h"),
             new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "验证码签发后的有效时长", "单位:秒"),
             new RiskArbitrageParamView("otpGate.maxVerifyAttempts", "最多输错次数", "5", "超过后验证码立即失效", "单位:次"),
-            new RiskArbitrageParamView("otpGate.captchaTicketTtlSeconds", "滑块票据有效期", "120", "一次性滑块票据的有效时长", "单位:秒"));
+            new RiskArbitrageParamView("captchaGate.alwaysScenes", "强制滑块场景", "register", "指定每次发送前都要求滑块的认证场景", "可选:register,login,reset"),
+            new RiskArbitrageParamView("captchaGate.afterSends", "累计发送触发滑块", "2", "同一场景与主体 24h 内达到该发送次数后要求滑块", "单位:次/24h"));
     private final RiskOpsMapper mapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
 

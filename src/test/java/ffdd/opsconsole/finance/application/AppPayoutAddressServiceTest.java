@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.application.UserOtpDeliveryService;
@@ -84,8 +85,8 @@ class AppPayoutAddressServiceTest {
     void otpQuotaChecksAreSerializedByTheActiveUserRow() {
         long userId = 9L;
         when(mapper.lockActiveUser(userId)).thenReturn(userId);
-        when(otpDelivery.available()).thenReturn(true);
-        when(otpDelivery.verificationCode()).thenReturn("123456");
+        when(otpDelivery.available(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+        when(otpDelivery.verificationCode(org.mockito.ArgumentMatchers.anyString())).thenReturn("123456");
         when(mapper.recentOtpCount(userId)).thenReturn(0);
         when(mapper.todayOtpCount(userId)).thenReturn(0);
         when(mapper.userContact(userId)).thenReturn(new UserContact("+84", "900000000"));
@@ -95,6 +96,22 @@ class AppPayoutAddressServiceTest {
 
         verify(mapper).lockActiveUser(userId);
         verify(otpDelivery).deliver(eq("+84"), eq("900000000"), anyString(), anyString(), eq(5));
+    }
+
+    @Test
+    void otpRejectsInvalidPhoneBeforeQuotaOrChallengeMutation() {
+        long userId = 10L;
+        when(mapper.lockActiveUser(userId)).thenReturn(userId);
+        when(mapper.userContact(userId)).thenReturn(new UserContact("+86", "12800138000"));
+
+        assertThatThrownBy(() -> service.sendOtp(userId))
+                .isInstanceOf(BizException.class)
+                .hasMessage("PAYOUT_ADDRESS_PHONE_INVALID");
+
+        verify(mapper, never()).recentOtpCount(userId);
+        verify(mapper, never()).todayOtpCount(userId);
+        verify(mapper, never()).insertOtp(eq(userId), anyString(), anyString());
+        verifyNoInteractions(otpDelivery);
     }
 
     @Test

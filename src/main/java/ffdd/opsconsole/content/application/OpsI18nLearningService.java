@@ -107,8 +107,14 @@ public class OpsI18nLearningService {
             return fail(guard);
         }
         I18nMessagePairView current = learningRepository.findMessagePairForUpdate(messageKey.trim()).orElse(null);
-        if (current != null && (!StringUtils.hasText(request.expectedVersion())
-                || !request.expectedVersion().trim().equals(current.version()))) {
+        // I6 is an editor for message keys already registered by an App release.
+        // Creating a syntactically valid key here would persist and publish a value
+        // that no shipped App screen consumes, while falsely reporting success.
+        if (current == null) {
+            return ApiResult.fail(404, "I18N_MESSAGE_KEY_NOT_REGISTERED");
+        }
+        if (!StringUtils.hasText(request.expectedVersion())
+                || !request.expectedVersion().trim().equals(current.version())) {
             return ApiResult.fail(409, "I18N_MESSAGE_VERSION_CONFLICT");
         }
         I18nMessagePairView saved;
@@ -175,12 +181,20 @@ public class OpsI18nLearningService {
         if ("fixed".equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        learningRepository.saveMessagePair(request.messageKey().trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
+        String messageKey = request.messageKey().trim();
+        // Integrity repair is another write entrance into the I6 catalogue. It
+        // must obey the same shipped-key boundary as the normal draft editor;
+        // otherwise an operator can use a real issue code to create and later
+        // publish a key no App release consumes.
+        if (learningRepository.findMessagePairForUpdate(messageKey).isEmpty()) {
+            return ApiResult.fail(404, "I18N_MESSAGE_KEY_NOT_REGISTERED");
+        }
+        learningRepository.saveMessagePair(messageKey, request.zh().trim(), request.en().trim(), request.vi().trim(), "draft", now());
         List<I18nIntegrityIssueView> recomputed = learningRepository.recomputeIntegrity(now());
         I18nIntegrityIssueView remaining = recomputed.stream().filter(issue -> issue.code().equals(issueCode.trim())).findFirst()
                 .orElse(new I18nIntegrityIssueView(issueCode.trim(), current.get().kind(), 0, List.of(), "fixed"));
         audit("I6_I18N_INTEGRITY_FIXED", "I18N_INTEGRITY", remaining.code(), request.operator(), idempotencyKey, request.reason(), Map.of(
-                "messageKey", request.messageKey().trim(), "remainingCount", remaining.cnt()));
+                "messageKey", messageKey, "remainingCount", remaining.cnt()));
         return ApiResult.ok(remaining);
     }
 

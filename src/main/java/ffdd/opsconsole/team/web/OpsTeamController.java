@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.team.application.LeadershipPoolService;
 import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest;
+import ffdd.opsconsole.team.dto.AmbassadorPolicyUpdateRequest;
 import ffdd.opsconsole.team.dto.VRankOverrideRequest;
 import ffdd.opsconsole.team.dto.VRankPromotionLogQuery;
 import ffdd.opsconsole.team.dto.VRankRewardPayoutActionRequest;
@@ -66,6 +67,20 @@ public class OpsTeamController {
     @PreAuthorize("hasAuthority('network_f4_read')")
     public ApiResult<Map<String, Object>> leadershipPool() {
         return teamService.leadershipPool();
+    }
+
+    @GetMapping("/ambassador-policy")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> ambassadorPolicy() {
+        return teamService.ambassadorPolicy();
+    }
+
+    @PutMapping("/ambassador-policy")
+    @PreAuthorize("hasAuthority('network_f4_pool_fund')")
+    public ApiResult<Map<String, Object>> updateAmbassadorPolicy(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody AmbassadorPolicyUpdateRequest request) {
+        return teamService.updateAmbassadorPolicy(idempotencyKey, request);
     }
 
     /**
@@ -176,8 +191,9 @@ public class OpsTeamController {
             @RequestParam(required = false) String v,
             @RequestParam(required = false) String cohort,
             @RequestParam(required = false) String from,
-            @RequestParam(required = false) String to) {
-        return teamService.queryPromotionLog(new VRankPromotionLogQuery(userId, v, cohort, from, to));
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) String cursor) {
+        return teamService.queryPromotionLog(new VRankPromotionLogQuery(userId, v, cohort, from, to, cursor));
     }
 
     // ============================================================
@@ -186,8 +202,9 @@ public class OpsTeamController {
 
     /**
      * 端点 4:派发流水查询(GET /api/admin/teams/reward-payouts)。
-     * <p>筛选 type/v/status/userId/cursor,查 nx_v_rank_reward_payout WHERE is_deleted=0
-     * ORDER BY granted_at DESC LIMIT 100。@PreAuthorize network_f1_read。
+     * <p>筛选 type/v/status/userId/cursor,查 nx_v_rank_reward_payout WHERE is_deleted=0。
+     * cursor 是不透明的递减数字行 id，分页条件为 id &lt; cursor，结果按 id DESC 返回 100 条。
+     * @PreAuthorize network_f1_read。
      */
     @GetMapping("/reward-payouts")
     @PreAuthorize("hasAuthority('network_f1_read')")

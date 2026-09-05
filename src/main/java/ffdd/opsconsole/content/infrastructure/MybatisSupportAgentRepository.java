@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.infrastructure;
 import ffdd.opsconsole.content.domain.SupportAgentAssignmentView;
 import ffdd.opsconsole.content.domain.SupportAgentProfileRecord;
 import ffdd.opsconsole.content.domain.SupportAgentRepository;
+import ffdd.opsconsole.content.domain.DedicatedAdvisorBindingView;
 import ffdd.opsconsole.content.domain.SupportTicketAssigneeCandidateView;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper.SupportAgentProfileRow;
@@ -184,6 +185,11 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
         mapper.deactivateAssignment(agentAdminId, assignmentId, operator, reason, now);
         SupportAgentAssignmentView after = mapper.findAssignmentById(agentAdminId, assignmentId);
         return Optional.ofNullable(after == null ? before : after);
+    }
+
+    @Override
+    public Optional<DedicatedAdvisorBindingView> findActiveDedicatedAdvisor(Long userId) {
+        return Optional.ofNullable(mapper.findActiveDedicatedAdvisor(userId));
     }
 
     private SupportAgentProfileRecord toProfileRecord(SupportAgentProfileRow row) {

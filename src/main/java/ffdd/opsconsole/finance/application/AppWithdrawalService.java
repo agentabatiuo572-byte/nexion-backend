@@ -26,8 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.time.Clock;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -62,11 +61,21 @@ public class AppWithdrawalService {
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
+    private final Clock clock;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
+        return list(userId, 1, 50);
+    }
+
+    public ApiResult<Map<String, Object>> list(Long userId, int requestedPageNum, int requestedPageSize) {
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
-        return ApiResult.ok(linked("withdrawals", mapper.userWithdrawals(userId, 50),
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        long total = Math.max(0L, mapper.countUserWithdrawals(userId));
+        long offset = (long) (pageNum - 1) * pageSize;
+        return ApiResult.ok(linked("withdrawals", mapper.userWithdrawals(userId, offset, pageSize),
+                "page", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
                 "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
     }
 
@@ -85,12 +94,10 @@ public class AppWithdrawalService {
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         PolicySnapshot policy = currentPolicy();
-        int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
-        BigDecimal balanceMaxRatio = requiredDecimal("withdrawal.max_balance_pct");
+        int dailyLimit = validatedDailyLimit();
+        BigDecimal balanceMaxRatio = validatedBalanceMaxRatio();
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (dailyLimit < 1 || dailyLimit > 10
-                || balanceMaxRatio.signum() <= 0 || balanceMaxRatio.compareTo(BigDecimal.ONE) > 0
-                || rhythm == null || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
+        if (rhythm == null || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
                 || rhythm.withdrawCooldownDays() <= 0) {
             throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
         }
@@ -116,24 +123,31 @@ public class AppWithdrawalService {
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> eligibility(Long userId, BigDecimal amount, String chain, String address,
                                                       String requestedPolicyVersion) {
+        WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal requested = money(amount);
         String normalizedChain = normalizeChain(chain);
         String normalizedAddress = normalizeAddress(address);
         PolicySnapshot policy = currentPolicy();
+        if (!StringUtils.hasText(requestedPolicyVersion)
+                || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
+            return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
+                    Map.of("policyVersion", policy.policyVersion()));
+        }
+        int dailyLimit = validatedDailyLimit();
+        BigDecimal balanceMaxRatio = validatedBalanceMaxRatio();
         if (!policy.enabledNetworks().contains(normalizedChain)) {
             return ApiResult.ok(linked("canSubmit", false, "maxWithdrawableUsdt", BigDecimal.ZERO,
                     "route", "reject", "riskReasons", List.of("network-disabled"),
                     "fastLaneApplied", false, "waivedGates", List.of(), "dailyLimitReached", false,
-                    "dailyCountResetAt", nextPlatformDayReset(), "configVersion", policy.policyVersion()));
+                    "dailyCountResetAt", day.resetAt(), "configVersion", policy.policyVersion()));
         }
         WalletRow wallet = mapper.walletForEligibility(userId);
         if (wallet == null || wallet.usdtAvailable() == null) throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
-        BigDecimal max = safe(wallet.usdtAvailable()).multiply(requiredDecimal("withdrawal.max_balance_pct"))
+        BigDecimal max = safe(wallet.usdtAvailable()).multiply(balanceMaxRatio)
                 .setScale(6, RoundingMode.DOWN);
-        int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
-        boolean dailyLimitReached = mapper.countLast24Hours(userId) >= dailyLimit;
+        boolean dailyLimitReached = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive()) >= dailyLimit;
         PayoutAddressRow payoutAddress = mapper.payoutAddressForEligibility(userId, normalizedChain);
         boolean payoutAddressReady = payoutAddress != null
                 && StringUtils.hasText(payoutAddress.address())
@@ -178,13 +192,8 @@ public class AppWithdrawalService {
                 && !dailyLimitReached && payoutAddressReady && withdrawGateEnabled();
         return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
-                "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", nextPlatformDayReset(),
+                "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", day.resetAt(),
                 "configVersion", policy.policyVersion()));
-    }
-
-    private long nextPlatformDayReset() {
-        return ZonedDateTime.now(ZoneId.of("Asia/Ho_Chi_Minh")).plusDays(1).toLocalDate()
-                .atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh")).toInstant().toEpochMilli();
     }
 
     private String toClientRiskRoute(String route) {
@@ -321,16 +330,15 @@ public class AppWithdrawalService {
         }
         if (!policy.enabledNetworks().contains(chain)) return ApiResult.fail(409, "WITHDRAWAL_NETWORK_DISABLED");
 
-        int dailyLimit = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
-        if (dailyLimit < 1 || dailyLimit > 10) throw new BizException(503, "D5_DAILY_LIMIT_INVALID");
-        if (mapper.countLast24Hours(userId) >= dailyLimit) return ApiResult.fail(409, "WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+        int dailyLimit = validatedDailyLimit();
+        WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
+        if (mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive()) >= dailyLimit) {
+            return ApiResult.fail(409, "WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+        }
 
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null || wallet.version() == null) throw new BizException(409, "WITHDRAWAL_WALLET_UNAVAILABLE");
-        BigDecimal maxRatio = requiredDecimal("withdrawal.max_balance_pct");
-        if (maxRatio.signum() <= 0 || maxRatio.compareTo(BigDecimal.ONE) > 0) {
-            throw new BizException(503, "D5_BALANCE_RATIO_INVALID");
-        }
+        BigDecimal maxRatio = validatedBalanceMaxRatio();
         BigDecimal maxAmount = safe(wallet.usdtAvailable()).multiply(maxRatio).setScale(6, RoundingMode.DOWN);
         if (amount.compareTo(MIN_WITHDRAWAL) < 0) return ApiResult.fail(422, "WITHDRAWAL_MIN_AMOUNT_NOT_MET");
         if (amount.compareTo(maxAmount) > 0 || amount.compareTo(safe(wallet.usdtAvailable())) > 0) {
@@ -542,6 +550,29 @@ public class AppWithdrawalService {
         } catch (RuntimeException ex) {
             throw new BizException(503, "A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
         }
+    }
+
+    private int validatedDailyLimit() {
+        try {
+            int value = requiredDecimal("withdrawal.daily_count_limit").intValueExact();
+            if (value < 1 || value > 10) throw new ArithmeticException("range");
+            return value;
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "D5_DAILY_LIMIT_INVALID");
+        }
+    }
+
+    private BigDecimal validatedBalanceMaxRatio() {
+        BigDecimal value;
+        try {
+            value = requiredDecimal("withdrawal.max_balance_pct");
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "D5_BALANCE_RATIO_INVALID");
+        }
+        if (value.signum() <= 0 || value.compareTo(BigDecimal.ONE) > 0) {
+            throw new BizException(503, "D5_BALANCE_RATIO_INVALID");
+        }
+        return value;
     }
 
     private boolean validK4Thresholds(WithdrawalRiskFacts facts) {

@@ -66,6 +66,21 @@ class DeviceCatalogMapperSkuSqlContractTest {
     }
 
     @Test
+    void e1SkuEditsCannotWriteTheOrderManagedSalesCounter() throws Exception {
+        String insertSql = String.join("\n", DeviceCatalogMapper.class.getMethod(
+                "insertSku", DeviceCatalogMapper.SkuWrite.class).getAnnotation(Insert.class).value());
+        String updateSql = updateSql("updateSku", DeviceCatalogMapper.SkuWrite.class, java.time.LocalDateTime.class);
+        String metadataSql = String.join("\n", DeviceCatalogMapper.class.getMethod(
+                "upsertSkuMetadata", DeviceCatalogMapper.SkuWrite.class).getAnnotation(Insert.class).value());
+
+        assertThat(insertSql).contains("CAST(#{sku.unlockPhaseId} AS CHAR),0,COALESCE(#{sku.rating},0)")
+                .doesNotContain("COALESCE(#{sku.sold},0)");
+        assertThat(updateSql).doesNotContain("sold_count=");
+        assertThat(metadataSql).contains("#{sku.shareYieldMax},#{sku.baseRate},0,#{sku.stock}")
+                .doesNotContain("sold=VALUES(sold)");
+    }
+
+    @Test
     void e1CatalogUpdateUsesTheProductRevisionAsAnOptimisticLock() throws Exception {
         String sql = updateSql("updateSku", DeviceCatalogMapper.SkuWrite.class, java.time.LocalDateTime.class);
         String statusSql = updateSql("updateSkuStatus", String.class, String.class, java.time.LocalDateTime.class, java.time.LocalDateTime.class);
@@ -117,6 +132,7 @@ class DeviceCatalogMapperSkuSqlContractTest {
                 .contains("GROUP BY oi.product_id")
                 .contains("SUM(oi.quantity) quantity")
                 .contains("HAVING oi.product_id IS NOT NULL AND MIN(oi.quantity)>0")
+                .contains("'CAPACITY_KEEP'")
                 .contains("p.sold_count>=items.quantity")
                 .contains("p.stock<=2147483647-items.quantity")
                 .doesNotContain("p.is_deleted=0");

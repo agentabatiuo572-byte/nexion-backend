@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.dto.NovaAiChatRequest;
 import ffdd.opsconsole.content.mapper.AppNovaConversationMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,7 +24,8 @@ class AppNovaAiServiceTest {
     private final NovaAiGateway gateway = mock(NovaAiGateway.class);
     private final AppNovaConversationMapper mapper = mock(AppNovaConversationMapper.class);
     private final NovaAiProperties properties = new NovaAiProperties();
-    private final AppNovaAiService service = new AppNovaAiService(gateway, properties, mapper);
+    private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
+    private final AppNovaAiService service = new AppNovaAiService(gateway, properties, mapper, configFacade);
 
     @BeforeEach
     void persistCompletedTurns() {
@@ -88,6 +90,8 @@ class AppNovaAiServiceTest {
         verify(gateway, org.mockito.Mockito.times(2)).chat(request.capture());
         assertThat(request.getAllValues().get(0).sessionId())
                 .isNotEqualTo(request.getAllValues().get(1).sessionId());
+        assertThat(request.getAllValues().get(0).queueScope()).matches("nova-queue-v1-[0-9a-f]{64}")
+                .isEqualTo(request.getAllValues().get(1).queueScope());
     }
 
     @Test
@@ -100,6 +104,23 @@ class AppNovaAiServiceTest {
                 .hasMessage("NOVA_AI_CONVERSATION_INVALID");
 
         verify(gateway, never()).chat(any());
+    }
+
+    @Test
+    void pcDisabledAiCategoryFailsClosedForStatusChatAndHistory() {
+        properties.setMode(NovaAiProperties.Mode.OLLAMA_LOCAL);
+        when(configFacade.activeValue("I.session.cat.ai.enabled")).thenReturn(java.util.Optional.of("off"));
+
+        assertThat(service.status(42L).available()).isFalse();
+        assertThatThrownBy(() -> service.chat(42L, AUTH_SESSION_ID,
+                new NovaAiChatRequest("hello", "en", CONVERSATION_ID, TURN_ID, List.of())))
+                .isInstanceOf(BizException.class)
+                .hasMessage("CONVERSATION_CATEGORY_DISABLED");
+        assertThatThrownBy(() -> service.history(42L, null))
+                .isInstanceOf(BizException.class)
+                .hasMessage("CONVERSATION_CATEGORY_DISABLED");
+        verify(gateway, never()).chat(any());
+        verify(mapper, never()).latestConversationId(any());
     }
 
     @Test
@@ -159,9 +180,10 @@ class AppNovaAiServiceTest {
     @Test
     void restoresTheLatestServerOwnedTranscriptForTheAuthenticatedUser() {
         when(mapper.latestConversationId(42L)).thenReturn(CONVERSATION_ID);
-        when(mapper.turns(42L, CONVERSATION_ID)).thenReturn(List.of(
+        when(mapper.turns(42L, CONVERSATION_ID, null, 201)).thenReturn(List.of(
                 new AppNovaConversationMapper.TurnRow(TURN_ID, CONVERSATION_ID, "zh", "问题", "回答",
                         "OLLAMA_LOCAL", "gemma4-e4b-ctx32k:latest", 1_777_000_000_000L)));
+        when(mapper.countTurns(42L, CONVERSATION_ID)).thenReturn(1L);
 
         var history = service.history(42L, null);
 
@@ -170,9 +192,27 @@ class AppNovaAiServiceTest {
                 .containsExactly("user", "nova");
         assertThat(history.messages()).extracting(AppNovaAiService.HistoryMessage::text)
                 .containsExactly("问题", "回答");
+        assertThat(history.truncated()).isFalse();
         assertThat(AppNovaAiService.HistoryResponse.class.getRecordComponents())
                 .extracting(component -> component.getName())
-                .containsExactly("conversationId", "messages");
+                .containsExactly("conversationId", "messages", "truncated", "nextCursor");
+    }
+
+    @Test
+    void marksACompleteLatestHistoryWindowAsTruncatedWhenOlderTurnsExist() {
+        when(mapper.latestConversationId(42L)).thenReturn(CONVERSATION_ID);
+        List<AppNovaConversationMapper.TurnRow> turns = java.util.stream.IntStream.rangeClosed(1, 201)
+                .mapToObj(index -> new AppNovaConversationMapper.TurnRow(
+                        String.format("00000000-0000-4000-8000-%012d", index), CONVERSATION_ID, "en",
+                        "question-" + index, "answer-" + index, "OLLAMA_LOCAL", "gemma4-e4b-ctx32k:latest",
+                        1_777_000_000_000L + index)).toList();
+        when(mapper.turns(42L, CONVERSATION_ID, null, 201)).thenReturn(turns);
+
+        var history = service.history(42L, null);
+
+        assertThat(history.truncated()).isTrue();
+        assertThat(history.messages()).hasSize(400);
+        assertThat(history.nextCursor()).isEqualTo(turns.get(1).turnId());
     }
 
     @Test

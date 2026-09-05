@@ -14,6 +14,10 @@ public interface SupportAgentRepository {
 
     Optional<SupportAgentProfileRecord> findProfile(Long adminId);
 
+    default Optional<DedicatedAdvisorBindingView> findActiveDedicatedAdvisor(Long userId) {
+        return Optional.empty();
+    }
+
     void ensureDefaultProfile(
             Long adminId,
             String seatType,

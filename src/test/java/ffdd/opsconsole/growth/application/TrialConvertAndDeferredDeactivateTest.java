@@ -10,6 +10,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -33,9 +35,11 @@ class TrialConvertAndDeferredDeactivateTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
+    private final StorefrontProductReleasePolicy productReleasePolicy = mock(StorefrontProductReleasePolicy.class);
+    private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
     private final AppTrialLifecycleService service = new AppTrialLifecycleService(
             mapper, earningsRelease, idempotency, coverage,
-            mock(AuditLogService.class), mock(EventOutboxService.class), productionEnvironment(),
+            mock(AuditLogService.class), mock(EventOutboxService.class), productReleasePolicy, canonicalStateMapper, productionEnvironment(),
             TEST_CLOCK);
 
     private static MockEnvironment productionEnvironment() {
@@ -47,6 +51,9 @@ class TrialConvertAndDeferredDeactivateTest {
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setup() {
+        when(mapper.emergencyValue("killswitch.trial")).thenReturn("enabled");
+        when(productReleasePolicy.evaluate(anyString(), any()))
+                .thenReturn(StorefrontProductReleasePolicy.Decision.open("P1"));
         when(mapper.activeUser(7L)).thenReturn(7L);
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.policies()).thenReturn(List.of(

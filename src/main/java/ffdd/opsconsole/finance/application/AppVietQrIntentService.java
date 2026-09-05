@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
@@ -16,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
@@ -26,6 +28,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AppVietQrIntentService {
+    private static final String VIETQR_CHANNEL_ENABLED_KEY = "finance.topup.channel.vietqr.enabled";
     private static final BigDecimal MIN_DEPOSIT_USDT = new BigDecimal("10.00");
     private static final BigDecimal ABSOLUTE_MAX_DEPOSIT_USDT = new BigDecimal("10000.00");
     private static final int MAX_ACTIVE_INTENTS = 5;
@@ -37,6 +40,7 @@ public class AppVietQrIntentService {
     private final FinanceSensitiveDataCipher cipher;
     private final Clock clock;
     private final Environment environment;
+    private final PlatformConfigFacade configFacade;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> paymentConfig() {
@@ -56,7 +60,7 @@ public class AppVietQrIntentService {
         // "enabled" describes whether an operational bank rail exists. Daily
         // exhaustion is a separate business limit and must not masquerade as
         // maintenance, nor overwrite the configured per-transaction maximum.
-        vietQr.put("enabled", mapper.countActiveBankAccounts() > 0);
+        vietQr.put("enabled", vietQrChannelState().available() && mapper.countActiveBankAccounts() > 0);
         vietQr.put("minDepositUsdt", MIN_DEPOSIT_USDT);
         vietQr.put("maxDepositUsdt", configuredMax);
         vietQr.put("todayRemainingDepositUsdt", todayRemainingDepositUsdt);
@@ -96,6 +100,7 @@ public class AppVietQrIntentService {
     public ApiResult<Map<String, Object>> create(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
         requirePaymentRuntime();
+        requireVietQrChannelEnabled();
         requireUser(userId);
         String key = commandKey(idempotencyKey);
         BigDecimal amount = depositAmount(requestedAmount);
@@ -312,6 +317,7 @@ public class AppVietQrIntentService {
         view.put("feeVnd", VIETQR_FEE_VND);
         view.put("feeUsdt", VIETQR_FEE_USDT);
         view.put("version", longValue(row.get("version")));
+        putIfPresent(view, "targetOrderNo", row.get("targetOrderNo"));
         putIfPresent(view, "receivedVnd", row.get("receivedVnd"));
         if (row.get("matchedAt") != null) view.put("matchedAt", isoInstant(row.get("matchedAt")));
         if (row.get("createdAt") != null) view.put("createdAt", isoInstant(row.get("createdAt")));
@@ -346,6 +352,34 @@ public class AppVietQrIntentService {
     }
 
     /**
+     * The D1 channel switch is owned by the canonical platform config item.
+     * A missing item preserves the pre-existing D1 default (enabled); an
+     * explicitly malformed value never permits a payment intent.
+     */
+    private VietQrChannelState vietQrChannelState() {
+        Optional<String> configured = configFacade.activeValue(VIETQR_CHANNEL_ENABLED_KEY)
+                .filter(StringUtils::hasText);
+        if (configured.isEmpty()) {
+            return VietQrChannelState.ENABLED;
+        }
+        return switch (configured.get().trim().toLowerCase(Locale.ROOT)) {
+            case "true", "1" -> VietQrChannelState.ENABLED;
+            case "false", "0" -> VietQrChannelState.DISABLED;
+            default -> VietQrChannelState.INVALID;
+        };
+    }
+
+    private void requireVietQrChannelEnabled() {
+        switch (vietQrChannelState()) {
+            case ENABLED -> {
+                return;
+            }
+            case DISABLED -> throw new BizException(503, "VIETQR_CHANNEL_UNAVAILABLE");
+            case INVALID -> throw new BizException(503, "VIETQR_CHANNEL_CONFIG_INVALID");
+        }
+    }
+
+    /**
      * VietQR config, FX quotes, bank accounts, and intents are currently
      * backed only by the production payment tables.  A sandbox request must
      * never silently reuse those rows; until a run-scoped payment projection
@@ -370,6 +404,16 @@ public class AppVietQrIntentService {
             throw new BizException(503, "VIETQR_SANDBOX_CONFIG_UNAVAILABLE");
         }
         throw new BizException(503, "VIETQR_RUNTIME_PROFILE_INVALID");
+    }
+
+    private enum VietQrChannelState {
+        ENABLED,
+        DISABLED,
+        INVALID;
+
+        boolean available() {
+            return this == ENABLED;
+        }
     }
 
     private String isoInstant(Object value) {

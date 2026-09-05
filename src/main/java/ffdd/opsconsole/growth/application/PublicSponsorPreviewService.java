@@ -45,7 +45,8 @@ public class PublicSponsorPreviewService {
                     new PublicSponsorPreviewView.Sponsor(
                             maskName(row.nickname()), safe(row.vRank(), "V0")),
                     new PublicSponsorPreviewView.Gift(
-                            "PENDING_REVIEW", config.welcomeGift().usdtAmount(), config.welcomeGift().nexAmount())));
+                            config.enabled() ? "PENDING_REVIEW" : "DISABLED",
+                            config.welcomeGift().usdtAmount(), config.welcomeGift().nexAmount())));
         } catch (RuntimeException exception) {
             return ApiResult.fail(503, "REFERRAL_PREVIEW_UNAVAILABLE");
         }

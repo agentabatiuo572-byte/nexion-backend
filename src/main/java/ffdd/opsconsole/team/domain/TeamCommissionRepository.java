@@ -49,6 +49,15 @@ public interface TeamCommissionRepository {
 
     default List<Map<String, Object>> ambassadorApplications(int limit) { return List.of(); }
 
+    default Map<String, Object> ambassadorPolicy() { return Map.of(); }
+
+    default boolean updateAmbassadorPolicyCas(
+            long expectedRevision,
+            String policyVersion,
+            BigDecimal defaultBudgetUsdt,
+            String bucketsJson,
+            String operator) { return false; }
+
     default boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) { return false; }
 
     List<Map<String, Object>> leaderboardPodium(int limit);
@@ -235,24 +244,28 @@ public interface TeamCommissionRepository {
                                                 String from,
                                                 String to);
 
+    default List<Map<String, Object>> queryPromotionLogPage(
+            Long userId, String v, String cohort, String from, String to, Long beforeId, int limit) {
+        return queryPromotionLog(userId, v, cohort, from, to).stream().limit(limit).toList();
+    }
+
+    default long countPromotionLog(Long userId, String v, String cohort, String from, String to) {
+        return queryPromotionLog(userId, v, cohort, from, to).size();
+    }
+
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6 端点第二组)
     // ============================================================
 
-    /**
-     * 查 nx_v_rank_reward_payout 派发流水(is_deleted=0,ORDER BY granted_at DESC LIMIT 100)。
-     *
-     * @param type   reward_type 精确忽略大小写(null=不过滤)
-     * @param v      rank_code 精确匹配(null/空=不过滤)
-     * @param status status 忽略大小写(null/空=不过滤)
-     * @param userId user_id 精确匹配(null=不过滤)
-     * @param cursor granted_at 上界游标(null=首页)
-     */
-    List<Map<String, Object>> queryRewardPayouts(String type,
-                                                 String v,
-                                                 String status,
-                                                 Long userId,
-                                                 String cursor);
+    /** Stable keyset page ordered by descending row id; beforeId is the opaque cursor. */
+    default List<Map<String, Object>> queryRewardPayoutsPage(
+            String type, String v, String status, Long userId, Long beforeId, int limit) {
+        return List.of();
+    }
+
+    default long countRewardPayouts(String type, String v, String status, Long userId) {
+        return 0;
+    }
 
     /**
      * 按 payout_id 精确查单条 payout(忽略软删)。

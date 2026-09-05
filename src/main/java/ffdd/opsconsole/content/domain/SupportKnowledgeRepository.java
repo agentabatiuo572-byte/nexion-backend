@@ -4,12 +4,35 @@ import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportSlaUpdateRequest;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 public interface SupportKnowledgeRepository {
     void ensureSeedData(LocalDateTime now);
 
     List<SupportFaqView> listFaqs();
+
+    default long countPublishedFaqs(String language, String surface, String category) {
+        return listFaqs().stream()
+                .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
+                .filter(faq -> language.equalsIgnoreCase(faq.language()))
+                .filter(faq -> surface.equalsIgnoreCase(faq.surface()))
+                .filter(faq -> category == null || category.isBlank()
+                        || category.toLowerCase(Locale.ROOT).equals(faq.category().toLowerCase(Locale.ROOT)))
+                .count();
+    }
+
+    default List<SupportFaqView> listPublishedFaqPage(
+            String language, String surface, String category, long offset, int limit) {
+        return listFaqs().stream()
+                .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
+                .filter(faq -> language.equalsIgnoreCase(faq.language()))
+                .filter(faq -> surface.equalsIgnoreCase(faq.surface()))
+                .filter(faq -> category == null || category.isBlank()
+                        || category.toLowerCase(Locale.ROOT).equals(faq.category().toLowerCase(Locale.ROOT)))
+                .sorted(java.util.Comparator.comparing(SupportFaqView::sortOrder).thenComparing(SupportFaqView::id))
+                .skip(offset).limit(limit).toList();
+    }
 
     Optional<SupportFaqView> findFaq(String faqId);
 

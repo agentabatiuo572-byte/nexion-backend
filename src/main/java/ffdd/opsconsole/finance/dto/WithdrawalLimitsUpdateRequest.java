@@ -18,6 +18,7 @@ public class WithdrawalLimitsUpdateRequest {
     private BigDecimal networkFeeMax;
     private BigDecimal nexFeeOffsetRate;
     private Map<String, BigDecimal> networkConfirmFeeUsd;
+    private Map<String, Boolean> networkEnabled;
     private BigDecimal smallAmountThresholdUsd;
     private Integer payoutSlaHours;
     private Integer cooldownDays;
@@ -44,6 +45,11 @@ public class WithdrawalLimitsUpdateRequest {
     @JsonSetter public void setNetworkConfirmFeeUsd(Map<String, BigDecimal> value) {
         networkConfirmFeeUsd = value;
         presentFields.add("networkConfirmFeeUsd");
+    }
+    public Map<String, Boolean> getNetworkEnabled() { return networkEnabled; }
+    @JsonSetter public void setNetworkEnabled(Map<String, Boolean> value) {
+        networkEnabled = value;
+        presentFields.add("networkEnabled");
     }
     public BigDecimal getSmallAmountThresholdUsd() { return smallAmountThresholdUsd; }
     @JsonSetter public void setSmallAmountThresholdUsd(BigDecimal value) {
@@ -83,6 +89,7 @@ public class WithdrawalLimitsUpdateRequest {
         fields.retainAll(Set.of(
                 "dailyLimitCount", "balanceMaxRatio", "networkFeeRatio",
                 "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd",
+                "networkEnabled",
                 "smallAmountThresholdUsd", "payoutSlaHours"));
         return fields;
     }

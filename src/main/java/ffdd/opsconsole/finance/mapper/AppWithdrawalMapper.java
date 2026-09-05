@@ -147,9 +147,12 @@ public interface AppWithdrawalMapper {
 
     @Select("""
             SELECT COUNT(1) FROM nx_withdrawal_order
-             WHERE user_id=#{userId} AND created_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) AND is_deleted=0
+             WHERE user_id=#{userId} AND created_at>=#{fromInclusive}
+               AND created_at<#{toExclusive} AND is_deleted=0
             """)
-    int countLast24Hours(@Param("userId") Long userId);
+    int countBusinessDay(@Param("userId") Long userId,
+                         @Param("fromInclusive") LocalDateTime fromInclusive,
+                         @Param("toExclusive") LocalDateTime toExclusive);
 
     @Select("""
             SELECT CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) userNo,
@@ -271,9 +274,18 @@ public interface AppWithdrawalMapper {
               FROM nx_withdrawal_order w
               JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0
              WHERE w.user_id=#{userId} AND w.is_deleted=0
-             ORDER BY w.created_at DESC,w.id DESC LIMIT #{limit}
+             ORDER BY w.created_at DESC,w.id DESC LIMIT #{offset},#{limit}
             """)
-    List<Map<String, Object>> userWithdrawals(@Param("userId") Long userId, @Param("limit") int limit);
+    List<Map<String, Object>> userWithdrawals(
+            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_withdrawal_order w
+              JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+             WHERE w.user_id=#{userId} AND w.is_deleted=0
+            """)
+    long countUserWithdrawals(@Param("userId") Long userId);
 
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,

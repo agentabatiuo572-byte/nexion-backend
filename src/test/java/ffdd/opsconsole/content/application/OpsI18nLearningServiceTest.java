@@ -110,6 +110,20 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
+    void saveLocalizedDraftRejectsAnUnregisteredMessageKey() {
+        var result = service.saveLocalizedDraft(
+                "unregistered.message",
+                "idem-i6-unregistered",
+                new I18nLocalizedCopyRequest(
+                        "未注册中文", "Unregistered English", "Tiếng Việt chưa đăng ký",
+                        "v1", "Marina K.", "验证未注册词条不得绕过 App 消费注册表"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("I18N_MESSAGE_KEY_NOT_REGISTERED");
+        assertThat(repository.findMessagePair("unregistered.message")).isEmpty();
+    }
+
+    @Test
     void saveLocalizedDraftRejectsPlaceholderMismatch() {
         var result = service.saveLocalizedDraft("milestones.earnCross", "idem-i6-draft", copyRequest("完成 {amount}", "Earn {nex}"));
 
@@ -244,6 +258,21 @@ class OpsI18nLearningServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("fixed");
+    }
+
+    @Test
+    void fixIntegrityRejectsAnUnregisteredMessageKeyWithoutSaving() {
+        var result = service.fixIntegrity("missing-zh", "idem-i6-fix-unregistered", new I18nIntegrityFixRequest(
+                "unregistered.integrity.message",
+                "补齐中文",
+                "Repair English",
+                "Sửa tiếng Việt",
+                "Marina K.",
+                "验证完整性修复不能创建 App 未注册词条"));
+
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("I18N_MESSAGE_KEY_NOT_REGISTERED");
+        assertThat(repository.findMessagePair("unregistered.integrity.message")).isEmpty();
     }
 
     @Test

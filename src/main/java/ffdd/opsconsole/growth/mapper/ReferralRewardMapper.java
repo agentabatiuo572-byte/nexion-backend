@@ -40,7 +40,6 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
              WHERE invited.sponsor_user_id = #{userId}
                AND invited.id <> #{userId}
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
-               AND invited.created_at >= #{effectiveAt}
                AND #{sourceEnvironment} = 'PRODUCTION'
                AND COALESCE(owner.sandbox, 0) = #{accountSandbox}
                AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
@@ -169,7 +168,6 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                 ON s.invited_user_id = invited.id AND s.run_id = #{runId} AND s.is_deleted = 0
              WHERE invited.sponsor_user_id = #{userId} AND invited.id <> #{userId}
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
-               AND invited.created_at >= #{effectiveAt}
                AND COALESCE(owner.sandbox, 0) = 1 AND COALESCE(invited.sandbox, 0) = 1
             """)
     long appSandboxInvitedCount(@Param("userId") Long userId,
@@ -745,6 +743,26 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> recentSettlements(@Param("accountSandbox") int accountSandbox,
                                                 @Param("limit") int limit);
+
+    @Select("""
+            SELECT s.id AS rowId,
+                   s.settlement_no AS settlementNo, s.invited_user_id AS invitedUserId,
+                   s.inviter_user_id AS inviterUserId, s.newcomer_usdt AS newcomerUsdt,
+                   s.newcomer_nex AS newcomerNex, s.inviter_nex AS inviterNex,
+                   s.status AS status, s.created_at AS createdAt
+              FROM nx_referral_reward_settlement s
+              JOIN nx_user invited ON invited.id=s.invited_user_id
+              JOIN nx_user inviter ON inviter.id=s.inviter_user_id
+             WHERE s.is_deleted=0
+               AND COALESCE(invited.sandbox,0)=#{accountSandbox}
+               AND COALESCE(inviter.sandbox,0)=#{accountSandbox}
+               AND (#{beforeId} IS NULL OR s.id < #{beforeId})
+             ORDER BY s.id DESC LIMIT #{limit}
+            """)
+    List<Map<String, Object>> recentSettlementsPage(
+            @Param("accountSandbox") int accountSandbox,
+            @Param("beforeId") Long beforeId,
+            @Param("limit") int limit);
 
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}

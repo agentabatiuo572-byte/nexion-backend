@@ -21,6 +21,7 @@ import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneQuestState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
@@ -34,6 +35,9 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
@@ -83,7 +87,7 @@ class AppGrowthEngagementServiceTest {
 
         assertThatThrownBy(() -> isolated.eventState(42L))
                 .hasMessageContaining("GROWTH_SANDBOX_SCOPE_UNAVAILABLE");
-        verify(mapper, never()).eventState(anyLong());
+        verify(mapper, never()).eventState(anyLong(), anyString());
     }
 
     @Test
@@ -102,11 +106,14 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void questStateUsesOnlyPersistedDefinitionsUserProgressPromoAndH1Multiplier() {
-        when(mapper.questState(42L)).thenReturn(List.of(Map.of(
+        when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "H3_FIRST_ORDER_STARTED",
                 "name", "Start your first order",
                 "layer", "DAY_ONE",
                 "rewardNex", 50,
+                "triReward", "500 / 200 / 0 NEX",
+                "accountAgeHours", 0,
+                "eligibilityHours", 72,
                 "status", "CLAIMABLE")));
         when(mapper.questPromoBanner()).thenReturn(Map.of(
                 "bannerCode", "HOME_WEEKLY_UPSELL",
@@ -122,7 +129,11 @@ class AppGrowthEngagementServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("questBonusMultiplier", new BigDecimal("1.5"))
-                .containsEntry("rhythmMonth", 3);
+                .containsEntry("rhythmMonth", 3)
+                .containsEntry("dayOneRewardNex", new BigDecimal("500"));
+        assertThat(result.getData().get("quests")).asList().singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("rewardNex"))
+                .isEqualTo(BigDecimal.ZERO);
         assertThat(result.getData().get("quests")).asList().singleElement()
                 .extracting(row -> ((Map<?, ?>) row).get("questCode"))
                 .isEqualTo("H3_FIRST_ORDER_STARTED");
@@ -133,18 +144,18 @@ class AppGrowthEngagementServiceTest {
     void questClaimAtomicallyChangesStateCreditsWalletAuditsAndPublishes() {
         when(mapper.lockClaimableQuest(42L, "QUEST-1"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", new BigDecimal("10")));
-        when(mapper.claimQuest(42L, 7L)).thenReturn(1);
+        when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         wallet(new BigDecimal("100"));
 
-        var result = service.claimQuest(42L, "QUEST-1", "quest-key");
+        var result = service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "quest-key");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("15.000000"));
         var ordered = inOrder(mapper, audit, outbox);
-        ordered.verify(mapper).claimQuest(42L, 7L);
+        ordered.verify(mapper).claimQuest(42L, 7L, "TEST-INSTANCE");
         ordered.verify(mapper).creditWalletNex(42L, new BigDecimal("15.000000"));
         ordered.verify(mapper).insertNexLedger(
-                42L, "QUEST:QUEST-1:42", "QUEST_REWARD", new BigDecimal("15.000000"),
+                42L, "QUEST:QUEST-1:42:TEST-INSTANCE", "QUEST_REWARD", new BigDecimal("15.000000"),
                 new BigDecimal("115.000000"), "H3 quest claim");
         ordered.verify(audit).recordRequired(any());
         ordered.verify(outbox).publishUserEvent(
@@ -203,6 +214,130 @@ class AppGrowthEngagementServiceTest {
         verify(outbox).publishUserEvent(
                 eq("DAILY_CHECK_IN"), anyString(), eq("daily.lucky_triggered"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void dayOneClaimRequiresTheWholeConfiguredGroupAndDoesNotPayOneTaskEarly() {
+        when(mapper.lockClaimableQuest(42L, "DAY-1"))
+                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
+                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
+        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
+                new DayOneQuestState(7L, "CLAIMABLE"),
+                new DayOneQuestState(8L, "PENDING")));
+
+        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-early");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(mapper, never()).claimDayOneGroup(anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(any(), any());
+    }
+
+    @Test
+    void dayOneClaimRejectsACompleteLookingButIncompleteFiveTaskGroup() {
+        when(mapper.lockClaimableQuest(42L, "DAY-1"))
+                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
+                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
+        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
+                new DayOneQuestState(7L, "CLAIMABLE"), new DayOneQuestState(8L, "COMPLETED"),
+                new DayOneQuestState(9L, "CLAIMABLE"), new DayOneQuestState(10L, "COMPLETED"),
+                new DayOneQuestState(11L, "CLAIMABLE")));
+
+        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-short-group");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DAY_ONE_GROUP_NOT_CLAIMABLE");
+        verify(mapper, never()).claimDayOneGroup(anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(any(), any());
+    }
+
+    @Test
+    void dayOneClaimMarksAndPaysTheWholeGroupExactlyOnce() {
+        when(mapper.lockClaimableQuest(42L, "DAY-1"))
+                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
+                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
+        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
+                new DayOneQuestState(7L, "CLAIMABLE"), new DayOneQuestState(8L, "COMPLETED"),
+                new DayOneQuestState(9L, "CLAIMABLE"), new DayOneQuestState(10L, "COMPLETED"),
+                new DayOneQuestState(11L, "CLAIMABLE"), new DayOneQuestState(12L, "COMPLETED")));
+        when(mapper.claimDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(6);
+        wallet(new BigDecimal("100"));
+
+        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-group");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("750.000000"));
+        verify(mapper).claimDayOneGroup(42L, "DAY_ONE:20260904T120000");
+        verify(mapper, never()).claimQuest(any(), any(), any());
+        verify(mapper).insertNexLedger(42L, "QUEST:DAY_ONE:42:DAY_ONE:20260904T120000",
+                "QUEST_REWARD", new BigDecimal("750.000000"), new BigDecimal("850.000000"),
+                "H3 quest claim");
+    }
+
+    @Test
+    void questClaimBindsTheIdempotencyPayloadToTheRequestedMissionInstance() {
+        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+                .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
+        when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
+        wallet(BigDecimal.ZERO);
+
+        service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "instance-bound-key");
+
+        verify(idempotency).execute(eq("APP:QUEST_CLAIM:USER:42"), eq("instance-bound-key"),
+                eq(sha256("QUEST-1|TEST-INSTANCE")), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void questClaimRejectsAStaleRequestedInstanceBeforeAnyRewardWrite() {
+        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+                .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN, "WEEK:2026-W36"));
+
+        assertThatThrownBy(() -> service.claimQuest(
+                42L, "QUEST-1", "WEEK:2026-W35", "stale-instance-key"))
+                .hasMessage("QUEST_INSTANCE_MISMATCH");
+
+        verify(mapper, never()).claimQuest(any(), any(), any());
+        verify(mapper, never()).creditWalletNex(any(), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void contentStatePassesOnlySupportedLocaleToTheLocalizedProjection() {
+        when(mapper.questState(42L, "zh")).thenReturn(List.of());
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        assertThat(service.questState(42L, "zh").getCode()).isZero();
+        verify(mapper).questState(42L, "zh");
+
+        when(mapper.questState(42L, "en")).thenReturn(List.of());
+        assertThat(service.questState(42L, "ja").getCode()).isZero();
+        verify(mapper).questState(42L, "en");
+    }
+
+    @Test
+    void pointStateIncludesCanonicalBadgeAchievements() {
+        when(mapper.pointState(eq(42L), any())).thenReturn(Map.of(
+                "currentStreak", 0,
+                "longestStreak", 0,
+                "streakSavers", 0,
+                "checkedInToday", 0));
+        when(mapper.achievementState(42L)).thenReturn(List.of(Map.of(
+                "achievementCode", "FIRST_DEVICE",
+                "name", "First device",
+                "description", "Activate a device",
+                "category", "HARDWARE",
+                "iconKey", "hardware",
+                "accentColor", "#00C48C",
+                "rewardPoints", 0,
+                "status", "UNLOCKED")));
+
+        var result = service.pointState(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("badgeAchievements")).asList().singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("achievementCode"))
+                .isEqualTo("FIRST_DEVICE");
+        verify(mapper).achievementState(42L);
     }
 
     @Test
@@ -298,6 +433,61 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
+    void explicitEarningMilestoneClaimFiresOnlyTheRequestedEligibleRungAndScopesIdempotencyToIt() {
+        EarningMilestone lowest = new EarningMilestone(
+                "M-100", new BigDecimal("100"), new BigDecimal("8"), new BigDecimal("500"));
+        EarningMilestone requested = new EarningMilestone(
+                "M-500", new BigDecimal("500"), new BigDecimal("50"), new BigDecimal("500"));
+        when(mapper.lockEligibleEarningMilestones(42L)).thenReturn(List.of(lowest, requested));
+        when(mapper.insertEarningMilestone(eq(42L), eq(requested), anyString())).thenReturn(1);
+        wallet(BigDecimal.TEN);
+
+        var result = service.evaluateEarningMilestones(42L, "earning-selected-key", "M-500");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("fired")).asList().singleElement()
+                .extracting(row -> ((Map<?, ?>) row).get("milestoneId"))
+                .isEqualTo("M-500");
+        verify(mapper).insertEarningMilestone(eq(42L), eq(requested), anyString());
+        verify(mapper, never()).insertEarningMilestone(eq(42L), eq(lowest), anyString());
+        verify(idempotency).execute(
+                eq("APP:EARNING_MILESTONE_EVALUATE:USER:42"), eq("earning-selected-key"),
+                eq(sha256("milestone:M-500")), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void defaultEarningMilestoneEvaluationStillFiresTheLowestEligibleRung() {
+        EarningMilestone lowest = new EarningMilestone(
+                "M-100", new BigDecimal("100"), new BigDecimal("8"), new BigDecimal("500"));
+        EarningMilestone higher = new EarningMilestone(
+                "M-500", new BigDecimal("500"), new BigDecimal("50"), new BigDecimal("500"));
+        when(mapper.lockEligibleEarningMilestones(42L)).thenReturn(List.of(lowest, higher));
+        when(mapper.insertEarningMilestone(eq(42L), eq(lowest), anyString())).thenReturn(1);
+        wallet(BigDecimal.TEN);
+
+        assertThat(service.evaluateEarningMilestones(42L, "earning-default-key").getCode()).isZero();
+
+        verify(mapper).insertEarningMilestone(eq(42L), eq(lowest), anyString());
+        verify(mapper, never()).insertEarningMilestone(eq(42L), eq(higher), anyString());
+        verify(idempotency).execute(
+                eq("APP:EARNING_MILESTONE_EVALUATE:USER:42"), eq("earning-default-key"),
+                eq(sha256("eligible-rules")), eq(ApiResult.class), any());
+    }
+
+    @Test
+    void explicitEarningMilestoneClaimRejectsARequestedRungOutsideTheLockedEligibleSet() {
+        EarningMilestone eligible = new EarningMilestone(
+                "M-100", new BigDecimal("100"), new BigDecimal("8"), new BigDecimal("120"));
+        when(mapper.lockEligibleEarningMilestones(42L)).thenReturn(List.of(eligible));
+
+        assertThatThrownBy(() -> service.evaluateEarningMilestones(42L, "earning-not-eligible-key", "M-500"))
+                .hasMessageContaining("EARNING_MILESTONE_NOT_CLAIMABLE");
+
+        verify(mapper, never()).insertEarningMilestone(anyLong(), any(), anyString());
+        verify(mapper, never()).creditWalletNex(anyLong(), any());
+    }
+
+    @Test
     void voucherClaimPublishesAnalyticsOnlyForTheFirstDurableGrant() {
         when(mapper.lockUserClaimableVoucher(eq("V-1"), eq("home"), anyLong()))
                 .thenReturn(new VoucherClaimDefinition("V-1", "all"));
@@ -358,12 +548,12 @@ class AppGrowthEngagementServiceTest {
     void outboxFailureIsNotSwallowedSoTransactionCanRollBackRewardAndClaim() {
         when(mapper.lockClaimableQuest(42L, "QUEST-1"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
-        when(mapper.claimQuest(42L, 7L)).thenReturn(1);
+        when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         wallet(BigDecimal.ZERO);
         when(outbox.publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("outbox unavailable"));
 
-        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "rollback-key"))
+        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "rollback-key"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("outbox unavailable");
     }
@@ -372,9 +562,9 @@ class AppGrowthEngagementServiceTest {
     void inactiveUserCannotReachAnyMutationOrSideEffect() {
         when(mapper.lockActiveUser(42L)).thenReturn(null);
 
-        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "key"))
+        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "key"))
                 .hasMessage("USER_NOT_FOUND_OR_INACTIVE");
-        verify(mapper, never()).claimQuest(any(), any());
+        verify(mapper, never()).claimQuest(any(), any(), any());
         verify(audit, never()).recordRequired(any());
         verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
     }
@@ -383,11 +573,11 @@ class AppGrowthEngagementServiceTest {
     void b1BelowRedlineRollsBackClaimBeforeAnyWalletOrOutboxSideEffect() {
         when(mapper.lockClaimableQuest(42L, "QUEST-1"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
-        when(mapper.claimQuest(42L, 7L)).thenReturn(1);
+        when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
                 new BigDecimal("1.01"), new BigDecimal("1.05"), true));
 
-        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "coverage-key"))
+        assertThatThrownBy(() -> service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "coverage-key"))
                 .hasMessage("B1_COVERAGE_BELOW_REDLINE");
         verify(mapper, never()).creditWalletNex(any(), any());
         verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
@@ -398,5 +588,14 @@ class AppGrowthEngagementServiceTest {
         when(mapper.creditWalletNex(eq(42L), any(BigDecimal.class))).thenReturn(1);
         when(mapper.insertNexLedger(eq(42L), anyString(), anyString(), any(BigDecimal.class),
                 any(BigDecimal.class), anyString())).thenReturn(1);
+    }
+
+    private static String sha256(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new AssertionError(ex);
+        }
     }
 }

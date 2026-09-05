@@ -21,11 +21,43 @@ import ffdd.opsconsole.content.mapper.I18nMessageVersionMapper;
 import ffdd.opsconsole.content.mapper.I18nNamespaceMapper;
 import ffdd.opsconsole.content.mapper.LearningCourseVersionMapper;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 
 class MybatisI18nLearningRepositoryDraftCasTest {
+
+    @Test
+    void malformedStoredQuizFailsClosedInsteadOfPublishingAQuizlessCourse() {
+        HelpArticleMapper helpArticleMapper = mock(HelpArticleMapper.class);
+        HelpArticleEntity course = new HelpArticleEntity();
+        course.setArticleCode("learn.basics.malformed-quiz");
+        course.setTitle("损坏测验");
+        course.setContent("正文");
+        course.setCategory("basics");
+        course.setFormat("article");
+        course.setLevel("beginner");
+        course.setStatus(1);
+        course.setIsDeleted(0);
+        course.setSortOrder(10);
+        course.setVersionNo(1);
+        course.setQuizJson("{not-json");
+        when(helpArticleMapper.selectList(any())).thenReturn(List.of(course));
+        MybatisI18nLearningRepository repository = new MybatisI18nLearningRepository(
+                mock(I18nNamespaceMapper.class),
+                mock(I18nMessageMapper.class),
+                mock(I18nMessageVersionMapper.class),
+                mock(I18nIntegrityIssueMapper.class),
+                mock(I18nHardcodedFindingMapper.class),
+                helpArticleMapper,
+                mock(LearningCourseVersionMapper.class),
+                mock(AppLearningMapper.class));
+
+        assertThatThrownBy(repository::listCourses)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("LEARNING_COURSE_QUIZ_INVALID");
+    }
 
     @Test
     void editingDraftAdvancesServerVersionAndRetiresPreviousDraft() {

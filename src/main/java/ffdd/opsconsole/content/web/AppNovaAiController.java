@@ -35,8 +35,9 @@ public class AppNovaAiController {
     @GetMapping("/history")
     public ApiResult<AppNovaAiService.HistoryResponse> history(
             @RequestParam(required = false) String conversationId,
+            @RequestParam(required = false) String beforeTurnId,
             Authentication authentication) {
-        return ApiResult.ok(service.history(userId(authentication), conversationId));
+        return ApiResult.ok(service.history(userId(authentication), conversationId, beforeTurnId));
     }
 
     private Long userId(Authentication authentication) {

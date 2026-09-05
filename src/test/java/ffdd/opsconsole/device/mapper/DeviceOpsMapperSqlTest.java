@@ -9,6 +9,7 @@ class DeviceOpsMapperSqlTest {
     void deviceProjectionUsesExecutableLessThanOrEqualOperator() {
         assertThat(DeviceOpsMapper.DEVICE_COLUMNS)
                 .contains("NOT s.id > d.id")
+                .doesNotContain("<>")
                 .doesNotContain("&lt;=");
     }
 
@@ -36,5 +37,22 @@ class DeviceOpsMapperSqlTest {
                 .contains("r.paused_reason IS NULL", "r.paused_reason IS NOT NULL", "FOR UPDATE");
         assertThat(String.join(" ", pauseQuery.value()))
                 .contains("r.paused_reason IS NULL", "is_deleted = 0");
+    }
+
+    @Test
+    void pendingDeactivateFilterUsesTheDeferredFlagForCountAndPage() throws Exception {
+        var countQuery = DeviceOpsMapper.class
+                .getDeclaredMethod("countDevices", String.class, String.class, String.class,
+                        Long.class, String.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class);
+        var pageQuery = DeviceOpsMapper.class
+                .getDeclaredMethod("pageDevices", String.class, String.class, String.class,
+                        Long.class, String.class, String.class, long.class, long.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class);
+
+        assertThat(String.join(" ", countQuery.value()))
+                .contains("status == \"PENDING-DEACTIVATE\"", "d.pending_deactivate = 1");
+        assertThat(String.join(" ", pageQuery.value()))
+                .contains("status == \"PENDING-DEACTIVATE\"", "d.pending_deactivate = 1");
     }
 }

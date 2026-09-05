@@ -142,13 +142,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     String ORDER_COLUMNS = """
             o.order_no AS orderNo,
             CONCAT('U', o.user_id) AS userNo,
-            COALESCE((SELECT oi.product_no FROM nx_order_item oi
-                       WHERE oi.order_no=o.order_no AND oi.is_deleted=0
-                       ORDER BY oi.sort_order,oi.id LIMIT 1), p.product_no, CAST(o.product_id AS CHAR)) AS skuId,
-            COALESCE((SELECT oi.product_name FROM nx_order_item oi
-                       WHERE oi.order_no=o.order_no AND oi.is_deleted=0
-                         AND NULLIF(TRIM(oi.product_name),'') IS NOT NULL
-                       ORDER BY oi.sort_order,oi.id LIMIT 1),
+            COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_no,'×',oi.quantity)
+                                               ORDER BY oi.sort_order,oi.id SEPARATOR ' + ')
+                       FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0),
+                     p.product_no, CAST(o.product_id AS CHAR)) AS skuId,
+            COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_name,'×',oi.quantity)
+                                               ORDER BY oi.sort_order,oi.id SEPARATOR ' + ')
+                       FROM nx_order_item oi WHERE oi.order_no=o.order_no AND oi.is_deleted=0
+                         AND NULLIF(TRIM(oi.product_name),'') IS NOT NULL),
                      NULLIF(TRIM(p.name),'')) AS skuName,
             CASE
               WHEN EXISTS(SELECT 1 FROM nx_order_item oi
@@ -242,6 +243,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               unlock_phase VARCHAR(32) NOT NULL DEFAULT '',
               unlock_phase_id BIGINT DEFAULT NULL,
               purchase_gate_json TEXT,
+              purchase_gate_generation BIGINT NOT NULL DEFAULT 1,
               image_asset_id VARCHAR(512) DEFAULT NULL,
               image_object_key VARCHAR(255) DEFAULT NULL,
               image_preview_url TEXT NULL,
@@ -972,7 +974,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.price},#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
-              #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),COALESCE(#{sku.sold},0),COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
+              #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
               #{sku.createdAt},#{sku.updatedAt},0
             )
             """)
@@ -989,7 +991,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
               #{sku.power},#{sku.datacenter},#{sku.uptime},#{sku.warranty},#{sku.phoneDailyEarn},#{sku.phoneDailyEarnNex},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
-              #{sku.shareYieldMax},#{sku.baseRate},#{sku.sold},#{sku.stock},#{sku.rating},#{sku.reviews},
+              #{sku.shareYieldMax},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
@@ -999,12 +1001,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
               hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),
               daily_earn=VALUES(daily_earn),daily_earn_nex=VALUES(daily_earn_nex),share_yield_min=VALUES(share_yield_min),
-              share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),sold=VALUES(sold),stock_text=VALUES(stock_text),
+              share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
               ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),features_json=VALUES(features_json),
               generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
               tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
+              purchase_gate_generation=CASE WHEN NOT (purchase_gate_json <=> VALUES(purchase_gate_json))
+                    THEN purchase_gate_generation+1 ELSE purchase_gate_generation END,
               purchase_gate_json=VALUES(purchase_gate_json),image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
               image_preview_url=VALUES(image_preview_url),tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
             """)
@@ -1019,7 +1023,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
                    share_yield_max=#{sku.shareYieldMax},superseded_by_product_no=#{sku.supersededBy},
-                   unlock_phase=CAST(#{sku.unlockPhaseId} AS CHAR),sold_count=COALESCE(#{sku.sold},0),
+                   unlock_phase=CAST(#{sku.unlockPhaseId} AS CHAR),
                    rating_value=COALESCE(#{sku.rating},0),review_count=COALESCE(#{sku.reviews},0),
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
@@ -1203,6 +1207,15 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              LIMIT 1
             """)
     DeviceTaskView findTask(@Param("taskId") String taskId);
+
+    @Select("""
+            SELECT
+            """ + TASK_COLUMNS + """
+              FROM nx_admin_device_task
+             WHERE task_id = #{taskId} AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    DeviceTaskView findTaskForUpdate(@Param("taskId") String taskId);
 
     @Insert("""
             INSERT INTO nx_admin_device_task (
@@ -1606,7 +1619,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                                   OR complete_item.quantity<=0
                                              THEN 1 ELSE 0 END)=0
                                 AND (
-                                      UPPER(complete_order.order_type) IN ('SINGLE','TRIAL_CONVERT')
+                                      UPPER(complete_order.order_type) IN ('SINGLE','TRIAL_CONVERT','CAPACITY_KEEP')
                                       OR (
                                            UPPER(complete_order.order_type) IN ('BUNDLE','TRADE_IN')
                                            AND COUNT(complete_item.id)=complete_order.item_count

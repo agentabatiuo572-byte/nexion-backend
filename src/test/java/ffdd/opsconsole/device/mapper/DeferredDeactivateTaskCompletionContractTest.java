@@ -16,7 +16,10 @@ class DeferredDeactivateTaskCompletionContractTest {
         assertThat(mapper).contains("pending_deactivate=1", "status='DEACTIVATED'", "USER_DEACTIVATED");
         assertThat(service).contains("\"PRODUCTION\".equals(sourceEnvironment)")
                 .contains("deactivatePendingDevice")
-                .contains("markRuntimeDeactivated");
+                .contains("markRuntimeDeactivated")
+                .contains("\"device.deactivated\"")
+                .contains("USER_DEVICE_DEFERRED_DEACTIVATED")
+                .contains("recordRequiredForTrustedActor");
     }
 
     @Test

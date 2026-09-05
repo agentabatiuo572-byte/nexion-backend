@@ -37,7 +37,7 @@ class AppBinaryProjectionServiceTest {
         development.setActiveProfiles("dev");
         when(mapper.userSandbox(41L)).thenReturn(0);
         service = new AppBinaryProjectionService(
-                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage, development);
+                mapper, config, mock(OpsReadTimeSeedPolicy.class), coverage, development, java.time.Clock.systemUTC());
         seed("team.ui.F.binary.threshold", "1000");
         seed("team.ui.F.binary.matchRate", "13%");
         seed("team.ui.F.binary.paused", "false");
@@ -63,6 +63,7 @@ class AppBinaryProjectionServiceTest {
 
     @Test
     void projectsOnlyServerPaidOrdersAssignmentsH1AndCommissionEvents() {
+        seed("team.ui.F.binary.settlePeriod", "每日");
         when(mapper.listPaidOrderCandidates(eq(41L), any(), any())).thenReturn(List.of(
                 new PaidOrderVolumeCandidate(
                         "A-1", 51L, 51L, "A", new BigDecimal("1000"),
@@ -94,6 +95,27 @@ class AppBinaryProjectionServiceTest {
     }
 
     @Test
+    void nonDueProjectionReturnsItsBlockReasonAndNeverShowsAPositiveEstimate() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        service = new AppBinaryProjectionService(mapper, config, mock(OpsReadTimeSeedPolicy.class),
+                coverage, environment,
+                java.time.Clock.fixed(java.time.Instant.parse("2026-08-30T00:00:00Z"), java.time.ZoneOffset.UTC));
+        when(mapper.userSandbox(41L)).thenReturn(0);
+        when(mapper.listPaidOrderCandidates(eq(41L), any(), any())).thenReturn(List.of(
+                new PaidOrderVolumeCandidate("A-1", 51L, 51L, "A", new BigDecimal("1000"), LocalDateTime.now(), 1),
+                new PaidOrderVolumeCandidate("B-1", 52L, 52L, "B", new BigDecimal("2000"), LocalDateTime.now(), 1)));
+        when(mapper.countDirectMembers(41L)).thenReturn(2);
+        when(mapper.countAssignmentsByLeg(41L, "A")).thenReturn(1);
+        when(mapper.countAssignmentsByLeg(41L, "B")).thenReturn(1);
+
+        Map<String, Object> result = service.snapshot(41L);
+
+        assertThat(result).containsEntry("blockedReason", "F3_SETTLEMENT_NOT_DUE");
+        assertThat((BigDecimal) result.get("estimatedAmountUsdt")).isEqualByComparingTo("0");
+    }
+
+    @Test
     void ambiguousPaidOrderMappingFailsClosed() {
         when(mapper.listPaidOrderCandidates(eq(41L), any(), any())).thenReturn(List.of(
                 new PaidOrderVolumeCandidate(
@@ -102,6 +124,18 @@ class AppBinaryProjectionServiceTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.snapshot(41L))
                 .hasMessage("F3_APP_VOLUME_SOURCE_AMBIGUOUS");
+    }
+
+    @Test
+    void monthAndPeriodCapStayInUtcWhenTheJvmHasAlreadyEnteredSeptember() {
+        service = new AppBinaryProjectionService(mapper, config, mock(OpsReadTimeSeedPolicy.class),
+                coverage, new MockEnvironment(), java.time.Clock.fixed(
+                        java.time.Instant.parse("2026-08-31T16:30:00Z"), java.time.ZoneId.of("Asia/Tokyo")));
+        var result = service.snapshot(41L);
+        assertThat(result.get("asOfDate")).isEqualTo(java.time.LocalDate.of(2026, 8, 31));
+        assertThat((BigDecimal) result.get("periodCap")).isEqualByComparingTo("155000");
+        org.mockito.Mockito.verify(mapper).listPaidOrderCandidates(eq(41L), any(),
+                eq(LocalDateTime.of(2026, 9, 1, 8, 0)));
     }
 
     @Test

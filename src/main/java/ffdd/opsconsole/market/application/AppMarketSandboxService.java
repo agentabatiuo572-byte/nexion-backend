@@ -35,10 +35,14 @@ public class AppMarketSandboxService {
     private final Optional<PlatformConfigFacade> config;
 
     public ApiResult<Map<String,Object>> exchangeState(Long userId) {
+        return exchangeState(userId, 1, 50);
+    }
+
+    public ApiResult<Map<String,Object>> exchangeState(Long userId, int requestedPageNum, int requestedPageSize) {
         requireSandboxUser(userId);
         String run = runId();
         AppMarketSandboxMapper.ExchangeWallet wallet = exchangeWallet(run, userId);
-        return ApiResult.ok(exchangeView(run, userId, wallet));
+        return ApiResult.ok(exchangeView(run, userId, wallet, null, requestedPageNum, requestedPageSize));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -222,7 +226,21 @@ public class AppMarketSandboxService {
     private AppMarketSandboxMapper.CanonicalWallet lockCanonicalGenesisWallet(Long user){ AppMarketSandboxMapper.CanonicalWallet w=mapper.lockCanonicalGenesisWallet(user); if(w==null) throw new BizException(409,"GENESIS_SANDBOX_WALLET_UNAVAILABLE"); return w; }
     private void requireGenesisUserRunIsolation(String run,Long user){ if(mapper.genesisArtifactsInOtherRuns(run,user)>0) throw new BizException(409,"GENESIS_SANDBOX_USER_RUN_CONFLICT"); }
     private Map<String,Object> exchangeView(String run,Long user,AppMarketSandboxMapper.ExchangeWallet w){ return exchangeView(run,user,w,null); }
-    private Map<String,Object> exchangeView(String run,Long user,AppMarketSandboxMapper.ExchangeWallet w,String no){ Map<String,Object> m=linked("wallet",linked("usdtAvailable",money(w.usdtAvailable()),"nexAvailable",money(w.nexAvailable())),"orders",mapper.exchangeOrders(run,user),"ledger",mapper.exchangeLedger(run,user),"serverCanonical",true,"source","mock","sourceEnvironment","SANDBOX","runId",run); if(no!=null)m.put("exchangeNo",no); return m; }
+    private Map<String,Object> exchangeView(String run,Long user,AppMarketSandboxMapper.ExchangeWallet w,String no){ return exchangeView(run,user,w,no,1,50); }
+    private Map<String,Object> exchangeView(String run,Long user,AppMarketSandboxMapper.ExchangeWallet w,String no,
+            int requestedPageNum,int requestedPageSize){
+        int pageNum=Math.max(1,requestedPageNum); int pageSize=Math.max(1,Math.min(requestedPageSize,100));
+        long total=mapper.countExchangeOrders(run,user);
+        long offset=(long)(pageNum-1)*pageSize;
+        List<AppMarketSandboxMapper.ExchangeOrderView> orders=offset>=total
+                ? List.of() : mapper.exchangeOrdersPage(run,user,offset,pageSize);
+        Map<String,Object> m=linked("wallet",linked("usdtAvailable",money(w.usdtAvailable()),"nexAvailable",money(w.nexAvailable())),
+                "orders",List.copyOf(orders),
+                "ordersPage",linked("total",total,"pageNum",pageNum,"pageSize",pageSize),
+                "ledger",mapper.exchangeLedger(run,user),"serverCanonical",true,"source","mock",
+                "sourceEnvironment","SANDBOX","runId",run);
+        if(no!=null)m.put("exchangeNo",no); return m;
+    }
     private Map<String,Object> genesisStateView(String run,SandboxSalePolicy policy){ BigDecimal price=positiveMoneyNumber("nexion.genesis.sandbox.price-usdt","7999"); long sold=sandboxHoldingCount(run); return linked("series",linked("seriesCode","GENESIS-SANDBOX","name","Genesis Sandbox","totalSupply",1000,"soldSupply",sold,"remainingSupply",Math.max(0,1000-sold),"priceUsdt",price,"royaltyPct",0,"dailyEmissionRatePct",0),"market",linked("enabled",true,"internalP2POnly",true),"sale",linked("available",policy.available(),"open",policy.available(),"eligibilityEnabled",policy.eligibilityEnabled(),"maxPerUser",policy.effectiveMaxPerUser(),"minAccountAgeDays",policy.effectiveMinAccountAgeDays(),"presaleEnabled",false,"showCountdown",false,"unitPriceUsdt",price),"tradeAvailable",policy.available(),"listings",mapper.listings(run).stream().map(this::genesisListingView).toList(),"serverCanonical",true,"source","mock","sourceEnvironment","SANDBOX","runId",run); }
     private Map<String,Object> genesisAccountView(String run,Long user,AppMarketSandboxMapper.CanonicalWallet w){ return genesisAccountView(run,user,w,null); }
     private Map<String,Object> genesisAccountView(String run,Long user,AppMarketSandboxMapper.CanonicalWallet w,String order){

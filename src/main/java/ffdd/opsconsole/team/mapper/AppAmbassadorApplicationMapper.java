@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -51,6 +52,23 @@ public interface AppAmbassadorApplicationMapper extends BaseMapper<Object> {
             """)
     ApplicationRow latest(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
                           @Param("runId") String runId);
+
+    @Select("SELECT COUNT(*) FROM nx_team_ambassador_application WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId} AND is_deleted=0")
+    long count(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+               @Param("runId") String runId);
+
+    @Select("""
+            SELECT id,user_id userId,idempotency_key idempotencyKey,request_hash requestHash,
+                   UPPER(status) status,city,event_date eventDate,requested_budget_usdt budget,
+                   application_reason bucket,created_at submittedAt,
+                   source_environment sourceEnvironment,run_id runId
+              FROM nx_team_ambassador_application
+             WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
+               AND is_deleted=0 ORDER BY created_at DESC,id DESC LIMIT #{offset},#{limit}
+            """)
+    List<ApplicationRow> list(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+                              @Param("runId") String runId, @Param("offset") long offset,
+                              @Param("limit") int limit);
 
     @Select("""
             SELECT id,user_id userId,idempotency_key idempotencyKey,request_hash requestHash,

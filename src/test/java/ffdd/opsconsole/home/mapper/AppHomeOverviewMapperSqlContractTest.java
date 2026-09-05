@@ -20,8 +20,9 @@ class AppHomeOverviewMapperSqlContractTest {
         assertTrue(devices.contains("SHA2("));
         assertTrue(devices.contains("current_client.client_name"));
         assertTrue(devices.contains("t.user_device_id"));
-        assertTrue(devices.contains("AS task_rank"));
-        assertTrue(devices.contains("ranked.task_rank = 1"));
+        assertTrue(devices.contains("current_client.id = ("));
+        assertTrue(devices.contains("t.user_device_id = d.id"));
+        assertTrue(devices.contains("ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC"));
         assertTrue(devices.contains("COALESCE(current_client.client_name, dc.display_name) AS name"));
         assertTrue(devices.contains("COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city"));
         assertTrue(!devices.contains("u.email"));

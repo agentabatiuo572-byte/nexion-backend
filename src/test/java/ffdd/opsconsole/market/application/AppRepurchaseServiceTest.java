@@ -55,7 +55,10 @@ class AppRepurchaseServiceTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     void executeIdempotentAction() {
         environment.setActiveProfiles("dev");
+        when(mapper.controlValue("killswitch.staking")).thenReturn("enabled");
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
+                .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+        when(idempotency.executeRetained(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(disclosureGate.checkUserGate(eq(7L), eq("staking"), anyString())).thenReturn(ApiResult.ok(null));
         when(mapper.latestNexUsdtPrice()).thenReturn(new BigDecimal("0.12"));
@@ -110,6 +113,25 @@ class AppRepurchaseServiceTest {
     }
 
     @Test
+    void sandboxOrdersHonorRequestedPagination() {
+        environment.setActiveProfiles("test");
+        environment.setProperty("nexion.commerce.acceptance-run-id", "RUN-REPURCHASE-PAGE-001");
+        LocalDateTime lockedAt = LocalDateTime.now(clock).minusDays(1);
+        when(sandboxMapper.listPositions("repurchase", "RUN-REPURCHASE-PAGE-001", 7L)).thenReturn(List.of(
+                new MarketSandboxMapper.PositionRow(1L, "RPS-ONE00000", "REPURCHASE", "Repurchase",
+                        BigDecimal.TEN, BigDecimal.ONE, BigDecimal.ONE, 90, lockedAt,
+                        lockedAt.plusDays(90), BigDecimal.ONE, "ACTIVE", 0L),
+                new MarketSandboxMapper.PositionRow(2L, "RPS-TWO00000", "REPURCHASE", "Repurchase",
+                        BigDecimal.TEN, BigDecimal.ONE, BigDecimal.ONE, 90, lockedAt,
+                        lockedAt.plusDays(90), BigDecimal.ONE, "ACTIVE", 0L)));
+
+        Map<String,Object> data = service.orders(7L, 2, 1).getData();
+
+        assertThat(data.get("ordersPage")).isEqualTo(Map.of("total", 2, "pageNum", 2, "pageSize", 1));
+        assertThat((List<?>) data.get("orders")).hasSize(1);
+    }
+
+    @Test
     void productionProfileExposesCanonicalProvenance() {
         when(mapper.product()).thenReturn(product());
         when(mapper.issuedTicketsThisMonth()).thenReturn(20L);
@@ -155,7 +177,7 @@ class AppRepurchaseServiceTest {
         when(outbox.publishUserEvent(anyString(), anyString(), anyString(), eq(7L), eq("P4"), eq(6), eq("2026-W30"), any()))
                 .thenReturn("evt-1");
         when(mapper.wallet(7L)).thenReturn(new BigDecimal("300"));
-        when(mapper.positions(7L)).thenReturn(List.of());
+        when(mapper.positions(7L, 0L, 50)).thenReturn(List.of());
 
         ApiResult<Map<String, Object>> result = service.open(7L, "g7-open-1",
                 new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
@@ -190,11 +212,10 @@ class AppRepurchaseServiceTest {
         when(disclosureGate.checkUserGate(7L, "staking", "g7-open-unacknowledged"))
                 .thenReturn(ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED"));
 
-        ApiResult<Map<String, Object>> result = service.open(7L, "g7-open-unacknowledged",
-                new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("RISK_DISCLOSURE_ACK_REQUIRED");
+        assertThatThrownBy(() -> service.open(7L, "g7-open-unacknowledged",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200"))))
+                .isInstanceOf(BizException.class)
+                .hasMessage("RISK_DISCLOSURE_ACK_REQUIRED");
         verify(disclosureGate).checkUserGate(7L, "staking", "g7-open-unacknowledged");
         verify(mapper, never()).debitWallet(any(), any());
         verify(mapper, never()).insertPosition(any());
@@ -221,7 +242,7 @@ class AppRepurchaseServiceTest {
         when(outbox.publishUserEvent(anyString(), anyString(), anyString(), eq(7L), eq("P4"), eq(6), eq("2026-W30"), any()))
                 .thenReturn("evt-1");
         when(mapper.wallet(7L)).thenReturn(new BigDecimal("300"));
-        when(mapper.positions(7L)).thenReturn(List.of());
+        when(mapper.positions(7L, 0L, 50)).thenReturn(List.of());
         when(disclosureGate.checkUserGate(7L, "staking", "g7-open-acknowledged"))
                 .thenReturn(ApiResult.ok(null));
 
@@ -236,7 +257,7 @@ class AppRepurchaseServiceTest {
     }
 
     @Test
-    void disclosureFailureIsNotClaimedByIdempotencyAndSameKeySucceedsAfterAcknowledgment() {
+    void disclosureFailureIsRetriedWithTheSameKeyAfterAcknowledgment() {
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.lockProduct()).thenReturn(product());
         when(mapper.issuedTicketsThisMonth()).thenReturn(20L);
@@ -250,24 +271,46 @@ class AppRepurchaseServiceTest {
         when(outbox.publishUserEvent(anyString(), anyString(), anyString(), eq(7L), eq("P4"), eq(6), eq("2026-W30"), any()))
                 .thenReturn("evt-1");
         when(mapper.wallet(7L)).thenReturn(new BigDecimal("300"));
-        when(mapper.positions(7L)).thenReturn(List.of());
+        when(mapper.positions(7L, 0L, 50)).thenReturn(List.of());
         when(disclosureGate.checkUserGate(7L, "staking", "g7-open-same-key"))
                 .thenReturn(ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED"), ApiResult.ok(null));
 
-        ApiResult<Map<String, Object>> blocked = service.open(7L, "g7-open-same-key",
-                new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
+        assertThatThrownBy(() -> service.open(7L, "g7-open-same-key",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200"))))
+                .isInstanceOf(BizException.class)
+                .hasMessage("RISK_DISCLOSURE_ACK_REQUIRED");
         ApiResult<Map<String, Object>> accepted = service.open(7L, "g7-open-same-key",
                 new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
 
-        assertThat(blocked.getCode()).isEqualTo(409);
-        assertThat(blocked.getMessage()).isEqualTo("RISK_DISCLOSURE_ACK_REQUIRED");
         assertThat(accepted.getCode()).isZero();
         verify(disclosureGate, times(2)).checkUserGate(7L, "staking", "g7-open-same-key");
-        verify(idempotency, times(1)).execute(anyString(), eq("g7-open-same-key"), anyString(), eq(ApiResult.class), any());
+        verify(idempotency, times(2)).executeRetained(anyString(), eq("g7-open-same-key"), anyString(), eq(ApiResult.class), any());
         verify(mapper, times(1)).debitWallet(7L, new BigDecimal("200.000000"));
         verify(mapper, times(1)).insertPosition(any());
         verify(mapper, times(1)).insertLedger(any());
         verify(mapper, times(1)).insertTicket(any());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void retainedSuccessReplaysBeforeLaterProductAndDisclosureGates() {
+        ApiResult<Map<String, Object>> receipt = ApiResult.ok(Map.of(
+                "walletBalanceUsdt", new BigDecimal("300.000000"),
+                "receiptId", "RPS-RECOVERED"));
+        when(idempotency.executeRetained(anyString(), eq("g7-open-replay"), anyString(), eq(ApiResult.class), any()))
+                .thenReturn((ApiResult) receipt);
+        when(mapper.controlValue("killswitch.staking")).thenReturn("disabled");
+        when(disclosureGate.checkUserGate(7L, "staking", "g7-open-replay"))
+                .thenReturn(ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED"));
+
+        ApiResult<Map<String, Object>> replayed = service.open(7L, "g7-open-replay",
+                new AppRepurchaseService.OpenRequest(new BigDecimal("200")));
+
+        assertThat(replayed).isSameAs(receipt);
+        verify(idempotency).executeRetained(anyString(), eq("g7-open-replay"), anyString(), eq(ApiResult.class), any());
+        verify(disclosureGate, never()).checkUserGate(7L, "staking", "g7-open-replay");
+        verify(mapper, never()).lockActiveUser(7L);
+        verify(mapper, never()).debitWallet(any(), any());
     }
 
     @Test

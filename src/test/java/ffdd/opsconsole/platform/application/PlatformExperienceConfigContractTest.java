@@ -25,7 +25,9 @@ class PlatformExperienceConfigContractTest {
     @Test
     void experienceContractValidatesSourceUrlAndShareEnumsBeforeProjection() throws Exception {
         String service = Files.readString(Path.of("src/main/java/ffdd/opsconsole/platform/application/PlatformExperienceConfigService.java"));
-        assertThat(service).contains("official", "unavailable", "urlTemplate", "textTemplate");
+        assertThat(service).contains("official", "unavailable", "urlTemplate", "textTemplate",
+                "validChannelUrlTemplate", "https", "sms");
+        assertThat(service).contains("PLATFORM_EXPERIENCE_URL_TEMPLATE_INVALID");
         assertThat(service).doesNotContain("\"mock\"", "MOCK_URL", "/local-sandbox/app/");
         String view = Files.readString(Path.of("src/main/java/ffdd/opsconsole/device/domain/PlatformComputeConfigView.java"));
         assertThat(view).contains("homeNewcomerTasksEnabled", "homeWeeklyPromoEnabled", "ShareConfig", "releaseNotes");

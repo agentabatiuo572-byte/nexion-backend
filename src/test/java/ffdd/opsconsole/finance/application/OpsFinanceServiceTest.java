@@ -301,6 +301,8 @@ class OpsFinanceServiceTest {
                         "trc20", new BigDecimal("1.00"),
                         "bep20", new BigDecimal("1.00"),
                         "erc20", new BigDecimal("5.00")))
+                .containsEntry("networkEnabled", Map.of(
+                        "trc20", true, "bep20", false, "erc20", true))
                 .containsEntry("nexFeeOffsetRate", new BigDecimal("0.40"))
                 .containsEntry("smallAmountThresholdUsd", new BigDecimal("50"))
                 .containsEntry("payoutSlaHours", 24)
@@ -313,6 +315,41 @@ class OpsFinanceServiceTest {
                 .containsEntry("smallAmountThresholdUsd", "d5")
                 .containsEntry("payoutSlaHours", "d5")
                 .containsEntry("cooldownDays", "phase-h1");
+    }
+
+    @Test
+    void canonicalNetworkAvailabilityIsVersionedAuditedAndMirroredForAllThreeNetworks() {
+        seedCanonicalD5();
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("120"), new BigDecimal("100"));
+        WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "enable approved BEP20 withdrawal channel");
+        request.setNetworkEnabled(Map.of("trc20", true, "bep20", true, "erc20", true));
+
+        ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-network-enable", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("networkEnabled", Map.of(
+                "trc20", true, "bep20", true, "erc20", true));
+        assertThat(configFacade.values)
+                .containsEntry("withdrawal.bep20.enabled", "true")
+                .containsEntry("wallet.withdrawal.bep20.enabled", "true")
+                .containsEntry("withdrawal.d5.version", "8");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void canonicalNetworkAvailabilityOpeningBelowCoverageRedlineIsRejectedWithoutWrites() {
+        seedCanonicalD5();
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("100"));
+        WithdrawalLimitsUpdateRequest request = canonicalRequest(7L, "opening a channel must respect coverage redline");
+        request.setNetworkEnabled(Map.of("trc20", true, "bep20", true, "erc20", true));
+
+        ApiResult<Map<String, Object>> result = service.updateWithdrawalLimits("d5-network-open-redline", request);
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("COVERAGE_BELOW_REDLINE");
+        assertThat(configFacade.values)
+                .containsEntry("withdrawal.bep20.enabled", "false")
+                .containsEntry("withdrawal.d5.version", "7");
     }
 
     @Test
@@ -733,7 +770,7 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void missingJ1RowsKeepTheRealD2WithdrawalPathEnabledLikeTheJ1DisplayDefault() {
+    void missingJ1RowsFailClosedForTheRealD2WithdrawalPath() {
         emergencyRepository.settings.remove("killswitch.withdraw");
         emergencyRepository.settings.remove("emergency.killswitch.withdraw");
         withdrawalRepository.order = withdrawal("WD-DEFAULT-ON", "REVIEWING");
@@ -743,8 +780,9 @@ class OpsFinanceServiceTest {
                 "idem-withdraw-default-on",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "verify shared default state"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("REVIEW_PASSED");
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_KILL_SWITCH_DISABLED");
+        assertThat(withdrawalRepository.order.status()).isEqualTo("REVIEWING");
     }
 
     @Test
@@ -1720,6 +1758,9 @@ class OpsFinanceServiceTest {
         configFacade.values.put("withdrawal.network_confirm_fee_usd.trc20", "1.00");
         configFacade.values.put("withdrawal.network_confirm_fee_usd.bep20", "1.00");
         configFacade.values.put("withdrawal.network_confirm_fee_usd.erc20", "5.00");
+        configFacade.values.put("withdrawal.trc20.enabled", "true");
+        configFacade.values.put("withdrawal.bep20.enabled", "false");
+        configFacade.values.put("withdrawal.erc20.enabled", "true");
         configFacade.values.put("withdrawal.small_amount_threshold_usd", "50");
         configFacade.values.put("withdrawal.payout_sla_hours", "24");
         configFacade.values.put("withdrawal.d5.version", "7");

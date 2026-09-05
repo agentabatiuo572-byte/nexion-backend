@@ -10,8 +10,11 @@ import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.math.BigDecimal;
+import java.net.URI;
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,6 +34,7 @@ import org.springframework.util.StringUtils;
 @Slf4j
 public class AppProductCatalogService {
     private static final Set<String> TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
+    private static final Duration PRODUCT_IMAGE_EXPIRY = Duration.ofMinutes(15);
 
     private final AppTradeinMapper tradeinMapper;
     private final CommerceAcceptanceSandboxMapper commerceAcceptanceSandboxMapper;
@@ -38,6 +42,7 @@ public class AppProductCatalogService {
     private final CommerceAcceptanceRun commerceAcceptanceRun;
     private final ObjectMapper objectMapper;
     private final StorefrontProductReleasePolicy productReleasePolicy;
+    private final ObjectStorageService storageService;
 
     public ApiResult<Map<String, Object>> catalog() {
         return catalog(null);
@@ -178,6 +183,8 @@ public class AppProductCatalogService {
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("price", target.priceUsdt());
         item.put("sold", target.sold());
+        item.put("imageUrl", approvedProductImageUrl(target));
+        item.put("videoUrl", approvedProductVideoUrl(target));
         item.put("productType", productType);
         item.put("inventoryMode", target.inventoryMode());
         item.put("stock", ProductInventoryMode.isUnlimited(target.inventoryMode()) ? null : target.stock());
@@ -202,6 +209,46 @@ public class AppProductCatalogService {
                 ? "PRODUCT_SPECS_UNAVAILABLE"
                 : outOfStock ? "PRODUCT_OUT_OF_STOCK" : null);
         return item;
+    }
+
+    /**
+     * The catalog may expose only a fresh, short-lived URL for a controlled E1
+     * SKU medium. Persisted preview URLs are intentionally ignored: they expire
+     * and might not refer to a product medium. There is no durable asset-to-SKU
+     * ownership relation today, so matching identities only prove that the E1
+     * record is self-consistent; explicitly authorized E1 SKU media may be
+     * reused by another SKU within the same controlled namespace.
+     */
+    private String approvedProductImageUrl(AppTradeinMapper.CatalogTargetProduct target) {
+        return approvedProductMediaUrl(target, false);
+    }
+
+    private String approvedProductVideoUrl(AppTradeinMapper.CatalogTargetProduct target) {
+        return approvedProductMediaUrl(target, true);
+    }
+
+    private String approvedProductMediaUrl(
+            AppTradeinMapper.CatalogTargetProduct target,
+            boolean video) {
+        if (target == null || !StringUtils.hasText(target.imageAssetId()) || !StringUtils.hasText(target.imageObjectKey())) {
+            return null;
+        }
+        String objectKey = target.imageObjectKey().trim();
+        if (!ManagedSkuMediaIdentity.isCanonicalPair(target.imageAssetId(), objectKey)
+                || (video ? !ManagedSkuMediaIdentity.isApprovedVideoObjectKey(objectKey)
+                : !ManagedSkuMediaIdentity.isApprovedImageObjectKey(objectKey))) return null;
+        try {
+            String url = storageService.presignGet(objectKey, PRODUCT_IMAGE_EXPIRY);
+            URI parsed = URI.create(url);
+            if ((!"http".equalsIgnoreCase(parsed.getScheme()) && !"https".equalsIgnoreCase(parsed.getScheme()))
+                    || !StringUtils.hasText(parsed.getHost()) || parsed.getUserInfo() != null || parsed.getFragment() != null) {
+                return null;
+            }
+            return url;
+        } catch (RuntimeException ex) {
+            log.warn("Storefront SKU media presign failed for product={}", target.productNo());
+            return null;
+        }
     }
 
     private String canonicalProductType(String raw, String tier) {

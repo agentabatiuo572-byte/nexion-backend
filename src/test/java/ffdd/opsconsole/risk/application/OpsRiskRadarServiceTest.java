@@ -233,7 +233,7 @@ class OpsRiskRadarServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void usesTheCanonicalJ1EnabledDefaultWhenAGateRowIsMissing() {
+    void usesTheCanonicalJ1FailClosedDefaultWhenAGateRowIsMissing() {
         when(mapper.killSwitchStates()).thenReturn(List.of(
                 Map.of("gateKey", "withdraw", "settingValue", "enabled"),
                 Map.of("gateKey", "staking"),
@@ -252,7 +252,7 @@ class OpsRiskRadarServiceTest {
                 .filter(gate -> "exchange".equals(gate.get("key")))
                 .findFirst()
                 .orElseThrow();
-        assertThat(staking).containsEntry("enabled", true).containsEntry("defaulted", true);
+        assertThat(staking).containsEntry("enabled", false).containsEntry("defaulted", true);
         assertThat(exchange).containsEntry("enabled", false).containsEntry("defaulted", false);
     }
 

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -13,6 +14,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -29,7 +32,8 @@ class AppTrialLifecycleControllerIntegrationTest {
     void authenticatedUserReadsStrictServerAuthorityThroughTheHttpBoundary() {
         AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
         when(mapper.activeUser(42L)).thenReturn(42L);
-        when(mapper.lockTrial(42L)).thenReturn(null);
+        when(mapper.trial(42L)).thenReturn(null);
+        when(mapper.emergencyValue("killswitch.trial")).thenReturn("enabled");
         when(mapper.policies()).thenReturn(List.of(
                 new AppTrialLifecycleMapper.PolicyRow("seatsLeftToday", "47")));
         when(mapper.trialQuotaRemaining(org.mockito.ArgumentMatchers.any(LocalDate.class))).thenReturn(47);
@@ -54,7 +58,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                 .containsEntry("canStart", true)
                 .containsEntry("version", 0L)
                 .containsKey("serverNowEpochMs");
-        verify(mapper).lockTrial(42L);
+        verify(mapper).trial(42L);
     }
 
     @Test
@@ -75,7 +79,8 @@ class AppTrialLifecycleControllerIntegrationTest {
     void developmentRuntimeUsesTheCanonicalPcManagedTrialPolicy() {
         AppTrialLifecycleMapper mapper = mock(AppTrialLifecycleMapper.class);
         when(mapper.activeUser(42L)).thenReturn(42L);
-        when(mapper.lockTrial(42L)).thenReturn(null);
+        when(mapper.trial(42L)).thenReturn(null);
+        when(mapper.emergencyValue("killswitch.trial")).thenReturn("enabled");
         when(mapper.policies()).thenReturn(List.of(
                 new AppTrialLifecycleMapper.PolicyRow("seatsLeftToday", "47")));
         when(mapper.trialQuotaRemaining(org.mockito.ArgumentMatchers.any(LocalDate.class))).thenReturn(47);
@@ -89,7 +94,7 @@ class AppTrialLifecycleControllerIntegrationTest {
                 .containsEntry("source", "nx_trial_claim")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("state", "ELIGIBLE");
-        verify(mapper).lockTrial(42L);
+        verify(mapper).trial(42L);
     }
 
     @Test
@@ -122,6 +127,8 @@ class AppTrialLifecycleControllerIntegrationTest {
 
     private AppTrialLifecycleController controller(AppTrialLifecycleMapper mapper,
                                                    MockEnvironment environment) {
+        StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
+        when(releasePolicy.evaluate(any(), any())).thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
         AppTrialLifecycleService service = new AppTrialLifecycleService(
                 mapper,
                 mock(EarningsReleaseService.class),
@@ -129,6 +136,8 @@ class AppTrialLifecycleControllerIntegrationTest {
                 mock(TreasuryCoverageFacade.class),
                 mock(AuditLogService.class),
                 mock(EventOutboxService.class),
+                releasePolicy,
+                mock(CanonicalStateMapper.class),
                 environment,
                 Clock.systemUTC());
         return new AppTrialLifecycleController(service);

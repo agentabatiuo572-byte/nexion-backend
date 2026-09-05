@@ -235,7 +235,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Update("""
             UPDATE nx_user_device SET pending_deactivate=1,updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
-               AND UPPER(ownership_status)='OWNED' AND UPPER(status)='ACTIVE'
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND pending_deactivate=0 AND row_version=#{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -246,7 +246,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             UPDATE nx_user_device SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
                    pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
-               AND UPPER(ownership_status)='OWNED' AND UPPER(status)='ACTIVE'
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND pending_deactivate=1
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -257,7 +257,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                SET status = 'DEACTIVATED', activated_at = NULL, deactivated_at = NOW(),
                    pending_deactivate = 0, row_version = row_version + 1, updated_at = NOW()
              WHERE id = #{deviceId} AND user_id = #{userId} AND is_deleted = 0
-               AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) = 'ACTIVE'
+               AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND row_version = #{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -266,8 +266,21 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                                  @Param("expectedVersion") Long expectedVersion);
 
     @Update("""
+            UPDATE nx_compute_task t
+              JOIN nx_user_device d ON d.id = t.user_device_id AND d.user_id = t.user_id
+              JOIN nx_user u ON u.id = d.user_id AND u.sandbox = 0 AND u.is_deleted = 0
+               SET t.status = 'CANCELLED', t.proof_consumed_at = NOW(), t.updated_at = NOW()
+             WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId} AND t.is_deleted = 0
+               AND t.source_environment = 'PRODUCTION' AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               AND d.source_environment = 'PRODUCTION' AND d.run_id = '' AND d.is_deleted = 0
+               AND UPPER(d.ownership_status) = 'OWNED' AND UPPER(d.status) = 'DEACTIVATED'
+            """)
+    int cancelActiveDeviceTasks(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Update("""
             UPDATE nx_user_device_runtime
-               SET online_status = 'OFFLINE', paused_reason = 'USER_DEACTIVATED', updated_at = NOW()
+               SET online_status = 'OFFLINE', paused_reason = 'USER_DEACTIVATED',
+                   active_task_no = NULL, updated_at = NOW()
              WHERE user_device_id = #{deviceId} AND is_deleted = 0
                AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id=d.user_id
                             WHERE d.id=#{deviceId} AND COALESCE(u.sandbox,0)=0)
@@ -401,8 +414,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                             AND u.is_deleted = 0
              WHERE r.user_id = #{userId}
                AND r.is_deleted = 0
-               AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
-               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.source_environment = 'PRODUCTION'
+               AND r.earning_status IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
                AND r.completed_at >= #{start}
                AND r.completed_at < #{end}
              GROUP BY r.user_device_id
@@ -442,14 +455,19 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.dc_location AS location,
                    COALESCE(NULLIF(CASE WHEN o.quantity > 0 THEN o.amount_usdt / o.quantity END, 0),
                             NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0) AS actualPaidUsdt,
-                   COALESCE((SELECT SUM(r.reward_usdt)
-                              FROM nx_compute_receipt r
-                              WHERE r.user_device_id = d.id AND r.is_deleted = 0
-                                AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
-                                AND UPPER(r.earning_status) IN
-                                    ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')), 0) AS cumulativeOutputUsdt
+                   COALESCE(output.totalUsdt, 0) AS cumulativeOutputUsdt
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0
+              LEFT JOIN (
+                SELECT r.user_device_id, SUM(r.reward_usdt) AS totalUsdt
+                  FROM nx_compute_receipt r
+                  JOIN nx_user_device owned ON owned.id = r.user_device_id
+                                           AND owned.user_id = #{userId} AND owned.is_deleted = 0
+                                           AND UPPER(owned.ownership_status) = 'OWNED'
+                 WHERE r.is_deleted = 0 AND r.source_environment = 'PRODUCTION'
+                   AND r.earning_status IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+                 GROUP BY r.user_device_id
+              ) output ON output.user_device_id = d.id
               LEFT JOIN nx_product p
                 ON p.id = d.product_id AND p.is_deleted = 0
               LEFT JOIN nx_order o
@@ -592,9 +610,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Select("""
             SELECT s.purchase_gate_json
               FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1
+             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1 FOR UPDATE
             """)
     String purchaseGateJson(@Param("productNo") String productNo);
+
+    /** Read after the quota CAS while its row lock is still held by the checkout transaction. */
+    @Select("""
+            SELECT purchase_gate_generation
+              FROM nx_admin_device_sku
+             WHERE sku_id=#{productNo} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockPurchaseGateGeneration(@Param("productNo") String productNo);
 
     /** Canonical, quantity-aware lifetime quota CAS for ordinary checkout. */
     @Update("""
@@ -647,28 +674,31 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Insert("""
             INSERT INTO nx_order_item
               (order_no,product_id,product_no,product_name,quantity,unit_price_usdt,line_amount_usdt,
-               sort_order,created_at,updated_at,is_deleted)
+               lifetime_quota_reserved,lifetime_quota_gate_generation,sort_order,created_at,updated_at,is_deleted)
             SELECT #{orderNo},p.id,p.product_no,p.name,#{quantity},p.price_usdt,#{lineAmountUsdt},
-                   0,NOW(6),NOW(6),0
+                   #{quotaReserved},#{quotaGateGeneration},0,NOW(6),NOW(6),0
               FROM nx_product p
              WHERE p.id=#{productId} AND p.is_deleted=0
             """)
     int insertOrderItem(@Param("orderNo") String orderNo,
                         @Param("productId") Long productId,
                         @Param("quantity") Integer quantity,
-                        @Param("lineAmountUsdt") BigDecimal lineAmountUsdt);
+                        @Param("lineAmountUsdt") BigDecimal lineAmountUsdt,
+                        @Param("quotaReserved") boolean quotaReserved,
+                        @Param("quotaGateGeneration") Long quotaGateGeneration);
 
     @Select("""
+            <script>
             SELECT o.order_no AS orderNo,
                    o.product_id AS productId,
-                   COALESCE((SELECT oi.product_no
+                   COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_no, '×', oi.quantity)
+                                                       ORDER BY oi.sort_order, oi.id SEPARATOR ' + ')
                                FROM nx_order_item oi
-                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
-                              ORDER BY oi.sort_order, oi.id LIMIT 1), p.product_no) AS productNo,
-                   COALESCE((SELECT oi.product_name
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0), p.product_no) AS productNo,
+                   COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_name, '×', oi.quantity)
+                                                       ORDER BY oi.sort_order, oi.id SEPARATOR ' + ')
                                FROM nx_order_item oi
-                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
-                              ORDER BY oi.sort_order, oi.id LIMIT 1),
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0),
                             ta.target_product_name, p.name, o.order_no) AS productName,
                    o.quantity,
                    COALESCE((SELECT oi.unit_price_usdt
@@ -682,7 +712,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                                FROM nx_payment_record pr
                               WHERE pr.order_no = o.order_no AND pr.user_id = o.user_id AND pr.is_deleted = 0
                               ORDER BY pr.id DESC LIMIT 1),
-                            CASE WHEN o.order_type = 'TRADE_IN' THEN 'USDT_WALLET' ELSE 'PENDING' END) AS paymentMethod,
+                            CASE WHEN o.order_type IN ('TRADE_IN','CAPACITY_KEEP') THEN 'USDT_WALLET' ELSE 'PENDING' END) AS paymentMethod,
                    o.payment_status AS paymentStatus,
                    o.order_status AS orderStatus,
                    o.activation_status AS activationStatus,
@@ -693,13 +723,53 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    ud.dc_location AS dataCenter,
                    ta.tradein_no AS tradeinNo,
                    ta.source_device_id AS sourceDeviceId,
-                   ta.target_device_id AS targetDeviceId,
-                   ud.instance_no AS targetDeviceInstanceNo
+                   CASE WHEN o.order_type IN ('TRADE_IN','CAPACITY_KEEP')
+                        THEN COALESCE(ta.target_device_id, ud.id)
+                        ELSE NULL END AS targetDeviceId,
+                   ud.instance_no AS targetDeviceInstanceNo,
+                   o.item_count AS itemCount,
+                   o.subtotal_usdt AS subtotalUsdt,
+                   (SELECT wb.occurred_at
+                     FROM nx_wallet_bill wb
+                     WHERE wb.user_id = o.user_id AND wb.deleted = 0
+                       AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
+                       AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
+                       AND wb.direction = 'IN' AND wb.amount > 0
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundedAt,
+                   (SELECT wb.amount
+                     FROM nx_wallet_bill wb
+                     WHERE wb.user_id = o.user_id AND wb.deleted = 0
+                       AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
+                       AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
+                       AND wb.direction = 'IN' AND wb.amount > 0
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundAmountUsdt,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM nx_wallet_bill wb
+                        WHERE wb.user_id = o.user_id AND wb.deleted = 0
+                          AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
+                          AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
+                          AND wb.direction = 'IN' AND wb.amount > 0
+                   ) THEN 'WALLET' ELSE NULL END AS refundChannel,
+                   (SELECT wb.bill_no
+                     FROM nx_wallet_bill wb
+                     WHERE wb.user_id = o.user_id AND wb.deleted = 0
+                       AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
+                       AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
+                       AND wb.direction = 'IN' AND wb.amount > 0
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundBillNo
               FROM nx_order o
               LEFT JOIN nx_product p
                 ON p.id = o.product_id AND p.is_deleted = 0
               LEFT JOIN nx_tradein_application ta
-                ON ta.user_id = o.user_id AND ta.target_order_no = o.order_no AND ta.is_deleted = 0
+                ON ta.id = (
+                    SELECT latest_tradein.id
+                      FROM nx_tradein_application latest_tradein
+                     WHERE latest_tradein.user_id = o.user_id
+                       AND latest_tradein.target_order_no = o.order_no
+                       AND latest_tradein.is_deleted = 0
+                     ORDER BY latest_tradein.updated_at DESC, latest_tradein.id DESC
+                     LIMIT 1
+                )
               LEFT JOIN nx_user_device ud
                 ON ud.id = COALESCE(ta.target_device_id, (
                      SELECT MIN(ordinary_device.id)
@@ -710,10 +780,37 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    ))
                AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
+               <if test="beforeOrderNo != null and beforeOrderNo != ''">
+               AND EXISTS (
+                   SELECT 1 FROM nx_order cursor_order
+                    WHERE cursor_order.order_no = #{beforeOrderNo}
+                      AND cursor_order.user_id = #{userId}
+                      AND cursor_order.is_deleted = 0
+                      AND (o.created_at &lt; cursor_order.created_at
+                           OR (o.created_at = cursor_order.created_at AND o.id &lt; cursor_order.id))
+               )
+               </if>
              ORDER BY o.created_at DESC, o.id DESC
-             LIMIT 100
+             LIMIT #{limit}
+            </script>
             """)
-    List<UserOrder> userOrders(@Param("userId") Long userId);
+    List<UserOrder> userOrdersPage(@Param("userId") Long userId,
+                                   @Param("beforeOrderNo") String beforeOrderNo,
+                                   @Param("limit") Integer limit);
+
+    default List<UserOrder> userOrders(Long userId) {
+        return userOrdersPage(userId, null, 100);
+    }
+
+    /** Preserve order-line structure for bundle detail instead of collapsing SKUs into display text. */
+    @Select("""
+            SELECT product_no AS sku, product_name AS name, quantity,
+                   unit_price_usdt AS unitPriceUsdt, line_amount_usdt AS lineAmountUsdt
+              FROM nx_order_item
+             WHERE order_no=#{orderNo} AND is_deleted=0
+             ORDER BY sort_order, id
+            """)
+    List<UserOrderLineItem> userOrderLineItems(@Param("orderNo") String orderNo);
 
     @Select("""
             SELECT COALESCE((
@@ -885,7 +982,43 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String tradeinNo,
             Long sourceDeviceId,
             Long targetDeviceId,
-            String targetDeviceInstanceNo) {
+            String targetDeviceInstanceNo,
+            Integer itemCount,
+            BigDecimal subtotalUsdt,
+            LocalDateTime refundedAt,
+            BigDecimal refundAmountUsdt,
+            String refundChannel,
+            String refundBillNo) {
+
+        public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
+                  BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,
+                  String paymentMethod, String paymentStatus, String orderStatus, String activationStatus,
+                  String orderType, LocalDateTime placedAt, LocalDateTime paidAt, LocalDateTime activatedAt,
+                  String dataCenter, String tradeinNo, Long sourceDeviceId, Long targetDeviceId,
+                  String targetDeviceInstanceNo, Integer itemCount, BigDecimal subtotalUsdt) {
+            this(orderNo, productId, productNo, productName, quantity, unitPriceUsdt, discountUsdt,
+                    amountUsdt, paymentMethod, paymentStatus, orderStatus, activationStatus, orderType,
+                    placedAt, paidAt, activatedAt, dataCenter, tradeinNo, sourceDeviceId, targetDeviceId,
+                    targetDeviceInstanceNo, itemCount, subtotalUsdt, null, null, null, null);
+        }
+
+        public UserOrder(String orderNo, Long productId, String productNo, String productName, Integer quantity,
+                  BigDecimal unitPriceUsdt, BigDecimal discountUsdt, BigDecimal amountUsdt,
+                  String paymentMethod, String paymentStatus, String orderStatus, String activationStatus,
+                  String orderType, LocalDateTime placedAt, LocalDateTime paidAt, LocalDateTime activatedAt,
+                  String dataCenter, String tradeinNo, Long sourceDeviceId, Long targetDeviceId,
+                  String targetDeviceInstanceNo) {
+            this(orderNo, productId, productNo, productName, quantity, unitPriceUsdt, discountUsdt,
+                    amountUsdt, paymentMethod, paymentStatus, orderStatus, activationStatus, orderType,
+                    placedAt, paidAt, activatedAt, dataCenter, tradeinNo, sourceDeviceId, targetDeviceId,
+                    targetDeviceInstanceNo, quantity, unitPriceUsdt == null || quantity == null
+                            ? null : unitPriceUsdt.multiply(BigDecimal.valueOf(quantity)),
+                    null, null, null, null);
+        }
+    }
+
+    record UserOrderLineItem(String sku, String name, Integer quantity,
+                             BigDecimal unitPriceUsdt, BigDecimal lineAmountUsdt) {
     }
 
     record TrialClaim(Long id, String claimNo, String status, BigDecimal priceUsdt, BigDecimal earnedOffsetUsdt) {

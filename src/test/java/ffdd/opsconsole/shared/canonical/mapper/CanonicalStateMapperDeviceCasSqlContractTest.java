@@ -46,6 +46,23 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
     }
 
     @Test
+    void everyDeactivationCasAcceptsTheSameCanonicalActiveStateSet() throws Exception {
+        String mapper = Files.readString(
+                Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"),
+                StandardCharsets.UTF_8);
+
+        for (String methodName : List.of(
+                "markDevicePendingDeactivate", "deactivatePendingDevice", "deactivateOwnedDeviceCas")) {
+            int method = mapper.indexOf(" " + methodName + "(");
+            assertThat(method).as(methodName).isGreaterThanOrEqualTo(0);
+            int sqlStart = mapper.lastIndexOf("@Update", method);
+            String sql = mapper.substring(sqlStart, method);
+            assertThat(sql).as(methodName)
+                    .contains("UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')");
+        }
+    }
+
+    @Test
     void cloudShareActivationBypassesThePhysicalSlotCapWhilePhysicalActivationStillUsesCas() throws Exception {
         String mapper = Files.readString(
                 Path.of("src/main/java/ffdd/opsconsole/shared/canonical/mapper/CanonicalStateMapper.java"),

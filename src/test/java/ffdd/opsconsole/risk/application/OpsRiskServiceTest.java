@@ -714,7 +714,36 @@ class OpsRiskServiceTest {
 
         assertThat(result.getCode()).isZero();
         verify(configFacade).upsertAdminValue(
-                "auth.risk.otp_cooldown_seconds", "90", "NUMBER", "auth-risk", "K2 OTP gate canonical configuration");
+                "auth.risk.otp_send_cooldown_seconds", "90", "NUMBER", "auth-risk", "K2 OTP gate canonical configuration");
+    }
+
+    @Test
+    void captchaGateParametersRoundTripThroughTheK2ControlPlane() {
+        authenticateK2Admin();
+        when(configFacade.activeValue("auth.risk.captcha_always_scenes"))
+                .thenReturn(Optional.of("register,login"));
+        when(configFacade.activeValue("auth.risk.captcha_after_sends"))
+                .thenReturn(Optional.of("3"));
+
+        ApiResult<Map<String, Object>> overview = service.arbitrageOverview();
+        @SuppressWarnings("unchecked")
+        List<RiskArbitrageParamView> params =
+                (List<RiskArbitrageParamView>) overview.getData().get("params");
+        assertThat(params).filteredOn(row -> "captchaGate.alwaysScenes".equals(row.key()))
+                .extracting(RiskArbitrageParamView::value).containsExactly("register,login");
+        assertThat(params).filteredOn(row -> "captchaGate.afterSends".equals(row.key()))
+                .extracting(RiskArbitrageParamView::value).containsExactly("3");
+
+        ApiResult<RiskArbitrageParamView> update = service.updateArbitrageParam(
+                "captchaGate.alwaysScenes", "idem-k2-captcha-scenes",
+                new RiskArbitrageParamUpdateRequest(
+                        "reset,register", "change mandatory captcha scenes", "spoofed"));
+
+        assertThat(update.getCode()).isZero();
+        assertThat(update.getData().value()).isEqualTo("register,reset");
+        verify(configFacade).upsertAdminValue(
+                "auth.risk.captcha_always_scenes", "register,reset", "STRING",
+                "auth-risk", "K2 OTP gate canonical configuration");
     }
 
     @Test
@@ -757,13 +786,13 @@ class OpsRiskServiceTest {
         authenticateK2Admin();
         java.util.concurrent.atomic.AtomicReference<String> canonical =
                 new java.util.concurrent.atomic.AtomicReference<>("60");
-        when(configFacade.activeValue("auth.risk.otp_cooldown_seconds"))
+        when(configFacade.activeValue("auth.risk.otp_send_cooldown_seconds"))
                 .thenAnswer(invocation -> Optional.of(canonical.get()));
         doAnswer(invocation -> {
             canonical.set(invocation.getArgument(1));
             return null;
         }).when(configFacade).upsertAdminValue(
-                org.mockito.ArgumentMatchers.eq("auth.risk.otp_cooldown_seconds"),
+                org.mockito.ArgumentMatchers.eq("auth.risk.otp_send_cooldown_seconds"),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.eq("NUMBER"),
                 org.mockito.ArgumentMatchers.eq("auth-risk"),
@@ -1840,8 +1869,10 @@ class OpsRiskServiceTest {
                 new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "sub", "note"),
                 new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "sub", "note"),
                 new RiskArbitrageParamView("otpGate.resendSeconds", "重发冷却", "60", "sub", "note"),
-                new RiskArbitrageParamView("otpGate.captchaAfterSends", "图形验证触发次数", "3", "sub", "note"),
-                new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "sub", "note")));
+                new RiskArbitrageParamView("otpGate.dayLimit", "验证码 24h 发送上限", "10", "sub", "note"),
+                new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "sub", "note"),
+                new RiskArbitrageParamView("captchaGate.alwaysScenes", "强制滑块场景", "register", "sub", "note"),
+                new RiskArbitrageParamView("captchaGate.afterSends", "发送后触发滑块", "2", "sub", "note")));
         private final List<RiskArbitrageRowView> arbitrageRows = new ArrayList<>(List.of(
                 new RiskArbitrageRowView("T-318", "trial", "CL-318", List.of("CL-318", "7 次"), 3, List.of("freeze", "flag"), null)));
         private final List<K2Signal> k2Signals = new ArrayList<>();

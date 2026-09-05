@@ -49,6 +49,8 @@ class AppTaskAssignmentServiceTest {
     void setUp() {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
+        when(mapper.lockProductionUser(7L)).thenReturn(7L);
+        when(mapper.assignmentDeviceId(eq(7L), anyString(), eq("PRODUCTION"))).thenReturn(11L);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("stellarbox-s1", "S1", "StellarBox S1", 96));
@@ -77,6 +79,45 @@ class AppTaskAssignmentServiceTest {
                 org.mockito.ArgumentMatchers.eq(30), anyString(), any(), anyString(), any(), any());
         verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void automaticAssignmentUsesTheSameLockedCanonicalProductionPathWithoutAUserIdempotencyKey() {
+        var result = service.assignAutomatically(7L, 11L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().taskId()).isEqualTo("TASK-IG");
+        verify(mapper).lockProductionUser(7L);
+        verify(mapper).lockOwnedDevice(7L, 11L);
+        verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
+        verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(idempotency);
+    }
+
+    @Test
+    void cancelledTaskCannotBeCompletedAfterReactivationAndLocksUseCanonicalOrder() {
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION"))
+                .thenReturn(assignment("CANCELLED", null, null));
+        assertThatThrownBy(() -> service.complete(7L, "CTA-1", "cancelled-proof", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_STATE_INVALID");
+        var order = org.mockito.Mockito.inOrder(mapper);
+        order.verify(mapper).lockProductionUser(7L);
+        order.verify(mapper).assignmentDeviceId(7L, "CTA-1", "PRODUCTION");
+        order.verify(mapper).lockOwnedDevice(7L, 11L);
+        order.verify(mapper).lockAssignment(7L, "CTA-1", "PRODUCTION");
+        verify(mapper, never()).creditWallet(any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(outbox, audit);
+    }
+
+    @Test
+    void routingHintCannotAuthorizeAChangedTaskBinding() {
+        when(mapper.assignmentDeviceId(7L, "CTA-1", "PRODUCTION")).thenReturn(12L);
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION"))
+                .thenReturn(assignment("RUNNING", null, null));
+        assertThatThrownBy(() -> service.complete(7L, "CTA-1", "changed-binding", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_DEVICE_BINDING_CHANGED");
+        verify(mapper, never()).creditWallet(any(), any(), any(), any());
     }
 
     @Test
@@ -167,6 +208,72 @@ class AppTaskAssignmentServiceTest {
         verify(mapper, times(1)).upsertDeviceTaskLock(any(), any(), anyString(), any(), anyString(), any());
         verify(outbox, times(2)).publishUserEvent(anyString(), anyString(), anyString(), any(),
                 anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void pendingDeactivationSettlesThenClearsRuntimeAndFinalizesTheDevice() {
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION"))
+                .thenReturn(assignment("RUNNING", null, null));
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.deactivatePendingDevice(7L, 11L, NOW)).thenReturn(1);
+        when(mapper.deviceRowVersion(7L, 11L)).thenReturn(3L);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        var result = service.complete(7L, "CTA-1", "complete-deferred-deactivate", validProof());
+
+        assertThat(result.getData().status()).isEqualTo("COMPLETED");
+        var order = org.mockito.Mockito.inOrder(mapper);
+        order.verify(mapper).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        order.verify(mapper).creditWallet(any(), any(), any(), any());
+        order.verify(mapper).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
+        order.verify(mapper).insertEarningEvent(anyString(), any(), any(), anyString(), any(), any());
+        order.verify(mapper).completeAssignment(7L, "CTA-1", "a".repeat(64), "PRODUCTION", NOW);
+        order.verify(mapper).clearRuntimeTask(7L, 11L, "CTA-1", NOW);
+        order.verify(mapper).deactivatePendingDevice(7L, 11L, NOW);
+        order.verify(mapper).markRuntimeDeactivated(7L, 11L, NOW);
+        order.verify(mapper).deviceRowVersion(7L, 11L);
+        verify(outbox).publishUserEvent(eq("USER_DEVICE"), eq("DEV-11"), eq("device.deactivated"),
+                eq(7L), eq("P3"), eq(8), eq("2026-W30"), any());
+        verify(audit).recordRequiredForTrustedActor(any());
+    }
+
+    @Test
+    void concurrentDeferredDeactivationFinalizationDoesNotDuplicateSettlementOrRuntimeOfflining() {
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION"))
+                .thenReturn(assignment("RUNNING", null, null));
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.deactivatePendingDevice(7L, 11L, NOW)).thenReturn(0);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        service.complete(7L, "CTA-1", "complete-concurrent-deactivate", validProof());
+
+        verify(mapper).clearRuntimeTask(7L, 11L, "CTA-1", NOW);
+        verify(mapper).deactivatePendingDevice(7L, 11L, NOW);
+        verify(mapper, never()).markRuntimeDeactivated(anyLong(), anyLong(), any());
+        verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, times(1)).creditWallet(any(), any(), any(), any());
+        verify(mapper, times(1)).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
+        verify(mapper, times(1)).insertEarningEvent(anyString(), any(), any(), anyString(), any(), any());
     }
 
     @Test

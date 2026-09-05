@@ -73,7 +73,7 @@ class AppHomeOverviewServiceTest {
         assertEquals(1L, ((Map<?, ?>) result.getData().get("onGrid")).get("activeJobs"));
         assertNull(((Map<?, ?>) ((Map<?, ?>) result.getData().get("earnings")).get("all")).get("usdt"));
         verify(mapper).userEnvironment(42L);
-        verify(mapper, org.mockito.Mockito.never()).earnings(eq(42L), any(), any(), any());
+        verify(mapper, org.mockito.Mockito.never()).earningsSummary(eq(42L), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -140,7 +140,8 @@ class AppHomeOverviewServiceTest {
         assertEquals("", result.getData().get("runId"));
         assertEquals("SETTLED", result.getData().get("earningsLedgerMode"));
         verify(mapper).userEnvironment(42L);
-        verify(mapper, org.mockito.Mockito.times(5)).earnings(eq(42L), eq("PRODUCTION"), any(), any());
+        verify(mapper).earningsSummary(eq(42L), eq("PRODUCTION"), any(), any(), any(), any(), any(), any());
+        verify(mapper, org.mockito.Mockito.never()).earnings(any(), any(), any(), any());
     }
 
     @Test
@@ -151,17 +152,20 @@ class AppHomeOverviewServiceTest {
         LocalDateTime now = LocalDateTime.parse("2026-08-15T08:00:00");
         LocalDateTime yesterdayStart = LocalDateTime.parse("2026-08-14T00:00:00");
         LocalDateTime yesterdaySameTime = LocalDateTime.parse("2026-08-14T08:00:00");
-        when(mapper.earnings(42L, "PRODUCTION", todayStart, now))
-                .thenReturn(new AppHomeOverviewMapper.PeriodRow(new BigDecimal("105.20"), BigDecimal.ZERO, 5L));
-        when(mapper.earnings(42L, "PRODUCTION", yesterdayStart, yesterdaySameTime))
-                .thenReturn(new AppHomeOverviewMapper.PeriodRow(new BigDecimal("100.00"), BigDecimal.ZERO, 4L));
+        when(mapper.earningsSummary(eq(42L), eq("PRODUCTION"), eq(todayStart), eq(yesterdayStart),
+                eq(yesterdaySameTime), any(), any(), eq(now)))
+                .thenReturn(new AppHomeOverviewMapper.EarningsSummaryRow(
+                        new BigDecimal("105.20"), BigDecimal.ZERO, 5L,
+                        new BigDecimal("100.00"), BigDecimal.ZERO, 4L,
+                        null, null, 0L, null, null, 0L, null, null, 0L));
 
         var result = service.overview(42L);
 
         assertEquals(0, result.getCode());
         var earnings = (Map<?, ?>) result.getData().get("earnings");
         assertEquals(new BigDecimal("5.20"), earnings.get("todayVsYesterdayPct"));
-        verify(mapper).earnings(42L, "PRODUCTION", yesterdayStart, yesterdaySameTime);
+        verify(mapper).earningsSummary(eq(42L), eq("PRODUCTION"), eq(todayStart), eq(yesterdayStart),
+                eq(yesterdaySameTime), any(), any(), eq(now));
     }
 
     @Test
@@ -176,9 +180,11 @@ class AppHomeOverviewServiceTest {
         var result = midnightService.overview(42L);
 
         assertEquals(0, result.getCode());
-        verify(mapper).earnings(42L, "PRODUCTION",
-                LocalDateTime.parse("2026-08-15T00:00:00"),
-                LocalDateTime.parse("2026-08-15T00:00:01"));
+        verify(mapper).earningsSummary(eq(42L), eq("PRODUCTION"),
+                eq(LocalDateTime.parse("2026-08-15T00:00:00")),
+                eq(LocalDateTime.parse("2026-08-14T00:00:00")),
+                eq(LocalDateTime.parse("2026-08-14T00:00:01")), any(), any(),
+                eq(LocalDateTime.parse("2026-08-15T00:00:01")));
     }
 
     @Test
@@ -382,7 +388,8 @@ class AppHomeOverviewServiceTest {
         assertEquals("PRODUCTION", result.getData().get("sourceEnvironment"));
         assertEquals("", result.getData().get("runId"));
         assertEquals("SETTLED", result.getData().get("earningsLedgerMode"));
-        verify(mapper, org.mockito.Mockito.times(5)).earnings(eq(42L), eq("PRODUCTION"), any(), any());
+        verify(mapper).earningsSummary(eq(42L), eq("PRODUCTION"), any(), any(), any(), any(), any(), any());
+        verify(mapper, org.mockito.Mockito.never()).earnings(any(), any(), any(), any());
         verify(publicStats, org.mockito.Mockito.never()).overview();
     }
 

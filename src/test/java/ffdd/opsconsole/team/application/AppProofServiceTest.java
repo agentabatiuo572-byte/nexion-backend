@@ -153,6 +153,30 @@ class AppProofServiceTest {
     }
 
     @Test
+    void proofExplainsThatTheDailyBoundaryUsesVietnamUtcPlusSevenRatherThanChinaUtcPlusEight() {
+        var mapper = mock(AppProofMapper.class);
+        when(mapper.user(7L)).thenReturn(new AppProofMapper.UserRow(
+                LocalDateTime.of(2026, 1, 1, 0, 0), "NXAB12CD34EF"));
+        when(mapper.onlineDevices(7L)).thenReturn(0L);
+        when(mapper.earningsTotalUsdt(7L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.streak(7L)).thenReturn(new AppProofMapper.StreakRow(1, 1, java.time.LocalDate.of(2026, 8, 16)));
+        when(mapper.earningsPopulation(7L, BigDecimal.ZERO)).thenReturn(new AppProofMapper.PercentileRow(0L, 5L));
+        var referral = mock(AppReferralRewardService.class);
+        when(referral.snapshot(7L, 20)).thenReturn(ApiResult.ok(new AppReferralRewardView(
+                "NXAB12CD34EF", BigDecimal.ONE, 0, 0, 0, BigDecimal.ZERO, BigDecimal.ZERO,
+                List.of(), 20, "ledger", "PRODUCTION", null, List.of(), Instant.now())));
+        var network = mock(AppTeamNetworkService.class);
+        when(network.snapshot(7L)).thenReturn(ApiResult.ok(Map.of("totalMembers", 0, "activeMembers", 0)));
+
+        var result = new AppProofService(mapper, referral, network,
+                Clock.fixed(Instant.parse("2026-08-16T16:30:00Z"), ZoneOffset.UTC)).snapshot(7L);
+
+        assertThat(result.getData()).containsEntry("asOf", "2026-08-16");
+        assertThat(result.getData().get("provenance").toString())
+                .contains("UTC+07:00", "not UTC+08:00");
+    }
+
+    @Test
     void sandboxProofDoesNotReadCanonicalDeviceTableWithoutRunScopedDeviceFacts() {
         var mapper = mock(AppProofMapper.class);
         when(mapper.user(7L)).thenReturn(new AppProofMapper.UserRow(

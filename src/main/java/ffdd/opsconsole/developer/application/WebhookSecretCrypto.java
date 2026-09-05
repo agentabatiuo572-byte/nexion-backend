@@ -12,6 +12,10 @@ import org.springframework.core.env.Environment;
 final class WebhookSecretCrypto {
     private static final SecureRandom RANDOM = new SecureRandom();
     private WebhookSecretCrypto() { }
+    static boolean configured(Environment environment) {
+        return environment != null
+                && !environment.getProperty("nexion.developer.webhooks.secret-key", "").isBlank();
+    }
     static String encrypt(String plaintext, Environment environment) {
         String configured = environment.getProperty("nexion.developer.webhooks.secret-key", "");
         if (configured.isBlank()) return null;

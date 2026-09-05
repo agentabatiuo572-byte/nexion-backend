@@ -70,6 +70,36 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
     List<SupportFaqView> listFaqs();
 
     @Select("""
+            <script>
+            SELECT COUNT(*)
+              FROM nx_help_article
+             WHERE is_deleted=0 AND format='faq' AND status=1
+               AND level=#{language} AND COALESCE(surface, 'Help Center')=#{surface}
+               <if test="category != null and category != ''">AND LOWER(category)=LOWER(#{category})</if>
+            </script>
+            """)
+    long countPublishedFaqs(@Param("language") String language, @Param("surface") String surface,
+                            @Param("category") String category);
+
+    @Select("""
+            <script>
+            SELECT article_code AS id, category, title AS question, content AS answer,
+                   'PUBLISHED' AS status, COALESCE(surface, 'Help Center') AS surface,
+                   level AS language, COALESCE(sort_order, 0) AS sortOrder,
+                   COALESCE(version_no, 1) AS version, updated_at AS updatedAt
+              FROM nx_help_article
+             WHERE is_deleted=0 AND format='faq' AND status=1
+               AND level=#{language} AND COALESCE(surface, 'Help Center')=#{surface}
+               <if test="category != null and category != ''">AND LOWER(category)=LOWER(#{category})</if>
+             ORDER BY sort_order ASC, article_code ASC
+             LIMIT #{limit} OFFSET #{offset}
+            </script>
+            """)
+    List<SupportFaqView> listPublishedFaqPage(
+            @Param("language") String language, @Param("surface") String surface,
+            @Param("category") String category, @Param("offset") long offset, @Param("limit") int limit);
+
+    @Select("""
             SELECT
               article_code AS id,
               category,

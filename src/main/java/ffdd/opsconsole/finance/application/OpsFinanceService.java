@@ -467,6 +467,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("nexFeeOffsetRate", nexFeeOffsetRate);
         response.put("minUsdt", configDecimal("withdrawal.min_usdt", BigDecimal.ZERO));
         response.put("trc20Enabled", optionalConfigBoolean("withdrawal.trc20.enabled"));
+        response.put("bep20Enabled", optionalConfigBoolean("withdrawal.bep20.enabled"));
         response.put("erc20Enabled", optionalConfigBoolean("withdrawal.erc20.enabled"));
         response.put("h1Rhythm", rhythm.summary());
         response.put("h1WithdrawRules", Map.of(
@@ -525,6 +526,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 String.valueOf(request.getNetworkFeeMax()),
                 String.valueOf(request.getNexFeeOffsetRate()),
                 String.valueOf(request.getNetworkConfirmFeeUsd()),
+                String.valueOf(request.getNetworkEnabled()),
                 String.valueOf(request.getSmallAmountThresholdUsd()),
                 String.valueOf(request.getPayoutSlaHours()),
                 request.getReason().trim(), trimToEmpty(actor)));
@@ -561,6 +563,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         } catch (IllegalStateException ex) {
             return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
         }
+        Map<String, Boolean> beforeNetworkEnabled;
+        try {
+            beforeNetworkEnabled = currentD5NetworkEnabledValues();
+        } catch (IllegalStateException ex) {
+            return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
+        }
         BigDecimal nextFeeMin = changedFields.contains("networkFeeMin")
                 ? request.getNetworkFeeMin() : before.get("networkFeeMin");
         BigDecimal nextFeeMax = changedFields.contains("networkFeeMax")
@@ -572,6 +580,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if ("networkConfirmFeeUsd".equals(field)) {
                 return request.getNetworkConfirmFeeUsd().entrySet().stream().anyMatch(entry ->
                         entry.getValue().compareTo(before.get("networkConfirmFeeUsd." + entry.getKey())) < 0);
+            }
+            if ("networkEnabled".equals(field)) {
+                return request.getNetworkEnabled().entrySet().stream().anyMatch(entry ->
+                        entry.getValue() && !beforeNetworkEnabled.get(entry.getKey()));
             }
             return loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request));
         });
@@ -604,6 +616,29 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 detail.put("field", field);
                 detail.put("before", previous);
                 detail.put("after", fees);
+                detail.put("operator", trimToEmpty(actor));
+                detail.put("role", role);
+                detail.put("reason", reason);
+                detail.put("versionBefore", currentVersion);
+                detail.put("versionAfter", currentVersion + 1);
+                detail.put("idempotencyKey", idempotencyKey);
+                auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", field, actor, detail);
+                eventOutboxService.publish("WITHDRAWAL_PARAM", field, "admin.withdraw_limit_changed", detail);
+                continue;
+            }
+            if ("networkEnabled".equals(field)) {
+                Map<String, Boolean> enabled = request.getNetworkEnabled();
+                enabled.forEach((network, nextEnabled) -> {
+                    String value = String.valueOf(nextEnabled);
+                    configFacade.upsertAdminValue("withdrawal." + network + ".enabled", value,
+                            "BOOLEAN", "wallet", "D5 withdrawal network enabled");
+                    configFacade.upsertAdminValue("wallet.withdrawal." + network + ".enabled", value,
+                            "BOOLEAN", "wallet", "D5 withdrawal network enabled mirror");
+                });
+                Map<String, Object> detail = new LinkedHashMap<>();
+                detail.put("field", field);
+                detail.put("before", beforeNetworkEnabled);
+                detail.put("after", enabled);
                 detail.put("operator", trimToEmpty(actor));
                 detail.put("role", role);
                 detail.put("reason", reason);
@@ -1409,6 +1444,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         configFacade.upsertAdminValue("wallet.withdrawal.trc20.enabled",
                 String.valueOf(requiredConfigBoolean("withdrawal.trc20.enabled")),
                 "BOOLEAN", "wallet", "D5 TRC20 withdrawal enabled mirror");
+        configFacade.upsertAdminValue("wallet.withdrawal.bep20.enabled",
+                String.valueOf(requiredConfigBoolean("withdrawal.bep20.enabled")),
+                "BOOLEAN", "wallet", "D5 BEP20 withdrawal enabled mirror");
         configFacade.upsertAdminValue("wallet.withdrawal.erc20.enabled",
                 String.valueOf(requiredConfigBoolean("withdrawal.erc20.enabled")),
                 "BOOLEAN", "wallet", "D5 ERC20 withdrawal enabled mirror");
@@ -2250,6 +2288,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 "trc20", owned.get("networkConfirmFeeUsd.trc20"),
                 "bep20", owned.get("networkConfirmFeeUsd.bep20"),
                 "erc20", owned.get("networkConfirmFeeUsd.erc20")));
+        response.put("networkEnabled", currentD5NetworkEnabledValues());
         response.put("nexFeeOffsetRate", owned.get("nexFeeOffsetRate"));
         response.put("smallAmountThresholdUsd", owned.get("smallAmountThresholdUsd"));
         response.put("payoutSlaHours", owned.get("payoutSlaHours").intValueExact());
@@ -2265,6 +2304,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("dailyLimitCount", "d5"),
                 Map.entry("balanceMaxRatio", "d5"),
                 Map.entry("networkConfirmFeeUsd", "d5"),
+                Map.entry("networkEnabled", "d5"),
                 Map.entry("nexFeeOffsetRate", "d5"),
                 Map.entry("smallAmountThresholdUsd", "d5"),
                 Map.entry("payoutSlaHours", "d5"),
@@ -2302,6 +2342,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return values;
     }
 
+    private Map<String, Boolean> currentD5NetworkEnabledValues() {
+        return Map.of(
+                "trc20", requiredConfigBoolean("withdrawal.trc20.enabled"),
+                "bep20", requiredConfigBoolean("withdrawal.bep20.enabled"),
+                "erc20", requiredConfigBoolean("withdrawal.erc20.enabled"));
+    }
+
     private ApiResult<Map<String, Object>> validateWithdrawalLimitsRequest(
             WithdrawalLimitsUpdateRequest request,
             Set<String> changedFields) {
@@ -2336,6 +2383,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if (fees == null || !fees.keySet().equals(Set.of("trc20", "bep20", "erc20"))
                     || fees.values().stream().anyMatch(value -> !validNetworkConfirmFee(value))) {
                 return ApiResult.fail(400, "NETWORK_CONFIRM_FEE_INVALID");
+            }
+        }
+        if (changedFields.contains("networkEnabled")) {
+            Map<String, Boolean> enabled = request.getNetworkEnabled();
+            if (enabled == null || !enabled.keySet().equals(Set.of("trc20", "bep20", "erc20"))
+                    || enabled.values().stream().anyMatch(java.util.Objects::isNull)) {
+                return ApiResult.fail(400, "NETWORK_ENABLED_INVALID");
             }
         }
         if (changedFields.contains("smallAmountThresholdUsd")

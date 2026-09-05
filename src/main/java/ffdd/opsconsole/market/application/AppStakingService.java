@@ -90,13 +90,19 @@ public class AppStakingService {
 
     @Transactional
     public ApiResult<Map<String, Object>> positions(Long userId) {
-        if (isSandbox()) return sandboxPositions(userId);
+        return positions(userId, 1, 100);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> positions(Long userId, int requestedPageNum, int requestedPageSize) {
+        if (isSandbox()) return sandboxPositions(userId, requestedPageNum, requestedPageSize);
         requireCanonicalProductionRuntime();
         requireUser(userId);
         if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         LocalDateTime now = LocalDateTime.now(clock);
         mapper.matureDuePositions(userId, now);
-        return positionsResponse(userId, null, null, null, null, null, null);
+        return positionsResponse(userId, null, null, null, null, null, null,
+                requestedPageNum, requestedPageSize);
     }
 
     @Transactional
@@ -316,13 +322,14 @@ public class AppStakingService {
         return runId.trim();
     }
 
-    private ApiResult<Map<String, Object>> sandboxPositions(Long userId) {
+    private ApiResult<Map<String, Object>> sandboxPositions(Long userId, int requestedPageNum, int requestedPageSize) {
         requireUser(userId);
         String runId = sandboxRunId();
         requireSandboxMapper();
         sandboxMapper.insertAccountIfAbsent("staking", runId, userId);
         sandboxMapper.maturePositions("staking", runId, userId, LocalDateTime.now(clock));
-        return ApiResult.ok(sandboxResponse(runId, userId, null, null, null, null));
+        return ApiResult.ok(sandboxResponse(runId, userId, null, null, null, null,
+                requestedPageNum, requestedPageSize));
     }
 
     private ApiResult<Map<String, Object>> sandboxOpen(Long userId, String key, OpenRequest request) {
@@ -411,9 +418,19 @@ public class AppStakingService {
     }
     private Map<String, Object> sandboxResponse(String runId, Long userId, String focus, BigDecimal principal,
             BigDecimal credited, BigDecimal detail) {
+        return sandboxResponse(runId, userId, focus, principal, credited, detail, 1, 50);
+    }
+
+    private Map<String, Object> sandboxResponse(String runId, Long userId, String focus, BigDecimal principal,
+            BigDecimal credited, BigDecimal detail, int requestedPageNum, int requestedPageSize) {
         MarketSandboxMapper.AccountRow account = sandboxMapper.account("staking", runId, userId);
         List<MarketSandboxMapper.PositionRow> rows = sandboxMapper.listPositions("staking", runId, userId);
-        Map<String, Object> result = linked("positions", rows.stream().map(this::sandboxPositionView).toList(),
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        int from = (int) Math.min((long) (pageNum - 1) * pageSize, rows.size());
+        int to = Math.min(from + pageSize, rows.size());
+        Map<String, Object> result = linked("positions", rows.subList(from, to).stream().map(this::sandboxPositionView).toList(),
+                "positionsPage", linked("total", rows.size(), "pageNum", pageNum, "pageSize", pageSize),
                 "walletBalanceUsdt", money(account == null ? null : account.walletUsdt()),
                 "serverTime", LocalDateTime.now(clock), "serverCanonical", true, "source", "mock",
                 "sourceEnvironment", "SANDBOX", "runId", runId);
@@ -475,7 +492,7 @@ public class AppStakingService {
     }
 
     private boolean globalGateEnabled() {
-        return KillSwitchState.enabled(
+        return KillSwitchState.enabledFailClosed(
                 java.util.Optional.ofNullable(mapper.controlValue(STAKING_KILLSWITCH_KEY)),
                 java.util.Optional.ofNullable(mapper.controlValue(STAKING_LEGACY_KILLSWITCH_KEY)));
     }
@@ -497,8 +514,19 @@ public class AppStakingService {
     private ApiResult<Map<String, Object>> positionsResponse(
             Long userId, AppStakingMapper.PositionRow focus, BigDecimal principal, BigDecimal interest,
             BigDecimal penalty, String billNo, String receiptId) {
+        return positionsResponse(userId, focus, principal, interest, penalty, billNo, receiptId, 1, 100);
+    }
+
+    private ApiResult<Map<String, Object>> positionsResponse(
+            Long userId, AppStakingMapper.PositionRow focus, BigDecimal principal, BigDecimal interest,
+            BigDecimal penalty, String billNo, String receiptId, int requestedPageNum, int requestedPageSize) {
+        int pageNum = Math.max(1, requestedPageNum);
+        int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
+        long total = Math.max(0L, mapper.countUserPositions(userId));
+        long offset = (long) (pageNum - 1) * pageSize;
         Map<String, Object> response = linked(
-                "positions", mapper.listUserPositions(userId).stream().map(this::positionView).toList(),
+                "positions", mapper.listUserPositions(userId, offset, pageSize).stream().map(this::positionView).toList(),
+                "positionsPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
                 "walletBalanceUsdt", money(mapper.walletBalance(userId)),
                 "serverTime", LocalDateTime.now(clock),
                 "serverCanonical", true,
@@ -531,8 +559,9 @@ public class AppStakingService {
     }
 
     private AppStakingMapper.PositionRow findPosition(Long userId, String positionNo) {
-        return mapper.listUserPositions(userId).stream().filter(row -> positionNo.equals(row.positionNo())).findFirst()
-                .orElseThrow(() -> new BizException(409, "STAKING_POSITION_PROJECTION_MISSING"));
+        AppStakingMapper.PositionRow row = mapper.lockUserPosition(userId, positionNo);
+        if (row == null) throw new BizException(409, "STAKING_POSITION_PROJECTION_MISSING");
+        return row;
     }
 
     private AppStakingMapper.PositionRow requirePosition(Long userId, String positionNo) {

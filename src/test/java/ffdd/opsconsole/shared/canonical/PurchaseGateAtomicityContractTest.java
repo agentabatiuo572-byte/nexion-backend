@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
+import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class PurchaseGateAtomicityContractTest {
@@ -61,6 +65,19 @@ class PurchaseGateAtomicityContractTest {
                 "ffdd/opsconsole/shared/canonical/AppBundleOrderService.java")))
                 .contains("reserveCanonicalPurchaseQuota")
                 .contains("consumePurchaseQuota");
+    }
+
+    @Test
+    void productionGatePolicyIsLockedBeforeEligibilityAndQuotaMutation() throws Exception {
+        for (var mapper : java.util.List.of(CanonicalStateMapper.class, AppBundleOrderMapper.class)) {
+            String sql = String.join(" ", mapper.getMethod("purchaseGateJson", String.class)
+                    .getAnnotation(Select.class).value());
+            assertThat(sql).contains("nx_admin_device_sku", "FOR UPDATE");
+        }
+        String tradein = String.join(" ", AppTradeinMapper.class
+                .getMethod("lockPurchaseGateJson", String.class)
+                .getAnnotation(Select.class).value());
+        assertThat(tradein).contains("nx_admin_device_sku", "FOR UPDATE");
     }
 
     @Test

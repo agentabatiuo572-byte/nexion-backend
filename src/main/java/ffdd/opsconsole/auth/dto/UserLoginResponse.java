@@ -31,7 +31,11 @@ public record UserLoginResponse(
         return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, receipt);
     }
 
-    public record UserSession(Long userId, String countryCode, String phone, String nickname) {
+    public record UserSession(Long userId, String countryCode, String phone, String nickname,
+                              boolean onboardingComplete) {
+        public UserSession(Long userId, String countryCode, String phone, String nickname) {
+            this(userId, countryCode, phone, nickname, false);
+        }
     }
 
     public record RegistrationReceipt(

@@ -62,6 +62,21 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("SELECT COALESCE((SELECT password_reset_required FROM nx_user_security WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1),0)=1")
     boolean isPasswordResetRequired(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT EXISTS(
+                SELECT 1
+                  FROM nx_onboarding_calibration
+                 WHERE user_id=#{userId}
+                   AND source_environment='PRODUCTION'
+                   AND run_id=''
+                   AND activation_status IN ('ACTIVE','DEFERRED')
+                   AND is_deleted=0)
+            """)
+    boolean isOnboardingComplete(@Param("userId") Long userId);
+
+    @Select("SELECT COALESCE(NULLIF(language, ''), 'en') FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    String activeUserLanguage(@Param("userId") Long userId);
+
     @Insert("""
             INSERT INTO nx_user_security(user_id,two_factor_enabled,login_fail_count,password_reset_required,created_at,updated_at,is_deleted)
             VALUES(#{userId},0,#{failedCount},0,NOW(),NOW(),0)
@@ -91,9 +106,29 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW()
              WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
                AND code_hash=SHA2(CONCAT(#{code}, ':', challenge_no),256)
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int consumeValidLoginOtp(
+            @Param("userId") Long userId,
+            @Param("challengeNo") String challengeNo,
+            @Param("code") String code);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_otp_challenge
+             WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
+               AND code_hash=SHA2(CONCAT(#{code}, ':', challenge_no),256)
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
+            """)
+    int countValidLoginOtp(
             @Param("userId") Long userId,
             @Param("challengeNo") String challengeNo,
             @Param("code") String code);
@@ -121,6 +156,31 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Update("""
             UPDATE nx_user_otp_challenge
                SET consumed_at=NOW(),updated_at=NOW()
+             WHERE user_id=#{userId} AND challenge_no LIKE 'SEC2FA-%'
+               AND consumed_at IS NULL AND is_deleted=0
+            """)
+    int invalidateOpenSecurityOtpChallenges(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_otp_challenge
+               SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW()
+             WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
+               AND challenge_no LIKE 'SEC2FA-%'
+               AND code_hash=SHA2(CONCAT(#{code}, ':', challenge_no),256)
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
+            """)
+    int consumeValidSecurityOtp(
+            @Param("userId") Long userId,
+            @Param("challengeNo") String challengeNo,
+            @Param("code") String code);
+
+    @Update("""
+            UPDATE nx_user_otp_challenge
+               SET consumed_at=NOW(),updated_at=NOW()
              WHERE user_id=#{userId} AND challenge_no LIKE 'RESET-%'
                AND consumed_at IS NULL AND is_deleted=0
             """)
@@ -130,7 +190,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             UPDATE nx_user_otp_challenge
                SET attempts=attempts+1,updated_at=NOW()
              WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
-               AND consumed_at IS NULL AND expires_at>=NOW() AND attempts<5 AND is_deleted=0
+               AND consumed_at IS NULL AND expires_at>=NOW()
+               AND attempts < COALESCE((SELECT CAST(config_value AS UNSIGNED) FROM nx_config_item
+                  WHERE config_key='auth.risk.otp_max_verify_attempts' AND status=1 AND is_deleted=0
+                    AND config_value REGEXP '^[0-9]+$' AND CAST(config_value AS UNSIGNED) BETWEEN 1 AND 10
+                  LIMIT 1),5) AND is_deleted=0
             """)
     int recordInvalidLoginOtpAttempt(
             @Param("userId") Long userId,
@@ -295,7 +359,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{query.keyword}, '%')
                     OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CAST(u.id AS CHAR) = #{query.keyword})
+                    OR CAST(u.id AS CHAR) = #{query.keyword}
+                    <if test='phoneKeyword != null'>
+                    OR RIGHT(REGEXP_REPLACE(u.phone, '[^0-9]', ''), LENGTH(#{phoneKeyword})) = #{phoneKeyword}
+                    OR REGEXP_REPLACE(CONCAT(u.country_code, u.phone), '[^0-9]', '') = #{phoneKeyword}
+                    </if>)
              </if>
              <if test='query.userId != null'>AND u.id = #{query.userId}</if>
              <if test='query.phoneHash != null and query.phoneHash != ""'>
@@ -330,7 +398,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.joinedTo != null and query.joinedTo != ""'>AND u.created_at &lt; DATE_ADD(CONCAT(#{query.joinedTo}, ' 00:00:00'), INTERVAL 1 DAY)</if>
             </script>
             """)
-    long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses);
+    long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
+                          @Param("phoneKeyword") String phoneKeyword);
 
     @Select("""
             <script>
@@ -381,7 +450,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND (u.nickname LIKE CONCAT('%', #{query.keyword}, '%')
                     OR u.referral_code LIKE CONCAT('%', #{query.keyword}, '%')
                     OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) LIKE CONCAT('%', #{query.keyword}, '%')
-                    OR CAST(u.id AS CHAR) = #{query.keyword})
+                    OR CAST(u.id AS CHAR) = #{query.keyword}
+                    <if test='phoneKeyword != null'>
+                    OR RIGHT(REGEXP_REPLACE(u.phone, '[^0-9]', ''), LENGTH(#{phoneKeyword})) = #{phoneKeyword}
+                    OR REGEXP_REPLACE(CONCAT(u.country_code, u.phone), '[^0-9]', '') = #{phoneKeyword}
+                    </if>)
              </if>
              <if test='query.userId != null'>AND u.id = #{query.userId}</if>
              <if test='query.phoneHash != null and query.phoneHash != ""'>
@@ -418,7 +491,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             </script>
             """)
     List<UserAccountView> pageUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
-                                    @Param("offset") int offset, @Param("pageSize") int pageSize);
+                                    @Param("offset") int offset, @Param("pageSize") int pageSize,
+                                    @Param("phoneKeyword") String phoneKeyword);
 
     @Select("""
             <script>

@@ -63,6 +63,21 @@ class OpsDomainRuntimeServiceTest {
     }
 
     @Test
+    void mediaUploadIsOwnedByE1InsteadOfPlatformA1() {
+        ApiResult<OpsDomainRuntimeContract> platform = service.contract("platform");
+        ApiResult<OpsDomainRuntimeContract> devices = service.contract("devices");
+
+        assertThat(platform.getData().apiFamilies())
+                .noneMatch(api -> "MediaUpload".equals(api.resource()));
+        assertThat(devices.getData().apiFamilies()).anySatisfy(api -> {
+            assertThat(api.resource()).isEqualTo("MediaUpload");
+            assertThat(api.path()).isEqualTo("/api/admin/media/uploads");
+            assertThat(api.readPermission()).isEqualTo("device_e1_read");
+            assertThat(api.writePermission()).isEqualTo("device_e1_write");
+        });
+    }
+
+    @Test
     void contentContractIncludesM4KnowledgeApi() {
         ApiResult<OpsDomainRuntimeContract> result = service.contract("content");
 

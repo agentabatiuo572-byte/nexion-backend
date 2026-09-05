@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -59,19 +60,22 @@ public class AppPayoutAddressService {
     public ApiResult<Map<String, Object>> sendOtp(Long userId) {
         Scope scope = scope();
         requireActiveUserLock(userId, scope);
-        if (!otpDelivery.available()) throw new BizException(503, "PAYOUT_ADDRESS_OTP_DELIVERY_UNAVAILABLE");
+        UserContact contact = scope.sandbox() ? mapper.sandboxUserContact(userId) : mapper.userContact(userId);
+        if (contact == null || !SupportedUserPhonePolicy.isSupportedDestination(
+                contact.countryCode(), contact.phone())) {
+            throw new BizException(422, "PAYOUT_ADDRESS_PHONE_INVALID");
+        }
+        if (!otpDelivery.available(contact.countryCode())) {
+            throw new BizException(503, "PAYOUT_ADDRESS_OTP_DELIVERY_UNAVAILABLE");
+        }
         if ((scope.sandbox() ? mapper.recentSandboxOtpCount(scope.runId(), userId) : mapper.recentOtpCount(userId)) > 0) {
             throw new BizException(429, "PAYOUT_ADDRESS_OTP_COOLDOWN");
         }
         if ((scope.sandbox() ? mapper.todaySandboxOtpCount(scope.runId(), userId) : mapper.todayOtpCount(userId)) >= 10) {
             throw new BizException(429, "PAYOUT_ADDRESS_OTP_DAILY_LIMIT");
         }
-        UserContact contact = scope.sandbox() ? mapper.sandboxUserContact(userId) : mapper.userContact(userId);
-        if (contact == null || !StringUtils.hasText(contact.countryCode()) || !StringUtils.hasText(contact.phone())) {
-            throw new BizException(409, "PAYOUT_ADDRESS_PHONE_UNAVAILABLE");
-        }
         String challengeNo = "PAYOUT-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        String code = otpDelivery.verificationCode();
+        String code = otpDelivery.verificationCode(contact.countryCode());
         int inserted = scope.sandbox()
                 ? mapper.insertSandboxOtp(scope.runId(), userId, challengeNo, code)
                 : mapper.insertOtp(userId, challengeNo, code);

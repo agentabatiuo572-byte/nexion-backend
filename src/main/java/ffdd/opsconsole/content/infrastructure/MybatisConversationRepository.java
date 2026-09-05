@@ -50,8 +50,25 @@ public class MybatisConversationRepository implements ConversationRepository {
         long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
         List<ContentConversationView> records = total == 0
                 ? List.of()
-                : mapper.pageConversations(status, type, ownerAgentId, keyword, userId, unreadOnly, pageSize, (pageNum - 1) * pageSize);
+                : mapper.pageConversations(status, type, ownerAgentId, keyword, userId, unreadOnly,
+                        null, false, pageSize, (pageNum - 1) * pageSize);
         return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
+    public PageResult<ContentConversationView> pageConversationsBeforeId(
+            ConversationQueryRequest request, Long beforeId) {
+        long pageSize = normalizeSize(request == null ? null : request.pageSize());
+        String status = request == null ? null : trim(request.status());
+        String type = request == null ? null : trim(request.type());
+        String ownerAgentId = request == null ? null : trim(request.ownerAgentId());
+        Long userId = request == null ? null : request.userId();
+        String keyword = request == null ? null : trim(request.keyword());
+        Boolean unreadOnly = request == null ? null : request.unreadOnly();
+        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
+        List<ContentConversationView> records = mapper.pageConversations(
+                status, type, ownerAgentId, keyword, userId, unreadOnly, beforeId, true, pageSize, 0);
+        return new PageResult<>(total, 1, pageSize, records);
     }
 
     @Override
@@ -77,6 +94,22 @@ public class MybatisConversationRepository implements ConversationRepository {
     @Override
     public List<ContentConversationMessageView> userVisibleMessages(String conversationNo) {
         return messageMapper.listUserVisibleByConversationNo(conversationNo);
+    }
+
+    @Override
+    public List<ContentConversationMessageView> recentUserVisibleMessages(String conversationNo, int limit) {
+        return messageMapper.listRecentUserVisibleByConversationNo(conversationNo, limit);
+    }
+
+    @Override
+    public List<ContentConversationMessageView> recentUserVisibleMessagesBefore(
+            String conversationNo, Long beforeMessageId, int limit) {
+        return messageMapper.listRecentUserVisibleByConversationNoBefore(conversationNo, beforeMessageId, limit);
+    }
+
+    @Override
+    public int unreadUserVisibleAgentMessageCount(String conversationNo) {
+        return messageMapper.countUnreadUserVisibleAgentMessages(conversationNo);
     }
 
     @Override
@@ -313,13 +346,20 @@ public class MybatisConversationRepository implements ConversationRepository {
             String conversationType,
             String openingText,
             LocalDateTime now) {
+        return createUserConversation(conversationNo, userId, conversationType, openingText, null, "Unassigned", now);
+    }
+
+    @Override
+    public ContentConversationView createUserConversation(
+            String conversationNo, Long userId, String conversationType, String openingText,
+            String ownerAgentId, String ownerAgentName, LocalDateTime now) {
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
         entity.setConversationType(conversationType);
         entity.setStatus("OPEN");
-        entity.setOwnerAgentId(null);
-        entity.setOwnerAgentName("Unassigned");
+        entity.setOwnerAgentId(ownerAgentId);
+        entity.setOwnerAgentName(org.springframework.util.StringUtils.hasText(ownerAgentName) ? ownerAgentName : "Unassigned");
         entity.setUnreadCount(1);
         entity.setLastMessage(openingText);
         entity.setLastMessageAt(now);

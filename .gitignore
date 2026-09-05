@@ -7,3 +7,9 @@ target/
 logs/
 .codex-logs/
 
+
+# Local runtime state and command output
+.codex-run/
+.codex-runtime/
+*.out
+*.err

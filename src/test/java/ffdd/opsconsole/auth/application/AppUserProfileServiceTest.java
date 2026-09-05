@@ -73,6 +73,35 @@ class AppUserProfileServiceTest {
     }
 
     @Test
+    void updatesOnlyTheAuthenticatedActiveUsersWhitelistedLanguage() {
+        when(mapper.updateLanguage(42L, "zh")).thenReturn(1);
+
+        Map<String, Object> result = service.updateLanguage(42L, "zh");
+
+        assertThat(result).containsEntry("language", "zh");
+        verify(mapper).updateLanguage(42L, "zh");
+        verify(mapper, never()).updateLanguage(org.mockito.ArgumentMatchers.eq(43L), any());
+    }
+
+    @Test
+    void refusesUnknownLanguageBeforeItCanReachTheUserRow() {
+        assertThatThrownBy(() -> service.updateLanguage(42L, "zh-CN"))
+                .hasMessage("USER_LANGUAGE_INVALID");
+
+        verify(mapper, never()).updateLanguage(any(), any());
+    }
+
+    @Test
+    void profileNormalizesLegacyRegionalLanguageTagsWithoutChangingTheStoredValue() {
+        when(mapper.profile(42L)).thenReturn(Map.of("nickname", "Nexion 0042", "avatarObjectKey", "", "language", "zh-CN"));
+        assertThat(service.profile(42L)).containsEntry("language", "zh");
+
+        when(mapper.profile(42L)).thenReturn(Map.of("nickname", "Nexion 0042", "avatarObjectKey", "", "language", "vi-VN"));
+        assertThat(service.profile(42L)).containsEntry("language", "vi");
+        verify(mapper, never()).updateLanguage(any(), any());
+    }
+
+    @Test
     void avatarAcceptsOnlyMagicVerifiedImagesAndStoresAnOpaqueObjectKey() {
         byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
         when(mapper.currentAvatarForUpdate(42L)).thenReturn(null);

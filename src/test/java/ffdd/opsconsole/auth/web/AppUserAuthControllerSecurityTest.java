@@ -22,6 +22,7 @@ import ffdd.opsconsole.auth.dto.UserOAuthExchangeRequest;
 import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeRequest;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
@@ -96,7 +97,7 @@ class AppUserAuthControllerSecurityTest {
                 eq("http://127.0.0.1:5173"))).thenReturn(ApiResult.ok(
                 new UserOAuthExchangeResponse(
                         "access", "Bearer",
-                        new UserLoginResponse.UserSession(301L, "+1", "900123456789", "Passkey User"),
+                        new UserLoginResponse.UserSession(301L, "+86", "900123456789", "Passkey User"),
                         "refresh", "mock", true)));
 
         mockMvc.perform(post("/auth/users/oauth/exchange")
@@ -151,18 +152,66 @@ class AppUserAuthControllerSecurityTest {
     }
 
     @Test
-    void anonymousOnlyExactExchangeRouteIsPublic() throws Exception {
+    void anonymousOnlyExactPublicAuthRoutesAreReachable() throws Exception {
         mockMvc.perform(post("/auth/users/oauth/exchange/other")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
 
+        when(passwordResetService.send(any(), eq("127.0.0.1")))
+                .thenReturn(ApiResult.ok(new UserOtpLoginChallengeResponse(
+                        "RESET-0123456789abcdef0123456789abcdef", 60, "****5678")));
+        when(passwordResetService.complete(any(), eq("127.0.0.1")))
+                .thenReturn(ApiResult.ok(java.util.Map.of(
+                        "status", "PASSWORD_RESET", "revokedSessionCount", 2)));
+        when(passwordResetService.verify(any()))
+                .thenReturn(ApiResult.ok(java.util.Map.of("status", "PASSWORD_RESET_OTP_VERIFIED")));
+
         mockMvc.perform(post("/auth/users/password-reset/otp/send")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countryCode\":\"+84\",\"phone\":\"901234567\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(post("/auth/users/password-reset/otp/complete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countryCode\":\"+84\",\"phone\":\"901234567\","
+                                + "\"challengeNo\":\"RESET-0123456789abcdef0123456789abcdef\","
+                                + "\"code\":\"123456\",\"newPassword\":\"NewPassword2!\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(post("/auth/users/password-reset/otp/verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countryCode\":\"+84\",\"phone\":\"901234567\","
+                                + "\"challengeNo\":\"RESET-0123456789abcdef0123456789abcdef\","
+                                + "\"code\":\"123456\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        mockMvc.perform(post("/auth/users/password-reset/otp/send/other")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value(401));
+
+        mockMvc.perform(post("/auth/users/password-reset/otp/verify/other")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+    }
+
+    @Test
+    void retiredCurrentPasswordResetRouteIsNotPubliclyReachable() throws Exception {
+        mockMvc.perform(post("/auth/users/password-reset/complete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"old\",\"newPassword\":\"new\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401));
+
+        verify(authService, org.mockito.Mockito.never()).completePasswordReset(any(), any());
     }
 
     @Test

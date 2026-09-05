@@ -198,7 +198,7 @@ class OpsVietnamPaymentServiceTest {
                 12L, "match-credit", "reconcile-12",
                 new VietQrReconciliationCommandRequest(
                         0L, 41L, "VQR-CANONICAL",
-                        "EVIDENCE-12",
+                        receiptEvidence(),
                         "manual bank receipt match", "finance-admin"));
 
         assertThat(result.getData())
@@ -257,7 +257,7 @@ class OpsVietnamPaymentServiceTest {
         assertThat(service.reconcile(
                 18L, "match-credit", "reconcile-18",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-LOCKED-LIMIT", "EVIDENCE-18",
+                        0L, null, "VQR-LOCKED-LIMIT", receiptEvidence(),
                         "honor registered receipt snapshot", "finance-admin"))
                 .getData())
                 .containsEntry("creditedUsdt", new BigDecimal("125.000000"));
@@ -291,7 +291,7 @@ class OpsVietnamPaymentServiceTest {
                 13L, "match-credit", "reconcile-13",
                 new VietQrReconciliationCommandRequest(
                         0L, 99L, "VQR-OWNER",
-                        "EVIDENCE-13",
+                        receiptEvidence(),
                         "manual bank receipt match", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_INTENT_USER_MISMATCH");
@@ -325,7 +325,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 14L, "match-credit", "reconcile-14",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-TARGET", "EVIDENCE-14",
+                        0L, null, "VQR-TARGET", receiptEvidence(),
                         "reject giant overpayment", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_INTENT_AMOUNT_MISMATCH");
@@ -345,7 +345,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 14L, "match-credit", "reconcile-14b",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-TARGET", "EVIDENCE-14B",
+                        0L, null, "VQR-TARGET", receiptEvidence(),
                         "reject wrong bank receipt", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_INTENT_BANK_ACCOUNT_MISMATCH");
@@ -382,7 +382,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 140L, "write-off", "write-off-account-mismatch",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, null, "EVIDENCE-ACCOUNT-MISMATCH",
+                        0L, null, null, receiptEvidence(),
                         "reject account mismatch writeoff", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_INTENT_BANK_ACCOUNT_MISMATCH");
@@ -422,7 +422,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 15L, "match-credit", "reconcile-15",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-FUTURE", "EVIDENCE-15",
+                        0L, null, "VQR-FUTURE", receiptEvidence(),
                         "reject retroactive orphan assignment", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIPT_PREDATES_INTENT");
@@ -445,7 +445,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 28L, "return", "reconcile-28-intent",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-UNRELATED", "EVIDENCE-28A",
+                        0L, null, "VQR-UNRELATED", receiptEvidence(),
                         "reject poisoned orphan target", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_ORPHAN_RETURN_TARGET_NOT_ALLOWED");
@@ -453,7 +453,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 28L, "return", "reconcile-28-user",
                 new VietQrReconciliationCommandRequest(
-                        0L, 41L, null, "EVIDENCE-28B",
+                        0L, 41L, null, receiptEvidence(),
                         "reject poisoned orphan owner", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_ORPHAN_RETURN_TARGET_NOT_ALLOWED");
@@ -485,7 +485,7 @@ class OpsVietnamPaymentServiceTest {
         ApiResult<Map<String, Object>> result = service.reconcile(
                 29L, "return", "reconcile-29",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, null, "EVIDENCE-29",
+                        0L, null, null, receiptEvidence(),
                         "return unbound orphan receipt", "finance-admin"));
 
         assertThat(result.getData())
@@ -517,7 +517,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 16L, "match-credit", "reconcile-16",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-OLD", "EVIDENCE-16",
+                        0L, null, "VQR-OLD", receiptEvidence(),
                         "reject stale locked rate reuse", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_MATCH_CREDIT_NOT_ALLOWED");
@@ -554,7 +554,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 17L, "write-off", "reconcile-17",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-LIMIT", "EVIDENCE-17",
+                        0L, null, "VQR-LIMIT", receiptEvidence(),
                         "reject over-limit writeoff", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIPT_CREDIT_LIMIT_EXCEEDED");
@@ -568,7 +568,19 @@ class OpsVietnamPaymentServiceTest {
                 new VietQrReconciliationCommandRequest(
                         0L, null, null, "", "return bank transfer", "finance-admin")))
                 .isInstanceOf(BizException.class)
-                .hasMessage("VIETQR_EVIDENCE_REFERENCE_INVALID");
+                .hasMessage("VIETQR_RECEIPT_UPLOAD_EVIDENCE_REQUIRED");
+        verify(mapper, never()).findVietQrReconciliationForUpdate(anyLong());
+    }
+
+    @Test
+    void reconciliationRejectsOperatorTypedEvidenceBeforeDatabaseAccess() {
+        assertThatThrownBy(() -> service.reconcile(
+                15L, "return", "reconcile-free-text",
+                new VietQrReconciliationCommandRequest(
+                        0L, null, null, "EVIDENCE-I-TYPED-MYSELF",
+                        "return bank transfer", "finance-admin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_RECEIPT_UPLOAD_EVIDENCE_REQUIRED");
         verify(mapper, never()).findVietQrReconciliationForUpdate(anyLong());
     }
 
@@ -734,7 +746,7 @@ class OpsVietnamPaymentServiceTest {
         assertThat(delayedService.reconcile(
                 21L, "match-credit", "reconcile-delay-21",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-BEFORE-EXPIRY", "EVIDENCE-21",
+                        0L, null, "VQR-BEFORE-EXPIRY", receiptEvidence(),
                         "confirm delayed exact receipt", "finance-admin")).getData())
                 .containsEntry("status", "CREDITED");
         verify(mapper, never()).addVietQrBankReceivedToday(anyLong(), any(), any());
@@ -818,7 +830,7 @@ class OpsVietnamPaymentServiceTest {
         assertThat(delayedService.reconcile(
                 22L, "match-credit", "reconcile-grace-22",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-WITHIN-GRACE", "EVIDENCE-22",
+                        0L, null, "VQR-WITHIN-GRACE", receiptEvidence(),
                         "confirm receipt after grace", "finance-admin")).getData())
                 .containsEntry("status", "CREDITED");
     }
@@ -926,7 +938,7 @@ class OpsVietnamPaymentServiceTest {
         assertThat(delayedService.reconcile(
                 24L, "return", "reconcile-duplicate-24",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-DUPLICATE", "EVIDENCE-24",
+                        0L, null, "VQR-DUPLICATE", receiptEvidence(),
                         "return supplemental receipt", "finance-admin")).getData())
                 .containsEntry("status", "RETURNED");
         verify(mapper, never()).findUsdtWalletForUpdate(anyLong());
@@ -952,7 +964,7 @@ class OpsVietnamPaymentServiceTest {
         assertThatThrownBy(() -> service.reconcile(
                 25L, "match-credit", "reconcile-bound-25",
                 new VietQrReconciliationCommandRequest(
-                        0L, null, "VQR-OTHER", "EVIDENCE-25",
+                        0L, null, "VQR-OTHER", receiptEvidence(),
                         "reject operator intent override", "finance-admin")))
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_BOUND_INTENT_OVERRIDE_NOT_ALLOWED");

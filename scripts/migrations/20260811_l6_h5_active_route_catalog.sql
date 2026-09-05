@@ -15,6 +15,7 @@ VALUES
 ('/pages/onboarding/estimator','estimator',1,'/pages/onboarding/estimator','/pages/onboarding/estimator',1,'pages-manifest-20260811',0),
 ('/pages/onboarding/connect','connect',1,'/pages/onboarding/connect','/pages/onboarding/connect',1,'pages-manifest-20260811',0),
 ('/pages/onboarding/terms','terms',1,'/pages/onboarding/terms','/pages/onboarding/terms',1,'pages-manifest-20260811',0),
+('/pages/onboarding/privacy','privacy',1,'/pages/onboarding/privacy','/pages/onboarding/privacy',1,'pages-manifest-20260811',0),
 ('/pages/register/register','register',1,'/pages/register/register','/pages/register/register',1,'pages-manifest-20260811',0),
 ('/pages/register/success','success',1,'/pages/register/success','/pages/register/success',1,'pages-manifest-20260811',0),
 ('/pages/login/login','login',1,'/pages/login/login','/pages/login/login',1,'pages-manifest-20260811',0),

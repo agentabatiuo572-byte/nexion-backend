@@ -83,6 +83,29 @@ class AppReferralRewardServiceTest {
             assertThat(row.ledgerStatus()).isEqualTo("SUCCESS");
         });
         verify(mapper).appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 20);
+        verify(mapper).appPendingCount(11L, LocalDateTime.of(2026, 7, 17, 8, 0), "PRODUCTION", 0);
+    }
+
+    @Test
+    void keepsHistoricalSettlementsReadableAfterAForwardOnlyWindowResets() {
+        when(mapper.appInvitedCount(org.mockito.ArgumentMatchers.eq(11L),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(0))).thenReturn(0L);
+        when(mapper.appPendingCount(org.mockito.ArgumentMatchers.eq(11L),
+                org.mockito.ArgumentMatchers.any(LocalDateTime.class), org.mockito.ArgumentMatchers.eq("PRODUCTION"),
+                org.mockito.ArgumentMatchers.eq(0))).thenReturn(0L);
+        when(mapper.appPositiveSettlementCount(11L, "PRODUCTION", 0)).thenReturn(2L);
+        when(mapper.appSettlementCount(11L, "PRODUCTION", 0)).thenReturn(2L);
+        when(mapper.appVerifiedRewardSummary(11L, "H8_REFERRAL", "PRODUCTION", 0))
+                .thenReturn(new ReferralRewardMapper.AppReferralLedgerSummary(2L, new BigDecimal("40")));
+        when(mapper.appRecentVerifiedRewards(11L, "H8_REFERRAL", "PRODUCTION", 0, 10)).thenReturn(List.of());
+
+        AppReferralRewardView view = service.snapshot(11L, 10).getData();
+
+        assertThat(view.invitedCount()).isEqualTo(2);
+        assertThat(view.pendingCount()).isZero();
+        assertThat(view.settledCount()).isEqualTo(2);
+        assertThat(view.lifetimeInviterNex()).isEqualByComparingTo("40");
     }
 
     @Test

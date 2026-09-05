@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantResult;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneQuestState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
@@ -79,6 +80,10 @@ public class AppGrowthEngagementService {
     private final Environment environment;
 
     public ApiResult<Map<String, Object>> questState(Long userId) {
+        return questState(userId, "en");
+    }
+
+    public ApiResult<Map<String, Object>> questState(Long userId, String locale) {
         if (sandboxService != null) {
             if (sandboxService.enabled()) return sandboxService.questState(userId);
             if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
@@ -89,8 +94,19 @@ public class AppGrowthEngagementService {
             throw conflict("H1_RHYTHM_UNAVAILABLE");
         }
         Map<String, Object> promo = mapper.questPromoBanner();
+        List<Map<String, Object>> rawQuests = safeList(mapper.questState(userId, contentLocale(locale)));
+        BigDecimal dayOneReward = rawQuests.stream()
+                .filter(row -> "DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer"))))
+                .map(row -> DayOneTriRewardPolicy.effectiveDayOneReward(
+                        row.get("triReward") == null ? null : String.valueOf(row.get("triReward")),
+                        numberValue(row.get("accountAgeHours"), 0L),
+                        numberValue(row.get("eligibilityHours"), 72L)))
+                .findFirst().orElse(BigDecimal.ZERO);
+        List<Map<String, Object>> quests = rawQuests.stream()
+                .map(this::projectQuestRewardPolicy).toList();
         return ApiResult.ok(productionResponse(linked(
-                "quests", safeList(mapper.questState(userId)),
+                "quests", quests,
+                "dayOneRewardNex", dayOneReward,
                 "promoBanner", promo == null ? Map.of() : new LinkedHashMap<>(promo),
                 "questBonusMultiplier", positiveOrOne(rhythm.questBonusMultiplier()),
                 "rhythmMonth", rhythm.currentMonth(),
@@ -99,9 +115,13 @@ public class AppGrowthEngagementService {
     }
 
     public ApiResult<Map<String, Object>> eventState(Long userId) {
+        return eventState(userId, "en");
+    }
+
+    public ApiResult<Map<String, Object>> eventState(Long userId, String locale) {
         requireCanonicalEngagementRuntime();
         requireReadableUser(userId);
-        List<Map<String, Object>> events = safeList(mapper.eventState(userId));
+        List<Map<String, Object>> events = safeList(mapper.eventState(userId, contentLocale(locale)));
         long featuredOngoing = events.stream()
                 .filter(row -> Boolean.TRUE.equals(row.get("featured"))
                         || row.get("featured") instanceof Number number && number.intValue() == 1)
@@ -114,6 +134,11 @@ public class AppGrowthEngagementService {
                 "events", events,
                 "serverTimeUtc", java.time.Instant.now().toString(),
                 "source", "nx_event_quest + nx_user_event_quest"));
+    }
+
+    private String contentLocale(String locale) {
+        String normalized = locale == null ? "" : locale.trim().toLowerCase(Locale.ROOT);
+        return Set.of("en", "zh", "vi").contains(normalized) ? normalized : "en";
     }
 
     public ApiResult<Map<String, Object>> pointState(Long userId) {
@@ -141,10 +166,11 @@ public class AppGrowthEngagementService {
                 "streak", streak,
                 "dailyMilestones", safeList(mapper.dailyMilestoneState(userId)),
                 "earningMilestones", safeList(mapper.earningMilestoneState(userId)),
+                "badgeAchievements", safeList(mapper.achievementState(userId)),
                 "rules", safeList(mapper.checkInRuleState()),
                 "powerUps", safeList(mapper.streakPowerUpState(userId)),
                 "topStreakers", safeList(mapper.topStreakers()),
-                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers")));
+                "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers + nx_achievement")));
     }
 
     public ApiResult<Map<String, Object>> voucherState(Long userId) {
@@ -222,31 +248,70 @@ public class AppGrowthEngagementService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> claimQuest(Long userId, String questCode, String idempotencyKey) {
+    public ApiResult<Map<String, Object>> claimQuest(
+            Long userId, String questCode, String requestedInstanceKey, String idempotencyKey) {
         if (sandboxService != null) {
             if (sandboxService.enabled()) return sandboxService.claimQuest(userId, questCode, idempotencyKey);
             if (sandboxService.unknownProfile()) throw new BizException(503, "WHEEL_RUNTIME_PROFILE_UNSUPPORTED");
         }
         requireUser(userId);
         String code = reference(questCode, "QUEST_CODE_REQUIRED");
-        return executeOnce("QUEST_CLAIM", userId, idempotencyKey, code, () -> {
+        String instanceKey = reference(requestedInstanceKey, "QUEST_INSTANCE_KEY_REQUIRED");
+        return executeOnce("QUEST_CLAIM", userId, idempotencyKey, code + "|" + instanceKey, () -> {
             QuestReward reward = mapper.lockClaimableQuest(userId, code);
             if (reward == null) return ApiResult.fail(409, "QUEST_NOT_CLAIMABLE");
-            if (mapper.claimQuest(userId, reward.missionId()) != 1) throw conflict("QUEST_CLAIM_CONFLICT");
+            if (!instanceKey.equals(reward.instanceKey())) throw conflict("QUEST_INSTANCE_MISMATCH");
+            boolean dayOne = "DAY_ONE".equalsIgnoreCase(reward.layer());
+            if (dayOne) {
+                List<DayOneQuestState> group = Optional.ofNullable(
+                        mapper.lockDayOneGroup(userId, reward.instanceKey())).orElseGet(List::of);
+                if (group.size() != 6 || group.stream().anyMatch(row ->
+                        !Set.of("COMPLETED", "CLAIMABLE").contains(row.missionStatus()))) {
+                    return ApiResult.fail(409, "DAY_ONE_GROUP_NOT_CLAIMABLE");
+                }
+                if (mapper.claimDayOneGroup(userId, reward.instanceKey()) != group.size()) {
+                    throw conflict("QUEST_CLAIM_CONFLICT");
+                }
+            } else if (mapper.claimQuest(userId, reward.missionId(), reward.instanceKey()) != 1) {
+                throw conflict("QUEST_CLAIM_CONFLICT");
+            }
             GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
             if (rhythm == null || rhythm.currentMonth() <= 0) throw conflict("H1_RHYTHM_UNAVAILABLE");
             BigDecimal multiplier = positiveOrOne(rhythm.questBonusMultiplier());
-            BigDecimal amount = positive(reward.rewardNex()).multiply(multiplier)
+            BigDecimal baseReward = dayOne
+                    ? DayOneTriRewardPolicy.effectiveDayOneReward(reward.triReward(),
+                            reward.accountAgeHours() == null ? 0L : reward.accountAgeHours(),
+                            reward.eligibilityHours() == null ? 72L : reward.eligibilityHours())
+                    : reward.rewardNex();
+            BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
-            creditNex(userId, "QUEST:" + code + ":" + userId, "QUEST_REWARD", amount, "H3 quest claim");
+            String rewardReference = dayOne ? "DAY_ONE" : code;
+            creditNex(userId, "QUEST:" + rewardReference + ":" + userId + ":" + reward.instanceKey(),
+                    "QUEST_REWARD", amount, "H3 quest claim");
             Map<String, Object> detail = linked(
                     "layer", reward.layer(), "rewardNex", amount, "multiplier", multiplier,
-                    "rhythmMonth", rhythm.currentMonth());
+                    "rhythmMonth", rhythm.currentMonth(), "instanceKey", reward.instanceKey());
             audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
             publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
             return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",
+                    "instanceKey", reward.instanceKey(),
                     "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
         });
+    }
+
+    private Map<String, Object> projectQuestRewardPolicy(Map<String, Object> source) {
+        Map<String, Object> projected = new LinkedHashMap<>(source);
+        if ("DAY_ONE".equalsIgnoreCase(String.valueOf(source.get("layer")))) {
+            projected.put("rewardNex", BigDecimal.ZERO);
+        }
+        projected.remove("triReward");
+        projected.remove("accountAgeHours");
+        projected.remove("eligibilityHours");
+        return projected;
+    }
+
+    private long numberValue(Object value, long fallback) {
+        return value instanceof Number number ? number.longValue() : fallback;
     }
 
     /** Records a successful client share as a server-owned H3 fact. */
@@ -506,15 +571,24 @@ public class AppGrowthEngagementService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> evaluateEarningMilestones(Long userId, String idempotencyKey) {
+        return evaluateEarningMilestones(userId, idempotencyKey, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> evaluateEarningMilestones(Long userId, String idempotencyKey, String requestedMilestoneId) {
         requireCanonicalEngagementRuntime();
         requireUser(userId);
-        return executeOnce("EARNING_MILESTONE_EVALUATE", userId, idempotencyKey, "eligible-rules", () -> {
+        String target = requestedMilestoneId == null ? null : reference(requestedMilestoneId, "EARNING_MILESTONE_ID_REQUIRED");
+        return executeOnce("EARNING_MILESTONE_EVALUATE", userId, idempotencyKey, target == null ? "eligible-rules" : "milestone:" + target, () -> {
             List<EarningMilestone> eligible = mapper.lockEligibleEarningMilestones(userId);
             List<Map<String, Object>> fired = new ArrayList<>();
             Attribution attribution = attribution(userId);
             List<EarningMilestone> ordered = eligible == null ? List.of() : eligible;
-            // H6 deliberately advances one rung per authoritative evaluation tick.
-            for (EarningMilestone row : ordered.stream().limit(1).toList()) {
+            // Automatic evaluation advances one rung; an explicit claim must honor the selected reward.
+            List<EarningMilestone> selected = ordered.stream()
+                    .filter(row -> target == null || target.equals(row.milestoneId())).limit(1).toList();
+            if (target != null && selected.isEmpty()) throw conflict("EARNING_MILESTONE_NOT_CLAIMABLE");
+            for (EarningMilestone row : selected) {
                 BigDecimal reward = positive(row.rewardNex());
                 String eventNo = "EMS-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
                 if (mapper.insertEarningMilestone(userId, row, eventNo) != 1) {

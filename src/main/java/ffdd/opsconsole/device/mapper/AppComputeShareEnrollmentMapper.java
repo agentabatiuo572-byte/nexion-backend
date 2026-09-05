@@ -69,7 +69,8 @@ public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id, enrollment_no AS enrollmentNo, user_id AS userId,
                    requested_gpu_model AS requestedGpuModel, pairing_code_hash AS pairingCodeHash,
-                   status, user_device_id AS deviceId, expires_at AS expiresAt, row_version AS rowVersion
+                   status, user_device_id AS deviceId, device_instance_no AS deviceInstanceNo,
+                   expires_at AS expiresAt, row_version AS rowVersion
               FROM nx_compute_share_enrollment
              WHERE enrollment_no = #{enrollmentNo} AND user_id = #{userId} AND is_deleted = 0
              LIMIT 1
@@ -79,7 +80,8 @@ public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
     @Select("""
             SELECT id, enrollment_no AS enrollmentNo, user_id AS userId,
                    requested_gpu_model AS requestedGpuModel, pairing_code_hash AS pairingCodeHash,
-                   status, user_device_id AS deviceId, expires_at AS expiresAt, row_version AS rowVersion
+                   status, user_device_id AS deviceId, device_instance_no AS deviceInstanceNo,
+                   expires_at AS expiresAt, row_version AS rowVersion
               FROM nx_compute_share_enrollment
              WHERE enrollment_no = #{enrollmentNo} AND is_deleted = 0
              LIMIT 1 FOR UPDATE
@@ -131,7 +133,7 @@ public interface AppComputeShareEnrollmentMapper extends BaseMapper<Object> {
 
     record EnrollmentRow(Long id, String enrollmentNo, Long userId, String requestedGpuModel,
                          String pairingCodeHash, String status, Long deviceId,
-                         Instant expiresAt, Long rowVersion) { }
+                         String deviceInstanceNo, Instant expiresAt, Long rowVersion) { }
 
     record CanonicalDeviceWrite(Long userId, String instanceNo, String name, String gpuModel,
                                 Integer vramTotalGb, BigDecimal basePowerW) { }

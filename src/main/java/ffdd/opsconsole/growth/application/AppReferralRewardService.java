@@ -10,7 +10,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppReferralRewardService {
+    private static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
     public static final int MAX_LIMIT = 20;
     private static final List<String> PRODUCTION_FACT_SOURCES = List.of(
             "nx_referral_reward_settlement",
@@ -64,7 +65,7 @@ public class AppReferralRewardService {
         String source = sandboxFacts ? "mock" : "ledger";
         int accountSandbox = sandbox ? 1 : 0;
         ReferralRewardPublicConfigView config = rewardConfig.publicConfig();
-        java.time.LocalDateTime effectiveAt = config.effectiveAt().atZone(ZoneOffset.UTC).toLocalDateTime();
+        java.time.LocalDateTime effectiveAt = config.effectiveAt().atZone(DATABASE_ZONE).toLocalDateTime();
         long invitedCount = sandboxFacts
                 ? mapper.appSandboxInvitedCount(userId, effectiveAt, runId)
                 : mapper.appInvitedCount(userId, effectiveAt, environment, accountSandbox);
@@ -77,6 +78,7 @@ public class AppReferralRewardService {
         long settlementCount = sandboxFacts
                 ? mapper.appSandboxSettlementCount(userId, runId)
                 : mapper.appSettlementCount(userId, environment, accountSandbox);
+        invitedCount = Math.max(invitedCount, Math.addExact(pendingCount, settlementCount));
         AppReferralLedgerSummary summary = sandboxFacts
                 ? mapper.appVerifiedSandboxRewardSummary(userId, runId)
                 : mapper.appVerifiedRewardSummary(userId, sourceType, environment, accountSandbox);
@@ -92,7 +94,7 @@ public class AppReferralRewardService {
         List<AppReferralRewardView.RewardLedgerItem> rewards = ledgerRows == null
                 ? List.of() : ledgerRows.stream().map(this::toView).toList();
         return ApiResult.ok(new AppReferralRewardView(
-                account.referralCode(), config.inviterReward().nexAmount(),
+                account.referralCode(), config.enabled(), config.inviterReward().nexAmount(),
                 invitedCount, pendingCount, settlementCount, lifetime,
                 sandboxFacts ? lifetime : nz(account.walletNexAvailable()), rewards, limit, source, environment, sandboxFacts ? runId : null,
                 sandboxFacts ? SANDBOX_FACT_SOURCES : PRODUCTION_FACT_SOURCES, clock.instant()));

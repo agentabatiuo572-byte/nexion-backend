@@ -13,6 +13,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
@@ -25,6 +26,7 @@ import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -34,13 +36,15 @@ class AppVietQrIntentServiceTest {
             Clock.fixed(Instant.parse("2026-07-25T00:00:00Z"), ZoneOffset.UTC);
     private final AppVietQrIntentMapper mapper = mock(AppVietQrIntentMapper.class);
     private final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
+    private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final MockEnvironment environment = new MockEnvironment();
     private AppVietQrIntentService service;
 
     @BeforeEach
     void setUp() {
         environment.setActiveProfiles("prod");
-        service = new AppVietQrIntentService(mapper, cipher, CLOCK, environment);
+        service = new AppVietQrIntentService(mapper, cipher, CLOCK, environment, config);
+        when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.of("true"));
         when(mapper.lockActiveUserForIntentCreation(41L)).thenReturn(41L);
         when(mapper.findVietQrConfig()).thenReturn(Map.of(
                 "toleranceVnd", new BigDecimal("1000"),
@@ -188,6 +192,70 @@ class AppVietQrIntentServiceTest {
                 .containsEntry("maxDepositUsdt", new BigDecimal("5000.00"))
                 .containsEntry("todayRemainingDepositUsdt", new BigDecimal("0.00"))
                 .containsEntry("todayRemainingVnd", BigDecimal.ZERO);
+    }
+
+    @Test
+    void paymentConfigAndCreateFailClosedWhenD1DisablesTheCanonicalVietQrChannel() {
+        when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.of("false"));
+        when(mapper.findMaxAvailableBankCapacityVnd()).thenReturn(new BigDecimal("200000000"));
+
+        Map<String, Object> vietQr = (Map<String, Object>) service.paymentConfig().getData().get("vietQr");
+
+        assertThat(vietQr)
+                .containsEntry("enabled", false)
+                .containsEntry("maxDepositUsdt", new BigDecimal("5000.00"))
+                .containsEntry("todayRemainingDepositUsdt", new BigDecimal("7578.62"));
+        assertThatThrownBy(() -> service.create(41L, "create-channel-disabled", new BigDecimal("25")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_CHANNEL_UNAVAILABLE")
+                .extracting("code")
+                .isEqualTo(503);
+        verify(mapper, never()).lockActiveUserForIntentCreation(41L);
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+        verify(mapper, never()).ensureInFlightReconciliation(anyString());
+        verify(mapper, never()).insertIntent(
+                anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
+                anyLong(), anyString(), any());
+    }
+
+    @Test
+    void enabledD1ChannelStillRequiresAnActiveBankAccountBeforeCreatingAnIntent() {
+        when(mapper.findIntentByCreateKey(41L, "create-no-active-bank")).thenReturn(null);
+        when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
+        when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.create(41L, "create-no-active-bank", new BigDecimal("25")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_BANK_RAIL_UNAVAILABLE")
+                .extracting("code")
+                .isEqualTo(503);
+        verify(mapper, never()).insertIntent(
+                anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
+                anyLong(), anyString(), any());
+    }
+
+    @Test
+    void missingChannelConfigRetainsTheExistingD1DefaultWhileIllegalValuesFailClosed() {
+        when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.empty());
+        when(mapper.findMaxAvailableBankCapacityVnd()).thenReturn(new BigDecimal("200000000"));
+
+        Map<String, Object> missing = (Map<String, Object>) service.paymentConfig().getData().get("vietQr");
+
+        assertThat(missing).containsEntry("enabled", true);
+
+        when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.of("not-a-boolean"));
+        Map<String, Object> illegal = (Map<String, Object>) service.paymentConfig().getData().get("vietQr");
+        assertThat(illegal).containsEntry("enabled", false);
+        assertThatThrownBy(() -> service.create(41L, "create-illegal-channel-config", new BigDecimal("25")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_CHANNEL_CONFIG_INVALID")
+                .extracting("code")
+                .isEqualTo(503);
+        verify(mapper, never()).lockActiveUserForIntentCreation(41L);
+        verify(mapper, never()).ensureInFlightReconciliation(anyString());
+        verify(mapper, never()).insertIntent(
+                anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
+                anyLong(), anyString(), any());
     }
 
     @Test

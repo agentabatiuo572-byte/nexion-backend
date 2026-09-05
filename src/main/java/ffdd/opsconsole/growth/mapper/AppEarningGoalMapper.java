@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -35,6 +36,14 @@ public interface AppEarningGoalMapper extends BaseMapper<Object> {
     GoalRow latest(@Param("userId") Long userId);
 
     @Select("""
+            SELECT id,user_id AS userId,target_usdt AS targetUsdt,deadline_at AS deadlineAt,
+                   achieved,achieved_at AS achievedAt,created_at AS createdAt,updated_at AS updatedAt
+              FROM nx_earning_goal
+             WHERE id=#{goalId} AND user_id=#{userId} AND is_deleted=0
+             """)
+    GoalRow findById(@Param("userId") Long userId, @Param("goalId") Long goalId);
+
+    @Select("""
             SELECT COALESCE(SUM(reward_usdt),0)
               FROM nx_compute_receipt
              WHERE user_id=#{userId} AND is_deleted=0
@@ -47,8 +56,8 @@ public interface AppEarningGoalMapper extends BaseMapper<Object> {
               (user_id,target_usdt,deadline_at,achieved,created_at,updated_at,is_deleted)
             VALUES (#{userId},#{targetUsdt},#{deadlineAt},0,NOW(),NOW(),0)
             """)
-    int insert(@Param("userId") Long userId, @Param("targetUsdt") BigDecimal targetUsdt,
-               @Param("deadlineAt") LocalDateTime deadlineAt);
+    @Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "id")
+    int insert(GoalInsert goal);
 
     @Update("""
             UPDATE nx_earning_goal SET achieved=#{achieved},
@@ -66,6 +75,25 @@ public interface AppEarningGoalMapper extends BaseMapper<Object> {
     int softDelete(@Param("userId") Long userId, @Param("goalId") Long goalId);
 
     record GoalRow(Long id, Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt,
-                   boolean achieved, LocalDateTime achievedAt, LocalDateTime createdAt,
-                   LocalDateTime updatedAt) { }
+                    boolean achieved, LocalDateTime achievedAt, LocalDateTime createdAt,
+                    LocalDateTime updatedAt) { }
+
+    class GoalInsert {
+        private Long id;
+        private final Long userId;
+        private final BigDecimal targetUsdt;
+        private final LocalDateTime deadlineAt;
+
+        public GoalInsert(Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt) {
+            this.userId = userId;
+            this.targetUsdt = targetUsdt;
+            this.deadlineAt = deadlineAt;
+        }
+
+        public Long getId() { return id; }
+        public void setId(Long id) { this.id = id; }
+        public Long getUserId() { return userId; }
+        public BigDecimal getTargetUsdt() { return targetUsdt; }
+        public LocalDateTime getDeadlineAt() { return deadlineAt; }
+    }
 }

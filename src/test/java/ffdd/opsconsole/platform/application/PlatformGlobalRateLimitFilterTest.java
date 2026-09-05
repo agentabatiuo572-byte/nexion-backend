@@ -80,6 +80,15 @@ class PlatformGlobalRateLimitFilterTest {
     }
 
     @Test
+    void publicHdPayCallbackIsProtectedByTheSocketIpProviderBudget() throws Exception {
+        when(values.increment(any(String.class))).thenAnswer(invocation ->
+                invocation.<String>getArgument(0).contains(":provider-callback:") ? 501L : 1L);
+
+        assertThat(execute("POST", "/openapi/v1/payments/hdpay/pay-in/callback").getStatus())
+                .isEqualTo(429);
+    }
+
+    @Test
     void rotatingUnauthenticatedBearerValuesStillShareTheIpRouteBucket() throws Exception {
         Set<String> keys = new LinkedHashSet<>();
         when(values.increment(any(String.class))).thenAnswer(invocation -> {
