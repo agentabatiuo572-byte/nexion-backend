@@ -7175,3 +7175,13 @@ DROP TABLE IF EXISTS
   nx_support_acceptance_sandbox_receipt,
   nx_support_acceptance_sandbox_idempotency,
   nx_growth_quest_sandbox;
+
+-- Password mutation receipts contain no submitted passwords or request bodies.
+CREATE TABLE IF NOT EXISTS nx_user_password_command (
+  user_id BIGINT NOT NULL,
+  session_id VARCHAR(128) NOT NULL,
+  command_key VARCHAR(128) NOT NULL,
+  changed_at DATETIME NOT NULL,
+  revoked_count INT NOT NULL,
+  PRIMARY KEY (user_id, command_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

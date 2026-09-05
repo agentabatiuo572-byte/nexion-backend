@@ -81,7 +81,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.insertConversionOrder(eq(7L), anyString(), eq(11L), any(), any(), any())).thenReturn(1);
         when(mapper.insertConversionOrderItem(anyString(), eq(11L), eq("stellarbox-s1"), eq("S1"), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("CLOUD"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), any(), any()))
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), any(), any()))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))

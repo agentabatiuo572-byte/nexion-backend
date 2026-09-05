@@ -180,7 +180,10 @@ public interface AppTrialLifecycleMapper {
     int ensureTrialQuotaDay(@Param("quotaDate") LocalDate quotaDate, @Param("dailyLimit") int dailyLimit);
 
     @Select("""
-            SELECT GREATEST(daily_limit-claimed_count,0)
+            SELECT GREATEST(COALESCE((
+                     SELECT CAST(current_value AS SIGNED) FROM nx_growth_trial_policy
+                      WHERE policy_key='seatsLeftToday' AND is_deleted=0 LIMIT 1
+                   ),0)-claimed_count,0)
               FROM nx_growth_trial_daily_quota
              WHERE quota_date=#{quotaDate}
             """)
@@ -380,10 +383,19 @@ public interface AppTrialLifecycleMapper {
             INSERT INTO nx_user_device
               (user_id,source_order_no,product_id,product_code,product_tier,device_id,instance_no,name,
                device_type,generation,base_power_w,price_usdt_snapshot,ownership_status,source_channel,
-               status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted)
-            VALUES
-              (#{userId},#{sourceOrderNo},#{productId},#{productCode},#{productTier},NULL,#{instanceNo},#{deviceName},
-               #{deviceType},1,0,#{priceUsdt},'OWNED','TRIAL','ACTIVE',0,#{dailyUsdt},#{dailyNex},NOW(),NOW(),NOW(),NOW(),0)
+               status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
+               gpu_model,vram_total_gb,dc_location)
+            SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},NULL,#{instanceNo},#{deviceName},
+               #{deviceType},1,CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
+               p.gpu_model,p.vram_total_gb,s.datacenter
+              FROM nx_product p
+              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
+               AND p.estimated_daily_usdt>=0 AND p.daily_nex>=0
+               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
+               AND s.power_text REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
+               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6))>0
             """)
     int insertPurchasedDevice(
             @Param("userId") Long userId,

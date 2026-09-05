@@ -71,6 +71,12 @@ public class RagNovaAiGateway implements NovaAiGateway {
             JsonNode root = objectMapper.readTree(response.body());
             String answer = root.path("answer").asText("").trim();
             String model = root.path("model").asText("");
+            // No retrieved evidence on a retrieval-only/fallback route is a server outcome,
+            // not authority inferred from generated answer text.
+            if (("retrieval-only".equals(model) || "retrieval-fallback".equals(model))
+                    && root.path("sources").isArray() && root.path("sources").isEmpty()) {
+                throw new BizException(503, "NOVA_AI_UNANSWERABLE");
+            }
             if (!isAcceptedPublicRoute(model) || answer.isBlank()
                     || answer.length() > bounded(properties.getMaxOutputChars(), 256, 16_000)) {
                 throw invalidResponse();

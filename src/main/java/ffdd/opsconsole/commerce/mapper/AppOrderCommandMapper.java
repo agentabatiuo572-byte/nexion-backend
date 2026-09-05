@@ -13,6 +13,40 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppOrderCommandMapper extends BaseMapper<Object> {
+    @Select("""
+            SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
+                   t.monthly_quota monthlyQuota, t.status,
+                   CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END quantity
+              FROM nx_order o
+              LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
+               AND UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE'
+              JOIN nx_product p ON p.id=CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE'
+                   THEN oi.product_id ELSE o.product_id END
+              JOIN nx_team_hardware_quota_tier t ON t.product_no=p.product_no AND t.is_deleted=0
+             WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+             ORDER BY t.id FOR UPDATE
+            """)
+    List<MonthlyQuota> lockOrderMonthlyQuotas(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT quantity FROM nx_team_hardware_quota_usage
+             WHERE quota_tier_id=#{tierId} AND status='ACTIVE' AND is_deleted=0
+               AND occurred_at >= #{from} AND occurred_at < #{until}
+             ORDER BY id FOR UPDATE
+            """)
+    List<Integer> lockMonthlyQuotaUsage(@Param("tierId") Long tierId,
+            @Param("from") java.time.LocalDateTime from, @Param("until") java.time.LocalDateTime until);
+
+    @Insert("""
+            INSERT INTO nx_team_hardware_quota_usage
+              (quota_tier_id,quota_code,product_no,user_id,order_no,usage_type,quantity,status,occurred_at,remark)
+            VALUES (#{tier.id},#{tier.quotaCode},#{tier.productNo},#{userId},#{orderNo},'SOLD',#{tier.quantity},'ACTIVE',#{occurredAt},'Canonical wallet checkout')
+            """)
+    int consumeMonthlyQuota(@Param("tier") MonthlyQuota tier, @Param("userId") Long userId,
+            @Param("orderNo") String orderNo, @Param("occurredAt") java.time.LocalDateTime occurredAt);
+
+    record MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer status, Integer quantity) { }
+
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);
 
@@ -330,7 +364,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'Nexion accelerator'),
-                   GREATEST(COALESCE(p.vram_total_gb,0),0),0,
+                   GREATEST(COALESCE(p.vram_total_gb,0),0),
+                   CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
+                        ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,
                    COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
@@ -343,6 +379,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
                AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED' AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
+               AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
+                    (TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
+                     AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0))
             """)
     int insertDevelopmentDevice(@Param("orderNo") String orderNo,
                                 @Param("userId") Long userId,
@@ -358,7 +397,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'Nexion accelerator'),
-                   GREATEST(COALESCE(p.vram_total_gb,0),0),0,
+                   GREATEST(COALESCE(p.vram_total_gb,0),0),
+                   CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
+                        ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,
                    COALESCE(NULLIF(s.datacenter,''),'NexGrid DC'),
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
@@ -373,6 +414,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.order_type='BUNDLE'
                AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED'
+               AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
+                    (TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
+                     AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0))
             """)
     int insertWalletDevice(@Param("orderNo") String orderNo,
                            @Param("userId") Long userId,

@@ -48,18 +48,21 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             r.thermal_state AS thermalState,
             (SELECT COUNT(*) FROM nx_user_device a
               WHERE a.user_id=d.user_id AND a.is_deleted=0
-                AND a.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+                AND a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE')
+                AND a.ownership_status = 'OWNED' AND a.pending_deactivate = 0
                 AND UPPER(COALESCE(NULLIF(a.device_type,''),'DEVICE')) != 'SHARE'
                 AND a.deactivated_at IS NULL) AS activeDevicesForUser,
             CASE
               WHEN UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) = 'SHARE' THEN NULL
-              WHEN d.status NOT IN ('ONLINE','BUSY','OFFLINE','ACTIVE') OR d.deactivated_at IS NOT NULL THEN NULL
+              WHEN d.status NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE') OR d.deactivated_at IS NOT NULL
+                OR d.pending_deactivate = 1 OR d.ownership_status != 'OWNED' THEN NULL
               ELSE (
                 SELECT COUNT(*)
                   FROM nx_user_device s
                  WHERE s.is_deleted = 0
                    AND s.user_id = d.user_id
-                   AND s.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+                   AND s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE')
+                   AND s.ownership_status = 'OWNED' AND s.pending_deactivate = 0
                    AND s.deactivated_at IS NULL
                    AND UPPER(COALESCE(NULLIF(s.device_type,''),'DEVICE')) != 'SHARE'
                    AND NOT s.id > d.id

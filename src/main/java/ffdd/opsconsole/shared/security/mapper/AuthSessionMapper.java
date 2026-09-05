@@ -8,6 +8,28 @@ import org.apache.ibatis.annotations.Update;
 import java.util.List;
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
+    @Select("""
+            SELECT * FROM nx_user_session
+             WHERE user_id=#{userId} AND refresh_token_id=#{currentSessionId}
+               AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
+               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
+             LIMIT 1
+            """)
+    UserSessionEntity currentUserSession(@Param("userId") Long userId,
+            @Param("currentSessionId") String currentSessionId, @Param("idleDays") int idleDays);
+
+    @Select("""
+            SELECT * FROM nx_user_session
+             WHERE user_id=#{userId} AND refresh_token_id<>#{currentSessionId}
+               AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
+               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
+               AND (#{beforeId} IS NULL OR id < #{beforeId})
+             ORDER BY id DESC LIMIT 21
+            """)
+    List<UserSessionEntity> pageOtherUserSessions(@Param("userId") Long userId,
+            @Param("currentSessionId") String currentSessionId, @Param("idleDays") int idleDays,
+            @Param("beforeId") Long beforeId);
+
     @Select("SELECT * FROM nx_user_session WHERE refresh_token_id=#{refreshTokenId} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     UserSessionEntity findRefreshForUpdate(@Param("refreshTokenId") String refreshTokenId);
 

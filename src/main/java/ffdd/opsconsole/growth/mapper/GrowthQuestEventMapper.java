@@ -504,6 +504,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     Integer missionRewardByCode(@Param("missionCode") String missionCode);
 
+    @Select("SELECT mission_type FROM nx_mission WHERE mission_code=#{missionCode} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    String missionTypeByCode(@Param("missionCode") String missionCode);
+
     @Update("""
             UPDATE nx_mission
                SET reward_points = #{rewardPoints}, updated_at = NOW()

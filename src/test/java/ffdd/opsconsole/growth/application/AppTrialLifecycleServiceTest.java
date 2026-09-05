@@ -8,7 +8,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,8 +35,6 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
-import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -100,6 +97,16 @@ class AppTrialLifecycleServiceTest {
         Map<String, Object> state = service.state(7L).getData();
         assertThat(((Map<?, ?>) state.get("config")).get("autoPushEnabled")).isEqualTo(false);
         assertThat(state.get("trialGateEnabled")).isEqualTo(true);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void stateProjectsAnUninitializedDayWithoutWritingQuota() {
+        when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(null);
+        Map<String, Object> state = service.state(7L).getData();
+        assertThat((Map<String, String>) state.get("config")).containsEntry("seatsLeftToday", "47");
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
+        verify(mapper, never()).consumeTrialQuota(any(LocalDate.class));
     }
 
     @Test
@@ -183,10 +190,11 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any(), any(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
     }
 
     @Test
-    void futureE1UnlockPhaseBlocksStartConvertAndRedeemBeforeMoneyOrInventorySideEffects() {
+    void futureE1UnlockPhaseBlocksStartAndConvertWhileRetiredRedeemRequiresExplicitPurchase() {
         when(mapper.lockTrial(7L)).thenReturn(null, activeTrial(), activeTrial());
         when(productReleasePolicy.evaluate(eq("stellarbox-s1"), eq("P1")))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "P1"));
@@ -198,7 +206,8 @@ class AppTrialLifecycleServiceTest {
 
         assertThat(start.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_RELEASED");
         assertThat(convert.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_RELEASED");
-        assertThat(redeem.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_RELEASED");
+        assertThat(redeem.getCode()).isEqualTo(410);
+        assertThat(redeem.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         verify(mapper, never()).lockWallet(anyLong());
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
         verify(mapper, never()).decrementProductStock(anyLong());
@@ -208,7 +217,7 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
-    void fullPhysicalCapacityBlocksRedemptionBeforeWalletInventoryOrderOrDeviceMutation() {
+    void retiredEarlyRedeemRejectsBeforeCapacityWalletInventoryOrderOrDeviceChecks() {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
         when(canonicalStateMapper.activeDeviceCount(7L)).thenReturn(5);
         when(canonicalStateMapper.reservedDeviceOrderCount(7L)).thenReturn(1);
@@ -216,17 +225,17 @@ class AppTrialLifecycleServiceTest {
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-capacity-full");
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
         verify(mapper, never()).lockWallet(anyLong());
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
                 anyString(), anyString(), anyString(), any(), any(), any());
-        InOrder capacityLock = inOrder(mapper, canonicalStateMapper);
-        capacityLock.verify(mapper).lockActiveUser(7L);
-        capacityLock.verify(canonicalStateMapper).activeDeviceCount(7L);
+        verify(mapper, never()).lockTrial(anyLong());
+        verify(canonicalStateMapper, never()).activeDeviceCount(anyLong());
+        verify(canonicalStateMapper, never()).reservedDeviceOrderCount(anyLong());
     }
 
     @Test
@@ -250,14 +259,17 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
-    void shareProductIsRejectedByTrialAndNeverCountsAgainstPhysicalCapacity() {
+    void retiredEarlyRedeemRejectsWithoutInspectingTheRequestedProductOrCapacity() {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
                 new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "Share", "Share",
                         new BigDecimal("1299"), 1, "P1", "SHARE", "FINITE"));
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-share-capacity");
 
-        assertThat(result.getMessage()).isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        verify(mapper, never()).lockTrial(anyLong());
+        verify(mapper, never()).lockConversionProduct(anyString());
         verify(canonicalStateMapper, never()).activeDeviceCount(anyLong());
         verify(canonicalStateMapper, never()).reservedDeviceOrderCount(anyLong());
     }
@@ -377,8 +389,22 @@ class AppTrialLifecycleServiceTest {
         ApiResult<Map<String, Object>> result = shanghaiService.state(7L);
 
         assertThat(result.getCode()).isZero();
-        verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 21), 47);
+        verify(mapper, never()).ensureTrialQuotaDay(any(LocalDate.class), anyInt());
         verify(mapper).trialQuotaRemaining(LocalDate.of(2026, 8, 21));
+    }
+
+    @Test
+    void aStartCrossingMidnightConsumesTheSameQuotaDateItInitialized() {
+        Clock crossing = mock(Clock.class);
+        when(crossing.instant()).thenReturn(Instant.parse("2026-08-20T15:59:59Z"), Instant.parse("2026-08-20T16:00:01Z"));
+        when(mapper.insertTrial(anyLong(), anyString(), anyString(), isNull(), anyString(), anyInt(),
+                any(), any(), any(), any(), any(), any(), anyString())).thenReturn(1);
+        var crossingService = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+                audit, outbox, productReleasePolicy, canonicalStateMapper, environment, crossing);
+        assertThat(crossingService.start(7L, null, "ignored", "midnight-start").getCode()).isZero();
+        verify(mapper).ensureTrialQuotaDay(LocalDate.of(2026, 8, 20), 47);
+        verify(mapper).consumeTrialQuota(LocalDate.of(2026, 8, 20));
+        verify(mapper, never()).consumeTrialQuota(LocalDate.of(2026, 8, 21));
     }
 
     @Test
@@ -588,7 +614,7 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
-    void insufficientWalletMovesToFailedWithCooldownWithoutSettlementMutation() {
+    void retiredEarlyRedeemRejectsEvenWhenTheWalletWouldBeInsufficient() {
         TrialRow active = activeTrial();
         when(mapper.lockTrial(7L)).thenReturn(active);
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
@@ -597,18 +623,17 @@ class AppTrialLifecycleServiceTest {
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-low-balance");
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("ok", false)
-                .containsEntry("reason", "INSUFFICIENT_FUNDS")
-                .containsEntry("paymentRail", "NEXION_USDT_WALLET");
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        verify(mapper, never()).lockWallet(anyLong());
         verify(mapper, never()).settleWallet(any(), any(), any(), any());
-        verify(mapper).failTrial(eq(1L), eq(0L), any(), any(), any(), any(), eq("INSUFFICIENT_FUNDS"));
-        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.charge_attempted"),
+        verify(mapper, never()).failTrial(anyLong(), anyLong(), any(), any(), any(), any(), anyString());
+        verify(outbox, never()).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.charge_attempted"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
     }
 
     @Test
-    void successfulRedeemReservesCanonicalProductAndKeepsDeviceTraceability() {
+    void retiredEarlyRedeemRejectsEvenWhenACompletePurchaseWouldOtherwiseSucceed() {
         TrialRow active = activeTrial();
         when(mapper.lockTrial(7L)).thenReturn(active);
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
@@ -621,34 +646,48 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), eq("Trial"), any()))
                 .thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"),
-                eq("Entry"), eq("CLOUD"), anyString(), eq("Trial"), any(), any(), any())).thenReturn(1);
+                eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any(), any(), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
 
         ApiResult<Map<String, Object>> result = service.redeemEarly(7L, "h2-success");
 
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("payment_status", "PAID")
-                .containsEntry("order_status", "PAID")
-                .containsKey("order_no");
-        String orderNo = String.valueOf(result.getData().get("order_no"));
-        assertThat(orderNo).startsWith("TRC-");
-        verify(mapper).decrementProductStock(9L);
-        verify(mapper).insertConversionOrder(eq(7L), eq(orderNo), eq(9L),
-                eq(new BigDecimal("1299")), any(), any());
-        verify(mapper).insertConversionOrderItem(eq(orderNo), eq(9L), eq("stellarbox-s1"),
-                eq("Trial"), eq(new BigDecimal("1299")));
-        verify(mapper).insertPurchasedDevice(eq(7L), eq(orderNo), eq(9L), eq("stellarbox-s1"),
-                eq("Entry"), eq("CLOUD"), anyString(), eq("Trial"), any(), any(), any());
-        ArgumentCaptor<Map<String, Object>> redeemedEvent = ArgumentCaptor.forClass(Map.class);
-        verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
-                eq(7L), eq("P2"), eq(2), eq("2026-W30"), redeemedEvent.capture());
-        assertThat(redeemedEvent.getValue()).containsKeys(
-                "shadow_usdt", "shadow_nex", "offset_usdt", "remainder_usdt",
-                "discount_applied", "discount_usdt", "amount_usdt", "early_purchase",
-                "order_no", "product_no", "payment_status", "order_status",
-                "payment_rail", "device_id");
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
+        verify(mapper, never()).decrementProductStock(anyLong());
+        verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
+        verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
+                anyString(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
+        verify(outbox, never()).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
+                eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
+    }
+
+    @Test
+    void retiredRedeemAndChargeRemainIdempotentlyRejectedWithoutPurchaseSideEffects() {
+        ApiResult<Map<String, Object>> firstRedeem = service.redeemEarly(7L, "retired-redeem");
+        ApiResult<Map<String, Object>> repeatedRedeem = service.redeemEarly(7L, "retired-redeem");
+        ApiResult<Map<String, Object>> firstCharge = service.charge(7L, "retired-charge");
+        ApiResult<Map<String, Object>> repeatedCharge = service.charge(7L, "retired-charge");
+
+        assertThat(firstRedeem.getCode()).isEqualTo(410);
+        assertThat(repeatedRedeem.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        assertThat(firstCharge.getCode()).isEqualTo(410);
+        assertThat(repeatedCharge.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        verify(mapper, never()).lockTrial(anyLong());
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
+        verify(mapper, never()).decrementProductStock(anyLong());
+        verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
+        verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
+                anyString(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -708,7 +747,7 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
-    void staleDueSettlementCancelsInsteadOfExecutingADeferredAutomaticPurchase() {
+    void autoChargeEnabledStaleDueSettlementStillCancelsWithoutAnyAutomaticPurchase() {
         LocalDateTime now = LocalDateTime.now();
         TrialRow stale = new TrialRow(1L, 7L, "TRIAL-STALE", "ACTIVE", null, null, "Trial",
                 3, new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"),
@@ -729,8 +768,14 @@ class AppTrialLifecycleServiceTest {
 
         assertThat(result.getCode()).isZero();
         verify(mapper).cancelTrial(eq(1L), eq(4L), eq("auto_settlement_window_expired"), any(), any());
+        verify(mapper, never()).lockWallet(anyLong());
         verify(mapper, never()).settleWallet(any(), any(), any(), any());
         verify(mapper, never()).decrementProductStock(anyLong());
+        verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
+        verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
+                anyString(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
         verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-STALE"), eq("trial.cancelled"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());
     }

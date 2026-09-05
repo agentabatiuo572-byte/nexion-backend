@@ -781,6 +781,9 @@ public class OpsTeamService implements AuditReplayable {
     private ApiResult<Map<String, Object>> updateConfigInternal(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
         String key = requireText(request.key(), "TEAM_CONFIG_KEY_REQUIRED");
+        if (Set.of("F.royalty.minPayout", "F.peer.rate").contains(key)) {
+            return ApiResult.fail(409, "F2_PARAMETER_NOT_CONSUMED");
+        }
         // service 层二次精确校验(A1 批1a 修复4):ACTIVE_KEYS + UI keys 全覆盖,动态 key 前缀兜底,防跨域越权(如持 F2 改 F4)。
         String requiredCode = resolvePermissionCode(key);
         if (requiredCode != null && !A2ReplayContext.isReplaying()) {
@@ -841,6 +844,9 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateUiConfig(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        if (Set.of("F.royalty.minPayout", "F.peer.rate").contains(key)) {
+            return ApiResult.fail(409, "F2_PARAMETER_NOT_CONSUMED");
+        }
         // A1 批1a 修复4:UI keys 跨域越权收敛(原仅 ACTIVE_KEYS 二次校验,UI keys 跳过 → 持 F2 可改 F4)。
         String requiredCode = resolvePermissionCode(key);
         if (requiredCode != null && !A2ReplayContext.isReplaying()) {
@@ -1729,7 +1735,7 @@ public class OpsTeamService implements AuditReplayable {
         PoolRatioReadModel ratio = poolRatioReadModel();
         Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
         int weeklyGmvUsd = intValue(summary.get("weeklyGmvUsd"), 0);
-        int weeklyInjectedUsd = intValue(summary.get("weeklyInjectedUsd"), 0);
+        BigDecimal weeklyInjectedUsd = null;
         int unlockRank = leadershipUnlockRank();
         int topN = intConfig(uiConfigKey("F.vrank.leadership.topN"), 0);
         List<Map<String, Object>> ranks = leadershipRanks();
@@ -1744,7 +1750,8 @@ public class OpsTeamService implements AuditReplayable {
         // LeadershipPoolConfigGuard; never synthesize a browser/default version.
         pool.put("configVersion", configText("F.pool.configVersion", ""));
         try {
-            new LeadershipPoolConfigGuard(configFacade).requireValid();
+            var settlementConfig = new LeadershipPoolConfigGuard(configFacade).requireValid();
+            weeklyInjectedUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
             pool.put("settlementConfigStatus", "READY");
             pool.put("settlementConfigUnavailableKey", "");
             pool.put("settlementConfigUnavailableReason", "");
@@ -1753,7 +1760,8 @@ public class OpsTeamService implements AuditReplayable {
             pool.put("settlementConfigUnavailableKey", failure.key().replaceFirst("^team\\.ui\\.", ""));
             pool.put("settlementConfigUnavailableReason", failure.reason());
         }
-        pool.put("weeklyInjectedUsd", weeklyInjectedUsd);
+        pool.put("currentWeekPoolUsd", weeklyInjectedUsd);
+        pool.put("weeklyInjectedUsd", intValue(summary.get("weeklyInjectedUsd"), 0));
         pool.put("weeklyGmvUsd", weeklyGmvUsd);
         pool.put("poolRatio", ratio.label());
         pool.put("poolRatioValue", ratio.value());
@@ -1825,9 +1833,9 @@ public class OpsTeamService implements AuditReplayable {
         return List.of(
                 f4Metric(
                         "weeklyLeadershipPool",
-                        "领导奖池",
+                        "本周已结算实付",
                         moneyCompact(intValue(pool.get("weeklyInjectedUsd"), 0)),
-                        pool.get("poolRatio") + " × 周 GMV " + moneyCompact(intValue(pool.get("weeklyGmvUsd"), 0)),
+                        "本周领导奖已发放合计；预计池见下方",
                         "ok"),
                 f4Metric(
                         "hardwareQuotaRemaining",

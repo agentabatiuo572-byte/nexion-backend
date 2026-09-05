@@ -530,13 +530,25 @@ class AppTeamInsightsServiceTest {
                 7L, new BigDecimal("0.075"), 5, new BigDecimal("50000"), "0 0 0 * * *", "fingerprint"));
         when(mapper.rankDistribution(0, 5)).thenReturn(List.of(
                 new AppTeamInsightsMapper.RankDistributionRow(5, 2, 4)));
-        when(mapper.currentLeadershipPool(eq(0), any(), any())).thenReturn(new BigDecimal("1000"));
+        when(mapper.leadershipPoolSummary()).thenReturn(Map.of(
+                "weeklyGmvUsd", new BigDecimal("10000"),
+                "monthLeadershipUsd", new BigDecimal("49500"),
+                "weeklySettledCount", 0,
+                "weeklyInjectedUsd", new BigDecimal("1000")));
         when(mapper.leadershipHistory(eq(7L), any())).thenReturn(List.of());
 
-        var result = service(mapper, new MockEnvironment(), poolConfig).leadershipPool(7L);
+        var config = mock(PlatformConfigFacade.class);
+        when(config.activeValue("team.ui.F.vrank.leadership.topN")).thenReturn(Optional.of("3"));
+        var result = new AppTeamInsightsService(mapper, poolConfig, config, new MockEnvironment()).leadershipPool(7L);
 
         assertThat(result.getData()).containsEntry("unlockRank", 5)
-                .containsEntry("injectRate", new BigDecimal("0.075"));
+                .containsEntry("injectRate", new BigDecimal("0.075"))
+                .containsEntry("topN", 3);
+        assertThat((BigDecimal) result.getData().get("currentWeekPoolUSDT"))
+                .isEqualByComparingTo("500");
+        assertThat((BigDecimal) result.getData().get("projectedPayoutUSDT"))
+                .isEqualByComparingTo("250");
+        verify(mapper).leadershipPoolSummary();
         assertThat(result.getData().get("nextPayoutAt")).isInstanceOf(String.class);
         verify(mapper).rankDistribution(0, 5);
     }

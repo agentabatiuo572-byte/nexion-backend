@@ -1,5 +1,6 @@
 package ffdd.opsconsole.market.mapper;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
@@ -8,7 +9,7 @@ import org.apache.ibatis.annotations.Select;
 
 /** Read-only, bounded keyset pages. Internal IDs are removed by the service. */
 @Mapper
-public interface AppGenesisHistoryMapper {
+public interface AppGenesisHistoryMapper extends BaseMapper<Object> {
     @Select("""
         SELECT h.id AS cursorId,h.holding_no AS holdingNo,h.series_code AS seriesCode,
                h.listing_price_usdt AS askPriceUsdt,h.listed_at AS listedAt,

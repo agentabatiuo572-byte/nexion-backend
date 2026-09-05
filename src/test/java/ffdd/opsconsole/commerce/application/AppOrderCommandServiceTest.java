@@ -23,6 +23,28 @@ import org.junit.jupiter.api.Test;
 
 class AppOrderCommandServiceTest {
     @Test
+    void monthlyQuotaExhaustionNeverDebitsWalletOrCreatesDevices() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-QUOTA")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-QUOTA", 7L, 18L, 2, new BigDecimal("100"), null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockOrderMonthlyQuotas("ORD-QUOTA")).thenReturn(List.of(
+                new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 1, 2)));
+        when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(9));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-QUOTA", "quota-test-key");
+        assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
+        verify(mapper, never()).debitDevelopmentWallet(any(), any(), any());
+        verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
+        verify(mapper, never()).insertDevelopmentDevice(any(), any(), any(), any());
+    }
+
+    @Test
     void expiryReturnsStockQuotaAndVoucherBeforeMarkingTheOrderExpired() {
         var mapper = mock(AppOrderCommandMapper.class);
         var guard = mock(FundsSandboxProfileGuard.class);
@@ -65,6 +87,10 @@ class AppOrderCommandServiceTest {
                 new AppOrderCommandMapper.DevelopmentPayOrder(
                         "ORD-FREE-1", 7L, 18L, 1, new BigDecimal("0.000000"),
                         null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        var quota = new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 1, 1);
+        when(mapper.lockOrderMonthlyQuotas("ORD-FREE-1")).thenReturn(List.of(quota));
+        when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(9));
+        when(mapper.consumeMonthlyQuota(eq(quota), eq(7L), eq("ORD-FREE-1"), any())).thenReturn(1);
         when(mapper.lockUsedVouchersForOrder(7L, "ORD-FREE-1")).thenReturn(List.of(
                 new AppOrderCommandMapper.VoucherGrantRow("VGR-FREE-1")));
         when(mapper.markDevelopmentOrderActivated(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-")))
@@ -91,6 +117,7 @@ class AppOrderCommandServiceTest {
         verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
         verify(mapper, never()).insertDevelopmentPurchaseLedger(anyString(), anyLong(), any(), any());
         verify(mapper).markDevelopmentOrderActivated(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-"));
+        verify(mapper).consumeMonthlyQuota(eq(quota), eq(7L), eq("ORD-FREE-1"), any());
         verify(mapper).insertDevelopmentPayment(eq("ORD-FREE-1"), eq(7L), startsWith("PAY-VOUCHER-"),
                 eq(new BigDecimal("0.000000")));
         verify(audit).recordRequired(any());

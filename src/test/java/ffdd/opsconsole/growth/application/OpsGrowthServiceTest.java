@@ -437,21 +437,18 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void updateTrialParamWritesBusinessTableAuditsAndStillMasksChargeFailureRate() {
+    void retiredCardChargeParametersCannotBeWritten() {
         seedTrialPolicies();
         ApiResult<Map<String, Object>> result = service.updateTrialParam(
                 "idem-h2-param",
                 "chargeFailRate",
                 new GrowthConfigUpdateRequest("chargeFailRate", "6.5", "tune failure", "superadmin"));
 
-        assertThat(result.getCode()).isZero();
-        assertThat(configFacade.values).doesNotContainKey("growth.trial.param.chargeFailRate");
-        assertThat(result.getData().toString()).doesNotContain("6.5");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_PARAM_CHANGED");
-        assertThat(detailMap(captor.getValue().getDetail())).containsEntry("serverOnly", true);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_PARAM_READONLY");
+        assertThat(service.updateTrialParam("idem-h2-auto-charge", "autoChargeAtEnd",
+                new GrowthConfigUpdateRequest("autoChargeAtEnd", "开", "retired toggle", "superadmin"))
+                .getMessage()).isEqualTo("TRIAL_PARAM_READONLY");
+        verify(auditLogService, never()).recordRequired(any());
     }
 
     @Test
@@ -1134,6 +1131,17 @@ class OpsGrowthServiceTest {
         verify(questEventMapper, never()).insertMission(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
                 anyInt(), anyInt(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void dayOneIndividualRewardCannotPretendToChangeTheGroupPayout() {
+        when(questEventMapper.missionRewardByCode("H3_DEVICE_ACTIVATED")).thenReturn(100);
+        when(questEventMapper.missionTypeByCode("H3_DEVICE_ACTIVATED")).thenReturn("DAY_ONE");
+        var result = service.updateQuestConfig("idem-dayone-reward", "mission.H3_DEVICE_ACTIVATED.reward",
+                new GrowthConfigUpdateRequest("mission.H3_DEVICE_ACTIVATED.reward", "120", "test group reward guard", "reviewer", "100"));
+        assertThat(result.getMessage()).isEqualTo("QUEST_DAY_ONE_GROUP_REWARD_REQUIRED");
+        verify(questEventMapper, never()).updateMissionRewardByCode(anyString(), anyInt(), anyInt());
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
     }
 
     @Test

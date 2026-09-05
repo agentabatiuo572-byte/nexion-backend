@@ -291,7 +291,7 @@ public class AppTeamInsightsService {
         int myVotes = distribution.stream().filter(row -> row.vRank() != null && row.vRank() == myRank)
                 .map(AppTeamInsightsMapper.RankDistributionRow::votes).findFirst().orElse(0);
         SettlementWindow window = settlementWindow("week");
-        BigDecimal pool = zero(mapper.currentLeadershipPool(scope.sandbox(), window.fromInclusive(), window.toExclusive()));
+        BigDecimal pool = LeadershipPoolProjection.amount(mapper.leadershipPoolSummary(), config);
         BigDecimal share = totalVotes == 0 ? BigDecimal.ZERO : BigDecimal.valueOf(myVotes)
                 .divide(BigDecimal.valueOf(totalVotes), 12, RoundingMode.DOWN);
         List<Map<String, Object>> dist = distribution.stream().map(row -> Map.<String, Object>of(
@@ -305,6 +305,9 @@ public class AppTeamInsightsService {
         result.put("totalVotes", totalVotes); result.put("mySharePct", share); result.put("projectedPayoutUSDT", pool.multiply(share));
         result.put("distribution", dist); result.put("history", history); result.put("nextPayoutAt", next == null ? now.toInstant().toString() : next.toInstant().toString());
         result.put("unlockRank", config.unlockRank()); result.put("injectRate", config.injectRate());
+        // Same display configuration and absent-value default as PC F1. This
+        // controls concentration presentation only, never settlement amounts.
+        result.put("topN", configuredMoney("team.ui.F.vrank.leadership.topN").intValue());
         return ApiResult.ok(result);
     }
 

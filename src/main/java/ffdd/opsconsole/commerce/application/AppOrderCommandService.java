@@ -226,6 +226,28 @@ public class AppOrderCommandService {
         } else if (!"SINGLE".equals(orderType) || order.productId() == null || order.productId() < 1) {
             return ApiResult.fail(409, "ORDER_PAYMENT_FACT_INVALID");
         }
+        // F4 monthly capacity is distinct from E1 stock/lifetime quota. Serialize
+        // checkout against the tier row and use current locking reads, not an
+        // earlier repeatable-read snapshot. Pending/cancelled orders consume none.
+        var quotaOccurredAt = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC);
+        var quotaMonth = quotaOccurredAt.withDayOfMonth(1).toLocalDate().atStartOfDay();
+        var monthlyQuotas = mapper.lockOrderMonthlyQuotas(orderNo);
+        if (monthlyQuotas == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+        for (var tier : monthlyQuotas) {
+            if (tier.id() == null || tier.monthlyQuota() == null || tier.monthlyQuota() < 0
+                    || tier.quantity() == null || tier.quantity() <= 0) {
+                throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            }
+            if (!Integer.valueOf(1).equals(tier.status())) return ApiResult.fail(409, "ORDER_MONTHLY_QUOTA_PAUSED");
+            var usages = mapper.lockMonthlyQuotaUsage(tier.id(), quotaMonth, quotaMonth.plusMonths(1));
+            if (usages == null || usages.stream().anyMatch(q -> q == null || q < 0)) {
+                throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            }
+            long used = usages.stream().mapToLong(Integer::longValue).sum();
+            if (used + tier.quantity() > tier.monthlyQuota()) {
+                return ApiResult.fail(409, "ORDER_MONTHLY_QUOTA_EXHAUSTED");
+            }
+        }
         // Keep the cross-flow lock order aligned with trade-in settlement:
         // product/SKU first, wallet second. Otherwise payment and trade-in for
         // the same product and wallet can deadlock each other.
@@ -254,6 +276,11 @@ public class AppOrderCommandService {
         }
         if (mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {
             throw new BizException(409, "PAYMENT_RECORD_CONFLICT");
+        }
+        for (var tier : monthlyQuotas) {
+            if (mapper.consumeMonthlyQuota(tier, userId, orderNo, quotaOccurredAt) != 1) {
+                throw new BizException(409, "ORDER_MONTHLY_QUOTA_CONFLICT");
+            }
         }
         if ("BUNDLE".equals(orderType)) {
             for (AppOrderCommandMapper.DevelopmentPaymentItem item : paymentItems) {

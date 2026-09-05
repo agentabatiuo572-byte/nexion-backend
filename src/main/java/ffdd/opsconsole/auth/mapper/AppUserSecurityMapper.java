@@ -11,6 +11,23 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity> {
+    @Select("SELECT config_value FROM nx_config_item WHERE config_key='auth.session.idle_ttl_days' AND status=1 AND is_deleted=0 LIMIT 1")
+    String sessionIdleDaysConfig();
+
+    @Select("""
+            SELECT NULL AS twoFactorEnabled,changed_at AS passwordChangedAt,revoked_count AS revokedSessionCount
+              FROM nx_user_password_command
+             WHERE user_id=#{userId} AND command_key=#{commandKey}
+            """)
+    ffdd.opsconsole.auth.dto.AppSecurityMutationResponse passwordChangeReceipt(
+            @Param("userId") Long userId, @Param("sessionId") String sessionId, @Param("commandKey") String commandKey);
+
+    @Insert("""
+            INSERT INTO nx_user_password_command(user_id,session_id,command_key,changed_at,revoked_count)
+            VALUES(#{userId},#{sessionId},#{commandKey},#{changedAt},#{revokedCount})
+            """)
+    int insertPasswordChangeReceipt(@Param("userId") Long userId, @Param("sessionId") String sessionId,
+            @Param("commandKey") String commandKey, @Param("changedAt") LocalDateTime changedAt, @Param("revokedCount") int revokedCount);
     @Select("SELECT password_hash FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     String passwordHashForUpdate(@Param("userId") Long userId);
 

@@ -286,7 +286,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND p.store_visible = 1
                AND UPPER(COALESCE(p.status,'')) IN ('ACTIVE','ON_SALE')
                AND p.price_usdt IS NOT NULL AND p.price_usdt > 0
-             ORDER BY p.sort_order, p.updated_at DESC, p.id DESC
+             ORDER BY p.estimated_daily_usdt DESC, p.sort_order, p.updated_at DESC, p.id DESC
              LIMIT 20
             """)
     List<MarketProductRow> marketProducts();

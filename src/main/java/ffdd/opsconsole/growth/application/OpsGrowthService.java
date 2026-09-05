@@ -463,7 +463,7 @@ public class OpsGrowthService implements AuditReplayable {
             return guard;
         }
         String key = normalizeTrialParamKey(paramKey);
-        if (Set.of("phaseOpen", "trialPriceUSD").contains(key)) {
+        if (Set.of("phaseOpen", "trialPriceUSD", "autoChargeAtEnd", "chargeFailRate").contains(key)) {
             return validation("TRIAL_PARAM_READONLY");
         }
         if ("trialProductId".equals(key)) {
@@ -1677,6 +1677,9 @@ public class OpsGrowthService implements AuditReplayable {
             Integer oldReward = mapper.missionRewardByCode(missionCode);
             if (oldReward == null) {
                 return validation("QUEST_TASK_NOT_FOUND");
+            }
+            if ("DAY_ONE".equalsIgnoreCase(mapper.missionTypeByCode(missionCode))) {
+                return validation("QUEST_DAY_ONE_GROUP_REWARD_REQUIRED");
             }
             if (!expectedIntegerMatches(request.expectedValue(), oldReward)) {
                 return validation("QUEST_CONFIG_STALE");

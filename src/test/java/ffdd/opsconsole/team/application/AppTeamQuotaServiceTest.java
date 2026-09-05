@@ -73,6 +73,7 @@ class AppTeamQuotaServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("sourceEnvironment", "PRODUCTION").containsEntry("runId", "");
+        assertThat(((Map<?, ?>) result.getData().get("facts")).get("directInvites")).isEqualTo(0L);
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> tiers = (List<Map<String, Object>>) result.getData().get("tiers");
         @SuppressWarnings("unchecked")

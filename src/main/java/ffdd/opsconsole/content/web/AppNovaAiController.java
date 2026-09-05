@@ -1,6 +1,8 @@
 package ffdd.opsconsole.content.web;
 
 import ffdd.opsconsole.content.application.AppNovaAiService;
+import ffdd.opsconsole.content.application.NovaHumanHandoffService;
+import ffdd.opsconsole.content.domain.ContentConversationDetail;
 import ffdd.opsconsole.content.dto.NovaAiChatRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import jakarta.validation.Valid;
@@ -10,6 +12,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,6 +22,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppNovaAiController {
     private final AppNovaAiService service;
+    private final NovaHumanHandoffService handoffService;
+
+    @PostMapping("/handoffs")
+    public ApiResult<ContentConversationDetail> handoff(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody NovaHumanHandoffService.NovaHandoffConfirmRequest request,
+            Authentication authentication) {
+        return handoffService.confirm(userId(authentication), idempotencyKey, request);
+    }
 
     @GetMapping("/status")
     public ApiResult<AppNovaAiService.Status> status(Authentication authentication) {

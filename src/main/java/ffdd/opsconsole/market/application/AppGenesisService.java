@@ -321,6 +321,7 @@ public class AppGenesisService {
         return linked("series", seriesView(series, mapper.holdingCount(series.seriesCode())),
                 "holdings", mapper.holdings(userId).stream().map(this::holdingView).toList(),
                 "emissions", mapper.emissions(userId).stream().map(this::emissionView).toList(),
+                "emissionTotals", mapper.emissionTotals(userId),
                 "orders", mapper.userTransactions(userId).stream().map(this::transactionView).toList(),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled(),
                 "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),

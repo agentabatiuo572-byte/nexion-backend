@@ -39,7 +39,7 @@ public class AppUserProfileService {
     private static final Set<String> ALLOWED_ADJECTIVES = Set.copyOf(ADJECTIVES);
     private static final Set<String> ALLOWED_NOUNS = Set.copyOf(NOUNS);
     private static final Set<String> ALLOWED_LANGUAGES = Set.of(
-            "en", "vi", "zh", "ja", "ko", "ru", "es", "pt", "ar", "de", "fr");
+            "en", "vi", "zh");
 
     private final AppUserProfileMapper mapper;
     private final AdminIdempotencyService idempotency;

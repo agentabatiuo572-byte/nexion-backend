@@ -6,6 +6,11 @@ import org.junit.jupiter.api.Test;
 
 class DeviceOpsMapperSqlTest {
     @Test
+    void e5SlotProjectionReleasesPendingDeactivationsLikeCanonicalCapacity() {
+        assertThat(DeviceOpsMapper.DEVICE_COLUMNS)
+                .contains("a.pending_deactivate = 0", "s.pending_deactivate = 0", "d.pending_deactivate = 1");
+    }
+    @Test
     void deviceProjectionUsesExecutableLessThanOrEqualOperator() {
         assertThat(DeviceOpsMapper.DEVICE_COLUMNS)
                 .contains("NOT s.id > d.id")

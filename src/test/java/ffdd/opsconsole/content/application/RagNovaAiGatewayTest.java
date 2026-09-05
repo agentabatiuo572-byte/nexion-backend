@@ -104,6 +104,48 @@ class RagNovaAiGatewayTest {
         assertThat(upgradeHeader.get()).isNull();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"retrieval-only", "retrieval-fallback"})
+    void retrievalRoutesWithoutSourcesFailClosedAtTheHttpGateway(String model) throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> {
+            method.set(exchange.getRequestMethod());
+            respond(exchange, 200, """
+                    {"answer":"This must not be returned without evidence.","sources":[],"need_human":false,
+                     "model":"%s"}
+                    """.formatted(model));
+        });
+        server.start();
+
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+
+        assertThatThrownBy(() -> new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "What is NexGrid?")), 128)))
+                .isInstanceOf(BizException.class)
+                .hasMessage("NOVA_AI_UNANSWERABLE");
+        assertThat(method.get()).isEqualTo("POST");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"retrieval-only", "retrieval-fallback"})
+    void retrievalRoutesWithEvidenceSourcesRemainAnswerableAtTheHttpGateway(String model) throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> respond(exchange, 200, """
+                {"answer":"NexGrid is the current product name.","sources":[{"id":"KB-23"}],"need_human":false,
+                 "model":"%s"}
+                """.formatted(model)));
+        server.start();
+
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+
+        assertThat(new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "What is NexGrid?")), 128)))
+                .isEqualTo("NexGrid is the current product name.");
+    }
+
     @Test
     void availabilityUsesOnlyThePublicHealthStatus() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

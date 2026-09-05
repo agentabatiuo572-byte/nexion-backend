@@ -433,28 +433,36 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_user_device
               (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
-               generation,gpu_model,vram_total_gb,base_power_w,price_usdt_snapshot,ownership_status,
+               generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            VALUES
-              (#{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
-               #{row.vramTotalGb},0,#{row.targetPriceUsdt},'OWNED','TRADE_IN','ACTIVE',#{row.hashrate},
-               #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0)
+               #{row.vramTotalGb},CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               s.datacenter,#{row.targetPriceUsdt},'OWNED','TRADE_IN','ACTIVE',#{row.hashrate},
+               #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
+              FROM nx_admin_device_sku s
+             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
+               AND TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
+               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0
             """)
     int insertTargetDevice(@Param("row") DeliveredDeviceWrite row);
 
     @Insert("""
             INSERT INTO nx_user_device
               (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
-               generation,gpu_model,vram_total_gb,base_power_w,price_usdt_snapshot,ownership_status,
+               generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            VALUES
-              (#{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
-               #{row.vramTotalGb},0,#{row.targetPriceUsdt},'OWNED','ORDER','INACTIVE',#{row.hashrate},
-               #{row.dailyUsdt},#{row.dailyNex},NOW(),NULL,NULL,0,NOW(),NOW(),0)
+               #{row.vramTotalGb},CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)),
+               s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','INACTIVE',#{row.hashrate},
+               #{row.dailyUsdt},#{row.dailyNex},NOW(),NULL,NULL,0,NOW(),NOW(),0
+              FROM nx_admin_device_sku s
+             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
+               AND TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
+               AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0
             """)
     int insertInventoryTargetDevice(@Param("row") DeliveredDeviceWrite row);
 

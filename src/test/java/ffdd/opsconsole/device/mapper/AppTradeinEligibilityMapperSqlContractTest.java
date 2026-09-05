@@ -91,4 +91,19 @@ class AppTradeinEligibilityMapperSqlContractTest {
                 .contains("'OWNED','ORDER','INACTIVE'")
                 .contains("NOW(),NULL,NULL");
     }
+
+    @Test
+    void bothTradeinTargetDeviceInsertBranchesRequireAValidSkuPowerAndDatacenter() throws Exception {
+        for (String methodName : List.of("insertTargetDevice", "insertInventoryTargetDevice")) {
+            Method method = AppTradeinMapper.class.getMethod(methodName, AppTradeinMapper.DeliveredDeviceWrite.class);
+            String sql = String.join(" ", method.getAnnotation(Insert.class).value());
+
+            assertThat(sql).as(methodName)
+                    .contains("FROM nx_admin_device_sku s")
+                    .contains("s.sku_id=#{row.productNo}")
+                    .contains("TRIM(s.datacenter) <> ''")
+                    .contains("TRIM(s.power_text) REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'")
+                    .contains("CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) > 0");
+        }
+    }
 }

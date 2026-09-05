@@ -51,15 +51,71 @@ public class AppUserSecurityService {
 
     @Transactional(readOnly = true)
     public AppSecurityStateResponse overview(Long userId, String currentSessionId) {
+        return overview(userId, currentSessionId, null);
+    }
+
+    @Transactional(readOnly = true)
+    public AppSecurityStateResponse overview(Long userId, String currentSessionId, String cursor) {
         requireContext(userId, currentSessionId);
-        List<AppSecurityStateResponse.Session> sessions = sessionMapper
-                .listActiveUserSessions(userId, SESSION_IDLE_DAYS).stream()
-                .map(row -> toResponse(row, currentSessionId))
-                .toList();
+        Long beforeId = null;
+        if (cursor != null) {
+            try {
+                if (!cursor.matches("[1-9][0-9]{0,18}")) throw new NumberFormatException();
+                beforeId = Long.valueOf(cursor);
+            } catch (NumberFormatException ex) { throw new BizException(422, "SECURITY_CURSOR_INVALID"); }
+        }
+        int idleDays = effectiveSessionIdleDays();
+        var rows = sessionMapper.pageOtherUserSessions(userId, currentSessionId, idleDays, beforeId);
+        List<AppSecurityStateResponse.Session> sessions = new java.util.ArrayList<>();
+        if (beforeId == null) {
+            var current = sessionMapper.currentUserSession(userId, currentSessionId, idleDays);
+            if (current != null) sessions.add(toResponse(current, currentSessionId));
+        }
+        rows.stream().limit(20).map(row -> toResponse(row, currentSessionId)).forEach(sessions::add);
+        String nextCursor = rows.size() > 20 ? String.valueOf(rows.get(19).getId()) : null;
         return new AppSecurityStateResponse(
                 securityMapper.twoFactorEnabled(userId),
                 securityMapper.passwordChangedAt(userId),
-                sessions);
+                sessions, nextCursor);
+    }
+
+    private int effectiveSessionIdleDays() {
+        try {
+            String configured = securityMapper.sessionIdleDaysConfig();
+            int value = Integer.parseInt(configured == null ? null : configured.trim());
+            return value >= 7 && value <= 90 ? value : SESSION_IDLE_DAYS;
+        } catch (NumberFormatException ex) {
+            return SESSION_IDLE_DAYS;
+        }
+    }
+
+    @Transactional(noRollbackFor = PreWriteRejection.class)
+    public AppSecurityMutationResponse changePassword(
+            Long userId, String currentSessionId, String commandKey, AppPasswordChangeRequest request) {
+        requireContext(userId, currentSessionId);
+        if (commandKey == null || !commandKey.matches("[A-Za-z0-9:_-]{8,128}"))
+            throw new BizException(422, "PASSWORD_COMMAND_KEY_INVALID");
+        // The user row serializes simultaneous attempts; the receipt commits atomically with the change.
+        String hash = securityMapper.passwordHashForUpdate(userId);
+        if (!StringUtils.hasText(hash)) throw new BizException(401, "USER_AUTH_REQUIRED");
+        var receipt = securityMapper.passwordChangeReceipt(userId, currentSessionId, commandKey);
+        if (receipt != null) {
+            if (request == null || !safeMatches(request.newPassword(), hash))
+                throw new BizException(409, "PASSWORD_COMMAND_INPUT_CHANGED");
+            return receipt;
+        }
+        var result = changePassword(userId, currentSessionId, request);
+        if (securityMapper.insertPasswordChangeReceipt(userId, currentSessionId, commandKey,
+                result.passwordChangedAt(), result.revokedSessionCount()) != 1)
+            throw new IllegalStateException("PASSWORD_COMMAND_RECEIPT_FAILED");
+        return result;
+    }
+
+    public AppSecurityMutationResponse passwordCommandReceipt(Long userId, String sessionId, String commandKey) {
+        requireContext(userId, sessionId);
+        if (commandKey == null || !commandKey.matches("[A-Za-z0-9:_-]{8,128}"))
+            throw new BizException(422, "PASSWORD_COMMAND_KEY_INVALID");
+        return securityMapper.passwordChangeReceipt(userId, sessionId, commandKey);
     }
 
     @Transactional

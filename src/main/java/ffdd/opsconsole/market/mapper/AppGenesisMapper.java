@@ -266,6 +266,15 @@ public interface AppGenesisMapper {
     List<EmissionRow> emissions(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COALESCE(SUM(CASE WHEN UPPER(i.status)='PAID' THEN i.amount_usdt ELSE 0 END),0) AS paidUsdt,
+                   COALESCE(SUM(CASE WHEN UPPER(i.status)='PENDING' THEN i.amount_usdt ELSE 0 END),0) AS pendingUsdt
+              FROM nx_genesis_emission_item i
+              JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
+             WHERE i.user_id=#{userId} AND i.is_deleted=0
+            """)
+    java.util.Map<String, Object> emissionTotals(@Param("userId") Long userId);
+
+    @Select("""
             SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.order_no AS orderNo,h.series_code AS seriesCode,
                    h.acquired_price_usdt AS acquiredPriceUsdt,UPPER(h.status) AS status,
                    h.listing_price_usdt AS listingPriceUsdt,h.acquired_at AS acquiredAt,h.listed_at AS listedAt

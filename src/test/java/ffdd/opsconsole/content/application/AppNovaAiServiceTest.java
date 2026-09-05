@@ -59,7 +59,7 @@ class AppNovaAiServiceTest {
         assertThat(response.turnId()).isEqualTo(TURN_ID);
         assertThat(AppNovaAiService.ChatResponse.class.getRecordComponents())
                 .extracting(component -> component.getName())
-                .containsExactly("reply", "conversationId", "turnId");
+                .containsExactly("reply", "conversationId", "turnId", "handoffReason");
         verify(mapper).insertTurn(42L, TURN_ID, CONVERSATION_ID, "zh", "current question",
                 "Safe local reply.", "OLLAMA_LOCAL", "gemma4-e4b-ctx32k:latest");
         var request = ArgumentCaptor.forClass(NovaAiGateway.ChatRequest.class);

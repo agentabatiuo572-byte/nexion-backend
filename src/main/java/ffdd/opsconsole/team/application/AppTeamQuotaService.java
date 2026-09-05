@@ -60,6 +60,7 @@ public class AppTeamQuotaService {
         Map<String, Object> factMap = new LinkedHashMap<>();
         factMap.put("rank", rank(scope.vRank()));
         factMap.put("directRefs", Math.max(0, facts.directRefs()));
+        factMap.put("directInvites", Math.max(0, mapper.directInvites(userId)));
         factMap.put("activeDirect", Math.max(0, mapper.activeDirect(userId)));
         factMap.put("teamVolumeUSD", nonNegative(facts.teamVolumeUSD()));
         List<Map<String, Object>> tiers = new ArrayList<>();

@@ -14,6 +14,16 @@ import org.springframework.mock.env.MockEnvironment;
 
 class PublishedPrivacyPolicyServiceTest {
     @Test
+    void publishingRequiresTheDefaultLanguageButDraftsMayRemainIncomplete() {
+        InMemoryConfig config = new InMemoryConfig();
+        var service = service(config, productionEnvironment());
+        var chineseOnly = Map.<String, Object>of("zh", content("Chinese draft"));
+        assertThat(service.update("v1", "PUBLISHED", chineseOnly, 0L, "Publish reviewed policy").getCode()).isEqualTo(422);
+        assertThat(config.writes).isZero();
+        assertThat(service.update("v1", "DRAFT", chineseOnly, 0L, "Save incomplete policy draft").getCode()).isZero();
+    }
+
+    @Test
     void draftPreservesThePreviouslyPublishedSnapshotUntilAnExplicitRevoke() {
         InMemoryConfig config = new InMemoryConfig();
         PublishedPrivacyPolicyService service = service(config, productionEnvironment());
@@ -81,7 +91,7 @@ class PublishedPrivacyPolicyServiceTest {
         assertThat(service.update("v1", "PUBLISHED", locales("Current published body"), 0L,
                 "Publish reviewed privacy policy").getCode()).isZero();
         String before = config.values.get("legal.privacy-policy.published");
-        Map<String, Object> oversized = Map.of("zh", Map.of("hero", "隐私政策", "sections", List.of(
+        Map<String, Object> oversized = Map.of("en", content("English body"), "zh", Map.of("hero", "隐私政策", "sections", List.of(
                 Map.of("id", "one", "title", "收集", "body", "文".repeat(6000), "order", 0),
                 Map.of("id", "two", "title", "保留", "body", "文".repeat(6000), "order", 1))));
 

@@ -294,7 +294,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int deleteVRankReward(@Param("rank") String rank, @Param("rewardId") String rewardId);
 
-    @Select("""
+    String LEADERSHIP_POOL_SUMMARY = """
             SELECT (
                      SELECT COALESCE(SUM(o.subtotal_usdt), 0)
                        FROM nx_order o
@@ -309,8 +309,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        FROM nx_commission_event e
                       WHERE e.is_deleted = 0
                         AND LOWER(e.commission_type) = 'leadership'
-                        AND e.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                        AND e.remark LIKE CONCAT('%', YEARWEEK(NOW(), 1), '%')
                    ) AS weeklyInjectedUsd,
+                   (
+                     SELECT COUNT(*) FROM nx_commission_event e
+                      WHERE e.is_deleted = 0 AND LOWER(e.commission_type) = 'leadership'
+                        AND e.remark LIKE CONCAT('%', YEARWEEK(NOW(), 1), '%')
+                   ) AS weeklySettledCount,
                    (
                      SELECT COALESCE(SUM(e.amount_usdt), 0)
                        FROM nx_commission_event e
@@ -324,7 +329,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                      THEN m.member_user_id END) AS participantCount
               FROM nx_team_member m
              WHERE m.is_deleted = 0
-            """)
+            """;
+    @Select(LEADERSHIP_POOL_SUMMARY)
     Map<String, Object> leadershipPoolSummary();
 
     @Select("""
@@ -358,6 +364,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               LEFT JOIN nx_team_hardware_quota_usage u
                 ON u.quota_tier_id = t.id
                AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+               AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
              WHERE t.is_deleted = 0
                AND t.status = 1
              GROUP BY t.id, t.display_name, t.quota_code, t.monthly_quota, t.sort_order
@@ -378,6 +385,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               JOIN nx_team_hardware_quota_tier t ON t.id = u.quota_tier_id
              WHERE u.is_deleted = 0
                AND UPPER(u.status) = 'ACTIVE'
+               AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+               AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
              ORDER BY u.occurred_at DESC, u.id DESC
              LIMIT #{limit}
             """)
@@ -397,6 +406,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND u.is_deleted = 0
                        AND UPPER(u.status) = 'ACTIVE'
                         AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+                        AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
                )
             """)
     int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.application.AppNovaAiService;
+import ffdd.opsconsole.content.application.NovaHumanHandoffService;
 import ffdd.opsconsole.content.dto.NovaAiChatRequest;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,7 @@ class AppNovaAiControllerTest {
     private static final String TURN_ID = "8c12eaf3-744d-405e-b2fb-64b3d81267be";
 
     private final AppNovaAiService service = mock(AppNovaAiService.class);
-    private final AppNovaAiController controller = new AppNovaAiController(service);
+    private final AppNovaAiController controller = new AppNovaAiController(service, mock(NovaHumanHandoffService.class));
 
     @Test
     void passesAuthenticatedUserAndServerSessionToTheConversationService() {
@@ -32,7 +33,7 @@ class AppNovaAiControllerTest {
                 "sessionId", AUTH_SESSION_ID));
         var request = new NovaAiChatRequest("NexGrid 保证赚钱吗？", "zh", CONVERSATION_ID, TURN_ID, List.of());
         when(service.chat(42L, AUTH_SESSION_ID, request)).thenReturn(
-                new AppNovaAiService.ChatResponse("不保证。", CONVERSATION_ID, TURN_ID));
+                new AppNovaAiService.ChatResponse("不保证。", CONVERSATION_ID, TURN_ID, ""));
 
         var result = controller.chat(request, authentication);
 
@@ -78,7 +79,7 @@ class AppNovaAiControllerTest {
         ObjectMapper mapper = new ObjectMapper();
         String status = mapper.writeValueAsString(new AppNovaAiService.Status(true));
         String chat = mapper.writeValueAsString(
-                new AppNovaAiService.ChatResponse("回答", CONVERSATION_ID, TURN_ID));
+                new AppNovaAiService.ChatResponse("回答", CONVERSATION_ID, TURN_ID, ""));
         String history = mapper.writeValueAsString(
                 new AppNovaAiService.HistoryResponse(CONVERSATION_ID, List.of(), false, null));
 

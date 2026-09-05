@@ -489,6 +489,27 @@ class OpsI18nLearningServiceTest {
         return new I18nLocalizedCopyRequest(zh, en, en, "v4", "Marina K.", "同步三语词条并记录审计");
     }
 
+    @Test
+    void courseCopyLengthIsValidatedForEveryLanguageBeforePersistence() {
+        for (int field = 0; field < 6; field++) {
+            String[] copy = {"标题", "Title", "正文", "Body", "Tiêu đề", "Nội dung"};
+            copy[field] = "a".repeat(1025);
+            var request = new LearningCourseUpsertRequest(copy[0], copy[1], copy[2], copy[3],
+                    "Basics", "Article", "Beginner", BigDecimal.TEN, "5 min", "draft", "reviewer",
+                    "verify oversized copy", List.of(), null, null, null, null, null, copy[4], copy[5]);
+            var result = service.createCourse("length-check-" + field, "length-idem-" + field, request);
+            assertThat(result.getMessage()).isEqualTo("LEARNING_COURSE_COPY_TOO_LONG");
+        }
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
+    @Test
+    void exactly1024CharactersRemainAuthorable() {
+        var request = new LearningCourseUpsertRequest("Title", "Title", "a".repeat(1024), "a".repeat(1024),
+                "Basics", "Article", "Beginner", BigDecimal.TEN, "5 min", "draft", "reviewer", "verify copy boundary");
+        assertThat(service.createCourse("length-boundary", "length-boundary-idem", request).getCode()).isZero();
+    }
+
     private static I18nLocalizedCopyRequest publishRequest(String zh, String en, String version) {
         return new I18nLocalizedCopyRequest(zh, en, en, version, "Marina K.", "发布三语词条并记录审计");
     }

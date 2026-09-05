@@ -8,6 +8,11 @@ import org.junit.jupiter.api.Test;
 
 class AppHomeOverviewMapperSqlContractTest {
     @Test
+    void earningsRankingOrdersByDailyYieldBeforeApplyingTheLimit() throws Exception {
+        String sql = select("marketProducts");
+        assertTrue(sql.contains("ORDER BY p.estimated_daily_usdt DESC"));
+    }
+    @Test
     void accountFactsCarryUserAndEnvironmentBoundaries() throws Exception {
         String earnings = select("earnings");
         String grid = select("onGrid");

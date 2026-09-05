@@ -188,6 +188,9 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                                      @Param("fromInclusive") LocalDateTime fromInclusive,
                                      @Param("toExclusive") LocalDateTime toExclusive);
 
+    @Select(TeamCommissionMapper.LEADERSHIP_POOL_SUMMARY)
+    java.util.Map<String, Object> leadershipPoolSummary();
+
     @Select("""
             SELECT DATE_FORMAT(created_at,'%x-W%v') weekId,SUM(amount_usdt) payoutUsdt
               FROM nx_commission_event

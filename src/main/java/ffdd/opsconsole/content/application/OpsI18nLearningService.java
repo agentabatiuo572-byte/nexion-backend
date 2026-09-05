@@ -675,11 +675,7 @@ public class OpsI18nLearningService {
                 .filter(LearningCourseView::featured)
                 .map(LearningCourseView::id)
                 .findFirst()
-                .orElseGet(() -> courses.stream()
-                        .filter(row -> "published".equals(row.status()))
-                        .map(LearningCourseView::id)
-                        .findFirst()
-                        .orElse(""));
+                .orElse("");
     }
 
     private ApiResult<Void> requireCoursePayload(String courseId, String idempotencyKey, LearningCourseUpsertRequest request) {
@@ -694,6 +690,10 @@ public class OpsI18nLearningService {
                 || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyZh())
                 || !StringUtils.hasText(request.bodyEn()) || !StringUtils.hasText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_COPY_REQUIRED");
+        }
+        if (java.util.stream.Stream.of(request.titleZh(), request.titleEn(), request.titleVi(),
+                request.bodyZh(), request.bodyEn(), request.bodyVi()).anyMatch(value -> value.trim().length() > 1024)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "LEARNING_COURSE_COPY_TOO_LONG");
         }
         if (!containsIgnoreCase(CATEGORIES, request.category()) || !containsIgnoreCase(FORMATS, request.format())
                 || !containsIgnoreCase(LEVELS, request.difficulty()) || !STATUSES.contains(normalizeStatus(request.publishState()))) {

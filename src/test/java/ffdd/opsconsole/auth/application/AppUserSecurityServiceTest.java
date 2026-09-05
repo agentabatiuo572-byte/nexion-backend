@@ -78,7 +78,8 @@ class AppUserSecurityServiceTest {
         LocalDateTime now = LocalDateTime.now();
         UserSessionEntity current = session("current", "Nexion H5", "203.0.113.8", now);
         UserSessionEntity other = session("other", "Chrome on Windows", "198.51.100.9", now.minusHours(2));
-        when(sessions.listActiveUserSessions(42L, 30)).thenReturn(List.of(current, other));
+        when(sessions.currentUserSession(42L, "current", 30)).thenReturn(current);
+        when(sessions.pageOtherUserSessions(42L, "current", 30, null)).thenReturn(List.of(other));
         when(security.passwordChangedAt(42L)).thenReturn(now.minusDays(3));
 
         var state = service.overview(42L, "current");
@@ -88,6 +89,88 @@ class AppUserSecurityServiceTest {
         assertThat(state.sessions().get(0).ipMasked()).isEqualTo("203.0.113.*");
         assertThat(state.sessions().get(1).current()).isFalse();
         assertThat(state.passwordChangedAt()).isEqualTo(now.minusDays(3));
+    }
+
+    @Test
+    void overviewFollowsConfiguredIdleTtlAndRejectsInvalidConfiguration() {
+        when(security.sessionIdleDaysConfig()).thenReturn(" 14 ", null, "oops", "6", "91");
+        service.overview(42L, "current");
+        verify(sessions).pageOtherUserSessions(42L, "current", 14, null);
+        for (int i = 0; i < 4; i++) service.overview(42L, "current");
+        verify(sessions, org.mockito.Mockito.times(4)).pageOtherUserSessions(42L, "current", 30, null);
+    }
+
+    @Test
+    void sessionPagesUseStableIdsAndDoNotRepeatTheCurrentSession() {
+        var rows = java.util.stream.LongStream.rangeClosed(1, 21).mapToObj(n -> {
+            var row = session("session-" + n, "Phone", "203.0.113.8", LocalDateTime.now());
+            row.setId(100L - n);
+            return row;
+        }).toList();
+        when(sessions.pageOtherUserSessions(42L, "current", 30, null)).thenReturn(rows);
+        var first = service.overview(42L, "current");
+        assertThat(first.sessions()).hasSize(20);
+        assertThat(first.nextCursor()).isEqualTo("80");
+        when(sessions.pageOtherUserSessions(42L, "current", 30, 80L)).thenReturn(List.of(rows.get(20)));
+        assertThat(service.overview(42L, "current", "80").sessions()).hasSize(1);
+        verify(sessions, org.mockito.Mockito.times(1)).currentUserSession(42L, "current", 30);
+        assertThatThrownBy(() -> service.overview(42L, "current", "-1")).hasMessage("SECURITY_CURSOR_INVALID");
+    }
+
+    @Test
+    void passwordReceiptReplaysWithoutChangingHashOrRevokingAgain() {
+        LocalDateTime changedAt = LocalDateTime.now();
+        when(security.passwordHashForUpdate(42L)).thenReturn(passwords.encode("NewPassword2"));
+        when(security.passwordChangeReceipt(42L, "current", "password-key"))
+                .thenReturn(new ffdd.opsconsole.auth.dto.AppSecurityMutationResponse(null, changedAt, 2));
+        var result = service.changePassword(42L, "current", "password-key",
+                new AppPasswordChangeRequest("OldPassword1", "NewPassword2"));
+        assertThat(result.passwordChangedAt()).isEqualTo(changedAt);
+        assertThat(result.revokedSessionCount()).isEqualTo(2);
+        verify(security, never()).updatePasswordHash(any(), any());
+        verify(sessions, never()).revokeOtherUserSessions(any(), any());
+        verify(audit, never()).recordRequired(any());
+    }
+
+    @Test
+    void passwordReceiptReadIsBoundToUserButSurvivesSessionRotation() throws Exception {
+        var receipt = new ffdd.opsconsole.auth.dto.AppSecurityMutationResponse(null, LocalDateTime.now(), 2);
+        when(security.passwordChangeReceipt(42L, "new-session", "password-key")).thenReturn(receipt);
+        assertThat(service.passwordCommandReceipt(42L, "new-session", "password-key")).isSameAs(receipt);
+        assertThat(service.passwordCommandReceipt(43L, "other-session", "password-key")).isNull();
+        var sql = AppUserSecurityMapper.class.getMethod("passwordChangeReceipt", Long.class, String.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class).value()[0];
+        assertThat(sql).contains("user_id=#{userId}", "command_key=#{commandKey}").doesNotContain("session_id=#{sessionId}");
+        verify(security, never()).updatePasswordHash(any(), any());
+    }
+
+    @Test
+    void passwordChangePersistsReceiptOnlyAfterTheAuditedMutation() {
+        LocalDateTime changedAt = LocalDateTime.now();
+        when(security.updatePasswordHash(eq(42L), any())).thenReturn(1);
+        when(security.markPasswordChanged(42L)).thenReturn(1);
+        when(security.passwordChangedAt(42L)).thenReturn(changedAt);
+        when(sessions.revokeOtherUserSessions(42L, "current")).thenReturn(2);
+        when(security.insertPasswordChangeReceipt(42L, "current", "password-key", changedAt, 2)).thenReturn(1);
+        var result = service.changePassword(42L, "current", "password-key",
+                new AppPasswordChangeRequest("OldPassword1", "NewPassword2"));
+        assertThat(result.passwordChangedAt()).isEqualTo(changedAt);
+        var order = org.mockito.Mockito.inOrder(security, sessions, audit);
+        order.verify(security).updatePasswordHash(eq(42L), any());
+        order.verify(sessions).revokeOtherUserSessions(42L, "current");
+        order.verify(audit).recordRequired(any());
+        order.verify(security).insertPasswordChangeReceipt(42L, "current", "password-key", changedAt, 2);
+    }
+
+    @Test
+    void passwordReceiptCannotBeReusedForDifferentInput() {
+        when(security.passwordChangeReceipt(42L, "current", "password-key"))
+                .thenReturn(new ffdd.opsconsole.auth.dto.AppSecurityMutationResponse(null, LocalDateTime.now(), 2));
+        assertThatThrownBy(() -> service.changePassword(42L, "current", "password-key",
+                new AppPasswordChangeRequest("OldPassword1", "OtherPassword2")))
+                .hasMessage("PASSWORD_COMMAND_INPUT_CHANGED");
+        verify(security, never()).updatePasswordHash(any(), any());
+        verify(sessions, never()).revokeOtherUserSessions(any(), any());
     }
 
     @Test

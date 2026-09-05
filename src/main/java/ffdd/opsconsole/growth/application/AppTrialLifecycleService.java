@@ -94,14 +94,15 @@ public class AppTrialLifecycleService {
     private ApiResult<Map<String, Object>> startOnce(
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
-        Map<String, String> policy = policyMap();
+        LocalDateTime now = businessNow();
+        LocalDate quotaDate = now.toLocalDate();
+        Map<String, String> policy = policyMap(true, quotaDate);
         if (!flag(policy, "phaseOpen", true)) return ApiResult.fail(409, "TRIAL_PHASE_CLOSED");
         if (mapper.trialCycleSignalCount(userId) > 0) return ApiResult.fail(409, "TRIAL_CYCLE_RISK_BLOCKED");
         if (paymentMethodId != null && mapper.lockUsablePaymentMethod(userId, paymentMethodId) == null) {
             return ApiResult.fail(409, "TRIAL_PAYMENT_METHOD_UNAVAILABLE");
         }
         TrialRow existing = mapper.lockTrial(userId);
-        LocalDateTime now = businessNow();
         String existingState = existing == null ? null : normalize(existing.status());
         if (existing != null && active(existingState)) return ApiResult.fail(409, "TRIAL_ALREADY_ACTIVE");
         if (existing != null && "REDEEMED".equals(existingState)) {
@@ -129,7 +130,6 @@ public class AppTrialLifecycleService {
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
-        LocalDate quotaDate = businessDate();
         int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
         if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
             return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
@@ -315,7 +315,7 @@ public class AppTrialLifecycleService {
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
                 .substring(0, 20).toUpperCase(Locale.ROOT);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
-                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : "CLOUD",
+                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
                 instanceNo, row.deviceName(), subtotal, row.dailyUsdt(), row.dailyNex()) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
@@ -371,111 +371,15 @@ public class AppTrialLifecycleService {
                 ? row.expiresAt()
                 : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
         if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
-        if (!flag(policy, "autoChargeAtEnd", true)) {
-            return cancelOnce(userId, "auto_end");
-        }
-        // A delayed worker must never turn an old authorization into a surprise
-        // purchase weeks later. Resolve the stale lifecycle without touching
-        // wallet, stock or orders; the user can explicitly start again after
-        // the normal cooldown.
-        if (now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))) {
-            return cancelOnce(userId, "auto_settlement_window_expired");
-        }
-        return redeemOnce(userId, false, "auto");
+        // FEAT-TRIAL02: expiry may close a trial, never authorize a purchase.
+        return cancelOnce(userId, flag(policy, "autoChargeAtEnd", false) && now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))
+                ? "auto_settlement_window_expired" : "auto_end");
     }
 
+    /** Retired card-era endpoint: only convert() may execute a user-confirmed purchase. */
     private ApiResult<Map<String, Object>> redeemOnce(Long userId, boolean early, String trigger) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
-        TrialRow row = mapper.lockTrial(userId);
-        if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CHARGEABLE");
-        Map<String, String> policy = policyMap();
-        String productCode = trialProductCode(policy, row);
-        if (productCode == null) return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
-        AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(productCode);
-        if (!availablePhysicalTrialProduct(product)) {
-            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
-        }
-        if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
-        if (!withinPhysicalSlotCapacity(userId, product)) {
-            return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
-        }
-        LocalDateTime now = businessNow();
-        Settlement value = settlement(row, policy, early, now);
-        requireCoverage(value.remainderUsdt(), value.shadowNex());
-        WalletRow wallet = mapper.lockWallet(userId);
-        if (wallet == null) throw new BizException(409, "TRIAL_WALLET_UNAVAILABLE");
-        if (wallet.usdt().compareTo(value.chargeUsdt()) < 0) {
-            publishChargeAttempt(userId, row, trigger, "FAILED", value.chargeUsdt(), "INSUFFICIENT_FUNDS");
-            int cooldownDays = positiveInt(policy, "cooldownDays", 30);
-            if (mapper.failTrial(row.id(), row.version(), value.shadowUsdt(), value.shadowNex(),
-                    now, now.plusDays(cooldownDays), "INSUFFICIENT_FUNDS") != 1) {
-                throw new BizException(409, "TRIAL_CHARGE_FAILURE_CONFLICT");
-            }
-            return ApiResult.ok(linked("ok", false, "reason", "INSUFFICIENT_FUNDS",
-                    "amountUsdt", value.chargeUsdt(), "paymentRail", "NEXION_USDT_WALLET"));
-        }
-        if (mapper.settleWallet(userId, value.chargeUsdt(), BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
-            throw new BizException(409, "TRIAL_WALLET_CONFLICT");
-        }
-        if (value.remainderUsdt().signum() > 0) {
-            earningsReleaseService.creditReward(userId, "H2_TRIAL_REMAINDER", row.claimNo() + ":REMAINDER",
-                    "USDT", value.remainderUsdt(), "H2:" + row.claimNo() + ":REMAINDER:USDT");
-        }
-        if (value.shadowNex().signum() > 0) {
-            earningsReleaseService.creditReward(userId, "H2_TRIAL_BONUS", row.claimNo() + ":NEX",
-                    "NEX", value.shadowNex(), "H2:" + row.claimNo() + ":NEX");
-        }
-        BigDecimal usdtAfter = wallet.usdt().subtract(value.chargeUsdt()).add(value.remainderUsdt());
-        BigDecimal nexAfter = wallet.nex().add(value.shadowNex());
-        if (value.chargeUsdt().signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":CHARGE", "TRIAL_CHARGE",
-                "USDT", "OUT", value.chargeUsdt(), wallet.usdt().subtract(value.chargeUsdt()),
-                "H2 purchase via Nexion USDT wallet");
-        if (value.remainderUsdt().signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS",
-                "USDT", "IN", value.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");
-        if (value.shadowNex().signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":NEX", "TRIAL_BONUS",
-                "NEX", "IN", value.shadowNex(), nexAfter, "H2 shadow NEX credited after purchase");
-        if (mapper.decrementProductStock(product.id()) != 1) {
-            throw new BizException(409, "TRIAL_PRODUCT_STOCK_CONFLICT");
-        }
-        BigDecimal orderDiscount = value.discountUsdt().add(value.offsetUsdt())
-                .min(row.priceUsdt()).setScale(6, RoundingMode.DOWN);
-        String orderNo = "TRC-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        if (mapper.insertConversionOrder(userId, orderNo, product.id(), row.priceUsdt(),
-                orderDiscount, value.chargeUsdt()) != 1
-                || mapper.insertConversionOrderItem(orderNo, product.id(), product.productNo(), product.name(),
-                        row.priceUsdt()) != 1) {
-            throw new BizException(409, "TRIAL_CONVERSION_ORDER_CONFLICT");
-        }
-        String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
-        if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
-                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : "CLOUD",
-                instanceNo, row.deviceName(),
-                row.priceUsdt(), row.dailyUsdt(), row.dailyNex()) != 1) {
-            throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
-        }
-        Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
-        String snapshot = value.snapshot(trigger, "NEXION_USDT_WALLET", productCode)
-                + ",orderNo=" + orderNo + ",totalDiscountUsdt=" + orderDiscount;
-        if (deviceId == null || mapper.markRedeemed(row.id(), row.version(), deviceId,
-                value.shadowUsdt(), value.shadowNex(), value.remainderUsdt(), value.discountUsdt(),
-                value.chargeUsdt(), now, snapshot) != 1) {
-            throw new BizException(409, "TRIAL_REDEEM_CONFLICT");
-        }
-        Attribution attr = requireAttribution(userId);
-        Map<String, Object> detail = linked(
-                "shadow_usdt", value.shadowUsdt(), "shadow_nex", value.shadowNex(),
-                "offset_usdt", value.offsetUsdt(), "remainder_usdt", value.remainderUsdt(),
-                "discount_applied", value.discountUsdt(), "discount_usdt", orderDiscount,
-                "amount_usdt", value.chargeUsdt(), "early_purchase", early,
-                "order_no", orderNo, "product_no", product.productNo(), "payment_status", "PAID",
-                "order_status", "PAID", "payment_rail", "NEXION_USDT_WALLET", "device_id", deviceId);
-        publish("TRIAL", row.claimNo(), "trial.redeemed", userId, attr, detail);
-        publishChargeAttempt(userId, row, trigger, "SUCCESS", value.chargeUsdt(), "REDEEMED");
-        record("H2_TRIAL_REDEEMED", row.claimNo(), userId, detail);
-        Map<String, Object> response = new LinkedHashMap<>(project(userId, mapper.trial(userId), policy, now));
-        response.putAll(detail);
-        response.put("ok", true);
-        return ApiResult.ok(response);
+        return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
     }
 
     private Settlement settlement(TrialRow row, Map<String, String> policy, boolean early, LocalDateTime now) {
@@ -633,7 +537,7 @@ public class AppTrialLifecycleService {
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
                 "discountRate", "0.15", "discountCapUSD", "20", "trialOffsetCapUSD", "50",
-                "autoChargeAtEnd", "true", "highQualityThresholdUSD", "100",
+                "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
                 "shadowDailyUSD", "38.52", "shadowDailyNEX", "65", "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
@@ -641,7 +545,7 @@ public class AppTrialLifecycleService {
                 "seatsLeftToday", "0");
         defaults.forEach((key, fallback) -> {
             if (List.of("phaseOpen", "autoPushEnabled", "autoChargeAtEnd").contains(key)) {
-                result.put(key, flag(policy, key, Boolean.parseBoolean(fallback)));
+                result.put(key, !"autoChargeAtEnd".equals(key) && flag(policy, key, Boolean.parseBoolean(fallback)));
             } else {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
@@ -786,14 +690,19 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, String> policyMap() {
+        return policyMap(false, businessDate());
+    }
+
+    private Map<String, String> policyMap(boolean initializeQuota, LocalDate quotaDate) {
         List<PolicyRow> rows = mapper.policies();
         Map<String, String> policy = (rows == null ? List.<PolicyRow>of() : rows).stream().collect(Collectors.toMap(
                 PolicyRow::policyKey, PolicyRow::currentValue, (left, right) -> right, LinkedHashMap::new));
         int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", 0);
-        LocalDate quotaDate = businessDate();
-        mapper.ensureTrialQuotaDay(quotaDate, dailyLimit);
+        // Read endpoints must not create or update quota rows. Only a start command
+        // initializes the day's counter before the atomic quota consumption.
+        if (initializeQuota) mapper.ensureTrialQuotaDay(quotaDate, dailyLimit);
         Integer remaining = mapper.trialQuotaRemaining(quotaDate);
-        policy.put("seatsLeftToday", Integer.toString(remaining == null ? 0 : Math.max(remaining, 0)));
+        policy.put("seatsLeftToday", Integer.toString(remaining == null ? dailyLimit : Math.max(remaining, 0)));
         return policy;
     }
 

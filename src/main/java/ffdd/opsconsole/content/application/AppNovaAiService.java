@@ -79,7 +79,7 @@ public class AppNovaAiService {
                 if (winner == null) throw new BizException(503, "NOVA_AI_HISTORY_WRITE_FAILED");
                 return replay(winner, conversationId, request.language(), message);
             }
-            return response(answer, conversationId, turnId);
+            return response(answer, conversationId, turnId, message);
         } finally {
             release(active);
         }
@@ -205,11 +205,11 @@ public class AppNovaAiService {
                 || !language.equals(turn.language()) || !message.equals(turn.userMessage())) {
             throw new BizException(409, "NOVA_AI_TURN_CONFLICT");
         }
-        return response(turn.assistantReply(), turn.conversationId().toLowerCase(), turn.turnId().toLowerCase());
+        return response(turn.assistantReply(), turn.conversationId().toLowerCase(), turn.turnId().toLowerCase(), turn.userMessage());
     }
 
-    private ChatResponse response(String reply, String conversationId, String turnId) {
-        return new ChatResponse(reply, conversationId, turnId);
+    private ChatResponse response(String reply, String conversationId, String turnId, String userMessage) {
+        return new ChatResponse(reply, conversationId, turnId, NovaHumanHandoffPolicy.reason(userMessage, ""));
     }
 
     private HistoryResponse historyResponse(String conversationId, List<HistoryMessage> messages) {
@@ -250,7 +250,7 @@ public class AppNovaAiService {
 
     public record Status(boolean available) {}
 
-    public record ChatResponse(String reply, String conversationId, String turnId) {}
+    public record ChatResponse(String reply, String conversationId, String turnId, String handoffReason) {}
 
     public record HistoryMessage(String id, String sender, String text, long ts) {}
 

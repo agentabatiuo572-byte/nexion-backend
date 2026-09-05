@@ -70,6 +70,8 @@ $migrations = @(
   # Upgraded F4 databases may predate the mapper's audit projections.
   (Join-Path $root "scripts\migrations\20260905_team_ambassador_policy_audit_columns.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_self_service.sql"),
+  (Join-Path $root "scripts\migrations\20260905_password_command_receipts.sql"),
+  (Join-Path $root "scripts\migrations\20260905_password_command_user_scope.sql"),
   (Join-Path $root "scripts\migrations\20260816_withdrawal_attempt_authority.sql"),
   (Join-Path $root "scripts\migrations\20260816_developer_api_keys_webhooks.sql"),
   (Join-Path $root "scripts\migrations\20260816_onboarding_calibration_authority.sql"),

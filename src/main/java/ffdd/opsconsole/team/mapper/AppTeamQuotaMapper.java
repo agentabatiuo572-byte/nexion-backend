@@ -42,12 +42,22 @@ public interface AppTeamQuotaMapper extends BaseMapper<Object> {
     long activeDirect(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COUNT(*) FROM nx_user child
+              JOIN nx_user owner ON owner.id = #{userId}
+               AND owner.status = 'ACTIVE' AND owner.is_deleted = 0
+               AND child.sponsor_user_id = owner.id AND child.sandbox = owner.sandbox
+             WHERE child.is_deleted = 0
+            """)
+    long directInvites(@Param("userId") Long userId);
+
+    @Select("""
             SELECT t.quota_code AS quotaCode, t.product_no AS productNo,
                    COALESCE(t.display_name, t.quota_code) AS name,
                    t.direct_refs AS directRefs, t.month_volume_usd AS monthVolumeUsd,
                    t.monthly_quota AS monthlyQuota, t.unlock_mode AS unlockMode,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
                          AND u.occurred_at >= DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+                         AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
                          THEN u.quantity ELSE 0 END), 0) AS soldThisMonth
               FROM nx_team_hardware_quota_tier t
               LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id = t.id

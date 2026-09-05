@@ -20,6 +20,15 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
 
 class AppUserProfileServiceTest {
+    @Test
+    void unsupportedLegacyLocaleReadsAsEnglishAndCannotBeSavedAgain() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.profile(42L)).thenReturn(Map.of("language", "ja", "nickname", "Nova Rover 42"));
+        assertThat(service.profile(42L)).containsEntry("language", "en");
+        assertThatThrownBy(() -> service.updateLanguage(42L, "ja")).hasMessage("USER_LANGUAGE_INVALID");
+        verify(mapper, never()).updateLanguage(42L, "ja");
+    }
+
     private final AppUserProfileMapper mapper = mock(AppUserProfileMapper.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AuditLogService audit = mock(AuditLogService.class);

@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -29,18 +30,32 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppUserSecurityController {
     private final AppUserSecurityService securityService;
 
-    @GetMapping
     public ApiResult<AppSecurityStateResponse> overview(Authentication authentication) {
         UserContext context = requireUser(authentication);
         return ApiResult.ok(securityService.overview(context.userId(), context.sessionId()));
     }
 
+    @GetMapping
+    public ApiResult<AppSecurityStateResponse> overview(Authentication authentication,
+            @RequestParam(required = false) String cursor) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.overview(context.userId(), context.sessionId(), cursor));
+    }
+
     @PostMapping("/password")
     public ApiResult<AppSecurityMutationResponse> changePassword(
             Authentication authentication,
+            @RequestHeader("Idempotency-Key") String commandKey,
             @RequestBody(required = false) AppPasswordChangeRequest request) {
         UserContext context = requireUser(authentication);
-        return ApiResult.ok(securityService.changePassword(context.userId(), context.sessionId(), request));
+        return ApiResult.ok(securityService.changePassword(context.userId(), context.sessionId(), commandKey, request));
+    }
+
+    @GetMapping("/password/commands/{commandKey}")
+    public ApiResult<AppSecurityMutationResponse> passwordCommandReceipt(
+            Authentication authentication, @PathVariable String commandKey) {
+        UserContext context = requireUser(authentication);
+        return ApiResult.ok(securityService.passwordCommandReceipt(context.userId(), context.sessionId(), commandKey));
     }
 
     @PutMapping("/two-factor")

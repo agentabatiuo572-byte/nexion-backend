@@ -84,6 +84,8 @@ public class PublishedPrivacyPolicyService {
             if (!entry.getKey().matches("[a-z]{2}(?:-[a-z0-9]{2,8})?") || !validContent(map(entry.getValue())))
                 return ApiResult.fail(422, "PRIVACY_POLICY_INVALID");
         }
+        if ("PUBLISHED".equals(status) && !locales.containsKey("en"))
+            return ApiResult.fail(422, "PRIVACY_POLICY_DEFAULT_LOCALE_REQUIRED");
         Map<String, Object> before = read(true);
         long revision = revision(before);
         if (revision != expectedRevision) return ApiResult.fail(409, "PRIVACY_POLICY_VERSION_CONFLICT");
