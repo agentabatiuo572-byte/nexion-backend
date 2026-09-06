@@ -410,7 +410,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     Map<String, Object> trialStats();
 
     @Select("""
-            SELECT gate_name AS gate,
+            SELECT gate_key AS gateKey, gate_name AS gate,
                    COALESCE(note, '') AS note
               FROM nx_growth_trial_gate
              WHERE is_deleted = 0
@@ -420,7 +420,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> trialGates();
 
     @Select("""
-            SELECT id - 1 AS id,
+            SELECT id AS id,
                    mission_code AS taskCode,
                    'MISSION' AS taskKind,
                    mission_name AS task,

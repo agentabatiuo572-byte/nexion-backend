@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.List;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
@@ -87,6 +88,9 @@ public class EarningsReleaseService {
         String normalizedIdempotencyKey = idempotencyKey.trim();
         int expectedSandbox = expectedWalletSandbox(normalizedEnvironment);
         String no = "ER-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
+        // Follow the withdrawal order explicitly: user, wallet, then earnings entry.
+        mapper.lockCreditUser(userId, expectedSandbox);
+        mapper.lockCreditWallet(userId, expectedSandbox);
         if (mapper.insert(new EarningsReleaseMapper.EntryWrite(no, userId, clusterId, normalizedSourceType,
                 normalizedSourceRef, normalizedAsset, amount, bucket, normalizedIdempotencyKey, normalizedEnvironment)) != 1) {
             EarningsReleaseMapper.ExistingEntry existing = mapper.findBySource(
@@ -203,11 +207,21 @@ public class EarningsReleaseService {
             throw new BizException(409, "EARNINGS_ATTESTATION_CONFLICT");
         }
         if (mapper.attestedSeconds(userId, sourceEnvironment) < params.attestationHours() * 3600L) return;
+        mapper.lockCreditUser(userId, 0);
+        mapper.lockCreditWallet(userId, 0);
+        Set<String> lockedClusters = new TreeSet<>();
+        for (ProtectedEntry scope : mapper.protectedEntryScopes(userId, sourceEnvironment)) {
+            String cluster = StringUtils.hasText(scope.clusterId()) ? scope.clusterId() : "USER:" + userId;
+            if (!cluster.startsWith("USER:")) lockedClusters.add(cluster);
+        }
+        for (String cluster : lockedClusters) {
+            if (mapper.lockCluster(cluster) == null) {
+                throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
+            }
+        }
         for (ProtectedEntry entry : mapper.protectedEntries(userId, sourceEnvironment)) {
             String cluster = StringUtils.hasText(entry.clusterId()) ? entry.clusterId() : "USER:" + userId;
-            if (cluster.startsWith("USER:")) {
-                if (mapper.lockUserScope(userId) == null) throw new BizException(409, "EARNINGS_RELEASE_SCOPE_MISSING");
-            } else if (mapper.lockCluster(cluster) == null) {
+            if (!cluster.startsWith("USER:") && !lockedClusters.contains(cluster)) {
                 throw new BizException(409, "EARNINGS_RELEASE_CLUSTER_MISSING");
             }
             if (mapper.releasedAccountsInWindow(cluster, userId, params.releaseWindowHours()) >= params.freeSlots()) continue;
@@ -264,11 +278,28 @@ public class EarningsReleaseService {
         if (clusterRestricted(mapper.riskCluster(userId))) {
             throw new BizException(409, "WITHDRAWAL_CLUSTER_RESTRICTED");
         }
-        BigDecimal protectedAmount = mapper.protectedAmount(userId);
-        if (protectedAmount == null) protectedAmount = BigDecimal.ZERO;
-        if (walletAvailable.subtract(protectedAmount).compareTo(requested) < 0) {
+        if (withdrawableAmount(userId, walletAvailable).compareTo(requested) < 0) {
             throw new BizException(409, "WITHDRAWAL_RELEASE_BUCKET_INSUFFICIENT");
         }
+    }
+
+    /** Read-only preflight; submission re-reads current rows with locks. */
+    public BigDecimal withdrawableAmount(Long userId, BigDecimal walletAvailable) {
+        if (clusterRestricted(mapper.riskCluster(userId))) return BigDecimal.ZERO;
+        BigDecimal protectedAmount = mapper.protectedAmount(userId);
+        if (protectedAmount == null) protectedAmount = BigDecimal.ZERO;
+        return walletAvailable.subtract(protectedAmount.max(BigDecimal.ZERO)).max(BigDecimal.ZERO);
+    }
+
+    /** Locks remain held by the withdrawal transaction through wallet reservation. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public BigDecimal withdrawableAmountForUpdate(Long userId, BigDecimal walletAvailable) {
+        if (clusterRestricted(mapper.lockRiskCluster(userId))) {
+            throw new BizException(409, "WITHDRAWAL_CLUSTER_RESTRICTED");
+        }
+        BigDecimal protectedAmount = mapper.lockProtectedUsdtAmounts(userId).stream()
+                .map(amount -> amount.max(BigDecimal.ZERO)).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return walletAvailable.subtract(protectedAmount).max(BigDecimal.ZERO);
     }
 
     private boolean clusterRestricted(RiskCluster cluster) {

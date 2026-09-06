@@ -10,6 +10,7 @@ import ffdd.opsconsole.user.facade.UserAccountControlFacade;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +23,17 @@ public class UserAccountControlFacadeAdapter implements UserAccountControlFacade
     private final FinanceWithdrawalControlFacade withdrawalControlFacade;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void lockUsersByUserNos(List<String> userNos) {
+        TreeSet<Long> userIds = new TreeSet<>();
+        for (String userNo : new LinkedHashSet<>(userNos == null ? List.of() : userNos)) {
+            if (!StringUtils.hasText(userNo)) continue;
+            userRepository.findUserIdByLookupKey(userNo.trim()).ifPresent(userIds::add);
+        }
+        userIds.forEach(userRepository::lockUser);
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)

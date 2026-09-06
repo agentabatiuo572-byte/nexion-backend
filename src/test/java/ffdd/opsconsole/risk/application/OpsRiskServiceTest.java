@@ -641,6 +641,7 @@ class OpsRiskServiceTest {
                     new RiskArbitrageActionRequest("freeze after K1 suspicious confirmation", "spoofed", 0L, 0L));
             assertThat(result.getCode()).isZero();
             assertThat(riskRepository.multiAccountClusters.get("CL-318")).isEqualTo("frozen");
+            verify(userAccountControlFacade).lockUsersByUserNos(List.of("U00000001", "U00000002"));
             verify(userAccountControlFacade).freezeActiveUsersByUserNos(
                     List.of("U00000001", "U00000002"),
                     "freeze after K1 suspicious confirmation", "k2-approver", "CL-318");
@@ -1655,6 +1656,7 @@ class OpsRiskServiceTest {
                 new RiskClusterStatusRequest("frozen", "confirmed linked account cluster", "spoofed", 0L));
 
         assertThat(result.getCode()).isZero();
+        verify(userAccountControlFacade).lockUsersByUserNos(List.of("U00000001", "U00000002"));
         verify(userAccountControlFacade).freezeActiveUsersByUserNos(
                 List.of("U00000001", "U00000002"),
                 "confirmed linked account cluster", "risk-freezer", "CL-318");
@@ -1674,6 +1676,7 @@ class OpsRiskServiceTest {
                 new RiskClusterStatusRequest("released", "cluster false positive cleared", "spoofed", 0L));
 
         assertThat(result.getCode()).isZero();
+        verify(userAccountControlFacade).lockUsersByUserNos(List.of("U00000001", "U00000002"));
         verify(userAccountControlFacade).restoreUsersFrozenBySource(
                 List.of("U00000001", "U00000002"),
                 "cluster false positive cleared", "risk-releaser", "CL-318");

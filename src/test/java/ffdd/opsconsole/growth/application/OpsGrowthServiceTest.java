@@ -294,6 +294,20 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void trialCooldownExplanationUsesTheCurrentPolicyInsteadOfSeededText() {
+        when(questEventMapper.trialGates()).thenReturn(List.of(
+                row("gateKey", "cooldown", "gate", "冷却期闸", "note", "上次试用结束 ≥ 90 天方可再次申请"),
+                row("gateKey", "other", "gate", "其他闸", "note", "保留原说明")));
+        when(questEventMapper.trialPolicyValue("cooldownDays")).thenReturn("30");
+        assertThat(service.trials().getData().get("gates").toString())
+                .contains("30 天", "保留原说明").doesNotContain("90 天");
+        when(questEventMapper.trialPolicyValue("cooldownDays")).thenReturn("45");
+        assertThat(service.trials().getData().get("gates").toString()).contains("45 天").doesNotContain("30 天");
+        when(questEventMapper.trialPolicyValue("cooldownDays")).thenReturn(null);
+        assertThat(service.trials().getData().get("gates").toString()).contains("暂不可用").doesNotContain("90 天");
+    }
+
+    @Test
     void trialsMasksServerOnlyChargeFailureRateAndReturnsRuntimeRows() {
         seedTrialPolicies();
 

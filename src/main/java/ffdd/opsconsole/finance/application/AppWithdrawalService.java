@@ -145,8 +145,7 @@ public class AppWithdrawalService {
         }
         WalletRow wallet = mapper.walletForEligibility(userId);
         if (wallet == null || wallet.usdtAvailable() == null) throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
-        BigDecimal max = safe(wallet.usdtAvailable()).multiply(balanceMaxRatio)
-                .setScale(6, RoundingMode.DOWN);
+        BigDecimal max = maximumWithdrawable(userId, wallet.usdtAvailable(), balanceMaxRatio, false);
         boolean dailyLimitReached = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive()) >= dailyLimit;
         PayoutAddressRow payoutAddress = mapper.payoutAddressForEligibility(userId, normalizedChain);
         boolean payoutAddressReady = payoutAddress != null
@@ -194,6 +193,14 @@ public class AppWithdrawalService {
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
                 "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", day.resetAt(),
                 "configVersion", policy.policyVersion()));
+    }
+
+    private BigDecimal maximumWithdrawable(Long userId, BigDecimal walletAvailable, BigDecimal ratio, boolean lock) {
+        BigDecimal available = safe(walletAvailable).max(BigDecimal.ZERO);
+        BigDecimal released = earningsReleaseService == null ? available
+                : lock ? earningsReleaseService.withdrawableAmountForUpdate(userId, available)
+                : earningsReleaseService.withdrawableAmount(userId, available);
+        return released.min(available).max(BigDecimal.ZERO).multiply(ratio).setScale(6, RoundingMode.DOWN);
     }
 
     private String toClientRiskRoute(String route) {
@@ -339,7 +346,7 @@ public class AppWithdrawalService {
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null || wallet.version() == null) throw new BizException(409, "WITHDRAWAL_WALLET_UNAVAILABLE");
         BigDecimal maxRatio = validatedBalanceMaxRatio();
-        BigDecimal maxAmount = safe(wallet.usdtAvailable()).multiply(maxRatio).setScale(6, RoundingMode.DOWN);
+        BigDecimal maxAmount = maximumWithdrawable(userId, wallet.usdtAvailable(), maxRatio, true);
         if (amount.compareTo(MIN_WITHDRAWAL) < 0) return ApiResult.fail(422, "WITHDRAWAL_MIN_AMOUNT_NOT_MET");
         if (amount.compareTo(maxAmount) > 0 || amount.compareTo(safe(wallet.usdtAvailable())) > 0) {
             return ApiResult.fail(409, "WITHDRAWAL_BALANCE_LIMIT_EXCEEDED");

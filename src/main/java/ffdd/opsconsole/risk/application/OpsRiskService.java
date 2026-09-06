@@ -384,6 +384,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (!K1_CLUSTER_TRANSITIONS.getOrDefault(before.status(), Set.of()).contains(status)) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
                     }
+                    if ("frozen".equals(status) || "released".equals(status)) {
+                        userAccountControlFacade.lockUsersByUserNos(before.affectedUserIds());
+                    }
                     if (!riskRepository.updateMultiAccountClusterStatus(
                             normalizedCluster, before.status(), request.expectedVersion(), status, request.reason().trim(), actor)) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
@@ -1112,6 +1115,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         if (!K1_CLUSTER_TRANSITIONS.getOrDefault(clusterBefore.status(), Set.of()).contains("frozen")) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_FLAG_REQUIRED");
                         }
+                        userAccountControlFacade.lockUsersByUserNos(clusterBefore.affectedUserIds());
                         if (!riskRepository.updateMultiAccountClusterStatus(
                                 clusterId, clusterBefore.status(), clusterBefore.version(), "frozen",
                                 request.reason().trim(), actor)) {

@@ -3260,7 +3260,18 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> trialGates() {
-        return growthRows(GrowthQuestEventMapper::trialGates);
+        String cooldownDays = trialParamCurrentValue("cooldownDays", "");
+        String cooldownNote = "冷却参数暂不可用，请刷新核对；已有会话按记录的冷却截止时间裁决。";
+        if (cooldownDays.matches("\\d{1,3}") && Integer.parseInt(cooldownDays) <= 365) {
+            cooldownNote = "当前新取消试用的冷却期为 " + Integer.parseInt(cooldownDays)
+                    + " 天；已有会话按记录的冷却截止时间裁决。";
+        }
+        final String resolvedNote = cooldownNote;
+        return growthRows(GrowthQuestEventMapper::trialGates).stream().map(gate -> {
+            Map<String, Object> view = new LinkedHashMap<>(gate);
+            if ("cooldown".equals(gate.get("gateKey"))) view.put("note", resolvedNote);
+            return view;
+        }).toList();
     }
 
     private List<Map<String, Object>> trialStates() {

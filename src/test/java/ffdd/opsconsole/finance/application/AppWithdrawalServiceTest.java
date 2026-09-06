@@ -42,6 +42,32 @@ import org.springframework.mock.env.MockEnvironment;
 import org.mockito.ArgumentCaptor;
 
 class AppWithdrawalServiceTest {
+    @Test
+    void eligibilityAndSubmissionApplyTheRatioToUnprotectedFunds() {
+        EarningsReleaseService release = mock(EarningsReleaseService.class);
+        when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
+        when(release.withdrawableAmountForUpdate(eq(7L), any())).thenReturn(new BigDecimal("50"));
+        AppWithdrawalService guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
+                audit, outbox, k3, ledger, release, environment, java.time.Clock.systemUTC());
+        when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(
+                7L, new BigDecimal("500"), new BigDecimal("50"), BigDecimal.ZERO, 3L));
+        when(mapper.payoutAddressForEligibility(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), null));
+        String version = String.valueOf(guarded.policy(7L).getData().get("policyVersion"));
+        Map<String, Object> allowed = guarded.eligibility(7L, new BigDecimal("40"), "USDT-TRC20",
+                "TR7NHqExampleAddress", version).getData();
+        assertThat(allowed).containsEntry("canSubmit", true);
+        assertThat((BigDecimal) allowed.get("maxWithdrawableUsdt")).isEqualByComparingTo("40");
+        assertThat(guarded.eligibility(7L, new BigDecimal("41"), "USDT-TRC20",
+                "TR7NHqExampleAddress", version).getData()).containsEntry("canSubmit", false);
+        assertThat(guarded.submit(7L, new BigDecimal("41"), "USDT-TRC20", "TR7NHqExampleAddress",
+                version, false, "protected-limit").getMessage()).isEqualTo("WITHDRAWAL_BALANCE_LIMIT_EXCEEDED");
+        verify(release).withdrawableAmountForUpdate(eq(7L), any());
+        verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+        when(release.withdrawableAmount(eq(7L), any())).thenReturn(BigDecimal.ZERO);
+        assertThat(guarded.eligibility(7L, new BigDecimal("20"), "USDT-TRC20",
+                "TR7NHqExampleAddress", version).getData()).containsEntry("canSubmit", false);
+    }
     private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);

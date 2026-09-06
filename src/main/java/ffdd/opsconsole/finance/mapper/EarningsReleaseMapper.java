@@ -14,6 +14,10 @@ import org.apache.ibatis.annotations.Update;
 public interface EarningsReleaseMapper {
     @Insert("INSERT IGNORE INTO nx_earnings_release_entry(entry_no,user_id,cluster_id,source_type,source_ref,asset,amount,bucket,status,idempotency_key,source_environment,is_deleted) VALUES(#{entryNo},#{userId},#{clusterId},#{sourceType},#{sourceRef},#{asset},#{amount},#{bucket},'ACTIVE',#{idempotencyKey},#{sourceEnvironment},0)")
     int insert(EntryWrite write);
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND is_deleted=0 AND status='ACTIVE' AND sandbox=#{expectedSandbox} FOR UPDATE")
+    Long lockCreditUser(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
+    @Select("SELECT user_id FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 AND sandbox=#{expectedSandbox} FOR UPDATE")
+    Long lockCreditWallet(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,status,idempotency_key idempotencyKey,source_environment sourceEnvironment,is_deleted isDeleted FROM nx_earnings_release_entry WHERE source_type=#{sourceType} AND source_ref=#{sourceRef} AND user_id=#{userId} LIMIT 1 FOR UPDATE")
     ExistingEntry findBySource(@Param("sourceType") String sourceType, @Param("sourceRef") String sourceRef,
                                @Param("userId") Long userId);
@@ -86,6 +90,12 @@ public interface EarningsReleaseMapper {
     long attestedSeconds(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
     @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1")
     RiskCluster riskCluster(@Param("userId") Long userId);
+    @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1 FOR UPDATE")
+    RiskCluster lockRiskCluster(@Param("userId") Long userId);
+    @Select("SELECT amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id FOR UPDATE")
+    List<BigDecimal> lockProtectedUsdtAmounts(@Param("userId") Long userId);
+    @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id")
+    List<ProtectedEntry> protectedEntryScopes(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
     @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 ORDER BY id FOR UPDATE")
     List<ProtectedEntry> protectedEntries(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
     @Select("SELECT entry_no entryNo,user_id userId,cluster_id clusterId,asset,amount,bucket FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")

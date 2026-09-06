@@ -2,6 +2,7 @@ package ffdd.opsconsole.user.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +24,18 @@ class UserAccountControlFacadeAdapterTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final UserAccountControlFacadeAdapter facade =
             new UserAccountControlFacadeAdapter(users, withdrawals, audits, outbox);
+
+    @Test
+    void k1PrelocksAffectedUsersByStableIdRatherThanClusterPayloadOrder() {
+        when(users.findUserIdByLookupKey("U00000010")).thenReturn(Optional.of(10L));
+        when(users.findUserIdByLookupKey("U00000002")).thenReturn(Optional.of(2L));
+
+        facade.lockUsersByUserNos(List.of("U00000010", "U00000002", "U00000010"));
+
+        var order = inOrder(users);
+        order.verify(users).lockUser(2L);
+        order.verify(users).lockUser(10L);
+    }
 
     @Test
     void k1FreezePersistsSourceAndFreezesD2() {

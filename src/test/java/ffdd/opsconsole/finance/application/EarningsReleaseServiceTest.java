@@ -29,6 +29,26 @@ import org.mockito.InOrder;
 import org.mockito.ArgumentCaptor;
 
 class EarningsReleaseServiceTest {
+    @Test
+    void lockedWithdrawalReadsCurrentRiskAndProtectedRowsBeforeReservation() {
+        when(mapper.lockRiskCluster(7L)).thenReturn(new RiskCluster("C1", 1, "cleared"));
+        when(mapper.lockProtectedUsdtAmounts(7L)).thenReturn(List.of(new BigDecimal("450")));
+        assertThat(service.withdrawableAmountForUpdate(7L, new BigDecimal("500"))).isEqualByComparingTo("50");
+        InOrder locking = inOrder(mapper);
+        locking.verify(mapper).lockRiskCluster(7L);
+        locking.verify(mapper).lockProtectedUsdtAmounts(7L);
+        when(mapper.lockRiskCluster(7L)).thenReturn(new RiskCluster("C1", 1, "frozen"));
+        assertThatThrownBy(() -> service.withdrawableAmountForUpdate(7L, new BigDecimal("500")))
+                .hasMessage("WITHDRAWAL_CLUSTER_RESTRICTED");
+    }
+    @Test
+    void readOnlyWithdrawableAmountExcludesProtectedFundsAndRestrictedClusters() {
+        when(mapper.protectedAmount(7L)).thenReturn(new BigDecimal("450"));
+        assertThat(service.withdrawableAmount(7L, new BigDecimal("500"))).isEqualByComparingTo("50");
+        assertThat(service.withdrawableAmount(7L, new BigDecimal("400"))).isZero();
+        when(mapper.riskCluster(7L)).thenReturn(new RiskCluster("K1-C3", 2, "flagged"));
+        assertThat(service.withdrawableAmount(7L, new BigDecimal("500"))).isZero();
+    }
     private final EarningsReleaseMapper mapper = mock(EarningsReleaseMapper.class);
     private final RiskReleaseParamsService params = mock(RiskReleaseParamsService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -68,6 +88,7 @@ class EarningsReleaseServiceTest {
         when(mapper.trustedDeviceBinding(7L, "phone-1")).thenReturn(1);
         when(mapper.recordAttestation(7L, "phone-1", "PRODUCTION")).thenReturn(1);
         when(mapper.attestedSeconds(7L, "PRODUCTION")).thenReturn(3600L);
+        when(mapper.protectedEntryScopes(7L, "PRODUCTION")).thenReturn(List.of(entry));
         when(mapper.protectedEntries(7L, "PRODUCTION")).thenReturn(List.of(entry));
         when(mapper.lockCluster("K1-C1")).thenReturn("K1-C1");
         when(mapper.releasedAccountsInWindow("K1-C1", 7L, 24)).thenReturn(0);
@@ -76,7 +97,11 @@ class EarningsReleaseServiceTest {
         service.recordTrustedAttestation(proof("phone-1"));
 
         InOrder order = inOrder(mapper);
+        order.verify(mapper).lockCreditUser(7L, 0);
+        order.verify(mapper).lockCreditWallet(7L, 0);
+        order.verify(mapper).protectedEntryScopes(7L, "PRODUCTION");
         order.verify(mapper).lockCluster("K1-C1");
+        order.verify(mapper).protectedEntries(7L, "PRODUCTION");
         order.verify(mapper).releasedAccountsInWindow("K1-C1", 7L, 24);
         order.verify(mapper).releaseFromJanusProof("ER-1", "JANUS_PRODUCTION_EXECUTOR");
         verify(audit).recordRequiredForTrustedActor(any());
@@ -144,6 +169,21 @@ class EarningsReleaseServiceTest {
                 .isInstanceOfSatisfying(BizException.class, ex ->
                         org.assertj.core.api.Assertions.assertThat(ex.getMessage())
                                 .isEqualTo("WITHDRAWAL_CLUSTER_RESTRICTED"));
+    }
+
+    @Test
+    void rewardCreditLocksTheMatchingWalletBeforePersistingTheIdempotencyEntry() {
+        when(mapper.insert(any(EarningsReleaseMapper.EntryWrite.class))).thenReturn(1);
+        when(mapper.creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0)).thenReturn(1);
+
+        service.creditReward(7L, "H8_REFERRAL", "REF-1:INVITER:NEX", "NEX",
+                new BigDecimal("5"), "PRODUCTION", "idem-credit-lock-order");
+
+        InOrder order = inOrder(mapper);
+        order.verify(mapper).lockCreditUser(7L, 0);
+        order.verify(mapper).lockCreditWallet(7L, 0);
+        order.verify(mapper).insert(any(EarningsReleaseMapper.EntryWrite.class));
+        order.verify(mapper).creditNex(7L, new BigDecimal("5"), "PRODUCTION", 0);
     }
 
     @Test
