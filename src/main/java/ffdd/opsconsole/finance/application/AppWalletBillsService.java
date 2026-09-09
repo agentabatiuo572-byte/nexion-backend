@@ -221,9 +221,12 @@ public class AppWalletBillsService {
         }
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", "WL-" + row.id());
-        item.put("bizNo", row.bizNo());
+        String category = category(row.bizType(), row.direction());
+        item.put("bizNo", row.bizNo()); // retained for an older App API client; new clients use publicReference.
         item.put("bizType", row.bizType());
-        item.put("category", category(row.bizType(), row.direction()));
+        item.put("category", category);
+        item.put("presentationCode", presentationCode(row.bizType(), category));
+        item.put("publicReference", publicReference(row.bizType(), row.bizNo()));
         item.put("asset", row.asset());
         item.put("direction", row.direction());
         item.put("amount", nonNegative(row.amount()));
@@ -249,6 +252,71 @@ public class AppWalletBillsService {
         if (value.matches(".*(PURCHASE|ORDER|REPURCHASE|GENESIS|TRADE_IN).*$")) return "IN".equals(normalizedDirection) ? "earn" : "purchase";
         if (value.matches(".*(EARN|RELEASE|TASK|TRIAL).*$")) return "earn";
         return "other";
+    }
+
+    /**
+     * This is an App presentation contract, not the immutable ledger remark.
+     * Unknown business types deliberately collapse to the honest generic entry.
+     */
+    private String presentationCode(String bizType, String category) {
+        String value = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "COMPUTE_TASK_REWARD" -> "computeTaskReward";
+            case "DAILY_CHECK_IN" -> "dailyCheckIn";
+            case "TRIAL_CHARGE" -> "trialCharge";
+            case "TRIAL_BONUS" -> "trialBonus";
+            case "QUEST_REWARD" -> "questReward";
+            case "PURCHASE_REWARD" -> "purchaseReward";
+            case "WITHDRAW_NET_PRINCIPAL" -> "withdrawPrincipal";
+            case "WITHDRAW_NETWORK_FEE" -> "withdrawNetworkFee";
+            case "WITHDRAW_PENALTY_FEE" -> "withdrawPenaltyFee";
+            case "WITHDRAW_FEE_OFFSET" -> "withdrawFeeOffset";
+            case "WITHDRAW_PAYOUT_REFUND" -> "withdrawPayoutRefund";
+            case "WITHDRAW_PAYOUT_NEX_REFUND" -> "withdrawPayoutNexRefund";
+            case "WITHDRAW_REFUND" -> "withdrawRefund";
+            case "WITHDRAW_FEE_OFFSET_REFUND" -> "withdrawFeeOffsetRefund";
+            default -> switch (category) {
+                case "earn", "refer", "bonus", "topup", "withdraw", "purchase", "swap", "verification",
+                        "stake", "unstake", "achievement" -> category;
+                default -> "other";
+            };
+        };
+    }
+
+    /** Only public order/deposit/withdrawal identifiers may leave the ledger projection. */
+    private String publicReference(String bizType, String bizNo) {
+        if (bizNo == null || bizNo.isBlank()) return null;
+        String value = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "ORDER_PURCHASE", "GENESIS_PURCHASE", "WITHDRAWAL", "WITHDRAW_PAYOUT", "DEPOSIT", "TOPUP", "RECHARGE", "VIETQR_DEPOSIT" -> bizNo;
+            case "WITHDRAW_NET_PRINCIPAL" -> withdrawalComponentReference(bizNo, ":USDT:PRINCIPAL");
+            case "WITHDRAW_NETWORK_FEE" -> withdrawalComponentReference(bizNo, ":USDT:NETWORK_FEE");
+            case "WITHDRAW_PENALTY_FEE" -> withdrawalComponentReference(bizNo, ":USDT:PENALTY_FEE");
+            case "WITHDRAW_FEE_OFFSET" -> withdrawalComponentReference(bizNo, ":NEX:OFFSET");
+            case "WITHDRAW_PAYOUT_REFUND" -> withdrawalComponentReference(bizNo, ":PAYOUT:USDT:REFUND");
+            case "WITHDRAW_PAYOUT_NEX_REFUND" -> withdrawalComponentReference(bizNo, ":PAYOUT:NEX:REFUND");
+            case "WITHDRAW_REFUND" -> withdrawalReferenceAfterPrefix(bizNo, "D2-REFUND-");
+            case "WITHDRAW_FEE_OFFSET_REFUND" -> withdrawalReferenceAfterPrefix(bizNo, "D2-NEX-REFUND-");
+            default -> null;
+        };
+    }
+
+    private String withdrawalComponentReference(String bizNo, String suffix) {
+        return bizNo.endsWith(suffix) ? validWithdrawalReference(bizNo.substring(0, bizNo.length() - suffix.length())) : null;
+    }
+
+    private String withdrawalReferenceAfterPrefix(String bizNo, String prefix) {
+        return bizNo.startsWith(prefix) ? validWithdrawalReference(bizNo.substring(prefix.length())) : null;
+    }
+
+    /** AppWithdrawalService writes WD- + 32 upper-case hexadecimal UUID characters. */
+    private String validWithdrawalReference(String value) {
+        if (value == null || value.length() != 35 || !value.startsWith("WD-")) return null;
+        for (int index = 3; index < value.length(); index++) {
+            char c = value.charAt(index);
+            if (!(c >= '0' && c <= '9') && !(c >= 'A' && c <= 'F')) return null;
+        }
+        return value;
     }
 
     private BigDecimal nonNegative(BigDecimal value) {

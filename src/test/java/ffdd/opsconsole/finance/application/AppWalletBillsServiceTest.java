@@ -57,6 +57,111 @@ class AppWalletBillsServiceTest {
     }
 
     @Test
+    void appProjectionClassifiesTrialChargeAsPurchaseAndSuppliesControlledPresentation() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(1L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                18L, "TRIAL-42:CHARGE", "TRIAL_CHARGE", "USDT", "OUT", new BigDecimal("1249"),
+                new BigDecimal("3701"), "POSTED", "H2 conversion via Nexion USDT wallet",
+                LocalDateTime.of(2026, 9, 7, 13, 0))));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).singleElement().satisfies(bill -> assertThat(bill)
+                .containsEntry("category", "purchase")
+                .containsEntry("presentationCode", "trialCharge")
+                .containsEntry("publicReference", null));
+    }
+
+    @Test
+    void appProjectionRetainsOnlyAnExplicitPublicOrderReference() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(1L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                19L, "ORD-42", "ORDER_PURCHASE", "USDT", "OUT", new BigDecimal("99"),
+                new BigDecimal("3602"), "POSTED", "NexGrid wallet order settlement",
+                LocalDateTime.of(2026, 9, 7, 13, 1))));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).singleElement().satisfies(bill -> assertThat(bill)
+                .containsEntry("category", "purchase")
+                .containsEntry("presentationCode", "purchase")
+                .containsEntry("publicReference", "ORD-42"));
+    }
+
+    @Test
+    void appProjectionNormalizesEveryCurrentWithdrawalLedgerLegToThePublicWithdrawalNumber() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        String withdrawalNo = "WD-0123456789ABCDEF0123456789ABCDEF";
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(8L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
+                new AppWalletBillsMapper.LedgerRow(31L, withdrawalNo + ":USDT:PRINCIPAL", "WITHDRAW_NET_PRINCIPAL", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("9"), "POSTED", "D2 withdrawal net principal", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(32L, withdrawalNo + ":USDT:NETWORK_FEE", "WITHDRAW_NETWORK_FEE", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("8"), "POSTED", "D5 actual network fee", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(33L, withdrawalNo + ":USDT:PENALTY_FEE", "WITHDRAW_PENALTY_FEE", "USDT", "OUT", new BigDecimal("1"), new BigDecimal("7"), "POSTED", "H1 actual penalty fee", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(34L, withdrawalNo + ":NEX:OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", new BigDecimal("1"), new BigDecimal("6"), "POSTED", "D5 NEX fee offset", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(35L, withdrawalNo + ":PAYOUT:USDT:REFUND", "WITHDRAW_PAYOUT_REFUND", "USDT", "IN", new BigDecimal("1"), new BigDecimal("7"), "POSTED", "provider internal return", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(36L, withdrawalNo + ":PAYOUT:NEX:REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", new BigDecimal("1"), new BigDecimal("8"), "POSTED", "provider internal NEX return", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(37L, "D2-REFUND-" + withdrawalNo, "WITHDRAW_REFUND", "USDT", "IN", new BigDecimal("1"), new BigDecimal("9"), "POSTED", "D2 refund", LocalDateTime.now()),
+                new AppWalletBillsMapper.LedgerRow(38L, "D2-NEX-REFUND-" + withdrawalNo, "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", new BigDecimal("1"), new BigDecimal("10"), "POSTED", "D2 NEX refund", LocalDateTime.now())));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).allSatisfy(bill -> assertThat(bill)
+                .containsEntry("category", "withdraw")
+                .containsEntry("publicReference", withdrawalNo));
+        assertThat(rows).extracting(bill -> String.valueOf(bill.get("presentationCode"))).containsExactly(
+                "withdrawPrincipal", "withdrawNetworkFee", "withdrawPenaltyFee", "withdrawFeeOffset",
+                "withdrawPayoutRefund", "withdrawPayoutNexRefund", "withdrawRefund", "withdrawFeeOffsetRefund");
+    }
+
+    @Test
+    void unknownWithdrawalBusinessTypeKeepsTheGenericPresentationCode() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(1L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                39L, "unknown", "WITHDRAW_FUTURE_COMPONENT", "USDT", "OUT", new BigDecimal("1"),
+                new BigDecimal("9"), "POSTED", "future accounting leg", LocalDateTime.now())));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).singleElement().satisfies(bill -> assertThat(bill)
+                .containsEntry("category", "withdraw")
+                .containsEntry("presentationCode", "withdraw")
+                .containsEntry("publicReference", null));
+    }
+
+    @Test
+    void appProjectionRejectsMalformedWithdrawalComponentKeysAsPublicReferences() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(1L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(new AppWalletBillsMapper.LedgerRow(
+                39L, "D5-PRIVATE-LEDGER:PAYOUT:USDT:REFUND", "WITHDRAW_PAYOUT_REFUND", "USDT", "IN",
+                new BigDecimal("1"), new BigDecimal("9"), "POSTED", "provider internal return", LocalDateTime.now())));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).singleElement().satisfies(bill -> assertThat(bill)
+                .containsEntry("category", "withdraw")
+                .containsEntry("publicReference", null));
+    }
+
+    @Test
     void testProfileRemainsIsolatedFromCanonicalLedger() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
         var service = new AppWalletBillsService(mapper, environment("test"));
