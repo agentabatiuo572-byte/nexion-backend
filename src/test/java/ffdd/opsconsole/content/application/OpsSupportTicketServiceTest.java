@@ -373,7 +373,7 @@ class OpsSupportTicketServiceTest {
                 .containsEntry("warnPct", 75)
                 .containsEntry("quietHourBalance", true)
                 .containsEntry("overflowQueue", "夜间备勤队列");
-        assertThat(result.getData().get("agentState").toString()).contains("agent-1", "cap=5", "busy=true");
+        assertThat(result.getData().get("agentState").toString()).contains("agent-1", "cap=5").doesNotContain("busy=true");
         assertThat(result.getData()).containsEntry("lastRebalanceAt", "2026-06-18T00:00:00");
         assertThat(result.getData().get("sources")).asList()
                 .contains("nx_config_item:content_support_load", "nx_support_ticket", "nx_conversation");
@@ -411,7 +411,7 @@ class OpsSupportTicketServiceTest {
                 .containsEntry("content.support.load.warnPct", "75")
                 .containsEntry("content.support.load.version", "2")
                 .containsEntry("content.support.load.agent.agent-1.cap", "5")
-                .containsEntry("content.support.load.agent.agent-1.busy", "true");
+                .doesNotContainKey("content.support.load.agent.agent-1.busy");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -419,6 +419,35 @@ class OpsSupportTicketServiceTest {
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-m1-load");
     }
 
+    @Test
+    void m1AvailabilityConflictPreventsConfigWritesAndRequiredAudit() {
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(409,
+                "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT"))
+                .when(supportAgentService).updateAvailabilityForLoad(any());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                service.updateLoadConfig("idem-m1-availability-conflict", loadConfigRequest()))
+                .hasMessageContaining("SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+
+        assertThat(configFacade.values).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+    @Test
+    void m1ZeroCapsRoundTripWithoutBeingRewrittenByTheReadProjection() {
+        var request = new SupportLoadConfigUpdateRequest(
+                1L, true, 0, 0, 75, true, "备勤队列",
+                Map.of("agent-1", new SupportAgentLoadStateRequest(0, null)),
+                "superadmin", "zero-cap capacity hold");
+
+        var result = service.updateLoadConfig("idem-m1-zero-cap", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().get("loadConfig"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("defaultCap", 0)
+                .containsEntry("burstCap", 0);
+        assertThat(result.getData().get("agentState").toString()).contains("agent-1", "cap=0");
+    }
     @Test
     void updateLoadConfigRejectsAStaleVisibleVersion() {
         assertThat(service.updateLoadConfig("idem-m1-first", loadConfigRequest()).getCode()).isZero();
@@ -451,7 +480,7 @@ class OpsSupportTicketServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values)
                 .containsEntry("content.support.load.agent.agent-1.cap", "4")
-                .containsEntry("content.support.load.agent.agent-1.busy", "false")
+                .doesNotContainKey("content.support.load.agent.agent-1.busy")
                 .containsEntry("content.support.load.version", "2")
                 .containsKey("content.support.load.lastRebalanceAt");
 
@@ -487,7 +516,7 @@ class OpsSupportTicketServiceTest {
                 75,
                 true,
                 "备勤队列",
-                Map.of("agent-1", new SupportAgentLoadStateRequest(5, true)),
+                Map.of("agent-1", new SupportAgentLoadStateRequest(5, true, 1L)),
                 "superadmin",
                 "rebalance support capacity");
     }

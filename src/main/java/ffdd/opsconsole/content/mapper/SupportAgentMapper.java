@@ -61,6 +61,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                 ON p.admin_id = a.id
                AND p.enabled = 1
                AND p.transferable = 1
+               AND p.busy = 0
                AND p.is_deleted = 0
              WHERE a.status = 1
                AND a.is_deleted = 0

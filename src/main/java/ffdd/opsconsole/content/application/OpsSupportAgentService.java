@@ -115,6 +115,62 @@ public class OpsSupportAgentService {
         return transferTargets(profileViews(operators));
     }
 
+    /** Shared M1/M5 availability projection; legacy load-config flags are not routing authority. */
+    public Map<String, Map<String, Object>> availabilityStates() {
+        Map<String, Map<String, Object>> states = new LinkedHashMap<>();
+        List<Long> ids = supportOperators().stream().map(row -> parseAdminId(row.id()))
+                .flatMap(Optional::stream).toList();
+        if (ids.isEmpty()) return states;
+        repository.listProfiles(ids).forEach(profile -> states.put(String.valueOf(profile.adminId()),
+                Map.of("busy", Boolean.TRUE.equals(profile.busy()), "profileVersion", profile.version())));
+        return states;
+    }
+
+    /** Runs inside the M1 command transaction; a conflict must roll back the whole batch. */
+    @Transactional(rollbackFor = Exception.class)
+    public List<Map<String, Object>> updateAvailabilityForLoad(Map<String, ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest> states) {
+        if (states == null || states.values().stream().noneMatch(state -> state != null && state.busy() != null)) return List.of();
+        if (!canManageSupportSeats()) {
+            throw new ffdd.opsconsole.shared.exception.BizException(403, "SUPPORT_LOAD_MANAGEMENT_FORBIDDEN");
+        }
+        Map<Long, ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest> changes = new java.util.TreeMap<>();
+        Map<Long, SupportAgentProfileRecord> snapshots = new LinkedHashMap<>();
+        states.forEach((key, state) -> {
+            if (state == null || state.busy() == null) return;
+            Long id = parseAdminId(key).orElseThrow(() -> new ffdd.opsconsole.shared.exception.BizException(422, "SUPPORT_LOAD_AGENT_ID_INVALID"));
+            if (state.expectedProfileVersion() == null || state.expectedProfileVersion() < 1) {
+                throw new ffdd.opsconsole.shared.exception.BizException(422, "SUPPORT_AGENT_PROFILE_EXPECTED_VERSION_REQUIRED");
+            }
+            if (supportOperator(id).isEmpty()) {
+                throw new ffdd.opsconsole.shared.exception.BizException(404, "SUPPORT_AGENT_NOT_FOUND");
+            }
+            SupportAgentProfileRecord profile = repository.findProfile(id)
+                    .orElseThrow(() -> new ffdd.opsconsole.shared.exception.BizException(404, "SUPPORT_AGENT_NOT_FOUND"));
+            if (!state.expectedProfileVersion().equals(profile.version())) {
+                throw new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+            }
+            if (changes.put(id, state) != null) {
+                throw new ffdd.opsconsole.shared.exception.BizException(422, "SUPPORT_LOAD_AGENT_ID_DUPLICATE");
+            }
+            snapshots.put(id, profile);
+        });
+        for (var entry : changes.entrySet()) {
+            var profile = snapshots.get(entry.getKey());
+            if (!repository.updateProfileCas(profile.adminId(), profile.seatType(), profile.position(),
+                    profile.serviceTypes(), profile.tags(), profile.maxConcurrent(),
+                    Boolean.TRUE.equals(profile.enabled()), Boolean.TRUE.equals(profile.transferable()),
+                    Boolean.TRUE.equals(entry.getValue().busy()), profile.version(), LocalDateTime.now(clock))) {
+                throw new ffdd.opsconsole.shared.exception.BizException(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+            }
+        }
+        List<Map<String, Object>> receipt = new ArrayList<>();
+        changes.forEach((id, state) -> receipt.add(Map.of("adminId", id,
+                "beforeBusy", Boolean.TRUE.equals(snapshots.get(id).busy()), "afterBusy", state.busy(),
+                "expectedProfileVersion", state.expectedProfileVersion(),
+                "resultingProfileVersion", state.expectedProfileVersion() + 1)));
+        return receipt;
+    }
+
     public boolean canManageSupportSeats() {
         AdminAccountOverview.OperatorRecord actor = accountService.currentOperator().orElse(null);
         if (actor == null) {
@@ -174,6 +230,7 @@ public class OpsSupportAgentService {
                 .map(profile -> profileView(operator, profile))
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
+                .filter(agent -> !Boolean.TRUE.equals(agent.busy()))
                 .filter(agent -> agent.serviceTypes().contains("support"));
     }
 
@@ -686,6 +743,7 @@ public class OpsSupportAgentService {
         agents.stream()
                 .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
                 .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
+                .filter(agent -> !Boolean.TRUE.equals(agent.busy()))
                 .forEach(agent -> targets.add(target(
                         "agent",
                         String.valueOf(agent.adminId()),

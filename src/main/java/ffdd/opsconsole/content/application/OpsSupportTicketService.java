@@ -133,6 +133,7 @@ public class OpsSupportTicketService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_LOAD_OVERFLOW_QUEUE_TOO_LONG");
         }
         String remark = request.reason().trim();
+        List<Map<String, Object>> availabilityChanges = supportAgentService.updateAvailabilityForLoad(agentState);
         upsertLoadValue("autoBalance", Boolean.TRUE.equals(request.autoBalance()) ? "true" : "false", "BOOLEAN", remark);
         upsertLoadValue("defaultCap", String.valueOf(defaultCap), "NUMBER", remark);
         upsertLoadValue("burstCap", String.valueOf(burstCap), "NUMBER", remark);
@@ -141,15 +142,14 @@ public class OpsSupportTicketService {
         upsertLoadValue("overflowQueue", overflowQueue, "STRING", remark);
         agentState.forEach((agentId, state) -> {
             int cap = boundedInt(state == null ? null : state.cap(), 0, 40, defaultCap);
-            boolean busy = state != null && Boolean.TRUE.equals(state.busy());
             upsertLoadValue("agent." + agentId + ".cap", String.valueOf(cap), "NUMBER", remark);
-            upsertLoadValue("agent." + agentId + ".busy", String.valueOf(busy), "BOOLEAN", remark);
         });
         upsertLoadValue("version", String.valueOf(currentVersion + 1L), "NUMBER", remark);
         audit("M1_SUPPORT_LOAD_CONFIG_CHANGED", "SUPPORT_LOAD_CONFIG", "m1.support.load", request.operator(), Map.of(
                 "reason", remark,
                 "idempotencyKey", idempotencyKey.trim(),
                 "agentCount", agentState.size(),
+                "availabilityChanges", availabilityChanges,
                 "beforeVersion", currentVersion,
                 "afterVersion", currentVersion + 1L,
                 "defaultCap", defaultCap,
@@ -194,9 +194,7 @@ public class OpsSupportTicketService {
         for (Map<String, Object> agent : agents) {
             String agentId = loadAgentId(agent);
             int cap = boundedInt(parseInt(stringValue(agent.get("cap"))), 0, 40, 8);
-            boolean busy = Boolean.parseBoolean(stringValue(agent.get("busy")));
             upsertLoadValue("agent." + agentId + ".cap", String.valueOf(cap), "NUMBER", remark);
-            upsertLoadValue("agent." + agentId + ".busy", String.valueOf(busy), "BOOLEAN", remark);
         }
         configFacade.upsertAdminValue(LOAD_PREFIX + "lastRebalanceAt", now.toString(), "STRING", LOAD_GROUP, remark);
         upsertLoadValue("version", String.valueOf(currentVersion + 1L), "NUMBER", remark);
@@ -726,12 +724,12 @@ public class OpsSupportTicketService {
 
     private Map<String, Object> loadConfigView() {
         Map<String, String> values = configFacade.activeValuesByGroup(LOAD_GROUP);
-        int defaultCap = boundedInt(parseInt(values.get(LOAD_PREFIX + "defaultCap")), 1, 40, 8);
+        int defaultCap = boundedInt(parseInt(values.get(LOAD_PREFIX + "defaultCap")), 0, 40, 8);
         Map<String, Object> loadConfig = new LinkedHashMap<>();
         loadConfig.put("autoBalance", boolValue(values, "autoBalance", false));
         loadConfig.put("version", boundedLong(parseLong(values.get(LOAD_VERSION_KEY)), 1L, Long.MAX_VALUE, 1L));
         loadConfig.put("defaultCap", defaultCap);
-        loadConfig.put("burstCap", boundedInt(parseInt(values.get(LOAD_PREFIX + "burstCap")), defaultCap, 40, 12));
+        loadConfig.put("burstCap", boundedInt(parseInt(values.get(LOAD_PREFIX + "burstCap")), 0, 40, 12));
         loadConfig.put("warnPct", boundedInt(parseInt(values.get(LOAD_PREFIX + "warnPct")), 50, 100, 80));
         loadConfig.put("quietHourBalance", boolValue(values, "quietHourBalance", false));
         loadConfig.put("overflowQueue", textValue(values, "overflowQueue", "转人工备勤队列"));
@@ -754,14 +752,13 @@ public class OpsSupportTicketService {
             }
             Map<String, Object> state = agentState.computeIfAbsent(agentId, ignored -> new LinkedHashMap<>());
             if ("cap".equals(field)) {
-                state.put("cap", boundedInt(parseInt(value), 1, 40, defaultCap));
-            } else if ("busy".equals(field)) {
-                state.put("busy", Boolean.parseBoolean(value));
+                state.put("cap", boundedInt(parseInt(value), 0, 40, defaultCap));
             }
         });
+        supportAgentService.availabilityStates().forEach((id, state) ->
+                agentState.computeIfAbsent(id, ignored -> new LinkedHashMap<>()).putAll(state));
         agentState.values().forEach(state -> {
             state.putIfAbsent("cap", defaultCap);
-            state.putIfAbsent("busy", false);
         });
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -769,7 +766,7 @@ public class OpsSupportTicketService {
         response.put("loadConfig", loadConfig);
         response.put("agentState", agentState);
         response.put("lastRebalanceAt", values.getOrDefault(LOAD_PREFIX + "lastRebalanceAt", ""));
-        response.put("sources", List.of("nx_config_item:" + LOAD_GROUP, "nx_support_ticket", "nx_conversation"));
+        response.put("sources", List.of("nx_config_item:" + LOAD_GROUP, "nx_support_agent_profile", "nx_support_ticket", "nx_conversation"));
         return response;
     }
 

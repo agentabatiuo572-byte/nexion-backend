@@ -17,6 +17,29 @@ import org.mockito.Mockito;
 class MybatisSupportAgentRepositoryTest {
 
     @Test
+    void beanInitializesSchemaBeforeFirstReadWithoutDdlInLaterCommandTransactions() {
+        SupportAgentMapper mapper = Mockito.mock(SupportAgentMapper.class);
+        when(mapper.countSeatTypeColumn()).thenReturn(1L);
+        when(mapper.countProfileVersionColumn()).thenReturn(1L);
+        when(mapper.countActiveUserColumn()).thenReturn(1L);
+        when(mapper.countActiveUserUniqueIndex()).thenReturn(1L);
+        when(mapper.listProfiles(List.of(2L))).thenReturn(List.of());
+        try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.registerBean(SupportAgentMapper.class, () -> mapper);
+            context.registerBean(MybatisSupportAgentRepository.class);
+            context.refresh();
+            var repository = context.getBean(MybatisSupportAgentRepository.class);
+            verify(mapper).createProfileTable();
+            verify(mapper).createAssignmentTable();
+            Mockito.clearInvocations(mapper);
+            repository.listProfiles(List.of(2L));
+            repository.ensureSchema();
+            verify(mapper).listProfiles(List.of(2L));
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+    }
+
+    @Test
     void concurrentRequestsInitializeAndBackfillSchemaOnlyOnce() throws Exception {
         SupportAgentMapper mapper = Mockito.mock(SupportAgentMapper.class);
         when(mapper.countSeatTypeColumn()).thenReturn(1L);

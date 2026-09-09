@@ -23,6 +23,8 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     private final SupportAgentMapper mapper;
     private final SchemaInitializationGate schemaInitializationGate = new SchemaInitializationGate();
 
+    // Initialize before requests: MySQL schema DDL must never run inside an M1 CAS transaction.
+    @jakarta.annotation.PostConstruct
     @Override
     public void ensureSchema() {
         schemaInitializationGate.runOnce(() -> {

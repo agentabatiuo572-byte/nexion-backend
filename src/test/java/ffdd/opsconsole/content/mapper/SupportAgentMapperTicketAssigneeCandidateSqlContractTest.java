@@ -30,6 +30,7 @@ class SupportAgentMapperTicketAssigneeCandidateSqlContractTest {
                 .contains("r.role_code = 'support'")
                 .contains("p.enabled = 1")
                 .contains("p.transferable = 1")
+                .contains("p.busy = 0")
                 .contains("find_in_set('support'")
                 .doesNotContain(" create ", " alter ", " insert ", " update ", " delete ", " for update");
         assertThat(sql.substring(0, sql.indexOf(" from ")))

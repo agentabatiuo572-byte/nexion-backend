@@ -104,6 +104,66 @@ class OpsSupportAgentServiceTest {
     }
 
     @Test
+    void m1AvailabilitySharesProfileVersionWithoutOverwritingSeatFields() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of("keep-tag"),
+                17, true, true, false, now());
+        var before = fake.findProfile(2L).orElseThrow();
+        service.updateAvailabilityForLoad(Map.of("2",
+                new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, true, before.version())));
+        var paused = fake.findProfile(2L).orElseThrow();
+        assertThat(paused.busy()).isTrue();
+        assertThat(paused.tags()).containsExactly("keep-tag");
+        assertThat(paused.maxConcurrent()).isEqualTo(17);
+        assertThat(paused.seatType()).isEqualTo(before.seatType());
+        assertThat(paused.version()).isEqualTo(before.version() + 1);
+        assertThat(service.availabilityStates().get("2")).containsEntry("busy", true)
+                .containsEntry("profileVersion", paused.version());
+        assertThat(service.transferTargets()).noneMatch(row -> "2".equals(row.get("targetId")));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.updateAvailabilityForLoad(Map.of("2",
+                new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, false, before.version()))))
+                .hasMessageContaining("SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
+        assertThat(fake.findProfile(2L).orElseThrow().busy()).isTrue();
+        service.updateAvailabilityForLoad(Map.of("2",
+                new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, false, paused.version())));
+        assertThat(service.transferTargets()).anyMatch(row -> "2".equals(row.get("targetId")));
+    }
+
+    @Test
+    void m1AvailabilityRejectsMissingVersionAndUnauthorizedActorBeforeWrites() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(), 12, true, true, false, now());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.updateAvailabilityForLoad(Map.of("2",
+                new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, true))))
+                .hasMessageContaining("SUPPORT_AGENT_PROFILE_EXPECTED_VERSION_REQUIRED");
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("4", "Finance Agent", "finance", "enabled")));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.updateAvailabilityForLoad(Map.of("2",
+                new ffdd.opsconsole.content.dto.SupportAgentLoadStateRequest(8, true, 1L))))
+                .hasMessageContaining("SUPPORT_LOAD_MANAGEMENT_FORBIDDEN");
+        assertThat(fake.findProfile(2L).orElseThrow().busy()).isFalse();
+        assertThat(fake.findProfile(2L).orElseThrow().version()).isEqualTo(1L);
+    }
+
+    @Test
+    void pausedAgentRemainsVisibleButCannotReceiveConversationTransfersUntilResumed() {
+        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(),
+                12, true, true, true, now());
+        assertThat(service.overview().getData().agents()).extracting("adminId").contains(2L);
+        assertThat(service.transferTargets()).noneMatch(target -> "2".equals(target.get("targetId")));
+        assertThat(service.overview().getData().transferTargets())
+                .noneMatch(target -> "2".equals(target.get("targetId")));
+        assertThat(service.assignableSupportAgent(2L)).isEmpty();
+        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
+        assertThat(service.currentAssignableSupportAgent()).isEmpty();
+        fake.updateProfile(2L, "GENERAL", "通用客服", List.of("support"), List.of(),
+                12, true, true, false, now());
+        assertThat(service.transferTargets()).anyMatch(target -> "2".equals(target.get("targetId")));
+        assertThat(service.assignableSupportAgent(2L)).isPresent();
+        assertThat(service.currentAssignableSupportAgent()).isPresent();
+    }
+
+    @Test
     void ticketAssigneeCandidatesUseOnlyTheNonMaterializingRepositoryProjection() {
         FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
         fake.ticketAssigneeCandidates.add(new SupportTicketAssigneeCandidateView(2L, "Available Support"));
