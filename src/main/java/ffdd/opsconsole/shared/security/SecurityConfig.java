@@ -117,6 +117,7 @@ public class SecurityConfig {
                                 "/commerce/app/price-index",
                                 "/commerce/app/payment-options")
                         .permitAll()
+                        .requestMatchers("/ws/conversations").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         // WebMvc slice tests and deployments that do not expose developer APIs
@@ -210,7 +211,7 @@ public class SecurityConfig {
     private List<String> configuredDevelopmentOrigins() {
         if (environment == null) return List.of();
         String value = environment.getProperty("nexion.cors.development-allowed-origins",
-                "http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173");
+                "http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173,http://localhost:3002,http://127.0.0.1:3002");
         return Arrays.stream(value.split(","))
                 .map(String::trim)
                 .filter(StringUtils::hasText)

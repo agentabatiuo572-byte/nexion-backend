@@ -191,7 +191,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         return PASSWORD_CHANGE_ALLOWED_PATHS.stream().anyMatch(pattern -> pathMatcher.match(pattern, path));
     }
 
-    private boolean passwordChangeRequired(Authentication authentication) {
+    public boolean passwordChangeRequired(Authentication authentication) {
         Long adminId = parseAdminId(authentication.getPrincipal());
         if (adminId == null) {
             return false;
@@ -212,6 +212,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     }
 
     private RequiredAuthority requiredAuthority(String path, String method) {
+        // Socket tickets authorize only the following read-only WebSocket session. Keep this
+        // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
+        if (HttpMethod.POST.matches(method)
+                && path.equals("/api/admin/content/conversations/realtime-ticket")) {
+            return RequiredAuthority.exact("service_m3_read");
+        }
         if (path.equals("/api/admin/content/support-workbench/advisor-users")) {
             return RequiredAuthority.exact("service_m1_write");
         }

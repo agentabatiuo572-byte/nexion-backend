@@ -245,6 +245,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         private String subjectType() { return getMessage(); }
     }
 
+    /** Reuses the HTTP session, audience and current-permission checks for socket frames. */
+    public org.springframework.security.core.Authentication authenticateSocketToken(String token) {
+        Claims claims = tokenProvider.parse(token);
+        if (!isSessionActive(claims)) throw new org.springframework.security.authentication.BadCredentialsException("SESSION_EXPIRED");
+        var authentication = new UsernamePasswordAuthenticationToken(claims.getSubject(), null, resolveAuthorities(claims));
+        Map<String, String> details = new LinkedHashMap<>();
+        details.put("subjectType", String.valueOf(claims.getOrDefault("subjectType", "USER")));
+        details.put("username", String.valueOf(claims.getOrDefault("username", "")));
+        details.put("sessionId", String.valueOf(claims.getOrDefault("sessionId", "")));
+        authentication.setDetails(Map.copyOf(details));
+        return authentication;
+    }
+
     private List<SimpleGrantedAuthority> extractAuthorities(Claims claims) {
         Object raw = claims.get("authorities");
         if (!(raw instanceof Collection<?> values)) {

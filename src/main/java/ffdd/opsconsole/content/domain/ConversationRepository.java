@@ -45,6 +45,11 @@ public interface ConversationRepository {
             String conversationNo, Long lastSeenMessageId, String operator, LocalDateTime now,
             String expectedStatus, Long expectedVersion);
 
+    default boolean markUserMessagesReadThrough(ContentConversationView conversation, Long lastSeenMessageId,
+            String operator, LocalDateTime now) {
+        throw new UnsupportedOperationException("ADMIN_READ_RECEIPT_NOT_IMPLEMENTED");
+    }
+
     List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit);
 
     boolean transferToPending(

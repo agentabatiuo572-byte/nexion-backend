@@ -889,15 +889,24 @@ public class OpsConversationService {
 
     @Transactional(rollbackFor = Exception.class)
     public int runTimeoutFallback() {
+        return runTimeoutFallbackConversationNos().size();
+    }
+
+    /**
+     * The scheduler receives these identifiers only after this transactional proxy has committed.
+     * Failed or stale compare-and-set attempts are deliberately absent and must not invalidate sockets.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public List<String> runTimeoutFallbackConversationNos() {
         productionPathGuard.requireOpsWriteAllowed();
         if (!timeoutFallbackEnabled()) {
-            return 0;
+            return List.of();
         }
         ensureSeedData();
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDateTime cutoff = now.minusMinutes(TRANSFER_TIMEOUT_MINUTES);
         List<ContentConversationView> overdue = conversationRepository.overdueTransferredConversations(cutoff, AUTO_FALLBACK_BATCH_SIZE);
-        int changed = 0;
+        List<String> changedConversationNos = new ArrayList<>();
         for (ContentConversationView conversation : overdue) {
             ContentConversationView locked = conversationRepository
                     .findByConversationNoForUpdate(conversation.conversationNo())
@@ -913,9 +922,9 @@ public class OpsConversationService {
             if (!conversationRepository.fallbackTransfer(locked, reason, "system", now)) {
                 continue;
             }
-            changed += 1;
+            changedConversationNos.add(locked.conversationNo());
         }
-        return changed;
+        return List.copyOf(changedConversationNos);
     }
 
     @Transactional(rollbackFor = Exception.class)

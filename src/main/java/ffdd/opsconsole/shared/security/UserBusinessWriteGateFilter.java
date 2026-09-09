@@ -52,33 +52,38 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
             filterChain.doFilter(request, response);
             return;
         }
+        ApiResult<Void> blocked = businessWriteBlock(userId);
+        if (blocked != null) {
+            write(response, blocked.getCode(), blocked.getMessage());
+            return;
+        }
+        filterChain.doFilter(request, response);
+    }
+
+    /** The same gate applies when a business command arrives over WebSocket. */
+    public ApiResult<Void> businessWriteBlock(Long userId) {
         final boolean onboardingComplete;
         try {
             onboardingComplete = users.isOnboardingComplete(userId);
         } catch (RuntimeException ex) {
-            write(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE, "USER_ONBOARDING_STATE_UNAVAILABLE");
-            return;
+            return ApiResult.fail(503, "USER_ONBOARDING_STATE_UNAVAILABLE");
         }
         if (!onboardingComplete) {
-            write(response, 428, "USER_ONBOARDING_REQUIRED");
-            return;
+            return ApiResult.fail(428, "USER_ONBOARDING_REQUIRED");
         }
         final ApiResult<LegalTermsCurrentView> current;
         try {
             current = legalTerms.current(language(userId), "GLOBAL", userId);
         } catch (RuntimeException ex) {
-            write(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE, "LEGAL_TERMS_UNAVAILABLE");
-            return;
+            return ApiResult.fail(503, "LEGAL_TERMS_UNAVAILABLE");
         }
         if (current == null || current.getCode() != 0 || current.getData() == null) {
-            write(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE, "LEGAL_TERMS_UNAVAILABLE");
-            return;
+            return ApiResult.fail(503, "LEGAL_TERMS_UNAVAILABLE");
         }
         if (!current.getData().acknowledged()) {
-            write(response, 428, "LEGAL_TERMS_ACK_REQUIRED");
-            return;
+            return ApiResult.fail(428, "LEGAL_TERMS_ACK_REQUIRED");
         }
-        filterChain.doFilter(request, response);
+        return null;
     }
 
     private String language(Long userId) {

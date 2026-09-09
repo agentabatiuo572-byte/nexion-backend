@@ -1,14 +1,17 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.argThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Method;
+import java.util.List;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Profile;
@@ -28,23 +31,38 @@ class OpsConversationTransferSchedulerTest {
     }
 
     @Test
-    void publishesOneTerminalReloadSignalWhenAutomaticFallbackChangesRows() {
-        when(service.runTimeoutFallback()).thenReturn(3);
+    void publishesOneAuthorizedInvalidationForEachActuallyChangedConversation() {
+        when(service.runTimeoutFallbackConversationNos()).thenReturn(List.of("CV-FALLBACK-1", "CV-FALLBACK-2"));
 
         scheduler.runTimeoutFallback();
 
-        verify(publisher).publishEvent(argThat((Object event) -> event instanceof ConversationMessageEvent message
-                && message.getEventType() == ConversationMessageEvent.EventType.STATUS
-                && "SYSTEM".equals(message.getSenderType())
-                && "*".equals(message.getConversationNo())
-                && "TIMEOUT_FALLBACK_BATCH_CHANGED:3".equals(message.getBody())));
+        ArgumentCaptor<ConversationMessageEvent> events = ArgumentCaptor.forClass(ConversationMessageEvent.class);
+        verify(publisher, times(2)).publishEvent(events.capture());
+        assertThat(events.getAllValues())
+                .extracting(ConversationMessageEvent::getConversationNo)
+                .containsExactly("CV-FALLBACK-1", "CV-FALLBACK-2")
+                .doesNotContain("*");
+        assertThat(events.getAllValues()).allSatisfy(message -> {
+            assertThat(message.getEventType()).isEqualTo(ConversationMessageEvent.EventType.STATUS);
+            assertThat(message.getSenderType()).isEqualTo("SYSTEM");
+            assertThat(message.getBody()).isEqualTo("TIMEOUT_FALLBACK");
+        });
         verifyNoMoreInteractions(publisher);
     }
 
     @Test
     void publishesNothingWhenAutomaticFallbackChangesNothing() {
-        when(service.runTimeoutFallback()).thenReturn(0);
+        when(service.runTimeoutFallbackConversationNos()).thenReturn(List.of());
         scheduler.runTimeoutFallback();
+        verify(publisher, never()).publishEvent(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void publishesNothingWhenTheTransactionalFallbackDoesNotReturnNormally() {
+        when(service.runTimeoutFallbackConversationNos()).thenThrow(new IllegalStateException("rolled back"));
+
+        assertThatThrownBy(() -> scheduler.runTimeoutFallback()).isInstanceOf(IllegalStateException.class);
+
         verify(publisher, never()).publishEvent(org.mockito.ArgumentMatchers.any());
     }
 
@@ -52,7 +70,7 @@ class OpsConversationTransferSchedulerTest {
     void isolatedAutomationNeverInvokesOfficialTransferFallback() {
         ProductionSupportPathGuard disabled = mock(ProductionSupportPathGuard.class);
         new OpsConversationTransferScheduler(service, publisher, disabled).runTimeoutFallback();
-        verify(service, never()).runTimeoutFallback();
+        verify(service, never()).runTimeoutFallbackConversationNos();
         verify(publisher, never()).publishEvent(org.mockito.ArgumentMatchers.any());
     }
 

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
@@ -95,6 +96,39 @@ class JwtAuthenticationFilterTest {
 
         assertThat(invoked).isTrue();
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void socketAuthenticationUsesTheActiveAdminSessionAndCurrentPermissions() {
+        when(adminSessionRegistry.isSessionActive(1L, "admin-socket-session")).thenReturn(true);
+        when(permissionCache.getPermissionCodes(1L)).thenReturn(Set.of("service_m3_read"));
+
+        var authentication = filter.authenticateSocketToken(tokenProvider.createToken(
+                1L, "ADMIN", "superadmin", List.of("stale_claim"), "admin-socket-session"));
+
+        assertThat(authentication.getPrincipal()).isEqualTo("1");
+        assertThat(authentication.getAuthorities())
+                .extracting(GrantedAuthority::getAuthority)
+                .containsExactly("service_m3_read");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "ADMIN", "username", "superadmin", "sessionId", "admin-socket-session"));
+    }
+
+    @Test
+    void socketAuthenticationRejectsARevokedAdminSession() {
+        when(adminSessionRegistry.isSessionActive(1L, "admin-socket-revoked")).thenReturn(false);
+
+        assertThatThrownBy(() -> filter.authenticateSocketToken(tokenProvider.createToken(
+                1L, "ADMIN", "superadmin", List.of("service_m3_read"), "admin-socket-revoked")))
+                .isInstanceOf(org.springframework.security.authentication.BadCredentialsException.class)
+                .hasMessage("SESSION_EXPIRED");
+    }
+
+    @Test
+    void socketAuthenticationRejectsAnInvalidTokenBeforeItCreatesAnIdentity() {
+        assertThatThrownBy(() -> filter.authenticateSocketToken("not-a-jwt"))
+                .isInstanceOf(io.jsonwebtoken.JwtException.class);
+        verifyNoInteractions(adminSessionRegistry, permissionCache, authSessionMapper, userMapper);
     }
 
     @Test

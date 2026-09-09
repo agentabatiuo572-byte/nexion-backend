@@ -121,6 +121,14 @@ public class MybatisConversationRepository implements ConversationRepository {
     }
 
     @Override
+    public boolean markUserMessagesReadThrough(ContentConversationView conversation, Long lastSeenMessageId,
+            String operator, LocalDateTime now) {
+        int changed = messageMapper.markUserMessagesReadThrough(conversation.conversationNo(), lastSeenMessageId, operator, now);
+        if (changed > 0) mapper.refreshUserUnreadCount(conversation.conversationNo());
+        return changed > 0;
+    }
+
+    @Override
     public List<ContentConversationView> overdueTransferredConversations(LocalDateTime cutoff, int limit) {
         return mapper.overdueTransferredConversations(cutoff, Math.max(1, Math.min(limit, 200)));
     }

@@ -560,7 +560,7 @@ public class AppSupportService {
                 row.id(), row.conversationNo(), row.userId(), row.conversationType(), row.status(),
                 row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
                 row.transferFromAgentId(), row.transferFromAgentName(), row.transferToType(), row.transferToId(),
-                row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version());
+                row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version(), row.lastPublicMessageId());
     }
 
     private boolean validHistoryCursor(Long cursor) {

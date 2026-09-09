@@ -664,9 +664,9 @@ class OpsConversationServiceTest {
         conversationRepository.conversation = overdue;
         conversationRepository.overdueConversations = List.of(overdue);
 
-        int changed = service.runTimeoutFallback();
+        List<String> changed = service.runTimeoutFallbackConversationNos();
 
-        assertThat(changed).isEqualTo(1);
+        assertThat(changed).containsExactly("CV-OVER");
         assertThat(conversationRepository.fallbackCount).isEqualTo(1);
         assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
         assertThat(conversationRepository.lastLimit).isEqualTo(50);
@@ -686,6 +686,27 @@ class OpsConversationServiceTest {
         assertThat(changed).isZero();
         assertThat(conversationRepository.fallbackCount).isZero();
         assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void timeoutFallbackReturnsOnlyConversationNosWhoseCompareAndSetSucceeded() {
+        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
+        ContentConversationView first = transferredConversation("CV-FALLBACK-1");
+        ContentConversationView failed = transferredConversation("CV-FALLBACK-RACE");
+        ContentConversationView last = transferredConversation("CV-FALLBACK-2");
+        conversationRepository.overdueConversations = List.of(first, failed, last);
+        conversationRepository.conversations.put(first.conversationNo(), first);
+        conversationRepository.conversations.put(failed.conversationNo(), failed);
+        conversationRepository.conversations.put(last.conversationNo(), last);
+        conversationRepository.failStateClaimOnAttempt = 2;
+
+        List<String> changed = service.runTimeoutFallbackConversationNos();
+
+        assertThat(changed).containsExactly("CV-FALLBACK-1", "CV-FALLBACK-2");
+        assertThat(conversationRepository.fallbackCount).isEqualTo(2);
+        assertThat(conversationRepository.lockOrder)
+                .containsExactly("CV-FALLBACK-1", "CV-FALLBACK-RACE", "CV-FALLBACK-2");
         verifyNoInteractions(auditLogService);
     }
 

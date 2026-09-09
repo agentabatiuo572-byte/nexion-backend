@@ -525,6 +525,41 @@ class AdminRbacAuthorizationFilterTest {
     }
 
     @Test
+    void permitsOnlyM3ReadToPostTheConversationRealtimeTicket() throws Exception {
+        AtomicBoolean ticketInvoked = new AtomicBoolean(false);
+        authenticate("service_m3_read");
+
+        filter.doFilter(
+                request("POST", "/api/admin/content/conversations/realtime-ticket"),
+                new MockHttpServletResponse(),
+                mark(ticketInvoked));
+
+        assertThat(ticketInvoked).isTrue();
+
+        AtomicBoolean ordinaryWriteInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse ordinaryWrite = new MockHttpServletResponse();
+        authenticate("service_m3_read");
+        filter.doFilter(
+                request("POST", "/api/admin/content/conversations/CV-1/reply"),
+                ordinaryWrite,
+                mark(ordinaryWriteInvoked));
+
+        assertThat(ordinaryWriteInvoked).isFalse();
+        assertThat(ordinaryWrite.getStatus()).isEqualTo(403);
+
+        AtomicBoolean wrongM3AuthorityInvoked = new AtomicBoolean(false);
+        MockHttpServletResponse wrongM3Authority = new MockHttpServletResponse();
+        authenticate("service_m3_write");
+        filter.doFilter(
+                request("POST", "/api/admin/content/conversations/realtime-ticket"),
+                wrongM3Authority,
+                mark(wrongM3AuthorityInvoked));
+
+        assertThat(wrongM3AuthorityInvoked).isFalse();
+        assertThat(wrongM3Authority.getStatus()).isEqualTo(403);
+    }
+
+    @Test
     void advisorPhoneLookupRequiresTheExactBindingWriteAuthority() throws Exception {
         for (String authority : java.util.List.of("service_m1_read", "service_m3_read", "service_m5_write")) {
             authenticate(authority);

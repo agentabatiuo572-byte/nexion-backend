@@ -10,6 +10,18 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Insert;
 
 public interface ConversationMessageMapper extends BaseMapper<ConversationMessageEntity> {
+    @Insert("""
+            INSERT INTO nx_conversation_message_receipt(message_id,conversation_no,receipt_status,read_by,read_at)
+            SELECT m.id,m.conversation_no,'read',#{operator},#{now}
+            FROM nx_conversation_message m
+            LEFT JOIN nx_conversation_message_receipt r ON r.message_id=m.id
+            WHERE m.conversation_no=#{conversationNo} AND m.is_deleted=0 AND m.sender_type='user'
+              AND m.id<=#{lastSeenMessageId} AND (r.message_id IS NULL OR r.receipt_status<>'read')
+            ON DUPLICATE KEY UPDATE receipt_status='read',read_by=#{operator},read_at=#{now},updated_at=NOW()
+            """)
+    int markUserMessagesReadThrough(@Param("conversationNo") String conversationNo,
+            @Param("lastSeenMessageId") Long lastSeenMessageId, @Param("operator") String operator,
+            @Param("now") LocalDateTime now);
     @Select("""
             SELECT
               id,
@@ -19,7 +31,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               sender_type AS senderType,
               sender_name AS senderName,
               content,
-              COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+              COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
               msg.created_at AS createdAt
             FROM nx_conversation_message msg
             LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
@@ -31,7 +43,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     @Select("""
             SELECT id,conversation_id AS conversationId,msg.conversation_no AS conversationNo,
                    sender_id AS senderId,sender_type AS senderType,sender_name AS senderName,content,
-                   COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+                   COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    msg.created_at AS createdAt
               FROM nx_conversation_message msg
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
@@ -45,7 +57,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
                    recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
                    recent.content,
-                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
@@ -63,7 +75,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
                    recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
                    recent.content,
-                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type='agent' THEN 'sent' ELSE NULL END) AS receiptStatus,
+                   COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
                    recent.created_at AS createdAt
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at

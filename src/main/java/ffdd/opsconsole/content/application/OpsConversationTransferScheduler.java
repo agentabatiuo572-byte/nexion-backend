@@ -18,12 +18,12 @@ public class OpsConversationTransferScheduler {
             fixedDelayString = "${nexion.ops.content.transfer-fallback-delay-ms:60000}")
     public void runTimeoutFallback() {
         if (!productionPathGuard.productionSupportAutomationAllowed()) return;
-        int changed = conversationService.runTimeoutFallback();
-        if (changed > 0) {
+        // A proxied transactional service returns only after its successful commit.
+        for (String conversationNo : conversationService.runTimeoutFallbackConversationNos()) {
             eventPublisher.publishEvent(ConversationMessageEvent.builder()
-                    .conversationNo("*").eventType(ConversationMessageEvent.EventType.STATUS)
+                    .conversationNo(conversationNo).eventType(ConversationMessageEvent.EventType.STATUS)
                     .senderType("SYSTEM").senderName("System")
-                    .body("TIMEOUT_FALLBACK_BATCH_CHANGED:" + changed).ts(LocalDateTime.now()).build());
+                    .body("TIMEOUT_FALLBACK").ts(LocalDateTime.now()).build());
         }
     }
 }

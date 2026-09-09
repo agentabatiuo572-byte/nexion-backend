@@ -32,6 +32,8 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -201,7 +203,7 @@ public class OpsConversationController {
             @RequestBody ConversationTicketRequest request) {
         return executeCommand("M3_CONVERSATION_TO_TICKET", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ConversationTicketResult> result = conversationService.convertToTicket(conversationNo, idempotencyKey, request);
-            if (result.getData() != null) eventPublisher.publishEvent(ConversationMessageEvent.builder()
+            if (result.getData() != null) publishAfterCommit(ConversationMessageEvent.builder()
                     .conversationNo(conversationNo).eventType(ConversationMessageEvent.EventType.STATUS)
                     .senderType("SYSTEM").senderName("系统").body("CONVERTED_TO_TICKET")
                     .ts(LocalDateTime.now()).build());
@@ -300,7 +302,7 @@ public class OpsConversationController {
             return;
         }
         String body = bodyOverride != null ? bodyOverride : view.lastMessage();
-        eventPublisher.publishEvent(ConversationMessageEvent.builder()
+        publishAfterCommit(ConversationMessageEvent.builder()
                 .conversationNo(view.conversationNo())
                 .messageId(messageId)
                 .eventType(type)
@@ -318,7 +320,7 @@ public class OpsConversationController {
         if (view == null || view.conversationNo() == null) {
             return;
         }
-        eventPublisher.publishEvent(ConversationMessageEvent.builder()
+        publishAfterCommit(ConversationMessageEvent.builder()
                 .conversationNo(view.conversationNo())
                 .eventType(ConversationMessageEvent.EventType.TRANSFER)
                 .senderType("SYSTEM")
@@ -335,7 +337,7 @@ public class OpsConversationController {
         if (view == null || view.conversationNo() == null) {
             return;
         }
-        eventPublisher.publishEvent(ConversationMessageEvent.builder()
+        publishAfterCommit(ConversationMessageEvent.builder()
                 .conversationNo(view.conversationNo())
                 .eventType(ConversationMessageEvent.EventType.STATUS)
                 .senderType("SYSTEM")
@@ -345,5 +347,19 @@ public class OpsConversationController {
                 .ownerAgentId(view.ownerAgentId())
                 .ownerAgentName(view.ownerAgentName())
                 .build());
+    }
+
+    /** A socket invalidation must only describe a durable conversation projection. */
+    private void publishAfterCommit(ConversationMessageEvent event) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            eventPublisher.publishEvent(event);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                eventPublisher.publishEvent(event);
+            }
+        });
     }
 }

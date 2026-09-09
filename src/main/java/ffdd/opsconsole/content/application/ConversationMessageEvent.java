@@ -8,16 +8,15 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * 即时会话事件 —— 由 OpsConversationController 的写端点在调完 OpsConversationService 后发布，
- * OpsConversationStreamController 通过 @EventListener 接收并把变更通过 SSE 实时推给在线坐席。
+ * 会话提交事件：App、坐席及系统写入在事务提交后发布。
+ * WebSocket 将事件转换为授权会话的失效通知，客户端补拉各自可见的消息投影。
+ * 旧 SSE 订阅端点仍可消费此事件以兼容历史客户端。
  *
  * <p>不继承 ApplicationEvent：Spring 4.2+ 的 ApplicationEventPublisher.publishEvent(Object)
  * 接受任意类型，plain POJO 更利于 Jackson 序列化进 SSE 数据帧（避免把 ApplicationEvent 的
  * source/timestamp 字段一起吐到前端）。
  *
- * <p>跨进程说明：app 端用户主动发消息若落在外部进程，本事件无法跨进程感知；
- * 未来接入 RocketMQ（shared/rocketmq outbox）接收用户端消息事件后，再由消费侧补发本对象。
- * 当前实现仅覆盖 admin 后端闭环（坐席写操作触发 → SSE 推所有在线坐席）。
+ * <p>当前事件总线仅在单 Java 实例内生效；多实例部署需要接入共享事件总线。
  */
 @Getter
 @Setter
@@ -41,7 +40,7 @@ public class ConversationMessageEvent {
     private Long messageId;
     /** 事件类型。 */
     private EventType eventType;
-    /** 发送方类型：AGENT / USER / SYSTEM（USER 当前仅供未来跨进程接入预留）。 */
+    /** 发送方类型：AGENT / USER / SYSTEM。 */
     private String senderType;
     /** 发送方名称（坐席名 / 系统标签）。 */
     private String senderName;

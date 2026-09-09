@@ -11,6 +11,15 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
+    @Update("""
+            UPDATE nx_conversation c SET unread_count=(
+                SELECT COUNT(*) FROM nx_conversation_message m
+                LEFT JOIN nx_conversation_message_receipt r ON r.message_id=m.id
+                WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0 AND m.sender_type='user'
+                  AND (r.message_id IS NULL OR r.receipt_status<>'read'))
+            WHERE c.conversation_no=#{conversationNo} AND c.is_deleted=0
+            """)
+    int refreshUserUnreadCount(@Param("conversationNo") String conversationNo);
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='OPEN'")
     long countOpen();
 
@@ -68,7 +77,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
               c.updated_at AS updatedAt,
-              c.version
+              c.version,
+              (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
+                WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -118,7 +130,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
               c.updated_at AS updatedAt,
-              c.version
+              c.version,
+              (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
+                WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -164,7 +179,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               t.reason AS transferReason,
               t.transferred_at AS transferredAt,
               c.updated_at AS updatedAt,
-              c.version
+              c.version,
+              (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
+                WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
