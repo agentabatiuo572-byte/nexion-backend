@@ -14,7 +14,11 @@ class GrowthQuestEventMapperH3MutexSqlContractTest {
                 .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
         String contracts = String.join(" ", GrowthQuestEventMapper.class.getMethod("taskContracts")
                 .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
-        assertThat(rows).contains("SELECT id AS id").doesNotContain("id - 1");
+        assertThat(rows)
+                .contains("SELECT id AS id")
+                .contains("FROM nx_mission m")
+                .contains("b.quest_code=m.mission_code")
+                .doesNotContain("id - 1");
         assertThat(contracts).contains("SELECT id AS taskId");
     }
 

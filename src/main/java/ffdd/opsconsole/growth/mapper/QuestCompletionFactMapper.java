@@ -43,6 +43,58 @@ public interface QuestCompletionFactMapper {
             @Param("userId") Long userId,
             @Param("questCode") String questCode);
 
+    /**
+     * Uses the trusted source-event time for a delayed canonical projection.
+     * A fact observed before the Day One deadline remains attributable to that
+     * instance when the outbox worker runs just after the deadline.
+     */
+    @Select("""
+            SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,
+                   CASE WHEN m.mission_type='DAY_ONE'
+                        THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
+                        ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                   END instanceKey
+              FROM nx_mission m
+              JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
+             WHERE m.mission_code=#{questCode} AND m.status=1 AND m.is_deleted=0
+               AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+               AND (m.mission_type<>'DAY_ONE' OR (
+                     #{occurredAt}>=u.created_at
+                 AND #{occurredAt}<=NOW(3)
+                 AND #{occurredAt}<DATE_ADD(u.created_at,INTERVAL COALESCE((
+                     SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                      AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                 THEN CAST(c.config_value AS UNSIGNED) END
+                       FROM nx_config_item c
+                      WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                        AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR)))
+             LIMIT 1 FOR UPDATE
+            """)
+    MissionDefinition lockMissionInstanceAt(
+            @Param("userId") Long userId,
+            @Param("questCode") String questCode,
+            @Param("occurredAt") java.time.LocalDateTime occurredAt);
+
+    /** Locks only a frozen Day-One item; mutable nx_mission rows are intentionally not consulted. */
+    @Select("""
+            SELECT item.source_mission_id missionId,item.quest_code questCode,'DAY_ONE' layer,i.instance_key instanceKey
+              FROM nx_growth_day_one_instance i
+              JOIN nx_growth_day_one_instance_item item
+                ON item.instance_id=i.id AND item.is_deleted=0
+             WHERE i.user_id=#{userId} AND i.instance_key=#{instanceKey}
+               AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+               AND item.source_mission_id=#{sourceMissionId} AND item.quest_code=#{questCode}
+               AND i.entered_at<=#{occurredAt} AND #{occurredAt}<=NOW(3)
+               AND #{occurredAt}<i.eligible_until
+             LIMIT 1 FOR UPDATE
+            """)
+    MissionDefinition lockDayOneSnapshotMissionAt(
+            @Param("userId") Long userId,
+            @Param("sourceMissionId") Long sourceMissionId,
+            @Param("questCode") String questCode,
+            @Param("instanceKey") String instanceKey,
+            @Param("occurredAt") java.time.LocalDateTime occurredAt);
+
     @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND status=1 AND is_deleted=0")
     int activeMissionCount(@Param("questCode") String questCode);
 

@@ -17,12 +17,19 @@ final class DayOneTriRewardPolicy {
     }
 
     static BigDecimal effectiveDayOneReward(String rawPolicy, long accountAgeHours, long eligibilityHours) {
-        if (rawPolicy == null || eligibilityHours < FULL_REWARD_HOURS || eligibilityHours > 720L) {
+        return effectiveDayOneReward(rawPolicy, accountAgeHours, eligibilityHours, FULL_REWARD_HOURS);
+    }
+
+    /** The full-reward boundary is an immutable Day-One instance field. */
+    static BigDecimal effectiveDayOneReward(
+            String rawPolicy, long accountAgeHours, long eligibilityHours, long fullRewardHours) {
+        if (rawPolicy == null || fullRewardHours <= 0 || eligibilityHours < fullRewardHours
+                || eligibilityHours > 720L) {
             throw new BizException(503, "H3_DAY_ONE_REWARD_POLICY_UNAVAILABLE");
         }
         BigDecimal[] rewards = parse(rawPolicy);
         long age = Math.max(0L, accountAgeHours);
-        return age < FULL_REWARD_HOURS ? rewards[0]
+        return age < fullRewardHours ? rewards[0]
                 : age < eligibilityHours ? rewards[1] : rewards[2];
     }
 

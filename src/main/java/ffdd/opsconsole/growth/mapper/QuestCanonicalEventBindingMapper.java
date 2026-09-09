@@ -21,7 +21,7 @@ public interface QuestCanonicalEventBindingMapper {
 
     @Select("""
             SELECT binding_code bindingCode,producer,event_type eventType,
-                   quest_code questCode,user_id_field userIdField
+                   quest_code questCode,user_id_field userIdField,m.mission_type missionType
               FROM nx_growth_quest_event_binding b
               JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
              WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
@@ -34,6 +34,15 @@ public interface QuestCanonicalEventBindingMapper {
             String producer,
             String eventType,
             String questCode,
-            String userIdField) {
+            String userIdField,
+            String missionType) {
+        public CanonicalQuestEventBinding(
+                String bindingCode,
+                String producer,
+                String eventType,
+                String questCode,
+                String userIdField) {
+            this(bindingCode, producer, eventType, questCode, userIdField, null);
+        }
     }
 }

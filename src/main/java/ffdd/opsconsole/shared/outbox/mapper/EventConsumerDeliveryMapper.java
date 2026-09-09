@@ -115,6 +115,39 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
 
     @Update("""
             UPDATE nx_event_consumer_delivery
+               SET status = #{pendingBindingStatus},
+                   next_retry_at = NULL,
+                   dead_at = NULL,
+                   last_error = 'H3_BINDING_UNAVAILABLE',
+                   last_seen_at = NOW(),
+                   updated_at = NOW()
+             WHERE event_id = #{eventId}
+               AND consumer_group = #{consumerGroup}
+               AND is_deleted = 0
+               AND status = 'PROCESSING'
+            """)
+    int markPendingBinding(@Param("consumerGroup") String consumerGroup, @Param("eventId") String eventId,
+                           @Param("pendingBindingStatus") String pendingBindingStatus);
+
+    @Update("""
+            UPDATE nx_event_consumer_delivery
+               SET status = #{processingStatus},
+                   next_retry_at = NULL,
+                   dead_at = NULL,
+                   last_error = NULL,
+                   last_seen_at = NOW(),
+                   updated_at = NOW()
+             WHERE event_id = #{eventId}
+               AND consumer_group = #{consumerGroup}
+               AND is_deleted = 0
+               AND status = #{pendingBindingStatus}
+            """)
+    int resumePendingBinding(@Param("consumerGroup") String consumerGroup, @Param("eventId") String eventId,
+                             @Param("processingStatus") String processingStatus,
+                             @Param("pendingBindingStatus") String pendingBindingStatus);
+
+    @Update("""
+            UPDATE nx_event_consumer_delivery
                SET status = #{status},
                    processed_at = NOW(),
                    next_retry_at = NULL,

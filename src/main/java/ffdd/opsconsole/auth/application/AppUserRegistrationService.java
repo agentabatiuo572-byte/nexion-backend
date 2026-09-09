@@ -11,6 +11,7 @@ import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
+import ffdd.opsconsole.growth.facade.DayOneInstanceFacade;
 import ffdd.opsconsole.growth.domain.ReferralRewardPublicConfigView;
 import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
 import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
@@ -59,6 +60,7 @@ public class AppUserRegistrationService {
     private final PlatformConfigFacade configFacade;
     private final UserLoginGuardMapper loginGuardMapper;
     private final CaptchaOtpGate captchaGate;
+    private final DayOneInstanceFacade dayOneInstanceFacade;
 
     @PostConstruct
     void ensureSchema() {
@@ -296,6 +298,7 @@ public class AppUserRegistrationService {
         } catch (DuplicateKeyException exception) {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
+        dayOneInstanceFacade.provisionForRegisteredUser(user.getId());
         createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
         userMapper.ensureRegisteredUserWallet(user.getId(), sandbox);

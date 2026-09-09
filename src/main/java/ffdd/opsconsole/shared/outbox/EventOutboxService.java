@@ -29,6 +29,7 @@ public class EventOutboxService {
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_PUBLISHED = "PUBLISHED";
     private static final String STATUS_DEAD = "DEAD";
+    private static final String STATUS_PENDING_BINDING = "PENDING_BINDING";
     private static final Set<String> COMMON_FIELDS = Set.of(
             "event_id", "event_name", "ts", "user_id", "anon_id", "session_id", "phase",
             "account_age_months", "cohort", "ref", "source", "platform", "app_version", "locale",
@@ -217,6 +218,14 @@ public class EventOutboxService {
         return mapper.markFailed(eventId, clippedError, properties.maxRetries(), STATUS_DEAD, STATUS_FAILED, STATUS_PENDING) > 0;
     }
 
+    /**
+     * Requeues an already published fact only after the canonical H3 consumer
+     * recorded a binding wait and an active PC-owned binding now exists.
+     */
+    public int requeuePublishedPendingBinding(String eventType, String consumerGroup) {
+        return mapper.requeuePublishedPendingBinding(
+                eventType, consumerGroup, STATUS_PENDING_BINDING, STATUS_PENDING, STATUS_PUBLISHED);
+    }
     private String toEnvelopeJson(
             String eventId,
             String eventName,

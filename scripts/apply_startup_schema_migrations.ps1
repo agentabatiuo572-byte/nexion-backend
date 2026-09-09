@@ -132,8 +132,13 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260902_bundle_discount_authority.sql"),
   # H3 current-instance authority and H8 public reward gate close two App P1 findings.
   (Join-Path $root "scripts\migrations\20260901_h3_instances_h8_referral_gate.sql"),
+  # Day One successful page reads use a durable per-instance source receipt before outbox dispatch.
+  (Join-Path $root "scripts\migrations\20260907_h3_day_one_page_observation_receipt.sql"),
   # Only the currently active H3 mission set may consume new canonical facts.
   (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
+  # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
+  # This is create-only: legacy rows remain explicitly unverifiable.
+  (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),

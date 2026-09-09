@@ -22,4 +22,12 @@ class DayOneTriRewardPolicyTest {
                     .hasMessage("H3_DAY_ONE_REWARD_POLICY_UNAVAILABLE");
         }
     }
+
+    @Test
+    void usesThePersistedFullRewardWindowInsteadOfAnImplicitCurrentPolicy() {
+        assertThat(DayOneTriRewardPolicy.effectiveDayOneReward(
+                "500 / 200 / 0 NEX", 30, 72, 36)).isEqualByComparingTo("500");
+        assertThat(DayOneTriRewardPolicy.effectiveDayOneReward(
+                "500 / 200 / 0 NEX", 36, 72, 36)).isEqualByComparingTo("200");
+    }
 }

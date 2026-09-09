@@ -21,10 +21,12 @@ import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
-import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneQuestState;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneSnapshot;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneSnapshotQuestState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestClaimState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakPowerUp;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.StreakState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefinition;
@@ -38,8 +40,12 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -105,16 +111,26 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
-    void questStateUsesOnlyPersistedDefinitionsUserProgressPromoAndH1Multiplier() {
+    void questStateUsesCurrentWeeklyDefinitionsButOnlyTheImmutableDayOneSnapshot() {
         when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
                 "questCode", "H3_FIRST_ORDER_STARTED",
                 "name", "Start your first order",
-                "layer", "DAY_ONE",
+                "layer", "WEEKLY_T1",
                 "rewardNex", 50,
-                "triReward", "500 / 200 / 0 NEX",
-                "accountAgeHours", 0,
-                "eligibilityHours", 72,
                 "status", "CLAIMABLE")));
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(2), LocalDateTime.now().plusHours(70),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(
+                Map.of("questCode", "SNAPSHOT_ONLY", "name", "Original member name",
+                        "layer", "DAY_ONE", "rewardNex", 10, "instanceKey", snapshot.instanceKey(),
+                        "eligibleFrom", "2026-09-09T10:30:15+08:00", "eligibleUntil", "2026-09-12T10:30:15+08:00",
+                        "eligible", 1, "status", "CLAIMABLE"),
+                Map.of("questCode", "SNAPSHOT_SECOND", "name", "Second original member",
+                        "layer", "DAY_ONE", "rewardNex", 20, "instanceKey", snapshot.instanceKey(),
+                        "eligibleFrom", "2026-09-09T10:30:15+08:00", "eligibleUntil", "2026-09-12T10:30:15+08:00",
+                        "eligible", 1, "status", "PENDING")));
         when(mapper.questPromoBanner()).thenReturn(Map.of(
                 "bannerCode", "HOME_WEEKLY_UPSELL",
                 "baseReward", "800",
@@ -130,19 +146,211 @@ class AppGrowthEngagementServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("questBonusMultiplier", new BigDecimal("1.5"))
                 .containsEntry("rhythmMonth", 3)
-                .containsEntry("dayOneRewardNex", new BigDecimal("500"));
-        assertThat(result.getData().get("quests")).asList().singleElement()
-                .extracting(row -> ((Map<?, ?>) row).get("rewardNex"))
-                .isEqualTo(BigDecimal.ZERO);
-        assertThat(result.getData().get("quests")).asList().singleElement()
-                .extracting(row -> ((Map<?, ?>) row).get("questCode"))
-                .isEqualTo("H3_FIRST_ORDER_STARTED");
+                .containsEntry("dayOneRewardNex", new BigDecimal("1000.000000"))
+                .containsEntry("dayOneRequiredTaskCount", 2)
+                .containsEntry("dayOneSnapshotStatus", "SNAPSHOT");
+        List<?> questRows = (List<?>) result.getData().get("quests");
+        assertThat(questRows).hasSize(3);
+        List<Object> rewardValues = questRows.stream().map(row -> (Object) ((Map<?, ?>) row).get("rewardNex")).toList();
+        List<Object> questCodes = questRows.stream().map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
+        assertThat(rewardValues).containsExactly(50, BigDecimal.ZERO, BigDecimal.ZERO);
+        assertThat(questCodes).contains("SNAPSHOT_ONLY", "SNAPSHOT_SECOND");
         assertThat(result.getData().get("source").toString()).contains("nx_mission", "nx_user_mission");
     }
 
     @Test
+    void questStateDoesNotReconstructLegacyDayOneFromLiveDefinitionsOrUserProgress() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of(
+                Map.of("questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1", "status", "PENDING"),
+                // A newly enabled definition is not evidence that this legacy user
+                // received it when they entered the product.
+                Map.of("questCode", "NEW_DAY_ONE", "layer", "DAY_ONE", "status", "PENDING",
+                        "eligibleUntil", "2026-09-12T10:30:15+08:00"),
+                // Nor can an old user-mission status recreate the old mutable
+                // definition after its name, route, reward or window changed.
+                Map.of("questCode", "RENAMED_DAY_ONE", "layer", "DAY_ONE", "status", "CLAIMED",
+                        "instanceKey", "DAY_ONE:legacy", "eligibleUntil", "2026-09-12T10:30:15+08:00")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(null);
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getData()).containsEntry("dayOneRequiredTaskCount", null)
+                .containsEntry("dayOneSnapshotStatus", "LEGACY_UNVERIFIED");
+        List<Object> questCodes = ((List<?>) result.getData().get("quests")).stream()
+                .map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
+        assertThat(questCodes).containsExactly("CURRENT_WEEK");
+        verify(mapper, never()).dayOneSnapshotState(anyLong(), anyLong());
+    }
+
+    @Test
+    void questStateKeepsIndividuallyVerifiableFrozenHistoryWhenHeaderCountDoesNotMatch() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
+                "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(Map.of(
+                "questCode", "ONLY_ONE", "name", "Original name", "layer", "DAY_ONE",
+                "category", "explore", "actionRoute", "/pages/store/store", "rewardNex", 0,
+                "instanceKey", snapshot.instanceKey(), "eligible", 1, "status", "PENDING")));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getData()).containsEntry("dayOneSnapshotStatus", "LEGACY_UNVERIFIED")
+                .containsEntry("dayOneRequiredTaskCount", null)
+                .containsEntry("dayOneRewardNex", BigDecimal.ZERO);
+        List<Object> questCodes = ((List<?>) result.getData().get("quests")).stream()
+                .map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
+        assertThat(questCodes).contains("ONLY_ONE");
+    }
+
+    @Test
+    void questStateDropsDuplicateAndWrongInstanceRowsFromCorruptFrozenHistory() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 3,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
+                "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(
+                Map.of("questCode", "DUPLICATE", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey()),
+                Map.of("questCode", "DUPLICATE", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey()),
+                Map.of("questCode", "WRONG_KEY", "layer", "DAY_ONE", "instanceKey", "DAY_ONE:other"),
+                Map.of("questCode", "VERIFIED", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey())));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getData()).containsEntry("dayOneSnapshotStatus", "LEGACY_UNVERIFIED")
+                .containsEntry("dayOneRequiredTaskCount", null)
+                .containsEntry("dayOneRewardNex", BigDecimal.ZERO);
+        List<Object> questCodes = ((List<?>) result.getData().get("quests")).stream()
+                .map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
+        assertThat(questCodes)
+                .contains("CURRENT_WEEK", "VERIFIED")
+                .doesNotContain("DUPLICATE", "WRONG_KEY");
+    }
+
+    @Test
+    void questStateReturnsNoDayOneRowsWhenNoCorruptFrozenRowIsIndividuallyVerifiable() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
+                "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(
+                Map.of("questCode", "DUPLICATE", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey()),
+                Map.of("questCode", "DUPLICATE", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey()),
+                Map.of("questCode", "WRONG_KEY", "layer", "DAY_ONE", "instanceKey", "DAY_ONE:other")));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getData()).containsEntry("dayOneSnapshotStatus", "LEGACY_UNVERIFIED")
+                .containsEntry("dayOneRequiredTaskCount", null)
+                .containsEntry("dayOneRewardNex", BigDecimal.ZERO);
+        List<Object> questCodes = ((List<?>) result.getData().get("quests")).stream()
+                .map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
+        assertThat(questCodes).containsExactly("CURRENT_WEEK");
+    }
+    @Test
+    void questStateReadsTheFrozenDayOneHeaderWhenTheCurrentH1DialIsUnavailable() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                24, 3, "P2", 50, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                new BigDecimal("0.2"), 30, new BigDecimal("5000"), new BigDecimal("1.5"), false,
+                List.of("H1.rhythm.currentMonth"), false, List.of("growth.phase.month.3.questBonusMultiplier")));
+        when(mapper.questState(42L, "en")).thenReturn(List.of(
+                Map.of("questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1"),
+                Map.of("questCode", "LIVE_DAY_ONE", "layer", "DAY_ONE")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(Map.of(
+                "questCode", "FROZEN_DAY_ONE", "name", "Original name", "layer", "DAY_ONE",
+                "category", "explore", "actionRoute", "/pages/store/store",
+                "rewardNex", 0, "instanceKey", snapshot.instanceKey(), "eligible", 1,
+                "status", "PENDING")));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("dayOneSnapshotStatus", "SNAPSHOT")
+                .containsEntry("dayOneRewardNex", new BigDecimal("1000.000000"))
+                .containsEntry("questBonusMultiplier", new BigDecimal("2"))
+                .containsEntry("rhythmMonth", 2);
+        assertThat(result.getData().get("source")).isEqualTo(
+                "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + day_one_snapshot_only");
+        assertThat((List<?>) result.getData().get("quests")).allMatch(
+                row -> "DAY_ONE".equals(((Map<?, ?>) row).get("layer")));
+    }
+    @Test
+    void dayOneSnapshotUsesTheBusinessInstantAtTheTwentyFourHourAndExpiryBoundaries() {
+        LocalDateTime enteredAt = LocalDateTime.of(2026, 9, 9, 0, 0);
+        LocalDateTime eligibleUntil = LocalDateTime.of(2026, 9, 12, 0, 0);
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1, enteredAt, eligibleUntil,
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.questState(42L, "en")).thenReturn(List.of());
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(Map.of(
+                "questCode", "FROZEN_DAY_ONE", "name", "Original name", "layer", "DAY_ONE",
+                "category", "explore", "actionRoute", "/pages/store/store", "rewardNex", 0,
+                "instanceKey", snapshot.instanceKey(), "eligible", 1, "status", "PENDING")));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+        Instant firstGraceInstant = Instant.parse("2026-09-09T16:00:00Z");
+
+        var utcClockResult = serviceAt(Clock.fixed(firstGraceInstant, ZoneOffset.UTC)).questState(42L);
+        var differentClockZoneResult = serviceAt(Clock.fixed(firstGraceInstant,
+                ZoneId.of("America/Los_Angeles"))).questState(42L);
+
+        assertThat(utcClockResult.getData()).containsEntry("dayOneRewardNex", new BigDecimal("400.000000"));
+        assertThat(differentClockZoneResult.getData()).containsEntry("dayOneRewardNex", new BigDecimal("400.000000"));
+
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
+        var expiry = serviceAt(Clock.fixed(Instant.parse("2026-09-11T16:00:00Z"), ZoneOffset.UTC))
+                .claimQuest(42L, "FROZEN_DAY_ONE", snapshot.instanceKey(), "expiry-boundary");
+        assertThat(expiry.getCode()).isEqualTo(409);
+        assertThat(expiry.getMessage()).isEqualTo("QUEST_EXPIRED");
+        verify(mapper, never()).claimDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(anyLong(), any());
+    }
+    @Test
+    void questStateDoesNotInventCurrentH1FieldsForAnEmptyHeader() {
+        when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                24, 3, "P2", 50, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                new BigDecimal("0.2"), 30, new BigDecimal("5000"), new BigDecimal("1.5"), false,
+                List.of("H1.rhythm.currentMonth"), false, List.of("growth.phase.month.3.questBonusMultiplier")));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(dayOneSnapshot("EMPTY", 0,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", BigDecimal.ONE));
+
+        assertThatThrownBy(() -> service.questState(42L)).hasMessage("H1_RHYTHM_UNAVAILABLE");
+        verify(mapper, never()).questState(anyLong(), anyString());
+    }
+    @Test
+    void questStateReportsPersistedEmptySnapshotWithoutInventingClaimableTasks() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of());
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(dayOneSnapshot("EMPTY", 0,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", BigDecimal.ONE));
+        when(mapper.questPromoBanner()).thenReturn(Map.of());
+
+        var result = service.questState(42L);
+
+        assertThat(result.getData()).containsEntry("dayOneRequiredTaskCount", 0)
+                .containsEntry("dayOneSnapshotStatus", "EMPTY")
+                .containsEntry("dayOneRewardNex", BigDecimal.ZERO);
+        verify(mapper, never()).dayOneSnapshotState(anyLong(), anyLong());
+    }
+
+    @Test
     void questClaimAtomicallyChangesStateCreditsWalletAuditsAndPublishes() {
-        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "TEST-INSTANCE"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", new BigDecimal("10")));
         when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         wallet(new BigDecimal("100"));
@@ -217,65 +425,156 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
-    void dayOneClaimRequiresTheWholeConfiguredGroupAndDoesNotPayOneTaskEarly() {
-        when(mapper.lockClaimableQuest(42L, "DAY-1"))
-                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
-                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
-        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
-                new DayOneQuestState(7L, "CLAIMABLE"),
-                new DayOneQuestState(8L, "PENDING")));
+    void questClaimReturnsTheLockedTerminalReasonWithoutWalletOrOutboxWrites() {
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "TEST-INSTANCE")).thenReturn(null);
+        when(mapper.lockQuestClaimState(42L, "QUEST-1", "TEST-INSTANCE"))
+                .thenReturn(new QuestClaimState("CLAIMED", 1, 0));
 
-        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-early");
+        var result = service.claimQuest(42L, "QUEST-1", "TEST-INSTANCE", "already-claimed-key");
 
         assertThat(result.getCode()).isEqualTo(409);
-        verify(mapper, never()).claimDayOneGroup(anyLong(), anyString());
+        assertThat(result.getMessage()).isEqualTo("QUEST_ALREADY_CLAIMED");
+        verify(mapper).lockQuestClaimState(42L, "QUEST-1", "TEST-INSTANCE");
+        verify(mapper, never()).claimQuest(any(), any(), any());
         verify(mapper, never()).creditWalletNex(any(), any());
+        verify(audit, never()).recordRequired(any());
+        verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    void dayOneClaimRejectsACompleteLookingButIncompleteFiveTaskGroup() {
-        when(mapper.lockClaimableQuest(42L, "DAY-1"))
-                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
-                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
-        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
-                new DayOneQuestState(7L, "CLAIMABLE"), new DayOneQuestState(8L, "COMPLETED"),
-                new DayOneQuestState(9L, "CLAIMABLE"), new DayOneQuestState(10L, "COMPLETED"),
-                new DayOneQuestState(11L, "CLAIMABLE")));
+    void dayOneClaimRejectsAConfiguredSnapshotWhoseExactMemberSetIsNotComplete() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
+        when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
+                new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
+                new DayOneSnapshotQuestState("DAY-2", "PENDING")));
 
-        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-short-group");
+        var result = service.claimQuest(42L, "DAY-1", snapshot.instanceKey(), "day-one-early");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("DAY_ONE_GROUP_NOT_CLAIMABLE");
-        verify(mapper, never()).claimDayOneGroup(anyLong(), anyString());
+        verify(mapper, never()).lockClaimableQuest(anyLong(), anyString(), anyString());
+        verify(mapper, never()).claimDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
         verify(mapper, never()).creditWalletNex(any(), any());
     }
 
     @Test
-    void dayOneClaimMarksAndPaysTheWholeGroupExactlyOnce() {
-        when(mapper.lockClaimableQuest(42L, "DAY-1"))
-                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.ZERO,
-                        "DAY_ONE:20260904T120000", "500 / 200 / 0 NEX", 1L, 72L));
-        when(mapper.lockDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(List.of(
-                new DayOneQuestState(7L, "CLAIMABLE"), new DayOneQuestState(8L, "COMPLETED"),
-                new DayOneQuestState(9L, "CLAIMABLE"), new DayOneQuestState(10L, "COMPLETED"),
-                new DayOneQuestState(11L, "CLAIMABLE"), new DayOneQuestState(12L, "COMPLETED")));
-        when(mapper.claimDayOneGroup(42L, "DAY_ONE:20260904T120000")).thenReturn(6);
+    void dayOneClaimRejectsAHeaderWhoseLockedFrozenMemberCountIsShort() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
+        when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey()))
+                .thenReturn(List.of(new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE")));
+
+        var result = service.claimQuest(42L, "DAY-1", snapshot.instanceKey(), "short-member-set");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DAY_ONE_GROUP_NOT_CLAIMABLE");
+        verify(mapper, never()).claimDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(any(), any());
+    }
+
+    @Test
+    void dayOneClaimUsesTheSnapshotAfterCurrentDefinitionWasRemovedAndH1Changed() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
+        when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
+                new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
+                new DayOneSnapshotQuestState("DAY-2", "COMPLETED")));
+        when(mapper.claimDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(2);
         wallet(new BigDecimal("100"));
 
-        var result = service.claimQuest(42L, "DAY-1", "DAY_ONE:20260904T120000", "day-one-group");
+        var result = service.claimQuest(42L, "DAY-1", snapshot.instanceKey(), "snapshot-claim");
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("750.000000"));
-        verify(mapper).claimDayOneGroup(42L, "DAY_ONE:20260904T120000");
-        verify(mapper, never()).claimQuest(any(), any(), any());
-        verify(mapper).insertNexLedger(42L, "QUEST:DAY_ONE:42:DAY_ONE:20260904T120000",
-                "QUEST_REWARD", new BigDecimal("750.000000"), new BigDecimal("850.000000"),
+        assertThat(result.getData()).containsEntry("rewardNex", new BigDecimal("1000.000000"))
+                .containsEntry("instanceKey", snapshot.instanceKey());
+        verify(mapper, never()).lockClaimableQuest(anyLong(), anyString(), anyString());
+        verify(mapper).claimDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey());
+        verify(mapper).insertNexLedger(42L, "QUEST:DAY_ONE:42:" + snapshot.instanceKey(),
+                "QUEST_REWARD", new BigDecimal("1000.000000"), new BigDecimal("1100.000000"),
                 "H3 quest claim");
     }
 
     @Test
+    void dayOneClaimRejectsEmptyLegacyExpiredAndStaleSnapshotInstancesWithoutWrites() {
+        DayOneSnapshot empty = dayOneSnapshot("EMPTY", 0,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", BigDecimal.ONE);
+        when(mapper.lockDayOneSnapshot(42L, empty.instanceKey())).thenReturn(empty);
+        assertThat(service.claimQuest(42L, "DAY-1", empty.instanceKey(), "empty-instance").getMessage())
+                .isEqualTo("DAY_ONE_EMPTY_INSTANCE");
+
+        DayOneSnapshot expired = dayOneSnapshot("SNAPSHOT", 1,
+                LocalDateTime.now().minusHours(73), LocalDateTime.now().minusHours(1),
+                "500 / 200 / 0 NEX", BigDecimal.ONE);
+        when(mapper.lockDayOneSnapshot(42L, expired.instanceKey())).thenReturn(expired);
+        assertThat(service.claimQuest(42L, "DAY-1", expired.instanceKey(), "expired-instance").getMessage())
+                .isEqualTo("QUEST_EXPIRED");
+
+        assertThat(service.claimQuest(42L, "DAY-1", "DAY_ONE:missing", "legacy-instance").getMessage())
+                .isEqualTo("DAY_ONE_SNAPSHOT_UNAVAILABLE");
+        verify(mapper, never()).claimDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(any(), any());
+    }
+
+    @Test
+    void dayOneClaimRejectsDuplicateFrozenQuestCodesBeforeTheCasWrite() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", BigDecimal.ONE);
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot);
+        when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
+                new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
+                new DayOneSnapshotQuestState("DAY-1", "COMPLETED")));
+
+        var result = service.claimQuest(42L, "DAY-1", snapshot.instanceKey(), "duplicate-member");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DAY_ONE_GROUP_NOT_CLAIMABLE");
+        verify(mapper, never()).claimDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(anyLong(), any());
+    }
+    @Test
+    void dayOneClaimRequiresTheRequestedSnapshotMemberAndTheCasCountPreventsSecondPayout() {
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 2,
+                LocalDateTime.now().minusHours(1), LocalDateTime.now().plusHours(71),
+                "500 / 200 / 0 NEX", BigDecimal.ONE);
+        when(mapper.lockDayOneSnapshot(42L, snapshot.instanceKey())).thenReturn(snapshot, snapshot);
+        when(mapper.lockDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(List.of(
+                new DayOneSnapshotQuestState("DAY-1", "CLAIMABLE"),
+                new DayOneSnapshotQuestState("DAY-2", "COMPLETED")));
+        when(mapper.claimDayOneSnapshotGroup(42L, 71L, snapshot.instanceKey())).thenReturn(0);
+
+        assertThat(service.claimQuest(42L, "NOT_A_MEMBER", snapshot.instanceKey(), "not-member").getMessage())
+                .isEqualTo("DAY_ONE_SNAPSHOT_MEMBER_NOT_FOUND");
+        assertThatThrownBy(() -> service.claimQuest(42L, "DAY-1", snapshot.instanceKey(), "second-writer"))
+                .hasMessage("QUEST_CLAIM_CONFLICT");
+        verify(mapper, never()).creditWalletNex(any(), any());
+    }
+
+    @Test
+    void malformedNonDayOneKeyCannotReopenTheRetiredLiveDayOneGroupClaimPath() {
+        when(mapper.lockClaimableQuest(42L, "DAY-1", "OLD_DAY_ONE_KEY"))
+                .thenReturn(new QuestReward(7L, "DAY-1", "DAY_ONE", BigDecimal.TEN, "OLD_DAY_ONE_KEY"));
+
+        var result = service.claimQuest(42L, "DAY-1", "OLD_DAY_ONE_KEY", "legacy-day-one-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("DAY_ONE_SNAPSHOT_UNAVAILABLE");
+        verify(mapper, never()).lockDayOneSnapshotGroup(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).claimDayOneGroup(anyLong(), anyString());
+        verify(mapper, never()).claimQuest(anyLong(), anyLong(), anyString());
+        verify(mapper, never()).creditWalletNex(anyLong(), any());
+    }
+    @Test
     void questClaimBindsTheIdempotencyPayloadToTheRequestedMissionInstance() {
-        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "TEST-INSTANCE"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
         when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         wallet(BigDecimal.ZERO);
@@ -288,7 +587,7 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void questClaimRejectsAStaleRequestedInstanceBeforeAnyRewardWrite() {
-        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "WEEK:2026-W35"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN, "WEEK:2026-W36"));
 
         assertThatThrownBy(() -> service.claimQuest(
@@ -546,7 +845,7 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void outboxFailureIsNotSwallowedSoTransactionCanRollBackRewardAndClaim() {
-        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "TEST-INSTANCE"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
         when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         wallet(BigDecimal.ZERO);
@@ -571,7 +870,7 @@ class AppGrowthEngagementServiceTest {
 
     @Test
     void b1BelowRedlineRollsBackClaimBeforeAnyWalletOrOutboxSideEffect() {
-        when(mapper.lockClaimableQuest(42L, "QUEST-1"))
+        when(mapper.lockClaimableQuest(42L, "QUEST-1", "TEST-INSTANCE"))
                 .thenReturn(new QuestReward(7L, "QUEST-1", "DAILY", BigDecimal.TEN));
         when(mapper.claimQuest(42L, 7L, "TEST-INSTANCE")).thenReturn(1);
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
@@ -581,6 +880,17 @@ class AppGrowthEngagementServiceTest {
                 .hasMessage("B1_COVERAGE_BELOW_REDLINE");
         verify(mapper, never()).creditWalletNex(any(), any());
         verify(outbox, never()).publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    private AppGrowthEngagementService serviceAt(Clock clock) {
+        return new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox,
+                null, null, null, java.util.Optional.empty(), null, clock);
+    }
+    private DayOneSnapshot dayOneSnapshot(
+            String status, int requiredTaskCount, LocalDateTime enteredAt, LocalDateTime eligibleUntil,
+            String reward, BigDecimal multiplier) {
+        return new DayOneSnapshot(71L, "DAY_ONE:" + status + requiredTaskCount, status, enteredAt,
+                72, 24, eligibleUntil, reward, multiplier, 2, requiredTaskCount);
     }
 
     private void wallet(BigDecimal before) {

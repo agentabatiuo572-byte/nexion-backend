@@ -20,6 +20,7 @@ public class EventConsumerDeliveryService {
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_DEAD = "DEAD";
     private static final String STATUS_SKIPPED = "SKIPPED";
+    private static final String STATUS_PENDING_BINDING = "PENDING_BINDING";
 
     private final EventConsumerDeliveryMapper mapper;
     private final EventConsumerDeliveryProperties properties;
@@ -84,6 +85,33 @@ public class EventConsumerDeliveryService {
         String clippedError = clip(errorMessage);
         mapper.markFailure(consumerGroup, eventId, status, dead, Math.max(0, rocketmqReconsumeTimes), clippedError);
         return new ConsumerFailure(dead, eventId, status, attemptCount);
+    }
+
+    /**
+     * Atomically claims an H3 canonical event and turns that claim into a binding wait.
+     * A wait is distinct from a retry: it leaves attempt counters and retry scheduling untouched.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public ConsumerClaim claimPendingBinding(
+            EventOutboxMessage message,
+            String consumerGroup,
+            String topic,
+            String msgId,
+            int rocketmqReconsumeTimes) {
+        ConsumerClaim claim = claim(message, consumerGroup, topic, msgId, rocketmqReconsumeTimes);
+        if (claim.claimed()) {
+            mapper.markPendingBinding(consumerGroup, claim.eventId(), STATUS_PENDING_BINDING);
+        }
+        return claim;
+    }
+
+    /** Moves an already claimed H3 delivery into a no-retry binding wait. */
+    public void markPendingBinding(String consumerGroup, String eventId) {
+        mapper.markPendingBinding(consumerGroup, eventId, STATUS_PENDING_BINDING);
+    }
+    /** Returns true only for the single dispatcher that may resume this wait. */
+    public boolean resumePendingBinding(String consumerGroup, String eventId) {
+        return mapper.resumePendingBinding(consumerGroup, eventId, STATUS_PROCESSING, STATUS_PENDING_BINDING) > 0;
     }
 
     public void markSuccess(String consumerGroup, String eventId, int processedCount) {

@@ -23,6 +23,11 @@ import ffdd.opsconsole.auth.mapper.AppUserRegistrationMapper;
 import ffdd.opsconsole.auth.mapper.TeamAncestorProjection;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.growth.application.OpsReferralRewardService;
+import ffdd.opsconsole.growth.application.DayOneInstanceFacadeAdapter;
+import ffdd.opsconsole.growth.facade.DayOneInstanceFacade;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
+import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.RegisteredUser;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -50,6 +55,13 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.SmartTransactionObject;
+import org.springframework.transaction.interceptor.TransactionInterceptor;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
+import org.springframework.aop.framework.ProxyFactory;
 
 class AppUserRegistrationServiceTest {
     private final AppUserRegistrationMapper mapper = mock(AppUserRegistrationMapper.class);
@@ -64,6 +76,7 @@ class AppUserRegistrationServiceTest {
     private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
     private final UserLoginGuardMapper loginGuards = mock(UserLoginGuardMapper.class);
     private final CaptchaOtpGate captchaGate = mock(CaptchaOtpGate.class);
+    private final DayOneInstanceFacade dayOneInstanceFacade = mock(DayOneInstanceFacade.class);
     private AppUserRegistrationService service;
 
     @BeforeEach
@@ -72,7 +85,8 @@ class AppUserRegistrationServiceTest {
                 .when(transactionExecutor).execute(any());
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
-                transactionExecutor, environment, referralRewardService, configFacade, loginGuards, captchaGate);
+                transactionExecutor, environment, referralRewardService, configFacade, loginGuards, captchaGate,
+                dayOneInstanceFacade);
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
         when(loginGuards.recordOtpSend(any(), any(), any(), anyInt(), any(), anyInt())).thenReturn(1);
@@ -243,6 +257,7 @@ class AppUserRegistrationServiceTest {
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
+        verify(dayOneInstanceFacade).provisionForRegisteredUser(99L);
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         assertThat(result.getCode()).isZero();
         assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
@@ -278,6 +293,44 @@ class AppUserRegistrationServiceTest {
         assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
         assertThat(inserted.getValue().getSponsorUserId()).isNull();
         assertThat(inserted.getValue().getSponsorCode()).isNull();
+    }
+
+    @Test
+    void proxiedDayOneSnapshotFailureRollsBackTheActualRegistrationAttemptAfterUserInsert() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "test" });
+        prepareRegistrationPrerequisites("REG-DAY-ONE-ROLLBACK", "987654320", "127.0.0.3");
+        when(passwordEncoder.encode("NexPass9a")).thenReturn("hash");
+        doAnswer(invocation -> {
+            ((UserEntity) invocation.getArgument(0)).setId(99L);
+            return 1;
+        }).when(userMapper).insert(any(UserEntity.class));
+
+        DayOneInstanceMapper dayOneMapper = mock(DayOneInstanceMapper.class);
+        when(dayOneMapper.lockRegisteredUser(99L)).thenReturn(new RegisteredUser(
+                99L, LocalDateTime.of(2026, 9, 9, 10, 30, 15)));
+        when(dayOneMapper.lockActiveDayOneDefinitionIds()).thenReturn(List.of(11L));
+        when(dayOneMapper.lockActiveDayOneDefinitionBindings()).thenReturn(List.of());
+        RegistrationTransactionManager transactions = new RegistrationTransactionManager();
+        ProxyFactory dayOneProxyFactory = new ProxyFactory(new DayOneInstanceFacadeAdapter(
+                dayOneMapper, mock(GrowthRhythmFacade.class)));
+        dayOneProxyFactory.addAdvice(new TransactionInterceptor(
+                transactions, new AnnotationTransactionAttributeSource()));
+        DayOneInstanceFacade proxiedDayOne = (DayOneInstanceFacade) dayOneProxyFactory.getProxy();
+        AppUserRegistrationService transactionalService = new AppUserRegistrationService(
+                mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
+                new AppUserRegistrationTransactionExecutor(transactions), environment, referralRewardService,
+                configFacade, loginGuards, captchaGate, proxiedDayOne);
+
+        assertThatThrownBy(() -> transactionalService.register(new UserRegistrationRequest(
+                "+84", "987654320", "REG-DAY-ONE-ROLLBACK", "123456", "NexPass9a", null), "127.0.0.3"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("DAY_ONE_SNAPSHOT_BINDING_REQUIRED");
+
+        verify(userMapper).insert(any(UserEntity.class));
+        verify(userMapper, never()).ensureRegisteredUserWallet(anyLong(), anyInt());
+        assertThat(transactions.begun).isEqualTo(1);
+        assertThat(transactions.committed).isZero();
+        assertThat(transactions.rolledBack).isEqualTo(1);
     }
 
     @Test
@@ -645,6 +698,60 @@ class AppUserRegistrationServiceTest {
         guard.setDayStartedAt(LocalDateTime.now().minusHours(25));
         guard.setDaySendCount(0);
         return guard;
+    }
+
+    private static final class RegistrationTransactionManager extends AbstractPlatformTransactionManager {
+        private final ThreadLocal<RegistrationTransaction> current = new ThreadLocal<>();
+        private int begun;
+        private int committed;
+        private int rolledBack;
+
+        @Override
+        protected Object doGetTransaction() {
+            RegistrationTransaction transaction = current.get();
+            return transaction == null ? new RegistrationTransaction() : transaction;
+        }
+
+        @Override
+        protected boolean isExistingTransaction(Object transaction) {
+            return ((RegistrationTransaction) transaction).active;
+        }
+
+        @Override
+        protected void doBegin(Object transaction, TransactionDefinition definition) {
+            ((RegistrationTransaction) transaction).active = true;
+            current.set((RegistrationTransaction) transaction);
+            begun++;
+        }
+
+        @Override
+        protected void doCommit(DefaultTransactionStatus status) {
+            ((RegistrationTransaction) status.getTransaction()).active = false;
+            current.remove();
+            committed++;
+        }
+
+        @Override
+        protected void doRollback(DefaultTransactionStatus status) {
+            ((RegistrationTransaction) status.getTransaction()).active = false;
+            current.remove();
+            rolledBack++;
+        }
+
+        @Override
+        protected void doSetRollbackOnly(DefaultTransactionStatus status) {
+            ((RegistrationTransaction) status.getTransaction()).rollbackOnly = true;
+        }
+
+        private static final class RegistrationTransaction implements SmartTransactionObject {
+            private boolean active;
+            private boolean rollbackOnly;
+
+            @Override
+            public boolean isRollbackOnly() {
+                return rollbackOnly;
+            }
+        }
     }
 
     @SafeVarargs

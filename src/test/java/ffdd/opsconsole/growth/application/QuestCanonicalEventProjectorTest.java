@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.application.QuestCompletionFactConsumer.QuestCompletionCommand;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQuestEventBinding;
+import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
+import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.DayOneSnapshotBinding;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import java.time.LocalDateTime;
@@ -22,10 +24,11 @@ import org.mockito.ArgumentCaptor;
 class QuestCanonicalEventProjectorTest {
     private static final LocalDateTime EVENT_TS = LocalDateTime.of(2026, 9, 1, 9, 30);
     private final QuestCanonicalEventBindingMapper bindingMapper = mock(QuestCanonicalEventBindingMapper.class);
+    private final DayOneInstanceMapper dayOneInstances = mock(DayOneInstanceMapper.class);
     private final QuestCompletionFactConsumer factConsumer = mock(QuestCompletionFactConsumer.class);
     private final EventConsumerDeliveryService deliveryService = mock(EventConsumerDeliveryService.class);
     private final QuestCanonicalEventProjector projector = new QuestCanonicalEventProjector(
-            bindingMapper, factConsumer, deliveryService, new ObjectMapper());
+            bindingMapper, dayOneInstances, factConsumer, deliveryService, new ObjectMapper());
 
     @Test
     void routesOrderReferralLearningDeviceAndCommissionFactsToStableQuestCodes() {
@@ -76,6 +79,19 @@ class QuestCanonicalEventProjectorTest {
     }
 
     @Test
+    void unboundDayOnePageFactWaitsForLaterBindingInsteadOfAcknowledgingTheFact() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of());
+
+        projector.project(event("evt-h3-race", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"),
+                "evt-h3-race");
+
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markPendingBinding(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-h3-race");
+        verify(deliveryService, never()).markSuccess(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-h3-race", 0);
+    }
+    @Test
     void retiredEventWithoutAnActiveMissionBindingIsAcknowledgedWithoutCompletingAnything() {
         when(bindingMapper.listActiveBindings("checkout.started")).thenReturn(List.of());
 
@@ -111,6 +127,104 @@ class QuestCanonicalEventProjectorTest {
                 .hasMessage("QUEST_CANONICAL_EVENT_TIMESTAMP_REQUIRED");
         verify(factConsumer, never()).consume(any());
         verify(deliveryService, never()).markSuccess(any(), any(), any(Integer.class));
+    }
+
+    @Test
+    void dayOnePageFactUsesTheTrustedOutboxTime() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("DAY_ONE_EARN", "SYSTEM",
+                        "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "user_id")));
+        projector.project(event("evt-day-one", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-day-one");
+
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM", "evt-day-one:DAY_ONE_EARN", 990725L,
+                "visit_earn", EVENT_TS));
+    }
+
+    @Test
+    void correctDayOneBindingStillProjectsWhenAHistoricalInviterSlotBindingIsPresent() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_STORE_PAGE_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("WRONG_INVITER", "SYSTEM",
+                        "H3_DAY_ONE_STORE_PAGE_VIEWED", "visit_store", "inviter_user_id"),
+                new CanonicalQuestEventBinding("DAY_ONE_STORE", "SYSTEM",
+                        "H3_DAY_ONE_STORE_PAGE_VIEWED", "visit_store", "user_id")));
+
+        projector.project(event("evt-store", "H3_DAY_ONE_STORE_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-store");
+
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM", "evt-store:DAY_ONE_STORE",
+                990725L, "visit_store", EVENT_TS));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-store", 1);
+    }
+
+    @Test
+    void onlyHistoricalWrongDayOneBindingsKeepTheFactPendingForALaterExactBinding() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_STORE_PAGE_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("WRONG_INVITER", "SYSTEM",
+                        "H3_DAY_ONE_STORE_PAGE_VIEWED", "visit_store", "inviter_user_id"),
+                new CanonicalQuestEventBinding("WRONG_QUEST", "SYSTEM",
+                        "H3_DAY_ONE_STORE_PAGE_VIEWED", "visit_earn", "user_id")));
+
+        projector.project(event("evt-store-wrong-only", "H3_DAY_ONE_STORE_PAGE_VIEWED", "{\"user_id\":990725}"),
+                "evt-store-wrong-only");
+
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markPendingBinding(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-store-wrong-only");
+        verify(deliveryService, never()).markSuccess(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-store-wrong-only", 0);
+    }
+
+    @Test
+    void snapshotBindingCompletesItsFrozenItemWhenCurrentPcBindingIsGone() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of());
+        when(dayOneInstances.listInWindowSnapshotBindings(List.of(990725L), "H3_DAY_ONE_EARN_PAGE_VIEWED", EVENT_TS)).thenReturn(List.of(
+                new DayOneSnapshotBinding(71L, 990725L, "DAY_ONE:20260901T090000", 9L,
+                        "visit_earn", "DAY_ONE_EARN", "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "user_id",
+                        "{\"bindingCode\":\"DAY_ONE_EARN\",\"producer\":\"SYSTEM\",\"eventType\":\"H3_DAY_ONE_EARN_PAGE_VIEWED\",\"userIdField\":\"user_id\"}")));
+
+        projector.project(event("evt-frozen-day-one", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"),
+                "evt-frozen-day-one");
+
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM", "evt-frozen-day-one:I71:M9", 990725L,
+                "visit_earn", EVENT_TS, 9L, "DAY_ONE:20260901T090000"));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                "evt-frozen-day-one", 1);
+    }
+
+    @Test
+    void snapshotLookupIsBoundToTrustedPayloadUsersAndCannotCompleteAnotherUsersInstance() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of());
+        when(dayOneInstances.listInWindowSnapshotBindings(List.of(42L), "H3_DAY_ONE_EARN_PAGE_VIEWED", EVENT_TS))
+                .thenReturn(List.of(new DayOneSnapshotBinding(71L, 99L, "DAY_ONE:other", 9L,
+                        "visit_earn", "DAY_ONE_EARN", "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "user_id",
+                        "{\"bindingCode\":\"DAY_ONE_EARN\",\"producer\":\"SYSTEM\",\"eventType\":\"H3_DAY_ONE_EARN_PAGE_VIEWED\",\"userIdField\":\"user_id\"}")));
+
+        projector.project(event("evt-cross-user", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":42}"),
+                "evt-cross-user");
+
+        verify(dayOneInstances).listInWindowSnapshotBindings(
+                List.of(42L), "H3_DAY_ONE_EARN_PAGE_VIEWED", EVENT_TS);
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markPendingBinding(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-cross-user");
+    }
+
+    @Test
+    void frozenDayOneRouteSuppressesALaterCurrentDayOneRemapForTheSameUser() {
+        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("CURRENT_REMAP", "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED",
+                        "new_pc_quest", "user_id", "DAY_ONE")));
+        when(dayOneInstances.listInWindowSnapshotBindings(List.of(990725L), "H3_DAY_ONE_EARN_PAGE_VIEWED", EVENT_TS))
+                .thenReturn(List.of(new DayOneSnapshotBinding(71L, 990725L, "DAY_ONE:20260901T090000", 9L,
+                        "visit_earn", "DAY_ONE_EARN", "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "user_id",
+                        "{\"bindingCode\":\"DAY_ONE_EARN\",\"producer\":\"SYSTEM\",\"eventType\":\"H3_DAY_ONE_EARN_PAGE_VIEWED\",\"userIdField\":\"user_id\"}")));
+
+        projector.project(event("evt-remap", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-remap");
+
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM", "evt-remap:I71:M9", 990725L,
+                "visit_earn", EVENT_TS, 9L, "DAY_ONE:20260901T090000"));
+        verify(factConsumer, never()).consume(new QuestCompletionCommand("SYSTEM", "evt-remap:CURRENT_REMAP", 990725L,
+                "new_pc_quest", EVENT_TS));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-remap", 1);
     }
 
     private EventOutboxMessage event(String eventId, String eventType, String payload) {

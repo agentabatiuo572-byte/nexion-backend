@@ -51,6 +51,101 @@ public interface AppGrowthEngagementMapper {
             @Param("surface") String surface,
             @Param("nowMillis") long nowMillis);
 
+    /**
+     * Day-One instances are created at registration. Reads deliberately never
+     * recreate an absent instance from current mission definitions.
+     */
+    @Select("""
+            SELECT id instanceId,instance_key instanceKey,snapshot_status snapshotStatus,
+                   entered_at enteredAt,eligibility_hours eligibilityHours,full_reward_hours fullRewardHours,
+                   eligible_until eligibleUntil,tri_reward triReward,
+                   quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
+                   required_task_count requiredTaskCount
+              FROM nx_growth_day_one_instance
+             WHERE user_id=#{userId} AND is_deleted=0
+             ORDER BY entered_at DESC,id DESC
+             LIMIT 1
+            """)
+    DayOneSnapshot findLatestDayOneSnapshot(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT item.quest_code questCode,item.name name,'DAY_ONE' layer,
+                   item.category category,item.action_route actionRoute,
+                   item.reward_points rewardNex,i.instance_key instanceKey,
+                   DATE_FORMAT(i.entered_at,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
+                   DATE_FORMAT(i.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
+                   CASE WHEN NOW()<i.eligible_until THEN 1 ELSE 0 END eligible,
+                   CASE WHEN NOW()>=i.eligible_until
+                             AND UPPER(COALESCE(um.mission_status,'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
+                        ELSE CASE UPPER(COALESCE(um.mission_status,'PENDING'))
+                          WHEN 'COMPLETED' THEN 'COMPLETED'
+                          WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
+                          WHEN 'CLAIMED' THEN 'CLAIMED'
+                          ELSE 'PENDING'
+                        END END status,
+                   item.ordinal ordinal
+              FROM nx_growth_day_one_instance i
+              JOIN nx_growth_day_one_instance_item item
+                ON item.instance_id=i.id AND item.is_deleted=0
+              LEFT JOIN nx_user_mission um
+                ON um.user_id=#{userId} AND um.mission_id=item.source_mission_id
+               AND um.instance_key=i.instance_key AND um.is_deleted=0
+             WHERE i.id=#{instanceId} AND i.user_id=#{userId}
+               AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+             ORDER BY item.ordinal,item.id
+            """)
+    List<Map<String, Object>> dayOneSnapshotState(
+            @Param("userId") Long userId, @Param("instanceId") Long instanceId);
+
+    @Select("""
+            SELECT id instanceId,instance_key instanceKey,snapshot_status snapshotStatus,
+                   entered_at enteredAt,eligibility_hours eligibilityHours,full_reward_hours fullRewardHours,
+                   eligible_until eligibleUntil,tri_reward triReward,
+                   quest_bonus_multiplier questBonusMultiplier,rhythm_month rhythmMonth,
+                   required_task_count requiredTaskCount
+              FROM nx_growth_day_one_instance
+             WHERE user_id=#{userId} AND instance_key=#{instanceKey} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    DayOneSnapshot lockDayOneSnapshot(
+            @Param("userId") Long userId, @Param("instanceKey") String instanceKey);
+
+    @Select("""
+            SELECT item.quest_code questCode,UPPER(COALESCE(um.mission_status,'PENDING')) missionStatus
+              FROM nx_growth_day_one_instance i
+              JOIN nx_growth_day_one_instance_item item
+                ON item.instance_id=i.id AND item.is_deleted=0
+              LEFT JOIN nx_user_mission um
+                ON um.user_id=#{userId} AND um.mission_id=item.source_mission_id
+               AND um.instance_key=i.instance_key AND um.is_deleted=0
+             WHERE i.id=#{instanceId} AND i.user_id=#{userId} AND i.instance_key=#{instanceKey}
+               AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+             ORDER BY item.ordinal,item.id
+             FOR UPDATE
+            """)
+    List<DayOneSnapshotQuestState> lockDayOneSnapshotGroup(
+            @Param("userId") Long userId,
+            @Param("instanceId") Long instanceId,
+            @Param("instanceKey") String instanceKey);
+
+    /** CAS only snapshot members; current nx_mission status/name/reward cannot change this instance. */
+    @Update("""
+            UPDATE nx_user_mission um
+              JOIN nx_growth_day_one_instance_item item
+                ON item.source_mission_id=um.mission_id AND item.instance_id=#{instanceId}
+               AND item.is_deleted=0
+              JOIN nx_growth_day_one_instance i
+                ON i.id=item.instance_id AND i.user_id=#{userId} AND i.instance_key=#{instanceKey}
+               AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+               SET um.mission_status='CLAIMED',um.updated_at=NOW()
+             WHERE um.user_id=#{userId} AND um.instance_key=#{instanceKey} AND um.is_deleted=0
+               AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE')
+            """)
+    int claimDayOneSnapshotGroup(
+            @Param("userId") Long userId,
+            @Param("instanceId") Long instanceId,
+            @Param("instanceKey") String instanceKey);
+
     @Select("""
             SELECT m.id missionId,m.mission_code questCode,m.mission_type layer,m.reward_points rewardNex,
                    um.instance_key instanceKey,
@@ -66,6 +161,7 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_mission m ON m.id=um.mission_id AND m.status=1 AND m.is_deleted=0
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
+               AND um.instance_key=#{instanceKey}
                AND um.instance_key=CASE
                      WHEN m.mission_type='DAY_ONE' THEN CONCAT('DAY_ONE:',DATE_FORMAT(u.created_at,'%Y%m%dT%H%i%s'))
                      ELSE CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
@@ -80,7 +176,40 @@ public interface AppGrowthEngagementMapper {
                AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE') AND um.is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
-    QuestReward lockClaimableQuest(@Param("userId") Long userId, @Param("questCode") String questCode);
+    QuestReward lockClaimableQuest(
+            @Param("userId") Long userId, @Param("questCode") String questCode,
+            @Param("instanceKey") String instanceKey);
+
+    /**
+     * Locked diagnostic state used only when a claim cannot proceed. It keeps the
+     * public error precise without broadening either claim eligibility or rewards.
+     */
+    @Select("""
+            SELECT UPPER(COALESCE(um.mission_status,'PENDING')) missionStatus,
+                   m.status definitionStatus,
+                   CASE
+                     WHEN m.mission_type='DAY_ONE' AND NOW()>=DATE_ADD(u.created_at,INTERVAL COALESCE((
+                       SELECT CASE WHEN c.config_value REGEXP '^[0-9]{1,3}$'
+                                        AND CAST(c.config_value AS UNSIGNED) BETWEEN 24 AND 720
+                                   THEN CAST(c.config_value AS UNSIGNED) END
+                         FROM nx_config_item c
+                        WHERE c.config_key='growth.quest.day_one.eligibility_hours'
+                          AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) HOUR) THEN 1
+                     WHEN m.mission_type<>'DAY_ONE' AND um.instance_key<>
+                       CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v')) THEN 1
+                     ELSE 0
+                   END expired
+              FROM nx_user_mission um
+              JOIN nx_mission m ON m.id=um.mission_id AND m.is_deleted=0
+              JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+             WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
+               AND um.instance_key=#{instanceKey} AND um.is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    QuestClaimState lockQuestClaimState(
+            @Param("userId") Long userId,
+            @Param("questCode") String questCode,
+            @Param("instanceKey") String instanceKey);
 
     @Select("""
             SELECT m.id missionId,UPPER(COALESCE(um.mission_status,'PENDING')) missionStatus
@@ -190,7 +319,7 @@ public interface AppGrowthEngagementMapper {
             SELECT q.quest_code eventCode,
                    LOWER(q.target_type) kind,
                    CASE
-                     WHEN q.status=2 OR (q.ends_at IS NOT NULL AND q.ends_at<UTC_TIMESTAMP()) THEN 'ended'
+                     WHEN q.status=2 OR (q.ends_at IS NOT NULL AND q.ends_at<=UTC_TIMESTAMP()) THEN 'ended'
                      WHEN q.status=0 OR (q.starts_at IS NOT NULL AND q.starts_at>UTC_TIMESTAMP()) THEN 'upcoming'
                      ELSE 'ongoing'
                    END state,
@@ -257,7 +386,7 @@ public interface AppGrowthEngagementMapper {
                    reward_amount rewardAmount,badge_achievement_code badgeCode
               FROM nx_event_quest
              WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
-               AND (starts_at IS NULL OR starts_at<=NOW()) AND (ends_at IS NULL OR ends_at>=NOW())
+               AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP()) AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP())
              LIMIT 1 FOR UPDATE
             """)
     EventReward lockOpenEvent(@Param("eventCode") String eventCode);
@@ -276,6 +405,8 @@ public interface AppGrowthEngagementMapper {
               FROM nx_user_event_quest u
               JOIN nx_event_quest q ON q.id=u.quest_id AND q.status=1 AND q.is_deleted=0
              WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
+               AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+               AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
                AND (u.progress_value>=q.target_value OR UPPER(u.claim_status) IN ('COMPLETED','CLAIMABLE'))
              LIMIT 1 FOR UPDATE
             """)
@@ -286,7 +417,9 @@ public interface AppGrowthEngagementMapper {
              WHERE user_id=#{userId} AND quest_code=#{eventCode}
                AND UPPER(claim_status)<>'CLAIMED' AND is_deleted=0
                AND progress_value >= (SELECT target_value FROM nx_event_quest
-                                        WHERE quest_code=#{eventCode} AND is_deleted=0 LIMIT 1)
+                                        WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
+                                          AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
+                                          AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP()) LIMIT 1)
             """)
     int claimEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
 
@@ -790,7 +923,27 @@ public interface AppGrowthEngagementMapper {
         }
     }
 
+    record QuestClaimState(String missionStatus, Integer definitionStatus, Integer expired) {
+    }
+
     record DayOneQuestState(Long missionId, String missionStatus) {
+    }
+
+    record DayOneSnapshot(
+            Long instanceId,
+            String instanceKey,
+            String snapshotStatus,
+            java.time.LocalDateTime enteredAt,
+            Integer eligibilityHours,
+            Integer fullRewardHours,
+            java.time.LocalDateTime eligibleUntil,
+            String triReward,
+            BigDecimal questBonusMultiplier,
+            Integer rhythmMonth,
+            Integer requiredTaskCount) {
+    }
+
+    record DayOneSnapshotQuestState(String questCode, String missionStatus) {
     }
 
     record EventReward(

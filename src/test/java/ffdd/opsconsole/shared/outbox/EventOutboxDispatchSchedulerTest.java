@@ -16,6 +16,17 @@ class EventOutboxDispatchSchedulerTest {
     private final EventOutboxDispatchScheduler scheduler = new EventOutboxDispatchScheduler(service, publisher);
 
     @Test
+    void activeLateBindingRequeuesOnlyKnownH3WaitEventTypesBeforeTheNormalScan() {
+        scheduler.dispatchPending();
+
+        for (String eventType : EventOutboxDispatchScheduler.H3_BINDING_WAIT_EVENT_TYPES) {
+            verify(service).requeuePublishedPendingBinding(eventType, "h3-quest-completion");
+        }
+        verify(service, org.mockito.Mockito.times(EventOutboxDispatchScheduler.H3_BINDING_WAIT_EVENT_TYPES.size()))
+                .requeuePublishedPendingBinding(org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.eq("h3-quest-completion"));
+    }
+    @Test
     void deliveredMessagesAreMarkedPublished() {
         EventOutboxMessage message = message("event-ok");
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))

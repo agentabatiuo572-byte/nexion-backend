@@ -36,6 +36,22 @@ class StartupSchemaMigrationContractTest {
     }
 
     @Test
+    void dayOneSnapshotMigrationIsInstalledAndNeverBackfillsLegacyInstances() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String baseline = Files.readString(Path.of("scripts/schema.sql"));
+        String migration = Files.readString(Path.of(
+                "scripts/migrations/20260909_h3_day_one_instance_snapshot.sql"));
+
+        assertThat(runner).contains("20260909_h3_day_one_instance_snapshot.sql");
+        assertThat(baseline).contains("nx_growth_day_one_instance",
+                "chk_growth_day_one_instance_snapshot_shape");
+        assertThat(migration).contains("CREATE TABLE IF NOT EXISTS nx_growth_day_one_instance",
+                "snapshot_status='EMPTY' AND required_task_count=0 AND tri_reward IS NULL",
+                "snapshot_status='SNAPSHOT' AND required_task_count>0 AND tri_reward IS NOT NULL")
+                .doesNotContain("INSERT INTO nx_growth_day_one_instance", "UPDATE nx_growth_day_one_instance");
+    }
+
+    @Test
     void migrationsNeverOverrideTheRunnerSelectedDatabase() throws Exception {
         for (Path migration : Files.list(Path.of("scripts/migrations")).toList()) {
             assertThat(Files.readString(migration))

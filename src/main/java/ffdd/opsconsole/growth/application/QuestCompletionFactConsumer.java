@@ -91,8 +91,24 @@ public class QuestCompletionFactConsumer {
         if (activeUser == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
-        MissionDefinition mission = mapper.lockMissionInstance(userId, questCode);
+        boolean snapshotTarget = command.sourceMissionId() != null || StringUtils.hasText(command.instanceKey());
+        if (snapshotTarget && (command.sourceMissionId() == null || command.sourceMissionId() <= 0
+                || !StringUtils.hasText(command.instanceKey()) || command.occurredAt() == null)) {
+            throw new BizException(422, "QUEST_SNAPSHOT_TARGET_INVALID");
+        }
+        String targetInstanceKey = snapshotTarget
+                ? reference(command.instanceKey(), 64, "QUEST_SNAPSHOT_TARGET_INVALID")
+                : null;
+        MissionDefinition mission = snapshotTarget
+                ? mapper.lockDayOneSnapshotMissionAt(userId, command.sourceMissionId(), questCode,
+                        targetInstanceKey, command.occurredAt())
+                : command.occurredAt() == null
+                        ? mapper.lockMissionInstance(userId, questCode)
+                        : mapper.lockMissionInstanceAt(userId, questCode, command.occurredAt());
         if (mission == null) {
+            if (snapshotTarget) {
+                throw new BizException(409, "QUEST_NOT_ELIGIBLE_FOR_SNAPSHOT_INSTANCE");
+            }
             if (mapper.activeMissionCount(questCode) > 0) {
                 throw new BizException(409, "QUEST_NOT_ELIGIBLE_FOR_CURRENT_INSTANCE");
             }
@@ -207,9 +223,19 @@ public class QuestCompletionFactConsumer {
             String eventId,
             Long userId,
             String questCode,
-            LocalDateTime occurredAt) {
+            LocalDateTime occurredAt,
+            Long sourceMissionId,
+            String instanceKey) {
+        public QuestCompletionCommand(
+                String producer,
+                String eventId,
+                Long userId,
+                String questCode,
+                LocalDateTime occurredAt) {
+            this(producer, eventId, userId, questCode, occurredAt, null, null);
+        }
         public QuestCompletionCommand(String producer, String eventId, Long userId, String questCode) {
-            this(producer, eventId, userId, questCode, null);
+            this(producer, eventId, userId, questCode, null, null, null);
         }
     }
 

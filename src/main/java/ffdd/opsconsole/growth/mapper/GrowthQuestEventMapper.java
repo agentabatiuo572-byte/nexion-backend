@@ -427,11 +427,16 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    mission_name AS cond,
                    CONCAT(reward_points, ' NEX') AS reward,
                    CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
-                   'event' AS completionType,
-                   mission_code AS completionEvent,
+                   CASE WHEN EXISTS(
+                         SELECT 1 FROM nx_growth_quest_event_binding b
+                          WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
+                       ) THEN 'event' ELSE 'unbound' END AS completionType,
+                   COALESCE((SELECT GROUP_CONCAT(b.event_type ORDER BY b.binding_code SEPARATOR ', ')
+                               FROM nx_growth_quest_event_binding b
+                              WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0),'') AS completionEvent,
                    LOWER(mission_category) AS category,
                    action_route AS href
-              FROM nx_mission
+              FROM nx_mission m
              WHERE is_deleted = 0
                AND mission_type = #{missionType}
              ORDER BY id ASC
@@ -453,8 +458,12 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     Map<String, Object> lockQuestEventBinding(@Param("bindingCode") String bindingCode);
 
-    @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND status=1 AND is_deleted=0")
-    int activeMissionByCode(@Param("questCode") String questCode);
+    /** A paused mission may be bound before it is published; archived missions cannot be rebound. */
+    @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND status IN (0,1) AND is_deleted=0")
+    int activatableMissionByCode(@Param("questCode") String questCode);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND status=1 AND is_deleted=0")
+    int activeBindingCountByQuestCode(@Param("questCode") String questCode);
 
     @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE producer=#{producer} AND event_type=#{eventType} AND user_id_field=#{userIdField} AND status=1 AND is_deleted=0 AND binding_code<>#{bindingCode}")
     int activeBindingSlotCount(@Param("producer") String producer, @Param("eventType") String eventType,

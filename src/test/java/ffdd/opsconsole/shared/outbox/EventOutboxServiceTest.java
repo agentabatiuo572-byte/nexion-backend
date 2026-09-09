@@ -33,6 +33,18 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void requeuesOnlyAnExplicitPendingBindingDeliveryWithoutResettingRetryState() {
+        when(mapper.requeuePublishedPendingBinding(
+                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED"))
+                .thenReturn(1);
+
+        assertThat(service.requeuePublishedPendingBinding(
+                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion")).isEqualTo(1);
+
+        verify(mapper).requeuePublishedPendingBinding(
+                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED");
+    }
+    @Test
     void canonicalPendingScanUsesTypeAliasAndCursorContract() {
         List<EventOutboxMessage> rows = List.of(new EventOutboxMessage());
         when(mapper.listPendingByCanonicalType("order.completed", 41L, 25)).thenReturn(rows);
@@ -497,6 +509,29 @@ class EventOutboxServiceTest {
         assertThat(envelope.path("sku_key").asText()).isEqualTo("sku-1");
         assertThat(envelope.path("schema_revision").asInt()).isEqualTo(40);
         assertThat(envelope.path("is_server_authoritative").asBoolean()).isTrue();
+    }
+
+    @Test
+    void weeklyQuestCompletionAcceptsOnlyTheRegisteredInstanceKeyExtension() throws Exception {
+        when(mapper.findActiveSchema("quest.completed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("engagement", 317, true));
+        when(mapper.findLifecycleState("quest.completed")).thenReturn("full");
+        when(mapper.listActiveProperties("quest.completed")).thenReturn(List.of(
+                required("quest_id", "id"), required("layer", "enum"),
+                required("producer", "enum"), required("source_event_id", "id"),
+                required("instance_key", "string")));
+        ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+
+        String eventId = service.publishUserEvent("MISSION", "weekly_storefront_3", "quest.completed", 42L,
+                "P2", 4, "2026-W37", Map.of(
+                        "questId", "weekly_storefront_3", "layer", "WEEKLY_T1", "producer", "SYSTEM",
+                        "sourceEventId", "h3-fact-1", "instanceKey", "WEEK:2026-W37"));
+
+        verify(mapper).insertEvent(eq(eventId), eq("MISSION"), eq("weekly_storefront_3"), eq("quest.completed"),
+                eq("quest.completed"), eq("engagement"), eq("P2"), eq(4), eq("2026-W37"),
+                eq(true), eq(317), eq(true), eq(true), payloadCaptor.capture());
+        assertThat(objectMapper.readTree(payloadCaptor.getValue()).path("instance_key").asText())
+                .isEqualTo("WEEK:2026-W37");
     }
 
     @Test

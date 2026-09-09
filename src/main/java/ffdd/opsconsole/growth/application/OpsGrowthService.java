@@ -161,12 +161,21 @@ public class OpsGrowthService implements AuditReplayable {
             "discount", "referral", "wheel", "regional", "boost", "seasonal", "holding", "onboarding");
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("nex", "points", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
-    private static final Map<String, String> H3_BINDING_EVENT_TYPES = Map.of(
-            "ORDER", "checkout.started",
-            "REFERRAL", "H8_REFERRAL_REWARD_SETTLED",
-            "LEARNING", "LEARNING_COURSE_COMPLETED",
-            "DEVICE", "admin.device_activated",
-            "COMMISSION", "COMMISSION_UNLOCKED");
+    private static final Map<String, Set<String>> H3_BINDING_EVENT_TYPES = Map.of(
+            "ORDER", Set.of("checkout.started"),
+            "REFERRAL", Set.of("H8_REFERRAL_REWARD_SETTLED"),
+            "LEARNING", Set.of("LEARNING_COURSE_COMPLETED"),
+            "DEVICE", Set.of("admin.device_activated"),
+            "COMMISSION", Set.of("COMMISSION_UNLOCKED"),
+            "SYSTEM", Set.of(
+                    "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+                    "H3_GENESIS_SECONDARY_MARKET_VIEWED",
+                    "H3_COMPUTE_COMPLETED_50",
+                    "H3_REFERRAL_REGISTERED",
+                    "H3_EXCHANGE_COMPLETED",
+                    "H3_DAY_ONE_EARN_PAGE_VIEWED",
+                    "H3_DAY_ONE_STORE_PAGE_VIEWED",
+                    "H3_DAY_ONE_S1_ROI_VIEWED"));
     private static final Set<String> H3_BINDING_USER_FIELDS = Set.of("user_id", "inviter_user_id");
     private static final Set<String> SANDBOX_DAY_ONE_MISSION_CODES = Set.of(
             "bind_bank_card", "visit_earn", "visit_store", "view_product_roi", "setup_profile", "invite_friend");
@@ -791,12 +800,17 @@ public class OpsGrowthService implements AuditReplayable {
                 String questCode = normalizeMissionCode(request.questCode());
                 String userIdField = normalizePlainText(request.userIdField(), 64);
                 int status = Boolean.TRUE.equals(request.enabled()) ? 1 : 0;
-                if (!eventType.equals(H3_BINDING_EVENT_TYPES.get(producer))
+                if (!H3_BINDING_EVENT_TYPES.getOrDefault(producer, Set.of()).contains(eventType)
                         || !H3_BINDING_USER_FIELDS.contains(userIdField)) {
                     throw new IllegalArgumentException("H3_BINDING_EVENT_INVALID");
                 }
-                if (mapper.activeMissionByCode(questCode) != 1) {
-                    throw new IllegalArgumentException("H3_BINDING_TARGET_NOT_ACTIVE");
+                if (status == 1 && H3DayOnePageObservationContract.forEventType(eventType) != null
+                        && !H3DayOnePageObservationContract.matches(
+                                producer, eventType, questCode, userIdField)) {
+                    throw new IllegalArgumentException("H3_DAY_ONE_PAGE_OBSERVATION_BINDING_INVALID");
+                }
+                if (mapper.activatableMissionByCode(questCode) != 1) {
+                    throw new IllegalArgumentException("H3_BINDING_TARGET_NOT_ACTIVATABLE");
                 }
                 if (status == 1 && mapper.activeBindingSlotCount(producer, eventType, userIdField, code) > 0) {
                     throw new IllegalArgumentException("H3_BINDING_EVENT_ALREADY_MAPPED");
@@ -986,14 +1000,18 @@ public class OpsGrowthService implements AuditReplayable {
             if (rewardPoints > 0 && coverageBelowRedline()) {
                 return coverageRedline();
             }
+            // A mission cannot become user-visible until a trusted canonical event is bound.
+            // Current H3 storage has no executable visit/manual completion type, so every
+            // newly created mission starts paused and is activated only after a binding exists.
             questEventMapper.get().insertMission(
-                    code, name, type, category, actionRoute, rewardPoints, 1, LocalDateTime.now());
+                    code, name, type, category, actionRoute, rewardPoints, 0, LocalDateTime.now());
             audit("H3_MISSION_CREATED", "GROWTH_MISSION", code, request.operator(), Map.of(
                     "missionCode", code,
                     "missionName", name,
                     "missionType", type,
                     "category", category,
                     "actionRoute", actionRoute,
+                    "status", "paused",
                     "rewardPoints", rewardPoints,
                     "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim()));
@@ -1152,6 +1170,10 @@ public class OpsGrowthService implements AuditReplayable {
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
+            if ("MISSION".equals(kind) && target == 1
+                    && questEventMapper.get().activeBindingCountByQuestCode(code) < 1) {
+                return validation("H3_MISSION_ACTIVE_BINDING_REQUIRED");
+            }
             if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
             audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(
                     "taskCode", code, "taskKind", kind, "before", missionStatusName(expected),
@@ -2798,7 +2820,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {
-        return growthRows(mapper -> mapper.missionRows("DAY_ONE"));
+        return requiredMissionRows("DAY_ONE");
     }
 
     /** Strict H3 projection used by the public platform config; missing H3 data must fail closed. */
@@ -2843,7 +2865,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> weeklyTier1Rows() {
-        return growthRows(mapper -> mapper.missionRows("WEEKLY_T1"));
+        return requiredMissionRows("WEEKLY_T1");
     }
 
     private List<Map<String, Object>> weeklyTier2() {
@@ -2851,7 +2873,7 @@ public class OpsGrowthService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> weeklyTier2Rows() {
-        return growthRows(mapper -> mapper.missionRows("WEEKLY_T2"));
+        return requiredMissionRows("WEEKLY_T2");
     }
 
     private List<Map<String, Object>> weeklyTaskRows() {
@@ -4951,6 +4973,24 @@ public class OpsGrowthService implements AuditReplayable {
             throw new IllegalArgumentException("Days value is out of range");
         }
         return whole;
+    }
+
+    /** H3 task lists are the page's source of truth; an SQL fault must not masquerade as zero tasks. */
+    private List<Map<String, Object>> requiredMissionRows(String missionType) {
+        if (questEventMapper.isEmpty()) {
+            throw new BizException(503, "H3_TASK_PROJECTION_UNAVAILABLE");
+        }
+        try {
+            List<Map<String, Object>> rows = questEventMapper.get().missionRows(missionType);
+            if (rows == null) {
+                throw new BizException(503, "H3_TASK_PROJECTION_UNAVAILABLE");
+            }
+            return rows;
+        } catch (BizException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            throw new BizException(503, "H3_TASK_PROJECTION_UNAVAILABLE");
+        }
     }
 
     private long growthCount(Function<GrowthQuestEventMapper, Long> reader) {

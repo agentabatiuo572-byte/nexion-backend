@@ -9,6 +9,8 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DailyMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneQuestState;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneSnapshot;
+import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.DayOneSnapshotQuestState;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EarningMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.EventReward;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.QuestReward;
@@ -18,6 +20,7 @@ import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper.VoucherClaimDefin
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -32,7 +35,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -44,7 +49,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,7 +57,6 @@ import org.springframework.util.StringUtils;
 
 /** Real user claim/join/check-in/milestone commands for H3-H7. */
 @Service
-@RequiredArgsConstructor
 public class AppGrowthEngagementService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final ZoneId H5_BUSINESS_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
@@ -78,6 +82,56 @@ public class AppGrowthEngagementService {
      * Optional is constructor-resolved by Spring and avoids mutable field injection. */
     private final Optional<AppGrowthVoucherSandboxService> voucherSandboxService;
     private final Environment environment;
+    private final Clock clock;
+
+    /** Backward-compatible local construction; production Spring injection uses the business-zone clock. */
+    public AppGrowthEngagementService(
+            AppGrowthEngagementMapper mapper,
+            VoucherGrantFacade voucherGrantFacade,
+            GrowthRhythmFacade growthRhythmFacade,
+            TreasuryCoverageFacade coverageFacade,
+            AdminIdempotencyService idempotencyService,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            EarningsReleaseService earningsReleaseService,
+            AppGrowthWheelSandboxService sandboxService,
+            QuestCompletionFactConsumer questFactConsumer,
+            Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
+            Environment environment) {
+        this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
+                auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
+                voucherSandboxService, environment, Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
+    }
+
+    @Autowired
+    public AppGrowthEngagementService(
+            AppGrowthEngagementMapper mapper,
+            VoucherGrantFacade voucherGrantFacade,
+            GrowthRhythmFacade growthRhythmFacade,
+            TreasuryCoverageFacade coverageFacade,
+            AdminIdempotencyService idempotencyService,
+            AuditLogService auditLogService,
+            EventOutboxService outboxService,
+            EarningsReleaseService earningsReleaseService,
+            AppGrowthWheelSandboxService sandboxService,
+            QuestCompletionFactConsumer questFactConsumer,
+            Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
+            Environment environment,
+            Clock clock) {
+        this.mapper = mapper;
+        this.voucherGrantFacade = voucherGrantFacade;
+        this.growthRhythmFacade = growthRhythmFacade;
+        this.coverageFacade = coverageFacade;
+        this.idempotencyService = idempotencyService;
+        this.auditLogService = auditLogService;
+        this.outboxService = outboxService;
+        this.earningsReleaseService = earningsReleaseService;
+        this.sandboxService = sandboxService;
+        this.questFactConsumer = questFactConsumer;
+        this.voucherSandboxService = voucherSandboxService;
+        this.environment = environment;
+        this.clock = clock;
+    }
 
     public ApiResult<Map<String, Object>> questState(Long userId) {
         return questState(userId, "en");
@@ -90,28 +144,73 @@ public class AppGrowthEngagementService {
         }
         requireReadableUser(userId);
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (rhythm == null || rhythm.currentMonth() <= 0 || rhythm.questBonusMultiplier() == null) {
+        boolean liveRhythmAvailable = rhythm != null && rhythm.reliable() && rhythm.currentMonth() > 0
+                && rhythm.questBonusMultiplier() != null && rhythm.questBonusMultiplier().signum() > 0;
+        DayOneSnapshot dayOneSnapshot = mapper.findLatestDayOneSnapshot(userId);
+        boolean emptyDayOneSnapshot = dayOneSnapshot != null && "EMPTY".equals(dayOneSnapshot.snapshotStatus());
+        boolean completeDayOneSnapshot = validDayOneSnapshot(dayOneSnapshot);
+        // A persisted header is sufficient to read its own history even when the
+        // current H1 dial is unavailable; weekly rows remain unavailable in that case.
+        if (!liveRhythmAvailable && !completeDayOneSnapshot) {
             throw conflict("H1_RHYTHM_UNAVAILABLE");
         }
         Map<String, Object> promo = mapper.questPromoBanner();
-        List<Map<String, Object>> rawQuests = safeList(mapper.questState(userId, contentLocale(locale)));
-        BigDecimal dayOneReward = rawQuests.stream()
-                .filter(row -> "DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer"))))
-                .map(row -> DayOneTriRewardPolicy.effectiveDayOneReward(
-                        row.get("triReward") == null ? null : String.valueOf(row.get("triReward")),
-                        numberValue(row.get("accountAgeHours"), 0L),
-                        numberValue(row.get("eligibilityHours"), 72L)))
-                .findFirst().orElse(BigDecimal.ZERO);
+        List<Map<String, Object>> liveRows = safeList(mapper.questState(userId, contentLocale(locale)));
+        // `nx_user_mission` only records a mutable mission id/status.  A missing
+        // immutable header therefore cannot prove the original name, route,
+        // reward or window; never reconstruct a legacy Day One row from today's
+        // live definition.  A valid (or individually verifiable damaged) header
+        // supplies the only frozen Day One rows below.
+        List<Map<String, Object>> rawQuests = new ArrayList<>(liveRows.stream()
+                .filter(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer")))).toList());
+        if (!liveRhythmAvailable) {
+            rawQuests.removeIf(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer"))));
+        }
+        String dayOneSnapshotStatus = "LEGACY_UNVERIFIED";
+        Integer dayOneRequiredTaskCount = null;
+        BigDecimal dayOneReward = BigDecimal.ZERO;
+        if (emptyDayOneSnapshot) {
+            dayOneSnapshotStatus = "EMPTY";
+            dayOneRequiredTaskCount = 0;
+        } else if (completeDayOneSnapshot) {
+            List<Map<String, Object>> snapshotRows = safeList(
+                    mapper.dayOneSnapshotState(userId, dayOneSnapshot.instanceId()));
+            if (validDayOneSnapshotRows(dayOneSnapshot, snapshotRows)) {
+                dayOneSnapshotStatus = "SNAPSHOT";
+                dayOneRequiredTaskCount = dayOneSnapshot.requiredTaskCount();
+                rawQuests.addAll(snapshotRows);
+                dayOneReward = positive(dayOneBaseReward(dayOneSnapshot, businessNow()))
+                        .multiply(positive(dayOneSnapshot.questBonusMultiplier()))
+                        .setScale(6, RoundingMode.DOWN);
+            } else if (!liveRhythmAvailable) {
+                // Never label malformed members as a usable snapshot-only H1 fallback.
+                throw conflict("H1_RHYTHM_UNAVAILABLE");
+            } else {
+                // A damaged header cannot authorize a claim, but individually
+                // verifiable frozen rows remain useful historical evidence.
+                rawQuests.addAll(verifiableDayOneSnapshotRows(dayOneSnapshot, snapshotRows));
+            }
+        }
         List<Map<String, Object>> quests = rawQuests.stream()
                 .map(this::projectQuestRewardPolicy).toList();
+        BigDecimal responseMultiplier = liveRhythmAvailable
+                ? positiveOrOne(rhythm.questBonusMultiplier())
+                : positive(dayOneSnapshot.questBonusMultiplier());
+        int responseRhythmMonth = liveRhythmAvailable ? rhythm.currentMonth()
+                : dayOneSnapshot.rhythmMonth();
+        String stateSource = liveRhythmAvailable
+                ? "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + nx_growth_promo_banner + H1 rhythm"
+                : "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + day_one_snapshot_only";
         return ApiResult.ok(productionResponse(linked(
                 "quests", quests,
                 "dayOneRewardNex", dayOneReward,
+                "dayOneRequiredTaskCount", dayOneRequiredTaskCount,
+                "dayOneSnapshotStatus", dayOneSnapshotStatus,
                 "promoBanner", promo == null ? Map.of() : new LinkedHashMap<>(promo),
-                "questBonusMultiplier", positiveOrOne(rhythm.questBonusMultiplier()),
-                "rhythmMonth", rhythm.currentMonth(),
+                "questBonusMultiplier", responseMultiplier,
+                "rhythmMonth", responseRhythmMonth,
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "",
-                "source", "nx_mission + nx_user_mission + nx_growth_promo_banner + H1 rhythm")));
+                "source", stateSource)));
     }
 
     public ApiResult<Map<String, Object>> eventState(Long userId) {
@@ -258,34 +357,27 @@ public class AppGrowthEngagementService {
         String code = reference(questCode, "QUEST_CODE_REQUIRED");
         String instanceKey = reference(requestedInstanceKey, "QUEST_INSTANCE_KEY_REQUIRED");
         return executeOnce("QUEST_CLAIM", userId, idempotencyKey, code + "|" + instanceKey, () -> {
-            QuestReward reward = mapper.lockClaimableQuest(userId, code);
-            if (reward == null) return ApiResult.fail(409, "QUEST_NOT_CLAIMABLE");
+            if (instanceKey.startsWith("DAY_ONE:")) {
+                return claimDayOneSnapshot(userId, code, instanceKey);
+            }
+            QuestReward reward = mapper.lockClaimableQuest(userId, code, instanceKey);
+            if (reward == null) return ApiResult.fail(409,
+                    claimFailure(mapper.lockQuestClaimState(userId, code, instanceKey)));
             if (!instanceKey.equals(reward.instanceKey())) throw conflict("QUEST_INSTANCE_MISMATCH");
             boolean dayOne = "DAY_ONE".equalsIgnoreCase(reward.layer());
-            if (dayOne) {
-                List<DayOneQuestState> group = Optional.ofNullable(
-                        mapper.lockDayOneGroup(userId, reward.instanceKey())).orElseGet(List::of);
-                if (group.size() != 6 || group.stream().anyMatch(row ->
-                        !Set.of("COMPLETED", "CLAIMABLE").contains(row.missionStatus()))) {
-                    return ApiResult.fail(409, "DAY_ONE_GROUP_NOT_CLAIMABLE");
-                }
-                if (mapper.claimDayOneGroup(userId, reward.instanceKey()) != group.size()) {
-                    throw conflict("QUEST_CLAIM_CONFLICT");
-                }
-            } else if (mapper.claimQuest(userId, reward.missionId(), reward.instanceKey()) != 1) {
+            // The SQL is keyed by the requested instance. This guard also keeps a
+            // malformed legacy mapper result from reopening the retired live group path.
+            if (dayOne) return ApiResult.fail(409, "DAY_ONE_SNAPSHOT_UNAVAILABLE");
+            if (mapper.claimQuest(userId, reward.missionId(), reward.instanceKey()) != 1) {
                 throw conflict("QUEST_CLAIM_CONFLICT");
             }
             GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
             if (rhythm == null || rhythm.currentMonth() <= 0) throw conflict("H1_RHYTHM_UNAVAILABLE");
             BigDecimal multiplier = positiveOrOne(rhythm.questBonusMultiplier());
-            BigDecimal baseReward = dayOne
-                    ? DayOneTriRewardPolicy.effectiveDayOneReward(reward.triReward(),
-                            reward.accountAgeHours() == null ? 0L : reward.accountAgeHours(),
-                            reward.eligibilityHours() == null ? 72L : reward.eligibilityHours())
-                    : reward.rewardNex();
+            BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
-            String rewardReference = dayOne ? "DAY_ONE" : code;
+            String rewardReference = code;
             creditNex(userId, "QUEST:" + rewardReference + ":" + userId + ":" + reward.instanceKey(),
                     "QUEST_REWARD", amount, "H3 quest claim");
             Map<String, Object> detail = linked(
@@ -297,6 +389,122 @@ public class AppGrowthEngagementService {
                     "instanceKey", reward.instanceKey(),
                     "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
         });
+    }
+
+    private String claimFailure(AppGrowthEngagementMapper.QuestClaimState state) {
+        if (state == null) return "QUEST_INSTANCE_NOT_FOUND";
+        if ("CLAIMED".equalsIgnoreCase(state.missionStatus())) return "QUEST_ALREADY_CLAIMED";
+        if (state.definitionStatus() == null || state.definitionStatus() != 1) return "QUEST_DEFINITION_INACTIVE";
+        if (state.expired() != null && state.expired() == 1) return "QUEST_EXPIRED";
+        return "QUEST_NOT_COMPLETED";
+    }
+
+    /**
+     * Claims only members and rewards recorded at registration. Current mission
+     * definitions and the live H1 dial intentionally cannot revise this path.
+     */
+    private ApiResult<Map<String, Object>> claimDayOneSnapshot(Long userId, String code, String instanceKey) {
+        DayOneSnapshot snapshot = mapper.lockDayOneSnapshot(userId, instanceKey);
+        if (snapshot == null) return ApiResult.fail(409, "DAY_ONE_SNAPSHOT_UNAVAILABLE");
+        if ("EMPTY".equals(snapshot.snapshotStatus())) return ApiResult.fail(409, "DAY_ONE_EMPTY_INSTANCE");
+        if (!validDayOneSnapshot(snapshot)) return ApiResult.fail(409, "DAY_ONE_SNAPSHOT_UNAVAILABLE");
+        LocalDateTime now = businessNow();
+        if (snapshot.eligibleUntil() == null || !now.isBefore(snapshot.eligibleUntil())) {
+            return ApiResult.fail(409, "QUEST_EXPIRED");
+        }
+        List<DayOneSnapshotQuestState> group = Optional.ofNullable(
+                mapper.lockDayOneSnapshotGroup(userId, snapshot.instanceId(), instanceKey)).orElseGet(List::of);
+        if (!validDayOneSnapshotMemberSet(snapshot, group)) {
+            return ApiResult.fail(409, "DAY_ONE_GROUP_NOT_CLAIMABLE");
+        }
+        if (group.stream().noneMatch(row -> code.equals(row.questCode()))) {
+            return ApiResult.fail(409, "DAY_ONE_SNAPSHOT_MEMBER_NOT_FOUND");
+        }
+        if (mapper.claimDayOneSnapshotGroup(userId, snapshot.instanceId(), instanceKey) != snapshot.requiredTaskCount()) {
+            throw conflict("QUEST_CLAIM_CONFLICT");
+        }
+        BigDecimal multiplier = positive(snapshot.questBonusMultiplier());
+        BigDecimal amount = positive(dayOneBaseReward(snapshot, now)).multiply(multiplier)
+                .setScale(6, RoundingMode.DOWN);
+        creditNex(userId, "QUEST:DAY_ONE:" + userId + ":" + instanceKey,
+                "QUEST_REWARD", amount, "H3 quest claim");
+        Map<String, Object> detail = linked(
+                "layer", "DAY_ONE", "rewardNex", amount, "multiplier", multiplier,
+                "rhythmMonth", snapshot.rhythmMonth(), "instanceKey", instanceKey,
+                "requiredTaskCount", snapshot.requiredTaskCount());
+        audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
+        publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
+        return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",
+                "instanceKey", instanceKey,
+                "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
+    }
+
+    private boolean validDayOneSnapshotRows(DayOneSnapshot snapshot, List<Map<String, Object>> rows) {
+        if (rows.size() != snapshot.requiredTaskCount()) return false;
+        Set<String> codes = new java.util.HashSet<>();
+        for (Map<String, Object> row : rows) {
+            if (row == null || !(row.get("questCode") instanceof String code) || !StringUtils.hasText(code)
+                    || !(row.get("instanceKey") instanceof String instanceKey)
+                    || !snapshot.instanceKey().equals(instanceKey) || !codes.add(code)) {
+                return false;
+            }
+        }
+        return codes.size() == snapshot.requiredTaskCount();
+    }
+
+    private List<Map<String, Object>> verifiableDayOneSnapshotRows(
+            DayOneSnapshot snapshot, List<Map<String, Object>> rows) {
+        Map<String, Long> matchingCodeCounts = rows.stream()
+                .filter(row -> snapshotRowHasMatchingKey(snapshot, row))
+                .map(row -> (String) row.get("questCode"))
+                .collect(java.util.stream.Collectors.groupingBy(code -> code, java.util.stream.Collectors.counting()));
+        return rows.stream()
+                .filter(row -> snapshotRowHasMatchingKey(snapshot, row))
+                // Do not choose an arbitrary member if corrupted storage returned duplicates.
+                .filter(row -> matchingCodeCounts.getOrDefault(row.get("questCode"), 0L) == 1L)
+                .toList();
+    }
+
+    private boolean snapshotRowHasMatchingKey(DayOneSnapshot snapshot, Map<String, Object> row) {
+        return row != null && row.get("questCode") instanceof String code && StringUtils.hasText(code)
+                && row.get("instanceKey") instanceof String instanceKey
+                && snapshot.instanceKey().equals(instanceKey);
+    }
+
+    private boolean validDayOneSnapshotMemberSet(
+            DayOneSnapshot snapshot, List<DayOneSnapshotQuestState> group) {
+        if (group.size() != snapshot.requiredTaskCount()) return false;
+        Set<String> codes = new java.util.HashSet<>();
+        for (DayOneSnapshotQuestState row : group) {
+            if (row == null || !StringUtils.hasText(row.questCode()) || !codes.add(row.questCode())
+                    || !Set.of("COMPLETED", "CLAIMABLE").contains(row.missionStatus())) {
+                return false;
+            }
+        }
+        return codes.size() == snapshot.requiredTaskCount();
+    }
+
+    private boolean validDayOneSnapshot(DayOneSnapshot snapshot) {
+        return snapshot != null && "SNAPSHOT".equals(snapshot.snapshotStatus())
+                && snapshot.instanceId() != null && snapshot.instanceId() > 0
+                && StringUtils.hasText(snapshot.instanceKey())
+                && snapshot.requiredTaskCount() != null && snapshot.requiredTaskCount() > 0
+                && snapshot.enteredAt() != null && snapshot.eligibleUntil() != null
+                && snapshot.eligibilityHours() != null && snapshot.fullRewardHours() != null
+                && snapshot.eligibilityHours() >= snapshot.fullRewardHours()
+                && snapshot.fullRewardHours() > 0 && snapshot.eligibleUntil().isAfter(snapshot.enteredAt())
+                && snapshot.questBonusMultiplier() != null && snapshot.questBonusMultiplier().signum() > 0
+                && snapshot.rhythmMonth() != null && snapshot.rhythmMonth() > 0;
+    }
+
+    private LocalDateTime businessNow() {
+        return LocalDateTime.ofInstant(clock.instant(), DateTimeFormatConfig.BUSINESS_ZONE);
+    }
+
+    private BigDecimal dayOneBaseReward(DayOneSnapshot snapshot, LocalDateTime now) {
+        long accountAgeHours = Math.max(0L, java.time.Duration.between(snapshot.enteredAt(), now).toHours());
+        return DayOneTriRewardPolicy.effectiveDayOneReward(snapshot.triReward(), accountAgeHours,
+                snapshot.eligibilityHours(), snapshot.fullRewardHours());
     }
 
     private Map<String, Object> projectQuestRewardPolicy(Map<String, Object> source) {

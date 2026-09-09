@@ -173,6 +173,41 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
 
+    /**
+     * Revives only a published H3 event whose one H3 consumer is explicitly
+     * waiting for an active binding. The active-mission join avoids a replay
+     * after a binding has been disabled or its target mission retired.
+     */
+    @Update("""
+            UPDATE nx_event_outbox o
+              JOIN nx_event_consumer_delivery d
+                ON d.event_id = o.event_id
+               AND d.consumer_group = #{consumerGroup}
+               AND d.status = #{pendingBindingStatus}
+               AND d.is_deleted = 0
+              JOIN nx_growth_quest_event_binding b
+                ON b.event_type = o.event_type
+               AND b.status = 1
+               AND b.is_deleted = 0
+              JOIN nx_mission m
+                ON m.mission_code = b.quest_code
+               AND m.status = 1
+               AND m.is_deleted = 0
+               SET o.status = #{pendingStatus},
+                   o.next_retry_at = NOW(),
+                   o.published_at = NULL,
+                   o.last_error = NULL,
+                   o.updated_at = NOW()
+             WHERE o.event_type = #{eventType}
+               AND o.status = #{publishedStatus}
+               AND o.is_deleted = 0
+            """)
+    int requeuePublishedPendingBinding(@Param("eventType") String eventType,
+                                       @Param("consumerGroup") String consumerGroup,
+                                       @Param("pendingBindingStatus") String pendingBindingStatus,
+                                       @Param("pendingStatus") String pendingStatus,
+                                       @Param("publishedStatus") String publishedStatus);
+
     @Update("""
             UPDATE nx_event_outbox
                SET status = CASE WHEN retry_count + 1 >= #{maxRetries} THEN #{deadStatus} ELSE #{failedStatus} END,

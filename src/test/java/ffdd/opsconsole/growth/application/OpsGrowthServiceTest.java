@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -18,6 +19,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
@@ -28,6 +30,7 @@ import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventBindingRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
@@ -716,7 +719,9 @@ class OpsGrowthServiceTest {
     @Test
     void questEventsReturnsEmptyRuntimeModelWhenReadTimeSeedsAreDisabled() {
         FakePlatformConfigFacade emptyConfig = new FakePlatformConfigFacade();
-        OpsGrowthService noSeedService = serviceWithConfig(
+        // Read-time seeding and mapper availability are independent contracts. Keep a live mapper fixture
+        // that reads an empty business table projection; Optional.empty() is now an explicit H3 503 fault.
+        OpsGrowthService noSeedService = serviceWithConfigAndMapper(
                 emptyConfig, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
 
         ApiResult<Map<String, Object>> result = noSeedService.questEvents();
@@ -1054,6 +1059,131 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void newMissionStartsPausedUntilAnActiveCanonicalBindingExists() {
+        ApiResult<Map<String, Object>> created = service.createMission(
+                "idem-h3-unbound-mission",
+                new GrowthMissionRequest("H3_CANONICAL_EVENT", "Canonical event task", "WEEKLY_T1", 0,
+                        "require a trusted completion binding before publication", "superadmin"));
+
+        assertThat(created.getCode()).isZero();
+        verify(questEventMapper).insertMission(
+                eq("H3_CANONICAL_EVENT"), eq("Canonical event task"), eq("WEEKLY_T1"),
+                anyString(), anyString(), eq(0), eq(0), any(LocalDateTime.class));
+
+        when(questEventMapper.lockMission("H3_CANONICAL_EVENT")).thenReturn(row(
+                "taskCode", "H3_CANONICAL_EVENT", "taskKind", "MISSION", "status", 0));
+        ApiResult<Map<String, Object>> blocked = service.transitionMission(
+                "idem-h3-unbound-publish", "H3_CANONICAL_EVENT",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "do not publish an unbound mission", "superadmin"));
+
+        assertThat(blocked.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(blocked.getMessage()).isEqualTo("H3_MISSION_ACTIVE_BINDING_REQUIRED");
+        verify(questEventMapper, never()).transitionMissionStatusCas("H3_CANONICAL_EVENT", 0, 1);
+    }
+
+    @Test
+    void pausedMissionCanPublishAfterCanonicalBindingIsActive() {
+        when(questEventMapper.lockMission("H3_BOUND_EVENT")).thenReturn(row(
+                "taskCode", "H3_BOUND_EVENT", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("H3_BOUND_EVENT")).thenReturn(1);
+        when(questEventMapper.transitionMissionStatusCas("H3_BOUND_EVENT", 0, 1)).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.transitionMission(
+                "idem-h3-bound-publish", "H3_BOUND_EVENT",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "publish after the canonical event is bound", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).transitionMissionStatusCas("H3_BOUND_EVENT", 0, 1);
+    }
+
+    @Test
+    void systemThresholdBindingRejectsRawCompletionEvents() {
+        when(questEventMapper.lockQuestEventBinding("SYSTEM_THRESHOLD_EVENT")).thenReturn(
+                null,
+                row("producer", "SYSTEM", "eventType", "H3_COMPUTE_COMPLETED_50",
+                        "questCode", "weekly_t2_ai_jobs_50", "userIdField", "user_id", "status", 1));
+        when(questEventMapper.activatableMissionByCode("weekly_t2_ai_jobs_50")).thenReturn(1);
+        when(questEventMapper.insertQuestEventBinding(
+                "SYSTEM_THRESHOLD_EVENT", "SYSTEM", "H3_COMPUTE_COMPLETED_50",
+                "weekly_t2_ai_jobs_50", "user_id", 1)).thenReturn(1);
+
+        ApiResult<Map<String, Object>> accepted = service.createQuestEventBinding(
+                "idem-h3-system-threshold", "SYSTEM_THRESHOLD_EVENT",
+                new GrowthQuestEventBindingRequest(
+                        "SYSTEM", "H3_COMPUTE_COMPLETED_50", "weekly_t2_ai_jobs_50", "user_id", true,
+                        null, null, null, null, null, "bind evaluator threshold", "superadmin"));
+
+        assertThat(accepted.getCode()).isZero();
+        when(questEventMapper.lockQuestEventBinding("SYSTEM_RAW_EVENT")).thenReturn(null);
+        ApiResult<Map<String, Object>> rejected = service.createQuestEventBinding(
+                "idem-h3-system-raw", "SYSTEM_RAW_EVENT",
+                new GrowthQuestEventBindingRequest(
+                        "SYSTEM", "task.completed", "weekly_t2_ai_jobs_50", "user_id", true,
+                        null, null, null, null, null, "raw completion is forbidden", "superadmin"));
+        assertThat(rejected.getCode()).isNotZero();
+        assertThat(rejected.getMessage()).isEqualTo("H3_BINDING_EVENT_INVALID");
+        verify(questEventMapper, never()).insertQuestEventBinding(
+                "SYSTEM_RAW_EVENT", "SYSTEM", "task.completed", "weekly_t2_ai_jobs_50", "user_id", 1);
+    }
+
+    @Test
+    void dayOnePageEventsRejectWrongQuestOrInviterSlotBeforeTheyCanBeCreatedOrEnabled() {
+        when(questEventMapper.lockQuestEventBinding("DAY_ONE_BAD_SLOT")).thenReturn(null);
+
+        ApiResult<Map<String, Object>> created = service.createQuestEventBinding(
+                "idem-h3-day-one-bad-slot", "DAY_ONE_BAD_SLOT",
+                new GrowthQuestEventBindingRequest(
+                        "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "inviter_user_id", true,
+                        null, null, null, null, null, "fixed page facts require the subject user", "superadmin"));
+
+        assertThat(created.getCode()).isNotZero();
+        assertThat(created.getMessage()).isEqualTo("H3_DAY_ONE_PAGE_OBSERVATION_BINDING_INVALID");
+        verify(questEventMapper, never()).insertQuestEventBinding(
+                "DAY_ONE_BAD_SLOT", "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "inviter_user_id", 1);
+
+        when(questEventMapper.lockQuestEventBinding("DAY_ONE_EXISTING")).thenReturn(row(
+                "producer", "SYSTEM", "eventType", "H3_DAY_ONE_EARN_PAGE_VIEWED",
+                "questCode", "visit_earn", "userIdField", "user_id", "status", 0));
+        ApiResult<Map<String, Object>> enabled = service.updateQuestEventBinding(
+                "idem-h3-day-one-enable-bad-slot", "DAY_ONE_EXISTING",
+                new GrowthQuestEventBindingRequest(
+                        "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "inviter_user_id", true,
+                        "SYSTEM", "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "user_id", false,
+                        "do not enable a wrong historical slot", "superadmin"));
+
+        assertThat(enabled.getCode()).isNotZero();
+        assertThat(enabled.getMessage()).isEqualTo("H3_DAY_ONE_PAGE_OBSERVATION_BINDING_INVALID");
+        verify(questEventMapper, never()).updateQuestEventBindingCas(
+                eq("DAY_ONE_EXISTING"), eq("SYSTEM"), eq("H3_DAY_ONE_EARN_PAGE_VIEWED"),
+                eq("visit_earn"), eq("inviter_user_id"), eq(1), any(), any(), any(), any(), anyInt());
+    }
+    @Test
+    void canonicalBindingCanBeCreatedForAPausedMissionBeforePublication() {
+        when(questEventMapper.lockQuestEventBinding("DEVICE_CANONICAL_EVENT")).thenReturn(
+                null,
+                row("producer", "DEVICE", "eventType", "admin.device_activated",
+                        "questCode", "H3_BOUND_EVENT", "userIdField", "user_id", "status", 1));
+        when(questEventMapper.activatableMissionByCode("H3_BOUND_EVENT")).thenReturn(1);
+        when(questEventMapper.insertQuestEventBinding(
+                "DEVICE_CANONICAL_EVENT", "DEVICE", "admin.device_activated", "H3_BOUND_EVENT", "user_id", 1))
+                .thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.createQuestEventBinding(
+                "idem-h3-bind-paused", "DEVICE_CANONICAL_EVENT",
+                new GrowthQuestEventBindingRequest(
+                        "DEVICE", "admin.device_activated", "H3_BOUND_EVENT", "user_id", true,
+                        null, null, null, null, null,
+                        "bind the trusted device activation event before publication", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).activatableMissionByCode("H3_BOUND_EVENT");
+        verify(questEventMapper).insertQuestEventBinding(
+                "DEVICE_CANONICAL_EVENT", "DEVICE", "admin.device_activated", "H3_BOUND_EVENT", "user_id", 1);
+    }
+
+    @Test
     void forgedMissionOperatorCannotReplaceAuthenticatedAuditPrincipal() {
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken("991", null, List.of(
@@ -1131,6 +1261,17 @@ class OpsGrowthServiceTest {
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("PLATFORM_HOME_FLAGS_UNAVAILABLE");
+    }
+
+    @Test
+    void questTasksReturnsAnExplicitServiceFailureWhenTheRequiredMissionProjectionThrows() {
+        when(questEventMapper.missionRows("DAY_ONE")).thenThrow(new IllegalStateException("mapper SQL failed"));
+
+        assertThatThrownBy(service::questTasks)
+                .isInstanceOfSatisfying(BizException.class, failure -> {
+                    assertThat(failure.getCode()).isEqualTo(503);
+                    assertThat(failure.getMessage()).isEqualTo("H3_TASK_PROJECTION_UNAVAILABLE");
+                });
     }
 
     @Test

@@ -10,6 +10,16 @@ import org.junit.jupiter.api.Test;
 class AppGrowthEngagementMapperUserScopeContractTest {
 
     @Test
+    void eventClaimEnforcesTheUtcWindowInBothLockAndFinalWrite() throws Exception {
+        String lock = String.join(" ", AppGrowthEngagementMapper.class
+                .getMethod("lockClaimableEvent", Long.class, String.class).getAnnotation(Select.class).value());
+        String update = String.join(" ", AppGrowthEngagementMapper.class
+                .getMethod("claimEvent", Long.class, String.class).getAnnotation(Update.class).value());
+        assertThat(lock).contains("q.starts_at<=UTC_TIMESTAMP()", "q.ends_at>UTC_TIMESTAMP()");
+        assertThat(update).contains("starts_at<=UTC_TIMESTAMP()", "ends_at>UTC_TIMESTAMP()", "status=1");
+    }
+
+    @Test
     void canonicalQuestReadsAcceptAnyActiveDevelopmentAccount() throws Exception {
         Method method = AppGrowthEngagementMapper.class.getMethod("findActiveUser", Long.class);
         String sql = String.join(" ", method.getAnnotation(Select.class).value())
@@ -35,7 +45,7 @@ class AppGrowthEngagementMapperUserScopeContractTest {
     @Test
     void questReadAndClaimAreScopedToTheCurrentEligibilityInstance() throws Exception {
         Method state = AppGrowthEngagementMapper.class.getMethod("questState", Long.class, String.class);
-        Method lock = AppGrowthEngagementMapper.class.getMethod("lockClaimableQuest", Long.class, String.class);
+        Method lock = AppGrowthEngagementMapper.class.getMethod("lockClaimableQuest", Long.class, String.class, String.class);
         Method claim = AppGrowthEngagementMapper.class.getMethod("claimQuest", Long.class, Long.class, String.class);
         String stateSql = String.join(" ", state.getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
         String lockSql = String.join(" ", lock.getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
@@ -47,6 +57,7 @@ class AppGrowthEngagementMapperUserScopeContractTest {
                 .contains("then 'expired'")
                 .doesNotContain("where now()<q.eligible_until");
         assertThat(lockSql)
+                .contains("um.instance_key=#{instancekey}")
                 .contains("um.instance_key=case")
                 .contains("now()<date_add(u.created_at")
                 .contains("for update");
@@ -67,5 +78,24 @@ class AppGrowthEngagementMapperUserScopeContractTest {
                 .contains("when q.definition_status<>1 then case")
                 .contains("when 'claimed' then 'claimed'")
                 .contains("else 'expired'");
+    }
+
+    @Test
+    void dayOneSnapshotStateAndClaimNeverRejoinLiveMissionDefinitions() throws Exception {
+        Method state = AppGrowthEngagementMapper.class.getMethod("dayOneSnapshotState", Long.class, Long.class);
+        Method lock = AppGrowthEngagementMapper.class.getMethod(
+                "lockDayOneSnapshotGroup", Long.class, Long.class, String.class);
+        Method claim = AppGrowthEngagementMapper.class.getMethod(
+                "claimDayOneSnapshotGroup", Long.class, Long.class, String.class);
+        String stateSql = String.join(" ", state.getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
+        String lockSql = String.join(" ", lock.getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
+        String claimSql = String.join(" ", claim.getAnnotation(Update.class).value()).replaceAll("\\s+", " ").toLowerCase();
+
+        assertThat(stateSql).contains("nx_growth_day_one_instance_item", "item.name", "item.category", "item.action_route", "item.reward_points")
+                .doesNotContain("join nx_mission");
+        assertThat(lockSql).contains("nx_growth_day_one_instance_item", "for update")
+                .doesNotContain("join nx_mission");
+        assertThat(claimSql).contains("nx_growth_day_one_instance_item", "upper(um.mission_status) in ('completed','claimable')")
+                .doesNotContain("join nx_mission");
     }
 }

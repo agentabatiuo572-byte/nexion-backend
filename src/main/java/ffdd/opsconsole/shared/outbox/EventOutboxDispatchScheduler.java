@@ -27,7 +27,20 @@ public class EventOutboxDispatchScheduler {
             "H8_REFERRAL_REWARD_SETTLED",
             "LEARNING_COURSE_COMPLETED",
             "admin.device_activated",
-            "COMMISSION_UNLOCKED");
+            "COMMISSION_UNLOCKED",
+            "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+            "H3_GENESIS_SECONDARY_MARKET_VIEWED",
+            "H3_COMPUTE_COMPLETED_50",
+            "H3_REFERRAL_REGISTERED",
+            "H3_EXCHANGE_COMPLETED",
+            "H3_DAY_ONE_EARN_PAGE_VIEWED",
+            "H3_DAY_ONE_STORE_PAGE_VIEWED",
+            "H3_DAY_ONE_S1_ROI_VIEWED");
+    /** Day-One page receipts wait durably until their exact PC binding becomes active. */
+    public static final List<String> H3_BINDING_WAIT_EVENT_TYPES = List.of(
+            "H3_DAY_ONE_EARN_PAGE_VIEWED",
+            "H3_DAY_ONE_STORE_PAGE_VIEWED",
+            "H3_DAY_ONE_S1_ROI_VIEWED");
     /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/register → evaluate,analytics 已发 outbox)。 */
     static final List<String> F1_PASSIVE_EVAL_EVENT_TYPES = List.of(
             "checkout.completed",
@@ -95,6 +108,9 @@ public class EventOutboxDispatchScheduler {
         supportedEventTypes.addAll(D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
         supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
+        for (String eventType : H3_BINDING_WAIT_EVENT_TYPES) {
+            outboxService.requeuePublishedPendingBinding(eventType, "h3-quest-completion");
+        }
         int scanned = 0;
         int published = 0;
         int failed = 0;

@@ -91,6 +91,41 @@ class QuestCompletionFactConsumerTest {
     }
 
     @Test
+    void frozenDayOneSnapshotUsesItsStoredMissionAndWindowInsteadOfCurrentDefinitions() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        LocalDateTime eventTs = LocalDateTime.of(2026, 9, 9, 10, 0);
+        when(mapper.lockDayOneSnapshotMissionAt(42L, 9L, "visit_earn", "DAY_ONE:20260909T090000", eventTs))
+                .thenReturn(new MissionDefinition(9L, "visit_earn", "DAY_ONE", "DAY_ONE:20260909T090000"));
+        when(mapper.insertFact(eq("SYSTEM"), eq("EVT:I71:M9"), anyString(), eq(42L), eq(9L),
+                eq("visit_earn"), eq("DAY_ONE:20260909T090000"))).thenReturn(1);
+        when(mapper.markMissionCompleted(42L, 9L, "DAY_ONE:20260909T090000")).thenReturn(1);
+        when(mapper.attribution(42L)).thenReturn(Map.of(
+                "phase", "P3", "accountAgeMonths", 0, "cohort", "2026-W34"));
+
+        assertThat(consumer.consume(new QuestCompletionCommand("SYSTEM", "EVT:I71:M9", 42L, "visit_earn",
+                eventTs, 9L, "DAY_ONE:20260909T090000")).status()).isEqualTo("COMPLETED");
+
+        verify(mapper, never()).lockMissionInstance(any(), any());
+        verify(mapper, never()).lockMissionInstanceAt(any(), any(), any());
+    }
+
+    @Test
+    void missingFrozenDayOneSnapshotNeverFallsBackToAnActiveMission() {
+        when(mapper.lockActiveUser(42L)).thenReturn(42L);
+        LocalDateTime eventTs = LocalDateTime.of(2026, 9, 9, 10, 0);
+        when(mapper.lockDayOneSnapshotMissionAt(42L, 9L, "visit_earn", "DAY_ONE:20260909T090000", eventTs))
+                .thenReturn(null);
+
+        assertThatThrownBy(() -> consumer.consume(new QuestCompletionCommand("SYSTEM", "EVT:MISSING", 42L,
+                "visit_earn", eventTs, 9L, "DAY_ONE:20260909T090000")))
+                .hasMessage("QUEST_NOT_ELIGIBLE_FOR_SNAPSHOT_INSTANCE");
+
+        verify(mapper, never()).lockMissionInstance(any(), any());
+        verify(mapper, never()).lockMissionInstanceAt(any(), any(), any());
+        verify(mapper, never()).insertFact(anyString(), anyString(), anyString(), any(), any(), anyString(), anyString());
+    }
+
+    @Test
     void exactFactReplayDoesNotPublishTwice() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
         when(mapper.lockMissionInstance(42L, "QUEST-1")).thenReturn(new MissionDefinition(7L, "QUEST-1", "WEEKLY"));
@@ -133,7 +168,7 @@ class QuestCompletionFactConsumerTest {
     @Test
     void firstDeliveryFromAnOlderWeekCannotCompleteTheCurrentWeek() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockMissionInstance(42L, "QUEST-1"))
+        when(mapper.lockMissionInstanceAt(eq(42L), eq("QUEST-1"), any(LocalDateTime.class)))
                 .thenReturn(new MissionDefinition(7L, "QUEST-1", "WEEKLY_T1", "WEEK:2026-W36"));
 
         assertThatThrownBy(() -> consumer.consume(new QuestCompletionCommand(
