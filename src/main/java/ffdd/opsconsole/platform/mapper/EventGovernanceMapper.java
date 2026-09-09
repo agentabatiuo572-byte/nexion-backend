@@ -75,6 +75,18 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
             """)
     int countProperty(@Param("schemaId") long schemaId, @Param("propertyName") String propertyName);
 
+    @Select("""
+            SELECT COUNT(*) FROM nx_event_schema_property
+             WHERE schema_id=#{schemaId} AND registry_revision=#{revision} AND is_deleted=0
+            """)
+    int countActiveProperties(@Param("schemaId") long schemaId, @Param("revision") int revision);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_event_schema_property
+             WHERE schema_id=#{schemaId} AND is_deleted=0
+            """)
+    int countLiveProperties(@Param("schemaId") long schemaId);
+
     @Insert("""
             INSERT INTO nx_event_schema_registry
               (event_name, owner_domain, family_key, producer, consumers, is_server_authoritative,
@@ -103,6 +115,16 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
                              @Param("revision") int revision,
                              @Param("actor") String actor,
                              @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_event_schema_property
+               SET registry_revision=#{nextRevision}, updated_at=NOW()
+             WHERE schema_id=#{schemaId} AND registry_revision=#{currentRevision}
+               AND is_deleted=0
+            """)
+    int carryForwardProperties(@Param("schemaId") long schemaId,
+                               @Param("currentRevision") int currentRevision,
+                               @Param("nextRevision") int nextRevision);
 
     @Insert("""
             INSERT INTO nx_event_schema_property
@@ -137,6 +159,28 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
              LIMIT #{limit}
             """)
     List<EventSchemaRegistration> listSchemas(@Param("limit") int limit);
+
+    @Select("""
+            SELECT s.event_name AS eventName, s.owner_domain AS ownerDomain, s.family_key AS familyKey,
+                   s.producer, s.consumers,
+                   GROUP_CONCAT(CONCAT(p.property_name, ':', p.property_type) ORDER BY p.id SEPARATOR ', ') AS properties,
+                   s.is_server_authoritative AS serverAuthoritative,
+                   s.sampling_policy AS samplingPolicy,
+                   CONCAT('v', s.current_revision) AS version,
+                   DATE_FORMAT(s.updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt,
+                   COALESCE(l.lifecycle_state, 'new') AS lifecycleState,
+                   COALESCE(l.version, 0) AS lifecycleVersion
+              FROM nx_event_schema_registry s
+              LEFT JOIN nx_event_schema_property p ON p.schema_id=s.id AND p.is_deleted=0
+                   AND p.registry_revision=s.current_revision
+              LEFT JOIN nx_admin_event_lifecycle l ON l.event_name=s.event_name AND l.is_deleted=0
+             WHERE s.event_name=#{eventName} AND s.status='ACTIVE' AND s.is_deleted=0
+             GROUP BY s.id, s.event_name, s.owner_domain, s.family_key, s.producer, s.consumers,
+                      s.is_server_authoritative, s.sampling_policy, s.current_revision, s.updated_at,
+                      l.lifecycle_state, l.version
+             LIMIT 1
+            """)
+    EventSchemaRegistration findSchemaRegistration(@Param("eventName") String eventName);
 
     @Select("""
             SELECT event_name AS eventName, lifecycle_state AS state, version,

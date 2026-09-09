@@ -19,6 +19,8 @@ import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 class QuestCanonicalEventProjectorTest {
@@ -78,11 +80,12 @@ class QuestCanonicalEventProjectorTest {
         verify(deliveryService, never()).markSuccess(any(), any(), any(Integer.class));
     }
 
-    @Test
-    void unboundDayOnePageFactWaitsForLaterBindingInsteadOfAcknowledgingTheFact() {
-        when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of());
+    @ParameterizedTest
+    @ValueSource(strings = {"H3_DAY_ONE_EARN_PAGE_VIEWED", "H3_COMPUTE_COMPLETED_50"})
+    void unboundDayOneAndWeeklyFactsWaitForLaterBinding(String eventType) {
+        when(bindingMapper.listActiveBindings(eventType)).thenReturn(List.of());
 
-        projector.project(event("evt-h3-race", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"),
+        projector.project(event("evt-h3-race", eventType, "{\"user_id\":990725}"),
                 "evt-h3-race");
 
         verify(factConsumer, never()).consume(any());
@@ -130,14 +133,24 @@ class QuestCanonicalEventProjectorTest {
     }
 
     @Test
-    void dayOnePageFactUsesTheTrustedOutboxTime() {
+    void dayOneAndWeeklyFactsBothUseTheTrustedOutboxTime() {
         when(bindingMapper.listActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(List.of(
                 new CanonicalQuestEventBinding("DAY_ONE_EARN", "SYSTEM",
                         "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "user_id")));
-        projector.project(event("evt-day-one", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-day-one");
+        when(bindingMapper.listActiveBindings("H3_COMPUTE_COMPLETED_50")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("WEEKLY", "SYSTEM",
+                        "H3_COMPUTE_COMPLETED_50", "weekly_compute", "user_id")));
 
-        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM", "evt-day-one:DAY_ONE_EARN", 990725L,
-                "visit_earn", EVENT_TS));
+        projector.project(event("evt-day-one", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-day-one");
+        projector.project(event("evt-weekly", "H3_COMPUTE_COMPLETED_50", "{\"user_id\":990725}"), "evt-weekly");
+
+        ArgumentCaptor<QuestCompletionCommand> commands = ArgumentCaptor.forClass(QuestCompletionCommand.class);
+        verify(factConsumer, org.mockito.Mockito.times(2)).consume(commands.capture());
+        assertThat(commands.getAllValues()).containsExactly(
+                new QuestCompletionCommand("SYSTEM", "evt-day-one:DAY_ONE_EARN", 990725L,
+                        "visit_earn", EVENT_TS),
+                new QuestCompletionCommand("SYSTEM", "evt-weekly:WEEKLY", 990725L,
+                        "weekly_compute", EVENT_TS));
     }
 
     @Test

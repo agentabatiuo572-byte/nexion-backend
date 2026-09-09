@@ -146,7 +146,7 @@ class DeviceCommandEventMySqlIntegrationTest {
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),
                 new AnnotationTransactionAttributeSource()));
         http = MockMvcBuilders.standaloneSetup(new AppCanonicalBoundaryController(
-                        (AppCanonicalBoundaryService) proxy.getProxy(), null, null, null, null))
+                        (AppCanonicalBoundaryService) proxy.getProxy(), null, null, null, null, null))
                 .setControllerAdvice(new GlobalExceptionHandler(audit), new ApiResultHttpStatusAdvice()).build();
         seedUser(USER_ID, "420031");
         seedUser(OTHER_USER_ID, "420032");

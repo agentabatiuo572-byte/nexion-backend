@@ -1,6 +1,7 @@
 package ffdd.opsconsole.market.web;
 
 import ffdd.opsconsole.market.application.AppGenesisService;
+import ffdd.opsconsole.growth.application.H3WeeklyParticipationObservationService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppGenesisController {
     private final AppGenesisService service;
+    private final H3WeeklyParticipationObservationService h3WeeklyParticipationObservationService;
 
     @GetMapping("/api/genesis/state")
     public ApiResult<Map<String, Object>> state() {
@@ -35,6 +37,12 @@ public class AppGenesisController {
         return userId == null ? forbidden() : service.eligibility(userId);
     }
 
+    @PostMapping("/api/genesis/secondary-market/observation")
+    public ApiResult<Map<String, Object>> observeSecondaryMarket(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : h3WeeklyParticipationObservationService.observeGenesisSecondaryMarket(userId);
+    }
     @PostMapping("/api/genesis/purchase")
     public ApiResult<Map<String, Object>> purchase(
             @RequestBody AppGenesisService.PurchaseRequest request,

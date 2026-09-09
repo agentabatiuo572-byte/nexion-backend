@@ -93,6 +93,56 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
             """)
     EventConsumerDelivery getByEvent(@Param("consumerGroup") String consumerGroup, @Param("eventId") String eventId);
 
+    /**
+     * The governed H3 redrive may reopen only the canonical completion consumer.
+     * Attempt/error evidence and source columns remain immutable.
+     */
+    @Select("""
+            SELECT event_id AS eventId,
+                   consumer_group AS consumerGroup,
+                   status,
+                   attempt_count AS attemptCount,
+                   last_error AS lastError
+              FROM nx_event_consumer_delivery
+             WHERE event_id = #{eventId}
+               AND consumer_group = 'h3-quest-completion'
+               AND status = 'DEAD'
+               AND is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    H3DeadLetterDeliveryRow lockDeadH3QuestCompletionDelivery(@Param("eventId") String eventId);
+
+    @Select("""
+            SELECT event_id AS eventId,
+                   consumer_group AS consumerGroup,
+                   status,
+                   attempt_count AS attemptCount,
+                   last_error AS lastError
+              FROM nx_event_consumer_delivery
+             WHERE event_id = #{eventId}
+               AND consumer_group = 'h3-quest-completion'
+               AND status = 'DEAD'
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    H3DeadLetterDeliveryRow findDeadH3QuestCompletionDelivery(@Param("eventId") String eventId);
+
+    @Update("""
+            UPDATE nx_event_consumer_delivery
+               SET status = 'FAILED',
+                   next_retry_at = NOW(),
+                   dead_at = NULL,
+                   last_seen_at = NOW(),
+                   updated_at = NOW()
+             WHERE event_id = #{eventId}
+               AND consumer_group = 'h3-quest-completion'
+               AND status = 'DEAD'
+               AND attempt_count = #{expectedAttemptCount}
+               AND is_deleted = 0
+            """)
+    int redriveDeadH3QuestCompletionDelivery(@Param("eventId") String eventId,
+                                             @Param("expectedAttemptCount") int expectedAttemptCount);
     @Update("""
             UPDATE nx_event_consumer_delivery
                SET status = #{status},
@@ -225,4 +275,8 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
             </script>
             """)
     List<Map<String, Object>> summary(@Param("consumerGroup") String consumerGroup);
+
+    record H3DeadLetterDeliveryRow(
+            String eventId, String consumerGroup, String status, int attemptCount, String lastError) {
+    }
 }

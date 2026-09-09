@@ -13,6 +13,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
 import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
+import ffdd.opsconsole.platform.dto.ExistingSchemaPropertyRequest;
 import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.EventGovernanceMapper;
@@ -297,6 +298,206 @@ class OpsEventCenterServiceTest {
 
         assertThat(result.getCode()).isZero();
         verify(governanceMapper).insertProperty(103L, "commission_id", "id", 7);
+    }
+
+    @Test
+    void extendingSchemaCarriesEveryExistingAllowlistedPropertyIntoTheNewRevision() {
+        EventSchemaRegistrationRequest request = new EventSchemaRegistrationRequest(
+                "app.session_started", "app", "client", "L1 BI", "device_id", "id",
+                false, false, "10%", "v6", "extend session event without dropping session_id");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                106L, "app.session_started", "app", "acquisition", "client", "L1 BI", false,
+                "浏览/会话 10% · 资金/风控/转化 100%", 6);
+        when(governanceMapper.findSchema("app.session_started")).thenReturn(existing);
+        when(governanceMapper.countProperty(106L, "device_id")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(106L)).thenReturn(1);
+        when(governanceMapper.countActiveProperties(106L, 6)).thenReturn(1);
+        when(governanceMapper.advanceRevision(6, 7)).thenReturn(1);
+        when(governanceMapper.carryForwardProperties(106L, 6, 7)).thenReturn(1);
+        when(governanceMapper.updateSchemaRevision(
+                106L, 7, "authenticated-admin", "extend session event without dropping session_id"))
+                .thenReturn(1);
+
+        ApiResult<EventCenterOverview> result = service.registerSchema("idem-a4-schema-extension", request);
+
+        assertThat(result.getCode()).isZero();
+        org.mockito.InOrder writes = org.mockito.Mockito.inOrder(governanceMapper);
+        writes.verify(governanceMapper).advanceRevision(6, 7);
+        writes.verify(governanceMapper).carryForwardProperties(106L, 6, 7);
+        writes.verify(governanceMapper).updateSchemaRevision(
+                106L, 7, "authenticated-admin", "extend session event without dropping session_id");
+        writes.verify(governanceMapper).insertProperty(106L, "device_id", "id", 7);
+    }
+
+    @Test
+    void schemaExtensionUpdateGuardStillThrowsSoTheTransactionalRegistrationRollsBack() {
+        EventSchemaRegistrationRequest request = new EventSchemaRegistrationRequest(
+                "app.session_started", "app", "client", "L1 BI", "device_id", "id",
+                false, false, "10%", "v6", "reject stale schema update after carry forward");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                107L, "app.session_started", "app", "acquisition", "client", "L1 BI", false,
+                "浏览/会话 10% · 资金/风控/转化 100%", 6);
+        when(governanceMapper.findSchema("app.session_started")).thenReturn(existing);
+        when(governanceMapper.countProperty(107L, "device_id")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(107L)).thenReturn(1);
+        when(governanceMapper.countActiveProperties(107L, 6)).thenReturn(1);
+        when(governanceMapper.advanceRevision(6, 7)).thenReturn(1);
+        when(governanceMapper.carryForwardProperties(107L, 6, 7)).thenReturn(1);
+        when(governanceMapper.updateSchemaRevision(
+                107L, 7, "authenticated-admin", "reject stale schema update after carry forward"))
+                .thenReturn(0);
+
+        assertThatThrownBy(() -> service.registerSchema("idem-a4-schema-extension-stale", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("A4_SCHEMA_UPDATE_FAILED");
+
+        verify(governanceMapper).carryForwardProperties(107L, 6, 7);
+        verify(governanceMapper, never()).insertProperty(107L, "device_id", "id", 7);
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void existingSchemaPropertyExtensionUsesMigrationOwnedMetadataWithoutResubmittingIt() {
+        ExistingSchemaPropertyRequest request = new ExistingSchemaPropertyRequest(
+                "quest.completed", "instance_key", "string", "v104",
+                "add an instance key to the governed quest event");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                108L, "quest.completed", "quest", "engagement", "QuestCompletionFactConsumer", "H3",
+                true, "100%", 104);
+        when(governanceMapper.lockCurrentRevision()).thenReturn(104);
+        when(governanceMapper.findSchema("quest.completed")).thenReturn(existing);
+        when(governanceMapper.countProperty(108L, "instance_key")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(108L)).thenReturn(2);
+        when(governanceMapper.countActiveProperties(108L, 104)).thenReturn(2);
+        when(governanceMapper.advanceRevision(104, 105)).thenReturn(1);
+        when(governanceMapper.carryForwardProperties(108L, 104, 105)).thenReturn(2);
+        when(governanceMapper.updateSchemaRevision(
+                108L, 105, "authenticated-admin", "add an instance key to the governed quest event"))
+                .thenReturn(1);
+
+        ApiResult<EventCenterOverview> result = service.addSchemaProperty("idem-a4-quest-instance", request);
+
+        assertThat(result.getCode()).isZero();
+        org.mockito.InOrder writes = org.mockito.Mockito.inOrder(governanceMapper);
+        writes.verify(governanceMapper).advanceRevision(104, 105);
+        writes.verify(governanceMapper).carryForwardProperties(108L, 104, 105);
+        writes.verify(governanceMapper).updateSchemaRevision(
+                108L, 105, "authenticated-admin", "add an instance key to the governed quest event");
+        writes.verify(governanceMapper).insertProperty(108L, "instance_key", "string", 105);
+    }
+
+    @Test
+    void existingSchemaPropertyExtensionFailsClosedWhenNotEveryActiveFieldCarriesForward() {
+        ExistingSchemaPropertyRequest request = new ExistingSchemaPropertyRequest(
+                "quest.completed", "instance_key", "string", "v104",
+                "reject an incomplete governed schema snapshot");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                109L, "quest.completed", "quest", "engagement", "QuestCompletionFactConsumer", "H3",
+                true, "100%", 104);
+        when(governanceMapper.lockCurrentRevision()).thenReturn(104);
+        when(governanceMapper.findSchema("quest.completed")).thenReturn(existing);
+        when(governanceMapper.countProperty(109L, "instance_key")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(109L)).thenReturn(2);
+        when(governanceMapper.countActiveProperties(109L, 104)).thenReturn(2);
+        when(governanceMapper.advanceRevision(104, 105)).thenReturn(1);
+        when(governanceMapper.carryForwardProperties(109L, 104, 105)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.addSchemaProperty("idem-a4-quest-incomplete", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("A4_SCHEMA_PROPERTY_CARRY_FORWARD_FAILED");
+
+        verify(governanceMapper, never()).updateSchemaRevision(
+                109L, 105, "authenticated-admin", "reject an incomplete governed schema snapshot");
+        verify(governanceMapper, never()).insertProperty(109L, "instance_key", "string", 105);
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void zeroFieldSchemaCanReceiveItsFirstCustomField() {
+        ExistingSchemaPropertyRequest request = new ExistingSchemaPropertyRequest(
+                "app.dau", "session_id", "id", "v285", "add the first custom field to a shared envelope event");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                111L, "app.dau", "app", "acquisition", "client", "L1 BI", false, "10%", 285);
+        when(governanceMapper.lockCurrentRevision()).thenReturn(285);
+        when(governanceMapper.findSchema("app.dau")).thenReturn(existing);
+        when(governanceMapper.countProperty(111L, "session_id")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(111L)).thenReturn(0);
+        when(governanceMapper.countActiveProperties(111L, 285)).thenReturn(0);
+        when(governanceMapper.advanceRevision(285, 286)).thenReturn(1);
+        when(governanceMapper.carryForwardProperties(111L, 285, 286)).thenReturn(0);
+        when(governanceMapper.updateSchemaRevision(
+                111L, 286, "authenticated-admin", "add the first custom field to a shared envelope event"))
+                .thenReturn(1);
+
+        ApiResult<EventCenterOverview> result = service.addSchemaProperty("idem-a4-first-field", request);
+
+        assertThat(result.getCode()).isZero();
+        verify(governanceMapper).insertProperty(111L, "session_id", "id", 286);
+    }
+
+    @Test
+    void legacyPropertiesAtAnotherRevisionFailClosedInsteadOfBeingDropped() {
+        ExistingSchemaPropertyRequest request = new ExistingSchemaPropertyRequest(
+                "store.viewed", "session_id", "id", "v285", "reject a legacy property revision drift");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                112L, "store.viewed", "store", "conversion", "client", "L1 BI", false, "10%", 285);
+        when(governanceMapper.lockCurrentRevision()).thenReturn(285);
+        when(governanceMapper.findSchema("store.viewed")).thenReturn(existing);
+        when(governanceMapper.countProperty(112L, "session_id")).thenReturn(0);
+        when(governanceMapper.countLiveProperties(112L)).thenReturn(2);
+        when(governanceMapper.countActiveProperties(112L, 285)).thenReturn(0);
+        when(governanceMapper.advanceRevision(285, 286)).thenReturn(1);
+
+        assertThatThrownBy(() -> service.addSchemaProperty("idem-a4-revision-drift", request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("A4_SCHEMA_PROPERTY_REVISION_DRIFT");
+
+        verify(governanceMapper, never()).carryForwardProperties(112L, 285, 286);
+        verify(governanceMapper, never()).insertProperty(112L, "session_id", "id", 286);
+        verify(auditLogService, never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
+    void genericSchemaRegistrationRejectsExistingConsumerMismatch() {
+        EventSchemaRegistrationRequest request = new EventSchemaRegistrationRequest(
+                "app.session_started", "app", "client", "new consumer", "device_id", "id",
+                false, false, "10%", "v6", "reject consumer mutation through property registration");
+        EventGovernanceMapper.EventSchemaRecord existing = new EventGovernanceMapper.EventSchemaRecord(
+                110L, "app.session_started", "app", "acquisition", "client", "L1 BI", false,
+                "浏览/会话 10% · 资金/风控/转化 100%", 6);
+        when(governanceMapper.findSchema("app.session_started")).thenReturn(existing);
+        when(governanceMapper.countProperty(110L, "device_id")).thenReturn(0);
+
+        ApiResult<EventCenterOverview> result = service.registerSchema("idem-a4-schema-consumer-conflict", request);
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("A4_SCHEMA_METADATA_CONFLICT");
+        verify(governanceMapper, never()).advanceRevision(6, 7);
+    }
+
+    @Test
+    void schemaPreviewReadsAnExactActiveSchemaOutsideTheOverviewLimit() {
+        EventCenterOverview.EventSchemaRegistration schema = new EventCenterOverview.EventSchemaRegistration(
+                "quest.completed", "quest", "engagement", "QuestCompletionFactConsumer", "H3",
+                "quest_id:id, instance_key:string", true, "100%", "v104", "2026-09-07 17:00:00", "full", 3);
+        when(governanceMapper.findSchemaRegistration("quest.completed")).thenReturn(schema);
+
+        ApiResult<EventCenterOverview.EventSchemaRegistration> result = service.schemaRegistration(" Quest.Completed ");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).isSameAs(schema);
+        verify(governanceMapper).findSchemaRegistration("quest.completed");
+    }
+
+    @Test
+    void schemaPreviewRejectsMalformedNamesAndReturnsControlledNotFound() {
+        ApiResult<EventCenterOverview.EventSchemaRegistration> malformed = service.schemaRegistration("quest/anything");
+        ApiResult<EventCenterOverview.EventSchemaRegistration> missing = service.schemaRegistration("quest.completed");
+
+        assertThat(malformed.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(malformed.getMessage()).isEqualTo("A4_SCHEMA_EVENT_NAME_INVALID");
+        assertThat(missing.getCode()).isEqualTo(404);
+        assertThat(missing.getMessage()).isEqualTo("A4_EVENT_SCHEMA_NOT_FOUND");
     }
 
     @Test

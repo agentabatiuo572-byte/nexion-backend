@@ -27,6 +27,13 @@ class EventOutboxDispatchSchedulerTest {
                         org.mockito.ArgumentMatchers.eq("h3-quest-completion"));
     }
     @Test
+    void derivedExchangeAndReferralSourceFactsReachTheirVerifyingConsumer() {
+        scheduler.dispatchPending();
+
+        verify(service).listPendingByEventType("exchange.swapped", 100);
+        verify(service).listPendingByEventType("referral.bound", 100);
+    }
+    @Test
     void deliveredMessagesAreMarkedPublished() {
         EventOutboxMessage message = message("event-ok");
         when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))

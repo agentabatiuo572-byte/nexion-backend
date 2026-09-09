@@ -6,6 +6,7 @@ import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
 import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
 import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
+import ffdd.opsconsole.platform.dto.ExistingSchemaPropertyRequest;
 import ffdd.opsconsole.platform.dto.EventLifecycleTransitionRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCenterStats;
 import ffdd.opsconsole.platform.dto.EventCenterOverview.EventCommonField;
@@ -187,6 +188,18 @@ public class OpsEventCenterService {
                 guardrails()));
     }
 
+    public ApiResult<EventCenterOverview.EventSchemaRegistration> schemaRegistration(String eventName) {
+        if (!StringUtils.hasText(eventName)) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_EVENT_NAME_REQUIRED");
+        }
+        String normalized = eventName.trim().toLowerCase(Locale.ROOT);
+        if (!normalized.matches("^[a-z][a-z0-9_]*\\.[a-z0-9]+(?:_[a-z0-9]+)*$") || !pastTenseEvent(normalized)) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_EVENT_NAME_INVALID");
+        }
+        EventCenterOverview.EventSchemaRegistration schema = governanceMapper.findSchemaRegistration(normalized);
+        return schema == null ? ApiResult.fail(404, "A4_EVENT_SCHEMA_NOT_FOUND") : ApiResult.ok(schema);
+    }
+
     @Transactional
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<EventDimensionParam> updateParam(
@@ -239,6 +252,27 @@ public class OpsEventCenterService {
         return (ApiResult<EventCenterOverview>) idempotencyService.execute(
                 "A4_SCHEMA:" + normalized.eventName(), idempotencyKey.trim(), hash, ApiResult.class,
                 () -> registerSchemaOnce(normalized, idempotencyKey.trim()));
+    }
+
+    @Transactional
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ApiResult<EventCenterOverview> addSchemaProperty(
+            String idempotencyKey, ExistingSchemaPropertyRequest request) {
+        ApiResult<EventCenterOverview> guard = requireSchemaPropertyMutation(idempotencyKey, request);
+        if (guard != null) {
+            return guard;
+        }
+        NormalizedSchemaProperty normalized;
+        try {
+            normalized = normalizeSchemaProperty(request);
+        } catch (IllegalArgumentException ex) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
+        }
+        String hash = requestHash(normalized.eventName(), normalized.propertyName(), normalized.propertyType(),
+                normalized.expectedVersion(), normalized.reason());
+        return (ApiResult<EventCenterOverview>) idempotencyService.execute(
+                "A4_SCHEMA_PROPERTY:" + normalized.eventName(), idempotencyKey.trim(), hash, ApiResult.class,
+                () -> addSchemaPropertyOnce(normalized, idempotencyKey.trim()));
     }
 
     @Transactional
@@ -496,6 +530,23 @@ public class OpsEventCenterService {
         return null;
     }
 
+    private <T> ApiResult<T> requireSchemaPropertyMutation(
+            String idempotencyKey, ExistingSchemaPropertyRequest request) {
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_PROPERTY_REQUEST_REQUIRED");
+        }
+        if (!StringUtils.hasText(request.reason())) {
+            return fail(OpsErrorCode.REASON_REQUIRED, OpsErrorCode.REASON_REQUIRED.name());
+        }
+        if (!validReason(request.reason())) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_REASON_LENGTH_INVALID");
+        }
+        return null;
+    }
+
     private <T> ApiResult<T> requireDomainMutation(String idempotencyKey, EventDomainExtensionRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
@@ -550,6 +601,7 @@ public class OpsEventCenterService {
         }
         if (existing != null && (!existing.ownerDomain().equals(schema.ownerDomain())
                 || !existing.producer().equals(schema.producer())
+                || !existing.consumers().equals(schema.consumer())
                 || existing.serverAuthoritative() != schema.serverAuthoritative()
                 || !existing.samplingPolicy().equals(schema.samplingPolicy()))) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_METADATA_CONFLICT");
@@ -574,6 +626,10 @@ public class OpsEventCenterService {
                 governanceMapper.insertLifecycle(schema.eventName(), actor, schema.reason());
             } else {
                 schemaId = existing.id();
+                // The property table has one row per (schema, property), so carrying a schema
+                // forward means promoting every active prior-revision row. This retains its
+                // type/PII/required metadata while the new field is added below.
+                carryForwardExistingProperties(existing, nextRevision);
                 if (governanceMapper.updateSchemaRevision(schemaId, nextRevision, actor, schema.reason()) != 1) {
                     throw new IllegalStateException("A4_SCHEMA_UPDATE_FAILED");
                 }
@@ -603,6 +659,56 @@ public class OpsEventCenterService {
                         "beforeVersion", schema.expectedVersion(),
                         "afterVersion", "v" + nextRevision));
         return overview();
+    }
+
+    private ApiResult<EventCenterOverview> addSchemaPropertyOnce(
+            NormalizedSchemaProperty property, String idempotencyKey) {
+        int currentRevision = requiredRevision(governanceMapper.lockCurrentRevision());
+        if (!property.expectedVersion().equals("v" + currentRevision)) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_VERSION_STALE");
+        }
+        EventSchemaRecord existing = governanceMapper.findSchema(property.eventName());
+        if (existing == null) {
+            return fail(OpsErrorCode.VALIDATION_FAILED, "A4_EVENT_SCHEMA_NOT_FOUND");
+        }
+        if (governanceMapper.countProperty(existing.id(), property.propertyName()) > 0) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_PROPERTY_DUPLICATE");
+        }
+
+        int nextRevision = currentRevision + 1;
+        if (governanceMapper.advanceRevision(currentRevision, nextRevision) != 1) {
+            return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_VERSION_STALE");
+        }
+        String actor = authenticatedActor();
+        try {
+            carryForwardExistingProperties(existing, nextRevision);
+            if (governanceMapper.updateSchemaRevision(existing.id(), nextRevision, actor, property.reason()) != 1) {
+                throw new IllegalStateException("A4_SCHEMA_UPDATE_FAILED");
+            }
+            governanceMapper.insertProperty(existing.id(), property.propertyName(), property.propertyType(), nextRevision);
+        } catch (DuplicateKeyException ex) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "A4_SCHEMA_DUPLICATE");
+        }
+        auditRequired("A4_EVENT_SCHEMA_PROPERTY_ADDED", "A4_EVENT_SCHEMA", property.eventName(),
+                idempotencyKey, property.reason(), Map.of(
+                        "eventName", property.eventName(),
+                        "propertyName", property.propertyName(),
+                        "propertyType", property.propertyType(),
+                        "beforeVersion", property.expectedVersion(),
+                        "afterVersion", "v" + nextRevision));
+        return overview();
+    }
+
+    private void carryForwardExistingProperties(EventSchemaRecord existing, int nextRevision) {
+        int liveCount = governanceMapper.countLiveProperties(existing.id());
+        int activeCount = governanceMapper.countActiveProperties(existing.id(), existing.currentRevision());
+        if (liveCount != activeCount) {
+            throw new IllegalStateException("A4_SCHEMA_PROPERTY_REVISION_DRIFT");
+        }
+        int carried = governanceMapper.carryForwardProperties(existing.id(), existing.currentRevision(), nextRevision);
+        if (carried != activeCount) {
+            throw new IllegalStateException("A4_SCHEMA_PROPERTY_CARRY_FORWARD_FAILED");
+        }
     }
 
     private ApiResult<EventCenterOverview.EventLifecycleView> transitionLifecycleOnce(
@@ -780,6 +886,30 @@ public class OpsEventCenterService {
         String sampling = normalizeSampling(lowerRequired(request.samplingPolicy(), "A4_SCHEMA_SAMPLING_REQUIRED"), protectedFamily);
         return new NormalizedSchema(eventName, ownerDomain, familyKey, producer, consumer, propertyName,
                 propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain);
+    }
+
+    private NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
+        String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
+        String propertyName = lowerRequired(request.propertyName(), "A4_SCHEMA_PROPERTY_REQUIRED");
+        String propertyType = lowerRequired(request.propertyType(), "A4_SCHEMA_PROPERTY_TYPE_REQUIRED");
+        String expectedVersion = lowerRequired(request.expectedVersion(), "A4_SCHEMA_VERSION_REQUIRED");
+        String reason = normalizeReason(request.reason());
+        if (containsSunsetTerm(eventName)) {
+            throw new IllegalArgumentException("SUNSET_CAPABILITY_READONLY");
+        }
+        if (!eventName.matches("^[a-z][a-z0-9_]*\\.[a-z0-9]+(?:_[a-z0-9]+)*$") || !pastTenseEvent(eventName)) {
+            throw new IllegalArgumentException("A4_SCHEMA_EVENT_NAME_INVALID");
+        }
+        if (!propertyName.matches("^[a-z][a-z0-9_]{0,63}$") || containsPiiTerm(propertyName)) {
+            throw new IllegalArgumentException("A4_SCHEMA_PII_REJECTED");
+        }
+        if (!PROPERTY_TYPES.contains(propertyType)) {
+            throw new IllegalArgumentException("A4_SCHEMA_PROPERTY_TYPE_INVALID");
+        }
+        if (!expectedVersion.matches("^v[1-9][0-9]*$")) {
+            throw new IllegalArgumentException("A4_SCHEMA_VERSION_INVALID");
+        }
+        return new NormalizedSchemaProperty(eventName, propertyName, propertyType, expectedVersion, reason);
     }
 
     private NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
@@ -1023,6 +1153,14 @@ public class OpsEventCenterService {
             String expectedVersion,
             String reason,
             boolean extensionDomain) {
+    }
+
+    private record NormalizedSchemaProperty(
+            String eventName,
+            String propertyName,
+            String propertyType,
+            String expectedVersion,
+            String reason) {
     }
 
     private record NormalizedDomainExtension(

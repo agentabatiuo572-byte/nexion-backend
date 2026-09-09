@@ -8,15 +8,19 @@ import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
 import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
 import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
+import ffdd.opsconsole.platform.dto.ExistingSchemaPropertyRequest;
 import ffdd.opsconsole.platform.dto.EventLifecycleTransitionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionView;
+import ffdd.opsconsole.platform.dto.H3OutboxRedriveRequest;
+import ffdd.opsconsole.platform.dto.H3OutboxRedriveView;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.outbox.H3DeadLetterRedriveService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.exception.BizException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,11 +50,18 @@ public class OpsEventCenterController {
     private final A2RuntimePolicy a2RuntimePolicy;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
+    private final H3DeadLetterRedriveService h3DeadLetterRedriveService;
     private final ObjectMapper objectMapper;
 
     @GetMapping("/overview")
     public ApiResult<EventCenterOverview> overview() {
         return eventCenterService.overview();
+    }
+
+    @GetMapping("/schema-registrations/{eventName}")
+    @PreAuthorize("hasAuthority('platform_a4_read')")
+    public ApiResult<EventCenterOverview.EventSchemaRegistration> schemaRegistration(@PathVariable String eventName) {
+        return eventCenterService.schemaRegistration(eventName);
     }
 
     @GetMapping("/retention-runs/latest")
@@ -81,6 +92,14 @@ public class OpsEventCenterController {
         return eventCenterService.registerSchema(idempotencyKey, request);
     }
 
+    @PostMapping("/schema-registrations/properties")
+    @PreAuthorize("hasAuthority('platform_a4_write')")
+    public ApiResult<EventCenterOverview> addSchemaProperty(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody(required = false) ExistingSchemaPropertyRequest request) {
+        return eventCenterService.addSchemaProperty(idempotencyKey, request);
+    }
+
     @PostMapping("/domain-extension-batches")
     @PreAuthorize("hasAuthority('platform_a4_write')")
     public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
@@ -102,6 +121,22 @@ public class OpsEventCenterController {
         return ApiResult.ok(idempotencyService.execute("A4_EVENT_RETENTION_RUN", key,
                 retentionHash(actor, request.reason()), RetentionExecutionView.class,
                 () -> executeRetention(actor, key, request.reason())));
+    }
+
+    /** Retries one audited, governed H3 source event after ordinary delivery is DEAD. */
+    @PostMapping("/outbox/{eventId}/redrive")
+    @PreAuthorize("hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write')")
+    public ApiResult<H3OutboxRedriveView> redriveH3DeadLetter(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String eventId,
+            @RequestBody(required = false) H3OutboxRedriveRequest request) {
+        return ApiResult.ok(h3DeadLetterRedriveService.redrive(eventId, idempotencyKey, request));
+    }
+
+    @GetMapping("/outbox/{eventId}/redrive-preview")
+    @PreAuthorize("hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write')")
+    public ApiResult<H3OutboxRedriveView> h3DeadLetterRedrivePreview(@PathVariable String eventId) {
+        return ApiResult.ok(h3DeadLetterRedriveService.preview(eventId));
     }
 
     private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {

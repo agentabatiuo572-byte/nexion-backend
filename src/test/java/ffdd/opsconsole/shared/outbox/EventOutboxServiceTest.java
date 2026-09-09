@@ -33,16 +33,55 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void serverDerivedOccurrenceUsesTheSameTrustedTimeForDurableEventAndEnvelope() throws Exception {
+        java.time.LocalDateTime occurredAt = java.time.LocalDateTime.of(2026, 9, 6, 23, 59, 59, 123_000_000);
+
+        String eventId = service.publishUserEventAt(
+                "H3_WEEKLY_PARTICIPATION", "42:WEEK:2026-W36:H3_COMPUTE_COMPLETED_50",
+                "H3_COMPUTE_COMPLETED_50", 42L, "P2", 4, "2026-W10", occurredAt,
+                Map.of("instanceKey", "WEEK:2026-W36", "sourceOccurredAt", occurredAt.toString()));
+
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(mapper).insertEventAt(eq(eventId), eq("H3_WEEKLY_PARTICIPATION"),
+                eq("42:WEEK:2026-W36:H3_COMPUTE_COMPLETED_50"), eq("H3_COMPUTE_COMPLETED_50"),
+                eq("internal.h3_compute_completed_50"), eq("internal"), eq(occurredAt),
+                eq("P2"), eq(4), eq("2026-W10"), eq(true), eq(null), eq(false), eq(false), payload.capture());
+        JsonNode envelope = objectMapper.readTree(payload.getValue());
+        assertThat(envelope.path("ts").asLong()).isEqualTo(
+                occurredAt.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli());
+        verify(mapper, never()).insertEvent(anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(), anyString());
+    }
+
+    @Test
+    void serverDerivedOccurrenceTruncatesSubMillisecondPrecisionBeforeBothDurableWrites() throws Exception {
+        java.time.LocalDateTime sourceOccurrence = java.time.LocalDateTime.of(2026, 9, 6, 23, 59, 59, 999_600_000);
+        java.time.LocalDateTime storedOccurrence = java.time.LocalDateTime.of(2026, 9, 6, 23, 59, 59, 999_000_000);
+
+        String eventId = service.publishUserEventAt(
+                "H3_WEEKLY_PARTICIPATION", "42:WEEK:2026-W36:H3_GENESIS_SECONDARY_MARKET_VIEWED",
+                "H3_GENESIS_SECONDARY_MARKET_VIEWED", 42L, "P2", 4, "2026-W10", sourceOccurrence,
+                Map.of("instanceKey", "WEEK:2026-W36"));
+
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        verify(mapper).insertEventAt(eq(eventId), anyString(), anyString(), anyString(), anyString(), anyString(),
+                eq(storedOccurrence), anyString(), anyInt(), anyString(), anyBoolean(), any(), anyBoolean(), anyBoolean(),
+                payload.capture());
+        assertThat(objectMapper.readTree(payload.getValue()).path("ts").asLong()).isEqualTo(
+                storedOccurrence.atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli());
+    }
+
+    @Test
     void requeuesOnlyAnExplicitPendingBindingDeliveryWithoutResettingRetryState() {
         when(mapper.requeuePublishedPendingBinding(
-                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED"))
+                "H3_COMPUTE_COMPLETED_50", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED"))
                 .thenReturn(1);
 
         assertThat(service.requeuePublishedPendingBinding(
-                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion")).isEqualTo(1);
+                "H3_COMPUTE_COMPLETED_50", "h3-quest-completion")).isEqualTo(1);
 
         verify(mapper).requeuePublishedPendingBinding(
-                "H3_DAY_ONE_EARN_PAGE_VIEWED", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED");
+                "H3_COMPUTE_COMPLETED_50", "h3-quest-completion", "PENDING_BINDING", "PENDING", "PUBLISHED");
     }
     @Test
     void canonicalPendingScanUsesTypeAliasAndCursorContract() {

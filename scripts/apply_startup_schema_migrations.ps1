@@ -136,6 +136,11 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260901_h3_instances_h8_referral_gate.sql"),
   # Day One successful page reads use a durable per-instance source receipt before outbox dispatch.
   (Join-Path $root "scripts\migrations\20260907_h3_day_one_page_observation_receipt.sql"),
+  # Server-observed H3 weekly counters are intentionally empty at deploy; no historical participation is backfilled.
+  (Join-Path $root "scripts\migrations\20260907_h3_weekly_participation.sql"),
+  # Weekly H3 completions publish the existing strict quest.completed A4 contract.
+  # Exchange/referral thresholds are prospective server-derived H3 facts; their binding rows are idempotent.
+  (Join-Path $root "scripts\migrations\20260907_h3_weekly_exchange_referral.sql"),
   # Only the currently active H3 mission set may consume new canonical facts.
   (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.

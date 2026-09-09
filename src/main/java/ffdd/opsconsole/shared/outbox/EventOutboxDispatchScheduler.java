@@ -21,6 +21,10 @@ public class EventOutboxDispatchScheduler {
     static final String K4_WITHDRAWAL_ESCALATED_EVENT_TYPE = "risk.withdraw_escalated";
     /** Sprint4: F1 V-Rank 晋升完成(Consumer 级联 L1 上级 re-eval)。 */
     static final String VRANK_PROMOTION_COMPLETED_EVENT_TYPE = "VRANK_PROMOTION_COMPLETED";
+    /** Server facts are re-verified before becoming the two derived SYSTEM H3 facts. */
+    static final List<String> H3_WEEKLY_EXCHANGE_REFERRAL_SOURCE_EVENT_TYPES = List.of(
+            "exchange.swapped",
+            "referral.bound");
     /** H3 trusted cross-domain facts; mappings remain data-owned in nx_growth_quest_event_binding. */
     static final List<String> H3_QUEST_FACT_EVENT_TYPES = List.of(
             "checkout.started",
@@ -36,11 +40,21 @@ public class EventOutboxDispatchScheduler {
             "H3_DAY_ONE_EARN_PAGE_VIEWED",
             "H3_DAY_ONE_STORE_PAGE_VIEWED",
             "H3_DAY_ONE_S1_ROI_VIEWED");
-    /** Day-One page receipts wait durably until their exact PC binding becomes active. */
+    /**
+     * Only these H3 threshold facts are retained when PC has not yet bound
+     * them. Other canonical events keep their historical no-binding behavior.
+     */
     public static final List<String> H3_BINDING_WAIT_EVENT_TYPES = List.of(
+            "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+            "H3_GENESIS_SECONDARY_MARKET_VIEWED",
+            "H3_COMPUTE_COMPLETED_50",
+            "H3_REFERRAL_REGISTERED",
+            "H3_EXCHANGE_COMPLETED",
             "H3_DAY_ONE_EARN_PAGE_VIEWED",
             "H3_DAY_ONE_STORE_PAGE_VIEWED",
             "H3_DAY_ONE_S1_ROI_VIEWED");
+    /** The evaluator consumes this source; it is not a direct H3 quest binding. */
+    static final List<String> H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES = List.of("task.completed");
     /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/register → evaluate,analytics 已发 outbox)。 */
     static final List<String> F1_PASSIVE_EVAL_EVENT_TYPES = List.of(
             "checkout.completed",
@@ -107,7 +121,11 @@ public class EventOutboxDispatchScheduler {
         supportedEventTypes.addAll(D2_WITHDRAWAL_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(D3_TREASURY_LIFECYCLE_EVENT_TYPES);
         supportedEventTypes.addAll(H3_QUEST_FACT_EVENT_TYPES);
+        supportedEventTypes.addAll(H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES);
+        supportedEventTypes.addAll(H3_WEEKLY_EXCHANGE_REFERRAL_SOURCE_EVENT_TYPES);
         supportedEventTypes.addAll(F1_PASSIVE_EVAL_EVENT_TYPES);
+        // A PC binding may be created after the fact reached its threshold.
+        // Requeue only durable H3 waits; ordinary published facts stay immutable.
         for (String eventType : H3_BINDING_WAIT_EVENT_TYPES) {
             outboxService.requeuePublishedPendingBinding(eventType, "h3-quest-completion");
         }

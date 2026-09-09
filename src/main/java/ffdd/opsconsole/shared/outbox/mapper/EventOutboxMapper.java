@@ -53,11 +53,37 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                     @Param("aggregateId") String aggregateId, @Param("eventType") String eventType,
                     @Param("eventName") String eventName, @Param("familyKey") String familyKey,
                     @Param("phase") String phase, @Param("accountAgeMonths") int accountAgeMonths,
-                    @Param("cohort") String cohort, @Param("serverAuthoritative") boolean serverAuthoritative,
+                    @Param("cohort") String cohort,
+                    @Param("serverAuthoritative") boolean serverAuthoritative,
                     @Param("schemaRevision") Integer schemaRevision,
                     @Param("schemaRegistered") boolean schemaRegistered,
                     @Param("analyticsEvent") boolean analyticsEvent,
                     @Param("payload") String payload);
+
+    /** Writes only a server-re-read occurrence time; generic producers retain NOW(3). */
+    @Insert("""
+            INSERT INTO nx_event_outbox (
+              event_id, aggregate_type, aggregate_id, event_type,
+              event_name, family_key, event_ts, phase, account_age_months, cohort,
+              is_server_authoritative, schema_revision, schema_registered, analytics_event, payload,
+              status, retry_count, next_retry_at, created_at, updated_at, is_deleted
+            ) VALUES (
+              #{eventId}, #{aggregateType}, #{aggregateId}, #{eventType},
+              #{eventName}, #{familyKey}, #{eventTs}, #{phase}, #{accountAgeMonths}, #{cohort},
+              #{serverAuthoritative}, #{schemaRevision}, #{schemaRegistered}, #{analyticsEvent}, #{payload},
+              'PENDING', 0, NOW(), NOW(), NOW(), 0
+            )
+            """)
+    int insertEventAt(@Param("eventId") String eventId, @Param("aggregateType") String aggregateType,
+                      @Param("aggregateId") String aggregateId, @Param("eventType") String eventType,
+                      @Param("eventName") String eventName, @Param("familyKey") String familyKey,
+                      @Param("eventTs") java.time.LocalDateTime eventTs, @Param("phase") String phase,
+                      @Param("accountAgeMonths") int accountAgeMonths, @Param("cohort") String cohort,
+                      @Param("serverAuthoritative") boolean serverAuthoritative,
+                      @Param("schemaRevision") Integer schemaRevision,
+                      @Param("schemaRegistered") boolean schemaRegistered,
+                      @Param("analyticsEvent") boolean analyticsEvent,
+                      @Param("payload") String payload);
 
     @Select("""
             SELECT family_key AS familyKey, current_revision AS revision,
@@ -207,7 +233,6 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                                        @Param("pendingBindingStatus") String pendingBindingStatus,
                                        @Param("pendingStatus") String pendingStatus,
                                        @Param("publishedStatus") String publishedStatus);
-
     @Update("""
             UPDATE nx_event_outbox
                SET status = CASE WHEN retry_count + 1 >= #{maxRetries} THEN #{deadStatus} ELSE #{failedStatus} END,
@@ -226,8 +251,78 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                    @Param("maxRetries") int maxRetries, @Param("deadStatus") String deadStatus,
                    @Param("failedStatus") String failedStatus, @Param("pendingStatus") String pendingStatus);
 
+    /**
+     * The redrive boundary intentionally selects only the five governed H3
+     * threshold facts. It never exposes payload/source data to the admin API.
+     */
+    @Select("""
+            SELECT event_id AS eventId,
+                   event_type AS eventType,
+                   retry_count AS retryCount,
+                   last_error AS lastError
+             FROM nx_event_outbox
+             WHERE event_id = #{eventId}
+               AND status = 'DEAD'
+               AND is_deleted = 0
+               AND event_type IN (
+                   'H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                   'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                   'H3_COMPUTE_COMPLETED_50',
+                   'H3_REFERRAL_REGISTERED',
+                   'H3_EXCHANGE_COMPLETED')
+             LIMIT 1
+             FOR UPDATE
+            """)
+    H3DeadLetterRow lockDeadH3ThresholdEvent(@Param("eventId") String eventId);
+
+    /** Safe preview for the same governed DEAD-only recovery boundary. */
+    @Select("""
+            SELECT event_id AS eventId,
+                   event_type AS eventType,
+                   retry_count AS retryCount,
+                   last_error AS lastError
+              FROM nx_event_outbox
+             WHERE event_id = #{eventId}
+               AND status = 'DEAD'
+               AND is_deleted = 0
+               AND event_type IN (
+                   'H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                   'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                   'H3_COMPUTE_COMPLETED_50',
+                   'H3_REFERRAL_REGISTERED',
+                   'H3_EXCHANGE_COMPLETED')
+             LIMIT 1
+            """)
+    H3DeadLetterRow findDeadH3ThresholdEvent(@Param("eventId") String eventId);
+
+    /**
+     * Preserve immutable source/payload fields and failed-delivery evidence.
+     * The dispatcher performs the next attempt using the original event id.
+     */
+    @Update("""
+            UPDATE nx_event_outbox
+               SET status = 'PENDING',
+                   next_retry_at = NOW(),
+                   updated_at = NOW()
+             WHERE event_id = #{eventId}
+               AND status = 'DEAD'
+               AND retry_count = #{expectedRetryCount}
+               AND is_deleted = 0
+               AND event_type IN (
+                   'H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                   'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                   'H3_COMPUTE_COMPLETED_50',
+                   'H3_REFERRAL_REGISTERED',
+                   'H3_EXCHANGE_COMPLETED')
+            """)
+    int redriveDeadH3ThresholdEvent(@Param("eventId") String eventId,
+                                    @Param("expectedRetryCount") int expectedRetryCount);
+
     record SchemaGateRow(String familyKey, int revision, boolean serverAuthoritative) {}
 
     record SchemaPropertyGateRow(String propertyName, String propertyType, boolean requiredField) {
+    }
+
+    record H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError) {
     }
 }

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
+import ffdd.opsconsole.growth.application.H3WeeklyParticipationObservationService;
 import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -18,11 +19,12 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 class AppCanonicalBoundaryControllerTest {
     private final AppCanonicalBoundaryService service = mock(AppCanonicalBoundaryService.class);
     private final AppTrialLifecycleService trialLifecycleService = mock(AppTrialLifecycleService.class);
+    private final H3WeeklyParticipationObservationService h3ObservationService = mock(H3WeeklyParticipationObservationService.class);
     private final AppBundleOrderService bundleOrderService = mock(AppBundleOrderService.class);
     private final CommerceSandboxTrialService sandboxTrialService = mock(CommerceSandboxTrialService.class);
     private final FundsSandboxProfileGuard profileGuard = mock(FundsSandboxProfileGuard.class);
     private final AppCanonicalBoundaryController controller =
-            new AppCanonicalBoundaryController(service, trialLifecycleService, bundleOrderService, sandboxTrialService, profileGuard);
+            new AppCanonicalBoundaryController(service, trialLifecycleService, h3ObservationService, bundleOrderService, sandboxTrialService, profileGuard);
 
     @BeforeEach
     void strictProductionByDefault() {
@@ -73,6 +75,26 @@ class AppCanonicalBoundaryControllerTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("eligible", false);
         verify(service).purchaseEligibility(42L, "stellarbox-pro-v2");
+    }
+
+    @Test
+    void detailObservationUsesOnlyTheAuthenticatedUserSubject() {
+        UsernamePasswordAuthenticationToken user = auth("42", "USER");
+        when(h3ObservationService.observeStorefrontProductDetail(42L, "HD-PRO-1U"))
+                .thenReturn(ApiResult.ok(Map.of("accepted", true)));
+
+        ApiResult<Map<String, Object>> result = controller.observeStorefrontProductDetail("HD-PRO-1U", user);
+
+        assertThat(result.getCode()).isZero();
+        verify(h3ObservationService).observeStorefrontProductDetail(42L, "HD-PRO-1U");
+    }
+
+    @Test
+    void detailObservationRejectsAnAdminSubjectBeforeAnyObservation() {
+        ApiResult<Map<String, Object>> result = controller.observeStorefrontProductDetail("HD-PRO-1U", auth("7", "ADMIN"));
+
+        assertThat(result.getCode()).isEqualTo(403);
+        verify(h3ObservationService, never()).observeStorefrontProductDetail(7L, "HD-PRO-1U");
     }
 
     @Test

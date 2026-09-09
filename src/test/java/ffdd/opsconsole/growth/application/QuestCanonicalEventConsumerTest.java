@@ -73,8 +73,8 @@ class QuestCanonicalEventConsumerTest {
 
     @Test
     void thresholdFactWithoutBindingBecomesDurableWaitWithoutProjectionOrRetry() {
-        EventOutboxMessage message = event("evt-wait", "H3_DAY_ONE_EARN_PAGE_VIEWED");
-        when(bindingMapper.countActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(0);
+        EventOutboxMessage message = event("evt-wait", "H3_COMPUTE_COMPLETED_50");
+        when(bindingMapper.countActiveBindings("H3_COMPUTE_COMPLETED_50")).thenReturn(0);
         when(deliveryService.claimPendingBinding(message, QuestCanonicalEventConsumer.CONSUMER_GROUP,
                 QuestCanonicalEventConsumer.TOPIC, "evt-wait", 0))
                 .thenReturn(new EventConsumerDeliveryService.ConsumerClaim(true, "evt-wait", "PROCESSING", 1));
@@ -90,8 +90,8 @@ class QuestCanonicalEventConsumerTest {
 
     @Test
     void lateBindingResumesTheSameWaitingDeliveryOnlyOnce() {
-        EventOutboxMessage message = event("evt-late", "H3_DAY_ONE_EARN_PAGE_VIEWED");
-        when(bindingMapper.countActiveBindings("H3_DAY_ONE_EARN_PAGE_VIEWED")).thenReturn(1);
+        EventOutboxMessage message = event("evt-late", "H3_COMPUTE_COMPLETED_50");
+        when(bindingMapper.countActiveBindings("H3_COMPUTE_COMPLETED_50")).thenReturn(1);
         when(deliveryService.claim(message, QuestCanonicalEventConsumer.CONSUMER_GROUP,
                 QuestCanonicalEventConsumer.TOPIC, "evt-late", 0))
                 .thenReturn(

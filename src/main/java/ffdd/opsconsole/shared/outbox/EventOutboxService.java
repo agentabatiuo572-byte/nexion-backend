@@ -9,6 +9,9 @@ import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.time.temporal.WeekFields;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -23,6 +26,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class EventOutboxService {
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int MAX_LIMIT = 200;
     private static final int MAX_ERROR_LENGTH = 512;
     private static final String STATUS_PENDING = "PENDING";
@@ -81,6 +85,39 @@ public class EventOutboxService {
                 accountAgeMonths, normalizedCohort, payload);
     }
 
+    /**
+     * Server-only variant for a derived fact whose eligibility is tied to an
+     * already re-read canonical occurrence.  It keeps the durable event time
+     * and envelope timestamp on that occurrence rather than on queue write.
+     */
+    public String publishUserEventAt(
+            String aggregateType,
+            String aggregateId,
+            String eventType,
+            Long userId,
+            String phase,
+            Integer accountAgeMonths,
+            String cohort,
+            LocalDateTime occurredAt,
+            Object payload) {
+        if (occurredAt == null) throw validation("A4_SERVER_EVENT_TIME_INVALID");
+        LocalDateTime persistedOccurredAt = occurredAt.truncatedTo(ChronoUnit.MILLIS);
+        String normalizedPhase = phase == null ? "" : phase.trim().toUpperCase(Locale.ROOT);
+        String normalizedCohort = cohort == null ? "" : cohort.trim();
+        int cohortWeek = normalizedCohort.matches("^\\d{4}-W\\d{2}$")
+                ? Integer.parseInt(normalizedCohort.substring(6))
+                : 0;
+        if (userId == null || userId <= 0
+                || !normalizedPhase.matches("^P[1-6]$")
+                || accountAgeMonths == null || accountAgeMonths < 0
+                || cohortWeek < 1 || cohortWeek > 53) {
+            throw validation("A4_USER_ATTRIBUTION_INVALID");
+        }
+        return publishInternal(
+                aggregateType, aggregateId, eventType, userId, normalizedPhase,
+                accountAgeMonths, normalizedCohort, payload, persistedOccurredAt).eventId();
+    }
+
     private String publishInternal(
             String aggregateType,
             String aggregateId,
@@ -91,7 +128,21 @@ public class EventOutboxService {
             String cohort,
             Object payload) {
         return publishInternal(aggregateType, aggregateId, eventType, canonicalUserId, phase,
-                accountAgeMonths, cohort, payload, null).eventId();
+                accountAgeMonths, cohort, payload, (String) null).eventId();
+    }
+
+    private ClientAnalyticsPublishResult publishInternal(
+            String aggregateType,
+            String aggregateId,
+            String eventType,
+            Long canonicalUserId,
+            String phase,
+            int accountAgeMonths,
+            String cohort,
+            Object payload,
+            LocalDateTime occurredAt) {
+        return publishInternal(aggregateType, aggregateId, eventType, canonicalUserId, phase,
+                accountAgeMonths, cohort, payload, null, occurredAt);
     }
 
     private ClientAnalyticsPublishResult publishInternal(
@@ -104,6 +155,21 @@ public class EventOutboxService {
             String cohort,
             Object payload,
             String trustedSamplingKey) {
+        return publishInternal(aggregateType, aggregateId, eventType, canonicalUserId, phase,
+                accountAgeMonths, cohort, payload, trustedSamplingKey, null);
+    }
+
+    private ClientAnalyticsPublishResult publishInternal(
+            String aggregateType,
+            String aggregateId,
+            String eventType,
+            Long canonicalUserId,
+            String phase,
+            int accountAgeMonths,
+            String cohort,
+            Object payload,
+            String trustedSamplingKey,
+            LocalDateTime occurredAt) {
         String eventId = UUID.randomUUID().toString().replace("-", "");
         EventMetadata metadata = metadata(eventType);
         EventOutboxMapper.SchemaGateRow schema = metadata.analyticsEvent()
@@ -136,12 +202,20 @@ public class EventOutboxService {
         }
         String payloadJson = toEnvelopeJson(
                 eventId, metadata.eventName(), phase, accountAgeMonths, cohort,
-                serverAuthoritative, revision, payloadObject);
-        mapper.insertEvent(
-                eventId, aggregateType, aggregateId, eventType,
-                metadata.eventName(), familyKey, phase, accountAgeMonths, cohort,
-                serverAuthoritative, schema == null ? null : revision,
-                schema != null, metadata.analyticsEvent(), payloadJson);
+                serverAuthoritative, revision, payloadObject, occurredAt);
+        if (occurredAt == null) {
+            mapper.insertEvent(
+                    eventId, aggregateType, aggregateId, eventType,
+                    metadata.eventName(), familyKey, phase, accountAgeMonths, cohort,
+                    serverAuthoritative, schema == null ? null : revision,
+                    schema != null, metadata.analyticsEvent(), payloadJson);
+        } else {
+            mapper.insertEventAt(
+                    eventId, aggregateType, aggregateId, eventType,
+                    metadata.eventName(), familyKey, occurredAt, phase, accountAgeMonths, cohort,
+                    serverAuthoritative, schema == null ? null : revision,
+                    schema != null, metadata.analyticsEvent(), payloadJson);
+        }
         return new ClientAnalyticsPublishResult(eventId, true);
     }
 
@@ -234,12 +308,15 @@ public class EventOutboxService {
             String cohort,
             boolean serverAuthoritative,
             int schemaRevision,
-            ObjectNode payload) {
+            ObjectNode payload,
+            LocalDateTime occurredAt) {
         try {
             ObjectNode envelope = payload.deepCopy();
             envelope.put("event_id", eventId);
             envelope.put("event_name", eventName);
-            envelope.put("ts", System.currentTimeMillis());
+            envelope.put("ts", occurredAt == null
+                    ? System.currentTimeMillis()
+                    : occurredAt.atZone(BUSINESS_ZONE).toInstant().toEpochMilli());
             if (!envelope.has("user_id")) envelope.putNull("user_id");
             if (!envelope.has("anon_id")) envelope.putNull("anon_id");
             if (!envelope.has("session_id")) envelope.putNull("session_id");

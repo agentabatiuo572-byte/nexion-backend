@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.canonical;
 import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
+import ffdd.opsconsole.growth.application.H3WeeklyParticipationObservationService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import java.util.Map;
@@ -22,6 +23,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 public class AppCanonicalBoundaryController {
     private final AppCanonicalBoundaryService service;
     private final AppTrialLifecycleService trialLifecycleService;
+    private final H3WeeklyParticipationObservationService h3WeeklyParticipationObservationService;
     private final AppBundleOrderService bundleOrderService;
     private final CommerceSandboxTrialService sandboxTrialService;
     private final FundsSandboxProfileGuard profileGuard;
@@ -33,6 +35,13 @@ public class AppCanonicalBoundaryController {
         return userId == null ? forbidden() : service.purchaseEligibility(userId, productNo);
     }
 
+    @PostMapping("/api/store/products/{productNo}/detail-observation")
+    public ApiResult<Map<String, Object>> observeStorefrontProductDetail(
+            @PathVariable String productNo, Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : h3WeeklyParticipationObservationService.observeStorefrontProductDetail(userId, productNo);
+    }
     @GetMapping("/api/trial/eligibility")
     public ApiResult<Map<String, Object>> trialEligibility(
             @RequestParam(required = false) String clientStatus, Authentication authentication) {
