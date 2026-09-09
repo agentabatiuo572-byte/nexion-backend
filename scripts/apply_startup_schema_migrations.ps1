@@ -98,6 +98,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260823_withdrawal_submitted_schema_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260823_d2_lifecycle_event_schema_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260824_nova_conversation_history.sql"),
+  (Join-Path $root "scripts\migrations\20260909_app_conversation_dismissal.sql"),
   (Join-Path $root "scripts\migrations\20260825_product_inventory_mode.sql"),
   (Join-Path $root "scripts\migrations\20260825_payment_method_expiry_label.sql"),
   (Join-Path $root "scripts\migrations\20260825_vietqr_receipt_evidence.sql"),
