@@ -7,6 +7,7 @@ import ffdd.opsconsole.finance.dto.DevelopmentD2CooldownSimulationRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @Profile("dev & !prod")
+@ConditionalOnProperty(name = "nexion.deployment.public-test", havingValue = "false", matchIfMissing = true)
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/finance/withdrawals/development")
 @RequiredArgsConstructor
 public class DevelopmentD2LifecycleController {

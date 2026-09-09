@@ -6,6 +6,7 @@ import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
 import ffdd.opsconsole.shared.api.ApiResult;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 /** Loopback-only Passkey challenge for the canonical local development account. */
 @RestController
 @Profile("dev")
+@ConditionalOnProperty(name = "nexion.deployment.public-test", havingValue = "false", matchIfMissing = true)
 @RequestMapping("/auth/users")
 @RequiredArgsConstructor
 public class OAuthDevelopmentPasskeyController {

@@ -18,7 +18,8 @@ public final class DatabaseEnvironmentPostProcessor implements EnvironmentPostPr
 
     void applyAuthoritativePropertySource(ConfigurableEnvironment environment, Map<String, String> processEnvironment) {
         DatabaseEnvironmentResolver.ResolvedDatabase resolved = DatabaseEnvironmentResolver.resolve(
-                processEnvironment, RuntimeProfile.PROD.equals(RuntimeProfile.requireSingle(environment)));
+                processEnvironment, RuntimeProfile.PROD.equals(RuntimeProfile.requireSingle(environment))
+                        || environment.getProperty("nexion.deployment.public-test", Boolean.class, false));
         MapPropertySource propertySource = new MapPropertySource(PROPERTY_SOURCE_NAME, Map.of(
                 "spring.datasource.url", resolved.jdbcUrl(),
                 "spring.datasource.username", resolved.username(),

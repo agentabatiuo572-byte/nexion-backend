@@ -16,12 +16,14 @@ import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 @Profile("dev & !prod")
+@ConditionalOnProperty(name = "nexion.deployment.public-test", havingValue = "false", matchIfMissing = true)
 @RequiredArgsConstructor
 public class DevelopmentD2LifecycleService {
     private static final String IDEMPOTENCY_SCOPE_PREFIX = "D2_DEV_SIMULATE_DUE_";

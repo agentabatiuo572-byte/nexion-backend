@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.captcha;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Component;
 /** Explicit dev/test-only fixture verifier. Production never registers this bean. */
 @Component
 @Profile({"dev", "test"})
+@ConditionalOnProperty(name = "nexion.deployment.public-test", havingValue = "false", matchIfMissing = true)
 final class IsolatedTestCaptchaTicketVerifier implements CaptchaTicketVerifier {
     private final Set<String> consumed = ConcurrentHashMap.newKeySet();
 

@@ -46,6 +46,13 @@ public class OpsPlatformParamRegistryService {
     public ApiResult<PlatformParamRegistryOverview> overview() {
         LinkedHashMap<String, PlatformParamRegistryRow> rows = new LinkedHashMap<>();
         for (PlatformConfigItem item : configSource.findAllActive()) {
+            // H9 acceptance runs store payloads here, not operational parameters.
+            // Keep those payloads private without hiding unknown config families.
+            if ("growth_sandbox".equals(item.configGroup())
+                    && item.configKey() != null
+                    && item.configKey().matches("h9\\.sb\\.[A-Za-z0-9][A-Za-z0-9._-]{7,95}\\.(v|data)")) {
+                continue;
+            }
             merge(rows, fromConfig(item));
         }
         int configCount = rows.size();

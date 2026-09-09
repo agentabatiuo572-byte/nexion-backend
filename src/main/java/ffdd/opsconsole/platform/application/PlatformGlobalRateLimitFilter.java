@@ -22,7 +22,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 20)
+@Order(Ordered.HIGHEST_PRECEDENCE + 40)
 @RequiredArgsConstructor
 public class PlatformGlobalRateLimitFilter extends OncePerRequestFilter {
     static final String CONFIG_KEY = "platform.global_rate_limit_per_minute";

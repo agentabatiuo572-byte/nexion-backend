@@ -187,6 +187,34 @@ class OpsPlatformParamRegistryServiceTest {
                 .hasMessageContaining("A5_OWNER_MAPPING_MISSING:unknown/family");
     }
 
+    @Test
+    void registryExcludesRunScopedPublicStatsFixturesFromOperationalParameters() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("growth.public_stats.version", "1", "growth"),
+                item("h9.sb.seven-closures-20260817.v", "2", "growth_sandbox"),
+                item("h9.sb.seven-closures-20260817.data", "private-fixture-payload", "growth_sandbox")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).singleElement().satisfies(row -> {
+            assertThat(row.canonicalKey()).isEqualTo("growth.public_stats.version");
+            assertThat(row.ownerCode()).isEqualTo("H9");
+        });
+        assertThat(overview.stats().registeredCount()).isEqualTo(1);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(1);
+    }
+
+    @Test
+    void registryDoesNotHideUnknownParametersUsingOnlyASandboxGroupOrKeyPrefix() {
+        for (PlatformConfigItem unknown : List.of(
+                item("unknown/family", "1", "growth_sandbox"),
+                item("h9.sb.example.data", "1", "unknown"))) {
+            when(source.findAllActive()).thenReturn(List.of(unknown));
+            assertThatThrownBy(service::overview).hasMessageContaining("A5_OWNER_MAPPING_MISSING:");
+        }
+    }
+
     private PlatformConfigItem item(String key, String value, String group) {
         LocalDateTime now = LocalDateTime.of(2026, 7, 18, 10, 0);
         return new PlatformConfigItem(1L, key, value, "STRING", group, "ADMIN", "test", 1, now, now);

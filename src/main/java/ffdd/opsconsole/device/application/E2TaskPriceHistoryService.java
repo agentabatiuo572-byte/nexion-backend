@@ -17,6 +17,7 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -157,6 +158,7 @@ public class E2TaskPriceHistoryService {
 
 @Component
 @Profile("dev")
+@ConditionalOnProperty(name = "nexion.deployment.public-test", havingValue = "false", matchIfMissing = true)
 @RequiredArgsConstructor
 class DevelopmentTaskPriceHistoryInitializer implements ApplicationRunner {
     private final E2TaskPriceHistoryService historyService;
