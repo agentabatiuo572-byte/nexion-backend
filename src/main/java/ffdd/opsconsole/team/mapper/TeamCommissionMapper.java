@@ -23,11 +23,27 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    c.leadership_votes AS votes,
                    c.status AS visible,
                    COALESCE(c.physical_reward, '') AS physicalReward,
-                   COUNT(m.id) AS pop
+                   COUNT(p.user_id) AS pop
               FROM nx_v_rank_config c
-              LEFT JOIN nx_team_member m
-                ON m.v_rank = c.rank_code
-               AND m.is_deleted = 0
+              LEFT JOIN (
+                    SELECT u.id AS user_id,
+                           CASE
+                               WHEN m.v_rank IS NULL OR m.v_rank REGEXP '^[[:space:]]*$' THEN 'V0'
+                               ELSE TRIM(UPPER(m.v_rank))
+                           END AS rank_code
+                      FROM nx_user u
+                      /* Historical duplicate tolerance: use the same earliest active self row as currentMemberVRank. */
+                      LEFT JOIN nx_team_member m
+                        ON m.id = (
+                            SELECT MIN(self_row.id)
+                              FROM nx_team_member self_row
+                             WHERE self_row.user_id = u.id
+                               AND self_row.member_user_id = u.id
+                               AND self_row.is_deleted = 0
+                        )
+                       AND m.is_deleted = 0
+                     WHERE u.is_deleted = 0
+              ) p ON p.rank_code = UPPER(c.rank_code)
              WHERE c.is_deleted = 0
                AND c.status = 1
              GROUP BY c.id, c.rank_code, c.title_cn, c.self_buy_usd, c.direct_refs,
@@ -336,11 +352,27 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT CAST(REPLACE(c.rank_code, 'V', '') AS SIGNED) AS v,
                    c.leadership_votes AS votes,
-                   COUNT(m.id) AS pop
+                   COUNT(p.user_id) AS pop
               FROM nx_v_rank_config c
-              LEFT JOIN nx_team_member m
-                ON m.v_rank = c.rank_code
-               AND m.is_deleted = 0
+              LEFT JOIN (
+                    SELECT u.id AS user_id,
+                           CASE
+                               WHEN m.v_rank IS NULL OR m.v_rank REGEXP '^[[:space:]]*$' THEN 'V0'
+                               ELSE TRIM(UPPER(m.v_rank))
+                           END AS rank_code
+                      FROM nx_user u
+                      /* Historical duplicate tolerance: use the same earliest active self row as currentMemberVRank. */
+                      LEFT JOIN nx_team_member m
+                        ON m.id = (
+                            SELECT MIN(self_row.id)
+                              FROM nx_team_member self_row
+                             WHERE self_row.user_id = u.id
+                               AND self_row.member_user_id = u.id
+                               AND self_row.is_deleted = 0
+                        )
+                       AND m.is_deleted = 0
+                     WHERE u.is_deleted = 0
+              ) p ON p.rank_code = UPPER(c.rank_code)
              WHERE c.is_deleted = 0
                AND c.status = 1
                AND c.leadership_votes > 0
@@ -950,9 +982,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT v_rank
               FROM nx_team_member
-             WHERE user_id = #{userId}
-               AND member_user_id = #{userId}
-               AND is_deleted = 0
+              WHERE user_id = #{userId}
+                AND member_user_id = #{userId}
+                AND is_deleted = 0
+             ORDER BY id ASC
              LIMIT 1
              FOR UPDATE
             """)
