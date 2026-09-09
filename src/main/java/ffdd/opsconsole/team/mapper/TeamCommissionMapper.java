@@ -925,7 +925,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             SELECT e.user_id AS userId,
                    SUM(e.amount_usdt) AS volume
               FROM nx_commission_event e
+              JOIN nx_user u ON u.id = e.user_id
              WHERE e.is_deleted = 0
+               AND u.is_deleted = 0 AND u.status = 'ACTIVE' AND u.sandbox = 0
                AND UPPER(e.status) = 'UNLOCKED'
                AND LOWER(e.commission_type) IN
                    ('unilevel','network','binary','peer','cultivation','leadership','genesis')
