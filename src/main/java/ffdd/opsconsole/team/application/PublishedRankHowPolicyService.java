@@ -2,6 +2,7 @@ package ffdd.opsconsole.team.application;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.content.application.PublishedContentSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -32,7 +33,7 @@ public class PublishedRankHowPolicyService {
 
     public ApiResult<Map<String, Object>> publicPolicy(String requestedLocale) {
         try {
-            Map<String, Object> document = read();
+            Map<String, Object> document = PublishedContentSnapshot.published(read());
             if (!"PUBLISHED".equals(document.get("status"))) return unavailable();
             String version = text(document.get("version"));
             Map<String, Object> locales = map(document.get("locales"));
@@ -66,6 +67,9 @@ public class PublishedRankHowPolicyService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
+            if (value.isEmpty()) value = new LinkedHashMap<>(Map.of(
+                    "status", "UNPUBLISHED", "version", "", "revision", 0, "locales", Map.of()));
+            value = PublishedContentSnapshot.admin(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
@@ -96,8 +100,9 @@ public class PublishedRankHowPolicyService {
             Map<String, Object> document = new LinkedHashMap<>();
             document.put("version", version.trim()); document.put("status", status); document.put("locales", locales);
             document.put("revision",currentRevision+1);
+            PublishedContentSnapshot.retainPublished(document, before);
             String serialized=mapper.writeValueAsString(document);
-            if(serialized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>262_144)
+            if(serialized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>PublishedContentSnapshot.MAX_STORED_BYTES)
                 return ApiResult.fail(422,"RANK_HOW_POLICY_TOO_LARGE");
             config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
             boolean systemPublication = SecurityContextHolder.getContext().getAuthentication() == null;
@@ -107,7 +112,7 @@ public class PublishedRankHowPolicyService {
                     .resourceType("PUBLISHED_CONTENT").resourceId(CONFIG_KEY).result("SUCCESS").riskLevel("MEDIUM")
                     .detail(Map.of("beforeRevision",currentRevision,"afterRevision",currentRevision+1,
                             "status",status,"version",version.trim(),"reason",reason.trim())).build());
-            return ApiResult.ok(document);
+            return ApiResult.ok(PublishedContentSnapshot.admin(document));
         } catch (RuntimeException ex) { throw ex; }
         catch (Exception ex) { return ApiResult.fail(422, "RANK_HOW_POLICY_INVALID"); }
     }

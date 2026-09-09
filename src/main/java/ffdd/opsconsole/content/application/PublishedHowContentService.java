@@ -36,7 +36,7 @@ public class PublishedHowContentService {
     public ApiResult<Map<String, Object>> publicContent(String contentKey, String requestedLocale) {
         try {
             if (!CONTENT_KEYS.contains(contentKey)) return unavailable();
-            Map<String, Object> document = read();
+            Map<String, Object> document = PublishedContentSnapshot.published(read());
             if (!"PUBLISHED".equals(document.get("status")) || text(document.get("version")) == null) return unavailable();
             String currentEnvironment = sourceEnvironment();
             String publishedEnvironment = text(document.get("sourceEnvironment"));
@@ -68,6 +68,7 @@ public class PublishedHowContentService {
         try {
             Map<String, Object> value = read();
             if (!hasAdminDocumentShape(value)) value = emptyAdminDocument();
+            value = PublishedContentSnapshot.admin(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
@@ -107,8 +108,9 @@ public class PublishedHowContentService {
             if ("SANDBOX".equals(environmentName) && environmentRunId.isBlank()) return ApiResult.fail(422, "HOW_CONTENT_RUN_REQUIRED");
             document.put("sourceEnvironment", environmentName);
             document.put("runId", environmentRunId);
+            PublishedContentSnapshot.retainPublished(document, before);
             String serialized = mapper.writeValueAsString(document);
-            if (serialized.getBytes(StandardCharsets.UTF_8).length > 524_288) return ApiResult.fail(422, "HOW_CONTENT_TOO_LARGE");
+            if (serialized.getBytes(StandardCharsets.UTF_8).length > PublishedContentSnapshot.MAX_STORED_BYTES) return ApiResult.fail(422, "HOW_CONTENT_TOO_LARGE");
             config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
             boolean systemPublication = SecurityContextHolder.getContext().getAuthentication() == null;
             audit.recordRequired(AuditLogWriteRequest.builder().action("HOW_CONTENT_PUBLISHED_CHANGED")
@@ -117,7 +119,7 @@ public class PublishedHowContentService {
                     .resourceType("PUBLISHED_CONTENT").resourceId(CONFIG_KEY).result("SUCCESS").riskLevel("MEDIUM")
                     .detail(Map.of("beforeRevision", currentRevision, "afterRevision", currentRevision + 1,
                             "status", status, "version", version.trim(), "contentKeys", contents.keySet(), "reason", reason.trim())).build());
-            return ApiResult.ok(document);
+            return ApiResult.ok(PublishedContentSnapshot.admin(document));
         } catch (RuntimeException ex) { throw ex; }
         catch (Exception ex) { return invalid(); }
     }
@@ -149,7 +151,8 @@ public class PublishedHowContentService {
         if (value == null || !value.containsKey("version") || !value.containsKey("status")
                 || !Set.of("UNPUBLISHED", "DRAFT", "PUBLISHED").contains(value.get("status"))) return false;
         Map<String, Object> contents = map(value.get("contents"));
-        if (contents == null || !contents.keySet().equals(CONTENT_KEYS)) return false;
+        if (contents == null || contents.isEmpty() || !CONTENT_KEYS.containsAll(contents.keySet())) return false;
+        if (!"DRAFT".equals(value.get("status")) && !contents.keySet().equals(CONTENT_KEYS)) return false;
         try {
             return revision(value) >= 0;
         } catch (RuntimeException ex) {
