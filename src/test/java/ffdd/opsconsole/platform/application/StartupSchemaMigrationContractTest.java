@@ -8,6 +8,14 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void legacyDailyRewardRepairFollowsTheSeedWithoutReplayingOldEventRevisions() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        assertThat(runner.indexOf("20260909_h5_legacy_milestone_reward.sql"))
+                .isGreaterThan(runner.indexOf("20260722_h_domain_closure.sql"));
+        String migration = Files.readString(Path.of("scripts/migrations/20260909_h5_legacy_milestone_reward.sql"));
+        assertThat(migration).doesNotContain("nx_event_schema", "current_revision");
+    }
+    @Test
     void startupSequenceIncludesEveryCurrentApplicationMigration() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         assertThat(runner).contains("20260816_team_ambassador_policy.sql",

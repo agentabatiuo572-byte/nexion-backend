@@ -19,6 +19,7 @@ $migrations = @(
   # acceptance endpoint is opened; H8 also owns its permission/menu contract.
   (Join-Path $root "scripts\migrations\20260711_rhythm_configurable.sql"),
   (Join-Path $root "scripts\migrations\20260722_h_domain_closure.sql"),
+  (Join-Path $root "scripts\migrations\20260909_h5_legacy_milestone_reward.sql"),
   # User registration publishes the canonical auth.register_completed event,
   # and referral binding publishes referral.bound in the same transaction.
   # Register both schemas before any acceptance account is allowed to exist.

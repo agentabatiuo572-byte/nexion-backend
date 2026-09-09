@@ -153,17 +153,16 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO nx_streak_milestone
   (milestone_day,milestone_name,reward_type,reward_amount,reward_name,badge_achievement_code,sort_order,status,is_deleted)
 VALUES
-  (3,'连续签到3天','POINTS',5,'+5 积分',NULL,10,1,0),
-  (7,'连续签到7天','POINTS',15,'+15 积分',NULL,20,1,0),
+  (3,'连续签到3天','NEX',5,'+5 NEX',NULL,10,1,0),
+  (7,'连续签到7天','NEX',15,'+15 NEX',NULL,20,1,0),
   (14,'连续签到14天','USDT',1,'+1 USDT',NULL,30,1,0),
   (21,'连续签到21天','NEX',100,'+100 NEX',NULL,40,1,0),
   (30,'连续签到30天','SPIN',1,'Lucky Spin 票 ×1',NULL,50,1,0),
   (60,'连续签到60天','USDT',10,'+10 USDT',NULL,60,1,0),
   (100,'连续签到100天','BADGE',0,'Streak Master Badge','STREAK_MASTER',70,1,0)
 ON DUPLICATE KEY UPDATE
-  milestone_name=VALUES(milestone_name),reward_type=VALUES(reward_type),reward_amount=VALUES(reward_amount),
-  reward_name=VALUES(reward_name),
-  badge_achievement_code=VALUES(badge_achievement_code),sort_order=VALUES(sort_order),status=1,is_deleted=0;
+  -- Existing milestones belong to PC configuration, including disabled/deleted rows.
+  milestone_day=VALUES(milestone_day);
 
 INSERT INTO nx_streak_power_up
   (power_up_code,power_up_name,i18n_key,target_path,badge_achievement_code,unlock_streak_days,
@@ -175,9 +174,11 @@ VALUES
   ('GENESIS_ALLOWLIST','Genesis 资格入口','streak.genesis_allowlist','/market/genesis','STREAK_60',60,'ROUTE_BADGE','连续签到 60 天解锁 Genesis 资格入口',0,40,1,0)
 ON DUPLICATE KEY UPDATE
   power_up_name=VALUES(power_up_name),i18n_key=VALUES(i18n_key),target_path=VALUES(target_path),
-  badge_achievement_code=VALUES(badge_achievement_code),unlock_streak_days=VALUES(unlock_streak_days),
-  effect_type=VALUES(effect_type),effect_value=VALUES(effect_value),duration_days=VALUES(duration_days),
-  sort_order=VALUES(sort_order),status=1,is_deleted=0;
+  badge_achievement_code=VALUES(badge_achievement_code),
+  -- Preserve PC-authored day/note for canonical entries. Retire old financial promises as before.
+  effect_value=IF(UPPER(effect_type)='ROUTE_BADGE',effect_value,VALUES(effect_value)),
+  effect_type=VALUES(effect_type),duration_days=VALUES(duration_days),
+  sort_order=VALUES(sort_order);
 
 UPDATE nx_streak_power_up
    SET is_deleted=1,status=0,updated_at=NOW()

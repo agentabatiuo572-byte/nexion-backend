@@ -40,8 +40,10 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
              <if test="category != null">
                AND UPPER(direction)='IN' AND COALESCE(amount,0)&gt;0
-               AND CASE
-                 WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
+                AND CASE
+                  WHEN UPPER(COALESCE(biz_type,''))='TRIAL_CHARGE' THEN 'purchase'
+                  WHEN UPPER(COALESCE(biz_type,'')) IN ('TRIAL_BONUS','DAILY_CHECK_IN') THEN 'reward'
+                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'WITHDRAW|PAYOUT' THEN 'withdraw'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP' THEN 'refer'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'STAKE|STAKING' THEN IF(UPPER(direction)='IN','unstake','stake')
@@ -67,8 +69,10 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
              <if test="category != null">
                AND UPPER(direction)='IN' AND COALESCE(amount,0)&gt;0
-               AND CASE
-                 WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
+                AND CASE
+                  WHEN UPPER(COALESCE(biz_type,''))='TRIAL_CHARGE' THEN 'purchase'
+                  WHEN UPPER(COALESCE(biz_type,'')) IN ('TRIAL_BONUS','DAILY_CHECK_IN') THEN 'reward'
+                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'WITHDRAW|PAYOUT' THEN 'withdraw'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP' THEN 'refer'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'STAKE|STAKING' THEN IF(UPPER(direction)='IN','unstake','stake')
@@ -94,8 +98,10 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
              <if test="direction != null">AND UPPER(direction)=#{direction} AND COALESCE(amount,0)&gt;0</if>
              <if test="category != null">
                AND UPPER(direction)='IN' AND COALESCE(amount,0)&gt;0
-               AND CASE
-                 WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
+                AND CASE
+                  WHEN UPPER(COALESCE(biz_type,''))='TRIAL_CHARGE' THEN 'purchase'
+                  WHEN UPPER(COALESCE(biz_type,'')) IN ('TRIAL_BONUS','DAILY_CHECK_IN') THEN 'reward'
+                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'WITHDRAW|PAYOUT' THEN 'withdraw'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP' THEN 'refer'
                  WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'STAKE|STAKING' THEN IF(UPPER(direction)='IN','unstake','stake')
@@ -131,10 +137,22 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                           ELSE -GREATEST(COALESCE(amount,0),0) END ELSE 0 END),0) todayNexEarn,
               COALESCE(SUM(CASE WHEN UPPER(asset)='NEX' AND UPPER(status)='PENDING'
                 THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) pendingNex,
-              COALESCE(SUM(CASE WHEN created_at >= #{monthStart} AND created_at < #{nextMonth} THEN 1 ELSE 0 END),0) monthBillCount
+              COALESCE(SUM(CASE WHEN created_at >= #{monthStart} AND created_at < #{nextMonth} THEN 1 ELSE 0 END),0) monthBillCount,
+              COALESCE(SUM(CASE WHEN bill_category IN ('refer','achievement','reward') AND UPPER(direction)='IN'
+                AND UPPER(asset)='NEX' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED')
+                THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) settledRewardsNex,
+              GREATEST(COALESCE(SUM(CASE WHEN UPPER(asset)='NEX'
+                AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED') THEN CASE
+                  WHEN UPPER(biz_type)='WITHDRAW_FEE_OFFSET' AND UPPER(direction)='OUT'
+                    THEN GREATEST(COALESCE(amount,0),0)
+                  WHEN UPPER(biz_type) IN ('WITHDRAW_FEE_OFFSET_REFUND','WITHDRAW_PAYOUT_NEX_REFUND')
+                    AND UPPER(direction)='IN' THEN -GREATEST(COALESCE(amount,0),0)
+                  ELSE 0 END ELSE 0 END),0),0) withdrawalOffsetNexSpent
               FROM (
-                SELECT asset,direction,amount,status,created_at,
+                SELECT asset,direction,amount,status,created_at,biz_type,
                   CASE
+                    WHEN UPPER(COALESCE(biz_type,''))='TRIAL_CHARGE' THEN 'purchase'
+                    WHEN UPPER(COALESCE(biz_type,'')) IN ('TRIAL_BONUS','DAILY_CHECK_IN') THEN 'reward'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'DEPOSIT|TOPUP|RECHARGE' THEN 'topup'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'WITHDRAW|PAYOUT' THEN 'withdraw'
                     WHEN UPPER(COALESCE(biz_type,'')) REGEXP 'REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP' THEN 'refer'
@@ -172,5 +190,11 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                      BigDecimal amount, BigDecimal balanceAfter, String status, String remark,
                      LocalDateTime createdAt) { }
     record SummaryRow(BigDecimal rewardsUsdt, BigDecimal rewardsNex, LocalDateTime latestRewardAt,
-                      BigDecimal todayNexEarn, BigDecimal pendingNex, Long monthBillCount) { }
+                      BigDecimal todayNexEarn, BigDecimal pendingNex, Long monthBillCount,
+                      BigDecimal settledRewardsNex, BigDecimal withdrawalOffsetNexSpent) {
+        public SummaryRow(BigDecimal rewardsUsdt, BigDecimal rewardsNex, LocalDateTime latestRewardAt,
+                          BigDecimal todayNexEarn, BigDecimal pendingNex, Long monthBillCount) {
+            this(rewardsUsdt, rewardsNex, latestRewardAt, todayNexEarn, pendingNex, monthBillCount, null, null);
+        }
+    }
 }

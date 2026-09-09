@@ -168,7 +168,8 @@ class AppWalletBillsServiceTest {
                 LocalDateTime.of(2026, 9, 1, 0, 0), LocalDateTime.of(2026, 9, 2, 0, 0),
                 LocalDateTime.of(2026, 9, 1, 0, 0), LocalDateTime.of(2026, 10, 1, 0, 0)))
                 .thenReturn(new AppWalletBillsMapper.SummaryRow(new BigDecimal("1.2"), new BigDecimal("3.4"),
-                        LocalDateTime.of(2026, 8, 30, 23, 0), new BigDecimal("-2"), new BigDecimal("5"), 8L));
+                        LocalDateTime.of(2026, 8, 30, 23, 0), new BigDecimal("-2"), new BigDecimal("5"), 8L,
+                        new BigDecimal("1.4"), new BigDecimal("0.6")));
         when(mapper.recentNexRows(7L, 10)).thenReturn(List.of(
                 ledgerRow(42L, "SUCCESS", "PURCHASE_REWARD", "NEX", "IN", LocalDateTime.of(2026, 8, 31, 8, 0)),
                 ledgerRow(41L, "PENDING", "QUEST_REWARD", "NEX", "IN", LocalDateTime.of(2026, 8, 31, 7, 0)),
@@ -182,7 +183,9 @@ class AppWalletBillsServiceTest {
                 .containsEntry("timeZone", "Asia/Shanghai").containsEntry("asOf", "2026-08-31T16:30:00Z")
                 .containsEntry("rewardsUsdt", new BigDecimal("1.2")).containsEntry("rewardsNex", new BigDecimal("3.4"))
                 .containsEntry("todayNexEarn", new BigDecimal("-2")).containsEntry("pendingNex", new BigDecimal("5"))
-                .containsEntry("monthBillCount", 8L);
+                .containsEntry("monthBillCount", 8L)
+                .containsEntry("settledRewardsNex", new BigDecimal("1.4"))
+                .containsEntry("withdrawalOffsetNexSpent", new BigDecimal("0.6"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> rows = (List<Map<String, Object>>) result.get("recentNexBills");
         assertThat(rows).extracting(row -> row.get("category")).containsExactly("bonus", "achievement", "bonus");

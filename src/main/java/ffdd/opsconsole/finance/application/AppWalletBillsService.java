@@ -99,6 +99,8 @@ public class AppWalletBillsService {
         result.put("latestRewardAt", apiInstant(summary.latestRewardAt()));
         result.put("todayNexEarn", signed(summary.todayNexEarn()));
         result.put("pendingNex", nonNegative(summary.pendingNex()));
+        result.put("settledRewardsNex", nonNegative(summary.settledRewardsNex()));
+        result.put("withdrawalOffsetNexSpent", nonNegative(summary.withdrawalOffsetNexSpent()));
         result.put("monthBillCount", Math.max(0L, summary.monthBillCount() == null ? 0L : summary.monthBillCount()));
         result.put("recentNexBills", mapper.recentNexRows(userId, 10).stream().map(this::bill).toList());
         return ApiResult.ok(result);
@@ -235,6 +237,8 @@ public class AppWalletBillsService {
     private String category(String bizType, String direction) {
         String value = bizType == null ? "" : bizType.toUpperCase(Locale.ROOT);
         String normalizedDirection = direction == null ? "" : direction.toUpperCase(Locale.ROOT);
+        if ("TRIAL_CHARGE".equals(value)) return "purchase";
+        if ("TRIAL_BONUS".equals(value) || "DAILY_CHECK_IN".equals(value)) return "bonus";
         if (value.matches(".*(DEPOSIT|TOPUP|RECHARGE).*$")) return "topup";
         if (value.matches(".*(WITHDRAW|PAYOUT).*$")) return "withdraw";
         if (value.matches(".*(REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP).*$")) return "refer";

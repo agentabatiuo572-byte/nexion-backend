@@ -122,6 +122,26 @@ class AppWalletBillsMySqlIntegrationTest {
     }
 
     @Test
+    void dailyMetricsExcludeUnsettledRewardsAndNetBothWithdrawalRefundPaths() {
+        ledger(USER, "SIGN-IN", "DAILY_CHECK_IN", "NEX", "IN", "4", "4", "POSTED", DAY, 0);
+        ledger(USER, "TRIAL", "TRIAL_BONUS", "NEX", "IN", "195", "199", "SUCCESS", DAY, 0);
+        ledger(USER, "PENDING-REWARD", "QUEST_REWARD", "NEX", "IN", "100", "299", "PENDING", DAY, 0);
+        ledger(USER, "FAILED-REWARD", "QUEST_REWARD", "NEX", "IN", "200", "499", "FAILED", DAY, 0);
+        ledger(USER, "OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "30", "169", "POSTED", DAY, 0);
+        ledger(USER, "REJECT-REFUND", "WITHDRAW_FEE_OFFSET_REFUND", "NEX", "IN", "5", "174", "SUCCESS", DAY, 0);
+        ledger(USER, "PAYOUT-REFUND", "WITHDRAW_PAYOUT_NEX_REFUND", "NEX", "IN", "7", "181", "POSTED", DAY, 0);
+        ledger(USER, "SWAP", "EXCHANGE", "NEX", "OUT", "50", "131", "POSTED", DAY, 0);
+        ledger(USER, "PENDING-OFFSET", "WITHDRAW_FEE_OFFSET", "NEX", "OUT", "500", "131", "PENDING", DAY, 0);
+        ledger(OTHER_USER, "OTHER-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 0);
+        ledger(USER, "DELETED-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 1);
+        var summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
+        assertThat(summary.settledRewardsNex()).isEqualByComparingTo("199");
+        assertThat(summary.withdrawalOffsetNexSpent()).isEqualByComparingTo("18");
+        // Existing gross reward counters retain their established contract.
+        assertThat(summary.rewardsNex()).isEqualByComparingTo("499");
+    }
+
+    @Test
     void keysetFiltersAndSummaryStayScopedAndExactAcrossMoreThanOneThousandRows() {
         for (int index = 0; index < 1_100; index++) {
             ledger(USER, "BULK-" + index, "EARN", "NEX", "IN", "1", "100", "SUCCESS",
@@ -158,14 +178,15 @@ class AppWalletBillsMySqlIntegrationTest {
         assertThat(mapper.rowsAfter(USER, 2_000, null, "IN", null, null, null))
                 .noneSatisfy(row -> assertThat(row.bizNo()).isIn("ZERO", "NEGATIVE", "NULL-AMOUNT"));
         assertThat(mapper.rowsAfter(USER, 20, null, null, "REWARD", null, null))
-                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains("QUEST", "COMMISSION")
-                .doesNotContain("STAKE-ACH", "ORDER-QUEST");
+                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains("ORDER-QUEST", "QUEST", "COMMISSION")
+                .doesNotContain("STAKE-ACH");
 
         AppWalletBillsMapper.SummaryRow summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1),
                 DAY.withDayOfMonth(1).plusMonths(1));
         assertThat(summary.rewardsUsdt()).isEqualByComparingTo("2");
-        assertThat(summary.rewardsNex()).isEqualByComparingTo("3");
-        assertThat(summary.todayNexEarn()).isEqualByComparingTo("1114");
+        assertThat(summary.rewardsNex()).isEqualByComparingTo("11");
+        // 1,100 EARN rows + two tied EARN rows + pending EARN amount 4; ORDER_QUEST is a reward.
+        assertThat(summary.todayNexEarn()).isEqualByComparingTo("1106");
         assertThat(summary.pendingNex()).isEqualByComparingTo("4");
         assertThat(summary.monthBillCount()).isEqualTo(1_111L);
         assertThat(mapper.recentNexRows(USER, 10)).noneSatisfy(row -> assertThat(row.bizNo()).isEqualTo("FAILED"));
