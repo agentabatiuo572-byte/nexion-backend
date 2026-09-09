@@ -1,5 +1,6 @@
 param(
   [string]$Maven = "D:\software\apache-maven-3.9.9\bin\mvn.cmd",
+  [ValidateRange(1, 65535)]
   [int]$Port = 8110,
   [string]$LogDir = "",
   [string]$MySql = "D:\software\MySQL\MySQL Server 8.0\bin\mysql.exe",
@@ -15,6 +16,9 @@ $localNovaAiEnabled = if ($null -eq $EnableLocalNovaAi) { $SpringProfile -eq "de
 $previousAcceptanceRunId = [Environment]::GetEnvironmentVariable("NEXION_ACCEPTANCE_RUN_ID", "Process")
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "assert_ops_console_monolith_port_available.ps1")
+Assert-OpsConsoleMonolithPortAvailable -Port $Port
+
 $databaseEnvironment = & (Join-Path $PSScriptRoot "resolve_nexion_database_environment.ps1") `
   -RequireExplicit:($SpringProfile -eq "prod")
 $databaseVariableNames = @(
