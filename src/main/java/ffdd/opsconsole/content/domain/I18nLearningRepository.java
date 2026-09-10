@@ -88,6 +88,24 @@ public interface I18nLearningRepository {
 
     Optional<LearningCourseView> findCourse(String courseId);
 
+    /** Public App projection; unpublished message revisions must never enter these views. */
+    default List<LearningCourseView> listPublishedCourses() {
+        throw new UnsupportedOperationException("LEARNING_PUBLISHED_COURSES_NOT_AVAILABLE");
+    }
+
+    default Optional<LearningCourseView> findPublishedCourse(String courseId) {
+        throw new UnsupportedOperationException("LEARNING_PUBLISHED_COURSE_NOT_AVAILABLE");
+    }
+
+    default Optional<LearningCourseView> findPublishedCourseForUpdate(String courseId) {
+        throw new UnsupportedOperationException("LEARNING_PUBLISHED_COURSE_LOCK_NOT_AVAILABLE");
+    }
+
+    /** Current read held through completion/award commit, blocking concurrent course writes. */
+    default Optional<LearningCourseView> findCourseForUpdate(String courseId) {
+        throw new UnsupportedOperationException("LEARNING_COURSE_LOCK_NOT_AVAILABLE");
+    }
+
     LearningCourseView createCourse(String courseId, LearningCourseUpsertRequest request, LocalDateTime now);
 
     LearningCourseView updateCourseDraft(String courseId, LearningCourseUpsertRequest request, LocalDateTime now);

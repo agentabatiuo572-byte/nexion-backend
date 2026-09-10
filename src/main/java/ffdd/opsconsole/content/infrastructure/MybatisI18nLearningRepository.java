@@ -440,6 +440,32 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public Optional<LearningCourseView> findCourseForUpdate(String courseId) {
+        return Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId)).map(this::toCourseView);
+    }
+
+    @Override
+    public List<LearningCourseView> listPublishedCourses() {
+        return learningCourseEntities().stream()
+                .filter(entity -> Integer.valueOf(1).equals(entity.getStatus()))
+                .map(entity -> toCourseView(entity, true)).toList();
+    }
+
+    @Override
+    public Optional<LearningCourseView> findPublishedCourse(String courseId) {
+        return findCourseEntity(courseId)
+                .filter(entity -> Integer.valueOf(1).equals(entity.getStatus()))
+                .map(entity -> toCourseView(entity, true));
+    }
+
+    @Override
+    public Optional<LearningCourseView> findPublishedCourseForUpdate(String courseId) {
+        return Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId))
+                .filter(entity -> Integer.valueOf(1).equals(entity.getStatus()))
+                .map(entity -> toCourseView(entity, true));
+    }
+
+    @Override
     public LearningCourseView createCourse(String courseId, LearningCourseUpsertRequest request, LocalDateTime now) {
         HelpArticleEntity entity = new HelpArticleEntity();
         String category = request.category().trim().toLowerCase(Locale.ROOT);
@@ -531,22 +557,22 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public LearningCourseView updateCourseStatus(String courseId, String status, LocalDateTime now) {
-        HelpArticleEntity entity = findCourseEntity(courseId).orElseThrow();
+        HelpArticleEntity entity = Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId)).orElseThrow();
         entity.setStatus(toDbCourseStatus(status));
         entity.setRevision(longValue(entity.getRevision()) + 1L);
         entity.setUpdatedAt(now);
         helpArticleMapper.updateById(entity);
-        return findCourse(courseId).orElseGet(() -> toCourseView(entity));
+        return toCourseView(entity);
     }
 
     @Override
     public LearningCourseView updateCourseReward(String courseId, BigDecimal rewardNex, LocalDateTime now) {
-        HelpArticleEntity entity = findCourseEntity(courseId).orElseThrow();
+        HelpArticleEntity entity = Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId)).orElseThrow();
         entity.setRewardNex(rewardNex);
         entity.setRevision(longValue(entity.getRevision()) + 1L);
         entity.setUpdatedAt(now);
         helpArticleMapper.updateById(entity);
-        return findCourse(courseId).orElseGet(() -> toCourseView(entity));
+        return toCourseView(entity);
     }
 
     @Override
@@ -967,9 +993,15 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     private LearningCourseView toCourseView(HelpArticleEntity entity) {
+        return toCourseView(entity, false);
+    }
+
+    private LearningCourseView toCourseView(HelpArticleEntity entity, boolean publishedOnly) {
         String id = courseId(entity.getArticleCode());
-        I18nMessagePairView title = findMessagePair("learn." + id + ".title").orElse(null);
-        I18nMessagePairView body = findMessagePair("learn." + id + ".body").orElse(null);
+        String titleKey = "learn." + id + ".title";
+        String bodyKey = "learn." + id + ".body";
+        I18nMessagePairView title = (publishedOnly ? findPublishedMessagePair(titleKey) : findMessagePair(titleKey)).orElse(null);
+        I18nMessagePairView body = (publishedOnly ? findPublishedMessagePair(bodyKey) : findMessagePair(bodyKey)).orElse(null);
         String titleZh = title == null ? text(entity.getTitle(), "") : text(title.zh(), text(entity.getTitle(), ""));
         String titleEn = title == null ? "" : text(title.en(), "");
         String titleVi = title == null ? "" : text(title.vi(), "");

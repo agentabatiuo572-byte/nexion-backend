@@ -36,7 +36,8 @@ public interface HelpArticleMapper extends BaseMapper<HelpArticleEntity> {
     @Select("""
             SELECT *
               FROM nx_help_article
-             WHERE article_code LIKE CONCAT('learn.%.', #{courseId})
+             WHERE article_code LIKE 'learn.%'
+               AND BINARY SUBSTRING_INDEX(article_code, '.', -1) = BINARY #{courseId}
                AND is_deleted = 0
              LIMIT 1
              FOR UPDATE

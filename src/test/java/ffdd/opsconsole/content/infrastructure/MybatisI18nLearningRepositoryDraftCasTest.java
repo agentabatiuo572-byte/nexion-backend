@@ -29,6 +29,31 @@ import org.springframework.dao.DuplicateKeyException;
 class MybatisI18nLearningRepositoryDraftCasTest {
 
     @Test
+    void pcCourseMutationsReadTheLockedEntityInsteadOfAnOlderSnapshot() {
+        HelpArticleMapper mapper = mock(HelpArticleMapper.class);
+        HelpArticleEntity current = new HelpArticleEntity();
+        current.setId(7L);
+        current.setArticleCode("learn.basics.current-course");
+        current.setStatus(1);
+        current.setRevision(9L);
+        current.setRewardNex(new java.math.BigDecimal("7"));
+        current.setVersionNo(3);
+        when(mapper.lockLearningCourse("current-course")).thenReturn(current);
+        MybatisI18nLearningRepository repository = new MybatisI18nLearningRepository(
+                mock(I18nNamespaceMapper.class), mock(I18nMessageMapper.class), mock(I18nMessageVersionMapper.class),
+                mock(I18nIntegrityIssueMapper.class), mock(I18nHardcodedFindingMapper.class), mapper,
+                mock(LearningCourseVersionMapper.class), mock(AppLearningMapper.class));
+        var archived = repository.updateCourseStatus("current-course", "archived", LocalDateTime.now());
+        assertThat(archived.revision()).isEqualTo(10);
+        assertThat(archived.rewardNex()).isEqualByComparingTo("7");
+        var rewarded = repository.updateCourseReward("current-course", java.math.BigDecimal.ONE, LocalDateTime.now());
+        assertThat(rewarded.status()).isEqualTo("archived");
+        assertThat(rewarded.revision()).isEqualTo(11);
+        verify(mapper, org.mockito.Mockito.times(2)).lockLearningCourse("current-course");
+        verify(mapper, never()).selectList(any());
+    }
+
+    @Test
     void malformedStoredQuizFailsClosedInsteadOfPublishingAQuizlessCourse() {
         HelpArticleMapper helpArticleMapper = mock(HelpArticleMapper.class);
         HelpArticleEntity course = new HelpArticleEntity();

@@ -56,6 +56,7 @@ class AppLearningServiceTest {
             sandboxIdempotencyService, "test-learning-run");
 
     AppLearningServiceTest() {
+        when(repository.findPublishedCourseForUpdate(anyString())).thenAnswer(invocation -> repository.findPublishedCourse(invocation.getArgument(0)));
         when(mapper.readRewardEnvironment(anyLong())).thenReturn("PRODUCTION");
         when(sandboxGate.enabled("PRODUCTION")).thenReturn(false);
         when(sandboxGate.enabled("SANDBOX")).thenReturn(true);
@@ -76,8 +77,16 @@ class AppLearningServiceTest {
     }
 
     @Test
+    void completeRejectsALockedCourseWithADifferentExactId() {
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        when(repository.findPublishedCourseForUpdate("%")).thenReturn(Optional.of(course("published")));
+        assertThat(service.complete(42L, "%").getCode()).isEqualTo(404);
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
+    }
+
+    @Test
     void overviewReturnsPublishedCoursesInVietnameseWithRealStats() {
-        when(repository.listCourses()).thenReturn(List.of(course("published"), course("draft")));
+        when(repository.listPublishedCourses()).thenReturn(List.of(course("published"), course("draft")));
         when(mapper.readRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.listProgress(42L)).thenReturn(List.of());
         when(mapper.sumGrantedReward(42L)).thenReturn(new BigDecimal("20.000000"));
@@ -101,7 +110,7 @@ class AppLearningServiceTest {
         when(sandboxGate.isStrictDevelopmentRuntime()).thenReturn(true);
         allowDevelopmentAccount();
         when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
-        when(repository.listCourses()).thenReturn(List.of(course("published")));
+        when(repository.listPublishedCourses()).thenReturn(List.of(course("published")));
         when(mapper.listProgress(42L)).thenReturn(List.of());
         when(mapper.sumGrantedReward(42L)).thenReturn(new BigDecimal("20.000000"));
 
@@ -123,7 +132,7 @@ class AppLearningServiceTest {
 
     @Test
     void productionReceiptExposesTheDurableIdempotencyState() throws Exception {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.findProductionQuizReceipt(anyString(), eq("pending-key")))
                 .thenReturn(new LearningSandboxIdempotencyRow("hash-pending", "PROCESSING", null));
         when(mapper.findProductionQuizReceipt(anyString(), eq("failed-key")))
@@ -233,7 +242,7 @@ class AppLearningServiceTest {
 
     @Test
     void controlledProfileNormalUserFailsBeforeStartCanWriteAnyLearningFact() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         doThrow(new IllegalStateException("LEARNING_ACCEPTANCE_SANDBOX_USER_REQUIRED"))
                 .when(sandboxGate).requireEnabled("PRODUCTION");
@@ -250,7 +259,7 @@ class AppLearningServiceTest {
 
     @Test
     void passingQuizCreditsRewardOnlyOnceForUserCourseVersion() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1, 0);
@@ -276,7 +285,7 @@ class AppLearningServiceTest {
 
     @Test
     void quizRejectsMissingIdempotencyKeyBeforeItCanConsumeAnAttempt() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
 
         var result = service.submitQuiz(42L, "test-course", new AppLearningQuizSubmitRequest(List.of(1), " "));
 
@@ -288,7 +297,7 @@ class AppLearningServiceTest {
 
     @Test
     void quizRejectsSameKeyWithDifferentAnswersWithoutConsumingAnotherAttempt() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
         when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(0);
@@ -304,7 +313,7 @@ class AppLearningServiceTest {
 
     @Test
     void passingQuizCreditsSandboxRewardToItsSandboxLedgerExactlyOnce() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourse());
         when(mapper.findSandboxProgress("test-learning-run", 42L, "test-course", "v2")).thenReturn(null);
         when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
@@ -342,7 +351,7 @@ class AppLearningServiceTest {
     void developmentQuizWritesCanonicalProductionFactsForAnyActiveDevelopmentAccount() {
         when(sandboxGate.isStrictDevelopmentRuntime()).thenReturn(true);
         allowDevelopmentAccount();
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.readRewardEnvironment(42L)).thenReturn("SANDBOX");
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
@@ -366,7 +375,7 @@ class AppLearningServiceTest {
 
     @Test
     void contentOnlySandboxCompletionKeepsItsVisibleRewardWithoutPublishingProductionFacts() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
         when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourseWithoutQuiz());
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
         when(mapper.grantSandboxReward(anyString(), anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
@@ -395,7 +404,7 @@ class AppLearningServiceTest {
 
     @Test
     void contentOnlyCompletionReplayDoesNotMutateAttemptsOrIssueAnotherReward() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
         when(mapper.findSandboxPublishedCourse("test-learning-run", "test-course")).thenReturn(sandboxCourseWithoutQuiz());
         when(mapper.lockRewardEnvironment(42L)).thenReturn("SANDBOX");
         when(mapper.findSandboxProgress("test-learning-run", 42L, "test-course", "v2"))
@@ -415,7 +424,7 @@ class AppLearningServiceTest {
 
     @Test
     void inconsistentRewardEnvironmentFailsClosedBeforeCompletionSideEffects() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(courseWithoutQuiz("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("UNKNOWN");
 
         assertThatThrownBy(() -> service.complete(42L, "test-course"))
@@ -432,7 +441,7 @@ class AppLearningServiceTest {
     @Test
     void longestValidCourseIdStillUsesABoundedDurableIdempotencyScope() {
         String courseId = "c".repeat(81);
-        when(repository.findCourse(courseId)).thenReturn(Optional.of(course(courseId, "published")));
+        when(repository.findPublishedCourse(courseId)).thenReturn(Optional.of(course(courseId, "published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, courseId, "v2")).thenReturn(null);
 
@@ -449,7 +458,7 @@ class AppLearningServiceTest {
 
     @Test
     void malformedAnswerFailsClosedBeforeItRecordsProgressOrIssuesReward() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
 
@@ -466,7 +475,7 @@ class AppLearningServiceTest {
 
     @Test
     void aNewKeyAfterCompletionReplaysTheCompletedStateWithoutAnotherAttemptOrReward() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2"))
                 .thenReturn(new LearningProgressRow("test-course", "v2", 100, 1, LocalDateTime.now()));
@@ -488,7 +497,7 @@ class AppLearningServiceTest {
 
     @Test
     void staleQuizVersionFailsClosedBeforeItCanConsumeAnAttempt() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
 
         var result = service.submitQuiz(42L, "test-course",
                 new AppLearningQuizSubmitRequest(List.of(1), "learning-quiz:stale-version", "v1"));
@@ -502,7 +511,7 @@ class AppLearningServiceTest {
 
     @Test
     void completedQuizReadbackReportsAnAlreadyGrantedServerRewardWithoutIssuingItAgain() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2"))
                 .thenReturn(new LearningProgressRow("test-course", "v2", 100, 1, 100, LocalDateTime.now()));
@@ -520,7 +529,7 @@ class AppLearningServiceTest {
 
     @Test
     void rewardFailureKeepsTheCompletionUnpublishedSoTheIdempotencyTransactionCanRollBack() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
         when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
@@ -539,7 +548,7 @@ class AppLearningServiceTest {
 
     @Test
     void failedAnswerClosesItsAttemptSoAChangedAnswerWithANewKeyCanPassExactlyOnce() {
-        when(repository.findCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
         when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
         when(mapper.findProgress(42L, "test-course", "v2")).thenReturn(null);
         when(mapper.grantReward(anyString(), anyLong(), anyString(), anyString(), any())).thenReturn(1);
@@ -570,6 +579,35 @@ class AppLearningServiceTest {
     }
 
     private record QuizReceipt(String requestHash, Object result) { }
+
+    @Test
+    void quizDoesNotAwardAfterPcArchivesTheCourseBeforeTheCommandTransaction() {
+        rejectsChangedCourseDuringQuiz(course("archived"));
+    }
+
+    @Test
+    void quizDoesNotAwardTheOldAmountAfterPcLowersTheSameVersionReward() {
+        LearningCourseView old = course("published");
+        rejectsChangedCourseDuringQuiz(new LearningCourseView(old.id(), old.title(), old.category(), old.format(),
+                old.level(), BigDecimal.ZERO, old.featured(), old.duration(), old.version(), old.status(),
+                old.body(), old.titleZh(), old.titleEn(), old.bodyZh(), old.bodyEn(), old.quizQuestions(),
+                old.passScore(), old.retryLimit(), old.completionCondition(), old.rewardEvent(), old.revision() + 1,
+                old.titleVi(), old.bodyVi()));
+    }
+
+    private void rejectsChangedCourseDuringQuiz(LearningCourseView updated) {
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
+        when(mapper.lockRewardEnvironment(42L)).thenReturn("PRODUCTION");
+        org.mockito.Mockito.doAnswer(invocation -> {
+            when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(updated));
+            return ((Supplier<?>) invocation.getArgument(4)).get();
+        }).when(idempotencyService).execute(anyString(), anyString(), anyString(), any(), any());
+        var result = service.submitQuiz(42L, "test-course",
+                new AppLearningQuizSubmitRequest(List.of(1), "pc-course-race-key", "v2"));
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(mapper, never()).grantReward(anyString(), anyLong(), anyString(), anyString(), any());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
 
     private static LearningCourseView course(String status) {
         return course("test-course", status);

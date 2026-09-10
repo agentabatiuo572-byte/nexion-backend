@@ -104,7 +104,7 @@ public class AppLearningService {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         requireDevelopmentAccount(userId);
         String sourceEnvironment = lockedRewardEnvironment(userId);
-        LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
+        LearningCourseView course = lockedPublishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         ApiResult<AppLearningQuizResult> versionGuard = requireExpectedVersion(course, expectedVersion);
         if (versionGuard != null) return versionGuard;
@@ -171,6 +171,14 @@ public class AppLearningService {
             List<LearningQuizQuestionView> questions,
             List<Integer> answers) {
         String sourceEnvironment = lockedRewardEnvironment(userId);
+        // A request can wait before its idempotent transaction starts. Re-read
+        // under a row lock that blocks PC writes; keep it until award commit.
+        LearningCourseView current = lockedPublishedCourse(course.id(), sourceEnvironment);
+        if (current == null || !current.version().equals(course.version()) || current.revision() != course.revision()) {
+            throw new BizException(409, "LEARNING_COURSE_VERSION_CONFLICT");
+        }
+        course = current;
+        questions = course.quizQuestions() == null ? List.of() : course.quizQuestions();
         startCourse(sourceEnvironment, userId, course);
         LearningProgressRow progress = lockedOrReadProgress(sourceEnvironment, userId, course);
         int attempts = progress == null ? 0 : progress.attempts();
@@ -268,7 +276,7 @@ public class AppLearningService {
         if (sandbox(sourceEnvironment)) {
             return learningMapper.listSandboxPublishedCourses(sandboxRunId()).stream().map(this::toSandboxCourse).toList();
         }
-        return learningRepository.listCourses().stream().filter(course -> "published".equals(course.status())).toList();
+        return learningRepository.listPublishedCourses().stream().filter(course -> "published".equals(course.status())).toList();
     }
 
     private LearningCourseView toSandboxCourse(LearningSandboxCourseRow row) {
@@ -285,13 +293,23 @@ public class AppLearningService {
         }
     }
 
+    private LearningCourseView lockedPublishedCourse(String courseId, String sourceEnvironment) {
+        if (!StringUtils.hasText(courseId)) return null;
+        // The isolated acceptance catalog is not edited through the production PC.
+        if (sandbox(sourceEnvironment)) return publishedCourse(courseId, sourceEnvironment);
+        return learningRepository.findPublishedCourseForUpdate(courseId.trim())
+                .filter(course -> courseId.trim().equals(course.id()))
+                .filter(course -> "published".equals(course.status())).orElse(null);
+    }
+
     private LearningCourseView publishedCourse(String courseId, String sourceEnvironment) {
         if (!StringUtils.hasText(courseId)) return null;
         if (sandbox(sourceEnvironment)) {
             LearningSandboxCourseRow row = learningMapper.findSandboxPublishedCourse(sandboxRunId(), courseId.trim());
             return row == null ? null : toSandboxCourse(row);
         }
-        return learningRepository.findCourse(courseId.trim())
+        return learningRepository.findPublishedCourse(courseId.trim())
+                .filter(course -> courseId.trim().equals(course.id()))
                 .filter(course -> "published".equals(course.status()))
                 .orElse(null);
     }

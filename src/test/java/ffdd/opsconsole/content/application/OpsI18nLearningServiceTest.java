@@ -663,6 +663,11 @@ class OpsI18nLearningServiceTest {
         }
 
         @Override
+        public Optional<LearningCourseView> findCourseForUpdate(String courseId) {
+            return findCourse(courseId);
+        }
+
+        @Override
         public Optional<LearningCourseView> findCourse(String courseId) {
             return courses.stream().filter(row -> row.id().equals(courseId)).findFirst();
         }

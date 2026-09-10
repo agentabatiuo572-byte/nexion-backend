@@ -560,7 +560,7 @@ public class OpsI18nLearningService {
         if (guard != null) {
             return fail(guard);
         }
-        LearningCourseView current = findCourse(courseId);
+        LearningCourseView current = findCourseForUpdate(courseId);
         if (current == null) {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
@@ -584,7 +584,7 @@ public class OpsI18nLearningService {
                 && lockMapper.countActiveByTarget("I", "learning_course", courseId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        LearningCourseView current = findCourse(courseId);
+        LearningCourseView current = findCourseForUpdate(courseId);
         if (current == null) {
             return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         }
@@ -909,6 +909,11 @@ public class OpsI18nLearningService {
 
     private LearningCourseView findCourse(String courseId) {
         return StringUtils.hasText(courseId) ? learningRepository.findCourse(courseId.trim()).orElse(null) : null;
+    }
+
+    private LearningCourseView findCourseForUpdate(String courseId) {
+        return StringUtils.hasText(courseId) ? learningRepository.findCourseForUpdate(courseId.trim())
+                .filter(course -> courseId.trim().equals(course.id())).orElse(null) : null;
     }
 
     private boolean containsUnsafeText(String... values) {
