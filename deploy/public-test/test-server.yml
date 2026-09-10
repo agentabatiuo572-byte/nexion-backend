@@ -1,0 +1,81 @@
+# AWS test-server is a TEST deployment. This version supports dev/prod only;
+# dev selects the normal business rail in this instance's isolated test database.
+# Load with --spring.config.additional-location=file:.../test-server.yml.
+# Switching to production requires an explicit user decision and removing this file.
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    url: ${NEXION_DB_URL}
+    username: ${NEXION_DB_USERNAME}
+    password: ${NEXION_DB_PASSWORD}
+  data:
+    redis:
+      host: ${NEXION_REDIS_HOST}
+      port: ${NEXION_REDIS_PORT}
+      password: ${NEXION_REDIS_PASSWORD}
+
+server:
+  forward-headers-strategy: none
+
+nexion:
+  deployment:
+    public-test: true
+  auth:
+    user-otp:
+      local-fixed-code-enabled: true
+  jwt:
+    secret: ${NEXION_JWT_SECRET}
+  admin-auth:
+    mfa:
+      temporary-superadmin-bypass-enabled: false
+  gateway:
+    header-authentication-enabled: false
+  home:
+    development-settlement:
+      enabled: false
+  treasury:
+    development-reserve:
+      enabled: false
+  developer:
+    webhooks:
+      allow-loopback: false
+  geo-block:
+    allow-loopback-without-country: false
+    trusted-proxy-addresses: ${NEXION_GEO_TRUSTED_PROXIES}
+  finance:
+    development-payout-address:
+      enabled: false
+    funds-sandbox:
+      mode: DISABLED
+    payment-method-provider:
+      mode: DISABLED
+    payout-vnd-provider:
+      mode: DISABLED
+    cregis:
+      mode: DISABLED
+    hdpay:
+      mode: DISABLED
+  janus:
+    executor:
+      mode: PRODUCTION
+      production-applied-enabled: false
+  compute-task:
+    executor:
+      mode: PRODUCTION
+  support:
+    acceptance-sandbox:
+      mode: DISABLED
+  market:
+    g2-acceptance-sandbox:
+      mode: DISABLED
+  storage:
+    endpoint: ${NEXION_MINIO_ENDPOINT}
+    access-key: ${NEXION_MINIO_ACCESS_KEY}
+    secret-key: ${NEXION_MINIO_SECRET_KEY}
+
+nexgrid:
+  sms:
+    itnio:
+      enabled: false
