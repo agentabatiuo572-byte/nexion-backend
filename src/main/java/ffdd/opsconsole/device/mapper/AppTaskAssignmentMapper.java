@@ -209,24 +209,13 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     AssignmentRow lockActiveAssignment(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                        @Param("sourceEnvironment") String sourceEnvironment);
 
+    /**
+     * Reads only the caller's already-authorized device set. Each completed branch walks its
+     * device's descending task index until ten records have been found; it must not materialize
+     * the user's entire task history merely to produce the App's ten-row preview.
+     */
     @Select("""
-            WITH ranked_tasks AS (
-                SELECT t.*,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY t.user_device_id,
-                               CASE WHEN UPPER(t.status) IN ('CLAIMED','RUNNING')
-                                    THEN 'ACTIVE' ELSE 'COMPLETED' END
-                           ORDER BY t.created_at DESC, t.id DESC
-                       ) AS device_rank
-                  FROM nx_compute_task t
-                  JOIN nx_user u ON u.id = t.user_id
-                    AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
-                 WHERE t.user_id = #{userId}
-                   AND t.source_environment = 'PRODUCTION'
-                   AND t.source_environment = #{sourceEnvironment}
-                   AND t.is_deleted = 0
-                   AND UPPER(t.status) IN ('CLAIMED','RUNNING','COMPLETED')
-            )
+            <script>
             SELECT t.task_no AS taskNo, t.user_device_id AS deviceId, t.task_config_id AS taskId,
                    t.task_name AS taskName, t.task_type AS taskClass, t.model_name AS modelName,
                    t.client_name AS clientName, t.status, t.reward_usdt AS rewardUsdt,
@@ -234,15 +223,47 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.started_at AS startedAt, t.lease_expires_at AS leaseExpiresAt,
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
                    t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
-              FROM ranked_tasks t
+              FROM (
+                <foreach collection='deviceIds' item='deviceId' separator=' UNION ALL '>
+                  (
+                    SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
+                           t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
+                           t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
+                           t.source_environment, t.completion_nonce, t.proof_expires_at, t.created_at, t.id
+                      FROM nx_compute_task t
+                      JOIN nx_user u ON u.id = t.user_id
+                        AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+                     WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId}
+                       AND t.source_environment = 'PRODUCTION'
+                       AND t.source_environment = #{sourceEnvironment}
+                       AND t.is_deleted = 0 AND t.status IN ('CLAIMED','RUNNING')
+                    UNION ALL
+                    (
+                      SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
+                             t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
+                             t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
+                             t.source_environment, t.completion_nonce, t.proof_expires_at, t.created_at, t.id
+                        FROM nx_compute_task t
+                        JOIN nx_user u ON u.id = t.user_id
+                          AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+                       WHERE t.user_id = #{userId} AND t.user_device_id = #{deviceId}
+                         AND t.source_environment = 'PRODUCTION'
+                         AND t.source_environment = #{sourceEnvironment}
+                         AND t.is_deleted = 0 AND t.status = 'COMPLETED'
+                       ORDER BY t.created_at DESC, t.id DESC
+                       LIMIT 10
+                    )
+                  )
+                </foreach>
+              ) t
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
-             WHERE UPPER(t.status) IN ('CLAIMED','RUNNING')
-                OR (UPPER(t.status) = 'COMPLETED' AND t.device_rank <= 10)
              ORDER BY t.created_at DESC, t.id DESC
+            </script>
             """)
-    List<AssignmentRow> assignments(@Param("userId") Long userId,
-                                    @Param("sourceEnvironment") String sourceEnvironment);
+    List<AssignmentRow> assignmentsForDevices(@Param("userId") Long userId,
+                                              @Param("sourceEnvironment") String sourceEnvironment,
+                                              @Param("deviceIds") List<Long> deviceIds);
 
     @Select("""
             WITH ranked_tasks AS (

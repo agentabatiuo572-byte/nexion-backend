@@ -34,11 +34,15 @@ class AppTaskAssignmentMapperContractTest {
                 "UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')",
                 "ORDER BY r.completed_at DESC, r.id DESC",
                 "LIMIT #{limit} OFFSET #{offset}");
-        assertThat(source).contains(
-                "ROW_NUMBER() OVER",
-                "PARTITION BY t.user_device_id",
-                "t.device_rank <= 10",
-                "UPPER(t.status) IN ('CLAIMED','RUNNING','COMPLETED')");
+        String assignmentRead = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("assignmentsForDevices", Long.class, String.class, java.util.List.class)
+                .getAnnotation(Select.class).value());
+        assertThat(source).contains("List<AssignmentRow> assignmentsForDevices");
+        assertThat(assignmentRead).contains(
+                "<foreach collection='deviceIds' item='deviceId' separator=' UNION ALL '>",
+                "t.user_device_id = #{deviceId}", "t.status IN ('CLAIMED','RUNNING')",
+                "t.status = 'COMPLETED'", "LIMIT 10")
+                .doesNotContain("ROW_NUMBER() OVER", "PARTITION BY t.user_device_id", "t.device_rank <= 10");
         assertThat(source).contains(
                 "UPPER(min_vram) REGEXP '^(0|[1-9][0-9]{0,3})(GB)?$'",
                 "THEN CAST(min_vram AS UNSIGNED) ELSE NULL END AS minVram",

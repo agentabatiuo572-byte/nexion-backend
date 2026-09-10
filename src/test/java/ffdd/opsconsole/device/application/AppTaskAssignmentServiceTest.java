@@ -458,13 +458,12 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.assignments(7L))
                 .hasMessage("TASK_ASSIGNMENT_RUNTIME_UNSUPPORTED");
         verify(mapper, never()).userScope(7L);
-        verify(mapper, never()).assignments(anyLong(), anyString());
+        verify(mapper, never()).assignmentsForDevices(anyLong(), anyString(), any());
         verify(mapper, never()).ownedDevices(anyLong());
     }
 
     @Test
     void assignmentsExposeCanonicalProductionProvenance() {
-        when(mapper.assignments(7L, "PRODUCTION")).thenReturn(List.of());
         when(mapper.ownedDevices(7L)).thenReturn(List.of());
 
         var result = service.assignments(7L);
@@ -476,12 +475,46 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void assignmentsReadOnlyRestrictsTheHistoryQueryToOwnedDevicesAndKeepsPerDeviceTaskViews() {
+        var first = deviceRow(11L, "DEV-11");
+        var second = deviceRow(12L, "DEV-12");
+        var firstCurrent = assignmentRow("CTA-11-ACTIVE", 11L, "RUNNING", NOW.minusSeconds(30), null);
+        var firstRecent = assignmentRow("CTA-11-DONE", 11L, "COMPLETED", NOW.minusMinutes(1), NOW.minusSeconds(10));
+        var secondRecent = assignmentRow("CTA-12-DONE", 12L, "COMPLETED", NOW.minusMinutes(2), NOW.minusMinutes(1));
+        when(mapper.ownedDevices(7L)).thenReturn(List.of(first, second));
+        when(mapper.assignmentsForDevices(7L, "PRODUCTION", List.of(11L, 12L)))
+                .thenReturn(List.of(firstCurrent, firstRecent, secondRecent));
+
+        var result = service.assignments(7L);
+
+        assertThat(result.getData().devices()).hasSize(2);
+        assertThat(result.getData().devices().get(0).deviceId()).isEqualTo(11L);
+        assertThat(result.getData().devices().get(0).currentTask().taskNo()).isEqualTo("CTA-11-ACTIVE");
+        assertThat(result.getData().devices().get(0).recentTasks()).extracting(task -> task.taskNo())
+                .containsExactly("CTA-11-DONE");
+        assertThat(result.getData().devices().get(1).currentTask()).isNull();
+        assertThat(result.getData().devices().get(1).recentTasks()).extracting(task -> task.taskNo())
+                .containsExactly("CTA-12-DONE");
+        verify(mapper).assignmentsForDevices(7L, "PRODUCTION", List.of(11L, 12L));
+    }
+
+    @Test
+    void assignmentsWithNoOwnedDeviceSkipsTaskHistoryRead() {
+        when(mapper.ownedDevices(7L)).thenReturn(List.of());
+
+        var result = service.assignments(7L);
+
+        assertThat(result.getData().devices()).isEmpty();
+        verify(mapper, never()).assignmentsForDevices(anyLong(), anyString(), any());
+    }
+
+    @Test
     void developmentReadsEveryActiveDevelopmentAccountsProductionShapedDevicesAndSettlementHistory() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
         when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
         when(mapper.ownedDevices(7L))
                 .thenReturn(List.of(device("phone", "PHONE", "你的手机", 8)));
-        when(mapper.assignments(7L, "PRODUCTION"))
+        when(mapper.assignmentsForDevices(7L, "PRODUCTION", List.of(11L)))
                 .thenReturn(List.of(new AppTaskAssignmentMapper.AssignmentRow(
                         "CTA-1", 11L, null, "Development settled compute task", "LLM_INFERENCE",
                         "gemma4-e4b-ctx32k", "Gemma AI Support", "COMPLETED", new BigDecimal("68.40"),
@@ -499,7 +532,7 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().devices().get(0).recentTasks().get(0).receiptNo()).isEqualTo("CTR-1");
         assertThat(result.getData().devices().get(0).recentTasks().get(0).taskClass()).isEqualTo("LL");
         verify(mapper).ownedDevices(7L);
-        verify(mapper).assignments(7L, "PRODUCTION");
+        verify(mapper).assignmentsForDevices(7L, "PRODUCTION", List.of(11L));
         verify(mapper, never()).sandboxOwnedDevices(anyLong(), anyString());
     }
 
@@ -824,6 +857,18 @@ class AppTaskAssignmentServiceTest {
                 new BigDecimal("0.20"), new BigDecimal("0.40"), minVram, "active", kill);
     }
 
+    private AppTaskAssignmentMapper.DeviceRow deviceRow(long id, String instanceNo) {
+        return new AppTaskAssignmentMapper.DeviceRow(id, instanceNo, "DEVICE", "S1", instanceNo, "ACTIVE",
+                "DEVICE", NOW.minusDays(1), NOW.minusDays(1), 8, "SG", "ONLINE", null, false);
+    }
+
+    private AppTaskAssignmentMapper.AssignmentRow assignmentRow(
+            String taskNo, long deviceId, String status, LocalDateTime startedAt, LocalDateTime completedAt) {
+        return new AppTaskAssignmentMapper.AssignmentRow(taskNo, deviceId, "TASK-IG", taskNo, "IG",
+                "model-v1", "Nexion App", status, new BigDecimal("0.300000"), 18, 30,
+                startedAt, startedAt.plusMinutes(30), completedAt, completedAt == null ? null : "R-" + taskNo,
+                null, null);
+    }
     private AppTaskAssignmentMapper.AssignmentRow assignment(
             String status, LocalDateTime completedAt, String receiptNo) {
         return assignment(status, completedAt, receiptNo, new BigDecimal("0.300000"));

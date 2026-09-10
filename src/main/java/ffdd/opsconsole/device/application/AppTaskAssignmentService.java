@@ -85,8 +85,12 @@ public class AppTaskAssignmentService {
         RuntimeScope runtime = requireProductionRuntime(userId);
         LocalDateTime now = now();
         String sourceEnvironment = runtime.sourceEnvironment();
-        List<AssignmentRow> rows = safe(mapper.assignments(userId, sourceEnvironment));
-        List<AppTaskDeviceState> devices = safe(mapper.ownedDevices(userId)).stream().map(device -> {
+        List<DeviceRow> ownedDevices = safe(mapper.ownedDevices(userId));
+        List<Long> ownedDeviceIds = ownedDevices.stream().map(DeviceRow::id).toList();
+        List<AssignmentRow> rows = ownedDeviceIds.isEmpty()
+                ? List.of()
+                : safe(mapper.assignmentsForDevices(userId, sourceEnvironment, ownedDeviceIds));
+        List<AppTaskDeviceState> devices = ownedDevices.stream().map(device -> {
             DeviceLockRow lock = mapper.deviceTaskLock(userId, device.id(), sourceEnvironment);
             AppTaskAssignmentView current = rows.stream()
                     .filter(row -> device.id().equals(row.deviceId()) && active(row.status())
