@@ -1279,6 +1279,32 @@ class OpsTeamServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void leadershipPoolPreservesQuotaEligibilityFieldsAndUsesConservativeModeFallback() {
+        Map<String, Object> either = new LinkedHashMap<>(Map.of(
+                "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10));
+        either.put("productNo", "P-REAL");
+        either.put("directRefs", 8);
+        either.put("monthVolumeUsd", new BigDecimal("725.50"));
+        either.put("unlockMode", "either");
+        Map<String, Object> unknown = new LinkedHashMap<>(either);
+        unknown.put("id", 8L);
+        unknown.put("unlockMode", "future-mode");
+        commissionRepository.quotaRows.add(either);
+        commissionRepository.quotaRows.add(unknown);
+
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.leadershipPool().getData().get("quotaRows");
+
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0)).containsEntry("productNo", "P-REAL")
+                .containsEntry("directRefs", 8)
+                .containsEntry("monthVolumeUsd", new BigDecimal("725.50"))
+                .containsEntry("unlockMode", "EITHER")
+                .containsEntry("current", 2).containsEntry("cap", 10);
+        assertThat(rows.get(1)).containsEntry("unlockMode", "ALL");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void updateF4QuotaTierRejectsSecondAdminStaleSnapshotAndReturnsAuthoritativeCap() {
         commissionRepository.quotaRows.add(new LinkedHashMap<>(Map.of(
                 "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10, "tight", false)));

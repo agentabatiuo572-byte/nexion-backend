@@ -10,6 +10,12 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface AppTeamInsightsMapper extends BaseMapper<Object> {
+    @Select("SELECT voucher_name FROM nx_growth_voucher WHERE voucher_id=#{id} AND is_deleted=0 LIMIT 1")
+    String voucherDisplayName(@Param("id") String id);
+
+    @Select("SELECT name FROM nx_admin_device_sku WHERE sku_id=#{id} AND is_deleted=0 LIMIT 1")
+    String skuDisplayName(@Param("id") String id);
+
     @Select("SELECT sandbox,v_rank vRank FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     UserScope userScope(@Param("userId") Long userId);
 

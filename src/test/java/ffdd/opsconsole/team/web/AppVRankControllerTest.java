@@ -73,11 +73,40 @@ class AppVRankControllerTest {
                 new VRankRewardRuleRow("r-sku", "V3", "sku", null, null, "SKU-1", null, 3),
                 new VRankRewardRuleRow("r-custom", "V3", "custom", null, null, null, "Priority support", 4)));
 
+        var names = mock(AppTeamInsightsMapper.class);
+        when(names.voucherDisplayName("V-1")).thenReturn("Welcome voucher");
+        when(names.skuDisplayName("SKU-1")).thenReturn("NexGridBox S1");
         var result = new AppVRankController(commission, mock(VRankPerformanceRepository.class),
-                mock(AppTeamInsightsMapper.class), new MockEnvironment()).ranks();
+                names, new MockEnvironment()).ranks();
 
         assertThat(result.getData().get("ranks").toString())
-                .contains("USDT", "VOUCHER", "SKU", "CUSTOM", "V-1", "SKU-1", "Priority support");
+                .contains("USDT", "VOUCHER", "SKU", "CUSTOM", "V-1", "SKU-1", "Priority support",
+                        "Welcome voucher", "NexGridBox S1");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void absentOrBlankRewardNamesRetainIdentifiersWithoutInventingDisplayNames() {
+        var commission = mock(TeamCommissionRepository.class);
+        when(commission.vRankRows()).thenReturn(List.of(Map.of(
+                "v", "V3", "label", "Captain", "visible", 1,
+                "unilevelDepth", "L1", "peerBonusRate", BigDecimal.ZERO, "votes", 1)));
+        when(commission.unilevelRates()).thenReturn(List.of());
+        when(commission.selectVRankRewardRulesByRank("V3")).thenReturn(List.of(
+                new VRankRewardRuleRow("r-voucher", "V3", "voucher", null, "V-1", null, null, 1),
+                new VRankRewardRuleRow("r-sku", "V3", "sku", null, null, "SKU-1", null, 2)));
+        var names = mock(AppTeamInsightsMapper.class);
+        when(names.voucherDisplayName("V-1")).thenReturn(null);
+        when(names.skuDisplayName("SKU-1")).thenReturn("  ");
+
+        var data = new AppVRankController(commission, mock(VRankPerformanceRepository.class),
+                names, new MockEnvironment()).ranks().getData();
+        var ranks = (List<Map<String, Object>>) data.get("ranks");
+        var rewards = (List<Map<String, Object>>) ranks.get(0).get("rewards");
+
+        assertThat(rewards).hasSize(2);
+        assertThat(rewards.get(0)).containsEntry("voucherId", "V-1").doesNotContainKey("displayName");
+        assertThat(rewards.get(1)).containsEntry("skuId", "SKU-1").doesNotContainKey("displayName");
     }
 
     @Test

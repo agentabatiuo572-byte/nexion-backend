@@ -384,7 +384,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Select("""
             SELECT t.id,
                    t.quota_code AS quotaCode,
+                   t.product_no AS productNo,
                    COALESCE(t.display_name, t.quota_code) AS name,
+                   t.direct_refs AS directRefs,
+                   t.month_volume_usd AS monthVolumeUsd,
+                   t.unlock_mode AS unlockMode,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE' THEN u.quantity ELSE 0 END), 0) AS current,
                    t.monthly_quota AS cap,
                    CASE
@@ -399,7 +403,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND u.occurred_at < DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
              WHERE t.is_deleted = 0
                AND t.status = 1
-             GROUP BY t.id, t.display_name, t.quota_code, t.monthly_quota, t.sort_order
+             GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.direct_refs,
+                      t.month_volume_usd, t.unlock_mode, t.monthly_quota, t.sort_order
              ORDER BY t.sort_order ASC, t.id ASC
             """)
     List<Map<String, Object>> quotaRows();
@@ -919,7 +924,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> leaderboardCandidates(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
                                                      @Param("limit") int limit);
 
-    /** F16:按对应日/周/月/总榜窗口汇总真实已解锁佣金，禁止复用全期 member.volume。 */
+    /** F16:按周期汇总规范业务轨的活跃用户已解锁佣金，与App生产榜资格一致。 */
     @Select("""
             <script>
             SELECT e.user_id AS userId,
@@ -980,7 +985,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> vRankConfigRows();
 
-    /** 读 nx_team_member 自循环行(user_id=member_user_id=userId)的 v_rank。 */
+    /**
+     * 读最早的有效 nx_team_member 自循环行(user_id=member_user_id=userId)的 v_rank。
+     * 历史重复行只确定读取语义，不在此查询中合并或修复数据。
+     */
     @Select("""
             SELECT v_rank
               FROM nx_team_member

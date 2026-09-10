@@ -1900,7 +1900,11 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", parseLongFromMap(raw.get("id")));
         row.put("quotaCode", String.valueOf(raw.getOrDefault("quotaCode", "")));
+        row.put("productNo", String.valueOf(raw.getOrDefault("productNo", "")));
         row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
+        row.put("directRefs", intValue(raw.get("directRefs"), 0));
+        row.put("monthVolumeUsd", decimalValue(raw.get("monthVolumeUsd"), BigDecimal.ZERO));
+        row.put("unlockMode", "EITHER".equalsIgnoreCase(String.valueOf(raw.get("unlockMode"))) ? "EITHER" : "ALL");
         row.put("current", current);
         row.put("cap", cap);
         row.put("tight", boolValue(raw.get("tight"), cap > 0 && current * 100 / cap >= 85));

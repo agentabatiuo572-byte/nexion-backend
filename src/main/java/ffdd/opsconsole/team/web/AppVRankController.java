@@ -230,6 +230,10 @@ public class AppVRankController {
             reward.put("voucherId", rule.voucherId());
             reward.put("skuId", rule.skuId());
             reward.put("customLabel", rule.customLabel());
+            String displayName = "VOUCHER".equals(type) && rule.voucherId() != null
+                    ? userMapper.voucherDisplayName(rule.voucherId())
+                    : "SKU".equals(type) && rule.skuId() != null ? userMapper.skuDisplayName(rule.skuId()) : null;
+            if (displayName != null && !displayName.isBlank()) reward.put("displayName", displayName.trim());
             return reward;
         }).toList();
     }
