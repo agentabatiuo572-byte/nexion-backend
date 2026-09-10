@@ -204,6 +204,19 @@ class OpsConversationServiceTest {
     }
 
     @Test
+    void transferRechecksAvailabilityWhenPreviouslyListedAgentHasPaused() {
+        conversationRepository.conversation = conversation("CV-PAUSED", "OPEN");
+        when(supportAgentService.transferTargets()).thenReturn(List.of());
+        var result = service.transfer("CV-PAUSED", "idem-paused-agent",
+                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
+        assertThat(result.getCode()).isEqualTo(404);
+        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
     void acceptTransferMovesConversationBackToOpen() {
         conversationRepository.conversation = transferredConversation("CV-1");
 
@@ -228,6 +241,19 @@ class OpsConversationServiceTest {
                 new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void pausedRecipientCannotAcceptPreviouslyPendingTransfer() {
+        conversationRepository.conversation = transferredConversation("CV-PAUSED-ACCEPT");
+        when(supportAgentService.currentAssignableSupportAgent()).thenReturn(java.util.Optional.empty());
+        var result = service.acceptTransfer("CV-PAUSED-ACCEPT", "idem-paused-accept",
+                new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
+        assertThat(result.getCode()).isEqualTo(403);
+        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_ACCEPT_FORBIDDEN");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("TRANSFERRED");
         assertThat(conversationRepository.messageWrites).isZero();
         verifyNoInteractions(auditLogService);
     }

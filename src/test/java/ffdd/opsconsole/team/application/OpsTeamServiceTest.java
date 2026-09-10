@@ -1305,6 +1305,25 @@ class OpsTeamServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void quotaVolumeWireTextPreservesEveryDecimalAtTheDatabaseBoundary() throws Exception {
+        for (String value : List.of("0.000000", "0.000001", "725.123456", "999999999999.999999")) {
+            BigDecimal amount = new BigDecimal(value);
+            commissionRepository.quotaRows.clear();
+            commissionRepository.quotaRows.add(new LinkedHashMap<>(Map.of(
+                    "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10,
+                    "productNo", "P-REAL", "directRefs", 8, "monthVolumeUsd", amount, "unlockMode", "ALL")));
+
+            List<Map<String, Object>> rows = (List<Map<String, Object>>) service.leadershipPool().getData().get("quotaRows");
+
+            assertThat(rows.get(0)).containsEntry("monthVolumeUsd", amount)
+                    .containsEntry("monthVolumeUsdText", value);
+            assertThat(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(rows.get(0)))
+                    .contains("\"monthVolumeUsdText\":\"" + value + "\"");
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void updateF4QuotaTierRejectsSecondAdminStaleSnapshotAndReturnsAuthoritativeCap() {
         commissionRepository.quotaRows.add(new LinkedHashMap<>(Map.of(
                 "id", 7L, "quotaCode", "PRO", "name", "Pro", "current", 2, "cap", 10, "tight", false)));

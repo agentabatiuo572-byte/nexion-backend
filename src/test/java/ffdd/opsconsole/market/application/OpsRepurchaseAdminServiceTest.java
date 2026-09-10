@@ -1,21 +1,26 @@
 package ffdd.opsconsole.market.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.mapper.AppRepurchaseMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.stream.IntStream;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,5 +103,39 @@ class OpsRepurchaseAdminServiceTest {
                 .doesNotContainKey("sourceDomain");
         assertThat((Map<String, Object>) auditRequest.getValue().getDetail())
                 .containsEntry("sourceDomain", "G7");
+    }
+
+    @Test
+    void orderCursorReturnsOnlyTheFirstTwentyRowsAndTheLastVisibleIdAsNextCursor() {
+        List<AppRepurchaseMapper.AdminOrderRow> rows = IntStream.range(0, 21)
+                .mapToObj(index -> adminOrder(101L - index))
+                .toList();
+        when(mapper.adminOrders(null, null, 21)).thenReturn(rows);
+
+        ApiResult<Map<String, Object>> result = service.orders(null, null, 20);
+
+        assertThat((List<?>) result.getData().get("orders")).hasSize(20);
+        assertThat(result.getData())
+                .containsEntry("hasMore", true)
+                .containsEntry("nextCursor", 82L)
+                .containsEntry("serverCanonical", true);
+        verify(mapper).adminOrders(null, null, 21);
+    }
+
+    @Test
+    void orderCursorRejectsNonPositiveValuesBeforeAnyDatabaseRead() {
+        assertThatThrownBy(() -> service.orders(null, 0L, 20))
+                .isInstanceOf(BizException.class)
+                .hasMessage("G7_REPURCHASE_CURSOR_INVALID");
+
+        verifyNoInteractions(mapper);
+    }
+
+    private static AppRepurchaseMapper.AdminOrderRow adminOrder(long id) {
+        LocalDateTime lockedAt = LocalDateTime.parse("2026-09-01T10:00:00");
+        return new AppRepurchaseMapper.AdminOrderRow(
+                id, 7L, "U00000007", "tester", "RPI-" + id,
+                new BigDecimal("100"), new BigDecimal("3500"), new BigDecimal("1500"), 90,
+                lockedAt, lockedAt.plusDays(90), new BigDecimal("8.63"), "ACTIVE", null, null);
     }
 }
