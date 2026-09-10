@@ -150,7 +150,9 @@ public interface AppPayoutAddressMapper {
 
     @Select("""
             SELECT COUNT(*) FROM nx_withdrawal_order
-             WHERE user_id=#{userId} AND UPPER(status) NOT IN ('COMPLETED','REJECTED','CANCELLED','FAILED')
+             WHERE user_id=#{userId}
+               AND UPPER(COALESCE(status,'')) NOT IN
+                   ('COMPLETED','CONFIRMED','SUCCESS','REFUNDED','REJECTED','CANCELLED','FAILED')
                AND is_deleted=0
             """)
     int unsettledWithdrawalCount(@Param("userId") Long userId);

@@ -20,10 +20,13 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.TimeZone;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -52,6 +55,7 @@ class AppPayoutAddressServiceTest {
         long userId = 7L;
         String address = "0x" + "ab".repeat(20);
         when(mapper.activeUser(userId)).thenReturn(userId);
+        when(mapper.lockActiveUser(userId)).thenReturn(userId);
         when(otpAttempts.verifyAndConsume(userId, "PAYOUT-ABC", "123456")).thenReturn(true);
         when(mapper.unsettledWithdrawalCount(userId)).thenReturn(0);
         when(mapper.lock(userId, "USDT-BEP20")).thenReturn(null, new PayoutAddressRow(
@@ -71,6 +75,7 @@ class AppPayoutAddressServiceTest {
         long userId = 8L;
         String address = "T" + "A".repeat(33);
         when(mapper.activeUser(userId)).thenReturn(userId);
+        when(mapper.lockActiveUser(userId)).thenReturn(userId);
         when(otpAttempts.verifyAndConsume(userId, "PAYOUT-DEF", "654321")).thenReturn(false);
 
         assertThatThrownBy(() -> service.save(userId,
@@ -79,6 +84,51 @@ class AppPayoutAddressServiceTest {
                 .hasMessage("PAYOUT_ADDRESS_OTP_INVALID");
 
         verify(otpAttempts).verifyAndConsume(userId, "PAYOUT-DEF", "654321");
+    }
+
+    @Test
+    void userDeactivatedAfterInitialReadCannotConsumeOtpOrChangeAddress() {
+        long userId = 8L;
+        when(mapper.activeUser(userId)).thenReturn(userId);
+        when(mapper.lockActiveUser(userId)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.save(userId,
+                new SaveRequest("USDT-TRC20", "T" + "A".repeat(33), "PAYOUT-DEF", "654321"), "cmd-lost-user"))
+                .isInstanceOf(BizException.class).hasMessage("USER_AUTH_REQUIRED");
+
+        verifyNoInteractions(otpAttempts, audit);
+        verify(mapper, never()).unsettledWithdrawalCount(userId);
+        verify(mapper, never()).lock(eq(userId), anyString());
+    }
+
+    @Test
+    @ResourceLock("java.util.TimeZone.default")
+    void expiredBusinessCooldownAllowsChangeEvenWhenHostTimezoneIsUtc() {
+        TimeZone original = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            long userId = 7L;
+            String address = "0x" + "cd".repeat(20);
+            LocalDateTime businessNow = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+            when(mapper.activeUser(userId)).thenReturn(userId);
+            when(mapper.lockActiveUser(userId)).thenReturn(userId);
+            when(otpAttempts.verifyAndConsume(userId, "PAYOUT-UTC", "123456")).thenReturn(true);
+            when(mapper.lock(userId, "USDT-BEP20")).thenReturn(
+                    new PayoutAddressRow("USDT-BEP20", "0x" + "ab".repeat(20), "ACTIVE",
+                            businessNow.minusDays(6), businessNow.minusDays(8), businessNow.minusHours(1), 1L),
+                    new PayoutAddressRow("USDT-BEP20", address, "ACTIVE",
+                            businessNow.plusDays(1), businessNow.minusDays(8), businessNow.plusDays(7), 2L));
+            when(mapper.update(userId, "USDT-BEP20", address, 1L)).thenReturn(1);
+
+            var result = service.save(userId,
+                    new SaveRequest("USDT-BEP20", address, "PAYOUT-UTC", "123456"), "cmd-utc");
+
+            org.assertj.core.api.Assertions.assertThat(result.getData()).containsEntry("address", address)
+                    .containsEntry("changePending", true);
+            verify(mapper).update(userId, "USDT-BEP20", address, 1L);
+        } finally {
+            TimeZone.setDefault(original);
+        }
     }
 
     @Test
@@ -131,7 +181,10 @@ class AppPayoutAddressServiceTest {
                 .containsEntry("source", "mock")
                 .containsEntry("sourceEnvironment", "SANDBOX")
                 .containsEntry("runId", runId)
-                .containsEntry("serverCanonical", true);
+                .containsEntry("serverCanonical", true)
+                .containsKey("serverNowEpochMs");
+        org.assertj.core.api.Assertions.assertThat(result.getData().get("serverNowEpochMs"))
+                .isInstanceOf(Long.class);
         verify(mapper).sandboxList(runId, userId);
         verify(mapper, org.mockito.Mockito.never()).list(userId);
     }
@@ -149,9 +202,42 @@ class AppPayoutAddressServiceTest {
                 .containsEntry("source", "server")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "")
-                .containsEntry("serverCanonical", true);
+                .containsEntry("serverCanonical", true)
+                .containsKey("serverNowEpochMs");
+        org.assertj.core.api.Assertions.assertThat(result.getData().get("serverNowEpochMs"))
+                .isInstanceOf(Long.class);
         verify(mapper).list(userId);
         verify(mapper, org.mockito.Mockito.never()).sandboxList(anyString(), eq(userId));
+    }
+
+    @Test
+    @ResourceLock("java.util.TimeZone.default")
+    void listUsesBusinessTimeAndOneServerTimestampWhenHostTimezoneDiffers() {
+        TimeZone original = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+            long userId = 21L;
+            LocalDateTime businessNow = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+            when(mapper.activeUser(userId)).thenReturn(userId);
+            when(mapper.list(userId)).thenReturn(java.util.List.of(
+                    new PayoutAddressRow("USDT-TRC20", "T" + "A".repeat(33), "ACTIVE",
+                            businessNow.minusHours(1), businessNow.minusDays(2), businessNow.plusDays(5), 0L),
+                    new PayoutAddressRow("USDT-BEP20", "0x" + "ab".repeat(20), "ACTIVE",
+                            businessNow.plusHours(1), businessNow.minusHours(23), businessNow.plusDays(6), 0L)));
+            long before = System.currentTimeMillis();
+
+            var data = service.list(userId).getData();
+
+            long serverNow = (Long) data.get("serverNowEpochMs");
+            org.assertj.core.api.Assertions.assertThat(serverNow).isBetween(before, System.currentTimeMillis());
+            @SuppressWarnings("unchecked")
+            var rows = (java.util.List<java.util.Map<String, Object>>) data.get("addresses");
+            org.assertj.core.api.Assertions.assertThat(rows).hasSize(2);
+            org.assertj.core.api.Assertions.assertThat(rows.get(0)).containsEntry("changePending", false);
+            org.assertj.core.api.Assertions.assertThat(rows.get(1)).containsEntry("changePending", true);
+        } finally {
+            TimeZone.setDefault(original);
+        }
     }
 
     @Test

@@ -7,6 +7,7 @@ import ffdd.opsconsole.finance.mapper.AppPayoutAddressMapper.UserContact;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
@@ -23,6 +24,7 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -46,10 +48,13 @@ public class AppPayoutAddressService {
     public ApiResult<Map<String, Object>> list(Long userId) {
         Scope scope = scope();
         requireUser(userId, scope);
+        LocalDateTime responseNow = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
+        long serverNowEpochMs = responseNow.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toEpochMilli();
         List<Map<String, Object>> rows = (scope.sandbox()
                 ? mapper.sandboxList(scope.runId(), userId)
-                : mapper.list(userId)).stream().map(row -> view(row, scope)).toList();
+                : mapper.list(userId)).stream().map(row -> view(row, scope, responseNow)).toList();
         return ApiResult.ok(linked("addresses", rows, "serverCanonical", true,
+                "serverNowEpochMs", serverNowEpochMs,
                 "changeCooldownDays", CHANGE_COOLDOWN_DAYS,
                 "effectiveDelayHours", EFFECTIVE_DELAY_HOURS,
                 "inFlightWithdrawalBlocked", true,
@@ -86,7 +91,7 @@ public class AppPayoutAddressService {
                 "runId", scope.runId(), "serverCanonical", true));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> save(Long userId, SaveRequest request, String idempotencyKey) {
         Scope scope = scope();
         requireUser(userId, scope);
@@ -111,6 +116,9 @@ public class AppPayoutAddressService {
 
     private ApiResult<Map<String, Object>> saveOnce(
             Long userId, String network, String address, String challenge, String code, Scope scope) {
+        // Use the same user-first mutex as withdrawal submission. READ_COMMITTED
+        // makes the count below observe withdrawals committed while this lock waited.
+        requireActiveUserLock(userId, scope);
         boolean otpValid = scope.sandbox()
                 ? otpAttempts.verifyAndConsumeSandbox(scope.runId(), userId, challenge, code)
                 : otpAttempts.verifyAndConsume(userId, challenge, code);
@@ -123,11 +131,12 @@ public class AppPayoutAddressService {
         if (unsettled > 0) {
             throw new BizException(409, "PAYOUT_ADDRESS_CHANGE_BLOCKED_BY_WITHDRAWAL");
         }
+        LocalDateTime businessNow = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         PayoutAddressRow current = scope.sandbox()
                 ? mapper.sandboxLock(scope.runId(), userId, network)
                 : mapper.lock(userId, network);
         if (current != null && current.nextChangeAllowedAt() != null
-                && current.nextChangeAllowedAt().isAfter(LocalDateTime.now())) {
+                && current.nextChangeAllowedAt().isAfter(businessNow)) {
             throw new BizException(409, "PAYOUT_ADDRESS_CHANGE_COOLDOWN");
         }
         if (current != null && addressEquals(network, address, current.address())) return ApiResult.ok(view(current, scope));
@@ -206,10 +215,14 @@ public class AppPayoutAddressService {
     }
 
     private Map<String, Object> view(PayoutAddressRow row, Scope scope) {
+        return view(row, scope, LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+    }
+
+    private Map<String, Object> view(PayoutAddressRow row, Scope scope, LocalDateTime now) {
         return linked("network", row.network(), "address", row.address(), "status", row.status(),
                 "effectiveAt", row.effectiveAt(), "createdAt", row.createdAt(),
                 "nextChangeAllowedAt", row.nextChangeAllowedAt(),
-                "changePending", row.effectiveAt() != null && row.effectiveAt().isAfter(LocalDateTime.now()),
+                "changePending", row.effectiveAt() != null && row.effectiveAt().isAfter(now),
                 "source", scope.source(), "sourceEnvironment", scope.sourceEnvironment(),
                 "runId", scope.runId(), "serverCanonical", true);
     }
