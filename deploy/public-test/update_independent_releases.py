@@ -83,8 +83,10 @@ def assert_idle():
         require(ET.fromstring(data).findtext('completed') == 'true', 'WAIT_FOR_IDLE_CI')
     # Docker top also works while paused. These dedicated jobs always launch a
     # shell/git/node/Maven subprocess when doing work; only init/remoting may remain.
-    processes = command('docker', 'top', 'nexgrid-ci-agent', '-eo', 'comm').splitlines()
-    require(len(processes) > 1 and {p.strip() for p in processes[1:]} <= {'tini', 'java'}, 'WAIT_FOR_IDLE_AGENT')
+    # Docker requires a PID column even when the caller only needs command names.
+    processes = command('docker', 'top', 'nexgrid-ci-agent', '-eo', 'pid,comm').splitlines()
+    require(len(processes) > 1 and all(len(p.split()) == 2 and p.split()[0].isdigit()
+            and p.split()[1] in {'tini', 'docker-init', 'java'} for p in processes[1:]), 'WAIT_FOR_IDLE_AGENT')
 
 
 def atomic(path, data, mode=0o600):

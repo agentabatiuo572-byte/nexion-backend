@@ -47,6 +47,20 @@ class PolicyUpdateTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'LOCK_PIN_MISMATCH'):
                     u.closure(path, '0'*64)
 
+    def test_docker_idle_process_check_requests_pid_and_rejects_build_shell(self):
+        with tempfile.TemporaryDirectory() as temp:
+            jobs = Path(temp)
+            for kind in ['backend', 'pc', 'uniapp']:
+                path = jobs / f'nexgrid-{kind}-main/builds/1'
+                path.mkdir(parents=True)
+                (path / 'build.xml').write_bytes(b'<flow-build><completed>true</completed></flow-build>')
+            with patch.object(u, 'JOBS', jobs), patch.object(u, 'command', return_value='PID COMMAND\n100 docker-init\n101 java') as command:
+                u.assert_idle()
+                self.assertEqual(command.call_args.args[-1], 'pid,comm')
+                command.return_value = 'PID COMMAND\n100 tini\n101 java\n102 sh'
+                with self.assertRaisesRegex(RuntimeError, 'WAIT_FOR_IDLE_AGENT'):
+                    u.assert_idle()
+
 
 class PolicyUpdateRecoveryTests(unittest.TestCase):
     def setUp(self):
