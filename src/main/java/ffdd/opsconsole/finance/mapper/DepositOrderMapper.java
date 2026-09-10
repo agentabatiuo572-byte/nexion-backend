@@ -129,7 +129,27 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_deposit_order d
                     WHERE d.is_deleted = 0
+                      AND d.user_id = p.user_id
                       AND d.deposit_no IN (p.payment_no, p.order_no)
+                 )
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM nx_topup_card_admission a
+                      WHERE a.is_deleted = 0
+                        AND a.user_id = p.user_id
+                        AND a.order_no = p.order_no
+                   )
+                   OR EXISTS (
+                     SELECT 1 FROM nx_wallet_ledger l
+                      WHERE l.id = p.wallet_ledger_id
+                        AND l.is_deleted = 0
+                        AND l.user_id = p.user_id
+                        AND l.biz_type = 'CARD_TOPUP'
+                        AND l.direction = 'IN'
+                        AND l.status = 'SUCCESS'
+                        AND l.biz_no = p.payment_no
+                        AND l.amount = p.amount_usdt
+                   )
                  )
               UNION ALL
               SELECT a.user_id, a.order_no, a.admission_event_id, 'USDT',
@@ -138,9 +158,9 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                 FROM nx_topup_card_admission a
                WHERE a.is_deleted=0 AND a.settlement_event_id IS NULL AND a.failure_event_id IS NULL
                  AND NOT EXISTS (SELECT 1 FROM nx_payment_record p
-                                  WHERE p.is_deleted=0 AND p.order_no=a.order_no)
+                                  WHERE p.is_deleted=0 AND p.user_id=a.user_id AND p.order_no=a.order_no)
                  AND NOT EXISTS (SELECT 1 FROM nx_deposit_order d
-                                  WHERE d.is_deleted=0 AND d.deposit_no=a.order_no)
+                                  WHERE d.is_deleted=0 AND d.user_id=a.user_id AND d.deposit_no=a.order_no)
             )
             SELECT COUNT(1) FROM all_flows
              WHERE 1 = 1
@@ -192,7 +212,27 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_deposit_order d
                     WHERE d.is_deleted = 0
+                      AND d.user_id = p.user_id
                       AND d.deposit_no IN (p.payment_no, p.order_no)
+                 )
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM nx_topup_card_admission a
+                      WHERE a.is_deleted = 0
+                        AND a.user_id = p.user_id
+                        AND a.order_no = p.order_no
+                   )
+                   OR EXISTS (
+                     SELECT 1 FROM nx_wallet_ledger l
+                      WHERE l.id = p.wallet_ledger_id
+                        AND l.is_deleted = 0
+                        AND l.user_id = p.user_id
+                        AND l.biz_type = 'CARD_TOPUP'
+                        AND l.direction = 'IN'
+                        AND l.status = 'SUCCESS'
+                        AND l.biz_no = p.payment_no
+                        AND l.amount = p.amount_usdt
+                   )
                  )
               UNION ALL
               SELECT -1000000000000-a.id, a.user_id, a.order_no, 'Card', 'USDT',
@@ -205,9 +245,9 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                 FROM nx_topup_card_admission a
                WHERE a.is_deleted=0 AND a.settlement_event_id IS NULL AND a.failure_event_id IS NULL
                  AND NOT EXISTS (SELECT 1 FROM nx_payment_record p
-                                  WHERE p.is_deleted=0 AND p.order_no=a.order_no)
+                                  WHERE p.is_deleted=0 AND p.user_id=a.user_id AND p.order_no=a.order_no)
                  AND NOT EXISTS (SELECT 1 FROM nx_deposit_order d
-                                  WHERE d.is_deleted=0 AND d.deposit_no=a.order_no)
+                                  WHERE d.is_deleted=0 AND d.user_id=a.user_id AND d.deposit_no=a.order_no)
             )
             SELECT id, user_id AS userId, flow_no AS depositNo, channel, asset, amount,
                    provider_received AS providerReceived, proof, status,
