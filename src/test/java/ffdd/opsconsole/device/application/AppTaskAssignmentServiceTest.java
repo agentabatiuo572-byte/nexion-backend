@@ -17,6 +17,7 @@ import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -26,9 +27,11 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.Environment;
 
 class AppTaskAssignmentServiceTest {
@@ -93,6 +96,105 @@ class AppTaskAssignmentServiceTest {
                 anyString(), any(), anyString(), any(), any());
         verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         org.mockito.Mockito.verifyNoInteractions(idempotency);
+    }
+
+    @Test
+    void pendingExpiredLeaseExpiresWithoutRewardThenDeactivatesOnlyAfterAllProductionTasksAreGone() {
+        var pending = new AppTaskAssignmentMapper.LeaseExpiryDevice(
+                11L, "DEV-11", "BUSY", 7L, true);
+        var expired = new AppTaskAssignmentMapper.AssignmentRow("CTA-EXPIRED", 11L, "TASK-IG", "Canonical IG", "IG",
+                "model-v1", "Nexion App", "RUNNING", new BigDecimal("0.300000"), 18, 30,
+                NOW.minusDays(2), NOW.minusDays(1), null, null, "nonce", NOW.minusDays(1));
+        when(mapper.lockLeaseExpiryDevice(7L, 11L)).thenReturn(pending);
+        when(mapper.lockAssignment(7L, "CTA-EXPIRED", "PRODUCTION")).thenReturn(expired);
+        when(mapper.expireAssignment(7L, "CTA-EXPIRED", "PRODUCTION", NOW)).thenReturn(1);
+        when(mapper.hasActiveProductionTask(7L, 11L)).thenReturn(false);
+        when(mapper.deactivatePendingDeviceAfterLeaseExpiry(7L, 11L, 7L, NOW)).thenReturn(1);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P1", 1, "2026-W32"));
+
+        assertThat(service.expirePendingLease(7L, 11L, "CTA-EXPIRED")).isTrue();
+
+        verify(mapper).lockProductionUser(7L);
+        verify(mapper).lockLeaseExpiryDevice(7L, 11L);
+        verify(mapper).lockAssignment(7L, "CTA-EXPIRED", "PRODUCTION");
+        verify(mapper).expireAssignment(7L, "CTA-EXPIRED", "PRODUCTION", NOW);
+        verify(mapper).clearRuntimeTask(7L, 11L, "CTA-EXPIRED", NOW);
+        verify(mapper).deactivatePendingDeviceAfterLeaseExpiry(7L, 11L, 7L, NOW);
+        verify(mapper).markRuntimeDeactivated(7L, 11L, NOW);
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+        verify(mapper, never()).insertWalletLedger(anyLong(), anyLong(), anyString(), any(), any(), any());
+        verify(mapper, never()).insertEarningEvent(anyString(), anyLong(), anyLong(), anyString(), any(), any());
+        ArgumentCaptor<Object> expiryPayload = ArgumentCaptor.forClass(Object.class);
+        verify(outbox, times(1)).publish(eq("COMPUTE_TASK"), eq("CTA-EXPIRED"),
+                eq("TASK_ASSIGNMENT_LEASE_EXPIRED"), expiryPayload.capture());
+        assertThat(asMap(expiryPayload.getValue())).containsEntry("status", "EXPIRED")
+                .containsEntry("userId", 7L).containsEntry("deviceId", 11L);
+        ArgumentCaptor<Object> devicePayload = ArgumentCaptor.forClass(Object.class);
+        verify(outbox, times(1)).publishUserEvent(eq("USER_DEVICE"), eq("DEV-11"), eq("device.deactivated"),
+                eq(7L), eq("P1"), eq(1), eq("2026-W32"), devicePayload.capture());
+        assertThat(asMap(devicePayload.getValue())).containsEntry("previousStatus", "BUSY")
+                .containsEntry("status", "DEACTIVATED").containsEntry("rowVersion", 8L);
+        verify(audit, never()).recordRequired(any());
+        ArgumentCaptor<AuditLogWriteRequest> auditRequests = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(audit, times(2)).recordRequiredForTrustedActor(auditRequests.capture());
+        assertThat(auditRequests.getAllValues()).extracting(AuditLogWriteRequest::getAction)
+                .containsExactly("TASK_ASSIGNMENT_LEASE_EXPIRED", "USER_DEVICE_DEFERRED_DEACTIVATED");
+        assertThat(asMap(auditRequests.getAllValues().get(1).getDetail())).containsEntry(
+                "trigger", "LEASE_EXPIRED_WITHOUT_ACTIVE_TASK");
+    }
+
+    @Test
+    void expiredLeaseWithAnotherProductionTaskStopsOnlyTheExpiredTask() {
+        var pending = new AppTaskAssignmentMapper.LeaseExpiryDevice(
+                11L, "DEV-11", "ONLINE", 7L, true);
+        var expired = new AppTaskAssignmentMapper.AssignmentRow("CTA-EXPIRED", 11L, "TASK-IG", "Canonical IG", "IG",
+                "model-v1", "Nexion App", "RUNNING", new BigDecimal("0.300000"), 18, 30,
+                NOW.minusDays(2), NOW.minusDays(1), null, null, "nonce", NOW.minusDays(1));
+        when(mapper.lockLeaseExpiryDevice(7L, 11L)).thenReturn(pending);
+        when(mapper.lockAssignment(7L, "CTA-EXPIRED", "PRODUCTION")).thenReturn(expired);
+        when(mapper.expireAssignment(7L, "CTA-EXPIRED", "PRODUCTION", NOW)).thenReturn(1);
+        when(mapper.hasActiveProductionTask(7L, 11L)).thenReturn(true);
+
+        assertThat(service.expirePendingLease(7L, 11L, "CTA-EXPIRED")).isTrue();
+
+        verify(mapper).clearRuntimeTask(7L, 11L, "CTA-EXPIRED", NOW);
+        verify(mapper, never()).deactivatePendingDeviceAfterLeaseExpiry(anyLong(), anyLong(), anyLong(), any());
+        verify(mapper, never()).markRuntimeDeactivated(anyLong(), anyLong(), any());
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void pendingExpiryFailsClosedBeforeExpiringWhenTheDeviceVersionIsUnavailable() {
+        when(mapper.lockLeaseExpiryDevice(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.LeaseExpiryDevice(11L, "DEV-11", "ACTIVE", null, true));
+
+        assertThatThrownBy(() -> service.expirePendingLease(7L, 11L, "CTA-EXPIRED"))
+                .hasMessage("TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");
+
+        verify(mapper, never()).lockAssignment(anyLong(), anyString(), anyString());
+        verify(mapper, never()).expireAssignment(anyLong(), anyString(), anyString(), any());
+        org.mockito.Mockito.verifyNoInteractions(outbox, audit);
+    }
+
+    @Test
+    void pendingExpiryFailsClosedAndLeavesTheExpiredTaskRetryableWhenDeactivationCasLosesWithoutAnotherTask() {
+        var pending = new AppTaskAssignmentMapper.LeaseExpiryDevice(11L, "DEV-11", "ACTIVE", 7L, true);
+        var expired = new AppTaskAssignmentMapper.AssignmentRow("CTA-EXPIRED", 11L, "TASK-IG", "Canonical IG", "IG",
+                "model-v1", "Nexion App", "RUNNING", new BigDecimal("0.300000"), 18, 30,
+                NOW.minusDays(2), NOW.minusDays(1), null, null, "nonce", NOW.minusDays(1));
+        when(mapper.lockLeaseExpiryDevice(7L, 11L)).thenReturn(pending);
+        when(mapper.lockAssignment(7L, "CTA-EXPIRED", "PRODUCTION")).thenReturn(expired);
+        when(mapper.expireAssignment(7L, "CTA-EXPIRED", "PRODUCTION", NOW)).thenReturn(1);
+        when(mapper.hasActiveProductionTask(7L, 11L)).thenReturn(false);
+        when(mapper.deactivatePendingDeviceAfterLeaseExpiry(7L, 11L, 7L, NOW)).thenReturn(0);
+
+        assertThatThrownBy(() -> service.expirePendingLease(7L, 11L, "CTA-EXPIRED"))
+                .hasMessage("TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_CAS_CONFLICT");
+
+        verify(mapper, times(2)).hasActiveProductionTask(7L, 11L);
+        org.mockito.Mockito.verifyNoInteractions(outbox, audit);
     }
 
     @Test
@@ -627,6 +729,12 @@ class AppTaskAssignmentServiceTest {
     private AppTaskAssignmentMapper.DeviceRow device(
             String type, String tier, String name, int vram) {
         return device(type, tier, name, vram, NOW.minusDays(1));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        assertThat(value).isInstanceOf(Map.class);
+        return (Map<String, Object>) value;
     }
 
     private AppTaskAssignmentMapper.DeviceRow device(

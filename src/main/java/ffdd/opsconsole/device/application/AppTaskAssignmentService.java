@@ -204,6 +204,87 @@ public class AppTaskAssignmentService {
         return claimInternal(userId, deviceId, runtime.sourceEnvironment());
     }
 
+    /**
+     * Makes an elapsed App-task lease terminal without ever entering the reward settlement path.  A pending
+     * device is stopped only after the expired task is no longer active and no other production task remains.
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean expirePendingLease(Long userId, Long deviceId, String taskNo) {
+        requireUser(userId);
+        if (deviceId == null || deviceId <= 0 || !StringUtils.hasText(taskNo)
+                || !taskNo.trim().matches("CTA-[A-Za-z0-9._:-]{1,92}")) {
+            throw new BizException(422, "TASK_ASSIGNMENT_EXPIRY_CANDIDATE_INVALID");
+        }
+        RuntimeScope runtime = requireProductionRuntime(userId);
+        LocalDateTime now = now();
+        lockProductionUser(userId);
+        AppTaskAssignmentMapper.LeaseExpiryDevice device = mapper.lockLeaseExpiryDevice(userId, deviceId);
+        if (device == null) return false;
+        if (Boolean.TRUE.equals(device.pendingDeactivate())
+                && (device.rowVersion() == null || device.rowVersion() < 0 || !StringUtils.hasText(device.status()))) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");
+        }
+        AssignmentRow task = mapper.lockAssignment(userId, taskNo.trim(), runtime.sourceEnvironment());
+        if (task == null || !deviceId.equals(task.deviceId()) || !active(task.status())
+                || task.leaseExpiresAt() == null || task.leaseExpiresAt().isAfter(now)) {
+            return false;
+        }
+        if (mapper.expireAssignment(userId, task.taskNo(), runtime.sourceEnvironment(), now) != 1) return false;
+        mapper.clearRuntimeTask(userId, deviceId, task.taskNo(), now);
+
+        boolean deactivated = false;
+        if (Boolean.TRUE.equals(device.pendingDeactivate())
+                && !mapper.hasActiveProductionTask(userId, deviceId)) {
+            deactivated = mapper.deactivatePendingDeviceAfterLeaseExpiry(
+                    userId, deviceId, device.rowVersion(), now) == 1;
+            if (deactivated) mapper.markRuntimeDeactivated(userId, deviceId, now);
+            if (!deactivated && !mapper.hasActiveProductionTask(userId, deviceId)) {
+                // Preserve the expired task as a retry candidate when the device CAS lost without a new
+                // active task explaining it; committing here would strand pending_deactivate indefinitely.
+                throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_CAS_CONFLICT");
+            }
+        }
+
+        Map<String, Object> expiryFact = linked("userId", userId, "deviceId", deviceId,
+                "taskNo", task.taskNo(), "leaseExpiresAt", task.leaseExpiresAt(), "status", "EXPIRED");
+        outboxService.publish("COMPUTE_TASK", task.taskNo(), "TASK_ASSIGNMENT_LEASE_EXPIRED", expiryFact);
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("TASK_ASSIGNMENT_LEASE_EXPIRED").resourceType("COMPUTE_TASK").resourceId(task.taskNo())
+                .bizNo(task.taskNo()).userId(userId).actorId(0L).actorType("SYSTEM")
+                .actorUsername("system").method("SCHEDULED")
+                .path("/internal/task-assignment-expiry-worker").result("SUCCESS").riskLevel("MEDIUM")
+                .detail(expiryFact).build());
+        if (deactivated) recordLeaseExpiryDeviceDeactivation(userId, device, now);
+        return true;
+    }
+
+    private void recordLeaseExpiryDeviceDeactivation(
+            Long userId, AppTaskAssignmentMapper.LeaseExpiryDevice device, LocalDateTime now) {
+        if (device.rowVersion() == null || device.rowVersion() < 0 || !StringUtils.hasText(device.status())) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");
+        }
+        AppTaskAssignmentMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
+        if (attribution == null || attribution.accountAgeMonths() == null || attribution.accountAgeMonths() < 0
+                || !StringUtils.hasText(attribution.phase())
+                || !attribution.phase().trim().matches("(?i)^P[1-6]$")
+                || !StringUtils.hasText(attribution.cohort())
+                || !attribution.cohort().trim().matches("^\\d{4}-W\\d{2}$")) {
+            throw new BizException(409, "TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        Map<String, Object> state = linked("userId", userId, "deviceId", device.id(),
+                "instanceNo", device.instanceNo(), "previousStatus", device.status(),
+                "status", "DEACTIVATED", "rowVersion", device.rowVersion() + 1);
+        outboxService.publishUserEvent("USER_DEVICE", device.instanceNo(), "device.deactivated", userId,
+                attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), state);
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_DEVICE_DEFERRED_DEACTIVATED").resourceType("USER_DEVICE")
+                .resourceId(String.valueOf(device.id())).bizNo(device.instanceNo()).userId(userId)
+                .actorId(0L).actorType("SYSTEM").actorUsername("system")
+                .method("SCHEDULED").path("/internal/task-assignment-expiry-worker")
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(linked("trigger", "LEASE_EXPIRED_WITHOUT_ACTIVE_TASK", "state", state)).build());
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<AppTaskAssignmentView> complete(
             Long userId, String taskNo, String idempotencyKey, AppTaskCompleteRequest request) {

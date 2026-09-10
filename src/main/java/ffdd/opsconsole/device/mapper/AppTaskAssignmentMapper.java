@@ -543,8 +543,63 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                             AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0)
             """)
     int expireAssignment(@Param("userId") Long userId, @Param("taskNo") String taskNo,
-                         @Param("sourceEnvironment") String sourceEnvironment,
-                         @Param("now") LocalDateTime now);
+                          @Param("sourceEnvironment") String sourceEnvironment,
+                          @Param("now") LocalDateTime now);
+
+    /** Bounded scheduler hint only; the service rechecks every row under user, device, then task locks. */
+    @Select("""
+            SELECT t.id AS taskId,t.user_id AS userId,t.user_device_id AS deviceId,t.task_no AS taskNo
+              FROM nx_compute_task t
+              JOIN nx_user u ON u.id=t.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
+              JOIN nx_user_device d ON d.id=t.user_device_id AND d.user_id=t.user_id AND d.is_deleted=0
+                AND d.source_environment='PRODUCTION' AND d.run_id='' AND UPPER(d.ownership_status)='OWNED'
+             WHERE t.id > #{afterTaskId} AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+               AND t.task_no LIKE 'CTA-%' AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at <= #{now}
+             ORDER BY t.id LIMIT #{limit}
+            """)
+    List<LeaseExpiryCandidate> leaseExpiryCandidates(@Param("afterTaskId") Long afterTaskId,
+                                                     @Param("limit") int limit,
+                                                     @Param("now") LocalDateTime now);
+
+    /** Canonical device lock for lease expiry; it deliberately permits a pending device to finish cleanup. */
+    @Select("""
+            SELECT d.id,d.instance_no AS instanceNo,d.status,d.row_version AS rowVersion,
+                   d.pending_deactivate AS pendingDeactivate
+              FROM nx_user_device d
+              JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_environment='PRODUCTION' AND d.run_id='' AND UPPER(d.ownership_status)='OWNED'
+             LIMIT 1 FOR UPDATE
+            """)
+    LeaseExpiryDevice lockLeaseExpiryDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Select("""
+            SELECT COUNT(1)>0 FROM nx_compute_task t
+             WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
+               AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+               AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+            """)
+    boolean hasActiveProductionTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Update("""
+            UPDATE nx_user_device d
+               SET d.status='DEACTIVATED',d.activated_at=NULL,d.deactivated_at=#{now},
+                   d.pending_deactivate=0,d.row_version=d.row_version+1,d.updated_at=#{now}
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_environment='PRODUCTION' AND d.run_id='' AND UPPER(d.ownership_status)='OWNED'
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.pending_deactivate=1 AND d.row_version=#{expectedRowVersion}
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=d.user_id
+                           AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0)
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_task active
+                                WHERE active.user_id=d.user_id AND active.user_device_id=d.id
+                                  AND active.source_environment='PRODUCTION' AND active.is_deleted=0
+                                  AND UPPER(active.status) IN ('CLAIMED','RUNNING'))
+            """)
+    int deactivatePendingDeviceAfterLeaseExpiry(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                                @Param("expectedRowVersion") Long expectedRowVersion,
+                                                @Param("now") LocalDateTime now);
 
     @Insert("""
             INSERT INTO nx_compute_receipt(user_id, user_device_id, task_no, receipt_no, task_type,
@@ -739,6 +794,10 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
              WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
             """)
     UserEventAttribution userEventAttribution(@Param("userId") Long userId);
+
+    record LeaseExpiryCandidate(Long taskId, Long userId, Long deviceId, String taskNo) {}
+
+    record LeaseExpiryDevice(Long id, String instanceNo, String status, Long rowVersion, Boolean pendingDeactivate) {}
 
     record DeviceRow(Long id, String instanceNo, String deviceType, String productTier, String name,
                      String status, String productCode, LocalDateTime purchasedAt,
