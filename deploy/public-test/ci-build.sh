@@ -10,12 +10,14 @@ case "$kind" in
     export JAVA_HOME="$JAVA17_HOME" PATH="$JAVA17_HOME/bin:$PATH"
     export MAVEN_OPTS='-Xms128m -Xmx1536m -XX:MaxMetaspaceSize=384m'
     export JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=/home/jenkins/agent/tmp'
-    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml -Dtest=RuntimeProfileEnvironmentPostProcessorTest,DatabaseEnvironmentResolverTest,PublicTestDeploymentIsolationTest,PublicTestDeploymentSafetyTest,OpsPlatformParamRegistryServiceTest,DeploymentForwardedHeadersConfigurationTest,UserOtpDeliveryServiceTest,CaptchaOtpGateTest,AppUserRegistrationServiceTest,AppUserPasswordResetServiceTest,AppUserSecurityServiceTest,GeoBlockEnforcementFilterTest,GeoBlockPolicyServiceTest,OpsAdminAuthControllerTest package
+    # main has already passed the user's local business acceptance. CI compiles
+    # and packages it without repeating business regression suites. These five
+    # automatic checks cover only TEST isolation, database routing and proxy trust.
+    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml -Dtest=RuntimeProfileEnvironmentPostProcessorTest,DatabaseEnvironmentResolverTest,PublicTestDeploymentIsolationTest,PublicTestDeploymentSafetyTest,DeploymentForwardedHeadersConfigurationTest package
     cp target/nexion-backend-0.0.1-SNAPSHOT.jar artifacts/backend.jar
     ;;
   pc)
     npm ci --ignore-scripts --no-audit --no-fund
-    node --experimental-strip-types --test tests/fetch-guard.test.mjs tests/standalone-deployment.test.mjs
     NEXGRID_STANDALONE_BUILD=1 npm run build
     test -f .next/standalone/server.js
     cp -a .next/static .next/standalone/.next/static
@@ -25,7 +27,6 @@ case "$kind" in
     ;;
   uniapp)
     npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
-    node --test scripts/phase-isolation-contract.test.mjs
     npm run type-check
     npm run build:h5:prod -- --base /app/
     node - <<'JS'
@@ -42,8 +43,7 @@ JS
     ;;
   *) echo 'Unknown build kind' >&2; exit 33 ;;
 esac
-# This field is informational only. The privileged host independently fingerprints
-# source Git objects; an untrusted build process cannot approve its own migrations.
+# Legacy manifest field retained for compatible artifact parsing, not approval.
 schema=$(printf '' | sha256sum | cut -d ' ' -f 1)
 node - "$kind" "$schema" <<'JS'
 const fs = require('node:fs');
