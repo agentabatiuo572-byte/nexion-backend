@@ -255,7 +255,6 @@ public class AppSupportService {
         if (conversation == null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
         if (!validExpectation(expectedStatus, expectedVersion)) return validation("CONVERSATION_READ_EXPECTATION_INVALID");
         if (!matches(conversation.status(), conversation.version(), expectedStatus, expectedVersion)) return conversationConflict();
-        if ("CLOSED".equals(normalizeUpper(conversation.status()))) return invalidConversationState();
         if (lastSeenMessageId == null || lastSeenMessageId <= 0) return validation("LAST_SEEN_MESSAGE_ID_REQUIRED");
         List<ContentConversationMessageView> messages = conversationRepository
                 .recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW + 1);

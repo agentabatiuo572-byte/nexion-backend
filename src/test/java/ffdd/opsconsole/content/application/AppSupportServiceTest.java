@@ -515,22 +515,88 @@ class AppSupportServiceTest {
     }
 
     @Test
-    void closedConversationCannotAdvanceAReadReceiptEvenWithMatchingCas() {
-        ContentConversationView closed = new ContentConversationView(
-                1L, "CV-CLOSED", 42L, "support", "CLOSED", null, "Unassigned", 1, "done",
-                LocalDateTime.now(clock), null, null, null, null, null, null, null, LocalDateTime.now(clock), 9L);
-        when(conversations.findByConversationNoForUpdate("CV-CLOSED")).thenReturn(Optional.of(closed));
+    void staleClosedConversationReadIsRejectedBeforeChangingAnyReceipt() {
+        when(conversations.findByConversationNoForUpdate("CV-CLOSED"))
+                .thenReturn(Optional.of(closedConversation(42L, "CV-CLOSED")));
 
-        var result = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 9L);
+        var result = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 8L);
 
         assertThat(result.getCode()).isEqualTo(409);
         verify(conversations, never()).markAgentMessagesReadThrough(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void repeatedClosedConversationReadIsIdempotentAndDoesNotPublishAnotherReceiptEvent() {
+        ContentConversationView conversation = closedConversation(42L, "CV-CLOSED");
+        when(conversations.findByConversationNoForUpdate("CV-CLOSED")).thenReturn(Optional.of(conversation));
+        when(conversations.findByConversationNo("CV-CLOSED")).thenReturn(Optional.of(conversation));
+        LocalDateTime now = LocalDateTime.now(clock);
+        ContentConversationMessageView read = new ContentConversationMessageView(
+                11L, 1L, "CV-CLOSED", 9L, "agent", "A", "reply", "read", now);
+        when(conversations.userVisibleMessages("CV-CLOSED")).thenReturn(List.of(read));
+        when(conversations.markAgentMessagesReadThrough("CV-CLOSED", 11L, "user:42", now, "CLOSED", 9L))
+                .thenReturn(true, false);
+
+        var first = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 9L);
+        var replay = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 9L);
+
+        assertThat(first.getCode()).isZero();
+        assertThat(replay.getCode()).isZero();
+        assertThat(replay.getData().conversation().unreadCount()).isZero();
+        assertThat(replay.getData().conversation().status()).isEqualTo("CLOSED");
+        assertThat(replay.getData().conversation().version()).isEqualTo(9L);
+        verify(conversations, times(2)).markAgentMessagesReadThrough("CV-CLOSED", 11L, "user:42", now, "CLOSED", 9L);
+        verify(eventPublisher, times(1)).publishEvent(any(ConversationMessageEvent.class));
+    }
+
+    @Test
+    void closedConversationStillRejectsReply() {
+        ContentConversationView closed = closedConversation(42L, "CV-CLOSED");
+        when(conversations.findByConversationNo("CV-CLOSED")).thenReturn(Optional.of(closed));
+
+        var result = service.replyConversation(42L, "CV-CLOSED", "closed-reply-key",
+                new AppSupportService.ReplyRequest("must not send", "CLOSED", 9L));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(conversations, never()).replyAsUser(any(), any(), any(), any());
+    }
+
+    @Test
+    void closedConversationReadAdvancesOnlyVisibleAgentMessagesWithoutChangingConversationState() {
+        ContentConversationView closed = closedConversation(42L, "CV-CLOSED");
+        when(conversations.findByConversationNoForUpdate("CV-CLOSED")).thenReturn(Optional.of(closed));
+        when(conversations.findByConversationNo("CV-CLOSED")).thenReturn(Optional.of(closed));
+        LocalDateTime now = LocalDateTime.now(clock);
+        ContentConversationMessageView readTarget = new ContentConversationMessageView(
+                11L, 1L, "CV-CLOSED", 9L, "agent", "A", "read target", "read", now);
+        ContentConversationMessageView laterAgent = new ContentConversationMessageView(
+                12L, 1L, "CV-CLOSED", 9L, "agent", "A", "later unread", "sent", now);
+        ContentConversationMessageView userMessage = new ContentConversationMessageView(
+                13L, 1L, "CV-CLOSED", 42L, "user", "User", "not a receipt target", "sent", now);
+        when(conversations.userVisibleMessages("CV-CLOSED")).thenReturn(List.of(readTarget, laterAgent, userMessage));
+        when(conversations.unreadUserVisibleAgentMessageCount("CV-CLOSED")).thenReturn(1);
+        when(conversations.markAgentMessagesReadThrough("CV-CLOSED", 11L, "user:42", now, "CLOSED", 9L))
+                .thenReturn(true);
+
+        var result = service.markConversationRead(42L, "CV-CLOSED", 11L, "CLOSED", 9L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().conversation().status()).isEqualTo("CLOSED");
+        assertThat(result.getData().conversation().version()).isEqualTo(9L);
+        assertThat(result.getData().conversation().unreadCount()).isEqualTo(1);
+        verify(conversations).markAgentMessagesReadThrough("CV-CLOSED", 11L, "user:42", now, "CLOSED", 9L);
     }
 
     private ContentConversationView conversation(Long userId, String number) {
         LocalDateTime now = LocalDateTime.now(clock);
         return new ContentConversationView(1L, number, userId, "support", "OPEN", null, "Unassigned",
                 9, "help", now, null, null, null, null, null, null, null, now, 9L);
+    }
+
+    private ContentConversationView closedConversation(Long userId, String number) {
+        LocalDateTime now = LocalDateTime.now(clock);
+        return new ContentConversationView(1L, number, userId, "support", "CLOSED", null, "Unassigned",
+                1, "done", now, null, null, null, null, null, null, null, now, 9L);
     }
 
     private SupportTicketView ticket(Long userId, String status, Long version) {

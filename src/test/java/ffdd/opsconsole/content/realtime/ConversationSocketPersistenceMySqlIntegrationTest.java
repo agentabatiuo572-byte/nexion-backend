@@ -354,6 +354,45 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 """, Integer.class, laterAgentMessageId));
     }
 
+    @Test
+    void closedConversationReadPersistsOnlyTheVisibleAgentReceiptWithoutChangingConversationState() throws Exception {
+        WireClient user = authenticated(USER_TOKEN, "USER");
+        user.watch("CV-M3-IT");
+        long readTargetId = messageIdFor(userConversation(), "seed agent message");
+        appendFixtureMessage(9001L, "agent", "fixture-advisor", "fixture later unread agent sentinel");
+        long laterAgentMessageId = messageIdFor(userConversation(), "fixture later unread agent sentinel");
+        assertThat(laterAgentMessageId).isGreaterThan(readTargetId);
+        jdbc.update("UPDATE nx_conversation SET status='CLOSED', version=7 WHERE conversation_no='CV-M3-IT'");
+
+        Map<String, Object> readCommand = Map.of(
+                "type", "command", "operation", "read", "conversationNo", "CV-M3-IT",
+                "body", Map.of("lastSeenMessageId", readTargetId, "expectedStatus", "CLOSED", "expectedVersion", 7));
+        user.send(withRequestId(readCommand, "closed-user-read"));
+        assertSuccessAck(user.await(frame -> "ack".equals(frame.path("type").asText())
+                && "closed-user-read".equals(frame.path("requestId").asText())));
+
+        user.send(withRequestId(readCommand, "closed-user-read-replay"));
+        assertSuccessAck(user.await(frame -> "ack".equals(frame.path("type").asText())
+                && "closed-user-read-replay".equals(frame.path("requestId").asText())));
+
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM nx_conversation_message_receipt
+                 WHERE conversation_no='CV-M3-IT' AND message_id=? AND receipt_status='read' AND read_by='user:501'
+                """, Integer.class, readTargetId));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM nx_conversation_message_receipt
+                 WHERE conversation_no='CV-M3-IT' AND message_id=? AND receipt_status='read' AND read_by='user:501'
+                """, Integer.class, laterAgentMessageId));
+        assertEquals("CLOSED", jdbc.queryForObject(
+                "SELECT status FROM nx_conversation WHERE conversation_no='CV-M3-IT'", String.class));
+        assertEquals(7L, jdbc.queryForObject(
+                "SELECT version FROM nx_conversation WHERE conversation_no='CV-M3-IT'", Long.class));
+        JsonNode detail = userConversation();
+        assertEquals("read", messageFor(detail, "agent", "seed agent message").path("receiptStatus").asText());
+        assertEquals("sent", messageFor(detail, "agent", "fixture later unread agent sentinel")
+                .path("receiptStatus").asText());
+    }
+
     private WireClient authenticated(String token, String audience) throws Exception {
         String ticket = ticket(token, audience);
         WireClient client = connect();
