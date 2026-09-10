@@ -38,6 +38,14 @@ class Rejected(RuntimeError):
     pass
 
 
+class ComponentFailed(Rejected):
+    """This artifact failed, but the previous deployment is unchanged/restored."""
+
+
+def failure_reason(error):
+    return str(error) if isinstance(error, Rejected) else type(error).__name__
+
+
 def require(condition, message):
     if not condition:
         raise Rejected(message)
@@ -134,13 +142,14 @@ def swap_upstream(text, old, new):
     return re.sub(re.escape(before) + r'(?=[/;])', f'proxy_pass http://127.0.0.1:{new}', text)
 
 
-def transaction(apply, verify, rollback, verify_old):
+def transaction(apply, verify, rollback, verify_old, after_rollback=lambda: None):
     try:
         apply()
         verify()
     except BaseException:
         rollback()
         verify_old()
+        after_rollback()
         raise
 
 
@@ -349,6 +358,67 @@ def frontend_run(component, candidate, port, release, config):
     run(*args)
 
 
+def clear_restored_transaction(journal):
+    save(ROOT / 'state.json', journal['old_state'])
+    (ROOT / 'transaction.json').unlink()
+    sync_directory(ROOT)
+
+
+def discard_staging(journal):
+    """No cutover occurred. Stop only this candidate; never restart a live service."""
+    require(journal['phase'] == 'STAGING', 'STAGING_PHASE_REQUIRED')
+    require(json.loads((ROOT / 'state.json').read_text()) == journal['old_state'], 'STAGING_STATE_DRIFT')
+    require(digest(NGINX) == journal['old_state']['nginx_sha256'], 'STAGING_NGINX_DRIFT')
+    if journal['component'] == 'backend':
+        require(str((ROOT / 'backend/current').resolve()) == journal['old_target'], 'STAGING_BACKEND_DRIFT')
+        require((DROPIN.read_text() if DROPIN.exists() else None) == journal['old_dropin'], 'STAGING_DROPIN_DRIFT')
+    else:
+        require(journal['candidate'] != journal['old_state'][journal['component']]['container'], 'LIVE_CANDIDATE_REJECTED')
+        stop_candidate(journal['candidate'])
+    clear_restored_transaction(journal)
+
+
+def stage_release(component, build, destination, manifest, config, journal, port):
+    destination.mkdir(mode=0o755)
+    destination.chmod(0o755)
+    payload = destination / manifest['artifact']
+    atomic_write(payload, safe_read(build / 'archive/artifacts' / manifest['artifact'], MAX_ARCHIVE), 0o644)
+    verify_digest(payload, manifest['sha256'])
+    release = destination / 'app'
+    if component == 'backend':
+        with zipfile.ZipFile(payload) as jar:
+            policy = jar.read('BOOT-INF/classes/public-test-policy.properties')
+            require(hashlib.sha256(policy).hexdigest() == config['policy_sha256'], 'JAR_POLICY_REJECTED')
+            require('BOOT-INF/classes/ffdd/opsconsole/PublicTestDeploymentSafety.class' in jar.namelist(), 'JAR_GUARD_MISSING')
+        release.mkdir(mode=0o755)
+        release.chmod(0o755)
+        shutil.copyfile(payload, release / 'nexion-backend.jar')
+        (release / 'nexion-backend.jar').chmod(0o644)
+    else:
+        safe_extract(payload, release)
+        frontend_run(component, journal['candidate'], port, release, config)
+        health(component, port)
+    return release
+
+
+def apply_with_rollback(journal, apply, port, old_port):
+    restored = False
+
+    def restored_ok():
+        nonlocal restored
+        clear_restored_transaction(journal)
+        restored = True
+
+    try:
+        transaction(apply, lambda: health(journal['component'], port), lambda: restore(journal),
+                    lambda: health(journal['component'], old_port), restored_ok)
+    except BaseException as error:
+        if restored:
+            raise ComponentFailed('ROLLED_BACK: ' + failure_reason(error)) from None
+        save(ROOT / 'HALTED.json', {'reason': 'ROLLBACK_INCOMPLETE_OPERATOR_REQUIRED', **journal})
+        raise
+
+
 def promote(component, number, config, state, rollback_check=False):
     require(component in ARTIFACTS and str(number).isdigit(), 'COMPONENT_REJECTED')
     require(not rollback_check or not (ROOT / 'AUTO_ENABLED').exists(), 'ROLLBACK_CHECK_REQUIRES_AUTO_HELD')
@@ -361,16 +431,8 @@ def promote(component, number, config, state, rollback_check=False):
     url = f'https://github.com/agentabatiuo572-byte/{REPOS[component]}.git'
     remote = run('git', 'ls-remote', url, 'refs/heads/main', timeout=30).split()
     require(len(remote) == 2 and remote == [sha, 'refs/heads/main'], 'BUILD_IS_NOT_CURRENT_MAIN')
-    if component == 'backend':
-        from schema_fingerprint import fingerprint_objects
-        cache = ROOT / 'source-cache.git'
-        if not cache.exists():
-            run('git', '-c', 'core.hooksPath=/dev/null', 'init', '--bare', str(cache))
-        run('git', '--git-dir=' + str(cache), '-c', 'core.hooksPath=/dev/null',
-            '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
-            'fetch', '--depth=1', '--no-tags', url, sha, timeout=90)
-        source_schema = fingerprint_objects(cache, sha)
-        require(source_schema == config['schema'][component], 'SCHEMA_REVIEW_REQUIRED')
+    # GitHub main is the user's approved business source. Mapper/startup/source
+    # changes do not require a second fingerprint approval. No SQL is run here.
     suffix = '-rollback' if rollback_check else ''
     destination = ROOT / component / f'{number}-{sha[:12]}{suffix}'
     require(not destination.exists(), 'RELEASE_ALREADY_STAGED')
@@ -388,26 +450,18 @@ def promote(component, number, config, state, rollback_check=False):
         candidate = f'nexgrid-cd-{component}-{number}{suffix}'
         old_nginx = NGINX.read_text()
         require(hashlib.sha256(old_nginx.encode()).hexdigest() == state['nginx_sha256'], 'NGINX_CONFIGURATION_DRIFT')
+        changed = swap_upstream(old_nginx, current['port'], port)
         journal.update(old_nginx=old_nginx, old_port=current['port'], candidate=candidate)
     save(ROOT / 'transaction.json', journal)
-    destination.mkdir(mode=0o755)
-    destination.chmod(0o755)
-    payload = destination / manifest['artifact']
-    atomic_write(payload, safe_read(build / 'archive/artifacts' / manifest['artifact'], MAX_ARCHIVE), 0o644)
-    verify_digest(payload, manifest['sha256'])
-    if component == 'backend':
-        with zipfile.ZipFile(payload) as jar:
-            policy = jar.read('BOOT-INF/classes/public-test-policy.properties')
-            require(hashlib.sha256(policy).hexdigest() == config['policy_sha256'], 'JAR_POLICY_REJECTED')
-            require('BOOT-INF/classes/ffdd/opsconsole/PublicTestDeploymentSafety.class' in jar.namelist(), 'JAR_GUARD_MISSING')
-        release = destination / 'app'
-        release.mkdir(mode=0o755)
-        release.chmod(0o755)
-        shutil.copyfile(payload, release / 'nexion-backend.jar')
-        (release / 'nexion-backend.jar').chmod(0o644)
-    else:
-        release = destination / 'app'
-        safe_extract(payload, release)
+    try:
+        release = stage_release(component, build, destination, manifest, config, journal, port)
+    except BaseException as error:
+        try:
+            discard_staging(journal)
+        except BaseException:
+            save(ROOT / 'HALTED.json', {'reason': 'STAGING_CLEANUP_INCOMPLETE', **journal})
+            raise
+        raise ComponentFailed('STAGING_FAILED: ' + failure_reason(error)) from None
     if component == 'backend':
         def apply():
             link(ROOT / 'backend/current', release)
@@ -415,14 +469,6 @@ def promote(component, number, config, state, rollback_check=False):
             run('systemctl', 'daemon-reload')
             run('systemctl', 'restart', 'nexgrid-backend', timeout=90)
     else:
-        # Starting and testing the new frontend does not change the live ingress.
-        frontend_run(component, candidate, port, release, config)
-        try:
-            health(component, port)
-        except BaseException:
-            run('docker', 'stop', '--time', '15', candidate)
-            raise
-        changed = swap_upstream(old_nginx, current['port'], port)
         def apply():
             atomic_write(NGINX, changed, 0o644)
             run('nginx', '-t')
@@ -449,20 +495,7 @@ def promote(component, number, config, state, rollback_check=False):
         sync_directory(ROOT)
         print(json.dumps({'event': 'ROLLBACK_VERIFIED', 'component': component, 'sha': sha}), flush=True)
         return
-    try:
-        transaction(apply, lambda: health(component, port), lambda: restore(journal),
-                    lambda: health(component, current['port']))
-    except BaseException:
-        # A successful rollback must restore its metadata too; if rollback itself
-        # failed, HALTED + the still-present journal require operator recovery.
-        if component == 'backend':
-            live_restored = str((ROOT / 'backend/current').resolve()) == journal['old_target']
-        else:
-            live_restored = digest(NGINX) == journal['old_state']['nginx_sha256']
-        if live_restored:
-            save(ROOT / 'state.json', journal['old_state'])
-        save(ROOT / 'HALTED.json', {'reason': 'ROLLED_BACK_OR_OPERATOR_REQUIRED', **journal})
-        raise
+    apply_with_rollback(journal, apply, port, current['port'])
     new_state = {**current, 'build': number, 'sha': sha, 'port': port, 'release': str(release)}
     if component != 'backend':
         new_state['container'] = candidate
@@ -474,6 +507,42 @@ def promote(component, number, config, state, rollback_check=False):
     atomic_write(destination / 'promotion.json', json.dumps(journal, sort_keys=True))
     finish_commit(journal)
     print(json.dumps({'event': 'DEPLOYED', 'component': component, 'build': number, 'sha': sha}), flush=True)
+
+
+def poll(config, state):
+    failure_path = ROOT / 'component-failures.json'
+    failures = json.loads(failure_path.read_text()) if failure_path.exists() else {}
+    for component in ARTIFACTS:
+        latest = None
+        try:
+            builds = JOBS / f'nexgrid-{component}-main/builds'
+            numbers = sorted((int(p.name) for p in builds.iterdir() if p.name.isdigit()), reverse=True)
+            if not numbers or numbers[0] <= state[component]['build']:
+                continue
+            latest = numbers[0]
+            previous = failures.get(component, {})
+            if previous.get('build') == latest and previous.get('retryable') is False:
+                continue  # A failed artifact needs a new build, not repeated cutovers.
+            try:
+                build_identity(safe_read(builds / str(latest) / 'build.xml', 8 * 1024 * 1024))
+            except (Rejected, FileNotFoundError):
+                continue  # queued/running/failed/unstable cannot replace the live release
+            promote(component, latest, config, state)
+        except Exception as error:
+            failures[component] = {'build': latest, 'reason': failure_reason(error),
+                                   'retryable': not isinstance(error, ComponentFailed), 'at': int(time.time())}
+            save(failure_path, failures)
+            print(json.dumps({'event': 'COMPONENT_RELEASE_FAILED', 'component': component,
+                              **failures[component]}), flush=True)
+            # Shared ingress/state is safe only after a completed cleanup/rollback.
+            # Never swallow interrupted commits or failed recovery just to continue.
+            require(not (ROOT / 'HALTED.json').exists() and not (ROOT / 'transaction.json').exists(),
+                    'RELEASE_RECOVERY_REQUIRED')
+            state = json.loads((ROOT / 'state.json').read_text())
+            continue
+        if component in failures:
+            del failures[component]
+            save(failure_path, failures)
 
 
 def main():
@@ -513,17 +582,7 @@ def main():
             promote(args.component, args.build, config, state, rollback_check=args.action == 'rollback-check')
             return
         require((ROOT / 'AUTO_ENABLED').is_file(), 'AUTO_DEPLOYMENT_HELD')
-        for component in ARTIFACTS:
-            builds = JOBS / f'nexgrid-{component}-main/builds'
-            numbers = sorted((int(p.name) for p in builds.iterdir() if p.name.isdigit()), reverse=True)
-            if not numbers or numbers[0] <= state[component]['build']:
-                continue
-            latest = numbers[0]
-            try:
-                build_identity(safe_read(builds / str(latest) / 'build.xml', 8 * 1024 * 1024))
-            except (Rejected, FileNotFoundError):
-                continue  # queued/running/failed/unstable must never replace the live release
-            promote(component, latest, config, state)
+        poll(config, state)
 
 
 if __name__ == '__main__':

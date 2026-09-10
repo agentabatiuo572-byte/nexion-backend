@@ -9,6 +9,11 @@ import trusted_entry as t
 
 
 class TrustedEntryTests(unittest.TestCase):
+    def test_checked_in_runtime_lock_matches_every_real_source(self):
+        with patch.object(t, 'trusted_path'):
+            sources = t.verified_sources(Path(__file__).parent)
+        self.assertEqual(set(sources), t.FILES)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
