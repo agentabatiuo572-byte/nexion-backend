@@ -14,6 +14,7 @@ import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.PromoRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.TaskPriceHistoryRow;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -35,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
@@ -43,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** Server-only projection. Missing production facts are represented as null/empty collections. */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AppHomeOverviewService {
     private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
@@ -66,7 +69,7 @@ public class AppHomeOverviewService {
     private final AppHomeOverviewMapper mapper;
     private final ComputeTaskProofVerifier proofVerifier;
     private final GrowthPublicStatsService publicStatsService;
-    private final AppCanonicalBoundaryService purchaseEligibilityService;
+    private final HomePurchaseEligibilityProbe purchaseEligibilityProbe;
     private final Clock clock;
     private final Environment runtimeEnvironment;
 
@@ -295,7 +298,7 @@ public class AppHomeOverviewService {
         try {
             List<String> productNos = candidates.stream().map(MarketProductRow::productNo).toList();
             ApiResult<Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision>> result =
-                    purchaseEligibilityService.purchaseEligibilityBatch(userId, productNos);
+                    purchaseEligibilityProbe.purchaseEligibilityBatch(userId, productNos);
             if (result == null || result.getCode() != 0 || result.getData() == null) return null;
             Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision> decisions = result.getData();
             return candidates.stream().filter(candidate -> {
@@ -308,8 +311,21 @@ public class AppHomeOverviewService {
             // Home is a read projection. An eligibility outage must hide the
             // conversion card, not make the entire Home/Earn surface unavailable
             // and never fall back to a locally guessed product.
+            log.warn("event=APP_HOME_PURCHASE_ELIGIBILITY_UNAVAILABLE errorCode={} exceptionClass={} rootCauseClass={}",
+                    eligibilityErrorCode(exception), exception.getClass().getSimpleName(), rootCauseClass(exception));
             return null;
         }
+    }
+
+    private String eligibilityErrorCode(RuntimeException exception) {
+        return exception instanceof BizException business ? "BIZ_" + business.getCode()
+                : "UNEXPECTED_RUNTIME";
+    }
+
+    private String rootCauseClass(Throwable exception) {
+        Throwable current = exception;
+        while (current.getCause() != null && current.getCause() != current) current = current.getCause();
+        return current.getClass().getSimpleName();
     }
 
     private PriceHistoryProjection priceHistory(List<TaskPriceHistoryRow> rows, LocalDateTime now) {

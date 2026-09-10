@@ -29,8 +29,8 @@ class AppHomeOverviewServiceTest {
     private final AppHomeOverviewMapper mapper = org.mockito.Mockito.mock(AppHomeOverviewMapper.class);
     private final ComputeTaskProofVerifier verifier = org.mockito.Mockito.mock(ComputeTaskProofVerifier.class);
     private final GrowthPublicStatsService publicStats = org.mockito.Mockito.mock(GrowthPublicStatsService.class);
-    private final AppCanonicalBoundaryService purchaseEligibility =
-            org.mockito.Mockito.mock(AppCanonicalBoundaryService.class);
+    private final HomePurchaseEligibilityProbe purchaseEligibility =
+            org.mockito.Mockito.mock(HomePurchaseEligibilityProbe.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
     private final AppHomeOverviewService service =
