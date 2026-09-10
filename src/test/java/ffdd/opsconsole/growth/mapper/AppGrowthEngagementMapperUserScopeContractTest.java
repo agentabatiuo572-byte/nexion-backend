@@ -10,6 +10,16 @@ import org.junit.jupiter.api.Test;
 class AppGrowthEngagementMapperUserScopeContractTest {
 
     @Test
+    void wheelUsesTheSameExclusiveDeadlineAsEventClaims() throws Exception {
+        for (String method : new String[] {"lockOpenWheelEvent", "findOpenWheelEvent"}) {
+            String sql = String.join(" ", AppGrowthWheelMapper.class.getMethod(method, String.class)
+                    .getAnnotation(Select.class).value());
+            assertThat(sql).contains("starts_at<=UTC_TIMESTAMP()", "ends_at>UTC_TIMESTAMP()")
+                    .doesNotContain("ends_at>=");
+        }
+    }
+
+    @Test
     void eventClaimEnforcesTheUtcWindowInBothLockAndFinalWrite() throws Exception {
         String lock = String.join(" ", AppGrowthEngagementMapper.class
                 .getMethod("lockClaimableEvent", Long.class, String.class).getAnnotation(Select.class).value());
