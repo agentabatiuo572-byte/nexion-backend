@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +44,7 @@ import org.springframework.transaction.annotation.AnnotationTransactionAttribute
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 
 /** Isolated real-MySQL contract for keyset paging and server-side wallet aggregates. */
-@EnabledIfEnvironmentVariable(named = "NEXION_TEST_DB_PASSWORD", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "NEXION_WALLET_BILLS_IT", matches = "true")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AppWalletBillsMySqlIntegrationTest {
     private static final long USER = 701L;
@@ -59,18 +60,17 @@ class AppWalletBillsMySqlIntegrationTest {
 
     @BeforeAll
     void createOwnedFixtureDatabase() throws Exception {
-        connection = DriverManager.getConnection(System.getenv().getOrDefault("NEXION_TEST_DB_URL",
-                        "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8"
-                                + "&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"),
-                System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root"),
-                System.getenv("NEXION_TEST_DB_PASSWORD"));
-        jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
         fixtureDatabase = "nx_wallet_bills_test_" + UUID.randomUUID().toString().replace("-", "");
         assertOwnedFixtureDatabase();
+        connection = DriverManager.getConnection(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), ""), "root", "");
+        jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isNull();
         try {
             jdbc.execute("CREATE DATABASE `" + fixtureDatabase + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             fixtureDatabaseCreated = true;
             jdbc.execute("USE `" + fixtureDatabase + "`");
+            assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
             jdbc.execute("""
                     CREATE TABLE nx_user (
                       id BIGINT PRIMARY KEY, sandbox TINYINT NOT NULL, status VARCHAR(32) NOT NULL,
@@ -104,6 +104,7 @@ class AppWalletBillsMySqlIntegrationTest {
     @BeforeEach
     void clearOnlyTheOwnedFixtureDatabase() {
         assertOwnedFixtureDatabase();
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
         assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
         jdbc.execute("TRUNCATE TABLE nx_wallet_ledger");
         jdbc.execute("TRUNCATE TABLE nx_user");
@@ -164,6 +165,9 @@ class AppWalletBillsMySqlIntegrationTest {
         ledger(USER, "NEXT-MONTH", "EARN", "NEX", "IN", "13", "130", "SUCCESS", DAY.plusDays(1), 0);
 
         List<AppWalletBillsMapper.LedgerRow> first = mapper.rowsAfter(USER, 51, null, null, null, null, null);
+        List<Long> expectedIds = jdbc.queryForList("SELECT id FROM nx_wallet_ledger WHERE user_id=? AND is_deleted=0"
+                + " ORDER BY created_at DESC,id DESC", Long.class, USER);
+        assertThat(expectedIds).hasSize(1_112);
         AppWalletBillsMapper.LedgerRow boundary = first.get(49);
         ledger(USER, "CONCURRENT-NEW", "EARN", "NEX", "IN", "1", "131", "SUCCESS", DAY.plusDays(2), 0);
         List<AppWalletBillsMapper.LedgerRow> second = mapper.rowsAfter(USER, 51, null, null, null,
@@ -175,17 +179,33 @@ class AppWalletBillsMySqlIntegrationTest {
         assertThat(second).allSatisfy(row -> assertThat(ids).doesNotContain(row.id()));
         assertThat(second).noneSatisfy(row -> assertThat(row.bizNo()).isEqualTo("CONCURRENT-NEW"));
         assertThat(first).extracting(AppWalletBillsMapper.LedgerRow::bizNo).doesNotContain("OTHER", "DELETED");
+        List<Long> traversedIds = new ArrayList<>();
+        List<AppWalletBillsMapper.LedgerRow> page = first;
+        int pages = 0;
+        while (!page.isEmpty()) {
+            assertThat(++pages).isLessThan(30);
+            List<AppWalletBillsMapper.LedgerRow> visible = page.subList(0, Math.min(50, page.size()));
+            visible.forEach(row -> traversedIds.add(row.id()));
+            var last = visible.get(visible.size() - 1);
+            List<AppWalletBillsMapper.LedgerRow> next = mapper.rowsAfter(USER, 51, null, null, null,
+                    last.createdAt(), last.id());
+            if (page.size() <= 50) assertThat(next).isEmpty();
+            page = next;
+        }
+        assertThat(traversedIds).containsExactlyElementsOf(expectedIds);
         assertThat(mapper.rowsAfter(USER, 2_000, null, "IN", null, null, null))
                 .noneSatisfy(row -> assertThat(row.bizNo()).isIn("ZERO", "NEGATIVE", "NULL-AMOUNT"));
         assertThat(mapper.rowsAfter(USER, 20, null, null, "REWARD", null, null))
-                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains("ORDER-QUEST", "QUEST", "COMMISSION")
+                // Synthetic overlapping names follow the same existing precedence as App presentation:
+                // QUEST wins over ORDER, while STAKE wins over ACHIEVEMENT.
+                .extracting(AppWalletBillsMapper.LedgerRow::bizNo).contains("QUEST", "COMMISSION", "ORDER-QUEST")
                 .doesNotContain("STAKE-ACH");
 
         AppWalletBillsMapper.SummaryRow summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1),
                 DAY.withDayOfMonth(1).plusMonths(1));
         assertThat(summary.rewardsUsdt()).isEqualByComparingTo("2");
         assertThat(summary.rewardsNex()).isEqualByComparingTo("11");
-        // 1,100 EARN rows + two tied EARN rows + pending EARN amount 4; ORDER_QUEST is a reward.
+        // 1,100 EARN rows + two tied EARN rows + four pending EARN; ORDER_QUEST is a reward.
         assertThat(summary.todayNexEarn()).isEqualByComparingTo("1106");
         assertThat(summary.pendingNex()).isEqualByComparingTo("4");
         assertThat(summary.monthBillCount()).isEqualTo(1_111L);
@@ -278,25 +298,21 @@ class AppWalletBillsMySqlIntegrationTest {
     }
 
     private DataSource fixtureDataSource() {
-        return new DriverManagerDataSource(fixtureJdbcUrl(), System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root"),
-                System.getenv("NEXION_TEST_DB_PASSWORD"));
+        return new DriverManagerDataSource(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), fixtureDatabase), "root", "");
     }
 
-    private String fixtureJdbcUrl() {
-        try {
-            String url = connection.getMetaData().getURL();
-            int query = url.indexOf('?');
-            String base = query < 0 ? url : url.substring(0, query);
-            String parameters = query < 0 ? "" : url.substring(query);
-            return base.substring(0, base.lastIndexOf('/') + 1) + fixtureDatabase + parameters;
-        } catch (Exception exception) {
-            throw new IllegalStateException("fixture JDBC URL unavailable", exception);
-        }
+    static String isolatedUrl(String endpoint, String database) {
+        if (!"127.0.0.1:13306".equals(endpoint)) throw new IllegalArgumentException("isolated endpoint required");
+        if (database == null || (!database.isEmpty() && !database.matches("nx_wallet_bills_test_[0-9a-f]{32}")))
+            throw new IllegalArgumentException("owned UUID schema required");
+        return "jdbc:mysql://" + endpoint + "/" + database
+                + "?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
     }
 
     private void dropOwnedFixtureDatabase() {
         if (!fixtureDatabaseCreated) return;
         assertOwnedFixtureDatabase();
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
         jdbc.execute("USE information_schema");
         jdbc.execute("DROP DATABASE `" + fixtureDatabase + "`");
         fixtureDatabaseCreated = false;
