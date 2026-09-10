@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.nullable;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.mapper.AppBundleOrderMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -62,7 +63,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, outbox, guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, "bundle-key-1");
+                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, new BigDecimal("285"), "bundle-key-1");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("orderType", "BUNDLE")
@@ -70,6 +71,98 @@ class AppBundleOrderServiceTest {
                 .containsEntry("discountUsdt", new BigDecimal("15.000000"))
                 .containsEntry("amountUsdt", new BigDecimal("285.000000"));
         verify(mapper, times(2)).insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any());
+    }
+
+    @Test
+    void productionBundleKeepsAConfirmedSixDecimalAmount() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(
+                new AppBundleOrderMapper.ProductRow(1L, "s1", "S1", new BigDecimal("100.01"), 2),
+                new AppBundleOrderMapper.ProductRow(2L, "pro", "Pro", new BigDecimal("100.01"), 2)));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W33"));
+        when(mapper.decrementStock(anyLong())).thenReturn(1);
+        when(mapper.insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertBundleItem(anyString(), any(), anyInt(), anyBoolean(), any())).thenReturn(1);
+
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("190.019"), "bundle-six-decimals");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("amountUsdt", new BigDecimal("190.019000"));
+    }
+
+    @Test
+    void productionBundleRejectsAChangedConfirmedAmountBeforeQuotaStockOrOrderWrites() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(
+                new AppBundleOrderMapper.ProductRow(1L, "s1", "S1", new BigDecimal("100.50"), 2),
+                new AppBundleOrderMapper.ProductRow(2L, "pro", "Pro", new BigDecimal("100.50"), 2)));
+        when(mapper.deviceSlotCap()).thenReturn(6);
+        when(mapper.attribution(7L)).thenReturn(new AppBundleOrderMapper.Attribution("P1", 1, "2026-W33"));
+
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("190.94"), "bundle-quote-stale");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("BUNDLE_QUOTE_STALE");
+        verify(mapper, never()).consumePurchaseQuota(anyString(), anyInt());
+        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+    }
+
+    @Test
+    void productionBundleRequiresAnExplicitConfirmedAmountFromEveryClient() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
+                .create(7L, List.of("s1", "pro"), 1L, null, "bundle-no-quote");
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("BUNDLE_QUOTE_REQUIRED");
+        verify(mapper, never()).lockProducts(any());
+        verify(mapper, never()).decrementStock(anyLong());
+    }
+
+    @Test
+    void aLegacyRetryCanRecoverItsExistingIdempotentBundleBeforeQuoteValidation() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
+                .thenReturn(ApiResult.ok(java.util.Map.of("orderNo", "BND-LEGACY")));
+
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
+                .create(7L, List.of("s1", "pro"), 1L, null, "legacy-retry-key");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("orderNo", "BND-LEGACY");
+        verify(mapper, never()).lockProducts(any());
+        verify(mapper, never()).decrementStock(anyLong());
     }
 
     @Test
@@ -91,7 +184,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, "bundle-capacity-key");
+                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, new BigDecimal("285"), "bundle-capacity-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
@@ -117,7 +210,7 @@ class AppBundleOrderServiceTest {
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy,
                 mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("s1", "share"), 1L, "bundle-spec-key");
+                .create(7L, List.of("s1", "share"), 1L, new BigDecimal("285"), "bundle-spec-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("PRODUCT_SPECS_UNAVAILABLE");
@@ -135,7 +228,7 @@ class AppBundleOrderServiceTest {
                 mock(EventOutboxService.class), guard, new StorefrontPurchaseGatePolicy(),
                 releasePolicy,
                 mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, "bundle-key-1");
+                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, new BigDecimal("285"), "bundle-key-1");
         assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
         verify(mapper).lockUser(7L);
     }
@@ -152,7 +245,7 @@ class AppBundleOrderServiceTest {
         var result = new AppBundleOrderService(mapper, idempotency, outbox, guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy,
                 mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, "mixed-bundle-key");
+                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, new BigDecimal("285"), "mixed-bundle-key");
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_UNAVAILABLE");
@@ -185,7 +278,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, sandbox, run)
-                .create(7L, List.of("s1", "pro"), 1L, "sandbox-bundle-key");
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "sandbox-bundle-key");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("source", "mock")
@@ -213,7 +306,7 @@ class AppBundleOrderServiceTest {
         when(mapper.purchaseFacts(7L)).thenReturn(new AppBundleOrderMapper.PurchaseFacts(2, 0, BigDecimal.ZERO));
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("s1", "pro"), 1L, "bundle-gate-key");
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "bundle-gate-key");
         assertThat(result.getMessage()).isEqualTo("PURCHASE_GATE_BLOCKED");
         verify(mapper, never()).decrementStock(anyLong());
     }
@@ -243,7 +336,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("s1", "pro"), 1L, "bundle-quota-key");
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "bundle-quota-key");
 
         assertThat(result.getCode()).isZero();
         verify(mapper).consumePurchaseQuota("s1", 1);
@@ -271,7 +364,7 @@ class AppBundleOrderServiceTest {
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class),
                 guard, new StorefrontPurchaseGatePolicy(), releasePolicy,
                 mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
-                .create(7L, List.of("s1", "pro"), 1L, "bundle-release-key");
+                .create(7L, List.of("s1", "pro"), 1L, new BigDecimal("285"), "bundle-release-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("BUNDLE_PRODUCT_NOT_RELEASED");
@@ -303,7 +396,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, sandbox, run)
-                .create(7L, List.of("bb", "aa"), 1L, "sandbox-release-key");
+                .create(7L, List.of("bb", "aa"), 1L, new BigDecimal("285"), "sandbox-release-key");
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("BUNDLE_PRODUCT_NOT_RELEASED");
@@ -335,7 +428,7 @@ class AppBundleOrderServiceTest {
 
         var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, sandbox, run)
-                .create(7L, List.of("bb", "aa"), 1L, "sandbox-order-lock-key");
+                .create(7L, List.of("bb", "aa"), 1L, new BigDecimal("285"), "sandbox-order-lock-key");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("productNos", List.of("bb", "aa"));
@@ -376,8 +469,8 @@ class AppBundleOrderServiceTest {
 
         var service = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, sandbox, run);
-        var first = service.create(7L, List.of("bb", "aa"), 1L, "same-bundle-key");
-        var second = service.create(7L, List.of("bb", "aa"), 1L, "same-bundle-key");
+        var first = service.create(7L, List.of("bb", "aa"), 1L, new BigDecimal("285"), "same-bundle-key");
+        var second = service.create(7L, List.of("bb", "aa"), 1L, new BigDecimal("285"), "same-bundle-key");
 
         assertThat(first.getCode()).isZero();
         assertThat(second.getCode()).isZero();
@@ -404,7 +497,7 @@ class AppBundleOrderServiceTest {
         var service = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
                 new StorefrontPurchaseGatePolicy(), releasePolicy, sandbox, run);
 
-        assertThatThrownBy(() -> service.create(7L, List.of("aa", "bb"), 1L, "missing-run-key"))
+        assertThatThrownBy(() -> service.create(7L, List.of("aa", "bb"), 1L, new BigDecimal("285"), "missing-run-key"))
                 .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class)
                 .hasMessageContaining("COMMERCE_SANDBOX_RUN_ID_REQUIRED");
         verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());

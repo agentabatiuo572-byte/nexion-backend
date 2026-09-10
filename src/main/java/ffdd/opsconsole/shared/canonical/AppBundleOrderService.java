@@ -80,7 +80,8 @@ public class AppBundleOrderService {
 
     @Transactional
     public ApiResult<Map<String, Object>> create(
-            Long userId, List<String> productNos, Long expectedPolicyVersion, String idempotencyKey) {
+            Long userId, List<String> productNos, Long expectedPolicyVersion,
+            BigDecimal expectedAmountUsdt, String idempotencyKey) {
         if (profileGuard.isLocalSandboxEnabled()) {
             AppBundleOrderMapper.UserLock user = mapper.lockUser(userId);
             if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -92,7 +93,12 @@ public class AppBundleOrderService {
             }
             String runId = acceptanceRun.requireRunId();
             return executeSandboxOnce(userId, normalized, idempotencyKey, runId,
-                    () -> createSandboxOnce(userId, normalized, runId));
+                    () -> {
+                        ApiResult<Map<String, Object>> quoteFailure = quoteValidationFailure(expectedAmountUsdt);
+                        return quoteFailure == null
+                                ? createSandboxOnce(userId, normalized, runId, expectedAmountUsdt)
+                                : quoteFailure;
+                    });
         }
         if (!profileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
@@ -103,7 +109,12 @@ public class AppBundleOrderService {
         List<String> normalized = normalizeProducts(productNos);
         if (normalized == null) return ApiResult.fail(422, "BUNDLE_PRODUCTS_INVALID");
         return executeOnce(userId, normalized, idempotencyKey, "APP:BUNDLE_ORDER_CREATE:USER:",
-                () -> createOnce(userId, normalized, expectedPolicyVersion));
+                () -> {
+                    ApiResult<Map<String, Object>> quoteFailure = quoteValidationFailure(expectedAmountUsdt);
+                    return quoteFailure == null
+                            ? createOnce(userId, normalized, expectedPolicyVersion, expectedAmountUsdt)
+                            : quoteFailure;
+                });
     }
 
     /**
@@ -112,7 +123,8 @@ public class AppBundleOrderService {
      * Payment, cancellation, expiry and refund therefore move the complete
      * bundle atomically and never write canonical product/order tables.
      */
-    private ApiResult<Map<String, Object>> createSandboxOnce(Long userId, List<String> productNos, String runId) {
+    private ApiResult<Map<String, Object>> createSandboxOnce(
+            Long userId, List<String> productNos, String runId, BigDecimal expectedAmountUsdt) {
         List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> products = new ArrayList<>();
         List<String> lockOrder = productNos.stream().sorted().toList();
         for (String productNo : lockOrder) {
@@ -146,9 +158,10 @@ public class AppBundleOrderService {
             }
         }
         BigDecimal subtotal = products.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::priceUsdt)
-                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.DOWN);
-        BigDecimal discount = subtotal.multiply(discountRate(products.size())).setScale(6, RoundingMode.DOWN);
-        BigDecimal amount = subtotal.subtract(discount).setScale(6, RoundingMode.DOWN);
+                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal discount = subtotal.multiply(discountRate(products.size())).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal amount = subtotal.subtract(discount).setScale(6, RoundingMode.HALF_UP);
+        if (amount.compareTo(expectedAmountUsdt) != 0) return ApiResult.fail(409, "BUNDLE_QUOTE_STALE");
         String bundleNo = "BND-SBX-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         for (CommerceAcceptanceSandboxMapper.SandboxCatalogProduct product : products) {
             if (sandboxMapper.reserveSandboxCatalogStock(runId, product.productId(), product.version(), 1) != 1) {
@@ -175,7 +188,7 @@ public class AppBundleOrderService {
     }
 
     private ApiResult<Map<String, Object>> createOnce(
-            Long userId, List<String> productNos, Long expectedPolicyVersion) {
+            Long userId, List<String> productNos, Long expectedPolicyVersion, BigDecimal expectedAmountUsdt) {
         long currentPolicyVersion = lockDiscountPolicyVersion();
         if (expectedPolicyVersion == null || expectedPolicyVersion < 1
                 || expectedPolicyVersion != currentPolicyVersion) {
@@ -196,6 +209,13 @@ public class AppBundleOrderService {
                 || row.priceUsdt() == null || row.priceUsdt().signum() <= 0 || !StringUtils.hasText(row.name()))) {
             return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
         }
+        int itemCount = products.size();
+        BigDecimal subtotal = products.stream().map(AppBundleOrderMapper.ProductRow::priceUsdt)
+                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal discountRate = discountRate(itemCount);
+        BigDecimal discount = subtotal.multiply(discountRate).setScale(6, RoundingMode.HALF_UP);
+        BigDecimal amount = subtotal.subtract(discount).setScale(6, RoundingMode.HALF_UP);
+        if (amount.compareTo(expectedAmountUsdt) != 0) return ApiResult.fail(409, "BUNDLE_QUOTE_STALE");
         if (products.stream().anyMatch(row -> {
             StorefrontProductReleasePolicy.Decision release = releasePolicy.evaluate(row.productNo(), row.unlockPhase());
             return release == null || !release.available();
@@ -209,7 +229,6 @@ public class AppBundleOrderService {
                 return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
             }
         }
-        int itemCount = products.size();
         long physicalItemCount = products.stream()
                 .filter(row -> !"SHARE".equalsIgnoreCase(row.productType())).count();
         int cap = Math.max(1, mapper.deviceSlotCap());
@@ -229,11 +248,6 @@ public class AppBundleOrderService {
                 quotaReservations.put(product.productNo(), quotaReservation);
             }
         }
-        BigDecimal subtotal = products.stream().map(AppBundleOrderMapper.ProductRow::priceUsdt)
-                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.DOWN);
-        BigDecimal discountRate = discountRate(itemCount);
-        BigDecimal discount = subtotal.multiply(discountRate).setScale(6, RoundingMode.DOWN);
-        BigDecimal amount = subtotal.subtract(discount).setScale(6, RoundingMode.DOWN);
         String orderNo = "BND-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         for (AppBundleOrderMapper.ProductRow product : products) {
             if (mapper.decrementStock(product.id()) != 1) throw new BizException(409, "BUNDLE_PRODUCT_STOCK_CONFLICT");
@@ -301,9 +315,20 @@ public class AppBundleOrderService {
         }
     }
 
+    private ApiResult<Map<String, Object>> quoteValidationFailure(BigDecimal expectedAmountUsdt) {
+        if (expectedAmountUsdt == null) return ApiResult.fail(422, "BUNDLE_QUOTE_REQUIRED");
+        if (expectedAmountUsdt.signum() < 0 || expectedAmountUsdt.scale() > 6) {
+            return ApiResult.fail(422, "BUNDLE_QUOTE_INVALID");
+        }
+        return null;
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<Map<String, Object>> executeOnce(Long userId, List<String> productNos, String key,
                                                         String namespace, Supplier<ApiResult<Map<String, Object>>> action) {
+        // The expected amount is intentionally outside the idempotency material. A stored command key
+        // must replay its original create response after a refresh; a changed catalogue quote is rejected
+        // only when a new key is issued for the new checkout attempt.
         String material = userId + "|" + String.join(",", productNos);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 namespace + userId, key, sha256(material), ApiResult.class, (Supplier) action);

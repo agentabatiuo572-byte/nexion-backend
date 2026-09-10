@@ -157,6 +157,7 @@ public class AppCanonicalBoundaryController {
                 userId,
                 request == null ? null : request.productNos(),
                 request == null ? null : request.policyVersion(),
+                request == null ? null : request.expectedAmountUsdt(),
                 idempotencyKey);
     }
 
@@ -233,7 +234,7 @@ public class AppCanonicalBoundaryController {
             String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
     }
 
-    public record BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion) {
+    public record BundleOrderCreateRequest(java.util.List<String> productNos, Long policyVersion, BigDecimal expectedAmountUsdt) {
     }
 
     public record TrialChargeRequest(Boolean chargeSucceeded, BigDecimal chargeFailRate) {
