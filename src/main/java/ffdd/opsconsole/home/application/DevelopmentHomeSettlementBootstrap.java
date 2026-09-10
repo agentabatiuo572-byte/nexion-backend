@@ -7,7 +7,11 @@ import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentRu
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTaskConfig;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTaskDevice;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTaskSettlement;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -62,6 +66,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private final DevelopmentHomeSettlementMapper mapper;
     private final Clock clock;
     private final DeviceTransaction deviceTransaction;
+    private final EventOutboxService outboxService;
+    private final AuditLogService auditLogService;
     @SuppressWarnings("ArchitectureConfigField")
     private final String countryCode;
     @SuppressWarnings("ArchitectureConfigField")
@@ -76,12 +82,16 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             @Value("${nexion.auth.development-passkey-account.country-code:}") String countryCode,
             @Value("${nexion.auth.development-passkey-account.phone:}") String phone,
             @Value("${nexion.home.development-settlement.enabled:false}") boolean enabled,
+            EventOutboxService outboxService,
+            AuditLogService auditLogService,
             PlatformTransactionManager transactionManager) {
         this.mapper = mapper;
         this.clock = clock;
         this.countryCode = countryCode == null ? "" : countryCode.trim();
         this.phone = phone == null ? "" : phone.trim();
         this.enabled = enabled;
+        this.outboxService = outboxService;
+        this.auditLogService = auditLogService;
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.deviceTransaction = work -> {
@@ -96,11 +106,24 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             String countryCode,
             String phone,
             boolean enabled) {
+        this(mapper, clock, countryCode, phone, enabled, null, null);
+    }
+
+    DevelopmentHomeSettlementBootstrap(
+            DevelopmentHomeSettlementMapper mapper,
+            Clock clock,
+            String countryCode,
+            String phone,
+            boolean enabled,
+            EventOutboxService outboxService,
+            AuditLogService auditLogService) {
         this.mapper = mapper;
         this.clock = clock;
         this.countryCode = countryCode == null ? "" : countryCode.trim();
         this.phone = phone == null ? "" : phone.trim();
         this.enabled = enabled;
+        this.outboxService = outboxService;
+        this.auditLogService = auditLogService;
         this.deviceTransaction = IntSupplier::getAsInt;
     }
 
@@ -115,16 +138,6 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     public synchronized int advanceTasks() {
         if (!enabled) return 0;
         LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), BUSINESS_ZONE).withNano(0);
-        Map<String, String> capacityConfig = developmentCapacityConfig();
-        if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
-            log.warn("event=DEVELOPMENT_TASK_PROGRESS_SKIPPED reason=E3_CAPACITY_CONFIG_INVALID");
-            return 0;
-        }
-        List<DevelopmentTaskConfig> pool = validatedTaskPool(mapper.developmentTaskPool());
-        if (pool.isEmpty()) {
-            log.warn("event=DEVELOPMENT_TASK_PROGRESS_SKIPPED reason=E2_TASK_POOL_UNAVAILABLE");
-            return 0;
-        }
         List<DevelopmentTaskDevice> candidates = mapper.developmentTaskDevices();
         if (candidates == null || candidates.isEmpty()) return 0;
 
@@ -155,28 +168,40 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         DevelopmentTaskDevice device = mapper.lockDevelopmentTaskDevice(
                 candidate.userId(), candidate.userDeviceId());
         if (device == null) return 0;
-        Map<String, String> capacityConfig = developmentCapacityConfig();
-        if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
-            log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E3_CAPACITY_CONFIG_INVALID",
-                    device.userDeviceId());
-            return 0;
-        }
-        List<DevelopmentTaskConfig> pool = validatedTaskPool(mapper.developmentTaskPool());
-        if (pool.isEmpty()) {
-            log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E2_TASK_POOL_UNAVAILABLE",
-                    device.userDeviceId());
-            return 0;
-        }
-        List<PlannedDevice> lockedPlans = planDevices(List.of(device), pool, capacityConfig, now);
-        if (lockedPlans.isEmpty()) return 0;
-        PlannedDevice plan = lockedPlans.get(0);
         int progressed = 0;
+        boolean settledExistingTask = false;
         DevelopmentActiveTask active = mapper.lockDevelopmentActiveTask(
                 device.userId(), device.userDeviceId());
         if (active != null) {
             if (!taskFinished(active, now) || !settleCompletedTask(active, now)) return 0;
             progressed++;
+            settledExistingTask = true;
         }
+        if (device.pendingDeactivate() == null) {
+            log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=PENDING_DEACTIVATE_UNAVAILABLE",
+                    device.userDeviceId());
+            return progressed;
+        }
+        if (device.pendingDeactivate()) {
+            if (mapper.hasActiveProductionTask(device.userId(), device.userDeviceId())) return progressed;
+            return progressed + finalizePendingDevice(device, now,
+                    settledExistingTask ? "TASK_SETTLEMENT_COMPLETED" : "PENDING_WITHOUT_ACTIVE_TASK");
+        }
+        Map<String, String> capacityConfig = developmentCapacityConfig();
+        if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
+            log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E3_CAPACITY_CONFIG_INVALID",
+                    device.userDeviceId());
+            return progressed;
+        }
+        List<DevelopmentTaskConfig> pool = validatedTaskPool(mapper.developmentTaskPool());
+        if (pool.isEmpty()) {
+            log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E2_TASK_POOL_UNAVAILABLE",
+                    device.userDeviceId());
+            return progressed;
+        }
+        List<PlannedDevice> lockedPlans = planDevices(List.of(device), pool, capacityConfig, now);
+        if (lockedPlans.isEmpty()) return progressed;
+        PlannedDevice plan = lockedPlans.get(0);
         long completedCount = mapper.developmentCompletedTaskCount(
                 device.userId(), device.userDeviceId());
         DevelopmentTaskConfig next = plan.eligibleTasks().get(
@@ -185,6 +210,39 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         DevelopmentRunningTask row = runningTask(device, next, reward, now);
         if (mapper.insertDevelopmentRunningTask(row) == 1) progressed++;
         return progressed;
+    }
+
+    private int finalizePendingDevice(DevelopmentTaskDevice device, LocalDateTime now, String trigger) {
+        if (device.rowVersion() == null || device.rowVersion() < 0 || device.status() == null
+                || device.status().isBlank()) {
+            throw new BizException(409, "DEVICE_STATE_UNAVAILABLE");
+        }
+        if (mapper.deactivatePendingDevelopmentDevice(
+                device.userId(), device.userDeviceId(), device.rowVersion(), now) != 1) return 0;
+        mapper.markDevelopmentDeviceRuntimeDeactivated(device.userId(), device.userDeviceId(), now);
+        DevelopmentHomeSettlementMapper.UserEventAttribution attribution =
+                mapper.developmentUserEventAttribution(device.userId());
+        if (attribution == null || attribution.accountAgeMonths() == null || attribution.accountAgeMonths() < 0
+                || attribution.phase() == null || !attribution.phase().trim().matches("(?i)^P[1-6]$")
+                || attribution.cohort() == null || !attribution.cohort().trim().matches("^\\d{4}-W\\d{2}$")) {
+            throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
+        }
+        if (outboxService == null || auditLogService == null) {
+            throw new IllegalStateException("DEVELOPMENT_DEVICE_DEACTIVATION_OBSERVABILITY_UNAVAILABLE");
+        }
+        Map<String, Object> state = Map.of(
+                "userId", device.userId(), "deviceId", device.userDeviceId(), "instanceNo", device.instanceNo(),
+                "previousStatus", device.status(), "status", "DEACTIVATED", "rowVersion", device.rowVersion() + 1);
+        outboxService.publishUserEvent("USER_DEVICE", device.instanceNo(), "device.deactivated", device.userId(),
+                attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), state);
+        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+                .action("USER_DEVICE_DEFERRED_DEACTIVATED").resourceType("USER_DEVICE")
+                .resourceId(String.valueOf(device.userDeviceId())).bizNo(device.instanceNo()).userId(device.userId())
+                .actorId(0L).actorType("SYSTEM").actorUsername("development-task-worker")
+                .method("SCHEDULED").path("/internal/development-task-worker")
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(Map.of("trigger", trigger, "state", state)).build());
+        return 1;
     }
 
     private void ensureDevelopmentPhone() {

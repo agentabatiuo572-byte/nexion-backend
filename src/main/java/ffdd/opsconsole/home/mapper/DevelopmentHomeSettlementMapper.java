@@ -129,10 +129,12 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
                    COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
                    COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'Nexion accelerator') AS modelName,
-                   d.product_code AS productCode, d.device_type AS deviceType,
-                   COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
-                   d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
-                   GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
+                    d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
+                    d.row_version AS rowVersion,
+                    COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
+                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
+                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt,
+                    d.pending_deactivate AS pendingDeactivate
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -170,10 +172,12 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
                    COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
                    COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'Nexion accelerator') AS modelName,
-                   d.product_code AS productCode, d.device_type AS deviceType,
-                   COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
-                   d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
-                   GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
+                    d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
+                    d.row_version AS rowVersion,
+                    COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
+                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
+                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt,
+                    d.pending_deactivate AS pendingDeactivate
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.sandbox=0
                             AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
@@ -215,6 +219,16 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                                                      @Param("userDeviceId") Long userDeviceId);
 
     @Select("""
+            SELECT COUNT(1) > 0
+              FROM nx_compute_task t
+              JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0
+                            AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
+             WHERE t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
+               AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.is_deleted=0
+            """)
+    boolean hasActiveProductionTask(@Param("userId") Long userId, @Param("userDeviceId") Long userDeviceId);
+
+    @Select("""
             SELECT COUNT(*) FROM nx_compute_task t
               JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0 AND u.is_deleted=0
              WHERE t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
@@ -242,6 +256,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                AND UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND d.activated_at IS NOT NULL AND UPPER(COALESCE(d.source_environment, ''))='PRODUCTION'
                AND COALESCE(d.run_id, '')=''
+               AND d.pending_deactivate=0
                AND NOT EXISTS (SELECT 1 FROM nx_compute_task active
                                 WHERE active.user_id=#{userId} AND active.user_device_id=#{userDeviceId}
                                   AND active.source_environment='PRODUCTION'
@@ -261,9 +276,56 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                AND TIMESTAMPADD(SECOND, t.required_seconds, t.started_at) <= #{completedAt}
             """)
     int completeDevelopmentTask(@Param("userId") Long userId,
-                                @Param("userDeviceId") Long userDeviceId,
-                                @Param("taskNo") String taskNo,
-                                @Param("completedAt") LocalDateTime completedAt);
+                                 @Param("userDeviceId") Long userDeviceId,
+                                 @Param("taskNo") String taskNo,
+                                 @Param("completedAt") LocalDateTime completedAt);
+
+    @Update("""
+            UPDATE nx_user_device d
+               SET d.status='DEACTIVATED',d.activated_at=NULL,d.deactivated_at=#{now},
+                   d.pending_deactivate=0,d.row_version=d.row_version+1,d.updated_at=#{now}
+             WHERE d.id=#{userDeviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
+               AND UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND d.pending_deactivate=1
+               AND d.row_version=#{expectedRowVersion}
+               AND UPPER(COALESCE(d.source_environment, ''))='PRODUCTION' AND COALESCE(d.run_id, '')=''
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=d.user_id AND u.sandbox=0
+                           AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0)
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_compute_task active
+                    WHERE active.user_id=d.user_id AND active.user_device_id=d.id
+                      AND active.source_environment='PRODUCTION'
+                      AND active.status IN ('CLAIMED','RUNNING') AND active.is_deleted=0
+               )
+            """)
+    int deactivatePendingDevelopmentDevice(@Param("userId") Long userId,
+                                           @Param("userDeviceId") Long userDeviceId,
+                                           @Param("expectedRowVersion") Long expectedRowVersion,
+                                           @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device_runtime
+               SET online_status='OFFLINE',paused_reason='USER_DEACTIVATED',active_task_no=NULL,updated_at=#{now}
+             WHERE user_device_id=#{userDeviceId} AND is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id=d.user_id
+                            WHERE d.id=#{userDeviceId} AND d.user_id=#{userId}
+                              AND u.sandbox=0 AND u.is_deleted=0)
+            """)
+    int markDevelopmentDeviceRuntimeDeactivated(@Param("userId") Long userId,
+                                                @Param("userDeviceId") Long userDeviceId,
+                                                @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COALESCE((SELECT config_value FROM nx_config_item
+                              WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1), 'P1') AS phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH, u.created_at, NOW()), 0) AS accountAgeMonths,
+                   DATE_FORMAT(u.created_at, '%x-W%v') AS cohort
+              FROM nx_user u
+             WHERE u.id=#{userId} AND u.sandbox=0 AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0
+             LIMIT 1
+            """)
+    UserEventAttribution developmentUserEventAttribution(@Param("userId") Long userId);
 
     @Insert("""
             INSERT IGNORE INTO nx_compute_receipt(
@@ -480,10 +542,13 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             String modelName,
             String productCode,
             String deviceType,
+            String status,
+            Long rowVersion,
             Integer vramTotalGb,
             LocalDateTime purchasedAt,
             LocalDateTime activatedAt,
-            BigDecimal dailyUsdt) {
+            BigDecimal dailyUsdt,
+            Boolean pendingDeactivate) {
     }
 
     record DevelopmentTaskConfig(
@@ -508,6 +573,9 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             BigDecimal rewardUsdt,
             Integer requiredSeconds,
             LocalDateTime startedAt) {
+    }
+
+    record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {
     }
 
     record DevelopmentRunningTask(

@@ -14,6 +14,8 @@ import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentAc
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentRunningTask;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTaskConfig;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTaskDevice;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -106,6 +108,90 @@ class DevelopmentTaskProgressionTest {
     }
 
     @Test
+    void pendingDeviceKeepsItsRunningDevelopmentTaskUntilItCompletes() {
+        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        DevelopmentTaskDevice pending = pendingDevice(91L, 8101L);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(pending));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(pending);
+        when(mapper.lockDevelopmentActiveTask(91L, 8101L)).thenReturn(new DevelopmentActiveTask(
+                "DEV-TASK-RUNNING", 91L, 8101L, "EM-8", "Embedding", "EM", "BGE-M3",
+                "NexGrid Development Workload", new BigDecimal("0.050000"), 30, NOW.minusSeconds(5)));
+
+        assertThat(bootstrap(mapper).advanceTasks()).isZero();
+
+        verify(mapper, never()).completeDevelopmentTask(anyLong(), anyLong(), any(), any());
+        verify(mapper, never()).deactivatePendingDevelopmentDevice(anyLong(), anyLong(), anyLong(), any());
+        verify(mapper, never()).insertDevelopmentRunningTask(any());
+    }
+
+    @Test
+    void pendingDeviceSettlesItsCompletedTaskThenDeactivatesWithoutAReplacement() {
+        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        EventOutboxService outbox = mock(EventOutboxService.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        DevelopmentTaskDevice pending = pendingDevice(91L, 8101L);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(pending));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(pending);
+        when(mapper.lockDevelopmentActiveTask(91L, 8101L)).thenReturn(new DevelopmentActiveTask(
+                "DEV-TASK-OLD", 91L, 8101L, "EM-8", "Embedding", "EM", "BGE-M3",
+                "NexGrid Development Workload", new BigDecimal("0.050000"), 5, NOW.minusSeconds(6)));
+        when(mapper.completeDevelopmentTask(91L, 8101L, "DEV-TASK-OLD", NOW)).thenReturn(1);
+        when(mapper.insertDevelopmentTaskReceipt(any())).thenReturn(1);
+        when(mapper.creditDevelopmentWallet(91L, "DEV-TASK-OLD", new BigDecimal("0.050000"), NOW)).thenReturn(1);
+        when(mapper.developmentWalletUsdt(91L)).thenReturn(new BigDecimal("2.050000"));
+        when(mapper.insertDevelopmentWalletLedger(anyLong(), any(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertDevelopmentEarningEvent(any(), anyLong(), anyLong(), any(), any(), any())).thenReturn(1);
+        when(mapper.hasActiveProductionTask(91L, 8101L)).thenReturn(false);
+        when(mapper.deactivatePendingDevelopmentDevice(91L, 8101L, 7L, NOW)).thenReturn(1);
+        when(mapper.developmentUserEventAttribution(91L)).thenReturn(
+                new DevelopmentHomeSettlementMapper.UserEventAttribution("P1", 1, "2026-W35"));
+
+        assertThat(bootstrap(mapper, outbox, audit).advanceTasks()).isEqualTo(2);
+
+        var ordering = inOrder(mapper, outbox, audit);
+        ordering.verify(mapper).completeDevelopmentTask(91L, 8101L, "DEV-TASK-OLD", NOW);
+        ordering.verify(mapper).deactivatePendingDevelopmentDevice(91L, 8101L, 7L, NOW);
+        ordering.verify(mapper).markDevelopmentDeviceRuntimeDeactivated(91L, 8101L, NOW);
+        ordering.verify(outbox).publishUserEvent(any(), any(), any(), anyLong(), any(), any(), any(), any());
+        ordering.verify(audit).recordRequiredForTrustedActor(any());
+        verify(mapper, never()).insertDevelopmentRunningTask(any());
+    }
+
+    @Test
+    void pendingDeviceWithoutAnyActiveProductionTaskDeactivatesEvenIfE2OrCapacityIsUnavailable() {
+        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        EventOutboxService outbox = mock(EventOutboxService.class);
+        AuditLogService audit = mock(AuditLogService.class);
+        DevelopmentTaskDevice pending = pendingDevice(91L, 8101L);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(pending));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(pending);
+        when(mapper.hasActiveProductionTask(91L, 8101L)).thenReturn(false);
+        when(mapper.deactivatePendingDevelopmentDevice(91L, 8101L, 7L, NOW)).thenReturn(1);
+        when(mapper.developmentUserEventAttribution(91L)).thenReturn(
+                new DevelopmentHomeSettlementMapper.UserEventAttribution("P1", 1, "2026-W35"));
+
+        assertThat(bootstrap(mapper, outbox, audit).advanceTasks()).isEqualTo(1);
+
+        verify(mapper, never()).developmentE3CapacityConfig();
+        verify(mapper, never()).developmentTaskPool();
+        verify(mapper, never()).insertDevelopmentRunningTask(any());
+    }
+
+    @Test
+    void pendingDeviceWithAnotherProductionTaskDoesNotDeactivateOrStartADevelopmentTask() {
+        DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        DevelopmentTaskDevice pending = pendingDevice(91L, 8101L);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(pending));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(pending);
+        when(mapper.hasActiveProductionTask(91L, 8101L)).thenReturn(true);
+
+        assertThat(bootstrap(mapper).advanceTasks()).isZero();
+
+        verify(mapper, never()).deactivatePendingDevelopmentDevice(anyLong(), anyLong(), anyLong(), any());
+        verify(mapper, never()).insertDevelopmentRunningTask(any());
+    }
+
+    @Test
     void leavesMoneyUntouchedWhileTaskProgressIsIncomplete() {
         DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
         when(mapper.developmentE3CapacityConfig()).thenReturn(capacityConfig());
@@ -130,13 +216,16 @@ class DevelopmentTaskProgressionTest {
     @Test
     void failsClosedBeforeTaskOrMoneyWritesWhenE3ConfigIsIncomplete() {
         DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        var idle = device(91L, 8101L, "DEVICE", "stellarbox-pro", 12);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(idle));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(idle);
         when(mapper.developmentE3CapacityConfig()).thenReturn(List.of(
                 new DevelopmentHomeSettlementMapper.DevelopmentE3CapacityConfig(
                         "capacityBand1DeltaPct", "-3")));
 
         assertThat(bootstrap(mapper).advanceTasks()).isZero();
 
-        verify(mapper, never()).developmentTaskDevices();
+        verify(mapper).developmentE3CapacityConfig();
         verify(mapper, never()).insertDevelopmentRunningTask(any());
         verify(mapper, never()).creditDevelopmentWallet(any(), any(), any(), any());
     }
@@ -169,8 +258,8 @@ class DevelopmentTaskProgressionTest {
         when(mapper.developmentTaskPool()).thenReturn(List.of(
                 task("EM-8", "EM", 8, "0.010000", "0.090000")));
         DevelopmentTaskDevice invalid = new DevelopmentTaskDevice(
-                91L, null, "BROKEN", "Broken", "GPU", "phone", "MOBILE", 8,
-                NOW.minusDays(1), NOW.minusDays(1), new BigDecimal("1.000000"));
+                91L, null, "BROKEN", "Broken", "GPU", "phone", "MOBILE", "ACTIVE", 7L, 8,
+                NOW.minusDays(1), NOW.minusDays(1), new BigDecimal("1.000000"), false);
         when(mapper.developmentTaskDevices()).thenReturn(List.of(
                 invalid, device(91L, 8104L, "DEVICE", "stellarbox-pro", 12)));
         when(mapper.lockDevelopmentTaskDevice(91L, 8104L)).thenReturn(
@@ -215,8 +304,11 @@ class DevelopmentTaskProgressionTest {
     }
 
     @Test
-    void failsClosedBeforeDeviceReadsWhenAnyE2MinimumVramIsInvalid() {
+    void doesNotDispatchWhenAnyE2MinimumVramIsInvalid() {
         DevelopmentHomeSettlementMapper mapper = mock(DevelopmentHomeSettlementMapper.class);
+        var idle = device(91L, 8101L, "DEVICE", "stellarbox-pro", 12);
+        when(mapper.developmentTaskDevices()).thenReturn(List.of(idle));
+        when(mapper.lockDevelopmentTaskDevice(91L, 8101L)).thenReturn(idle);
         when(mapper.developmentE3CapacityConfig()).thenReturn(capacityConfig());
         when(mapper.developmentTaskPool()).thenReturn(List.of(
                 new DevelopmentTaskConfig("BROKEN", "Broken", "EM", "model",
@@ -224,7 +316,7 @@ class DevelopmentTaskProgressionTest {
 
         assertThat(bootstrap(mapper).advanceTasks()).isZero();
 
-        verify(mapper, never()).developmentTaskDevices();
+        verify(mapper).developmentTaskPool();
         verify(mapper, never()).insertDevelopmentRunningTask(any());
     }
 
@@ -247,8 +339,15 @@ class DevelopmentTaskProgressionTest {
         ArgumentCaptor<DevelopmentRunningTask> task = ArgumentCaptor.forClass(DevelopmentRunningTask.class);
         verify(mapper).insertDevelopmentRunningTask(task.capture());
         assertThat(task.getValue().taskClass()).isEqualTo("EM");
-        verify(mapper, org.mockito.Mockito.atLeast(2)).developmentTaskPool();
-        verify(mapper, org.mockito.Mockito.atLeast(2)).developmentE3CapacityConfig();
+        var ordering = inOrder(mapper);
+        ordering.verify(mapper).lockDevelopmentTaskDevice(91L, 8105L);
+        ordering.verify(mapper).developmentE3CapacityConfig();
+        ordering.verify(mapper).developmentTaskPool();
+    }
+
+    private DevelopmentHomeSettlementBootstrap bootstrap(DevelopmentHomeSettlementMapper mapper,
+            EventOutboxService outbox, AuditLogService audit) {
+        return new DevelopmentHomeSettlementBootstrap(mapper, CLOCK, "+86", "18708173775", true, outbox, audit);
     }
 
     private DevelopmentHomeSettlementBootstrap bootstrap(DevelopmentHomeSettlementMapper mapper) {
@@ -262,10 +361,16 @@ class DevelopmentTaskProgressionTest {
     }
 
     private DevelopmentTaskDevice device(Long userId, Long deviceId, String type,
-                                         String productCode, int vram) {
+                                          String productCode, int vram) {
         return new DevelopmentTaskDevice(userId, deviceId, "DEV-" + deviceId,
-                "Device " + deviceId, "GPU", productCode, type, vram,
-                NOW.minusDays(1), NOW.minusDays(1), new BigDecimal("5.000000"));
+                "Device " + deviceId, "GPU", productCode, type, "ACTIVE", 7L, vram,
+                NOW.minusDays(1), NOW.minusDays(1), new BigDecimal("5.000000"), false);
+    }
+
+    private DevelopmentTaskDevice pendingDevice(Long userId, Long deviceId) {
+        return new DevelopmentTaskDevice(userId, deviceId, "DEV-" + deviceId,
+                "Device " + deviceId, "GPU", "stellarbox-pro", "DEVICE", "ACTIVE", 7L, 12,
+                NOW.minusDays(1), NOW.minusDays(1), new BigDecimal("5.000000"), true);
     }
 
     private List<DevelopmentHomeSettlementMapper.DevelopmentE3CapacityConfig> capacityConfig() {
