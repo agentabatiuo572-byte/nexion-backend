@@ -280,6 +280,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         if (guard != null) {
             return fail(guard);
         }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         TrustSectionMutationResult result = idempotencyService.execute(
                 "I4_TRUST_SECTION_PUBLISH", idempotencyKey.trim(),
                 DisclosureContentHash.ofParts(sectionKey, String.valueOf(request)),
@@ -338,6 +341,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         ApiResult<Void> guard = requireRollbackSection(sectionKey, idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         TrustSectionMutationResult result = idempotencyService.execute(
                 "I4_TRUST_SECTION_ROLLBACK", idempotencyKey.trim(),
@@ -507,6 +513,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
         ApiResult<Void> guard = requireAction(idempotencyKey, request);
         if (guard != null) {
             return fail(guard);
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         TrustSectionMutationResult result = idempotencyService.execute(
                 "I4_TRUST_SECTION_ARCHIVE", idempotencyKey.trim(),

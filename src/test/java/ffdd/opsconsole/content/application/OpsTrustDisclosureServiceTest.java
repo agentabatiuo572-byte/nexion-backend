@@ -38,13 +38,26 @@ import ffdd.opsconsole.content.dto.TrustSectionFieldInput;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.A2AccessPolicy;
+import ffdd.opsconsole.platform.application.AuditReplayBusinessPermissionGuard;
+import ffdd.opsconsole.platform.application.AuditReplayDispatcher;
+import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.domain.PlatformConfigItem;
+import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
+import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
+import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
+import ffdd.opsconsole.platform.mapper.AuditConfirmCategoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -56,6 +69,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -184,6 +198,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void rollbackSameVersionReturns409() {
+        A2ReplayContext.enterReplay();
         var result = service.rollbackSection("financials", "idem-i4-roll", new TrustSectionRollbackRequest(
                 "v5",
                 "v5",
@@ -316,6 +331,7 @@ class OpsTrustDisclosureServiceTest {
                 new TrustSectionFieldInput("legacyNote", "旧字段", "不应发布")),
                 0L, "Marina K.", "保存旧版字段草稿");
         TrustSectionVersionView saved = repository.saveTrustSectionDraft("financials", legacyDraft, LocalDateTime.now());
+        A2ReplayContext.enterReplay();
 
         var result = service.publishSection("financials", "idem-schema-publish", new TrustSectionPublishRequest(
                 "v6", saved.revision(), "v5", "published",
@@ -383,6 +399,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void publishAndRollbackRequireBackendVersionSnapshots() {
         service.createSectionDraft("financials", "idem-i4-create-snapshot", sectionDraft("v6", "新版说明", 0L));
+        A2ReplayContext.enterReplay();
         var published = service.publishSection("financials", "idem-i4-publish-v6", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
                 "数据来自已审计的资金账本", true, "Marina K.", "发布结构化信任新版"));
@@ -407,21 +424,24 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void publishPermissionIsClassifiedByServerSideSectionCategory() {
+    void directTrustSectionPublishIsA2GatedBeforeItCanChangeAnySectionCategory() {
         repository.saveTrustSectionDraft("leadership", leadershipDraft("v4", "团队新版", 0L), LocalDateTime.now());
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
 
         authenticate("content_i4_publish_standard");
         assertThat(service.publishSection("leadership", "idem-leadership", new TrustSectionPublishRequest(
-                "v4", 1L, "v3", "published", "", true, "Marina K.", "发布团队信任内容版本")).getCode()).isZero();
+                "v4", 1L, "v3", "published", "", true, "Marina K.", "发布团队信任内容版本")).getMessage())
+                .isEqualTo("A2_CONFIRMATION_REQUIRED");
         assertThat(service.publishSection("financials", "idem-financial-denied", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
-                "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getCode()).isEqualTo(403);
+                "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getMessage())
+                .isEqualTo("A2_CONFIRMATION_REQUIRED");
 
         authenticate("content_i4_trust_section_manage");
         assertThat(service.publishSection("financials", "idem-financial-allowed", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
-                "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getCode()).isZero();
+                "来源为资金账本与审计报表", true, "Marina K.", "发布财务信任内容版本")).getMessage())
+                .isEqualTo("A2_CONFIRMATION_REQUIRED");
     }
 
     @Test
@@ -458,6 +478,7 @@ class OpsTrustDisclosureServiceTest {
                         new TrustSectionFieldInput("summary.en", "English summary", "")),
                 0L, "v5", "published", "Marina K.", "维护信任版块草稿"), LocalDateTime.now());
         authenticate("content_i4_trust_section_manage");
+        A2ReplayContext.enterReplay();
 
         var result = service.publishSection("financials", "idem-bilingual-fields", new TrustSectionPublishRequest(
                 "v7", 1L, "v5", "published",
@@ -472,6 +493,7 @@ class OpsTrustDisclosureServiceTest {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "初始草稿", 0L), LocalDateTime.now());
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "审批前被修改", 1L), LocalDateTime.now());
         authenticate("content_i4_trust_section_manage");
+        A2ReplayContext.enterReplay();
 
         var result = service.publishSection("financials", "idem-stale-revision", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
@@ -483,6 +505,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void trustPublishUsesRequiredAudit() {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay();
 
         var result = service.publishSection("financials", "idem-required-audit", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
@@ -497,6 +520,7 @@ class OpsTrustDisclosureServiceTest {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
         doThrow(new IllegalStateException("audit unavailable"))
                 .when(auditLogService).recordRequired(any(AuditLogWriteRequest.class));
+        A2ReplayContext.enterReplay();
 
         assertThatThrownBy(() -> service.publishSection("financials", "idem-audit-fail-i4", new TrustSectionPublishRequest(
                 "v6", 1L, "v5", "published",
@@ -654,7 +678,118 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void trustSectionPublicMutationsRejectDirectAuthorizedCallsWithoutA2Replay() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        authenticate("content_i4_trust_section_manage", "content_i4_publish_standard");
+
+        var publish = service.publishSection("financials", "idem-i4-direct-publish", new TrustSectionPublishRequest(
+                "v6", 1L, "v5", "published",
+                "来源为资金账本与审计报表", true, "spoofed-operator", "直接发布不得绕过双人复核边界"));
+        var rollback = service.rollbackSection("financials", "idem-i4-direct-rollback", new TrustSectionRollbackRequest(
+                "v4", "v5", "published", "spoofed-operator", "直接回滚不得绕过双人复核边界"));
+        var archive = service.archiveSection("leadership", "idem-i4-direct-archive",
+                archiveSectionAction("v3", "published"));
+
+        assertThat(publish.getCode()).isEqualTo(409);
+        assertThat(publish.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(rollback.getCode()).isEqualTo(409);
+        assertThat(rollback.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(archive.getCode()).isEqualTo(409);
+        assertThat(archive.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        assertThat(repository.findTrustSection("financials").orElseThrow().version()).isEqualTo("v5");
+        assertThat(repository.findTrustSection("leadership").orElseThrow().status()).isEqualTo("published");
+    }
+
+    @Test
+    void trustSectionA2ReplayKeepsPublishRollbackAndArchiveSnapshotTransitions() {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay("A2-I4-TEST-REPLAY");
+
+        var publish = service.publishSection("financials", "idem-i4-replay-publish", new TrustSectionPublishRequest(
+                "v6", 1L, "v5", "published",
+                "来源为资金账本与审计报表", true, "spoofed-operator", "A2 审批后发布信任内容版本"));
+        var rollback = service.rollbackSection("financials", "idem-i4-replay-rollback", new TrustSectionRollbackRequest(
+                "v4", "v6", "published", "spoofed-operator", "A2 审批后回滚信任内容版本"));
+        var archive = service.archiveSection("leadership", "idem-i4-replay-archive",
+                archiveSectionAction("v3", "published"));
+
+        assertThat(publish.getCode()).isZero();
+        assertThat(rollback.getCode()).isZero();
+        assertThat(archive.getCode()).isZero();
+        assertThat(repository.findTrustSection("financials").orElseThrow().version()).isEqualTo("v4");
+        assertThat(repository.findTrustSection("leadership").orElseThrow().status()).isEqualTo("archived");
+    }
+
+    @Test
+    void approvedA2I4TicketUsesGuardAndDispatcherButLeavesStaleSnapshotPending() throws Exception {
+        repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        AuditOperationTicketMapper ticketMapper = mock(AuditOperationTicketMapper.class);
+        AuditOperationHistoryMapper historyMapper = mock(AuditOperationHistoryMapper.class);
+        AuditConfirmCategoryMapper categoryMapper = mock(AuditConfirmCategoryMapper.class);
+        AuditObjectLockMapper auditLockMapper = mock(AuditObjectLockMapper.class);
+        PlatformConfigRepository configRepository = mock(PlatformConfigRepository.class);
+        AuditLogService a2AuditLogService = mock(AuditLogService.class);
+        AdminIdempotencyService a2IdempotencyService = mock(AdminIdempotencyService.class);
+        A2AccessPolicy accessPolicy = mock(A2AccessPolicy.class);
+        AtomicReference<AuditOperationTicketEntity> ticket = new AtomicReference<>();
+        com.fasterxml.jackson.databind.ObjectMapper objectMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+
+        AuditOperationTicketEntity pending = new AuditOperationTicketEntity();
+        pending.setOperationId("WO-I4-STALE-SNAPSHOT");
+        pending.setAction("I4 trust publish");
+        pending.setObjectText("financials");
+        pending.setBeforeValue("v5");
+        pending.setAfterValue("v6");
+        pending.setOperatorName("maker.i4");
+        pending.setOperatorRole("内容");
+        pending.setOperationType("content");
+        pending.setAmplifies(0);
+        pending.setSos(0);
+        pending.setTimeLabel("刚刚");
+        pending.setMine(0);
+        pending.setRoleGate("内容");
+        pending.setReason("发布财务信任版块");
+        pending.setStatus("pending");
+        pending.setSourceDomain("I");
+        pending.setIsDeleted(0);
+        pending.setCommandJson(objectMapper.writeValueAsString(new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
+                "sectionKey", "financials", "action", "publish", "version", "v6",
+                "expectedRevision", 2L, "expectedVersion", "v5", "expectedStatus", "published",
+                "dataSourceStatement", "来源为资金账本与审计报表", "bilingualConfirmed", true))));
+        ticket.set(pending);
+
+        when(ticketMapper.selectActiveByOperationIdForUpdate("WO-I4-STALE-SNAPSHOT")).thenAnswer(invocation -> ticket.get());
+        when(accessPolicy.canAccessTicket(pending)).thenReturn(true);
+        when(configRepository.findActiveByKey(anyString())).thenReturn(Optional.of(new PlatformConfigItem(
+                1L, "A2.REASON_MIN_CHARS", "8", "STRING", "admin_a2", "ADMIN", "test", 1, null, null)));
+        when(a2IdempotencyService.execute(anyString(), anyString(), anyString(), any(), any()))
+                .thenAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get());
+
+        AuditReplayBusinessPermissionGuard permissionGuard = new AuditReplayBusinessPermissionGuard(
+                repository, mock(AdminOperatorRoleResolver.class), mock(EmergencyControlRepository.class));
+        AuditReplayDispatcher dispatcher = new AuditReplayDispatcher(List.of(service));
+        OpsAuditCenterService auditCenter = new OpsAuditCenterService(
+                configRepository, a2AuditLogService,
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                ticketMapper, historyMapper, categoryMapper, auditLockMapper, permissionGuard, dispatcher,
+                accessPolicy, objectMapper, a2IdempotencyService);
+
+        authenticate("platform_a2_operation_approve", "content_i4_trust_section_manage");
+        ApiResult<?> result = auditCenter.approve("idem-a2-i4-stale", "WO-I4-STALE-SNAPSHOT",
+                new AuditOperationDecisionRequest("检查后发现版本已变更", "checker.i4"));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRUST_SECTION_REVISION_CONFLICT");
+        assertThat(repository.findTrustSection("financials").orElseThrow().version()).isEqualTo("v5");
+        assertThat(repository.findTrustSectionVersion("financials", "v6").orElseThrow().status()).isEqualTo("draft");
+        assertThat(ticket.get().getStatus()).isEqualTo("pending");
+        verify(ticketMapper, org.mockito.Mockito.never()).updateById(any(AuditOperationTicketEntity.class));
+        verify(a2AuditLogService, org.mockito.Mockito.never()).recordRequired(any(AuditLogWriteRequest.class));
+    }
+
+    @Test
     void archiveSectionRejectsRepeatedArchive() {
+        A2ReplayContext.enterReplay();
         assertThat(service.archiveSection("leadership", "idem-i4-archive",
                 archiveSectionAction("v3", "published")).getCode()).isZero();
 
@@ -667,6 +802,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void trustSectionMutationsRejectMissingAndStaleSnapshots() {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "财务新版", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay();
 
         var missing = service.archiveSection(
                 "leadership", "idem-i4-missing-snapshot", actionRequest());
@@ -681,6 +817,7 @@ class OpsTrustDisclosureServiceTest {
 
     @Test
     void archivedSectionCanRestoreItsCurrentPublishedSnapshot() {
+        A2ReplayContext.enterReplay();
         assertThat(service.archiveSection(
                 "leadership", "idem-i4-archive-restore", archiveSectionAction("v3", "published")).getCode()).isZero();
 
@@ -1101,6 +1238,7 @@ class OpsTrustDisclosureServiceTest {
                 "spoofed-operator", base.reason());
 
         var created = service.createSectionDraft("financials", "idem-i4-auth-draft", spoofedDraft);
+        A2ReplayContext.enterReplay();
         var published = service.publishSection("financials", "idem-i4-auth-publish",
                 new TrustSectionPublishRequest(
                         "v6", created.getData().revision(), "v5", "published",
@@ -1231,6 +1369,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void replayI4TrustSectionPublishAuditsI4Action() {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "待发布版本", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay("A2-I4-TEST-PUBLISH");
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
                         "sectionKey", "financials",
@@ -1253,6 +1392,7 @@ class OpsTrustDisclosureServiceTest {
     @Test
     void replayTrustPublishCannotInventSourceOrBilingualConfirmation() {
         repository.saveTrustSectionDraft("financials", sectionDraft("v6", "待发布版本", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay();
 
         ApiResult<?> missingSource = service.replay(
                 new AuditReplayCommand("I", "i4_trust_section_manage", Map.of(
@@ -1280,6 +1420,7 @@ class OpsTrustDisclosureServiceTest {
                 current.fields().stream().map(field -> new TrustSectionVersionView.Field(field.key(), field.label(), field.value())).toList(),
                 "published", 1L, "system", "2026-06-18"));
         repository.saveTrustSectionDraft("auditsReserves", sectionDraft("v2", "审计新版", 0L), LocalDateTime.now());
+        A2ReplayContext.enterReplay();
 
         var result = service.publishSection("auditsReserves", "idem-audits-no-source", new TrustSectionPublishRequest(
                 "v2", 1L, "v1", "published", "", true, "Marina K.", "发布审计与储备内容版本"));
