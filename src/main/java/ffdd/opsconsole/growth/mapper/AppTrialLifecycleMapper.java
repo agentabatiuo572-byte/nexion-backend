@@ -14,7 +14,7 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 // Statement-only trial lifecycle boundary spanning users, claims, wallets and devices.
 @SuppressWarnings("MybatisPlusBaseMapper")
-public interface AppTrialLifecycleMapper {
+public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
             + "AND COALESCE(sandbox,0)=0 FOR UPDATE")

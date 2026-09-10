@@ -35,6 +35,7 @@ import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 import org.springframework.core.env.Environment;
 
@@ -211,14 +212,22 @@ public class AppExchangeService {
     }
 
     public ApiResult<Map<String, Object>> state(Long userId, int requestedPageNum, int requestedPageSize) {
+        return state(userId, requestedPageNum, requestedPageSize, null);
+    }
+
+    public ApiResult<Map<String, Object>> state(Long userId, int requestedPageNum, int requestedPageSize,
+            String snapshotId) {
         if (sandboxRuntime()) return sandbox.orElseThrow().exchangeState(userId, requestedPageNum, requestedPageSize);
         requireExchangeSubject(userId);
         AppExchangeMapper.WalletGateRow wallet = mapper.lockWalletGate(userId);
         if (wallet == null) throw new BizException(409, "EXCHANGE_WALLET_NOT_FOUND");
-        return ApiResult.ok(stateMap(userId, wallet, requestedPageNum, requestedPageSize));
+        long boundary = ffdd.opsconsole.shared.api.HistorySnapshotId.resolve(snapshotId,
+                () -> mapper.maxIssuedHistoryId(userId));
+        return ApiResult.ok(stateMap(userId, wallet, requestedPageNum, requestedPageSize, boundary));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    // The pre-lock subject read must not pin an RR snapshot for later daily-cap sums.
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> swap(Long userId, String idempotencyKey, SwapRequest request) {
         if (sandboxRuntime()) return sandbox.orElseThrow().swap(userId, idempotencyKey, request);
         requireExchangeSubject(userId);
@@ -297,7 +306,7 @@ public class AppExchangeService {
         return ApiResult.ok(result);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> cancel(Long userId, String exchangeNo, String idempotencyKey) {
         if (sandboxRuntime()) return sandbox.orElseThrow().cancelExchange(userId, exchangeNo, idempotencyKey);
         requireExchangeSubject(userId);
@@ -392,17 +401,25 @@ public class AppExchangeService {
 
     private Map<String, Object> stateMap(
             Long userId, AppExchangeMapper.WalletGateRow wallet, int requestedPageNum, int requestedPageSize) {
+        long boundary = ffdd.opsconsole.shared.api.HistorySnapshotId.resolve(null, () -> mapper.maxIssuedHistoryId(userId));
+        return stateMap(userId, wallet, requestedPageNum, requestedPageSize, boundary);
+    }
+
+    private Map<String, Object> stateMap(
+            Long userId, AppExchangeMapper.WalletGateRow wallet, int requestedPageNum, int requestedPageSize,
+            long snapshotId) {
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
-        long total = Math.max(0L, mapper.countUserOrders(userId));
+        long total = Math.max(0L, mapper.countUserOrdersAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
         return linked("caps", caps().getData(), "wallet", linked("usdtAvailable", money(wallet.usdtAvailable()),
                         "nexAvailable", money(wallet.nexAvailable())),
                 "todayUserUsedUsdt", money(mapper.userTodayUsdt(userId)),
                 "todayPlatformUsedUsdt", money(mapper.platformTodayUsdt()),
                 "lifetimeExchangedUsdt", money(mapper.userLifetimeUsdt(userId)),
-                "orders", mapper.userOrders(userId, offset, pageSize),
-                "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
+                "orders", mapper.userOrdersAt(userId, offset, pageSize, snapshotId),
+                "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize,
+                        "snapshotId", Long.toString(snapshotId)),
                 "serverCanonical", true,
                 "sourceEnvironment", "PRODUCTION", "runId", "");
     }
@@ -644,7 +661,7 @@ public class AppExchangeService {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private ApiResult<Map<String, Object>> executeOnce(String scope,String key,Object request,Supplier<ApiResult<Map<String,Object>>> action) {
-        return (ApiResult<Map<String,Object>>) (ApiResult) idempotency.execute("APP:G2_" + scope,key,sha256(String.valueOf(request)),
+        return (ApiResult<Map<String,Object>>) (ApiResult) idempotency.executeRetained("APP:G2_" + scope,key,sha256(String.valueOf(request)),
                 ApiResult.class,(Supplier) action);
     }
     private String sha256(String value) {

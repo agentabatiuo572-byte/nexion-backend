@@ -34,9 +34,10 @@ public class AppExchangeController {
     public ApiResult<Map<String,Object>> state(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize,
+            @RequestParam(required = false) String snapshotId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.state(userId, pageNum, pageSize);
+        return userId == null ? forbidden() : service.state(userId, pageNum, pageSize, snapshotId);
     }
 
     @PostMapping("/api/exchange")

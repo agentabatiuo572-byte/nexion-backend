@@ -27,9 +27,10 @@ public class AppRepurchaseController {
     public ApiResult<Map<String, Object>> orders(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "50") int pageSize,
+            @RequestParam(required = false) String snapshotId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.orders(userId, pageNum, pageSize);
+        return userId == null ? forbidden() : service.ordersSnapshot(userId, pageNum, pageSize, snapshotId);
     }
 
     @PostMapping("/api/repurchase/orders")

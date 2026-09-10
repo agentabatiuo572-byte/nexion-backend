@@ -40,6 +40,8 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
+import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -146,7 +148,7 @@ public class AppTradeinService {
         return ApiResult.ok(evaluateCapacity(userId, targetProductNo, false));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<AppTradeinSubmitResponse> capacityReplace(
             Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
         requireProductionTradeinAvailable();
@@ -164,7 +166,7 @@ public class AppTradeinService {
                 () -> capacityReplaceInternal(userId, idempotencyKey, normalized));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<AppCapacityKeepSubmitResponse> capacityKeep(
             Long userId, String idempotencyKey, AppCapacityKeepSubmitRequest request) {
         requireProductionTradeinAvailable();
@@ -182,7 +184,7 @@ public class AppTradeinService {
                 () -> capacityKeepInternal(userId, idempotencyKey, normalized));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<AppTradeinSubmitResponse> submit(
             Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
         requireProductionTradeinAvailable();
@@ -214,6 +216,8 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
+        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "TIN-" + nonce;
@@ -239,6 +243,7 @@ public class AppTradeinService {
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
+        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.recycleSourceDevice(userId, evaluation.source().id()) != 1) {
             throw new BizException(409, "TRADEIN_SOURCE_STATE_CONFLICT");
         }
@@ -346,6 +351,8 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
+        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "CPR-" + nonce;
@@ -367,6 +374,7 @@ public class AppTradeinService {
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
+        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.moveSourceDeviceToInventory(userId, source.id()) != 1) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CONFLICT");
         }
@@ -445,6 +453,8 @@ public class AppTradeinService {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
+        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String operationNo = "CPK-" + nonce;
@@ -466,6 +476,7 @@ public class AppTradeinService {
         if (mapper.insertCapacityKeepOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_ORDER_CREATE_CONFLICT");
         }
+        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),

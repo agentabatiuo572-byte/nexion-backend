@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -71,6 +72,11 @@ class TrialConvertAndDeferredDeactivateTest {
 
     @Test
     void convertLocksAuthoritativeProductCreatesOrderAndClosesActiveTrialAtomically() {
+        when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
+                        1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));
+        when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
+        when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
         when(mapper.lockConversionProduct("stellarbox-s1"))
                 .thenReturn(new AppTrialLifecycleMapper.ConversionProduct(11L, "stellarbox-s1", "S1", new BigDecimal("1299"), 2, "P1"));
@@ -105,6 +111,8 @@ class TrialConvertAndDeferredDeactivateTest {
                 .containsEntry("sourceEnvironment", "PRODUCTION")
                 .containsEntry("runId", "");
         verify(mapper).lockConversionProduct("stellarbox-s1");
+        verify(mapper).recordHardwarePurchase(any(), eq(7L), startsWith("TRC-"),
+                eq(LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneOffset.UTC)));
         verify(mapper).insertConversionOrder(eq(7L), anyString(), eq(11L),
                 eq(new BigDecimal("1299")), eq(new BigDecimal("21.666666")),
                 eq(new BigDecimal("1277.333334")));
@@ -172,11 +180,36 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper, never()).decrementProductStock(anyLong());
     }
 
-    private TrialRow activeTrial() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void proConversionRejectsUnmetRequirementsOrExhaustedCapacityBeforeWrites(boolean exhausted) {
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial("stellarbox-pro"));
+        when(mapper.lockConversionProduct("stellarbox-pro")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(11L, "stellarbox-pro", "Pro", new BigDecimal("1299"), 2, "P1"));
+        when(mapper.lockHardwarePurchaseTiers("stellarbox-pro")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
+                        1L, "PRO", "stellarbox-pro", 2, new BigDecimal("1000"), 10, "ALL", 1)));
+        when(mapper.hardwarePurchaseFacts(7L)).thenReturn(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Facts(
+                        exhausted ? 2L : 0L, exhausted ? new BigDecimal("1000") : BigDecimal.ZERO));
+        when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(10));
+
+        assertThatThrownBy(() -> service.convert(7L, "stellarbox-pro", EXPECTED_AMOUNT, "convert-f4b-blocked"))
+                .hasMessage(exhausted ? "ORDER_MONTHLY_QUOTA_EXHAUSTED" : "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
+        verify(mapper, never()).settleWallet(any(), any(), any(), any());
+        verify(mapper, never()).decrementProductStock(any());
+        verify(mapper, never()).insertConversionOrder(any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).insertPurchasedDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
+    }
+
+    private TrialRow activeTrial() { return activeTrial("stellarbox-s1"); }
+
+    private TrialRow activeTrial(String productNo) {
         LocalDateTime now = LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneId.of("Asia/Shanghai"));
         return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "NexGridBox S1", 3,
                 new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"), new BigDecimal("1299"),
-                "productCode=stellarbox-s1", now.minusHours(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                "productCode=" + productNo, now.minusHours(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, null, 0L);
     }
 }

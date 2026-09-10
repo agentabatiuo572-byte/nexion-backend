@@ -43,6 +43,28 @@ import org.mockito.ArgumentCaptor;
 
 class AppWithdrawalServiceTest {
     @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "NEXION_SNAPSHOT_RACE_IT", matches = "true")
+    void submitCountsWithdrawalCommittedWhileWaitingForUserLock() throws Exception {
+        try (var fixture = new ffdd.opsconsole.shared.idempotency.IsolatedMySqlSnapshotFixture()) {
+            when(mapper.isSandboxUser(7L)).thenAnswer(invocation -> {
+                assertThat(fixture.usage()).isEqualByComparingTo(BigDecimal.ZERO);
+                return 0;
+            });
+            when(mapper.lockActiveUser(7L)).thenAnswer(invocation -> { fixture.lock(); return 7L; });
+            when(mapper.countBusinessDay(eq(7L), any(), any()))
+                    .thenAnswer(invocation -> fixture.usage().intValueExact());
+            when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("1"));
+            String version = String.valueOf(service.policy(7L).getData().get("policyVersion"));
+            var actual = fixture.transactional(service);
+            var result = fixture.afterCompetingCommit(BigDecimal.ONE, () -> actual.submit(7L,
+                    new BigDecimal("20"), "USDT-TRC20", "TR7NHqExampleAddress", version, false, "isolated-withdrawal-race"));
+            assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
+            verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+            verify(mapper, never()).insertWithdrawal(any());
+        }
+    }
+
+    @Test
     void eligibilityAndSubmissionApplyTheRatioToUnprotectedFunds() {
         EarningsReleaseService release = mock(EarningsReleaseService.class);
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));

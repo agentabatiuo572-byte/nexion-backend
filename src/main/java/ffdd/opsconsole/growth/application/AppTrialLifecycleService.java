@@ -14,6 +14,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
+import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -227,7 +228,7 @@ public class AppTrialLifecycleService {
     }
 
     /** Converts the reserved trial slot into one authoritative catalogue order. */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> convert(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String idempotencyKey) {
         requireUser(userId);
@@ -253,7 +254,10 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
-        if (row.expiresAt() == null || now.isAfter(row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7)))) {
+        LocalDateTime conversionDeadline = row.expiresAt() == null ? null
+                : "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
+                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+        if (conversionDeadline == null || !now.isBefore(conversionDeadline)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
@@ -281,6 +285,8 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_AMOUNT_MISMATCH");
         }
         requireCoverage(settlement.remainderUsdt(), settlement.shadowNex());
+        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
+                LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
         if (wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
@@ -314,6 +320,7 @@ public class AppTrialLifecycleService {
         }
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
                 .substring(0, 20).toUpperCase(Locale.ROOT);
+        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
                 instanceNo, row.deviceName(), subtotal, row.dailyUsdt(), row.dailyNex()) != 1) {

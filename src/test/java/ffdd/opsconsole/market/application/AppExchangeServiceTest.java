@@ -25,6 +25,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,153 @@ import org.mockito.InOrder;
 import org.springframework.core.env.Environment;
 
 class AppExchangeServiceTest {
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "NEXION_SNAPSHOT_RACE_IT", matches = "true")
+    void outerTransactionSeesUsageCommittedWhileWaitingForExecutionMutex() throws Exception {
+        // Only this UUID-named fixture is written; all business mappers remain mocked.
+        var dataSource = new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                ffdd.opsconsole.shared.idempotency.IsolatedMySqlSnapshotFixture.isolatedUrl(),
+                System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root"),
+                System.getenv().getOrDefault("NEXION_TEST_DB_PASSWORD", ""));
+        var jdbc = new org.springframework.jdbc.core.JdbcTemplate(dataSource);
+        String table = "nx_audit_g2_snapshot_" + java.util.UUID.randomUUID().toString().replace("-", "");
+        assertThat(table).matches("nx_audit_g2_snapshot_[a-f0-9]{32}");
+        jdbc.execute("CREATE TABLE " + table + " (id INT PRIMARY KEY, amount DECIMAL(20,6) NOT NULL) ENGINE=InnoDB");
+        var worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            jdbc.update("INSERT INTO " + table + " VALUES (1,0)");
+            var beforeLock = new java.util.concurrent.CountDownLatch(1);
+            when(mapper.userSandbox(7L)).thenAnswer(invocation -> {
+                assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM " + table, BigDecimal.class))
+                        .isEqualByComparingTo(BigDecimal.ZERO);
+                return 0;
+            });
+            when(mapper.lockExchangeExecutionMutex()).thenAnswer(invocation -> {
+                beforeLock.countDown();
+                jdbc.queryForObject("SELECT id FROM " + table + " WHERE id=1 FOR UPDATE", Integer.class);
+                return "G2_EXCHANGE_EXECUTION";
+            });
+            when(mapper.platformTodayUsdt()).thenAnswer(invocation ->
+                    jdbc.queryForObject("SELECT SUM(amount) FROM " + table, BigDecimal.class));
+            when(config.activeValue("wallet.exchange.platform_daily_cap_usdt")).thenReturn(Optional.of("20"));
+            var proxyFactory = new org.springframework.aop.framework.ProxyFactory(service);
+            proxyFactory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
+                    new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource),
+                    new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+            var transactionalService = (AppExchangeService) proxyFactory.getProxy();
+            try (var competing = dataSource.getConnection()) {
+                competing.setAutoCommit(false);
+                try (var statement = competing.createStatement()) {
+                    statement.executeQuery("SELECT id FROM " + table + " WHERE id=1 FOR UPDATE").close();
+                    var pending = worker.submit(() -> transactionalService.swap(7L, "isolated-cap-race",
+                            new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false)));
+                    assertThat(beforeLock.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                    statement.executeUpdate("INSERT INTO " + table + " VALUES (2,20)");
+                    competing.commit();
+                    var result = pending.get(10, java.util.concurrent.TimeUnit.SECONDS);
+                    assertThat(((java.util.Map<?, ?>) result.getData().get("order")).get("status"))
+                            .isEqualTo("PLATFORM_CAP");
+                    verify(mapper, never()).applyWalletDelta(eq(7L), any(), any());
+                }
+            }
+        } finally {
+            worker.shutdownNow();
+            try {
+                assertThat(worker.awaitTermination(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            } finally {
+                jdbc.execute("DROP TABLE " + table);
+            }
+        }
+    }
+
+    @Test
+    void swapReplaysOriginalReceiptAfter24HoursWithoutAnotherWalletMutationOrFee() {
+        var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();
+        var actual = new AppExchangeService(mapper, config, durable.service, outbox, audit,
+                feeAllocationService, new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
+                java.util.Optional.empty());
+        var request = new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("20"), false);
+        var first = actual.swap(7L, "late-exchange-retry", request);
+        durable.advanceBeyondLease();
+        when(mapper.currentPrice()).thenReturn(new BigDecimal("2"));
+        var replay = actual.swap(7L, "late-exchange-retry", request);
+        assertThat(replay.getCode()).isZero();
+        Object exchangeNo = ((java.util.Map<?, ?>) first.getData().get("order")).get("exchangeNo");
+        assertThat(exchangeNo).isNotNull();
+        assertThat(((java.util.Map<?, ?>) replay.getData().get("order")).get("exchangeNo"))
+                .isEqualTo(exchangeNo);
+        verify(mapper, org.mockito.Mockito.times(1)).applyWalletDelta(eq(7L), any(), any());
+        verify(mapper, org.mockito.Mockito.times(1)).insertOrder(any());
+        verify(mapper, org.mockito.Mockito.times(2)).insertLedger(any());
+        verify(feeAllocationService, org.mockito.Mockito.times(1)).allocate(anyString(), any(), any());
+        verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
+        assertThatThrownBy(() -> actual.swap(7L, "late-exchange-retry",
+                new AppExchangeService.SwapRequest("USDT_TO_NEX", new BigDecimal("21"), false)))
+                .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        verify(mapper, org.mockito.Mockito.times(1)).applyWalletDelta(eq(7L), any(), any());
+        verify(mapper, org.mockito.Mockito.times(1)).insertOrder(any());
+        verify(feeAllocationService, org.mockito.Mockito.times(1)).allocate(anyString(), any(), any());
+    }
+
+    @Test
+    void historyPaginationPinsTheAccountHighWaterMarkAcrossConcurrentInserts() {
+        var firstRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0001", "USDT", "NEX",
+                new BigDecimal("10"), new BigDecimal("10"), BigDecimal.ONE, "COMPLETED",
+                java.time.LocalDateTime.parse("2026-07-22T10:00:00"));
+        var secondRow = new AppExchangeMapper.ExchangeRow("EX-HISTORY-0002", "USDT", "NEX",
+                new BigDecimal("9"), new BigDecimal("9"), BigDecimal.ONE, "COMPLETED",
+                java.time.LocalDateTime.parse("2026-07-22T10:00:00"));
+        when(mapper.maxIssuedHistoryId(7L)).thenReturn(40L);
+        when(mapper.countUserOrdersAt(7L, 40L)).thenReturn(2L);
+        when(mapper.userOrdersAt(7L, 0L, 1, 40L)).thenReturn(List.of(firstRow));
+        when(mapper.userOrdersAt(7L, 1L, 1, 40L)).thenReturn(List.of(secondRow));
+
+        var first = service.state(7L, 1, 1, null).getData();
+        // A later order has id=41. The retained boundary must still select only ids <=40.
+        when(mapper.maxIssuedHistoryId(7L)).thenReturn(41L);
+        var second = service.state(7L, 2, 1, "40").getData();
+
+        assertThat(first.get("ordersPage")).isEqualTo(Map.of(
+                "total", 2L, "pageNum", 1, "pageSize", 1, "snapshotId", "40"));
+        assertThat(second.get("ordersPage")).isEqualTo(Map.of(
+                "total", 2L, "pageNum", 2, "pageSize", 1, "snapshotId", "40"));
+        assertThat(((List<?>) first.get("orders"))).extracting(row -> ((AppExchangeMapper.ExchangeRow) row).exchangeNo())
+                .containsExactly("EX-HISTORY-0001");
+        assertThat(((List<?>) second.get("orders"))).extracting(row -> ((AppExchangeMapper.ExchangeRow) row).exchangeNo())
+                .containsExactly("EX-HISTORY-0002");
+        verify(mapper, org.mockito.Mockito.times(2)).countUserOrdersAt(7L, 40L);
+        verify(mapper).userOrdersAt(7L, 1L, 1, 40L);
+        verify(mapper, org.mockito.Mockito.times(2)).maxIssuedHistoryId(7L);
+        verify(mapper, never()).maxIssuedHistoryId(8L);
+        verify(mapper, never()).countUserOrdersAt(8L, 40L);
+        verify(mapper, never()).userOrdersAt(8L, 1L, 1, 40L);
+    }
+
+    @Test
+    void historyPaginationRejectsMalformedSnapshotIdBeforeReadingOrders() {
+        assertThatThrownBy(() -> service.state(7L, 1, 20, "01"))
+                .isInstanceOf(BizException.class)
+                .hasMessage("HISTORY_SNAPSHOT_INVALID");
+        verify(mapper, never()).countUserOrdersAt(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong());
+        verify(mapper, never()).userOrdersAt(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void historyPaginationRejectsUnissuedFutureIdBeforeReadingOrders() {
+        when(mapper.maxIssuedHistoryId(7L)).thenReturn(40L);
+        assertThatThrownBy(() -> service.state(7L, 1, 20, "41"))
+                .isInstanceOf(BizException.class).hasMessage("HISTORY_SNAPSHOT_INVALID");
+        verify(mapper, never()).countUserOrdersAt(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong());
+        verify(mapper, never()).userOrdersAt(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyLong());
+    }
+
     private final AppExchangeMapper mapper = mock(AppExchangeMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -48,7 +196,7 @@ class AppExchangeServiceTest {
                 Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
                 java.util.Optional.empty());
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
-                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+                .when(idempotency).executeRetained(anyString(), anyString(), anyString(), any(), any());
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(mapper.userSandbox(7L)).thenReturn(0);
@@ -120,16 +268,25 @@ class AppExchangeServiceTest {
 
     @Test
     void cancellingReservedQueueOrderRefundsTheHeldSourceAsset() {
+        var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();
+        var retainedService = new AppExchangeService(mapper, config, durable.service, outbox, audit,
+                feeAllocationService, new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-07-22T10:00:00Z"), ZoneOffset.UTC), environment,
+                java.util.Optional.empty());
         when(mapper.lockOwnQueued(7L, "EX-RESERVED-1234")).thenReturn(
                 new AppExchangeMapper.QueuedRow(7L, "EX-RESERVED-1234", "USDT", new BigDecimal("20")));
         when(mapper.sourceReservationExists("EX-RESERVED-1234")).thenReturn(1);
         when(mapper.cancelOwnQueued(7L, "EX-RESERVED-1234")).thenReturn(1);
         when(mapper.applyWalletDelta(7L, new BigDecimal("20"), BigDecimal.ZERO)).thenReturn(1);
 
-        assertThat(service.cancel(7L, "EX-RESERVED-1234", "idem-g2-cancel-refund").getCode()).isZero();
+        assertThat(retainedService.cancel(7L, "EX-RESERVED-1234", "idem-g2-cancel-refund").getCode()).isZero();
+        durable.advanceBeyondLease();
+        assertThat(retainedService.cancel(7L, "EX-RESERVED-1234", "idem-g2-cancel-refund").getCode()).isZero();
 
         verify(mapper).applyWalletDelta(7L, new BigDecimal("20"), BigDecimal.ZERO);
         verify(mapper).insertLedger(any(AppExchangeMapper.LedgerWrite.class));
+        verify(mapper).cancelOwnQueued(7L, "EX-RESERVED-1234");
+        verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
     }
 
     @Test

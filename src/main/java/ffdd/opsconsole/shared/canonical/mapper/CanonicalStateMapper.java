@@ -49,6 +49,13 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     Integer activeUserEnvironment(@Param("userId") Long userId);
 
     record UserLock(Long id, boolean sandbox) { }
+    record HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthVolumeUsd, Integer monthlyQuota,
+                         Long usedThisMonth, String unlockMode, Integer status) {
+        public HardwareQuota(String quotaCode, Integer directRefs, BigDecimal monthVolumeUsd, Integer monthlyQuota,
+                             long usedThisMonth, String unlockMode, Integer status) {
+            this(quotaCode, directRefs, monthVolumeUsd, monthlyQuota, Long.valueOf(usedThisMonth), unlockMode, status);
+        }
+    }
 
     @Select("""
             SELECT COALESCE((
@@ -92,6 +99,69 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
             """)
     PurchaseFacts purchaseFacts(@Param("userId") Long userId);
+
+    /** F4b counts active direct sponsors; this is not the V-rank branch counter. */
+    @Select("""
+            SELECT COUNT(*) FROM nx_user child
+              JOIN nx_user owner ON owner.id=#{userId}
+               AND owner.status='ACTIVE' AND owner.is_deleted=0
+               AND child.sponsor_user_id=owner.id AND child.sandbox=owner.sandbox
+             WHERE child.status='ACTIVE' AND child.is_deleted=0
+            """)
+    int purchaseQuotaActiveDirect(@Param("userId") Long userId);
+
+    /**
+     * F4b month_volume_usd is paid network-order volume in the current UTC
+     * month. nx_order.paid_at is a timezone-less DATETIME written through the
+     * +08 application connection, so its UTC boundaries are stored at 08:00.
+     * E1 retains its established accumulated nx_team_member volume definition.
+     */
+    @Select("""
+            WITH RECURSIVE subtree AS (
+                SELECT tm.member_user_id, owner.sandbox, 1 AS depth
+                  FROM nx_team_member tm
+                  JOIN nx_user owner ON owner.id=#{userId}
+                   AND owner.status='ACTIVE' AND owner.is_deleted=0
+                  JOIN nx_user direct ON direct.id=tm.member_user_id
+                   AND direct.sandbox=owner.sandbox AND direct.status='ACTIVE' AND direct.is_deleted=0
+                 WHERE tm.user_id=owner.id AND tm.level=1 AND tm.is_deleted=0
+                UNION ALL
+                SELECT child_member.member_user_id, s.sandbox, s.depth + 1
+                  FROM subtree s
+                  JOIN nx_team_member child_member ON child_member.user_id=s.member_user_id
+                   AND child_member.level=1 AND child_member.is_deleted=0
+                  JOIN nx_user child ON child.id=child_member.member_user_id
+                   AND child.sandbox=s.sandbox AND child.status='ACTIVE' AND child.is_deleted=0
+                 WHERE s.depth < 7
+            )
+            SELECT COALESCE(SUM(o.subtotal_usdt),0)
+              FROM subtree s
+              LEFT JOIN nx_order o ON o.user_id=s.member_user_id
+               AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+               AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+               AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
+               AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
+                    DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+               AND o.is_deleted=0
+            """)
+    BigDecimal purchaseQuotaMonthlyVolume(@Param("userId") Long userId);
+
+    /** All F4b rules tied to this SKU, in settlement lock order, with current UTC-month usage. */
+    @Select("""
+            SELECT t.quota_code AS quotaCode, t.direct_refs AS directRefs,
+                   t.month_volume_usd AS monthVolumeUsd, t.monthly_quota AS monthlyQuota,
+                   COALESCE(SUM(CASE WHEN u.is_deleted=0 AND UPPER(u.status)='ACTIVE'
+                         AND u.occurred_at>=DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01')
+                         AND u.occurred_at<DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01'), INTERVAL 1 MONTH)
+                         THEN u.quantity ELSE 0 END),0) AS usedThisMonth,
+                   t.unlock_mode AS unlockMode, t.status
+              FROM nx_team_hardware_quota_tier t
+              LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id=t.id
+             WHERE t.product_no=#{productNo} AND t.is_deleted=0
+             GROUP BY t.id,t.quota_code,t.direct_refs,t.month_volume_usd,t.monthly_quota,t.unlock_mode,t.status
+             ORDER BY t.id ASC
+            """)
+    List<HardwareQuota> purchaseHardwareQuotas(@Param("productNo") String productNo);
 
     @Select("""
             SELECT COUNT(1)
@@ -638,7 +708,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
              LIMIT 1
             """)
     Long findVisibleStorefrontProduct(@Param("productNo") String productNo);
-
     @Select("""
             SELECT s.purchase_gate_json
               FROM nx_admin_device_sku s

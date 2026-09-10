@@ -11,7 +11,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity> {
+public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper {
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
               FROM nx_compute_e3_config

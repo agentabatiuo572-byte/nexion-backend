@@ -42,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
@@ -309,6 +310,123 @@ class AppCanonicalBoundaryServiceTest {
         assertThat(result.getData()).containsEntry("eligible", false)
                 .containsEntry("decisionCode", "PURCHASE_GATE_NOT_MET")
                 .containsEntry("source", "nx_product + nx_admin_device_sku + nx_user");
+    }
+
+    @Test
+    void purchaseEligibilityBlocksAndProjectsTheSkuF4bPrerequisitesBeforeCheckout() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P2", "{\"mode\":\"all\",\"enforce\":true}")));
+        // The legacy E1 snapshot is historical/accumulated. F4b must still
+        // block when the independently measured current month is zero.
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(0, 2, new BigDecimal("8000")));
+        when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
+                List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "ALL", 1)));
+        when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
+        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO);
+
+        var result = service.purchaseEligibility(42L, "stellarbox-pro");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", false)
+                .containsEntry("decisionCode", "F4B_REQUIREMENTS_NOT_MET");
+        assertThat((List<AppCanonicalBoundaryService.PurchaseEligibilityPolicy>) result.getData().get("policies"))
+                .anySatisfy(policy -> {
+                    assertThat(policy.policy()).isEqualTo("F4B");
+                    assertThat(policy.eligible()).isFalse();
+                    assertThat(policy.conditions())
+                            .extracting(StorefrontPurchaseGatePolicy.Condition::kind)
+                            .contains("activeDirect", "teamVolumeUsd", "monthlyQuota");
+                });
+        verify(mapper).purchaseQuotaMonthlyVolume(42L);
+    }
+
+    @Test
+    void purchaseEligibilityUsesCurrentMonthF4bVolumeInsteadOfHistoricalE1Volume() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P2", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(0, 2, new BigDecimal("8000")));
+        when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
+                List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "ALL", 1)));
+        when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
+        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(new BigDecimal("1000"));
+
+        var result = service.purchaseEligibility(42L, "stellarbox-pro");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", true).containsEntry("decisionCode", "ELIGIBLE");
+    }
+
+    @Test
+    void purchaseEligibilityHonorsEitherForF4bCurrentMonthRequirements() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P2", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(mapper.purchaseFacts(42L)).thenReturn(
+                new CanonicalStateMapper.PurchaseFacts(0, 0, BigDecimal.ZERO));
+        when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(
+                List.of(new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "EITHER", 1)));
+        when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
+        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO);
+
+        var result = service.purchaseEligibility(42L, "stellarbox-pro");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("eligible", true).containsEntry("decisionCode", "ELIGIBLE");
+    }
+
+    @Test
+    void purchaseEligibilityEvaluatesEveryF4bTierWithoutFlatteningTheirModes() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P2", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(List.of(
+                new CanonicalStateMapper.HardwareQuota("PRO", 2, new BigDecimal("1000"), 10, 3, "EITHER", 1),
+                new CanonicalStateMapper.HardwareQuota("PRO_SECOND", 1, new BigDecimal("500"), 6, 1, "ALL", 1)));
+        when(mapper.purchaseQuotaActiveDirect(42L)).thenReturn(2);
+        when(mapper.purchaseQuotaMonthlyVolume(42L)).thenReturn(BigDecimal.ZERO, new BigDecimal("500"));
+
+        var denied = service.purchaseEligibility(42L, "stellarbox-pro");
+        assertThat(denied.getData()).containsEntry("eligible", false)
+                .containsEntry("decisionCode", "F4B_REQUIREMENTS_NOT_MET");
+        assertThat((List<AppCanonicalBoundaryService.PurchaseEligibilityPolicy>) denied.getData().get("policies"))
+                .extracting(AppCanonicalBoundaryService.PurchaseEligibilityPolicy::eligible)
+                .containsExactly(true, true, false);
+
+        var allowed = service.purchaseEligibility(42L, "stellarbox-pro");
+        assertThat(allowed.getData()).containsEntry("eligible", true);
+        assertThat((List<AppCanonicalBoundaryService.PurchaseEligibilityPolicy>) allowed.getData().get("policies"))
+                .extracting(AppCanonicalBoundaryService.PurchaseEligibilityPolicy::mode)
+                .containsExactly("ALL", "EITHER", "ALL");
+    }
+
+    @Test
+    void purchaseEligibilityCannotIgnoreASecondExhaustedF4bTier() {
+        when(mapper.findPurchasableProducts(List.of("stellarbox-pro"))).thenReturn(List.of(
+                new CanonicalStateMapper.ProductStock(18L, "stellarbox-pro", new BigDecimal("1199"), 3,
+                        "P2", "{\"mode\":\"all\",\"enforce\":true}")));
+        when(mapper.purchaseHardwareQuotas("stellarbox-pro")).thenReturn(List.of(
+                new CanonicalStateMapper.HardwareQuota("PRO", 0, BigDecimal.ZERO, 10, 0, "ALL", 1),
+                new CanonicalStateMapper.HardwareQuota("PRO_SECOND", 0, BigDecimal.ZERO, 2, 2, "ALL", 1)));
+        assertThat(service.purchaseEligibility(42L, "stellarbox-pro").getData())
+                .containsEntry("eligible", false).containsEntry("decisionCode", "F4B_MONTHLY_QUOTA_EXHAUSTED");
+    }
+
+    @Test
+    void purchaseEligibilityF4bMonthlyVolumeUsesUtcMonthBoundaryForPlusEightDatetimeStorage()
+            throws NoSuchMethodException {
+        String sql = CanonicalStateMapper.class
+                .getMethod("purchaseQuotaMonthlyVolume", Long.class)
+                .getAnnotation(Select.class)
+                .value()[0];
+
+        assertThat(sql).contains("COALESCE(o.paid_at,o.created_at)", "UTC_TIMESTAMP()",
+                        "INTERVAL 8 HOUR", "INTERVAL 1 MONTH",
+                        "o.payment_status IN ('PAID','CONFIRMED','SUCCESS')", "o.order_status NOT IN ('REFUNDED','CHARGEBACK')")
+                .doesNotContain("SUM(tm.volume)", "DATE_FORMAT(NOW()");
     }
 
     @Test

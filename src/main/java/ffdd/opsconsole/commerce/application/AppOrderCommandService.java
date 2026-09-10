@@ -233,12 +233,23 @@ public class AppOrderCommandService {
         var quotaMonth = quotaOccurredAt.withDayOfMonth(1).toLocalDate().atStartOfDay();
         var monthlyQuotas = mapper.lockOrderMonthlyQuotas(orderNo);
         if (monthlyQuotas == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+        boolean quotaPrerequisitesRequired = monthlyQuotas.stream().anyMatch(tier -> tier != null
+                && ((tier.directRefs() != null && tier.directRefs() > 0)
+                || (tier.monthVolumeUsd() != null && tier.monthVolumeUsd().signum() > 0)));
+        AppOrderCommandMapper.PurchaseQuotaFacts quotaFacts = quotaPrerequisitesRequired
+                ? mapper.purchaseQuotaFacts(userId) : null;
+        if (quotaPrerequisitesRequired && quotaFacts == null) {
+            throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+        }
         for (var tier : monthlyQuotas) {
             if (tier.id() == null || tier.monthlyQuota() == null || tier.monthlyQuota() < 0
                     || tier.quantity() == null || tier.quantity() <= 0) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
             }
             if (!Integer.valueOf(1).equals(tier.status())) return ApiResult.fail(409, "ORDER_MONTHLY_QUOTA_PAUSED");
+            if (quotaPrerequisitesRequired && !hardwareQuotaPrerequisitesMet(tier, quotaFacts)) {
+                return ApiResult.fail(409, "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
+            }
             var usages = mapper.lockMonthlyQuotaUsage(tier.id(), quotaMonth, quotaMonth.plusMonths(1));
             if (usages == null || usages.stream().anyMatch(q -> q == null || q < 0)) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
@@ -324,6 +335,13 @@ public class AppOrderCommandService {
                 .result("SUCCESS").riskLevel("LOW")
                 .detail(auditDetail).build());
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
+    }
+
+    private boolean hardwareQuotaPrerequisitesMet(AppOrderCommandMapper.MonthlyQuota tier,
+                                                   AppOrderCommandMapper.PurchaseQuotaFacts facts) {
+        if (facts == null) return false;
+        return ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard.requirementsMet(
+                tier.directRefs(), tier.monthVolumeUsd(), tier.unlockMode(), facts.activeDirect(), facts.monthlyVolumeUsd());
     }
 
     private boolean validWallet(AppOrderCommandMapper.DevelopmentWallet wallet) {

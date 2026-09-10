@@ -274,10 +274,22 @@ public interface AppWithdrawalMapper {
               FROM nx_withdrawal_order w
               JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0
              WHERE w.user_id=#{userId} AND w.is_deleted=0
+               AND (#{snapshotId} IS NULL OR w.id <= #{snapshotId})
              ORDER BY w.created_at DESC,w.id DESC LIMIT #{offset},#{limit}
             """)
-    List<Map<String, Object>> userWithdrawals(
-            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
+    List<Map<String, Object>> userWithdrawalsAt(
+            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit,
+            @Param("snapshotId") Long snapshotId);
+
+    default List<Map<String, Object>> userWithdrawals(Long userId, long offset, int limit) {
+        return userWithdrawalsAt(userId, offset, limit, null);
+    }
+
+    @Select("SELECT COALESCE(MAX(id),0) FROM nx_withdrawal_order WHERE user_id=#{userId}")
+    long maxIssuedHistoryId(@Param("userId") Long userId);
+
+    @Select("SELECT COUNT(*) FROM nx_withdrawal_order WHERE user_id=#{userId} AND is_deleted=0 AND id <= #{snapshotId}")
+    long countUserWithdrawalsAt(@Param("userId") Long userId, @Param("snapshotId") long snapshotId);
 
     @Select("""
             SELECT COUNT(*)

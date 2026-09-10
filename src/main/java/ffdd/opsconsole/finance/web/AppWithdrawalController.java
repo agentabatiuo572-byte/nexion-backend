@@ -25,9 +25,10 @@ public class AppWithdrawalController {
     public ApiResult<Map<String, Object>> list(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "50") int pageSize,
+            @RequestParam(required = false) String snapshotId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? unauthorized() : service.list(userId, pageNum, pageSize);
+        return userId == null ? unauthorized() : service.listSnapshot(userId, pageNum, pageSize, snapshotId);
     }
 
     @GetMapping("/policy")

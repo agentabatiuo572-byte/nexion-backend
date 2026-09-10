@@ -27,9 +27,10 @@ public class AppStakingController {
     public ApiResult<Map<String, Object>> positions(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "50") int pageSize,
+            @RequestParam(required = false) String snapshotId,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.positions(userId, pageNum, pageSize);
+        return userId == null ? forbidden() : service.positionsSnapshot(userId, pageNum, pageSize, snapshotId);
     }
 
     @PostMapping("/api/stakes")

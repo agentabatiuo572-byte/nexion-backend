@@ -83,11 +83,23 @@ public interface AppStakingMapper {
                    UPPER(status) AS status,claimed_at AS claimedAt,early_withdrawn_at AS earlyWithdrawnAt
               FROM nx_staking_position
              WHERE user_id=#{userId} AND is_deleted=0
+               AND (#{snapshotId} IS NULL OR id <= #{snapshotId})
              ORDER BY created_at DESC,id DESC
              LIMIT #{offset},#{limit}
             """)
-    List<PositionRow> listUserPositions(
-            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
+    List<PositionRow> listUserPositionsAt(
+            @Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit,
+            @Param("snapshotId") Long snapshotId);
+
+    default List<PositionRow> listUserPositions(Long userId, long offset, int limit) {
+        return listUserPositionsAt(userId, offset, limit, null);
+    }
+
+    @Select("SELECT COALESCE(MAX(id),0) FROM nx_staking_position WHERE user_id=#{userId}")
+    long maxIssuedHistoryId(@Param("userId") Long userId);
+
+    @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0 AND id <= #{snapshotId}")
+    long countUserPositionsAt(@Param("userId") Long userId, @Param("snapshotId") long snapshotId);
 
     @Select("SELECT COUNT(*) FROM nx_staking_position WHERE user_id=#{userId} AND is_deleted=0")
     long countUserPositions(@Param("userId") Long userId);

@@ -28,6 +28,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -831,6 +832,7 @@ public class AppCanonicalBoundaryService {
         String runId = productionShaped ? null : commerceAcceptanceRun.requireRunId();
         return ApiResult.ok(linked("productNo", decision.productNo(), "eligible", decision.eligible(),
                 "decisionCode", decision.decisionCode(),
+                "policies", decision.policies(),
                 "evaluatedAt", System.currentTimeMillis(),
                 "source", "nx_product + nx_admin_device_sku + nx_user",
                 "sourceEnvironment", productionShaped ? "PRODUCTION" : "SANDBOX",
@@ -870,10 +872,18 @@ public class AppCanonicalBoundaryService {
                         (first, ignored) -> first, LinkedHashMap::new));
         Map<String, PurchaseEligibilityDecision> preliminary = new LinkedHashMap<>();
         Map<String, String> releaseCandidates = new LinkedHashMap<>();
-        boolean needsFacts = false;
+        Map<String, List<CanonicalStateMapper.HardwareQuota>> hardwareQuotas = new LinkedHashMap<>();
+        boolean needsE1Facts = false;
+        boolean needsF4bFacts = false;
         for (String candidate : normalized) {
             CanonicalStateMapper.ProductStock product = products.get(candidate);
             if (product == null) continue;
+            List<CanonicalStateMapper.HardwareQuota> quotas = mapper.purchaseHardwareQuotas(product.productNo());
+            if (quotas == null || quotas.stream().anyMatch(java.util.Objects::isNull)) {
+                return ApiResult.fail(503, "F4B_QUOTA_UNAVAILABLE");
+            }
+            hardwareQuotas.put(product.productNo(), quotas);
+            needsF4bFacts = needsF4bFacts || quotas.stream().anyMatch(this::hardwareQuotaNeedsFacts);
             PurchaseEligibilityDecision decision = storefrontConfigurationDecision(
                     product.productNo(), product.productType(), product.inventoryMode(),
                     product.gpuModel(), product.vramTotalGb(), product.power(), product.datacenter());
@@ -887,21 +897,27 @@ public class AppCanonicalBoundaryService {
             if (release == null || !release.available()) {
                 preliminary.put(candidate, new PurchaseEligibilityDecision(candidate, false, "PRODUCT_NOT_RELEASED"));
             } else {
-                needsFacts = true;
+                needsE1Facts = true;
             }
         }
-        CanonicalStateMapper.PurchaseFacts facts = needsFacts ? mapper.purchaseFacts(userId) : null;
+        CanonicalStateMapper.PurchaseFacts facts = needsE1Facts ? mapper.purchaseFacts(userId) : null;
+        int quotaActiveDirect = needsF4bFacts ? Math.max(0, mapper.purchaseQuotaActiveDirect(userId)) : 0;
+        BigDecimal quotaMonthlyVolume = needsF4bFacts
+                ? zero(mapper.purchaseQuotaMonthlyVolume(userId)) : BigDecimal.ZERO;
         Map<String, PurchaseEligibilityDecision> decisions = new LinkedHashMap<>();
         for (String candidate : normalized) {
             CanonicalStateMapper.ProductStock product = products.get(candidate);
             if (product == null) continue;
             PurchaseEligibilityDecision decision = preliminary.get(candidate);
-            decisions.put(candidate, decision != null ? decision : purchaseGateDecision(
+            PurchaseEligibilityDecision e1Decision = decision != null ? decision : purchaseGateDecision(
                     product.productNo(), product.purchaseGateJson(),
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd())));
+                            facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+            decisions.put(candidate, combinePurchasePolicies(e1Decision,
+                    e1Policy(product.purchaseGateJson(), facts, e1Decision),
+                    hardwareQuotaPolicies(hardwareQuotas.get(candidate), quotaActiveDirect, quotaMonthlyVolume)));
         }
         return ApiResult.ok(decisions);
     }
@@ -970,6 +986,82 @@ public class AppCanonicalBoundaryService {
         return null;
     }
 
+    private boolean hardwareQuotaNeedsFacts(CanonicalStateMapper.HardwareQuota quota) {
+        return quota != null && ((quota.directRefs() != null && quota.directRefs() > 0)
+                || (quota.monthVolumeUsd() != null && quota.monthVolumeUsd().signum() > 0));
+    }
+
+    private PurchaseEligibilityPolicy e1Policy(String rawGate, CanonicalStateMapper.PurchaseFacts facts,
+                                                PurchaseEligibilityDecision decision) {
+        StorefrontPurchaseGatePolicy.Projection projection = purchaseGatePolicy.project(rawGate,
+                facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+                        facts.rank() == null ? 0 : facts.rank(), facts.activeDirect() == null ? 0 : facts.activeDirect(),
+                        facts.teamVolumeUsd() == null ? BigDecimal.ZERO : facts.teamVolumeUsd()));
+        boolean eligible = decision.eligible();
+        String code = eligible ? "ELIGIBLE" : decision.decisionCode();
+        return new PurchaseEligibilityPolicy("E1", eligible, code, projection.mode(), projection.conditions());
+    }
+
+    private List<PurchaseEligibilityPolicy> hardwareQuotaPolicies(List<CanonicalStateMapper.HardwareQuota> quotas,
+                                                                 int activeDirect, BigDecimal monthlyVolume) {
+        if (quotas.isEmpty()) return List.of(hardwareQuotaPolicy(null, activeDirect, monthlyVolume));
+        return quotas.stream().map(quota -> hardwareQuotaPolicy(quota, activeDirect, monthlyVolume)).toList();
+    }
+
+    private PurchaseEligibilityPolicy hardwareQuotaPolicy(CanonicalStateMapper.HardwareQuota quota,
+                                                           int activeDirect,
+                                                           BigDecimal monthlyVolume) {
+        if (quota == null) return new PurchaseEligibilityPolicy("F4B", true, "F4B_NOT_CONFIGURED", "ALL", List.of());
+        if (!Integer.valueOf(1).equals(quota.status()) || quota.monthlyQuota() == null || quota.monthlyQuota() < 0) {
+            return new PurchaseEligibilityPolicy("F4B", false, "F4B_QUOTA_UNAVAILABLE", "ALL", List.of());
+        }
+        BigDecimal volume = zero(monthlyVolume);
+        List<StorefrontPurchaseGatePolicy.Condition> conditions = new ArrayList<>();
+        if (quota.directRefs() != null && quota.directRefs() > 0) {
+            conditions.add(thresholdCondition("activeDirect", BigDecimal.valueOf(quota.directRefs()),
+                    BigDecimal.valueOf(Math.max(0, activeDirect))));
+        }
+        if (quota.monthVolumeUsd() != null && quota.monthVolumeUsd().signum() > 0) {
+            conditions.add(thresholdCondition("teamVolumeUsd", quota.monthVolumeUsd(), volume));
+        }
+        long used = quota.usedThisMonth() == null ? 0L : Math.max(0L, quota.usedThisMonth());
+        BigDecimal cap = BigDecimal.valueOf(quota.monthlyQuota());
+        BigDecimal usedValue = BigDecimal.valueOf(used);
+        BigDecimal remaining = cap.subtract(usedValue).max(BigDecimal.ZERO);
+        conditions.add(new StorefrontPurchaseGatePolicy.Condition("monthlyQuota", cap, usedValue, remaining,
+                usedValue.compareTo(cap) < 0));
+        boolean thresholdEligible = conditions.stream().filter(condition -> !"monthlyQuota".equals(condition.kind()))
+                .allMatch(StorefrontPurchaseGatePolicy.Condition::met);
+        List<StorefrontPurchaseGatePolicy.Condition> thresholdConditions = conditions.stream()
+                .filter(condition -> !"monthlyQuota".equals(condition.kind())).toList();
+        String mode = "EITHER".equalsIgnoreCase(quota.unlockMode()) ? "EITHER" : "ALL";
+        if ("EITHER".equals(mode) && !thresholdConditions.isEmpty()) {
+            thresholdEligible = thresholdConditions.stream().anyMatch(StorefrontPurchaseGatePolicy.Condition::met);
+        }
+        boolean capacityAvailable = conditions.stream().filter(condition -> "monthlyQuota".equals(condition.kind()))
+                .allMatch(StorefrontPurchaseGatePolicy.Condition::met);
+        String code = !capacityAvailable ? "F4B_MONTHLY_QUOTA_EXHAUSTED"
+                : !thresholdEligible ? "F4B_REQUIREMENTS_NOT_MET" : "ELIGIBLE";
+        return new PurchaseEligibilityPolicy("F4B", thresholdEligible && capacityAvailable, code, mode, conditions);
+    }
+
+    private StorefrontPurchaseGatePolicy.Condition thresholdCondition(String kind, BigDecimal required, BigDecimal current) {
+        BigDecimal gap = required.subtract(current).max(BigDecimal.ZERO);
+        return new StorefrontPurchaseGatePolicy.Condition(kind, required, current, gap, gap.signum() == 0);
+    }
+
+    private PurchaseEligibilityDecision combinePurchasePolicies(PurchaseEligibilityDecision e1,
+                                                                 PurchaseEligibilityPolicy e1Policy,
+                                                                 List<PurchaseEligibilityPolicy> f4Policies) {
+        PurchaseEligibilityPolicy denied = f4Policies.stream().filter(policy -> !policy.eligible()).findFirst().orElse(null);
+        boolean eligible = e1.eligible() && denied == null;
+        String code = !e1.eligible() ? e1.decisionCode() : (denied == null ? "ELIGIBLE" : denied.decisionCode());
+        List<PurchaseEligibilityPolicy> policies = new ArrayList<>();
+        policies.add(e1Policy);
+        policies.addAll(f4Policies);
+        return new PurchaseEligibilityDecision(e1.productNo(), eligible, code, List.copyOf(policies));
+    }
+
     private PurchaseEligibilityDecision purchaseGateDecision(
             String productNo, String purchaseGateJson, StorefrontPurchaseGatePolicy.Facts facts) {
         StorefrontPurchaseGatePolicy.Decision decision;
@@ -1009,7 +1101,15 @@ public class AppCanonicalBoundaryService {
         if (sandbox != 0) throw new BizException(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
     }
 
-    public record PurchaseEligibilityDecision(String productNo, boolean eligible, String decisionCode) { }
+    public record PurchaseEligibilityPolicy(String policy, boolean eligible, String decisionCode, String mode,
+                                            List<StorefrontPurchaseGatePolicy.Condition> conditions) { }
+
+    public record PurchaseEligibilityDecision(String productNo, boolean eligible, String decisionCode,
+                                              List<PurchaseEligibilityPolicy> policies) {
+        public PurchaseEligibilityDecision(String productNo, boolean eligible, String decisionCode) {
+            this(productNo, eligible, decisionCode, List.of());
+        }
+    }
 
     private String overlayPaymentStatus(String state, String fallback) {
         if (!StringUtils.hasText(state)) return normalizeState(fallback, "PENDING");

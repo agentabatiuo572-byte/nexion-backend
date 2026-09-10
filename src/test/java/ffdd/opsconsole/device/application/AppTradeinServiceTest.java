@@ -322,6 +322,7 @@ class AppTradeinServiceTest {
 
     @Test
     void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers() {
+        configuredHardwareQuotaHasCapacity();
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.lockPurchaseGateJson("SKU-NEW"))
@@ -339,6 +340,7 @@ class AppTradeinServiceTest {
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
 
         ApiResult<?> result = service.submit(7L, "idem-7", new AppTradeinSubmitRequest(11L, 22L));
+        verify(mapper).recordHardwarePurchase(any(), eq(7L), org.mockito.ArgumentMatchers.startsWith("TIO-"), any());
 
         assertThat(result.getCode()).isZero();
         verify(mapper).debitWalletUsdt(7L, new BigDecimal("900.000000"));
@@ -439,6 +441,7 @@ class AppTradeinServiceTest {
 
     @Test
     void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit() {
+        configuredHardwareQuotaHasCapacity();
         when(mapper.purchaseGateJson("SKU-NEW"))
                 .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
         when(mapper.lockPurchaseGateJson("SKU-NEW"))
@@ -459,6 +462,7 @@ class AppTradeinServiceTest {
 
         var result = service.capacityReplace(7L, "cap-idem-7",
                 new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500.000000")));
+        verify(mapper).recordHardwarePurchase(any(), eq(7L), org.mockito.ArgumentMatchers.startsWith("CPO-"), any());
 
         assertThat(result.getData().orderStatus()).isEqualTo("COMPLETED");
         assertThat(result.getData().sourceDeviceId()).isEqualTo(11L);
@@ -517,6 +521,39 @@ class AppTradeinServiceTest {
         verify(mapper, never()).insertPaidOrder(any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"submit,false", "submit,true", "replace,false", "replace,true", "keep,false", "keep,true"})
+    void everySettlementRejectsF4bBeforeWalletStockOrdersAndDevices(String path, boolean exhausted) {
+        when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000"));
+        when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000"));
+        when(mapper.lockHardwarePurchaseTiers("SKU-NEW")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
+                        1L, "PRO", "SKU-NEW", 2, new BigDecimal("1000"), 10, "ALL", 1)));
+        when(mapper.hardwarePurchaseFacts(7L)).thenReturn(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Facts(
+                        exhausted ? 2L : 0L, exhausted ? new BigDecimal("1000") : BigDecimal.ZERO));
+        when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(10));
+        assertThatThrownBy(() -> {
+            switch (path) {
+                case "submit" -> service.submit(7L, "f4b-submit", new AppTradeinSubmitRequest(11L, 22L));
+                case "replace" -> service.capacityReplace(7L, "f4b-replace",
+                        new AppCapacityReplaceSubmitRequest(11L, "stellarbox-pro-v2", new BigDecimal("1500")));
+                case "keep" -> service.capacityKeep(7L, "f4b-keep",
+                        new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500")));
+                default -> throw new IllegalArgumentException(path);
+            }
+        }).hasMessage(exhausted ? "ORDER_MONTHLY_QUOTA_EXHAUSTED" : "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
+        verify(mapper, never()).debitWalletUsdt(any(), any());
+        verify(mapper, never()).decrementTargetStock(any());
+        verify(mapper, never()).insertPaidOrder(any());
+        verify(mapper, never()).insertCapacityKeepOrder(any());
+        verify(mapper, never()).insertTargetDevice(any());
+        verify(mapper, never()).insertInventoryTargetDevice(any());
+        verify(mapper, never()).recycleSourceDevice(any(), any());
+        verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
+        verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
+    }
+
     private List<AppTradeinMapper.ConfigRow> validConfig() {
         return List.of(
                 row("tradeinEnabled", "true"), row("eligibility", "L2+ 持有者"),
@@ -541,6 +578,7 @@ class AppTradeinServiceTest {
 
     @Test
     void capacityKeepPurchasePaysAtomicallyAndDeliversAnInactiveInventoryDevice() {
+        configuredHardwareQuotaHasCapacity();
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
@@ -553,6 +591,7 @@ class AppTradeinServiceTest {
 
         var result = service.capacityKeep(7L, "keep-idem-7",
                 new AppCapacityKeepSubmitRequest("stellarbox-pro-v2", new BigDecimal("1500.000000")));
+        verify(mapper).recordHardwarePurchase(any(), eq(7L), org.mockito.ArgumentMatchers.startsWith("CKO-"), any());
 
         assertThat(result.getData().orderStatus()).isEqualTo("PAID");
         assertThat(result.getData().deviceStatus()).isEqualTo("INACTIVE");
@@ -584,6 +623,14 @@ class AppTradeinServiceTest {
         assertThatThrownBy(action)
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TRADEIN_SANDBOX_UNAVAILABLE");
+    }
+
+    private void configuredHardwareQuotaHasCapacity() {
+        when(mapper.lockHardwarePurchaseTiers("SKU-NEW")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
+                        1L, "PRO", "SKU-NEW", 0, BigDecimal.ZERO, 10, "ALL", 1)));
+        when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
+        when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
     }
 
     private AppTradeinMapper.SourceDevice source() {

@@ -18,8 +18,9 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
-import org.mockito.ArgumentCaptor;
+import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class AppOrderCommandServiceTest {
     @Test
@@ -42,6 +43,104 @@ class AppOrderCommandServiceTest {
         verify(mapper, never()).debitDevelopmentWallet(any(), any(), any());
         verify(mapper, never()).consumeMonthlyQuota(any(), any(), any(), any());
         verify(mapper, never()).insertDevelopmentDevice(any(), any(), any(), any());
+    }
+
+    @Test
+    void f4bAllRequirementsRejectBeforeCapacityWalletOrFulfillmentSideEffects() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-F4B-ALL")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-F4B-ALL", 7L, 18L, 1, new BigDecimal("100"), null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockOrderMonthlyQuotas("ORD-F4B-ALL")).thenReturn(List.of(
+                new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
+                        new BigDecimal("1000"), "ALL", 1, 1)));
+        when(mapper.purchaseQuotaFacts(7L)).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(1L, new BigDecimal("800")));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-F4B-ALL", "f4b-all-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
+        verify(mapper, never()).lockMonthlyQuotaUsage(anyLong(), any(), any());
+        verify(mapper, never()).lockDevelopmentWallet(anyLong());
+        verify(mapper, never()).debitDevelopmentWallet(anyLong(), any(), anyLong());
+        verify(mapper, never()).consumeMonthlyQuota(any(), anyLong(), anyString(), any());
+        verify(mapper, never()).markDevelopmentOrderActivated(anyString(), anyLong(), anyString());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
+    @Test
+    void f4bEitherAllowsOneSatisfiedRequirementThenStillEnforcesTheLockedMonthlyCap() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-F4B-EITHER")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-F4B-EITHER", 7L, 18L, 1, new BigDecimal("100"), null, "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockOrderMonthlyQuotas("ORD-F4B-EITHER")).thenReturn(List.of(
+                new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
+                        new BigDecimal("1000"), "EITHER", 1, 1)));
+        when(mapper.purchaseQuotaFacts(7L)).thenReturn(new AppOrderCommandMapper.PurchaseQuotaFacts(2L, BigDecimal.ZERO));
+        when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(10));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-F4B-EITHER", "f4b-either-key");
+
+        assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
+        verify(mapper).lockMonthlyQuotaUsage(eq(1L), any(), any());
+        verify(mapper, never()).lockDevelopmentWallet(anyLong());
+        verify(mapper, never()).consumeMonthlyQuota(any(), anyLong(), anyString(), any());
+        verify(mapper, never()).insertDevelopmentDevice(anyString(), anyLong(), anyString(), anyInt());
+    }
+
+    @Test
+    void f4bAllAcceptsCurrentMonthVolumeBeforeItStillLocksTheMonthlyCap() {
+        var mapper = mock(AppOrderCommandMapper.class);
+        var guard = mock(FundsSandboxProfileGuard.class);
+        var idempotency = mock(AdminIdempotencyService.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        when(mapper.activeUserEnvironment(7L)).thenReturn(0);
+        when(mapper.lockDevelopmentPayOrder("ORD-F4B-CURRENT-MONTH")).thenReturn(new AppOrderCommandMapper.DevelopmentPayOrder(
+                "ORD-F4B-CURRENT-MONTH", 7L, 18L, 1, new BigDecimal("100"), null,
+                "PENDING", "PENDING_PAYMENT", "WAITING_PAYMENT"));
+        when(mapper.lockOrderMonthlyQuotas("ORD-F4B-CURRENT-MONTH")).thenReturn(List.of(
+                new AppOrderCommandMapper.MonthlyQuota(1L, "PRO", "stellarbox-pro", 10, 2,
+                        new BigDecimal("1000"), "ALL", 1, 1)));
+        when(mapper.purchaseQuotaFacts(7L)).thenReturn(
+                new AppOrderCommandMapper.PurchaseQuotaFacts(2L, new BigDecimal("1000")));
+        when(mapper.lockMonthlyQuotaUsage(eq(1L), any(), any())).thenReturn(List.of(10));
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+
+        var result = new AppOrderCommandService(mapper, idempotency, mock(AuditLogService.class), guard,
+                null, null, null).pay(7L, "ORD-F4B-CURRENT-MONTH", "f4b-current-month-key");
+
+        assertThat(result.getMessage()).isEqualTo("ORDER_MONTHLY_QUOTA_EXHAUSTED");
+        verify(mapper).lockMonthlyQuotaUsage(eq(1L), any(), any());
+        verify(mapper, never()).lockDevelopmentWallet(anyLong());
+        verify(mapper, never()).consumeMonthlyQuota(any(), anyLong(), anyString(), any());
+    }
+
+    @Test
+    void f4bMonthlyVolumeMapperUsesUtcMonthBoundaryForPlusEightDatetimeStorage()
+            throws NoSuchMethodException {
+        String sql = AppOrderCommandMapper.class
+                .getMethod("purchaseQuotaFacts", Long.class)
+                .getAnnotation(Select.class)
+                .value()[0];
+
+        assertThat(sql).contains("COALESCE(o.paid_at,o.created_at)", "UTC_TIMESTAMP()",
+                        "INTERVAL 8 HOUR", "INTERVAL 1 MONTH",
+                        "o.payment_status IN ('PAID','CONFIRMED','SUCCESS')", "o.order_status NOT IN ('REFUNDED','CHARGEBACK')")
+                .doesNotContain("SUM(tm.volume)", "DATE_FORMAT(NOW()");
     }
 
     @Test

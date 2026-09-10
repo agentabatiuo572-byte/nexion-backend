@@ -39,6 +39,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 
 /** D2/D5 user entry point; fixed D5 fees and the accepted policy version are snapshotted at submission. */
@@ -67,15 +68,30 @@ public class AppWithdrawalService {
         return list(userId, 1, 50);
     }
 
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> listSnapshot(Long userId, int pageNum, int pageSize, String snapshotId) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        long boundary = ffdd.opsconsole.shared.api.HistorySnapshotId.resolve(snapshotId, () -> mapper.maxIssuedHistoryId(userId));
+        return listAt(userId, pageNum, pageSize, boundary);
+    }
+
     public ApiResult<Map<String, Object>> list(Long userId, int requestedPageNum, int requestedPageSize) {
+        return listAt(userId, requestedPageNum, requestedPageSize, null);
+    }
+
+    private ApiResult<Map<String, Object>> listAt(Long userId, int requestedPageNum, int requestedPageSize, Long snapshotId) {
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
-        long total = Math.max(0L, mapper.countUserWithdrawals(userId));
+        long total = Math.max(0L, snapshotId == null ? mapper.countUserWithdrawals(userId) : mapper.countUserWithdrawalsAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
-        return ApiResult.ok(linked("withdrawals", mapper.userWithdrawals(userId, offset, pageSize),
-                "page", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
+        Map<String, Object> page = linked("total", total, "pageNum", pageNum, "pageSize", pageSize);
+        if (snapshotId != null) page.put("snapshotId", snapshotId.toString());
+        return ApiResult.ok(linked("withdrawals", snapshotId == null ? mapper.userWithdrawals(userId, offset, pageSize)
+                        : mapper.userWithdrawalsAt(userId, offset, pageSize, snapshotId),
+                "page", page,
                 "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
     }
 
@@ -148,10 +164,11 @@ public class AppWithdrawalService {
         BigDecimal max = maximumWithdrawable(userId, wallet.usdtAvailable(), balanceMaxRatio, false);
         boolean dailyLimitReached = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive()) >= dailyLimit;
         PayoutAddressRow payoutAddress = mapper.payoutAddressForEligibility(userId, normalizedChain);
+        LocalDateTime businessNow = LocalDateTime.now(clock);
         boolean payoutAddressReady = payoutAddress != null
                 && StringUtils.hasText(payoutAddress.address())
                 && payoutAddress.effectiveAt() != null
-                && !payoutAddress.effectiveAt().isAfter(LocalDateTime.now())
+                && !payoutAddress.effectiveAt().isAfter(businessNow)
                 && payoutAddressMatches(normalizedChain, normalizedAddress, payoutAddress.address());
         WithdrawalRiskFacts facts = mapper.withdrawalRiskFacts(userId, normalizedAddress);
         if (facts == null || facts.k4RiskScore() == null || !StringUtils.hasText(facts.k4ModelVersion())
@@ -181,7 +198,7 @@ public class AppWithdrawalService {
         if (strong) reasons.add("A3_STRONG_REVIEW_THRESHOLD");
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             reasons.add("PAYOUT_ADDRESS_REQUIRED");
-        } else if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(LocalDateTime.now())) {
+        } else if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(businessNow)) {
             reasons.add("PAYOUT_ADDRESS_CHANGE_PENDING");
         } else if (!payoutAddressMatches(normalizedChain, normalizedAddress, payoutAddress.address())) {
             reasons.add("PAYOUT_ADDRESS_MISMATCH");
@@ -211,7 +228,7 @@ public class AppWithdrawalService {
         };
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     @SuppressWarnings({"rawtypes", "unchecked"})
     @Deprecated
     public ApiResult<Map<String, Object>> submit(
@@ -221,7 +238,7 @@ public class AppWithdrawalService {
         return submit(userId, amount, chain, address, currentPolicy().policyVersion(), false, idempotencyKey);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ApiResult<Map<String, Object>> submit(
             Long userId, BigDecimal amount, String chain, String address, String policyVersion,
@@ -256,7 +273,7 @@ public class AppWithdrawalService {
         return result;
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> abandonAttempt(
             Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
             String policyVersion, boolean useNexFeeOffset) {
@@ -325,11 +342,12 @@ public class AppWithdrawalService {
             return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
                     Map.of("policyVersion", policy.policyVersion()));
         }
+        LocalDateTime businessNow = LocalDateTime.now(clock);
         PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_REQUIRED");
         }
-        if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(LocalDateTime.now())) {
+        if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(businessNow)) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_CHANGE_PENDING");
         }
         if (!payoutAddressMatches(chain, address, payoutAddress.address())) {

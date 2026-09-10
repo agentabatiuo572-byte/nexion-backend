@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.springframework.stereotype.Component;
@@ -61,6 +62,51 @@ public class StorefrontPurchaseGatePolicy {
         } catch (Exception ex) {
             return Decision.closed("PURCHASE_GATE_INVALID");
         }
+    }
+
+    /**
+     * A read-only explanation of the same E1 predicate used by {@link #evaluate}.
+     * It intentionally contains numbers only; the App chooses locale-specific labels.
+     */
+    public Projection project(String raw, Facts facts) {
+        if (raw == null || raw.isBlank()) return new Projection(false, "ALL", List.of(), Decision.open());
+        try {
+            JsonNode gate = objectMapper.readTree(raw);
+            if (!validGate(gate)) return new Projection(true, "ALL", List.of(), Decision.closed("PURCHASE_GATE_INVALID"));
+            String mode = text(gate, "mode");
+            Integer rank = integer(gate, "rankMin");
+            Integer direct = integer(gate, "activeDirectMin");
+            BigDecimal volume = decimal(gate, "teamVolumeMin");
+            Integer cap = integer(gate, "quotaCap");
+            Integer sold = integer(gate, "quotaSold");
+            boolean enforce = gate.path("enforce").asBoolean();
+            if (!enforce) return new Projection(false, mode.toUpperCase(Locale.ROOT), List.of(), Decision.open());
+            if ((rank != null && (rank < 0 || rank > 12)) || (direct != null && (direct < 0 || direct > 1_000_000))
+                    || (volume != null && volume.signum() < 0) || (cap != null && cap < 1) || (sold != null && sold < 0)
+                    || (cap != null && sold != null && sold > cap) || ((cap == null) != (sold == null))) {
+                return new Projection(true, mode.toUpperCase(Locale.ROOT), List.of(), Decision.closed("PURCHASE_GATE_INVALID"));
+            }
+            Facts safeFacts = facts == null ? new Facts(0, 0, BigDecimal.ZERO) : facts;
+            java.util.ArrayList<Condition> conditions = new java.util.ArrayList<>();
+            if (rank != null) conditions.add(threshold("rank", BigDecimal.valueOf(rank), BigDecimal.valueOf(safeFacts.rank())));
+            if (direct != null) conditions.add(threshold("activeDirect", BigDecimal.valueOf(direct), BigDecimal.valueOf(safeFacts.activeDirect())));
+            if (volume != null) conditions.add(threshold("teamVolumeUsd", volume, safeFacts.teamVolumeUsd()));
+            if (cap != null) conditions.add(quota("lifetimeQuota", BigDecimal.valueOf(cap), BigDecimal.valueOf(sold)));
+            Decision decision = evaluate(raw, facts);
+            return new Projection(true, mode.toUpperCase(Locale.ROOT), List.copyOf(conditions), decision);
+        } catch (Exception ex) {
+            return new Projection(true, "ALL", List.of(), Decision.closed("PURCHASE_GATE_INVALID"));
+        }
+    }
+
+    private Condition threshold(String kind, BigDecimal required, BigDecimal current) {
+        BigDecimal gap = required.subtract(current).max(BigDecimal.ZERO);
+        return new Condition(kind, required, current, gap, gap.signum() == 0);
+    }
+
+    private Condition quota(String kind, BigDecimal cap, BigDecimal used) {
+        BigDecimal remaining = cap.subtract(used).max(BigDecimal.ZERO);
+        return new Condition(kind, cap, used, remaining, used.compareTo(cap) < 0);
     }
 
     /** True only for a structurally valid, mutable quota pair. */
@@ -123,4 +169,7 @@ public class StorefrontPurchaseGatePolicy {
         public static Decision open() { return new Decision(true, null); }
         public static Decision closed(String code) { return new Decision(false, code); }
     }
+
+    public record Condition(String kind, BigDecimal required, BigDecimal current, BigDecimal gap, boolean met) { }
+    public record Projection(boolean enforced, String mode, java.util.List<Condition> conditions, Decision decision) { }
 }

@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 
 /** Server-authoritative user boundary for the four G1 USDT staking products. */
@@ -94,6 +95,18 @@ public class AppStakingService {
     }
 
     @Transactional
+    public ApiResult<Map<String, Object>> positionsSnapshot(Long userId, int pageNum, int pageSize, String snapshotId) {
+        // Sandbox history remains scoped by its server-owned run ID, not production row IDs.
+        if (isSandbox()) return sandboxPositions(userId, pageNum, pageSize);
+        requireCanonicalProductionRuntime();
+        requireUser(userId);
+        if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        long boundary = ffdd.opsconsole.shared.api.HistorySnapshotId.resolve(snapshotId, () -> mapper.maxIssuedHistoryId(userId));
+        mapper.matureDuePositions(userId, LocalDateTime.now(clock));
+        return positionsResponse(userId, null, null, null, null, null, null, pageNum, pageSize, boundary);
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> positions(Long userId, int requestedPageNum, int requestedPageSize) {
         if (isSandbox()) return sandboxPositions(userId, requestedPageNum, requestedPageSize);
         requireCanonicalProductionRuntime();
@@ -105,7 +118,7 @@ public class AppStakingService {
                 requestedPageNum, requestedPageSize);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> open(Long userId, String idempotencyKey, OpenRequest request) {
         if (isSandbox()) return sandboxOpen(userId, idempotencyKey, request);
         requireCanonicalProductionRuntime();
@@ -183,7 +196,7 @@ public class AppStakingService {
                 billNo, receiptId);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claim(Long userId, String positionNo, String idempotencyKey) {
         if (isSandbox()) return sandboxClaim(userId, positionNo, idempotencyKey);
         requireCanonicalProductionRuntime();
@@ -233,7 +246,7 @@ public class AppStakingService {
                 billNo, receiptId);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> earlyWithdraw(Long userId, String positionNo, String idempotencyKey) {
         if (isSandbox()) return sandboxEarlyWithdraw(userId, positionNo, idempotencyKey);
         requireCanonicalProductionRuntime();
@@ -520,12 +533,19 @@ public class AppStakingService {
     private ApiResult<Map<String, Object>> positionsResponse(
             Long userId, AppStakingMapper.PositionRow focus, BigDecimal principal, BigDecimal interest,
             BigDecimal penalty, String billNo, String receiptId, int requestedPageNum, int requestedPageSize) {
+        return positionsResponse(userId, focus, principal, interest, penalty, billNo, receiptId, requestedPageNum, requestedPageSize, null);
+    }
+
+    private ApiResult<Map<String, Object>> positionsResponse(
+            Long userId, AppStakingMapper.PositionRow focus, BigDecimal principal, BigDecimal interest,
+            BigDecimal penalty, String billNo, String receiptId, int requestedPageNum, int requestedPageSize, Long snapshotId) {
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
-        long total = Math.max(0L, mapper.countUserPositions(userId));
+        long total = Math.max(0L, snapshotId == null ? mapper.countUserPositions(userId) : mapper.countUserPositionsAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
         Map<String, Object> response = linked(
-                "positions", mapper.listUserPositions(userId, offset, pageSize).stream().map(this::positionView).toList(),
+                "positions", (snapshotId == null ? mapper.listUserPositions(userId, offset, pageSize)
+                        : mapper.listUserPositionsAt(userId, offset, pageSize, snapshotId)).stream().map(this::positionView).toList(),
                 "positionsPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
                 "walletBalanceUsdt", money(mapper.walletBalance(userId)),
                 "serverTime", LocalDateTime.now(clock),
@@ -533,6 +553,7 @@ public class AppStakingService {
                 "source", "nx_staking_product + nx_config_item + nx_emergency_control_setting",
                 "sourceEnvironment", "PRODUCTION",
                 "runId", "");
+        if (snapshotId != null) ((Map<String, Object>) response.get("positionsPage")).put("snapshotId", snapshotId.toString());
         if (focus != null) response.put("position", positionView(focus));
         if (principal != null) response.put("principalUsdt", money(principal));
         if (interest != null) response.put("interestUsdt", money(interest));
@@ -599,7 +620,7 @@ public class AppStakingService {
     private ApiResult<Map<String, Object>> executeOnce(
             String operation, Long userId, String idempotencyKey, Object request,
             Supplier<ApiResult<Map<String, Object>>> action) {
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
                 "APP:G1_STAKING_" + operation + ":USER:" + userId,
                 idempotencyKey, sha256(String.valueOf(request)), ApiResult.class, (Supplier) action);
     }

@@ -92,6 +92,37 @@ class AppTrialLifecycleServiceTest {
     }
 
     @Test
+    void extendedConversionCannotBorrowAnotherGracePeriod() {
+        when(mapper.lockTrial(7L)).thenReturn(trialWithStatus("EXTENDED", null, 1L));
+        var result = service.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "expired-extension");
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_NOT_CONVERTIBLE");
+        verify(mapper, never()).lockConversionProduct(anyString());
+    }
+
+    @Test
+    void extendedConversionRejectsTheExactDeadlineButAllowsThePriorInstantToReachProductValidation() {
+        TrialRow extended = trialWithStatus("EXTENDED", null, 1L);
+        when(mapper.lockTrial(7L)).thenReturn(extended);
+        Instant deadline = extended.expiresAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant();
+        var atDeadline = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+                audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
+                Clock.fixed(deadline, ZoneId.of("UTC")));
+        assertThat(atDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "deadline").getMessage())
+                .isEqualTo("TRIAL_NOT_CONVERTIBLE");
+        verify(mapper, never()).lockConversionProduct(anyString());
+
+        when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(null);
+        var beforeDeadline = new AppTrialLifecycleService(mapper, earningsRelease, idempotency, coverage,
+                audit, outbox, productReleasePolicy, canonicalStateMapper, environment,
+                Clock.fixed(deadline.minusNanos(1), ZoneId.of("UTC")));
+        assertThat(beforeDeadline.convert(7L, "stellarbox-s1", new BigDecimal("1249"), "before-deadline").getMessage())
+                .isEqualTo("TRIAL_PRODUCT_NOT_AVAILABLE");
+        verify(mapper).lockConversionProduct("stellarbox-s1");
+        verify(mapper, never()).lockWallet(anyLong());
+    }
+
+    @Test
     void autoPushKillOverridesEnabledPolicyWithoutDisablingManualTrialEntry() {
         when(mapper.autoPushKilled()).thenReturn("true");
         Map<String, Object> state = service.state(7L).getData();

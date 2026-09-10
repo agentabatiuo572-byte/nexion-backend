@@ -241,12 +241,40 @@ public interface AppExchangeMapper {
     List<ExchangeRow> userOrders(@Param("userId") Long userId, @Param("offset") long offset, @Param("limit") int limit);
 
     @Select("""
+            SELECT COALESCE(MAX(o.id),0)
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId}
+            """)
+    long maxIssuedHistoryId(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT o.exchange_no AS exchangeNo,o.from_asset AS fromAsset,o.to_asset AS toAsset,
+                   o.from_amount AS fromAmount,o.to_amount AS toAmount,o.rate,UPPER(o.status) AS status,
+                   o.created_at AS createdAt
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0 AND o.id <= #{snapshotId}
+             ORDER BY o.created_at DESC,o.id DESC LIMIT #{offset},#{limit}
+            """)
+    List<ExchangeRow> userOrdersAt(@Param("userId") Long userId, @Param("offset") long offset,
+            @Param("limit") int limit, @Param("snapshotId") long snapshotId);
+
+    @Select("""
             SELECT COUNT(*)
               FROM nx_exchange_order o
               JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
             """)
     long countUserOrders(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.is_deleted=0 AND o.id <= #{snapshotId}
+            """)
+    long countUserOrdersAt(@Param("userId") Long userId, @Param("snapshotId") long snapshotId);
 
     @Select("""
             SELECT user_id AS userId,exchange_no AS exchangeNo,UPPER(from_asset) AS fromAsset,from_amount AS fromAmount

@@ -37,6 +37,28 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppRepurchaseServiceTest {
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "NEXION_SNAPSHOT_RACE_IT", matches = "true")
+    void openCountsMonthlyTicketsCommittedWhileWaitingForProductLock() throws Exception {
+        try (var fixture = new ffdd.opsconsole.shared.idempotency.IsolatedMySqlSnapshotFixture()) {
+            when(mapper.controlValue("killswitch.staking")).thenAnswer(invocation -> {
+                fixture.usage(); // Non-locking read before product lock establishes the old RR snapshot.
+                return "enabled";
+            });
+            when(mapper.lockActiveUser(7L)).thenReturn(7L);
+            when(mapper.lockProduct()).thenAnswer(invocation -> { fixture.lock(); return product(); });
+            when(mapper.issuedTicketsThisMonth()).thenAnswer(invocation -> fixture.usage().longValueExact());
+            when(mapper.configValue("G.genesis.lottery.monthlyCapacity")).thenReturn("1");
+            when(mapper.lockWallet(7L)).thenReturn(new BigDecimal("500"));
+            var actual = fixture.transactional(service);
+            assertThatThrownBy(() -> fixture.afterCompetingCommit(BigDecimal.ONE,
+                    () -> actual.open(7L, "isolated-repurchase-race", new AppRepurchaseService.OpenRequest(new BigDecimal("100")))))
+                    .isInstanceOf(BizException.class).hasMessageContaining("G4_LOTTERY_CAPACITY_EXCEEDED");
+            verify(mapper, never()).debitWallet(any(), any());
+            verify(mapper, never()).insertTicket(any());
+        }
+    }
+
     private final AppRepurchaseMapper mapper = mock(AppRepurchaseMapper.class);
     private final RiskDisclosureGateFacade disclosureGate = mock(RiskDisclosureGateFacade.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
@@ -129,6 +151,14 @@ class AppRepurchaseServiceTest {
 
         assertThat(data.get("ordersPage")).isEqualTo(Map.of("total", 2, "pageNum", 2, "pageSize", 1));
         assertThat((List<?>) data.get("orders")).hasSize(1);
+        for (String snapshot : new String[]{null, "40"}) {
+            Map<String,Object> snapshotData = service.ordersSnapshot(7L, 2, 1, snapshot).getData();
+            assertThat(snapshotData).containsEntry("sourceEnvironment", "SANDBOX")
+                    .containsEntry("runId", "RUN-REPURCHASE-PAGE-001");
+            assertThat(snapshotData.get("ordersPage")).isEqualTo(data.get("ordersPage"));
+            assertThat(snapshotData.get("orders")).isEqualTo(data.get("orders"));
+        }
+        verify(mapper, never()).maxIssuedHistoryId(any());
     }
 
     @Test

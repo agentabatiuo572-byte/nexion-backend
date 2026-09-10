@@ -33,6 +33,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 
 /** Atomic, idempotent and server-authoritative G7 repurchase aggregate. */
@@ -92,6 +93,17 @@ public class AppRepurchaseService {
     }
 
     @Transactional
+    public ApiResult<Map<String, Object>> ordersSnapshot(Long userId, int pageNum, int pageSize, String snapshotId) {
+        // Sandbox history remains scoped by its server-owned run ID, not production row IDs.
+        if (isSandbox()) return sandboxOrders(userId, pageNum, pageSize);
+        requireCanonicalProductionRuntime();
+        requireUser(userId);
+        if (mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        long boundary = ffdd.opsconsole.shared.api.HistorySnapshotId.resolve(snapshotId, () -> mapper.maxIssuedHistoryId(userId));
+        return response(userId, null, null, null, null, null, pageNum, pageSize, boundary);
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> orders(Long userId, int requestedPageNum, int requestedPageSize) {
         if (isSandbox()) return sandboxOrders(userId, requestedPageNum, requestedPageSize);
         requireCanonicalProductionRuntime();
@@ -101,7 +113,7 @@ public class AppRepurchaseService {
         return response(userId, null, null, null, null, null, requestedPageNum, requestedPageSize);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> open(Long userId, String key, OpenRequest request) {
         if (isSandbox()) return sandboxOpen(userId, key, request);
         requireCanonicalProductionRuntime();
@@ -181,7 +193,7 @@ public class AppRepurchaseService {
         return response(userId, orderNo, billNo, reinvestReceipt, null, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claim(Long userId, String orderNo, String key) {
         if (isSandbox()) return sandboxClaim(userId, orderNo, key);
         requireCanonicalProductionRuntime();
@@ -214,7 +226,7 @@ public class AppRepurchaseService {
         return response(userId, orderNo, billNo, receipt, credited, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> earlyWithdraw(Long userId, String orderNo, String key) {
         if (isSandbox()) return sandboxEarlyWithdraw(userId, orderNo, key);
         requireCanonicalProductionRuntime();
@@ -485,17 +497,25 @@ public class AppRepurchaseService {
     private ApiResult<Map<String, Object>> response(Long userId, String focus, String billNo, String receipt,
                                                      BigDecimal credited, BigDecimal penalty,
                                                      int requestedPageNum, int requestedPageSize) {
+        return response(userId, focus, billNo, receipt, credited, penalty, requestedPageNum, requestedPageSize, null);
+    }
+
+    private ApiResult<Map<String, Object>> response(Long userId, String focus, String billNo, String receipt,
+                                                     BigDecimal credited, BigDecimal penalty,
+                                                     int requestedPageNum, int requestedPageSize, Long snapshotId) {
         mapper.matureDue(userId, LocalDateTime.now(clock));
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
-        long total = Math.max(0L, mapper.countPositions(userId));
+        long total = Math.max(0L, snapshotId == null ? mapper.countPositions(userId) : mapper.countPositionsAt(userId, snapshotId));
         long offset = (long) (pageNum - 1) * pageSize;
-        Map<String, Object> data = linked("orders", mapper.positions(userId, offset, pageSize).stream().map(this::positionView).toList(),
+        Map<String, Object> data = linked("orders", (snapshotId == null ? mapper.positions(userId, offset, pageSize)
+                        : mapper.positionsAt(userId, offset, pageSize, snapshotId)).stream().map(this::positionView).toList(),
                 "ordersPage", linked("total", total, "pageNum", pageNum, "pageSize", pageSize),
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "serverTime", LocalDateTime.now(clock),
                 "serverCanonical", true,
                 "source", "nx_repurchase_product + nx_config_item + nx_emergency_control_setting",
                 "sourceEnvironment", "PRODUCTION", "runId", "");
+        if (snapshotId != null) ((Map<String, Object>) data.get("ordersPage")).put("snapshotId", snapshotId.toString());
         if (focus != null) data.put("focusOrderNo", focus);
         if (billNo != null) data.put("billNo", billNo);
         if (receipt != null) data.put("receiptId", receipt);

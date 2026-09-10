@@ -15,7 +15,8 @@ import org.apache.ibatis.annotations.Update;
 public interface AppOrderCommandMapper extends BaseMapper<Object> {
     @Select("""
             SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
-                   t.monthly_quota monthlyQuota, t.status,
+                   t.monthly_quota monthlyQuota, t.direct_refs directRefs,
+                   t.month_volume_usd monthVolumeUsd, t.unlock_mode unlockMode, t.status,
                    CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END quantity
               FROM nx_order o
               LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
@@ -27,6 +28,41 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
              ORDER BY t.id FOR UPDATE
             """)
     List<MonthlyQuota> lockOrderMonthlyQuotas(@Param("orderNo") String orderNo);
+
+    @Select("""
+            WITH RECURSIVE subtree AS (
+                SELECT tm.member_user_id, owner.sandbox, 1 AS depth
+                  FROM nx_team_member tm
+                  JOIN nx_user owner ON owner.id=#{userId}
+                   AND owner.status='ACTIVE' AND owner.is_deleted=0
+                  JOIN nx_user direct ON direct.id=tm.member_user_id
+                   AND direct.sandbox=owner.sandbox AND direct.status='ACTIVE' AND direct.is_deleted=0
+                 WHERE tm.user_id=owner.id AND tm.level=1 AND tm.is_deleted=0
+                UNION ALL
+                SELECT child_member.member_user_id, s.sandbox, s.depth + 1
+                  FROM subtree s
+                  JOIN nx_team_member child_member ON child_member.user_id=s.member_user_id
+                   AND child_member.level=1 AND child_member.is_deleted=0
+                  JOIN nx_user child ON child.id=child_member.member_user_id
+                   AND child.sandbox=s.sandbox AND child.status='ACTIVE' AND child.is_deleted=0
+                 WHERE s.depth < 7
+            )
+            SELECT (SELECT COUNT(*) FROM nx_user child
+                     JOIN nx_user owner ON owner.id=#{userId}
+                      AND owner.status='ACTIVE' AND owner.is_deleted=0
+                    WHERE child.sponsor_user_id=owner.id AND child.sandbox=owner.sandbox
+                      AND child.status='ACTIVE' AND child.is_deleted=0) AS activeDirect,
+                   COALESCE(SUM(o.subtotal_usdt),0) AS monthlyVolumeUsd
+              FROM subtree s
+              LEFT JOIN nx_order o ON o.user_id=s.member_user_id
+               AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+               AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
+               AND COALESCE(o.paid_at,o.created_at)>=DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 8 HOUR)
+               AND COALESCE(o.paid_at,o.created_at)<DATE_ADD(
+                    DATE_ADD(DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'),INTERVAL 1 MONTH),INTERVAL 8 HOUR)
+               AND o.is_deleted=0
+            """)
+    PurchaseQuotaFacts purchaseQuotaFacts(@Param("userId") Long userId);
 
     @Select("""
             SELECT quantity FROM nx_team_hardware_quota_usage
@@ -45,7 +81,13 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     int consumeMonthlyQuota(@Param("tier") MonthlyQuota tier, @Param("userId") Long userId,
             @Param("orderNo") String orderNo, @Param("occurredAt") java.time.LocalDateTime occurredAt);
 
-    record MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer status, Integer quantity) { }
+    record MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer directRefs,
+                        BigDecimal monthVolumeUsd, String unlockMode, Integer status, Integer quantity) {
+        public MonthlyQuota(Long id, String quotaCode, String productNo, Integer monthlyQuota, Integer status, Integer quantity) {
+            this(id, quotaCode, productNo, monthlyQuota, null, null, "ALL", status, quantity);
+        }
+    }
+    record PurchaseQuotaFacts(Long activeDirect, BigDecimal monthlyVolumeUsd) { }
 
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);

@@ -35,6 +35,34 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppStakingServiceTest {
+    @Test
+    void openReplaysOriginalReceiptAfter24HoursWithoutAnotherDebitOrPosition() {
+        var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();
+        var actual = new AppStakingService(mapper, disclosureGate, config, durable.service,
+                outbox, audit, earningsReleaseService, clock, environment, sandboxMapper);
+        var request = new AppStakingService.OpenRequest("usdt30d", new BigDecimal("100"));
+        var first = actual.open(42L, "late-staking-retry", request);
+        durable.advanceBeyondLease();
+        var replay = actual.open(42L, "late-staking-retry", request);
+        assertThat(replay.getCode()).isZero();
+        Object positionNo = ((Map<?, ?>) first.getData().get("position")).get("positionNo");
+        assertThat(positionNo).isNotNull();
+        assertThat(((Map<?, ?>) replay.getData().get("position")).get("positionNo"))
+                .isEqualTo(positionNo);
+        verify(mapper, org.mockito.Mockito.times(1)).debitWallet(42L, new BigDecimal("100.000000"));
+        verify(mapper, org.mockito.Mockito.times(1)).insertPosition(any());
+        verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
+        assertThatThrownBy(() -> actual.open(42L, "late-staking-retry",
+                new AppStakingService.OpenRequest("usdt30d", new BigDecimal("200"))))
+                .hasMessageContaining("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        verify(mapper, org.mockito.Mockito.times(1)).debitWallet(42L, new BigDecimal("100.000000"));
+        verify(mapper, org.mockito.Mockito.times(1)).insertPosition(any());
+        when(disclosureGate.checkUserGate(42L, "staking", "late-staking-retry"))
+                .thenReturn(ApiResult.fail(409, "RISK_DISCLOSURE_ACK_REQUIRED"));
+        assertThat(actual.open(42L, "late-staking-retry", request).getCode()).isEqualTo(409);
+        verify(mapper, org.mockito.Mockito.times(1)).debitWallet(42L, new BigDecimal("100.000000"));
+    }
+
     private final AppStakingMapper mapper = mock(AppStakingMapper.class);
     private final RiskDisclosureGateFacade disclosureGate = mock(RiskDisclosureGateFacade.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
@@ -67,7 +95,7 @@ class AppStakingServiceTest {
         when(mapper.userAttribution(42L)).thenReturn(new AppStakingMapper.UserAttribution("P1", 3, "2026-W30"));
         when(disclosureGate.checkUserGate(org.mockito.ArgumentMatchers.eq(42L),
                 org.mockito.ArgumentMatchers.eq("staking"), anyString())).thenReturn(ApiResult.ok(null));
-        when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
+        when(idempotency.executeRetained(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(sandboxMapper.insertAccountIfAbsent(anyString(), anyString(), any())).thenReturn(1);
         when(sandboxMapper.lockAccount(anyString(), anyString(), any())).thenReturn(
@@ -140,6 +168,14 @@ class AppStakingServiceTest {
 
         assertThat(data.get("positionsPage")).isEqualTo(Map.of("total", 2, "pageNum", 2, "pageSize", 1));
         assertThat((List<?>) data.get("positions")).hasSize(1);
+        for (String snapshot : new String[]{null, "40"}) {
+            Map<String,Object> snapshotData = service.positionsSnapshot(42L, 2, 1, snapshot).getData();
+            assertThat(snapshotData).containsEntry("sourceEnvironment", "SANDBOX")
+                    .containsEntry("runId", "RUN-STAKING-PAGE-001");
+            assertThat(snapshotData.get("positionsPage")).isEqualTo(data.get("positionsPage"));
+            assertThat(snapshotData.get("positions")).isEqualTo(data.get("positions"));
+        }
+        verify(mapper, never()).maxIssuedHistoryId(any());
     }
 
     @Test
@@ -253,6 +289,9 @@ class AppStakingServiceTest {
 
     @Test
     void maturedPrincipalCreditsDirectlyButInterestUsesTheCanonicalReleaseBuckets() {
+        var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();
+        var retainedService = new AppStakingService(mapper, disclosureGate, config, durable.service,
+                outbox, audit, earningsReleaseService, clock, environment, sandboxMapper);
         LocalDateTime unlockedAt = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).minusMinutes(1);
         AppStakingMapper.PositionRow active = new AppStakingMapper.PositionRow(
                 9L, 42L, "STK-9", 2L, "USDT_30D", "USDT 30D",
@@ -270,11 +309,38 @@ class AppStakingServiceTest {
         when(mapper.listUserPositions(42L, 0L, 50)).thenReturn(List.of(claimed));
         when(mapper.walletBalance(42L)).thenReturn(new BigDecimal("1002.500000"));
 
-        assertThat(service.claim(42L, "STK-9", "claim-9").getCode()).isZero();
+        assertThat(retainedService.claim(42L, "STK-9", "claim-9").getCode()).isZero();
+        durable.advanceBeyondLease();
+        assertThat(retainedService.claim(42L, "STK-9", "claim-9").getCode()).isZero();
 
         verify(mapper).creditWallet(42L, new BigDecimal("100.000000"));
         verify(earningsReleaseService).creditReward(42L, "staking_interest", "STK-9", "USDT",
                 new BigDecimal("2.500000"), "G1-STAKING-INTEREST-9");
+        verify(mapper).markClaimed(any(), any(), any());
+        verify(mapper).insertLedger(any());
+        verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
+    }
+
+    @Test
+    void earlyWithdrawalReplaysExpiredReceiptWithoutAnotherRefund() {
+        var durable = new ffdd.opsconsole.shared.idempotency.ExpiredReceiptFixture();
+        var retainedService = new AppStakingService(mapper, disclosureGate, config, durable.service,
+                outbox, audit, earningsReleaseService, clock, environment, sandboxMapper);
+        LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        var active = new AppStakingMapper.PositionRow(10L, 42L, "STK-10", 2L, "USDT_30D", "USDT 30D",
+                new BigDecimal("100"), new BigDecimal("1200"), new BigDecimal("500"), 30,
+                now.minusDays(1), now.plusDays(29), new BigDecimal("2.500000"), "ACTIVE", null, null);
+        when(mapper.lockUserPosition(42L, "STK-10")).thenReturn(active);
+        when(mapper.markEarlyWithdrawn(any(), any(), any())).thenReturn(1);
+        when(mapper.creditWallet(42L, new BigDecimal("95.000000"))).thenReturn(1);
+        assertThat(retainedService.earlyWithdraw(42L, "STK-10", "early-10").getCode()).isZero();
+        durable.advanceBeyondLease();
+        assertThat(retainedService.earlyWithdraw(42L, "STK-10", "early-10").getCode()).isZero();
+        verify(mapper).creditWallet(42L, new BigDecimal("95.000000"));
+        verify(mapper).markEarlyWithdrawn(any(), any(), any());
+        verify(mapper).insertLedger(any());
+        verifyNoInteractions(earningsReleaseService);
+        verify(durable.records, never()).resetExpiredById(any(), anyString(), any());
     }
 
     private AppStakingMapper.ProductRow product() {
