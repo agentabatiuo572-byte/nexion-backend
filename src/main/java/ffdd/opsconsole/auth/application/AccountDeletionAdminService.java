@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
 import ffdd.opsconsole.auth.dto.AccountDeletionAdminView;
+import ffdd.opsconsole.auth.dto.AccountDeletionAdminPage;
 import ffdd.opsconsole.auth.dto.AdminAccountDeletionCommandRequest;
 import ffdd.opsconsole.auth.mapper.AppUserSecurityMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -39,12 +40,26 @@ public class AccountDeletionAdminService {
 
     @Transactional(readOnly = true)
     public List<AccountDeletionAdminView> list(String status, int page, int limit) {
+        PageSpec spec = pageSpec(status, page, limit);
+        return mapper.listAccountDeletions(spec.status(), spec.offset(), spec.limit()).stream()
+                .map(row -> view(row, false, false)).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public AccountDeletionAdminPage page(String status, int page, int limit) {
+        PageSpec spec = pageSpec(status, page, limit);
+        long total = mapper.countAccountDeletions(spec.status());
+        List<AccountDeletionAdminView> records = mapper.listAccountDeletions(spec.status(), spec.offset(), spec.limit()).stream()
+                .map(row -> view(row, false, false)).toList();
+        return new AccountDeletionAdminPage(records, total, spec.page(), spec.limit());
+    }
+
+    private PageSpec pageSpec(String status, int page, int limit) {
         int safePage = Math.min(100_000, Math.max(1, page));
         int safeLimit = Math.min(100, Math.max(1, limit));
         String normalized = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
         if (normalized != null && !isStatus(normalized)) throw new BizException(422, "ACCOUNT_DELETION_STATUS_INVALID");
-        return mapper.listAccountDeletions(normalized, (safePage - 1) * safeLimit, safeLimit).stream()
-                .map(row -> view(row, false, false)).toList();
+        return new PageSpec(normalized, safePage, safeLimit, (safePage - 1) * safeLimit);
     }
 
     public AccountDeletionAdminView review(String requestNo, String key, AdminAccountDeletionCommandRequest request) {
@@ -213,6 +228,9 @@ public class AccountDeletionAdminService {
 
     private Long numberObject(Map<String, Object> row, String key) {
         return number(row, key);
+    }
+
+    private record PageSpec(String status, int page, int limit, int offset) {
     }
 
     private LocalDateTime date(Map<String, Object> row, String key) {

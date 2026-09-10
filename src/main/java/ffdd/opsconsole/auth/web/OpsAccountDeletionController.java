@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AccountDeletionAdminService;
 import ffdd.opsconsole.auth.dto.AccountDeletionAdminView;
+import ffdd.opsconsole.auth.dto.AccountDeletionAdminPage;
 import ffdd.opsconsole.auth.dto.AdminAccountDeletionCommandRequest;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -15,7 +16,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import java.util.List;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/users/account-deletions")
@@ -25,11 +25,11 @@ public class OpsAccountDeletionController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('user_c1_read')")
-    public ApiResult<List<AccountDeletionAdminView>> list(
+    public ApiResult<AccountDeletionAdminPage> list(
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "50") int limit) {
-        return ApiResult.ok(service.list(status, page, limit));
+        return ApiResult.ok(service.page(status, page, limit));
     }
 
     @GetMapping("/{requestNo}")

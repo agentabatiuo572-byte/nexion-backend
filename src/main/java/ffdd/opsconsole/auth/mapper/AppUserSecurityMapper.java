@@ -94,6 +94,14 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             @Param("status") String status, @Param("offset") int offset, @Param("limit") int limit);
 
     @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_account_deletion_request
+             WHERE is_deleted=0
+               AND (#{status} IS NULL OR #{status}='' OR status=#{status})
+            """)
+    long countAccountDeletions(@Param("status") String status);
+
+    @Select("""
             SELECT request_no AS requestNo,status,version,requested_at AS requestedAt,
                    reviewed_at AS reviewedAt,completed_at AS completedAt,reason,
                    block_reason AS blockReason,cancelled_at AS cancelledAt
