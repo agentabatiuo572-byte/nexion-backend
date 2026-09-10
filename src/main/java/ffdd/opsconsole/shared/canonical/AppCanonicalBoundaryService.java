@@ -170,8 +170,16 @@ public class AppCanonicalBoundaryService {
         if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
         String status = normalizeState(device.status(), "");
         boolean occupiesPhysicalSlot = !"SHARE".equals(normalizeState(device.deviceType(), "DEVICE"));
-        if ("ACTIVE".equals(status)) return ApiResult.ok(linked(
-                "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "ACTIVE",
+        // A lifecycle label alone is insufficient: old/incomplete rows must not acquire an activation
+        // fact or a physical slot through an idempotent response.
+        if (isSlotOccupyingActiveState(status)
+                && (device.activatedAt() == null || device.deactivatedAt() != null)) {
+            return ApiResult.fail(409, "DEVICE_STATE_CONFLICT");
+        }
+        // Runtime OFFLINE is still an activated asset: it occupies its physical slot and must not be
+        // reactivated or bypass the deferred-deactivation path merely because telemetry is disconnected.
+        if (isSlotOccupyingActiveState(status)) return ApiResult.ok(linked(
+                "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", status,
                 "activeCount", Math.max(0, mapper.activeDeviceCount(userId)),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()), "rowVersion", device.rowVersion(),
                 "alreadyActive", true));
@@ -315,7 +323,7 @@ public class AppCanonicalBoundaryService {
     }
 
     private boolean isSlotOccupyingActiveState(String status) {
-        return Set.of("ACTIVE", "ONLINE", "BUSY", "RUNNING")
+        return Set.of("ACTIVE", "ONLINE", "BUSY", "RUNNING", "OFFLINE")
                 .contains(normalizeState(status, ""));
     }
 
@@ -500,7 +508,9 @@ public class AppCanonicalBoundaryService {
                 "pendingDeactivate", device.pendingDeactivate(),
                 "instanceNo", device.instanceNo(), "name", device.name(),
                 "deviceType", device.deviceType(), "productCode", device.productCode(), "status", device.status(),
-                "activatedAt", epochMillis(device.activatedAt()), "purchasedAt", epochMillis(device.purchasedAt()),
+                "runtimeStatus", canonicalRuntimeStatus(device.runtimeStatus()),
+                "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
+                "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),
@@ -512,6 +522,14 @@ public class AppCanonicalBoundaryService {
                 "capacitySubsidyDays", capacity.subsidyDays(),
                 "capacitySubsidyRemainingDays", capacity.subsidyRemainingDays(),
                 "capacitySubsidyEndsAt", epochMillis(capacity.subsidyEndsAt()));
+    }
+
+    private String canonicalRuntimeStatus(String value) {
+        return switch (normalizeState(value, "UNKNOWN")) {
+            case "ONLINE" -> "ONLINE";
+            case "OFFLINE", "ERROR", "ABNORMAL", "LOST" -> "OFFLINE";
+            default -> "UNKNOWN";
+        };
     }
 
     private void validateDeviceSpec(CanonicalStateMapper.OwnedDevice device) {

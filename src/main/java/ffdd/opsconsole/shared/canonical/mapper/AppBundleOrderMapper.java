@@ -40,8 +40,9 @@ public interface AppBundleOrderMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COUNT(1) FROM nx_user_device
              WHERE user_id=#{userId} AND is_deleted=0 AND UPPER(ownership_status)='OWNED'
-               AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
+               AND activated_at IS NOT NULL
                AND deactivated_at IS NULL AND pending_deactivate=0
             """)
     int activeDeviceCount(@Param("userId") Long userId);

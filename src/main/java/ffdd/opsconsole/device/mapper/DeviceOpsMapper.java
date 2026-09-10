@@ -12,6 +12,35 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
+    String E5_ACTIVATED_OWNED = """
+            d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
+            AND d.activated_at IS NOT NULL
+            AND d.deactivated_at IS NULL
+            AND d.pending_deactivate = 0
+            AND UPPER(d.ownership_status) = 'OWNED'
+            """;
+    // Runtime views include Cloud Share; only capacity and user slot positions exclude it.
+    String E5_PHYSICAL_SLOT = E5_ACTIVATED_OWNED + """
+            AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
+            """;
+    String E5_RUNTIME_ONLINE = "UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'";
+    String E5_RUNTIME_OFFLINE = "UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE'";
+    String E5_RUNTIME_UNKNOWN = "UPPER(TRIM(COALESCE(r.online_status, ''))) NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')";
+    String E5_RUNTIME_ABNORMAL = "UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST')";
+    // Match the PC state precedence. Pending, inventory and unbound rows have their own tabs;
+    // UNKNOWN contains all remaining rows with non-active lifecycle facts or unavailable runtime telemetry.
+    String E5_VISIBLE_UNKNOWN = """
+            d.pending_deactivate = 0
+            AND UPPER(COALESCE(d.status, '')) NOT IN
+                ('RECYCLED','DEACTIVATED','RETIRED','UNBOUND','INVENTORY','PENDING','PENDING_ACTIVATION','INACTIVE')
+            AND (
+                UPPER(COALESCE(d.status, '')) NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
+                OR d.activated_at IS NULL
+                OR d.deactivated_at IS NOT NULL
+                OR """ + E5_RUNTIME_UNKNOWN + """
+            )
+            """;
+
     String DEVICE_COLUMNS = """
             d.id,
             d.user_id AS userId,
@@ -48,22 +77,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
             r.thermal_state AS thermalState,
             (SELECT COUNT(*) FROM nx_user_device a
               WHERE a.user_id=d.user_id AND a.is_deleted=0
-                AND a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE')
+                AND a.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
                 AND a.ownership_status = 'OWNED' AND a.pending_deactivate = 0
                 AND UPPER(COALESCE(NULLIF(a.device_type,''),'DEVICE')) != 'SHARE'
-                AND a.deactivated_at IS NULL) AS activeDevicesForUser,
+                AND a.activated_at IS NOT NULL AND a.deactivated_at IS NULL) AS activeDevicesForUser,
             CASE
               WHEN UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) = 'SHARE' THEN NULL
-              WHEN d.status NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE') OR d.deactivated_at IS NOT NULL
-                OR d.pending_deactivate = 1 OR d.ownership_status != 'OWNED' THEN NULL
+              WHEN d.status NOT IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE') OR d.activated_at IS NULL
+                OR d.deactivated_at IS NOT NULL OR d.pending_deactivate = 1 OR d.ownership_status != 'OWNED' THEN NULL
               ELSE (
                 SELECT COUNT(*)
                   FROM nx_user_device s
                  WHERE s.is_deleted = 0
                    AND s.user_id = d.user_id
-                   AND s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE')
+                   AND s.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
                    AND s.ownership_status = 'OWNED' AND s.pending_deactivate = 0
-                   AND s.deactivated_at IS NULL
+                   AND s.activated_at IS NOT NULL AND s.deactivated_at IS NULL
                    AND UPPER(COALESCE(NULLIF(s.device_type,''),'DEVICE')) != 'SHARE'
                    AND NOT s.id > d.id
               )
@@ -73,10 +102,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
     long countTotalDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0 AND status IN ('ONLINE','BUSY')")
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_device d
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+             WHERE d.is_deleted = 0
+               AND """ + E5_ACTIVATED_OWNED + """
+               AND """ + E5_RUNTIME_ONLINE)
     long countOnlineDevices();
 
-    @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0 AND status = 'OFFLINE'")
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_device d
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
+             WHERE d.is_deleted = 0
+               AND """ + E5_ACTIVATED_OWNED + """
+               AND """ + E5_RUNTIME_OFFLINE)
     long countOfflineDevices();
 
     @Select("""
@@ -94,10 +135,12 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0
+               AND """ + E5_ACTIVATED_OWNED + """
                AND (
-                 d.status NOT IN ('ONLINE','BUSY')
-                 OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST')
-                OR DATE_SUB(NOW(), INTERVAL 10 MINUTE) > r.heartbeat_at
+                 """ + E5_RUNTIME_ABNORMAL + """
+                 OR (""" + E5_RUNTIME_ONLINE + """
+                     AND (r.heartbeat_at IS NULL
+                          OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)))
                )
             """)
     long countAbnormalDevices();
@@ -114,8 +157,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0
-               AND d.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
-            """)
+               AND """ + E5_ACTIVATED_OWNED)
     FleetObservabilityMetrics e5FleetObservabilityMetrics();
 
     @Select("""
@@ -148,9 +190,27 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.is_deleted = 0
              <if test='status != null and status != ""'>
                <choose>
-                 <when test='status == "ACTIVE"'>AND d.status IN ('ONLINE','ACTIVE')</when>
-                 <when test='status == "UNBOUND"'>AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','INACTIVE','RETIRED')</when>
-                 <when test='status == "ABNORMAL"'>AND r.online_status IN ('ERROR','ABNORMAL','LOST')</when>
+                 <when test='status == "ACTIVE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "ONLINE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "BUSY"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND d.status = 'BUSY' AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "OFFLINE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_OFFLINE + """
+                 </when>
+                 <when test='status == "UNKNOWN"'>AND """ + E5_VISIBLE_UNKNOWN + """
+                 </when>
+                 <when test='status == "UNBOUND"'>AND d.pending_deactivate = 0
+                 AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','RETIRED')</when>
+                 <when test='status == "INVENTORY"'>AND d.pending_deactivate = 0
+                 AND d.status IN ('INVENTORY','INACTIVE','PENDING','PENDING_ACTIVATION')</when>
+                 <when test='status == "ABNORMAL"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST')""" + """
+                 </when>
                  <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
                  <otherwise>AND d.status = #{status}</otherwise>
                </choose>
@@ -186,9 +246,27 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.is_deleted = 0
              <if test='status != null and status != ""'>
                <choose>
-                 <when test='status == "ACTIVE"'>AND d.status IN ('ONLINE','ACTIVE')</when>
-                 <when test='status == "UNBOUND"'>AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','INACTIVE','RETIRED')</when>
-                 <when test='status == "ABNORMAL"'>AND r.online_status IN ('ERROR','ABNORMAL','LOST')</when>
+                 <when test='status == "ACTIVE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "ONLINE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "BUSY"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND d.status = 'BUSY' AND """ + E5_RUNTIME_ONLINE + """
+                 </when>
+                 <when test='status == "OFFLINE"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND """ + E5_RUNTIME_OFFLINE + """
+                 </when>
+                 <when test='status == "UNKNOWN"'>AND """ + E5_VISIBLE_UNKNOWN + """
+                 </when>
+                 <when test='status == "UNBOUND"'>AND d.pending_deactivate = 0
+                 AND d.status IN ('UNBOUND','DEACTIVATED','RECYCLED','RETIRED')</when>
+                 <when test='status == "INVENTORY"'>AND d.pending_deactivate = 0
+                 AND d.status IN ('INVENTORY','INACTIVE','PENDING','PENDING_ACTIVATION')</when>
+                 <when test='status == "ABNORMAL"'>AND """ + E5_ACTIVATED_OWNED + """
+                 AND UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST')""" + """
+                 </when>
                  <when test='status == "PENDING-DEACTIVATE"'>AND d.pending_deactivate = 1</when>
                  <otherwise>AND d.status = #{status}</otherwise>
                </choose>
@@ -244,11 +322,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     DeviceOpsView findDevice(@Param("deviceId") Long deviceId);
 
     @Select("""
-            SELECT COUNT(*) FROM nx_user_device
-             WHERE user_id = #{userId} AND is_deleted = 0
-               AND status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
-               AND UPPER(COALESCE(NULLIF(device_type,''),'DEVICE')) <> 'SHARE'
-               AND deactivated_at IS NULL
+            SELECT COUNT(*) FROM nx_user_device d
+             WHERE d.user_id = #{userId} AND d.is_deleted = 0
+               AND """ + E5_PHYSICAL_SLOT + """
             """)
     long countActiveDevicesByUser(@Param("userId") Long userId);
 
@@ -307,7 +383,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                      ) THEN 1 ELSE 0 END,
                    updated_at = NOW()
              WHERE id = #{deviceId} AND is_deleted = 0
-               AND status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+               AND status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
                AND (#{unbind} = 0 OR NOT EXISTS (
                  SELECT 1 FROM nx_compute_task t
                   WHERE t.user_device_id = nx_user_device.id AND t.is_deleted = 0
@@ -326,7 +402,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND (
                     (#{pause} = 1
-                     AND d.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+                     AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
                      AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL))
                     OR
                     (#{pause} = 0
@@ -341,12 +417,11 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
-            SELECT d.id, COALESCE(NULLIF(d.status,''),'OFFLINE'), COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'),
-                   #{reason}, COALESCE(d.last_seen_at, #{now})
+            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), #{reason}, COALESCE(d.last_seen_at, #{now})
               FROM nx_user_device d
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
-               AND d.status IN ('ONLINE','BUSY','OFFLINE','ACTIVE')
+               AND d.status IN ('ONLINE','BUSY','RUNNING','OFFLINE','ACTIVE')
                AND (r.id IS NULL OR r.is_deleted = 1 OR r.paused_reason IS NULL)
             ON DUPLICATE KEY UPDATE is_deleted = 0, paused_reason = VALUES(paused_reason), updated_at = NOW()
             """)
@@ -668,9 +743,16 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN (
                     SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
                            COUNT(*) AS totalDevices,
-                           SUM(CASE WHEN d.status IN ('ONLINE','BUSY') THEN 1 ELSE 0 END) AS onlineDevices,
+                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
+                                               AND """ + E5_RUNTIME_ONLINE + """
+                                               THEN 1 ELSE 0 END) AS onlineDevices,
                            SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
-                           SUM(CASE WHEN d.status NOT IN ('ONLINE','BUSY') OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 1 ELSE 0 END) AS abnormalDevices,
+                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
+                                              AND (""" + E5_RUNTIME_ABNORMAL + """
+                                                   OR (""" + E5_RUNTIME_ONLINE + """
+                                                       AND (r.heartbeat_at IS NULL
+                                                            OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE))))
+                                    THEN 1 ELSE 0 END) AS abnormalDevices,
                            COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
                            COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
                            COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
@@ -709,9 +791,16 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN (
                     SELECT COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') AS dcLocation,
                            COUNT(*) AS totalDevices,
-                           SUM(CASE WHEN d.status IN ('ONLINE','BUSY') THEN 1 ELSE 0 END) AS onlineDevices,
+                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
+                                               AND """ + E5_RUNTIME_ONLINE + """
+                                               THEN 1 ELSE 0 END) AS onlineDevices,
                            SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
-                           SUM(CASE WHEN d.status NOT IN ('ONLINE','BUSY') OR r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 1 ELSE 0 END) AS abnormalDevices,
+                           SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
+                                              AND (""" + E5_RUNTIME_ABNORMAL + """
+                                                   OR (""" + E5_RUNTIME_ONLINE + """
+                                                       AND (r.heartbeat_at IS NULL
+                                                            OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE))))
+                                    THEN 1 ELSE 0 END) AS abnormalDevices,
                            COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
                            COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
                            COALESCE(AVG(r.gpu_power_w), 0) AS avgGpuPowerW
@@ -880,7 +969,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
 
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, region, paused_reason, heartbeat_at)
-            SELECT d.id, d.status, COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), #{reason}, COALESCE(d.last_seen_at, #{now})
+            SELECT d.id, 'UNKNOWN', COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED'), #{reason}, COALESCE(d.last_seen_at, #{now})
               FROM nx_user_device d
              WHERE d.is_deleted = 0
                AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}

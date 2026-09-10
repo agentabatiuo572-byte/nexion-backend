@@ -36,8 +36,8 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
 
         assertThat(mapper).contains(
                 "UPPER(ownership_status) = 'OWNED'",
-                "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')",
-                "d.deactivated_at IS NULL AND d.pending_deactivate = 0",
+                "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
+                "d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0",
                 "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'",
                 "int reservedDeviceOrderCount",
                 "nx_order_item",
@@ -58,8 +58,31 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
             int sqlStart = mapper.lastIndexOf("@Update", method);
             String sql = mapper.substring(sqlStart, method);
             assertThat(sql).as(methodName)
-                    .contains("UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')");
+                    .contains("UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
+                            "activated_at IS NOT NULL");
         }
+    }
+
+    @Test
+    void productionAndDevelopmentCapacityUseTheSameActivatedPhysicalAssetDefinition() throws Exception {
+        for (String methodName : List.of("activeDeviceCount", "developmentActiveDeviceCount")) {
+            var method = CanonicalStateMapper.class.getMethod(methodName, Long.class);
+            String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+            assertThat(sql).as(methodName).contains(
+                    "UPPER(d.ownership_status)", "'OWNED'",
+                    "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
+                    "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate",
+                    "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
+        }
+
+        var activation = CanonicalStateMapper.class.getMethod(
+                "activateOwnedDeviceCas", Long.class, Long.class, Long.class, Integer.class);
+        String activationSql = String.join(" ", activation.getAnnotation(org.apache.ibatis.annotations.Update.class).value())
+                .replaceAll("\\s+", " ");
+        assertThat(activationSql).contains(
+                "UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')",
+                "d.activated_at IS NOT NULL", "d.deactivated_at IS NULL", "d.pending_deactivate = 0",
+                "UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'");
     }
 
     @Test
@@ -76,6 +99,17 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 "active_snapshot) < #{slotCap}");
     }
 
+    @Test
+    void lockedDeviceCommandCarriesActivationFactsBeforeAnAlreadyActiveResponse() throws Exception {
+        var command = CanonicalStateMapper.class.getMethod("lockDeviceForUserCommand", Long.class);
+        String sql = String.join(" ", command.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+        assertThat(sql).contains("d.activated_at AS activatedAt", "d.deactivated_at AS deactivatedAt", "FOR UPDATE");
+        assertThat(Arrays.stream(CanonicalStateMapper.UserDeviceCommandRow.class.getRecordComponents())
+                .map(RecordComponent::getName)
+                .toList())
+                .containsExactly("id", "userId", "instanceNo", "status", "ownershipStatus", "rowVersion",
+                        "pendingDeactivate", "deviceType", "activatedAt", "deactivatedAt");
+    }
     @Test
     void canonicalOrderReadbackResolvesActivationEvidenceForOrdinaryAndTradeinOrders() throws Exception {
         String mapper = Files.readString(
@@ -105,16 +139,42 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 "d.device_type AS deviceType,",
                 "d.product_code AS productCode,",
                 "d.status,",
+                "END AS runtimeStatus,",
                 "d.row_version AS rowVersion,",
                 "d.activated_at AS activatedAt,",
+                "d.deactivated_at AS deactivatedAt,",
                 "d.purchased_at AS purchasedAt,");
         assertThat(Arrays.stream(CanonicalStateMapper.OwnedDevice.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList())
                 .containsExactly(
-                        "id", "instanceNo", "name", "deviceType", "productCode", "status", "rowVersion",
-                        "pendingDeactivate", "activatedAt", "purchasedAt", "dailyUsdt", "dailyNex", "gpuModel", "vramTotalGb",
+                        "id", "instanceNo", "name", "deviceType", "productCode", "status", "runtimeStatus", "rowVersion",
+                        "pendingDeactivate", "activatedAt", "deactivatedAt", "purchasedAt", "dailyUsdt", "dailyNex", "gpuModel", "vramTotalGb",
                         "basePowerW", "location", "actualPaidUsdt", "cumulativeOutputUsdt");
+    }
+
+    @Test
+    void ownedDeviceProjectionsReadRuntimeOnceAndNormalizeItToTheAppContract() throws Exception {
+        for (String methodName : List.of("ownedDevices", "developmentOwnedDevices", "sandboxOwnedDevices")) {
+            var method = "sandboxOwnedDevices".equals(methodName)
+                    ? CanonicalStateMapper.class.getMethod(methodName, Long.class, String.class)
+                    : CanonicalStateMapper.class.getMethod(methodName, Long.class);
+            String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+            assertThat(sql).containsSubsequence(
+                    "d.status,", "runtimeStatus", "d.row_version AS rowVersion,",
+                    "d.activated_at AS activatedAt,", "d.deactivated_at AS deactivatedAt,",
+                    "d.purchased_at AS purchasedAt,");
+            if (!"sandboxOwnedDevices".equals(methodName)) {
+                assertThat(sql).contains(
+                        "LEFT JOIN nx_user_device_runtime runtime",
+                        "runtime.user_device_id = d.id AND runtime.is_deleted = 0",
+                        "runtime.online_status",
+                        "THEN 'ONLINE'",
+                        "THEN 'OFFLINE'",
+                        "ELSE 'UNKNOWN'",
+                        "END AS runtimeStatus");
+            }
+        }
     }
 
     @Test

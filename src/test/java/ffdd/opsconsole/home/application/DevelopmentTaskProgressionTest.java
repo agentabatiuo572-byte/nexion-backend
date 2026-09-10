@@ -345,6 +345,17 @@ class DevelopmentTaskProgressionTest {
         ordering.verify(mapper).developmentTaskPool();
     }
 
+    @Test
+    void pendingDeactivateAcceptsAnOfflineActivatedAssetButRetainsTheRunningTaskBarrier() throws Exception {
+        var method = java.util.Arrays.stream(DevelopmentHomeSettlementMapper.class.getDeclaredMethods())
+                .filter(candidate -> candidate.getName().equals("deactivatePendingDevelopmentDevice"))
+                .findFirst().orElseThrow();
+        String sql = method.getAnnotation(org.apache.ibatis.annotations.Update.class).value()[0];
+
+        assertThat(sql).contains("UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')");
+        assertThat(sql).contains("d.pending_deactivate=1", "d.row_version=#{expectedRowVersion}");
+        assertThat(sql).contains("NOT EXISTS", "active.status IN ('CLAIMED','RUNNING')");
+    }
     private DevelopmentHomeSettlementBootstrap bootstrap(DevelopmentHomeSettlementMapper mapper,
             EventOutboxService outbox, AuditLogService audit) {
         return new DevelopmentHomeSettlementBootstrap(mapper, CLOCK, "+86", "18708173775", true, outbox, audit);

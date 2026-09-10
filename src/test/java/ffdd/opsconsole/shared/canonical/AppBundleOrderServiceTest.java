@@ -73,6 +73,33 @@ class AppBundleOrderServiceTest {
     }
 
     @Test
+    void bundlePreflightRejectsWhenTheAuthoritativeOccupiedSlotCountLeavesNoPhysicalCapacity() {
+        AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
+        AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
+        FundsSandboxProfileGuard guard = mock(FundsSandboxProfileGuard.class);
+        when(guard.isStrictProductionRuntime()).thenReturn(true);
+        doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
+                .when(idempotency).execute(anyString(), anyString(), anyString(), any(), any());
+        when(mapper.lockUser(7L)).thenReturn(new AppBundleOrderMapper.UserLock(7L, false));
+        when(mapper.lockProducts(any())).thenReturn(List.of(
+                new AppBundleOrderMapper.ProductRow(1L, "stellarbox-s1", "S1", new BigDecimal("100"), 2,
+                        null, null, "DEVICE", "FINITE", "configured", 1, "500W", "DC-HCM"),
+                new AppBundleOrderMapper.ProductRow(2L, "stellarbox-pro", "Pro", new BigDecimal("200"), 2,
+                        null, null, "DEVICE", "FINITE", "configured", 1, "600W", "DC-HCM")));
+        when(mapper.deviceSlotCap()).thenReturn(2);
+        when(mapper.activeDeviceCount(7L)).thenReturn(2);
+
+        var result = new AppBundleOrderService(mapper, idempotency, mock(EventOutboxService.class), guard,
+                new StorefrontPurchaseGatePolicy(), releasePolicy, mock(CommerceAcceptanceSandboxMapper.class), mock(CommerceAcceptanceRun.class))
+                .create(7L, List.of("stellarbox-s1", "stellarbox-pro"), 1L, "bundle-capacity-key");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("CAPACITY_REPLACEMENT_REQUIRED");
+        verify(mapper, never()).decrementStock(anyLong());
+        verify(mapper, never()).insertBundleOrder(anyLong(), anyString(), anyLong(), anyInt(), any(), any(), any());
+    }
+
+    @Test
     void productionBundleRejectsIncompletePhysicalSpecsBeforeAnyReservationOrStockWrite() {
         AppBundleOrderMapper mapper = mock(AppBundleOrderMapper.class);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);

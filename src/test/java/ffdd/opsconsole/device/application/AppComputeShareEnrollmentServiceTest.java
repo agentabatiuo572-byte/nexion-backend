@@ -65,6 +65,17 @@ class AppComputeShareEnrollmentServiceTest {
     }
 
     @Test
+    void rejectsNewPairingWhenTheAuthoritativeOccupiedSlotCountReachesTheCap() {
+        when(mapper.activeDeviceCount(42L)).thenReturn(6);
+
+        ApiResult<?> result = service.create(42L, "NVIDIA RTX 4070", "pair-key-capacity");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("COMPUTE_SHARE_DEVICE_CAPACITY_REACHED");
+        verify(mapper, never()).insertEnrollment(any());
+    }
+
+    @Test
     void sandboxOrDisabledProfileCannotTouchProductionEnrollmentTables() {
         environment.setActiveProfiles("test");
         assertThat(service.create(42L, "NVIDIA RTX 4070", "pair-key-2").getMessage())

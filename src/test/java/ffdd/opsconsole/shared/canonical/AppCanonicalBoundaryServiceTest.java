@@ -1054,6 +1054,70 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void fleetSeparatesActivationLifecycleFromRuntimeAvailability() {
+        LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(
+                new CanonicalStateMapper.OwnedDevice(
+                        8L, "DEV-ONLINE", "Cloud Share", "SHARE", "CLOUD-SHARE", "ACTIVE", "ONLINE", 6L,
+                        false, activatedAt, activatedAt, new BigDecimal("12"), new BigDecimal("6"),
+                        "Hosted GPU", 0, BigDecimal.ZERO, "Singapore", new BigDecimal("99"), BigDecimal.ZERO),
+                new CanonicalStateMapper.OwnedDevice(
+                        9L, "DEV-OFFLINE", "Cloud Share", "SHARE", "CLOUD-SHARE", "ACTIVE", "OFFLINE", 7L,
+                        false, activatedAt, activatedAt, new BigDecimal("12"), new BigDecimal("6"),
+                        "Hosted GPU", 0, BigDecimal.ZERO, "Singapore", new BigDecimal("99"), BigDecimal.ZERO),
+                new CanonicalStateMapper.OwnedDevice(
+                        10L, "DEV-UNKNOWN", "Cloud Share", "SHARE", "CLOUD-SHARE", "ACTIVE", null, 8L,
+                        false, activatedAt, activatedAt, new BigDecimal("12"), new BigDecimal("6"),
+                        "Hosted GPU", 0, BigDecimal.ZERO, "Singapore", new BigDecimal("99"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> devices = (List<Map<String, Object>>) result.getData().get("devices");
+        assertThat(devices).extracting(device -> device.get("runtimeStatus"))
+                .containsExactly("ONLINE", "OFFLINE", "UNKNOWN");
+        assertThat(devices).allSatisfy(device -> assertThat(device)
+                .containsEntry("status", "ACTIVE")
+                .containsEntry("activatedAt", activatedAt.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()));
+    }
+
+    @Test
+    void fleetCarriesDeactivationTimeEvenWhenItIsAbsent() {
+        LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                11L, "DEV-LIFECYCLE", "Cloud Share", "SHARE", "CLOUD-SHARE", "ACTIVE", "ONLINE", 9L,
+                false, activatedAt, activatedAt, new BigDecimal("12"), new BigDecimal("6"),
+                "Hosted GPU", 0, BigDecimal.ZERO, "Singapore", new BigDecimal("99"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> devices = (List<Map<String, Object>>) result.getData().get("devices");
+        assertThat(devices.get(0)).containsEntry("deactivatedAt", null);
+    }
+
+    @Test
+    void fleetCarriesARecordedDeactivationTimeWithoutDiscardingIt() {
+        LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
+        LocalDateTime deactivatedAt = activatedAt.plusDays(1);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(new CanonicalStateMapper.OwnedDevice(
+                12L, "DEV-DEACTIVATED", "Cloud Share", "SHARE", "CLOUD-SHARE", "DEACTIVATED", "OFFLINE", 10L,
+                false, activatedAt, deactivatedAt, activatedAt, new BigDecimal("12"), new BigDecimal("6"),
+                "Hosted GPU", 0, BigDecimal.ZERO, "Singapore", new BigDecimal("99"), BigDecimal.ZERO)));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> devices = (List<Map<String, Object>>) result.getData().get("devices");
+        assertThat(devices.get(0)).containsEntry(
+                "deactivatedAt", deactivatedAt.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli());
+    }
+
+    @Test
     void exposesTheTrueServerAuthoredNewDeviceSubsidyCountdown() {
         LocalDateTime purchasedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
                 .minusDays(1).minusHours(1);
@@ -1328,7 +1392,7 @@ class AppCanonicalBoundaryServiceTest {
         org.mockito.Mockito.reset(mapper, outbox, audit);
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
-                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L, false, "DEVICE", LocalDateTime.of(2026, 1, 1, 0, 0), null));
 
         var replay = service.activateDevice(42L, 9L, 2L, null, "activate-same-state");
 
@@ -1393,7 +1457,7 @@ class AppCanonicalBoundaryServiceTest {
     void staleDeactivateFromBeforeReactivationIsRejected() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());
         when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
-                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L));
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", "ACTIVE", "OWNED", 2L, false, "DEVICE", LocalDateTime.of(2026, 1, 1, 0, 0), null));
 
         var stale = service.deactivateDevice(42L, 9L, 1L, "stale-after-reactivate");
 
@@ -1451,7 +1515,7 @@ class AppCanonicalBoundaryServiceTest {
         when(mapper.userEventAttribution(42L)).thenReturn(
                 new CanonicalStateMapper.UserEventAttribution("P3", 5, "2026-W06"));
 
-        for (String status : List.of("ACTIVE", "ONLINE", "BUSY", "RUNNING")) {
+        for (String status : List.of("ACTIVE", "ONLINE", "BUSY", "RUNNING", "OFFLINE")) {
             when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
                     new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-9", status, "OWNED", 7L));
 
@@ -1460,9 +1524,59 @@ class AppCanonicalBoundaryServiceTest {
             assertThat(result.getCode()).as(status).isZero();
             assertThat(result.getData()).as(status).containsEntry("status", "DEACTIVATED");
         }
-        verify(mapper, times(4)).deactivateOwnedDeviceCas(42L, 9L, 7L);
+        verify(mapper, times(5)).deactivateOwnedDeviceCas(42L, 9L, 7L);
     }
 
+    @Test
+    void offlineActivatedAssetUsesDeferredDeactivationWhenItsTaskIsStillRunning() {
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-OFFLINE", "OFFLINE", "OWNED", 7L, false, "DEVICE", LocalDateTime.of(2026, 1, 1, 0, 0), null));
+        when(mapper.hasActiveTask(42L, 9L)).thenReturn(true);
+        when(mapper.markDevicePendingDeactivate(42L, 9L, 7L)).thenReturn(1);
+
+        var result = service.deactivateAfterTask(42L, 9L, 7L, "offline-deferred");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "PENDING_DEACTIVATE")
+                .containsEntry("pendingDeactivate", true);
+        verify(mapper).markDevicePendingDeactivate(42L, 9L, 7L);
+        verify(mapper, never()).deactivateOwnedDeviceCas(42L, 9L, 7L);
+    }
+
+    @Test
+    void offlineActivatedAssetIsAlreadyActiveAndCannotBeReactivatedToEvadeItsSlot() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(9L, 42L, "DEV-OFFLINE", "OFFLINE", "OWNED", 7L, false, "DEVICE", LocalDateTime.of(2026, 1, 1, 0, 0), null));
+
+        var result = service.activateDevice(42L, 9L, 7L, null, "offline-activate");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "OFFLINE").containsEntry("alreadyActive", true);
+        verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
+    }
+
+    @Test
+    void activeLifecycleWithoutCurrentActivationFactCannotBecomeAlreadyActive() {
+        when(mapper.lockUser(42L)).thenReturn(productionUser());
+        when(mapper.lockDeviceForUserCommand(9L)).thenReturn(
+                new CanonicalStateMapper.UserDeviceCommandRow(
+                        9L, 42L, "DEV-MISSING-FACT", "ACTIVE", "OWNED", 7L, false, "DEVICE", null, null),
+                new CanonicalStateMapper.UserDeviceCommandRow(
+                        9L, 42L, "DEV-ENDED-FACT", "ONLINE", "OWNED", 8L, false, "DEVICE",
+                        LocalDateTime.of(2026, 1, 1, 0, 0), LocalDateTime.of(2026, 2, 1, 0, 0)));
+
+        var missing = service.activateDevice(42L, 9L, 7L, null, "missing-activation-fact");
+        var ended = service.activateDevice(42L, 9L, 8L, null, "ended-activation-fact");
+
+        assertThat(missing.getCode()).isEqualTo(409);
+        assertThat(missing.getMessage()).isEqualTo("DEVICE_STATE_CONFLICT");
+        assertThat(ended.getCode()).isEqualTo(409);
+        assertThat(ended.getMessage()).isEqualTo("DEVICE_STATE_CONFLICT");
+        verify(mapper, never()).activateOwnedDeviceCas(any(), any(), any(), any());
+        verify(outbox, never()).publishUserEvent(eq("USER_DEVICE"), anyString(), eq("device.activated"),
+                any(), anyString(), any(), anyString(), any());
+    }
     @Test
     void deviceDeactivationRejectsMissingForeignAndStaleCommandsWithoutMutation() {
         when(mapper.lockUser(42L)).thenReturn(productionUser());

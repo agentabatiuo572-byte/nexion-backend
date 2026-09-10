@@ -100,9 +100,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
              WHERE d.user_id = #{userId} AND d.is_deleted = 0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
-               AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
             """)
     int activeDeviceCount(@Param("userId") Long userId);
 
@@ -113,9 +113,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
              WHERE d.user_id=#{userId} AND d.is_deleted=0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
                AND UPPER(d.ownership_status)='OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
-               AND d.deactivated_at IS NULL AND d.pending_deactivate=0
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate=0
             """)
     int developmentActiveDeviceCount(@Param("userId") Long userId);
 
@@ -201,9 +201,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                       JOIN nx_user u ON u.id = d.user_id AND COALESCE(u.sandbox,0)=0
                      WHERE d.user_id = #{userId} AND d.is_deleted = 0
                        AND UPPER(d.ownership_status) = 'OWNED'
-                       AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+                       AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                        AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
-                       AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                       AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
                ) active_snapshot) < #{slotCap})
             """)
     int activateOwnedDeviceCas(@Param("userId") Long userId,
@@ -214,7 +214,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Select("""
             SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo, d.status,
                    d.ownership_status AS ownershipStatus, d.row_version AS rowVersion,
-                   d.pending_deactivate AS pendingDeactivate,d.device_type AS deviceType
+                   d.pending_deactivate AS pendingDeactivate,d.device_type AS deviceType,
+                   d.activated_at AS activatedAt,d.deactivated_at AS deactivatedAt
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0
              WHERE d.id = #{deviceId} AND d.is_deleted = 0
@@ -235,7 +236,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
     @Update("""
             UPDATE nx_user_device SET pending_deactivate=1,updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
-               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND activated_at IS NOT NULL
                AND pending_deactivate=0 AND row_version=#{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -246,7 +248,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             UPDATE nx_user_device SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
                    pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
              WHERE id=#{deviceId} AND user_id=#{userId} AND is_deleted=0
-               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(ownership_status)='OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND activated_at IS NOT NULL
                AND pending_deactivate=1
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -257,7 +260,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                SET status = 'DEACTIVATED', activated_at = NULL, deactivated_at = NOW(),
                    pending_deactivate = 0, row_version = row_version + 1, updated_at = NOW()
              WHERE id = #{deviceId} AND user_id = #{userId} AND is_deleted = 0
-               AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(ownership_status) = 'OWNED' AND UPPER(status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND activated_at IS NOT NULL
                AND row_version = #{expectedVersion}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
             """)
@@ -366,9 +370,15 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.device_type AS deviceType,
                    d.product_code AS productCode,
                    d.status,
+                   CASE
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) = 'ONLINE' THEN 'ONLINE'
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 'OFFLINE'
+                     ELSE 'UNKNOWN'
+                   END AS runtimeStatus,
                    d.row_version AS rowVersion,
                    d.pending_deactivate AS pendingDeactivate,
                    d.activated_at AS activatedAt,
+                   d.deactivated_at AS deactivatedAt,
                    d.purchased_at AS purchasedAt,
                    d.daily_usdt AS dailyUsdt,
                    d.daily_nex AS dailyNex,
@@ -389,6 +399,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                             AND u.sandbox = 1
                             AND UPPER(COALESCE(u.status, 'ACTIVE')) = 'ACTIVE'
                             AND u.is_deleted = 0
+              LEFT JOIN nx_user_device_runtime runtime
+                ON runtime.user_device_id = d.id AND runtime.is_deleted = 0
               LEFT JOIN nx_product p
                 ON p.id = d.product_id AND p.is_deleted = 0
               LEFT JOIN nx_order o
@@ -443,9 +455,15 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.device_type AS deviceType,
                    d.product_code AS productCode,
                    d.status,
+                   CASE
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) = 'ONLINE' THEN 'ONLINE'
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 'OFFLINE'
+                     ELSE 'UNKNOWN'
+                   END AS runtimeStatus,
                    d.row_version AS rowVersion,
                    d.pending_deactivate AS pendingDeactivate,
                    d.activated_at AS activatedAt,
+                   d.deactivated_at AS deactivatedAt,
                    d.purchased_at AS purchasedAt,
                    d.daily_usdt AS dailyUsdt,
                    d.daily_nex AS dailyNex,
@@ -458,6 +476,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    COALESCE(output.totalUsdt, 0) AS cumulativeOutputUsdt
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0
+              LEFT JOIN nx_user_device_runtime runtime
+                ON runtime.user_device_id = d.id AND runtime.is_deleted = 0
               LEFT JOIN (
                 SELECT r.user_device_id, SUM(r.reward_usdt) AS totalUsdt
                   FROM nx_compute_receipt r
@@ -489,8 +509,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     @Select("""
             SELECT d.id,d.instance_no AS instanceNo,d.name,d.device_type AS deviceType,
-                   d.product_code AS productCode,d.status,d.row_version AS rowVersion,
+                   d.product_code AS productCode,d.status,'UNKNOWN' AS runtimeStatus,d.row_version AS rowVersion,
                    d.pending_deactivate AS pendingDeactivate,d.activated_at AS activatedAt,
+                   d.deactivated_at AS deactivatedAt,
                    d.purchased_at AS purchasedAt,d.daily_usdt AS dailyUsdt,d.daily_nex AS dailyNex,
                    d.gpu_model AS gpuModel,d.vram_total_gb AS vramTotalGb,d.base_power_w AS basePowerW,
                    d.dc_location AS location,0 AS actualPaidUsdt,0 AS cumulativeOutputUsdt
@@ -895,14 +916,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
 
     record UserDeviceCommandRow(
             Long id, Long userId, String instanceNo, String status, String ownershipStatus, Long rowVersion,
-            boolean pendingDeactivate, String deviceType) {
+            boolean pendingDeactivate, String deviceType, LocalDateTime activatedAt, LocalDateTime deactivatedAt) {
+        public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
+                                    String ownershipStatus, Long rowVersion, boolean pendingDeactivate, String deviceType) {
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, pendingDeactivate, deviceType, null, null);
+        }
         public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
                                     String ownershipStatus, Long rowVersion, boolean pendingDeactivate) {
-            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, pendingDeactivate, "DEVICE");
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, pendingDeactivate, "DEVICE", null, null);
         }
         public UserDeviceCommandRow(Long id, Long userId, String instanceNo, String status,
                                     String ownershipStatus, Long rowVersion) {
-            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, false, "DEVICE");
+            this(id, userId, instanceNo, status, ownershipStatus, rowVersion, false, "DEVICE", null, null);
         }
     }
 
@@ -913,9 +938,11 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             String deviceType,
             String productCode,
             String status,
+            String runtimeStatus,
             Long rowVersion,
             boolean pendingDeactivate,
             LocalDateTime activatedAt,
+            LocalDateTime deactivatedAt,
             LocalDateTime purchasedAt,
             BigDecimal dailyUsdt,
             BigDecimal dailyNex,
@@ -927,10 +954,31 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             BigDecimal cumulativeOutputUsdt) {
         public OwnedDevice(
                 Long id, String instanceNo, String name, String deviceType, String productCode, String status,
+                String runtimeStatus, Long rowVersion, boolean pendingDeactivate, LocalDateTime activatedAt,
+                LocalDateTime purchasedAt, BigDecimal dailyUsdt, BigDecimal dailyNex, String gpuModel,
+                Integer vramTotalGb, BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt,
+                BigDecimal cumulativeOutputUsdt) {
+            this(id, instanceNo, name, deviceType, productCode, status, runtimeStatus, rowVersion, pendingDeactivate,
+                    activatedAt, null, purchasedAt, dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
+                    actualPaidUsdt, cumulativeOutputUsdt);
+        }
+
+        public OwnedDevice(
+                Long id, String instanceNo, String name, String deviceType, String productCode, String status,
+                Long rowVersion, boolean pendingDeactivate, LocalDateTime activatedAt, LocalDateTime purchasedAt,
+                BigDecimal dailyUsdt, BigDecimal dailyNex, String gpuModel, Integer vramTotalGb,
+                BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
+            this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", rowVersion, pendingDeactivate,
+                    activatedAt, null, purchasedAt, dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
+                    actualPaidUsdt, cumulativeOutputUsdt);
+        }
+
+        public OwnedDevice(
+                Long id, String instanceNo, String name, String deviceType, String productCode, String status,
                 Long rowVersion, LocalDateTime activatedAt, LocalDateTime purchasedAt,
                 BigDecimal dailyUsdt, BigDecimal dailyNex, String gpuModel, Integer vramTotalGb,
                 BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
-            this(id, instanceNo, name, deviceType, productCode, status, rowVersion, false, activatedAt, purchasedAt,
+            this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", rowVersion, false, activatedAt, null, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
                     actualPaidUsdt, cumulativeOutputUsdt);
         }
@@ -940,7 +988,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                 LocalDateTime activatedAt, LocalDateTime purchasedAt, BigDecimal dailyUsdt, BigDecimal dailyNex,
                 String gpuModel, Integer vramTotalGb, BigDecimal basePowerW, String location,
                 BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
-            this(id, instanceNo, name, deviceType, productCode, status, 0L, false, activatedAt, purchasedAt,
+            this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", 0L, false, activatedAt, null, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
                     actualPaidUsdt, cumulativeOutputUsdt);
         }

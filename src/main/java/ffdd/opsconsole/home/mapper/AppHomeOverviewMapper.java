@@ -119,7 +119,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
              WHERE d.user_id = #{userId}
                AND d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
             """)
@@ -140,7 +141,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
              WHERE d.user_id = #{userId}
                AND d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
                AND d.daily_usdt IS NOT NULL
@@ -164,7 +166,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.run_id = #{runId}
                AND d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
             """)
@@ -179,7 +182,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                             AND u.is_deleted = 0
              WHERE d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
             """)
@@ -229,7 +233,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
               )
              WHERE d.is_deleted = 0
                AND UPPER(d.ownership_status) = 'OWNED'
-               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+               AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
              GROUP BY d.device_type, d.dc_location, d.gpu_model,

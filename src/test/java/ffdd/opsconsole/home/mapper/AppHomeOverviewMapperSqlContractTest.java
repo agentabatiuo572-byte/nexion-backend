@@ -48,6 +48,18 @@ class AppHomeOverviewMapperSqlContractTest {
                         || method.getName().equals("sandboxEarningsLedger")));
     }
 
+    @Test
+    void activeAssetDisplayQueriesIncludeOfflineAssetsOnlyWhenActivationFactsStillHold() throws Exception {
+        for (String method : java.util.List.of(
+                "activeDevices", "highestActiveDevice", "sandboxActiveDevices", "globalActiveDevices", "onGridClients")) {
+            String sql = select(method);
+            assertTrue(sql.contains("UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')"));
+            assertTrue(sql.contains("d.activated_at IS NOT NULL"));
+            assertTrue(sql.contains("UPPER(d.ownership_status) = 'OWNED'"));
+            assertTrue(sql.contains("d.deactivated_at IS NULL"));
+            assertTrue(sql.contains("d.pending_deactivate = 0"));
+        }
+    }
     private String select(String name) throws Exception {
         Method method = java.util.Arrays.stream(AppHomeOverviewMapper.class.getDeclaredMethods())
                 .filter(candidate -> candidate.getName().equals(name)).findFirst().orElseThrow();

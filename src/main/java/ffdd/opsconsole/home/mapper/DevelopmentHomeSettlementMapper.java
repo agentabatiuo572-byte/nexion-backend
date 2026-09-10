@@ -286,7 +286,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                    d.pending_deactivate=0,d.row_version=d.row_version+1,d.updated_at=#{now}
              WHERE d.id=#{userDeviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND UPPER(COALESCE(d.ownership_status, ''))='OWNED'
-               AND UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND UPPER(COALESCE(d.status, '')) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
                AND d.pending_deactivate=1
                AND d.row_version=#{expectedRowVersion}
                AND UPPER(COALESCE(d.source_environment, ''))='PRODUCTION' AND COALESCE(d.run_id, '')=''
