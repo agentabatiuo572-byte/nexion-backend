@@ -4,6 +4,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.user.application.RegistrationRiskCaptchaWindow;
 import java.time.Clock;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -30,7 +31,7 @@ public class CaptchaOtpGate {
         if (!required(scene, successfulSendsLast24h)) return Decision.granted();
         if (ticket == null || ticket.isBlank() || ticket.length() > 2048) return Decision.reject(428, "USER_CAPTCHA_REQUIRED");
         CaptchaTicketVerifier verifier = verifiers.stream().filter(value -> !(value instanceof HoldCaptchaTicketVerifier))
-                .filter(value -> value.supports(environment)).findFirst()
+                .filter(value -> value.supports(environment)).max(Comparator.comparingInt(CaptchaTicketVerifier::priority))
                 .orElseGet(() -> verifiers.stream().filter(value -> value.supports(environment)).findFirst().orElse(null));
         if (verifier == null) return Decision.reject(503, "USER_CAPTCHA_VERIFIER_UNAVAILABLE");
         CaptchaTicketVerification result = verifier.verifyAndConsume(scene, ticket.trim(), clientAddress);

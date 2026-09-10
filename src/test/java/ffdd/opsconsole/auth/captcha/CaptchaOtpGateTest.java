@@ -60,6 +60,31 @@ class CaptchaOtpGateTest {
     }
 
     @Test
+    void deployedVerifierWinsOverAnyLowerPriorityDevelopmentFixture() {
+        environment.setActiveProfiles("dev");
+        when(configs.activeValue(any())).thenReturn(Optional.empty());
+        CaptchaTicketVerifier developmentFixture = new CaptchaTicketVerifier() {
+            @Override public boolean supports(org.springframework.core.env.Environment ignored) { return true; }
+            @Override public CaptchaTicketVerification verifyAndConsume(CaptchaScene scene, String ticket, String ip) {
+                return CaptchaTicketVerification.pass();
+            }
+            @Override public int priority() { return 10; }
+        };
+        CaptchaTicketVerifier deployed = new CaptchaTicketVerifier() {
+            @Override public boolean supports(org.springframework.core.env.Environment ignored) { return true; }
+            @Override public CaptchaTicketVerification verifyAndConsume(CaptchaScene scene, String ticket, String ip) {
+                return CaptchaTicketVerification.reject("USER_CAPTCHA_TICKET_INVALID");
+            }
+            @Override public int priority() { return 100; }
+        };
+
+        CaptchaOtpGate gate = new CaptchaOtpGate(environment, configs, List.of(developmentFixture, deployed),
+                Clock.fixed(Instant.parse("2026-09-04T12:00:00Z"), ZoneOffset.UTC));
+        assertThat(gate.checkAndConsume(CaptchaScene.REGISTER, "opaque-ticket", "127.0.0.1", 0).code())
+                .isEqualTo("USER_CAPTCHA_TICKET_INVALID");
+    }
+
+    @Test
     void activeCaptchaOffWindowBypassesTheRealOtpGateUntilItsAbsoluteDeadline() {
         environment.setActiveProfiles("prod");
         when(configs.activeValue("auth.risk.captcha_off_window"))

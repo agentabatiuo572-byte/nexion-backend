@@ -6,4 +6,7 @@ import org.springframework.core.env.Environment;
 public interface CaptchaTicketVerifier {
     boolean supports(Environment environment);
     CaptchaTicketVerification verifyAndConsume(CaptchaScene scene, String ticket, String clientAddress);
+
+    /** A deployed verifier must win over test-only fixtures when both are present. */
+    default int priority() { return 0; }
 }

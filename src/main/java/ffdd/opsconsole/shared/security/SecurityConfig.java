@@ -82,6 +82,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/repurchase").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/trust/sections/current", "/api/content/how-it-works/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/content/i18n", "/api/content/i18n/**", "/i18n", "/i18n/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/auth/captcha/challenge", "/api/auth/captcha/verify").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/openapi/v1/topups/card/admission",
                                 "/openapi/v1/topups/card/settlements",
