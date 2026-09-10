@@ -26,6 +26,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -585,24 +587,92 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
-    void developmentPaginatesEveryCanonicalComputeReceiptBeyondTheAssignmentPreview() {
+    void initialReceiptPageKeepsOffsetCompatibilityButIssuesAStablePerUserHighWaterCursor() {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
         when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
-        when(mapper.receipts(7L, 0, 3)).thenReturn(List.of(
-                receiptRow("R-CTA-3", "CTA-3", NOW),
-                receiptRow("R-CTA-2", "CTA-2", NOW.minusMinutes(1)),
-                receiptRow("R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(105L);
+        when(mapper.receiptsAtOrBefore(7L, 105L, 0, 3)).thenReturn(List.of(
+                receiptRow(105L, "R-CTA-3", "CTA-3", NOW),
+                receiptRow(100L, "R-CTA-2", "CTA-2", NOW.minusMinutes(1)),
+                receiptRow(90L, "R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
 
-        var result = service.receipts(7L, 0, 2);
+        var result = service.receipts(7L, 0, 2, null);
 
         assertThat(result.getData().items()).extracting("receiptNo")
                 .containsExactly("R-CTA-3", "R-CTA-2");
         assertThat(result.getData().nextOffset()).isEqualTo(2);
+        assertThat(result.getData().nextCursor()).isNotBlank();
         assertThat(result.getData().source()).isEqualTo("server");
         assertThat(result.getData().sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().runId()).isEmpty();
         assertThat(result.getData().serverCanonical()).isTrue();
-        verify(mapper).receipts(7L, 0, 3);
+        verify(mapper).maxIssuedReceiptId(7L);
+        verify(mapper).receiptsAtOrBefore(7L, 105L, 0, 3);
+    }
+
+    @Test
+    void cursorRetainsItsOriginalHighWaterAndNeverReResolvesItsSoftDeletedAnchor() {
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(105L);
+        when(mapper.receiptsAtOrBefore(7L, 105L, 0, 3)).thenReturn(List.of(
+                receiptRow(105L, "R-CTA-3", "CTA-3", NOW),
+                receiptRow(100L, "R-CTA-2", "CTA-2", NOW.minusMinutes(1)),
+                receiptRow(90L, "R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
+        String cursor = service.receipts(7L, 0, 2, null).getData().nextCursor();
+
+        // A later receipt has a higher id but an earlier business completion time; it must not enter this page set.
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(106L);
+        when(mapper.receiptsBefore(7L, 105L, NOW.minusMinutes(1), 100L, 3)).thenReturn(List.of(
+                receiptRow(90L, "R-CTA-1", "CTA-1", NOW.minusMinutes(2))));
+
+        var result = service.receipts(7L, 2, 2, cursor);
+
+        assertThat(result.getData().items()).extracting("receiptNo").containsExactly("R-CTA-1");
+        verify(mapper).receiptsBefore(7L, 105L, NOW.minusMinutes(1), 100L, 3);
+    }
+
+    @Test
+    void cursorPagesEveryReceiptOnceWhenCompletionTimesTieAndLaterInsertionFallsAboveHighWater() {
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(105L);
+        when(mapper.receiptsAtOrBefore(7L, 105L, 0, 3)).thenReturn(List.of(
+                receiptRow(105L, "R-105", "CTA-105", NOW),
+                receiptRow(104L, "R-104", "CTA-104", NOW),
+                receiptRow(103L, "R-103", "CTA-103", NOW)));
+
+        var first = service.receipts(7L, 0, 2, null).getData();
+        // 106 is inserted after the first snapshot and has the same ordering timestamp. It is above the issued
+        // high-water mark carried by every continuation cursor, so neither subsequent query may include it.
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(106L);
+        when(mapper.receiptsBefore(7L, 105L, NOW, 104L, 3)).thenReturn(List.of(
+                receiptRow(103L, "R-103", "CTA-103", NOW),
+                receiptRow(102L, "R-102", "CTA-102", NOW),
+                receiptRow(101L, "R-101", "CTA-101", NOW)));
+
+        var second = service.receipts(7L, first.nextOffset(), 2, first.nextCursor()).getData();
+        when(mapper.receiptsBefore(7L, 105L, NOW, 102L, 3)).thenReturn(List.of(
+                receiptRow(101L, "R-101", "CTA-101", NOW)));
+
+        var third = service.receipts(7L, second.nextOffset(), 2, second.nextCursor()).getData();
+
+        assertThat(first.items()).extracting("receiptNo").containsExactly("R-105", "R-104");
+        assertThat(second.items()).extracting("receiptNo").containsExactly("R-103", "R-102");
+        assertThat(third.items()).extracting("receiptNo").containsExactly("R-101");
+        assertThat(third.nextCursor()).isNull();
+        verify(mapper).receiptsBefore(7L, 105L, NOW, 104L, 3);
+        verify(mapper).receiptsBefore(7L, 105L, NOW, 102L, 3);
+    }
+
+    @Test
+    void cursorRejectsAFutureHighWaterBeforeReadingReceiptRows() {
+        when(mapper.maxIssuedReceiptId(7L)).thenReturn(105L);
+        String raw = "v2|" + NOW.minusMinutes(1) + "|100|106";
+        String cursor = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.receipts(7L, 0, 20, cursor))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("TASK_RECEIPT_CURSOR_INVALID");
+
+        verify(mapper, never()).receiptsBefore(anyLong(), anyLong(), any(), anyLong(), anyInt());
     }
 
     @Test
@@ -613,7 +683,7 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.receipts(7L, 0, 51))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("TASK_RECEIPT_PAGE_INVALID");
-        verify(mapper, never()).receipts(anyLong(), anyInt(), anyInt());
+        verify(mapper, never()).receiptsAtOrBefore(anyLong(), anyLong(), anyInt(), anyInt());
         verify(mapper, never()).developmentReceipts(anyLong(), anyInt(), anyInt());
     }
 
@@ -768,9 +838,9 @@ class AppTaskAssignmentServiceTest {
     }
 
     private AppTaskAssignmentMapper.ReceiptRow receiptRow(
-            String receiptNo, String taskNo, LocalDateTime completedAt) {
+            long receiptId, String receiptNo, String taskNo, LocalDateTime completedAt) {
         return new AppTaskAssignmentMapper.ReceiptRow(
-                receiptNo, taskNo, 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
+                receiptId, receiptNo, taskNo, 11L, "DEV-11", "你的手机", "MOBILE", "Adreno",
                 8, "TASK-LL", "Development settled compute task", "LLM_INFERENCE",
                 "gemma4-e4b-ctx32k", "Gemma AI Support", new BigDecimal("0.250000"),
                 BigDecimal.ZERO, "SETTLED", "a".repeat(64), completedAt.minusSeconds(45),

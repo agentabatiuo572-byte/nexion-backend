@@ -280,7 +280,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                                @Param("sourceEnvironment") String sourceEnvironment);
 
     @Select("""
-            SELECT r.receipt_no AS receiptNo, r.task_no AS taskNo,
+             SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
                    d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
                    d.device_type AS deviceType, d.gpu_model AS deviceGpu,
                    d.vram_total_gb AS vramTotalGb,
@@ -290,17 +290,17 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.earning_status AS earningStatus, r.proof_hash AS proofHash,
                    t.started_at AS startedAt, r.completed_at AS completedAt,
                    GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
-              FROM nx_compute_receipt r
-              JOIN nx_compute_task t ON t.task_no = r.task_no
+               FROM nx_compute_receipt r
+               JOIN nx_compute_task t ON t.task_no = r.task_no
                 AND t.user_id = r.user_id AND t.is_deleted = 0
                 AND t.source_environment = 'PRODUCTION'
                 AND t.user_device_id = r.user_device_id
                 AND UPPER(t.status) = 'COMPLETED' AND t.completed_at IS NOT NULL
                 AND t.completed_at = r.completed_at AND t.task_type = r.task_type
-              JOIN nx_user_device d ON d.id = r.user_device_id
+               JOIN nx_user_device d ON d.id = r.user_device_id
                 AND d.user_id = r.user_id AND d.is_deleted = 0
                 AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
-              JOIN nx_user u ON u.id = r.user_id
+               JOIN nx_user u ON u.id = r.user_id
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
              WHERE r.user_id = #{userId} AND r.receipt_no = #{receiptNo}
                 AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
@@ -312,7 +312,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     ReceiptRow receipt(@Param("userId") Long userId, @Param("receiptNo") String receiptNo);
 
     @Select("""
-            SELECT r.receipt_no AS receiptNo, r.task_no AS taskNo,
+             SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
                    d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
                    d.device_type AS deviceType, d.gpu_model AS deviceGpu,
                    d.vram_total_gb AS vramTotalGb,
@@ -344,7 +344,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     ReceiptRow developmentReceipt(@Param("userId") Long userId, @Param("receiptNo") String receiptNo);
 
     @Select("""
-            SELECT r.receipt_no AS receiptNo, r.task_no AS taskNo,
+             SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
                    d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
                    d.device_type AS deviceType, d.gpu_model AS deviceGpu,
                    d.vram_total_gb AS vramTotalGb,
@@ -354,31 +354,81 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    r.earning_status AS earningStatus, r.proof_hash AS proofHash,
                    t.started_at AS startedAt, r.completed_at AS completedAt,
                    GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
-              FROM nx_compute_receipt r
-              JOIN nx_compute_task t ON t.task_no = r.task_no
+              FROM nx_compute_receipt r FORCE INDEX (idx_receipt_user_time)
+               STRAIGHT_JOIN nx_compute_task t ON t.task_no = r.task_no
                 AND t.user_id = r.user_id AND t.is_deleted = 0
                 AND t.source_environment = 'PRODUCTION'
                 AND t.user_device_id = r.user_device_id
                 AND UPPER(t.status) = 'COMPLETED' AND t.completed_at IS NOT NULL
                 AND t.completed_at = r.completed_at AND t.task_type = r.task_type
-              JOIN nx_user_device d ON d.id = r.user_device_id
+               STRAIGHT_JOIN nx_user_device d ON d.id = r.user_device_id
                 AND d.user_id = r.user_id AND d.is_deleted = 0
                 AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
-              JOIN nx_user u ON u.id = r.user_id
+               STRAIGHT_JOIN nx_user u ON u.id = r.user_id
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
-             WHERE r.user_id = #{userId}
-               AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
+              WHERE r.user_id = #{userId}
+                AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
+                AND r.id <= #{highWaterReceiptId}
                AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
                AND r.reward_usdt IS NOT NULL AND r.reward_usdt >= 0
                AND r.reward_nex IS NOT NULL AND r.reward_nex >= 0
              ORDER BY r.completed_at DESC, r.id DESC
              LIMIT #{limit} OFFSET #{offset}
             """)
-    List<ReceiptRow> receipts(@Param("userId") Long userId, @Param("offset") int offset,
-                              @Param("limit") int limit);
+    List<ReceiptRow> receiptsAtOrBefore(@Param("userId") Long userId,
+                                        @Param("highWaterReceiptId") long highWaterReceiptId,
+                                        @Param("offset") int offset, @Param("limit") int limit);
+
+    /**
+     * The high-water mark intentionally includes retained soft-deleted receipts. It is used only to reject a
+     * forged future boundary; the page query below still enforces all current visibility predicates.
+     */
+    @Select("SELECT COALESCE(MAX(id), 0) FROM nx_compute_receipt "
+            + "WHERE user_id = #{userId} AND source_environment = 'PRODUCTION'")
+    long maxIssuedReceiptId(@Param("userId") Long userId);
 
     @Select("""
-            SELECT r.receipt_no AS receiptNo, r.task_no AS taskNo,
+            SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
+                   d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
+                   d.device_type AS deviceType, d.gpu_model AS deviceGpu,
+                   d.vram_total_gb AS vramTotalGb,
+                   t.task_config_id AS taskId, t.task_name AS taskName, t.task_type AS taskClass,
+                   t.model_name AS modelName, r.client_name AS clientName,
+                   r.reward_usdt AS rewardUsdt, r.reward_nex AS rewardNex,
+                   r.earning_status AS earningStatus, r.proof_hash AS proofHash,
+                   t.started_at AS startedAt, r.completed_at AS completedAt,
+                   GREATEST(TIMESTAMPDIFF(SECOND, t.started_at, r.completed_at), 0) AS durationSec
+              FROM nx_compute_receipt r FORCE INDEX (idx_receipt_user_time)
+              STRAIGHT_JOIN nx_compute_task t ON t.task_no = r.task_no
+                AND t.user_id = r.user_id AND t.is_deleted = 0
+                AND t.source_environment = 'PRODUCTION'
+                AND t.user_device_id = r.user_device_id
+                AND UPPER(t.status) = 'COMPLETED' AND t.completed_at IS NOT NULL
+                AND t.completed_at = r.completed_at AND t.task_type = r.task_type
+              STRAIGHT_JOIN nx_user_device d ON d.id = r.user_device_id
+                AND d.user_id = r.user_id AND d.is_deleted = 0
+                AND d.source_environment = 'PRODUCTION' AND COALESCE(d.run_id, '') = ''
+              STRAIGHT_JOIN nx_user u ON u.id = r.user_id
+                AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+             WHERE r.user_id = #{userId}
+               AND r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
+               AND r.id <= #{highWaterReceiptId}
+               AND UPPER(r.earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
+               AND r.reward_usdt IS NOT NULL AND r.reward_usdt >= 0
+               AND r.reward_nex IS NOT NULL AND r.reward_nex >= 0
+               AND (r.completed_at < #{beforeCompletedAt}
+                    OR (r.completed_at = #{beforeCompletedAt} AND r.id < #{beforeReceiptId}))
+             ORDER BY r.completed_at DESC, r.id DESC
+             LIMIT #{limit}
+            """)
+    List<ReceiptRow> receiptsBefore(@Param("userId") Long userId,
+                                    @Param("highWaterReceiptId") long highWaterReceiptId,
+                                    @Param("beforeCompletedAt") LocalDateTime beforeCompletedAt,
+                                    @Param("beforeReceiptId") long beforeReceiptId,
+                                    @Param("limit") int limit);
+
+    @Select("""
+             SELECT r.id AS receiptId, r.receipt_no AS receiptNo, r.task_no AS taskNo,
                    d.id AS deviceId, d.instance_no AS deviceInstanceNo, d.name AS deviceName,
                    d.device_type AS deviceType, d.gpu_model AS deviceGpu,
                    d.vram_total_gb AS vramTotalGb,
@@ -816,12 +866,23 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                          LocalDateTime leaseExpiresAt,
                          LocalDateTime completedAt, String receiptNo, String completionNonce,
                          LocalDateTime proofExpiresAt) {}
-    record ReceiptRow(String receiptNo, String taskNo, Long deviceId, String deviceInstanceNo,
+    record ReceiptRow(Long receiptId, String receiptNo, String taskNo, Long deviceId, String deviceInstanceNo,
                       String deviceName, String deviceType, String deviceGpu, Integer vramTotalGb,
                       String taskId, String taskName, String taskClass, String modelName,
                       String clientName, BigDecimal rewardUsdt, BigDecimal rewardNex,
                       String earningStatus, String proofHash, LocalDateTime startedAt,
-                      LocalDateTime completedAt, Integer durationSec) {}
+                      LocalDateTime completedAt, Integer durationSec) {
+        public ReceiptRow(String receiptNo, String taskNo, Long deviceId, String deviceInstanceNo,
+                   String deviceName, String deviceType, String deviceGpu, Integer vramTotalGb,
+                   String taskId, String taskName, String taskClass, String modelName,
+                   String clientName, BigDecimal rewardUsdt, BigDecimal rewardNex,
+                   String earningStatus, String proofHash, LocalDateTime startedAt,
+                   LocalDateTime completedAt, Integer durationSec) {
+            this(null, receiptNo, taskNo, deviceId, deviceInstanceNo, deviceName, deviceType, deviceGpu,
+                    vramTotalGb, taskId, taskName, taskClass, modelName, clientName, rewardUsdt, rewardNex,
+                    earningStatus, proofHash, startedAt, completedAt, durationSec);
+        }
+    }
     record UserEventAttribution(String phase, Integer accountAgeMonths, String cohort) {}
     record TaskRuntimeGateRow(String status, String killInit, Integer minVram, Integer deviceVram) {}
 }

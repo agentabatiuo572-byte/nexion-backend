@@ -20,13 +20,23 @@ class AppTaskAssignmentControllerTest {
     void receiptPaginationRejectsNonIntegerQueryValuesAsA422BusinessError() {
         Authentication authentication = userAuthentication();
 
-        assertThatThrownBy(() -> controller.receipts("abc", "20", authentication))
+        assertThatThrownBy(() -> controller.receipts("abc", "20", null, authentication))
                 .isInstanceOf(BizException.class)
                 .hasMessage("TASK_RECEIPT_PAGE_INVALID");
-        assertThatThrownBy(() -> controller.receipts("0", "99999999999", authentication))
+        assertThatThrownBy(() -> controller.receipts("0", "99999999999", null, authentication))
                 .isInstanceOf(BizException.class)
                 .hasMessage("TASK_RECEIPT_PAGE_INVALID");
-        verify(service, never()).receipts(7L, 0, 20);
+        verify(service, never()).receipts(7L, 0, 20, null);
+    }
+
+    @Test
+    void receiptPaginationPassesTheOpaqueCursorWithoutAttemptingToParseIt() {
+        Authentication authentication = userAuthentication();
+        String cursor = "djJ8MjAyNi0wOC0xMFQxMTo1OXwxMDB8MTA1";
+
+        controller.receipts("0", "20", cursor, authentication);
+
+        verify(service).receipts(7L, 0, 20, cursor);
     }
 
     private Authentication userAuthentication() {

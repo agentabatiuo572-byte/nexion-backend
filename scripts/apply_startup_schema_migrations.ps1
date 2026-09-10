@@ -125,6 +125,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260831_app_statistics_read_indexes.sql"),
   # App wallet bill keyset reads retain scope and ordering without deep offset scans.
   (Join-Path $root "scripts\migrations\20260831_app_wallet_bills_cursor_index.sql"),
+  # App task-assignment previews use the per-device recent-task index on upgraded databases too.
+  (Join-Path $root "scripts\migrations\20260907_task_assignment_recent_read_index.sql"),
+  # App compute-receipt cursor reads retain per-user issued high-water boundaries.
+  (Join-Path $root "scripts\migrations\20260907_task_receipt_cursor_index.sql"),
   # Globe reads active jobs and last-hour completions without scanning task history.
   (Join-Path $root "scripts\migrations\20260831_globe_task_read_index.sql"),
   # H3 mission category and direct App route are configured in PC and persisted by Java.

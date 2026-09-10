@@ -54,10 +54,11 @@ public class AppTaskAssignmentController {
     public ApiResult<AppComputeReceiptPage> receipts(
             @RequestParam(required = false, defaultValue = "0") String offset,
             @RequestParam(required = false, defaultValue = "20") String limit,
+            @RequestParam(required = false) String cursor,
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
-                : service.receipts(userId, pageValue(offset), pageValue(limit));
+                : service.receipts(userId, pageValue(offset), pageValue(limit), cursor);
     }
 
     @PostMapping("/api/tasks/assignments/{taskNo}/complete")

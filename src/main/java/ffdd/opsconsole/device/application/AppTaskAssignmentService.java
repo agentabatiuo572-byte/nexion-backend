@@ -17,6 +17,7 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ReceiptRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.HistorySnapshotId;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -30,6 +31,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -38,6 +41,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -59,6 +63,9 @@ public class AppTaskAssignmentService {
     private static final Set<String> SETTLED_EARNING_STATUSES = Set.of(
             "POSTED", "SUCCESS", "SETTLED", "CREDITED", "PAID");
     private static final String LEGACY_UNSCOPED_RUN_ID = "LEGACY_UNSCOPED";
+    private static final int MAX_RECEIPT_CURSOR_LENGTH = 160;
+    private static final LocalDateTime MYSQL_DATETIME_MIN = LocalDateTime.of(1000, 1, 1, 0, 0);
+    private static final LocalDateTime MYSQL_DATETIME_MAX = LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999_999_000);
 
     private final AppTaskAssignmentMapper mapper;
     private final AdminIdempotencyService idempotencyService;
@@ -131,6 +138,15 @@ public class AppTaskAssignmentService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppComputeReceiptPage> receipts(Long userId, Integer offset, Integer limit) {
+        return receipts(userId, offset, limit, null);
+    }
+
+    /**
+     * Offset remains a compatibility entrypoint for the initial request. New callers must continue with the
+     * opaque cursor, which carries both its ordering anchor and the per-user issued-receipt high water mark.
+     */
+    @Transactional(readOnly = true)
+    public ApiResult<AppComputeReceiptPage> receipts(Long userId, Integer offset, Integer limit, String cursor) {
         requireUser(userId);
         int normalizedOffset = offset == null ? 0 : offset;
         int normalizedLimit = limit == null ? 20 : limit;
@@ -138,9 +154,21 @@ public class AppTaskAssignmentService {
                 || normalizedLimit < 1 || normalizedLimit > 50) {
             throw new BizException(422, "TASK_RECEIPT_PAGE_INVALID");
         }
-        List<ReceiptRow> rows;
         requireProductionRuntime(userId);
-        rows = safe(mapper.receipts(userId, normalizedOffset, normalizedLimit + 1));
+        String normalizedCursor = value(cursor);
+        List<ReceiptRow> rows;
+        long highWaterReceiptId;
+        if (StringUtils.hasText(normalizedCursor)) {
+            ReceiptPageCursor boundary = decodeReceiptCursor(normalizedCursor);
+            highWaterReceiptId = resolveReceiptHighWater(String.valueOf(boundary.highWaterReceiptId()),
+                    () -> mapper.maxIssuedReceiptId(userId));
+            rows = safe(mapper.receiptsBefore(userId, highWaterReceiptId,
+                    boundary.completedAt(), boundary.receiptId(), normalizedLimit + 1));
+        } else {
+            highWaterReceiptId = resolveReceiptHighWater(null, () -> mapper.maxIssuedReceiptId(userId));
+            rows = safe(mapper.receiptsAtOrBefore(userId, highWaterReceiptId,
+                    normalizedOffset, normalizedLimit + 1));
+        }
         boolean hasMore = rows.size() > normalizedLimit;
         List<AppComputeReceiptSummaryView> items = rows.stream().limit(normalizedLimit)
                 .map(this::receiptView)
@@ -149,7 +177,9 @@ public class AppTaskAssignmentService {
                         view.rewardUsdt(), view.rewardNex(), view.earningStatus(), view.completedAt()))
                 .toList();
         Integer nextOffset = hasMore ? normalizedOffset + normalizedLimit : null;
-        return ApiResult.ok(new AppComputeReceiptPage(items, nextOffset,
+        String nextCursor = hasMore && !rows.isEmpty()
+                ? encodeReceiptCursor(rows.get(normalizedLimit - 1), highWaterReceiptId) : null;
+        return ApiResult.ok(new AppComputeReceiptPage(items, nextOffset, nextCursor,
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
     }
 
@@ -650,6 +680,50 @@ public class AppTaskAssignmentService {
     }
 
     private record RuntimeScope(String sourceEnvironment) { }
+
+    private ReceiptPageCursor decodeReceiptCursor(String value) {
+        if (value == null || value.isBlank() || value.length() > MAX_RECEIPT_CURSOR_LENGTH) {
+            throw new BizException(422, "TASK_RECEIPT_CURSOR_INVALID");
+        }
+        try {
+            String decoded = new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+            String[] parts = decoded.split("\\|", -1);
+            if (parts.length != 4 || !"v2".equals(parts[0])) throw new IllegalArgumentException();
+            LocalDateTime completedAt = LocalDateTime.parse(parts[1], DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+            long receiptId = Long.parseLong(parts[2]);
+            long highWaterReceiptId = Long.parseLong(parts[3]);
+            if (receiptId <= 0 || highWaterReceiptId < receiptId
+                    || completedAt.isBefore(MYSQL_DATETIME_MIN) || completedAt.isAfter(MYSQL_DATETIME_MAX)) {
+                throw new IllegalArgumentException();
+            }
+            return new ReceiptPageCursor(completedAt, receiptId, highWaterReceiptId);
+        } catch (RuntimeException exception) {
+            throw new BizException(422, "TASK_RECEIPT_CURSOR_INVALID");
+        }
+    }
+
+    private long resolveReceiptHighWater(String requestedHighWater, LongSupplier currentMaximum) {
+        try {
+            return HistorySnapshotId.resolve(requestedHighWater, currentMaximum);
+        } catch (BizException exception) {
+            if ("HISTORY_SNAPSHOT_INVALID".equals(exception.getMessage())) {
+                throw new BizException(422, "TASK_RECEIPT_CURSOR_INVALID");
+            }
+            throw exception;
+        }
+    }
+
+    private String encodeReceiptCursor(ReceiptRow row, long highWaterReceiptId) {
+        if (row == null || row.receiptId() == null || row.receiptId() <= 0 || row.completedAt() == null
+                || highWaterReceiptId < row.receiptId()) {
+            throw new BizException(500, "TASK_RECEIPT_CURSOR_STATE_INVALID");
+        }
+        String raw = "v2|" + row.completedAt().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                + "|" + row.receiptId() + "|" + highWaterReceiptId;
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private record ReceiptPageCursor(LocalDateTime completedAt, long receiptId, long highWaterReceiptId) { }
     private static String value(String value) { return value == null ? "" : value.trim(); }
     private static <T> List<T> safe(List<T> values) { return values == null ? List.of() : values; }
 

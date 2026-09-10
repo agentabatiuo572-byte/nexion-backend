@@ -54,6 +54,38 @@ class AppTaskAssignmentMapperContractTest {
     }
 
     @Test
+    void receiptCursorKeepsAUserIssuedHighWaterAndDoesNotRequireItsAnchorToRemainVisible() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String assignmentMigration = Files.readString(Path.of(
+                "scripts/migrations/20260907_task_assignment_recent_read_index.sql"));
+        String receiptMigration = Files.readString(Path.of(
+                "scripts/migrations/20260907_task_receipt_cursor_index.sql"));
+        String initial = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("receiptsAtOrBefore", Long.class, long.class, int.class, int.class)
+                .getAnnotation(Select.class).value());
+        String following = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("receiptsBefore", Long.class, long.class, java.time.LocalDateTime.class,
+                        long.class, int.class)
+                .getAnnotation(Select.class).value());
+
+        assertThat(source).contains("long maxIssuedReceiptId", "COALESCE(MAX(id), 0)")
+                .doesNotContain("ReceiptCursorRow", "receiptCursor(");
+        assertThat(initial).contains("FORCE INDEX (idx_receipt_user_time)", "r.id <= #{highWaterReceiptId}",
+                "ORDER BY r.completed_at DESC, r.id DESC", "LIMIT #{limit} OFFSET #{offset}");
+        assertThat(following).contains("FORCE INDEX (idx_receipt_user_time)", "r.id <= #{highWaterReceiptId}",
+                "r.completed_at < #{beforeCompletedAt}",
+                "r.completed_at = #{beforeCompletedAt} AND r.id < #{beforeReceiptId}",
+                "ORDER BY r.completed_at DESC, r.id DESC")
+                .doesNotContain("OFFSET #{offset}");
+        assertThat(startup).contains("20260907_task_assignment_recent_read_index.sql",
+                "20260907_task_receipt_cursor_index.sql");
+        assertThat(assignmentMigration).contains("idx_compute_task_assignment_recent");
+        assertThat(receiptMigration).contains("idx_receipt_user_time", "(user_id, completed_at)");
+    }
+
+    @Test
     void productionAssignmentCandidatesExcludeSandboxPausedLockedAndAlreadyAssignedDevices() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));

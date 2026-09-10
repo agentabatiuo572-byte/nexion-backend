@@ -5,6 +5,7 @@ import java.util.List;
 public record AppComputeReceiptPage(
         List<AppComputeReceiptSummaryView> items,
         Integer nextOffset,
+        String nextCursor,
         String source,
         String sourceEnvironment,
         String runId,
