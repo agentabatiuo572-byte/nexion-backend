@@ -1,0 +1,11 @@
+[Unit]
+Description=Check successful Jenkins main artifacts for guarded TEST promotion
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=nexgrid-release.service
+
+[Install]
+WantedBy=timers.target
