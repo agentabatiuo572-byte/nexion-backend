@@ -7,6 +7,7 @@ Only root may install/update this closure; CI can supply artifacts, never these 
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import sys
@@ -73,5 +74,7 @@ if __name__ == '__main__':
         main()
     except Exception as error:
         # Never spill environment, credentials or arbitrary application output.
-        print('TRUSTED_ENTRY_FAILED: ' + type(error).__name__, flush=True)
+        reason = str(error)
+        safe = reason if re.fullmatch(r'[A-Z][A-Z0-9_: .-]{0,150}', reason) else type(error).__name__
+        print('TRUSTED_ENTRY_FAILED: ' + safe, flush=True)
         raise SystemExit(1)

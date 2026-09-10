@@ -1,12 +1,26 @@
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition
-import hudson.model.Cause
 
 def j = Jenkins.get()
 def marker = new File(j.rootDir, 'nexgrid-release-v1-jobs-configured')
-if (marker.exists()) return
 if (!j.isUseSecurity() || j.numExecutors != 0) throw new IllegalStateException('CONTROLLER_SECURITY_REQUIRED')
 def repositories = [backend:'nexion-backend', pc:'nexion-frontend-pc', uniapp:'nexion-frontend-uniapp']
+def queued = new File(j.rootDir, 'nexgrid-release-v1-initial-builds-queued')
+def queueInitial = {
+    if (queued.exists()) return
+    repositories.each { kind, repo ->
+        def job = j.getItemByFullName("nexgrid-${kind}-main")
+        if (job == null || !job.definition.script.contains('RELEASE_ARTIFACT_READY')) {
+            throw new IllegalStateException('RELEASE_JOB_REQUIRED')
+        }
+        if (!job.isBuilding() && !job.isInQueue() && job.scheduleBuild2(0) == null) {
+            throw new IllegalStateException('INITIAL_BUILD_NOT_QUEUED')
+        }
+    }
+    queued.setText('three initial main artifact builds scheduled\n', 'UTF-8')
+    println('NEXGRID_RELEASE_ARTIFACT_BUILDS_QUEUED jobs=3 host_auto=HELD')
+}
+if (marker.exists()) { queueInitial(); return }
 def template = new File('/opt/nexgrid-ci/main.pipeline.groovy').getText('UTF-8')
 if (!template.contains('RELEASE_ARTIFACT_READY') || template.contains('DEPLOYMENT_HELD')) {
     throw new IllegalStateException('RELEASE_TEMPLATE_REQUIRED')
@@ -38,5 +52,4 @@ marker.setText('main release v1 configured; host auto deployment remains disable
     }
     throw failure
 }
-repositories.each { kind, repo -> j.getItemByFullName("nexgrid-${kind}-main").scheduleBuild2(0, new Cause.UserIdCause()) }
-println('NEXGRID_RELEASE_ARTIFACT_BUILDS_QUEUED jobs=3 host_auto=HELD')
+queueInitial()

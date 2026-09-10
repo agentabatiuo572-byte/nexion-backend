@@ -72,6 +72,7 @@ def install_ci():
             b.atomic_write(target, (BACKUP / f'{kind}-job.xml').read_bytes(), 0o644)
             os.chown(target, 1000, 1000)
         (HOME / 'nexgrid-release-v1-jobs-configured').unlink(missing_ok=True)
+        (HOME / 'nexgrid-release-v1-initial-builds-queued').unlink(missing_ok=True)
         if hook.exists():
             hook.rename(hook.with_suffix('.groovy.failed'))
         recreate_ci()
@@ -90,7 +91,8 @@ def recreate_ci():
 
 def verify_ci_hook():
     for attempt in range(60):
-        if (HOME / 'nexgrid-release-v1-jobs-configured').is_file():
+        if ((HOME / 'nexgrid-release-v1-jobs-configured').is_file()
+                and (HOME / 'nexgrid-release-v1-initial-builds-queued').is_file()):
             for kind in b.ARTIFACTS:
                 text = (b.JOBS / f'nexgrid-{kind}-main/config.xml').read_text()
                 b.require('RELEASE_ARTIFACT_READY' in text and 'DEPLOYMENT_HELD' not in text,

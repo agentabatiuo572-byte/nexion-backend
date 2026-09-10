@@ -47,6 +47,7 @@ class ReleaseBrokerTests(unittest.TestCase):
     def test_ci_partial_job_configuration_is_detected_even_with_marker(self):
         import install_release as installer
         (self.root / 'nexgrid-release-v1-jobs-configured').write_text('fixture')
+        (self.root / 'nexgrid-release-v1-initial-builds-queued').write_text('fixture')
         jobs = self.root / 'jobs'
         for kind in b.ARTIFACTS:
             job = jobs / f'nexgrid-{kind}-main'
