@@ -415,13 +415,16 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
              WHERE n.biz_no = #{bizNo}
                 AND n.push_status = 'QUEUED'
                 AND n.is_deleted = 0
-                AND COALESCE(CASE LOWER(n.type)
-                    WHEN 'commission' THEN pref.notify_commission
-                    WHEN 'team' THEN pref.notify_team
-                    WHEN 'staking' THEN pref.notify_staking
-                    WHEN 'market' THEN pref.notify_market
-                    WHEN 'genesis' THEN pref.notify_genesis
-                    ELSE pref.notify_system END, 1) = 1
+                AND (
+                    LOWER(COALESCE(n.priority, '')) = 'critical'
+                    OR COALESCE(CASE LOWER(n.type)
+                        WHEN 'commission' THEN pref.notify_commission
+                        WHEN 'team' THEN pref.notify_team
+                        WHEN 'staking' THEN pref.notify_staking
+                        WHEN 'market' THEN pref.notify_market
+                        WHEN 'genesis' THEN pref.notify_genesis
+                        ELSE pref.notify_system END, 1) = 1
+                )
             """)
     int markNotificationsDelivered(@Param("bizNo") String bizNo, @Param("now") LocalDateTime now);
 
@@ -438,13 +441,16 @@ public interface NovaSocialRuntimeMapper extends BaseMapper<Object> {
              WHERE n.biz_no = #{bizNo}
                AND n.push_status = 'DELIVERED'
                 AND n.is_deleted = 0
-                AND COALESCE(CASE LOWER(n.type)
-                    WHEN 'commission' THEN pref.notify_commission
-                    WHEN 'team' THEN pref.notify_team
-                    WHEN 'staking' THEN pref.notify_staking
-                    WHEN 'market' THEN pref.notify_market
-                    WHEN 'genesis' THEN pref.notify_genesis
-                    ELSE pref.notify_system END, 1) = 1
+                AND (
+                    LOWER(COALESCE(n.priority, '')) = 'critical'
+                    OR COALESCE(CASE LOWER(n.type)
+                        WHEN 'commission' THEN pref.notify_commission
+                        WHEN 'team' THEN pref.notify_team
+                        WHEN 'staking' THEN pref.notify_staking
+                        WHEN 'market' THEN pref.notify_market
+                        WHEN 'genesis' THEN pref.notify_genesis
+                        ELSE pref.notify_system END, 1) = 1
+                )
              ORDER BY n.id
             """)
     List<NotificationEventFact> notificationFacts(

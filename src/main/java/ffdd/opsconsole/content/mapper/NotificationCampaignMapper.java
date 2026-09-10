@@ -38,7 +38,6 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = u.id AND pref.is_deleted = 0
              WHERE u.is_deleted = 0 AND u.status = 'ACTIVE'
-               AND COALESCE(pref.notify_system, 1) = 1
                AND UPPER(TRIM(u.country_code)) IN
                <foreach item="country" collection="countryAliases" open="(" separator="," close=")">
                  UPPER(#{country})
@@ -77,13 +76,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                 ON pref.user_id = u.id AND pref.is_deleted = 0
              WHERE u.is_deleted = 0
                AND u.status = 'ACTIVE'
-               AND COALESCE(CASE LOWER(#{kind})
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(#{priority}) = 'critical'
+                   OR COALESCE(CASE LOWER(#{kind})
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
                AND (#{language} = 'all' OR LOWER(u.language) LIKE CONCAT(#{language}, '%'))
                AND TIMESTAMPDIFF(DAY, u.created_at, #{now}) > #{registrationDaysMin}
             ON DUPLICATE KEY UPDATE
@@ -113,13 +115,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
              WHERE n.biz_no = #{bizNo}
                AND n.is_deleted = 0
                AND n.push_status = 'QUEUED'
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
             """)
     int markCampaignNotificationsDelivered(@Param("bizNo") String bizNo, @Param("now") LocalDateTime now);
 
@@ -131,13 +136,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
              WHERE n.biz_no = #{bizNo}
                AND n.is_deleted = 0
                AND n.push_status IN ('DELIVERED','READ','SENT','SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
             """)
     int countNotificationsByBizNo(@Param("bizNo") String bizNo);
 
@@ -153,13 +161,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
              WHERE n.biz_no=#{bizNo} AND n.is_deleted=0
                AND n.push_status IN ('DELIVERED','READ','SENT','SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
              ORDER BY n.id
             """)
     List<NotificationEventFact> selectNotificationEventFactsByBizNo(
@@ -316,13 +327,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
              WHERE n.user_id = #{userId}
                AND n.is_deleted = 0
                AND n.push_status IN ('DELIVERED', 'READ', 'SENT', 'SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
                <if test='cursorId != null'>AND n.id &lt; #{cursorId}</if>
                <if test='priority != null and priority != ""'>AND LOWER(n.priority) = #{priority}</if>
              ORDER BY n.id DESC
@@ -344,13 +358,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                AND n.is_deleted = 0
                AND n.read_flag = 0
                AND n.push_status IN ('DELIVERED', 'READ', 'SENT', 'SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
             """)
     long countUnreadForUser(@Param("userId") Long userId);
 
@@ -375,13 +392,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
              WHERE n.id=#{notificationId} AND n.user_id=#{userId} AND n.is_deleted=0
                AND n.push_status IN ('DELIVERED','READ','SENT','SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
               LIMIT 1 FOR UPDATE
             """)
     NotificationEventFact lockNotificationEventFact(
@@ -401,13 +421,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
              WHERE n.user_id=#{userId} AND n.is_deleted=0 AND n.read_flag=0
                AND n.push_status IN ('DELIVERED','SENT','SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
              ORDER BY n.id FOR UPDATE
             """)
     List<NotificationEventFact> lockUnreadNotificationEventFacts(@Param("userId") Long userId);
@@ -443,13 +466,16 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    n.push_status = 'READ', n.updated_at = NOW()
              WHERE n.user_id = #{userId} AND n.is_deleted = 0 AND n.read_flag = 0
                AND n.push_status IN ('DELIVERED', 'SENT', 'SUCCESS')
-               AND COALESCE(CASE LOWER(n.type)
-                   WHEN 'commission' THEN pref.notify_commission
-                   WHEN 'team' THEN pref.notify_team
-                   WHEN 'staking' THEN pref.notify_staking
-                   WHEN 'market' THEN pref.notify_market
-                   WHEN 'genesis' THEN pref.notify_genesis
-                   ELSE pref.notify_system END, 1) = 1
+               AND (
+                   LOWER(COALESCE(n.priority, '')) = 'critical'
+                   OR COALESCE(CASE LOWER(n.type)
+                       WHEN 'commission' THEN pref.notify_commission
+                       WHEN 'team' THEN pref.notify_team
+                       WHEN 'staking' THEN pref.notify_staking
+                       WHEN 'market' THEN pref.notify_market
+                       WHEN 'genesis' THEN pref.notify_genesis
+                       ELSE pref.notify_system END, 1) = 1
+               )
                AND n.id IN
                <foreach item="id" collection="notificationIds" open="(" separator="," close=")">
                  #{id}
