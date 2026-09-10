@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
@@ -98,6 +99,18 @@ public class AuditLogService {
 
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
         return list(request, Math.max(1, Math.min(maxRows, 5000)));
+    }
+
+    /**
+     * Returns only successful, exact A2 terminal outcomes for the supplied operation ids.
+     * Callers must still verify each action against the operation's terminal status before
+     * presenting its actor as the approver or executor.
+     */
+    public List<AuditLogRecord> listSuccessfulA2OutcomeRecords(Collection<String> operationIds) {
+        if (operationIds == null || operationIds.isEmpty()) {
+            return List.of();
+        }
+        return auditLogMapper.listSuccessfulA2OutcomeRecords(operationIds);
     }
 
     private List<AuditLogRecord> list(AuditLogQueryRequest request, int maxRows) {

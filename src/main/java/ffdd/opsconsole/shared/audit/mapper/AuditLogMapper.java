@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.A2AuditAggregate;
 import ffdd.opsconsole.shared.audit.infrastructure.AuditLogEntity;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Delete;
@@ -79,6 +80,32 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             """)
     long countByActionAndResourceType(@Param("action") String action,
                                       @Param("resourceType") String resourceType);
+
+    /**
+     * A2 history outcome projection: only an immutable successful terminal-outcome record
+     * may identify an approver or executor. It intentionally uses exact action matching
+     * rather than the fuzzy audit-center search predicate.
+     */
+    @Select("""
+            <script>
+            SELECT id,
+                   action,
+                   resource_id AS resourceId,
+                   actor_username AS actorUsername
+              FROM nx_audit_log
+             WHERE is_deleted = 0
+               AND resource_type = 'A2_OPERATION'
+               AND result = 'SUCCESS'
+               AND action IN ('A2_OPERATION_APPROVED', 'A2_OPERATION_REJECTED',
+                              'A2_OPERATION_WITHDRAWN', 'A2_OPERATION_EXECUTED')
+               AND resource_id IN
+                 <foreach collection='operationIds' item='operationId' open='(' separator=',' close=')'>
+                   #{operationId}
+                 </foreach>
+             ORDER BY id DESC
+            </script>
+            """)
+    List<AuditLogRecord> listSuccessfulA2OutcomeRecords(@Param("operationIds") Collection<String> operationIds);
 
     @Insert("""
             INSERT INTO nx_audit_log (

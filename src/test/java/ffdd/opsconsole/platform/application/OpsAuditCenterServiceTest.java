@@ -26,6 +26,7 @@ import ffdd.opsconsole.platform.mapper.AuditOperationHistoryMapper;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
+import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditStatsQueryRequest;
@@ -280,6 +281,85 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void overviewProjectsTheVerifierFromTheMatchingImmutableDecisionAudit() {
+        putTicket("WO-CHECKER", "账户冻结", "approved", "acct", false, false);
+        AuditLogRecord decision = new AuditLogRecord();
+        decision.setResourceId("WO-CHECKER");
+        decision.setAction("A2_OPERATION_APPROVED");
+        decision.setActorUsername("su-admin");
+        when(auditLogService.listSuccessfulA2OutcomeRecords(Set.of("WO-CHECKER")))
+                .thenReturn(List.of(decision));
+
+        ApiResult<AuditCenterOverview> result = service.overview();
+
+        assertThat(result.getData().operationHistory()).singleElement()
+                .extracting(AuditCenterOverview.AuditOperationHistory::chain)
+                .asString()
+                .contains("发起人:superadmin", "审批人:su-admin", "admin.operation_confirmed");
+    }
+
+    @Test
+    void overviewShowsUnknownVerifierWhenNoExactDecisionAuditProvesOne() {
+        putTicket("WO-LEGACY", "账户冻结", "approved", "acct", false, false);
+        AuditLogRecord unrelated = new AuditLogRecord();
+        unrelated.setResourceId("WO-LEGACY");
+        unrelated.setAction("A2_OPERATION_PROPOSED");
+        unrelated.setActorUsername("superadmin");
+        when(auditLogService.listSuccessfulA2OutcomeRecords(Set.of("WO-LEGACY")))
+                .thenReturn(List.of(unrelated));
+
+        ApiResult<AuditCenterOverview> result = service.overview();
+
+        assertThat(result.getData().operationHistory()).singleElement()
+                .extracting(AuditCenterOverview.AuditOperationHistory::chain)
+                .asString()
+                .contains("发起人:superadmin", "审批人:未知")
+                .doesNotContain("审批人:superadmin");
+    }
+
+    @Test
+    void overviewLabelsImmediateExecutionWithTheExecutedAuditActor() {
+        putTicket("WO-EXECUTED", "后台账号停用", "approved", "acct", false, false);
+        ticketRows.get("WO-EXECUTED").setDecisionReason("即时执行·已生效(单人确认)");
+        AuditLogRecord execution = new AuditLogRecord();
+        execution.setResourceId("WO-EXECUTED");
+        execution.setAction("A2_OPERATION_EXECUTED");
+        execution.setActorUsername("immediate.executor");
+        when(auditLogService.listSuccessfulA2OutcomeRecords(Set.of("WO-EXECUTED")))
+                .thenReturn(List.of(execution));
+
+        ApiResult<AuditCenterOverview> result = service.overview();
+
+        assertThat(result.getData().operationHistory()).singleElement()
+                .extracting(AuditCenterOverview.AuditOperationHistory::chain)
+                .asString()
+                .contains("发起人:superadmin", "执行人:immediate.executor", "admin.operation_executed")
+                .doesNotContain("审批人:");
+    }
+
+    @Test
+    void overviewDeduplicatesPerOperationAndSortsModernAndLegacyHistoryByActualTime() {
+        putTicket("WO-LIVE", "实时工单", "approved", "acct", false, false);
+        ticketRows.get("WO-LIVE").setDecidedAt(LocalDateTime.of(2026, 9, 1, 9, 0));
+        putTicket("WO-LEGACY", "历史工单", "pending", "acct", false, false);
+        AuditOperationHistoryEntity duplicate = history("WO-LIVE", "approved", LocalDateTime.of(2026, 9, 2, 9, 0));
+        AuditOperationHistoryEntity legacy = history("WO-LEGACY", "approved", LocalDateTime.of(2026, 9, 3, 9, 0));
+        historyRows.add(duplicate);
+        historyRows.add(legacy);
+
+        ApiResult<AuditCenterOverview> result = service.overview();
+
+        assertThat(result.getData().operationHistory())
+                .extracting(AuditCenterOverview.AuditOperationHistory::id)
+                .containsExactly("WO-LEGACY", "WO-LIVE");
+        assertThat(result.getData().operationHistory())
+                .filteredOn(row -> row.id().equals("WO-LIVE"))
+                .singleElement()
+                .extracting(AuditCenterOverview.AuditOperationHistory::t)
+                .isEqualTo("2026-09-01T09:00:00");
+    }
+
+    @Test
     void overviewInfersLaterDomainsLAndMForLegacyTickets() {
         putTicket("WO-L", "L2 funnel report", "pending", "param", false, false);
         putTicket("WO-M", "M3 campaign report", "pending", "param", false, false);
@@ -437,6 +517,37 @@ class OpsAuditCenterServiceTest {
                 .containsEntry("operationId", result.getData().id())
                 .containsEntry("sourceDomain", "H1")
                 .containsEntry("idempotencyKey", "idem-proposal-1");
+    }
+
+    @Test
+    void immediateExecutionWritesItsOwnOutcomeActionAndKeepsTheExecutor() {
+        AuditOperationProposalRequest request = new AuditOperationProposalRequest(
+                "禁用后台账号",
+                "support@nexion.io",
+                "active",
+                "disabled",
+                "executing.admin",
+                "超管",
+                "acct",
+                false,
+                false,
+                "超管",
+                "高风险账号立即停用",
+                "A2",
+                null,
+                null,
+                null);
+
+        ApiResult<AuditCenterOverview.AuditOperationTicket> result = service.recordExecuted("idem-executed-1", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().status()).isEqualTo("approved");
+        AuditOperationTicketEntity stored = ticketRows.get(result.getData().id());
+        assertThat(stored.getDecisionReason()).isEqualTo("即时执行·已生效(单人确认)");
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("A2_OPERATION_EXECUTED");
+        assertThat(captor.getValue().getActorUsername()).isEqualTo("executing.admin");
     }
 
     @Test
@@ -801,6 +912,20 @@ class OpsAuditCenterServiceTest {
             throw new RuntimeException(ex);
         }
         ticketRows.put(operationId, ticket);
+    }
+
+    private AuditOperationHistoryEntity history(String operationId, String status, LocalDateTime createdAt) {
+        AuditOperationHistoryEntity row = new AuditOperationHistoryEntity();
+        row.setId(entitySequence++);
+        row.setOperationId(operationId);
+        row.setAction("legacy " + operationId);
+        row.setStatus(status);
+        row.setChainText("legacy chain");
+        row.setTimeLabel("legacy-time");
+        row.setNote("legacy note");
+        row.setCreatedAt(createdAt);
+        row.setIsDeleted(0);
+        return row;
     }
 
     private AuditOperationProposalRequest proposal(String operator) {

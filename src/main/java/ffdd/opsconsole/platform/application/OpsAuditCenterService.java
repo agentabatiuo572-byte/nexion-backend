@@ -43,8 +43,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -65,6 +65,8 @@ public class OpsAuditCenterService {
     private static final String STATUS_PENDING = "pending";
     private static final String STATUS_APPROVED = "approved";
     private static final String STATUS_REJECTED = "rejected";
+    private static final String A2_OPERATION_EXECUTED = "A2_OPERATION_EXECUTED";
+    private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
@@ -386,7 +388,7 @@ public class OpsAuditCenterService {
         ticket.setReason(reason);
         ticket.setStatus(STATUS_APPROVED);
         ticket.setSourceDomain(normalizeDomain(sourceDomain));
-        ticket.setDecisionReason("即时执行·已生效(单人确认)");
+        ticket.setDecisionReason(EXECUTED_DECISION_REASON);
         ticket.setDecidedAt(LocalDateTime.now());
         ticket.setIsDeleted(0);
         ticketMapper.insert(ticket);
@@ -813,20 +815,23 @@ public class OpsAuditCenterService {
     }
 
     private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, AuditLogQueryRequest filter) {
-        List<AuditOperationHistory> rows = new ArrayList<>();
         Set<String> visibleIds = tickets.stream().map(AuditOperationTicket::id).collect(Collectors.toSet());
-        terminalTickets().stream()
+        Map<String, AuditOperationTicket> ticketsById = tickets.stream()
+                .collect(Collectors.toMap(AuditOperationTicket::id, ticket -> ticket, (left, right) -> left));
+        List<AuditOperationTicketEntity> terminal = terminalTickets().stream()
                 .filter(ticket -> matches(ticket, filter))
-                .map(ticket -> new AuditOperationHistory(
+                .toList();
+        Map<String, DecisionActor> decisionActors = decisionActors(terminal);
+        Map<String, AuditOperationHistory> rowsByOperation = new LinkedHashMap<>();
+        terminal.forEach(ticket -> rowsByOperation.putIfAbsent(ticket.getOperationId(), new AuditOperationHistory(
                         ticket.getOperationId(),
                         ticket.getAction(),
                         status(ticket.getStatus()),
-                        ticket.getOperatorName() + " · reason + admin.operation_" + terminalAction(status(ticket.getStatus())),
+                        executionChain(ticket.getOperationId(), ticket.getOperatorName(), ticket.getStatus(), decisionActors),
                         ticket.getDecidedAt() == null ? LocalDateTime.now().format(ISO) : ticket.getDecidedAt().format(ISO),
                         "原因:" + (StringUtils.hasText(ticket.getDecisionReason())
                                 ? ticket.getDecisionReason()
-                                : ticket.getReason())))
-                .forEach(rows::add);
+                                : ticket.getReason()))));
         historyMapper.selectList(new LambdaQueryWrapper<AuditOperationHistoryEntity>()
                         .eq(AuditOperationHistoryEntity::getIsDeleted, 0)
                         .orderByDesc(AuditOperationHistoryEntity::getId))
@@ -836,11 +841,87 @@ public class OpsAuditCenterService {
                         row.getOperationId(),
                         row.getAction(),
                         status(row.getStatus()),
-                        row.getChainText(),
-                        row.getTimeLabel(),
+                        historicalExecutionChain(row, ticketsById.get(row.getOperationId()), decisionActors),
+                        row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                         row.getNote()))
-                .forEach(rows::add);
-        return rows;
+                .forEach(row -> rowsByOperation.putIfAbsent(row.id(), row));
+        return rowsByOperation.values().stream()
+                .sorted(Comparator.comparing(this::historyTime).reversed()
+                        .thenComparing(AuditOperationHistory::id, Comparator.reverseOrder()))
+                .toList();
+    }
+
+    private LocalDateTime historyTime(AuditOperationHistory row) {
+        if (!StringUtils.hasText(row.t())) {
+            return LocalDateTime.MIN;
+        }
+        try {
+            return LocalDateTime.parse(row.t(), ISO);
+        } catch (RuntimeException ignored) {
+            return LocalDateTime.MIN;
+        }
+    }
+
+    private Map<String, DecisionActor> decisionActors(List<AuditOperationTicketEntity> terminalTickets) {
+        Map<String, String> expectedActionByOperation = new LinkedHashMap<>();
+        terminalTickets.forEach(ticket -> {
+            String expectedAction = decisionAuditAction(ticket);
+            if (expectedAction != null) {
+                expectedActionByOperation.putIfAbsent(ticket.getOperationId(), expectedAction);
+            }
+        });
+        if (expectedActionByOperation.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, DecisionActor> actors = new LinkedHashMap<>();
+        auditLogService.listSuccessfulA2OutcomeRecords(expectedActionByOperation.keySet()).stream()
+                .filter(record -> expectedActionByOperation.get(record.getResourceId()) != null)
+                .filter(record -> expectedActionByOperation.get(record.getResourceId()).equals(record.getAction()))
+                .filter(record -> StringUtils.hasText(record.getActorUsername()))
+                .forEach(record -> actors.putIfAbsent(record.getResourceId(),
+                        new DecisionActor(record.getActorUsername().trim(), record.getAction())));
+        return actors;
+    }
+
+    private String historicalExecutionChain(
+            AuditOperationHistoryEntity row,
+            AuditOperationTicket ticket,
+            Map<String, DecisionActor> decisionActors) {
+        if (ticket == null) {
+            return executionChain(row.getOperationId(), null, row.getStatus(), decisionActors);
+        }
+        return executionChain(ticket.id(), ticket.operator(), row.getStatus(), decisionActors);
+    }
+
+    private String executionChain(
+            String operationId,
+            String proposer,
+            String terminalStatus,
+            Map<String, DecisionActor> decisionActors) {
+        String normalizedStatus = status(terminalStatus);
+        DecisionActor decisionActor = decisionActors.get(operationId);
+        boolean isImmediateExecution = decisionActor != null && A2_OPERATION_EXECUTED.equals(decisionActor.action());
+        String decisionRole = isImmediateExecution ? "执行人" : "withdrawn".equals(normalizedStatus) ? "撤回人" : "审批人";
+        String knownProposer = StringUtils.hasText(proposer) ? proposer.trim() : "未知";
+        String knownDecisionActor = decisionActor == null ? "未知" : decisionActor.actor();
+        return "发起人:" + knownProposer + " → " + decisionRole + ":" + knownDecisionActor
+                + " · reason + admin.operation_" + (isImmediateExecution ? "executed" : terminalAction(normalizedStatus));
+    }
+
+    private String decisionAuditAction(AuditOperationTicketEntity ticket) {
+        if (EXECUTED_DECISION_REASON.equals(ticket.getDecisionReason())) {
+            return A2_OPERATION_EXECUTED;
+        }
+        return decisionAuditAction(ticket.getStatus());
+    }
+
+    private String decisionAuditAction(String terminalStatus) {
+        return switch (status(terminalStatus)) {
+            case STATUS_APPROVED -> "A2_OPERATION_APPROVED";
+            case STATUS_REJECTED -> "A2_OPERATION_REJECTED";
+            case "withdrawn" -> "A2_OPERATION_WITHDRAWN";
+            default -> null;
+        };
     }
 
     private String terminalAction(String status) {
@@ -1331,6 +1412,9 @@ public class OpsAuditCenterService {
             String ip,
             String resourceType) {
         return new AuditLogSeed(ts, actor, role, action, obj, delta, domain, ip, resourceType);
+    }
+
+    private record DecisionActor(String actor, String action) {
     }
 
     private record OperationSeed(

@@ -108,6 +108,18 @@ class AuditLogServiceTest {
     }
 
     @Test
+    void a2OutcomeProjectionUsesExactTerminalActionsIncludingImmediateExecution() throws Exception {
+        Select annotation = AuditLogMapper.class
+                .getMethod("listSuccessfulA2OutcomeRecords", java.util.Collection.class)
+                .getAnnotation(Select.class);
+        String sql = String.join("\n", annotation.value());
+
+        assertThat(sql).contains("resource_type = 'A2_OPERATION'", "result = 'SUCCESS'", "resource_id IN")
+                .contains("A2_OPERATION_APPROVED", "A2_OPERATION_REJECTED", "A2_OPERATION_WITHDRAWN", "A2_OPERATION_EXECUTED")
+                .doesNotContain("LIKE");
+    }
+
+    @Test
     void trustedSessionActorOverridesTheTargetUserImpersonationSecurityContext() {
         UsernamePasswordAuthenticationToken impersonation =
                 new UsernamePasswordAuthenticationToken("52", null, List.of());
