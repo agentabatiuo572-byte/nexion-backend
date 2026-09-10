@@ -18,6 +18,7 @@ import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
+import ffdd.opsconsole.growth.application.H3WeeklyParticipationObservationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
@@ -29,6 +30,9 @@ import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.outbox.OutboxProperties;
 import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.LocalDateTime;
@@ -71,7 +75,7 @@ import org.springframework.transaction.interceptor.TransactionInterceptor;
  * empty database so repeated mapper references remain real MySQL joins rather than temporary-table
  * aliases.
  */
-@EnabledIfEnvironmentVariable(named = "NEXION_TEST_DB_PASSWORD", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "NEXION_DEVICE_COMMAND_IT", matches = "true")
 class DeviceCommandEventMySqlIntegrationTest {
     private static final String MIGRATION = "20260831_app_device_command_event_schema.sql";
     private static final long USER_ID = 420031L;
@@ -97,21 +101,18 @@ class DeviceCommandEventMySqlIntegrationTest {
 
     @BeforeEach
     void useOwnedEmptyDatabaseAndRealTransactionalBoundary() throws Exception {
-        connection = DriverManager.getConnection(System.getenv().getOrDefault("NEXION_TEST_DB_URL",
-                        "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8"
-                                + "&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"),
-                System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root"),
-                System.getenv("NEXION_TEST_DB_PASSWORD"));
-        jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
         fixtureDatabase = "nx_device_event_test_" + UUID.randomUUID().toString().replace("-", "");
         assertOwnedFixtureDatabase();
-        List<String> ddl = FIXTURE_TABLES.stream()
-                .map(table -> jdbc.queryForObject("SHOW CREATE TABLE `" + table + "`", (rs, row) -> rs.getString(2)))
-                .toList();
+        List<String> ddl = fixtureStatements();
+        connection = DriverManager.getConnection(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), ""), "root", "");
+        jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isNull();
         try {
             jdbc.execute("CREATE DATABASE `" + fixtureDatabase + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             fixtureDatabaseCreated = true;
             jdbc.execute("USE `" + fixtureDatabase + "`");
+            assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
             for (String tableDdl : ddl) jdbc.execute(tableDdl);
         } catch (Exception failure) {
             dropOwnedFixtureDatabase();
@@ -146,7 +147,7 @@ class DeviceCommandEventMySqlIntegrationTest {
         proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(dataSource),
                 new AnnotationTransactionAttributeSource()));
         http = MockMvcBuilders.standaloneSetup(new AppCanonicalBoundaryController(
-                        (AppCanonicalBoundaryService) proxy.getProxy(), null, null, null, null, null))
+                        (AppCanonicalBoundaryService) proxy.getProxy(), null, mock(H3WeeklyParticipationObservationService.class), null, null, null))
                 .setControllerAdvice(new GlobalExceptionHandler(audit), new ApiResultHttpStatusAdvice()).build();
         seedUser(USER_ID, "420031");
         seedUser(OTHER_USER_ID, "420032");
@@ -167,11 +168,10 @@ class DeviceCommandEventMySqlIntegrationTest {
         seedActiveDeviceWithTasks();
         // Use the real completion mapper lock sequence, but no settlement/payout fixture.
         // The service unit test separately enforces that completion uses this same order.
-        try (Connection completion = DriverManager.getConnection(connection.getMetaData().getURL(),
-                System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root"),
-                System.getenv("NEXION_TEST_DB_PASSWORD"))) {
-            completion.setCatalog(fixtureDatabase);
+        try (Connection completion = DriverManager.getConnection(
+                isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), fixtureDatabase), "root", "")) {
             JdbcTemplate completionJdbc = new JdbcTemplate(new SingleConnectionDataSource(completion, true));
+            assertThat(completionJdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
             assertThat(completionJdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
             completion.setAutoCommit(false);
             Configuration configuration = new Configuration(new Environment("device-completion-locks",
@@ -376,6 +376,22 @@ class DeviceCommandEventMySqlIntegrationTest {
     }
 
     @Test
+    void incompleteActivationFactCannotActivateDeactivateOrCancelTasks() throws Exception {
+        migrate();
+        seedActiveDeviceWithTasks();
+        jdbc.update("UPDATE nx_user_device SET activated_at=NULL WHERE id=?", DEVICE_ID);
+
+        activate(7L, "incomplete-activate").andExpect(status().isConflict());
+        deactivate(DEVICE_ID, 7L, "incomplete-deactivate").andExpect(status().isConflict());
+        deactivateAfterTask(7L, "incomplete-after-task").andExpect(status().isConflict());
+
+        assertDevice("ACTIVE", 7L, 0);
+        assertRuntime("ONLINE", "TASK-CLAIMED");
+        assertTask("TASK-CLAIMED", "CLAIMED", false);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_event_outbox", Integer.class)).isZero();
+    }
+
+    @Test
     void deactivateAfterTaskReturnsInstanceAndPendingReceiptAcrossAllBranches() throws Exception {
         migrate();
         seedDevice("ACTIVE", 7L);
@@ -391,7 +407,7 @@ class DeviceCommandEventMySqlIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("DEACTIVATED"))
                 .andExpect(jsonPath("$.data.alreadyDeactivated").value(true));
 
-        jdbc.update("UPDATE nx_user_device SET status='ACTIVE',deactivated_at=NULL,pending_deactivate=0,row_version=12"
+        jdbc.update("UPDATE nx_user_device SET status='ACTIVE',activated_at=NOW(),deactivated_at=NULL,pending_deactivate=0,row_version=12"
                 + " WHERE id=?", DEVICE_ID);
         seedActiveTask("TASK-AFTER-TASK", DEVICE_ID, "PRODUCTION", "RUNNING");
         deactivateAfterTask(12L, "after-task-pending").andExpect(status().isOk())
@@ -452,15 +468,16 @@ class DeviceCommandEventMySqlIntegrationTest {
 
     private void seedDevice(String status, long version) {
         jdbc.update("INSERT INTO nx_user_device(id,user_id,instance_no,name,device_type,ownership_status,source_environment,run_id,"
-                        + "status,pending_deactivate,row_version,is_deleted) VALUES(?,?, 'DEV-EVENT-930031','Device event test',"
-                        + "'DEVICE','OWNED','PRODUCTION','',?,?,?,0)",
-                DEVICE_ID, USER_ID, status, 0, version);
+                        + "status,pending_deactivate,row_version,activated_at,is_deleted) VALUES(?,?, 'DEV-EVENT-930031','Device event test',"
+                        + "'DEVICE','OWNED','PRODUCTION','',?,?,?,?,0)",
+                DEVICE_ID, USER_ID, status, 0, version,
+                "ACTIVE".equals(status) ? LocalDateTime.of(2026, 1, 1, 0, 0) : null);
     }
 
     private void seedOtherProductionDevice() {
         jdbc.update("INSERT INTO nx_user_device(id,user_id,instance_no,name,device_type,ownership_status,source_environment,run_id,"
-                        + "status,pending_deactivate,row_version,is_deleted) VALUES(?,?, 'DEV-EVENT-930032','Other device event test',"
-                        + "'DEVICE','OWNED','PRODUCTION','', 'ACTIVE',0,0,0)",
+                        + "status,pending_deactivate,row_version,activated_at,is_deleted) VALUES(?,?, 'DEV-EVENT-930032','Other device event test',"
+                        + "'DEVICE','OWNED','PRODUCTION','', 'ACTIVE',0,0,NOW(),0)",
                 OTHER_DEVICE_ID, USER_ID);
     }
 
@@ -530,10 +547,38 @@ class DeviceCommandEventMySqlIntegrationTest {
         }
     }
 
+    static String isolatedUrl(String endpoint, String database) {
+        if (!"127.0.0.1:13306".equals(endpoint)) throw new IllegalArgumentException("isolated endpoint required");
+        if (database == null || (!database.isEmpty() && !OWNED_DATABASE.matcher(database).matches()))
+            throw new IllegalArgumentException("owned UUID schema required");
+        return "jdbc:mysql://" + endpoint + "/" + database
+                + "?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
+    }
+
+    static List<String> fixtureStatements() throws IOException {
+        String coreSchema = Files.readString(Path.of("scripts/schema.sql"));
+        String lifecycleSchema = Files.readString(Path.of("scripts/migrations/20260810_ab_pending_closure.sql"));
+        return FIXTURE_TABLES.stream().map(table -> createTableStatement(
+                table.equals("nx_admin_event_lifecycle") ? lifecycleSchema : coreSchema, table)).toList();
+    }
+
+    // Select only owned fixture table DDL. Never execute the script's CREATE DATABASE, USE, or seeds.
+    static String createTableStatement(String source, String table) {
+        if (!FIXTURE_TABLES.contains(table)) throw new IllegalArgumentException("table outside fixture scope");
+        var matcher = Pattern.compile("(?ms)^CREATE TABLE IF NOT EXISTS " + Pattern.quote(table)
+                + " \\(\\R.*?^\\) ENGINE=InnoDB[^;\\r\\n]*;").matcher(source);
+        if (!matcher.find()) throw new IllegalStateException("fixture DDL missing: " + table);
+        String ddl = matcher.group();
+        if (matcher.find()) throw new IllegalStateException("duplicate fixture DDL: " + table);
+        return ddl;
+    }
+
     private void dropOwnedFixtureDatabase() {
         if (!fixtureDatabaseCreated) return;
         assertOwnedFixtureDatabase();
-        assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
+        assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+        String selected = jdbc.queryForObject("SELECT DATABASE()", String.class);
+        assertThat(selected == null || selected.equals(fixtureDatabase) || selected.equals("information_schema")).isTrue();
         jdbc.execute("USE information_schema");
         jdbc.execute("DROP DATABASE `" + fixtureDatabase + "`");
         fixtureDatabaseCreated = false;
