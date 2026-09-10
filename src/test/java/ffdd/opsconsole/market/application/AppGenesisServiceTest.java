@@ -9,9 +9,11 @@ import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -29,6 +31,8 @@ import java.util.Optional;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppGenesisServiceTest {
@@ -82,7 +86,8 @@ class AppGenesisServiceTest {
         when(catalog.priceForSold(anyLong())).thenReturn(new BigDecimal("9999.000000"));
         when(catalog.publicState()).thenReturn(java.util.Map.of(
                 "tiers", List.of(), "tiersVersion", 1L, "marketOpenState", "open",
-                "marketOpenStateVersion", 1L, "closedNoticeKey", "default"));
+                "marketOpenStateVersion", 1L, "closedNoticeKey", "default",
+                "catalogAvailable", true, "tradeAvailable", true, "tradeBlockedReason", ""));
         when(idempotency.execute(anyString(),anyString(),anyString(),any(),any()))
                 .thenAnswer(i->((Supplier)i.getArgument(4)).get());
     }
@@ -92,6 +97,24 @@ class AppGenesisServiceTest {
         var data=service.state().getData();
         @SuppressWarnings("unchecked") var series=(java.util.Map<String,Object>)data.get("series");
         assertThat(series).containsEntry("soldSupply",0L).containsEntry("remainingSupply",1000L);
+    }
+
+    @Test
+    void stateFailsClosedWhenAnOpenMarketHasAnUnavailableTierCatalog() {
+        when(catalog.marketOpen()).thenReturn(true);
+        when(catalog.publicState()).thenReturn(Map.of(
+                "tiers", List.of(), "tiersVersion", 2L, "marketOpenState", "closed",
+                "marketOpenStateVersion", 4L, "closedNoticeKey", "maintenance",
+                "catalogAvailable", false, "tradeAvailable", false,
+                "tradeBlockedReason", "GENESIS_TIER_UNAVAILABLE"));
+
+        Map<String, Object> data = service.state().getData();
+        @SuppressWarnings("unchecked") Map<String, Object> market = (Map<String, Object>) data.get("market");
+
+        assertThat(market).containsEntry("enabled", false);
+        assertThat(data).containsEntry("catalogAvailable", false)
+                .containsEntry("marketOpenState", "closed")
+                .containsEntry("tradeAvailable", false);
     }
 
     @Test
@@ -508,6 +531,189 @@ class AppGenesisServiceTest {
         assertThat(publicSale).isEqualTo(accountSale)
                 .containsEntry("maxPerUser",3)
                 .containsEntry("serverCanonical",true);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "negative", "gap"})
+    @SuppressWarnings("unchecked")
+    void invalidTierCatalogClosesPublicAccountAndEligibility(String defect) {
+        AppGenesisService subject = withInvalidTierCatalog(defect);
+
+        Map<String, Object> state = subject.state().getData();
+        assertThat((Map<String, Object>) state.get("market")).containsEntry("enabled", false);
+        assertThat(state).containsEntry("catalogAvailable", false).containsEntry("tradeAvailable", false);
+        Map<String, Object> account = subject.account(42L).getData();
+        assertThat(account).containsEntry("marketEnabled", false);
+        assertClosedEligibility((Map<String, Object>) account.get("eligibility"));
+        assertClosedEligibility(subject.eligibility(42L).getData());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "negative", "gap"})
+    void invalidTierCatalogRejectsPrimaryPurchaseBeforeSupplyOrMoneyWrites(String defect) {
+        AppGenesisService subject = withInvalidTierCatalog(defect);
+
+        assertPaused(() -> subject.purchase(42L, "invalid-catalog-primary",
+                new AppGenesisService.PurchaseRequest(1)));
+
+        assertNoTradeWrites();
+        verify(mapper, never()).lockActiveSeries();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "negative", "gap"})
+    void invalidTierCatalogRejectsListingBeforeHoldingChanges(String defect) {
+        AppGenesisService subject = withInvalidTierCatalog(defect);
+        when(mapper.lockHolding("GEN-OWN")).thenReturn(holding(42L, "ACTIVE"));
+        when(mapper.listHolding(anyLong(), anyLong(), any(), any())).thenReturn(1);
+
+        assertPaused(() -> subject.list(42L, "GEN-OWN", "invalid-catalog-list",
+                new AppGenesisService.ListingRequest(new BigDecimal("120"))));
+
+        assertNoTradeWrites();
+        verify(mapper, never()).lockHolding(anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"empty", "negative", "gap"})
+    void invalidTierCatalogRejectsSecondaryPurchaseBeforeWalletOrOwnershipChanges(String defect) {
+        AppGenesisService subject = withInvalidTierCatalog(defect);
+        when(mapper.lockHolding("GEN-SELLER")).thenReturn(holding(7L, "LISTED"));
+        when(mapper.lockWallet(7L)).thenReturn(new BigDecimal("50"));
+        when(mapper.debitWallet(anyLong(), any())).thenReturn(1);
+        when(mapper.creditWallet(anyLong(), any())).thenReturn(1);
+        when(mapper.transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any())).thenReturn(1);
+
+        assertPaused(() -> subject.buyListing(42L, "GEN-SELLER", "invalid-catalog-buy"));
+
+        assertNoTradeWrites();
+        verify(mapper, never()).lockHolding(anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void accountUsesOneCatalogSnapshotForMarketAndEligibility() {
+        Map<String, Object> open = catalog.publicState();
+        clearInvocations(catalog);
+        when(catalog.publicState()).thenReturn(open, Map.of("catalogAvailable", false, "marketOpenState", "closed"));
+
+        Map<String, Object> account = service.account(42L).getData();
+
+        assertThat(account).containsEntry("marketEnabled", true);
+        assertThat((Map<String, Object>) account.get("eligibility"))
+                .containsEntry("eligible", true).containsEntry("halted", false);
+        verify(catalog).publicState();
+        verify(catalog, never()).marketOpen();
+    }
+
+    @Test
+    void eligibilityUsesOneCatalogSnapshotForAllGateFields() {
+        when(catalog.publicState()).thenReturn(Map.of("catalogAvailable", false, "marketOpenState", "closed"),
+                Map.of("catalogAvailable", true, "marketOpenState", "open"));
+
+        assertClosedEligibility(service.eligibility(42L).getData());
+
+        verify(catalog).publicState();
+        verify(catalog, never()).marketOpen();
+    }
+
+    @Test
+    void validButClosedCatalogStillPreventsPurchase() {
+        when(catalog.publicState()).thenReturn(Map.of("catalogAvailable", true, "marketOpenState", "closed"));
+
+        assertPaused(() -> service.purchase(42L, "closed-catalog", new AppGenesisService.PurchaseRequest(1)));
+
+        assertNoTradeWrites();
+    }
+
+    @Test
+    void disclosureGateStillWinsWithAValidOpenCatalog() {
+        when(config.activeValue("disclosure.gate.genesis")).thenReturn(Optional.of("true"));
+
+        assertPaused(() -> service.purchase(42L, "disclosure-gate", new AppGenesisService.PurchaseRequest(1)));
+
+        assertNoTradeWrites();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unavailableCatalogStillAllowsTheOwnerToCancelAListing() {
+        AppGenesisService subject = withInvalidTierCatalog("empty");
+        when(mapper.lockHolding("GEN-OWN")).thenReturn(holding(42L, "LISTED"));
+        when(mapper.cancelListing(1L, 42L)).thenReturn(1);
+
+        Map<String, Object> account = subject.cancel(42L, "GEN-OWN", "cancel-while-paused").getData();
+
+        verify(mapper).cancelListing(1L, 42L);
+        assertThat(account).containsEntry("marketEnabled", false);
+        assertClosedEligibility((Map<String, Object>) account.get("eligibility"));
+        verify(mapper, never()).debitWallet(any(), any());
+        verify(mapper, never()).creditWallet(any(), any());
+        verify(mapper, never()).transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any());
+    }
+
+    @Test
+    void unavailableCatalogDoesNotAllowCancellationOfAnotherUsersListing() {
+        AppGenesisService subject = withInvalidTierCatalog("empty");
+        when(mapper.lockHolding("GEN-SELLER")).thenReturn(holding(7L, "LISTED"));
+
+        assertThatThrownBy(() -> subject.cancel(42L, "GEN-SELLER", "foreign-cancel-while-paused"))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(403);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_HOLDING_OWNER_REQUIRED");
+                });
+
+        verify(mapper, never()).cancelListing(anyLong(), anyLong());
+        assertNoTradeWrites();
+    }
+
+    private AppGenesisService withInvalidTierCatalog(String defect) {
+        GenesisCatalogMapper catalogMapper = mock(GenesisCatalogMapper.class);
+        when(catalogMapper.state()).thenReturn(new GenesisCatalogMapper.CatalogState(
+                1L, 2L, "open", 4L, "default", "catalog-fixture", 2L));
+        when(catalogMapper.activeTiers()).thenReturn(switch (defect) {
+            case "empty" -> List.of();
+            case "negative" -> List.of(new GenesisCatalogMapper.TierRow("tier-1", 0, 1000, new BigDecimal("-1")));
+            case "gap" -> List.of(new GenesisCatalogMapper.TierRow("tier-1", 1, 1000, new BigDecimal("120")));
+            default -> throw new IllegalArgumentException(defect);
+        });
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC);
+        GenesisCatalogService realCatalog = new GenesisCatalogService(catalogMapper, idempotency, audit, fixedClock);
+        // The real catalog reproduces the disagreement: raw switch open, validated catalog unavailable.
+        assertThat(realCatalog.marketOpen()).isTrue();
+        assertThat(realCatalog.publicState()).containsEntry("catalogAvailable", false);
+        return new AppGenesisService(mapper, config, idempotency, outbox, audit, fixedClock,
+                realCatalog, environment, Optional.empty());
+    }
+
+    private AppGenesisMapper.HoldingRow holding(Long owner, String status) {
+        LocalDateTime acquired = LocalDateTime.parse("2026-07-22T03:00:00");
+        return new AppGenesisMapper.HoldingRow(1L, "GEN-FIXTURE", owner, "GEN-ORDER", "genesis-main",
+                new BigDecimal("100"), status, new BigDecimal("120"), acquired, acquired);
+    }
+
+    private void assertClosedEligibility(Map<String, Object> eligibility) {
+        assertThat(eligibility).containsEntry("eligible", false).containsEntry("halted", true);
+        assertThat(eligibility.get("reasons")).asList().contains("MARKET_DISABLED");
+    }
+
+    private void assertPaused(Runnable action) {
+        assertThatThrownBy(action::run).isInstanceOfSatisfying(BizException.class, ex -> {
+            assertThat(ex.getCode()).isEqualTo(409);
+            assertThat(ex.getMessage()).isEqualTo("GENESIS_MARKET_PAUSED");
+        });
+    }
+
+    private void assertNoTradeWrites() {
+        verify(mapper, never()).updateSoldSupply(anyLong(), anyLong());
+        verify(mapper, never()).debitWallet(any(), any());
+        verify(mapper, never()).creditWallet(any(), any());
+        verify(mapper, never()).insertOrder(any());
+        verify(mapper, never()).insertHolding(any());
+        verify(mapper, never()).listHolding(anyLong(), anyLong(), any(), any());
+        verify(mapper, never()).transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any());
+        verify(mapper, never()).insertLedger(any());
+        verifyNoInteractions(outbox, audit);
     }
 
     private AppGenesisMapper.SeriesRow series(){

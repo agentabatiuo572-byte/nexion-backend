@@ -89,6 +89,7 @@ public interface NexMarketRepository {
     boolean updateRepurchasePresetAmounts(String presetAmounts);
 
     RepurchaseStatsView repurchaseStatsSince(LocalDateTime since);
+    long issuedRepurchaseTicketsSince(LocalDateTime since);
 
     List<RepurchaseStatusView> repurchaseStatusBreakdown();
 

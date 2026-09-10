@@ -286,6 +286,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public long issuedRepurchaseTicketsSince(LocalDateTime since) {
+        return stakingMapper.issuedRepurchaseTicketsSince(since);
+    }
+
+    @Override
     public List<RepurchaseStatusView> repurchaseStatusBreakdown() {
         return stakingMapper.repurchaseStatusBreakdown(CANONICAL_REPURCHASE_PRODUCT_CODES);
     }

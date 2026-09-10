@@ -329,6 +329,14 @@ public interface StakingMapper extends BaseMapper<StakingProductEntity> {
             @Param("since") LocalDateTime since,
             @Param("productCodes") List<String> productCodes);
 
+    // Issuance is historical: later forfeiture and changed product rules do not
+    // rewrite how many tickets were actually issued during this period.
+    @Select("""
+            SELECT COALESCE(SUM(quantity), 0) FROM nx_g7_repurchase_ticket
+             WHERE is_deleted = 0 AND issued_at >= #{since}
+            """)
+    long issuedRepurchaseTicketsSince(@Param("since") LocalDateTime since);
+
     @Select("""
             <script>
             SELECT status, orderCount, principalUsd

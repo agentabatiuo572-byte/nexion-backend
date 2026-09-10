@@ -748,6 +748,19 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void repurchaseOverviewUsesActualIssuedTicketsInsteadOfTheCurrentTicketRule() {
+        marketRepository.issuedRepurchaseTicketsThisMonth = 17L;
+        marketRepository.updateRepurchaseTicketPerOrder(99);
+
+        ApiResult<Map<String, Object>> result = service.repurchaseOverview();
+
+        assertThat(detailMap(result.getData().get("stats")))
+                .containsEntry("ticketsMonth", 17L);
+        assertThat(detailMap(result.getData().get("g4Capacity")))
+                .containsEntry("ticketsIssuedThisMonth", 17L);
+    }
+
+    @Test
     void raisingRepurchaseApyBelowCoverageRedlineReturns422() {
         coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80.00"), new BigDecimal("85.00"));
 
@@ -1631,6 +1644,7 @@ class OpsNexMarketServiceTest {
         private StakingProductView repurchaseProduct = defaultRepurchaseProduct();
         private List<StakingPositionView> stakingPositions = defaultStakingPositions();
         private List<StakingPositionView> repurchasePositions = defaultRepurchasePositions();
+        private long issuedRepurchaseTicketsThisMonth;
         private Optional<GenesisSeriesView> genesisSeries = Optional.of(defaultGenesisSeries());
         private Optional<GenesisPolicyView> genesisPolicy = Optional.of(defaultGenesisPolicy());
         private GenesisSecondaryStatsView genesisSecondaryStats = defaultGenesisSecondaryStats();
@@ -1881,6 +1895,11 @@ class OpsNexMarketServiceTest {
                     .map(StakingPositionView::estimatedInterestUsdt)
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
             return new RepurchaseStatsView(ordersMonth, principalUsd, estimatedInterestUsd);
+        }
+
+        @Override
+        public long issuedRepurchaseTicketsSince(LocalDateTime since) {
+            return issuedRepurchaseTicketsThisMonth;
         }
 
         @Override

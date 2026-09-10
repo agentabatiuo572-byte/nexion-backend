@@ -71,7 +71,9 @@ public class AppGenesisService {
         AppGenesisMapper.SeriesRow series = requireSeries();
         long sold = mapper.holdingCount(series.seriesCode());
         KillSwitchProjection killSwitch = killSwitchProjection();
-        boolean marketEnabled = marketEnabled(killSwitch.enabled());
+        Map<String,Object> catalogState = catalogState();
+        boolean catalogAvailable = Boolean.TRUE.equals(catalogState.get("catalogAvailable"));
+        boolean marketEnabled = marketEnabled(killSwitch.enabled(), catalogState);
         SalePolicy salePolicy = salePolicy(series);
         Map<String,Object> result=linked(
                 "series", seriesView(series, sold),
@@ -89,12 +91,11 @@ public class AppGenesisService {
                 "sources", List.of("nx_genesis_series", "nx_genesis_holding", "nx_genesis_order",
                         "nx_genesis_emission_batch", "nx_genesis_emission_item", "nx_wallet_ledger",
                         "nx_config_item:market.genesis.ops.*"));
-        if(catalogService!=null) result.putAll(catalogService.publicState());
+        result.putAll(catalogState);
         result.put("serverCanonical", true);
         result.put("sourceEnvironment", "PRODUCTION");
         result.put("runId", "");
-        boolean tradeAvailable = marketEnabled && salePolicy.available()
-                && Boolean.TRUE.equals(result.get("catalogAvailable"));
+        boolean tradeAvailable = marketEnabled && salePolicy.available() && catalogAvailable;
         result.put("tradeAvailable", tradeAvailable);
         if (!tradeAvailable) {
             String existingReason = String.valueOf(result.getOrDefault("tradeBlockedReason", ""));
@@ -126,7 +127,7 @@ public class AppGenesisService {
         }
         requireGenesisSubject(userId);
         AppGenesisMapper.SeriesRow series = requireSeries();
-        return ApiResult.ok(eligibilityView(userId, series, salePolicy(series)));
+        return ApiResult.ok(eligibilityView(userId, series, salePolicy(series), marketEnabled()));
     }
 
     @Transactional
@@ -318,14 +319,15 @@ public class AppGenesisService {
 
     private Map<String, Object> accountView(Long userId, AppGenesisMapper.SeriesRow series) {
         SalePolicy policy = salePolicy(series);
+        boolean marketEnabled = marketEnabled();
         return linked("series", seriesView(series, mapper.holdingCount(series.seriesCode())),
                 "holdings", mapper.holdings(userId).stream().map(this::holdingView).toList(),
                 "emissions", mapper.emissions(userId).stream().map(this::emissionView).toList(),
                 "emissionTotals", mapper.emissionTotals(userId),
                 "orders", mapper.userTransactions(userId).stream().map(this::transactionView).toList(),
-                "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled(),
+                "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled,
                 "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),
-                "eligibility", eligibilityView(userId, series, policy), "serverCanonical", true,
+                "eligibility", eligibilityView(userId, series, policy, marketEnabled), "serverCanonical", true,
                 "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
@@ -405,7 +407,8 @@ public class AppGenesisService {
         }
     }
 
-    private Map<String, Object> eligibilityView(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy policy) {
+    private Map<String, Object> eligibilityView(Long userId, AppGenesisMapper.SeriesRow series, SalePolicy policy,
+                                                boolean marketEnabled) {
         AppGenesisMapper.UserPolicyRow user = requirePolicy(userId);
         long owned = mapper.userHoldingCount(userId, series.seriesCode());
         List<String> reasons = new java.util.ArrayList<>();
@@ -417,12 +420,12 @@ public class AppGenesisService {
         if (!policy.saleOpen(clock.instant())) reasons.add("PRESALE_NOT_OPEN");
         int max = policy.effectiveMaxPerUser();
         if (owned >= max) reasons.add("USER_CAP_REACHED");
-        if (!marketEnabled()) reasons.add("MARKET_DISABLED");
-        Map<String, Object> result = linked("eligible", reasons.isEmpty() && marketEnabled(), "reasons", reasons,
+        if (!marketEnabled) reasons.add("MARKET_DISABLED");
+        Map<String, Object> result = linked("eligible", reasons.isEmpty() && marketEnabled, "reasons", reasons,
                 "ownedCount", owned, "maxPerUser", max,
                 "remainingCap", Math.max(0L, (long) max - owned),
                 "minAccountAgeDays", policy.eligibilityEnabled() ? policy.minAccountAgeDays() : 0,
-                "accountAgeDays", ageDays, "halted", !marketEnabled(),
+                "accountAgeDays", ageDays, "halted", !marketEnabled,
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "");
         result.putAll(holderProjection(userId, series.seriesCode(), owned, reasons));
         return result;
@@ -571,12 +574,19 @@ public class AppGenesisService {
     }
 
     private boolean marketEnabled() {
-        return marketEnabled(killSwitchProjection().enabled());
+        return marketEnabled(killSwitchProjection().enabled(), catalogState());
     }
 
-    private boolean marketEnabled(boolean killSwitchEnabled) {
+    private Map<String, Object> catalogState() {
+        return catalogService == null ? Map.of() : catalogService.publicState();
+    }
+
+    private boolean marketEnabled(boolean killSwitchEnabled, Map<String, Object> catalogState) {
         boolean disclosure = config.activeValue(DISCLOSURE_KEY).map(this::switchOn).orElse(false);
-        return catalogService != null && catalogService.marketOpen() && !disclosure && killSwitchEnabled;
+        // Use the validated catalog for both read projections and command admission.
+        // The raw switch alone can remain open while tier validation has closed trading.
+        return Boolean.TRUE.equals(catalogState.get("catalogAvailable"))
+                && "open".equals(catalogState.get("marketOpenState")) && !disclosure && killSwitchEnabled;
     }
 
     private KillSwitchProjection killSwitchProjection() {

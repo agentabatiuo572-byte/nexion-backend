@@ -660,10 +660,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     public ApiResult<Map<String, Object>> repurchaseOverview() {
         Optional<StakingProductView> product = marketRepository.repurchaseProduct();
-        RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(LocalDate.now(clock).withDayOfMonth(1).atStartOfDay());
+        LocalDateTime monthStart = LocalDate.now(clock).withDayOfMonth(1).atStartOfDay();
+        RepurchaseStatsView repurchaseStats = marketRepository.repurchaseStatsSince(monthStart);
         BigDecimal principalUsd = safeBig(repurchaseStats.principalUsd());
         BigDecimal estimatedInterestUsd = safeBig(repurchaseStats.estimatedInterestUsd());
-        BigDecimal lotteryPerOrder = product.map(value -> BigDecimal.valueOf(value.ticketPerOrder() == null ? 0 : value.ticketPerOrder())).orElse(BigDecimal.ZERO);
+        long issuedTickets = marketRepository.issuedRepurchaseTicketsSince(monthStart);
         long ordersMonth = safeLong(repurchaseStats.ordersMonth());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G7");
@@ -674,13 +675,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "ordersMonth", ordersMonth,
                 "principalUsd", principalUsd,
                 "matureUsd", principalUsd.add(estimatedInterestUsd).setScale(2, RoundingMode.HALF_UP),
-                "ticketsMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
+                "ticketsMonth", issuedTickets,
                 "reinvestRate", BigDecimal.ZERO,
                 "reinvestRateAvailable", false,
                 "lockDays", product.map(StakingProductView::termDays).orElse(0)));
         response.put("g4Capacity", map(
                 "monthlyCapacity", parseRepurchaseNumber(readText("G.genesis.lottery.monthlyCapacity", "100000"), BigDecimal.ZERO),
-                "ticketsIssuedThisMonth", lotteryPerOrder.multiply(BigDecimal.valueOf(ordersMonth)).setScale(0, RoundingMode.HALF_UP),
+                "ticketsIssuedThisMonth", issuedTickets,
                 "source", "G.genesis.lottery.monthlyCapacity"));
         response.put("params", product.map(value -> repurchaseParamDefs().stream()
                 .map(def -> repurchaseParamRow(def, value))
@@ -708,6 +709,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "nx_staking_product:repurchase",
                 "nx_wallet_ledger:wallet.reinvest",
                 "nx_staking_position:repurchase",
+                "nx_g7_repurchase_ticket",
                 "B1 coverage facade"));
         return ApiResult.ok(response);
     }
