@@ -204,6 +204,39 @@ class AppGenesisServiceTest {
                 .containsEntry("listedAt", "2026-07-21T19:30:00Z");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"0.0000004", "0.0000005", "1.2345674", "1.2345675", "0", "-1", "100000000.000001"})
+    void listingRejectsAmountsBeyondTheSixDecimalCommandProtocolBeforeAnyListingWrite(String rawPrice) {
+        when(mapper.lockHolding("GEN-MICRO")).thenReturn(holding(42L, "ACTIVE"));
+        when(mapper.listHolding(anyLong(), anyLong(), any(), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> service.list(42L, "GEN-MICRO", "micro-price-" + rawPrice,
+                new AppGenesisService.ListingRequest(new BigDecimal(rawPrice))))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(422);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_LISTING_PRICE_INVALID");
+                });
+
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).lockHolding("GEN-MICRO");
+        verify(mapper, never()).listHolding(anyLong(), anyLong(), any(), any());
+        verifyNoInteractions(outbox, audit);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0.000001", "10.123456", "100000000"})
+    void listingAcceptsSupportedPricesWithoutRounding(String rawPrice) {
+        when(mapper.lockHolding("GEN-MICRO")).thenReturn(holding(42L, "ACTIVE"));
+        when(mapper.listHolding(anyLong(), anyLong(), any(), any())).thenReturn(1);
+
+        var result = service.list(42L, "GEN-MICRO", "one-micro-price",
+                new AppGenesisService.ListingRequest(new BigDecimal(rawPrice)));
+
+        assertThat(result.getCode()).isZero();
+        verify(mapper).listHolding(anyLong(), anyLong(),
+                org.mockito.ArgumentMatchers.eq(new BigDecimal(rawPrice).setScale(6)), any());
+    }
+
     @Test
     void purchaseAtomicallyCreatesOrderHoldingLedgerAuditAndEvent(){
         var result=service.purchase(42L,"purchase-1",new AppGenesisService.PurchaseRequest(1));

@@ -200,7 +200,8 @@ public class AppGenesisService {
         final String requestKey = requireIdempotencyKey(idempotencyKey);
         String no = normalizeHoldingNo(holdingNo);
         BigDecimal price = request == null ? null : request.askPriceUsdt();
-        if (price == null || price.signum() <= 0 || price.compareTo(new BigDecimal("100000000")) > 0) {
+        if (price == null || price.signum() <= 0 || price.scale() > 6
+                || price.compareTo(new BigDecimal("100000000")) > 0) {
             throw new BizException(422, "GENESIS_LISTING_PRICE_INVALID");
         }
         BigDecimal normalizedPrice = money(price);
