@@ -416,6 +416,108 @@ class AppGenesisServiceTest {
         verify(audit,never()).recordRequiredForTrustedActor(any());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "-1", "0.0000004", "0.0000005", "100000000.000001", "100000001"})
+    void secondaryBuyRejectsInvalidExpectedPriceBeforeIdempotencyOrWrites(String rawPrice) {
+        assertThatThrownBy(() -> service.buyListing(42L, "listed-invalid", "expected-invalid-" + rawPrice,
+                new AppGenesisService.BuyRequest(new BigDecimal(rawPrice))))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(422);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_EXPECTED_PRICE_INVALID");
+                });
+
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).lockHolding("listed-invalid");
+        assertNoTradeWrites();
+    }
+
+    @Test
+    void secondaryBuyRequiresExpectedPrice() {
+        assertThatThrownBy(() -> service.buyListing(42L, "listed-missing", "expected-missing", null))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(422);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_EXPECTED_PRICE_INVALID");
+                });
+
+        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(mapper, never()).lockHolding("listed-missing");
+        assertNoTradeWrites();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0.000001", "120.123456", "100000000"})
+    void secondaryBuyExpectedPriceAcceptsSupportedBoundsWithoutRounding(String rawPrice) {
+        assertThat(AppGenesisService.expectedPurchasePrice(
+                new AppGenesisService.BuyRequest(new BigDecimal(rawPrice))))
+                .isEqualTo(new BigDecimal(rawPrice).setScale(6));
+    }
+
+    @Test
+    void secondaryBuyRejectsLockedPriceChangeBeforeSeriesWalletOrderTransferLedgerOutboxOrAudit() {
+        when(mapper.lockHolding("listed-price-change")).thenReturn(new AppGenesisMapper.HoldingRow(
+                9L, "listed-price-change", 7L, "seller-order", "genesis-main",
+                new BigDecimal("100"), "LISTED", new BigDecimal("120.123456"),
+                LocalDateTime.now(), LocalDateTime.now()));
+
+        assertThatThrownBy(() -> service.buyListing(42L, "listed-price-change", "expected-old-price",
+                new AppGenesisService.BuyRequest(new BigDecimal("120.123455"))))
+                .isInstanceOfSatisfying(BizException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(409);
+                    assertThat(ex.getMessage()).isEqualTo("GENESIS_LISTING_PRICE_CHANGED");
+                });
+
+        verify(mapper, never()).lockActiveSeries();
+        verify(mapper, never()).debitWallet(anyLong(), any());
+        verify(mapper, never()).creditWallet(anyLong(), any());
+        verify(mapper, never()).insertOrder(any());
+        verify(mapper, never()).transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any());
+        verify(mapper, never()).insertLedger(any());
+        verifyNoInteractions(outbox, audit);
+    }
+
+    @Test
+    void secondaryBuyUsesTheExactLockedExpectedPriceForDebitOrderAndTransfer() {
+        BigDecimal price = new BigDecimal("120.123456");
+        when(mapper.lockHolding("listed-exact")).thenReturn(new AppGenesisMapper.HoldingRow(
+                9L, "listed-exact", 7L, "seller-order", "genesis-main",
+                new BigDecimal("100"), "LISTED", price, LocalDateTime.now(), LocalDateTime.now()));
+        when(mapper.lockWallet(7L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.debitWallet(42L, price)).thenReturn(1);
+        when(mapper.creditWallet(7L, new BigDecimal("117.120370"))).thenReturn(1);
+        when(mapper.transferHolding(org.mockito.ArgumentMatchers.eq(9L), org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(price), any()))
+                .thenReturn(1);
+        when(mapper.insertLedger(any())).thenReturn(1);
+
+        assertThat(service.buyListing(42L, "listed-exact", "expected-exact",
+                new AppGenesisService.BuyRequest(price)).getCode()).isZero();
+
+        verify(mapper).debitWallet(42L, price);
+        verify(mapper).insertOrder(org.mockito.ArgumentMatchers.argThat(row ->
+                price.equals(row.unitPriceUsdt()) && price.equals(row.amountUsdt())
+                        && "SECONDARY".equals(row.orderType())));
+        verify(mapper).transferHolding(org.mockito.ArgumentMatchers.eq(9L), org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(price), any());
+    }
+
+    @Test
+    void secondaryBuyFingerprintChangesWhenExpectedPriceChanges() {
+        org.mockito.Mockito.doReturn(ApiResult.ok(Map.of())).when(idempotency)
+                .execute(anyString(), anyString(), anyString(), any(), any());
+        org.mockito.ArgumentCaptor<String> fingerprint = org.mockito.ArgumentCaptor.forClass(String.class);
+
+        service.buyListing(42L, "listed-fingerprint", "same-key",
+                new AppGenesisService.BuyRequest(new BigDecimal("120.000000")));
+        service.buyListing(42L, "listed-fingerprint", "same-key",
+                new AppGenesisService.BuyRequest(new BigDecimal("121.000000")));
+
+        verify(idempotency, org.mockito.Mockito.times(2))
+                .execute(anyString(), anyString(), fingerprint.capture(), any(), any());
+        assertThat(fingerprint.getAllValues().get(0)).isNotEqualTo(fingerprint.getAllValues().get(1));
+    }
+
     @Test
     void secondaryPurchaseRejectsSellerFromAnotherEnvironmentBeforeWalletMutation() {
         when(mapper.lockHolding("sandbox-holding")).thenReturn(new AppGenesisMapper.HoldingRow(
@@ -424,7 +526,8 @@ class AppGenesisServiceTest {
                 LocalDateTime.now(), LocalDateTime.now()));
         when(mapper.userSandbox(99L)).thenReturn(1);
 
-        assertThatThrownBy(() -> service.buyListing(42L, "sandbox-holding", "secondary-env-boundary"))
+        assertThatThrownBy(() -> service.buyListing(42L, "sandbox-holding", "secondary-env-boundary",
+                new AppGenesisService.BuyRequest(new BigDecimal("120"))))
                 .isInstanceOfSatisfying(BizException.class, ex -> {
                     assertThat(ex.getCode()).isEqualTo(403);
                     assertThat(ex.getMessage()).isEqualTo("GENESIS_SELLER_ENVIRONMENT_MISMATCH");
@@ -532,7 +635,8 @@ class AppGenesisServiceTest {
         when(mapper.lockHolding("listed-cap")).thenReturn(new AppGenesisMapper.HoldingRow(
                 9L,"listed-cap",99L,"seller-order","genesis-main",new BigDecimal("100"),
                 "LISTED",new BigDecimal("120"),LocalDateTime.now(),LocalDateTime.now()));
-        assertThatThrownBy(()->service.buyListing(42L,"listed-cap","secondary-cap"))
+        assertThatThrownBy(()->service.buyListing(42L,"listed-cap","secondary-cap",
+                new AppGenesisService.BuyRequest(new BigDecimal("120"))))
                 .isInstanceOf(BizException.class).hasMessageContaining("GENESIS_USER_CAP_REACHED");
         verify(mapper,never()).debitWallet(any(),any());
         verify(mapper,never()).creditWallet(any(),any());
@@ -617,7 +721,8 @@ class AppGenesisServiceTest {
         when(mapper.creditWallet(anyLong(), any())).thenReturn(1);
         when(mapper.transferHolding(anyLong(), anyLong(), anyLong(), anyString(), any(), any())).thenReturn(1);
 
-        assertPaused(() -> subject.buyListing(42L, "GEN-SELLER", "invalid-catalog-buy"));
+        assertPaused(() -> subject.buyListing(42L, "GEN-SELLER", "invalid-catalog-buy",
+                new AppGenesisService.BuyRequest(new BigDecimal("120"))));
 
         assertNoTradeWrites();
         verify(mapper, never()).lockHolding(anyString());

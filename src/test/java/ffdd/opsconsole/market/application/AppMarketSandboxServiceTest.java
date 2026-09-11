@@ -367,7 +367,8 @@ class AppMarketSandboxServiceTest {
                 1L,"run-seller","holding-8","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,"LISTED",new BigDecimal("12"),null,null));
 
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());
-        assertThatThrownBy(()->service.genesisBuy(7L,"holding-8","buy-key"))
+        assertThatThrownBy(()->service.genesisBuy(7L,"holding-8","buy-key",
+                new AppGenesisService.BuyRequest(new BigDecimal("12"))))
                 .hasMessage("MARKET_SANDBOX_USER_REQUIRED");
         verify(mapper,never()).updateGenesisWallet(anyString(),anyLong(),any(),anyLong());
     }
@@ -397,13 +398,65 @@ class AppMarketSandboxServiceTest {
         when(mapper.canonicalGenesisWallet(7L)).thenReturn(new AppMarketSandboxMapper.CanonicalWallet(
                 7L,new BigDecimal("88"),1L));
 
-        new AppMarketSandboxService(mapper,env,Optional.of(saleConfig(20,0))).genesisBuy(7L,"holding-8","buy-key");
+        new AppMarketSandboxService(mapper,env,Optional.of(saleConfig(20,0))).genesisBuy(7L,"holding-8","buy-key",
+                new AppGenesisService.BuyRequest(new BigDecimal("12")));
 
         var order=inOrder(mapper);
         order.verify(mapper).holdingSnapshot("run-lock-order","holding-8");
         order.verify(mapper).lockCanonicalGenesisWallet(7L);
         order.verify(mapper).lockCanonicalGenesisWallet(8L);
         order.verify(mapper).holding("run-lock-order","holding-8");
+        verify(mapper).debitCanonicalGenesisWallet(7L,new BigDecimal("12.000000"));
+    }
+
+    @Test
+    void secondaryBuyRejectsAChangedPriceFromTheLockedHoldingBeforeAnyMoneyOrTradeWrite() {
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-price-change");
+        env.setActiveProfiles("test");
+        AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        AppMarketSandboxMapper.HoldingView snapshot=new AppMarketSandboxMapper.HoldingView(
+                1L,"run-price-change","holding-price","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,
+                "LISTED",new BigDecimal("12"),null,null);
+        AppMarketSandboxMapper.HoldingView locked=new AppMarketSandboxMapper.HoldingView(
+                1L,"run-price-change","holding-price","order-8",8L,"GENESIS-SANDBOX",BigDecimal.TEN,
+                "LISTED",new BigDecimal("13"),null,null);
+        when(mapper.userSandbox(7L)).thenReturn(1);
+        when(mapper.userSandbox(8L)).thenReturn(1);
+        when(mapper.holdingSnapshot("run-price-change","holding-price")).thenReturn(snapshot);
+        when(mapper.holding("run-price-change","holding-price")).thenReturn(locked);
+        when(mapper.lockCanonicalGenesisWallet(7L)).thenReturn(
+                new AppMarketSandboxMapper.CanonicalWallet(7L,new BigDecimal("100"),0L));
+        when(mapper.lockCanonicalGenesisWallet(8L)).thenReturn(
+                new AppMarketSandboxMapper.CanonicalWallet(8L,BigDecimal.ZERO,0L));
+
+        assertThatThrownBy(() -> new AppMarketSandboxService(mapper,env,Optional.of(saleConfig(20,0)))
+                .genesisBuy(7L,"holding-price","expected-old-price",
+                        new AppGenesisService.BuyRequest(new BigDecimal("12"))))
+                .hasMessage("GENESIS_LISTING_PRICE_CHANGED");
+
+        verify(mapper,never()).debitCanonicalGenesisWallet(anyLong(),any());
+        verify(mapper,never()).creditCanonicalGenesisWallet(anyLong(),any());
+        verify(mapper,never()).insertGenesisOrder(any());
+        verify(mapper,never()).transferHolding(anyString(),anyString(),anyLong(),anyLong(),anyString(),any());
+        verify(mapper,never()).insertCanonicalGenesisLedger(any());
+        verify(mapper,never()).insertGenesisLedger(any());
+    }
+
+    @Test
+    void secondaryBuyReplayRejectsTheSameKeyWhenItsExpectedPriceChanged() {
+        MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-replay-price");
+        env.setActiveProfiles("test");
+        AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class);
+        when(mapper.userSandbox(7L)).thenReturn(1);
+        when(mapper.genesisOrderByKey("run-replay-price",7L,"same-key")).thenReturn(
+                new AppMarketSandboxMapper.GenesisOrder(1L,"run-replay-price","G4S-SBX-1","same-key",7L,
+                        "holding-8","SECONDARY",new BigDecimal("13"),new BigDecimal("13"),8L,
+                        "COMPLETED",LocalDateTime.now()));
+
+        assertThatThrownBy(() -> new AppMarketSandboxService(mapper,env,Optional.of(saleConfig(20,0)))
+                .genesisBuy(7L,"holding-8","same-key",
+                        new AppGenesisService.BuyRequest(new BigDecimal("12"))))
+                .hasMessage("IDEMPOTENCY_KEY_REUSE_CONFLICT");
     }
 
     @Test
@@ -425,7 +478,8 @@ class AppMarketSandboxServiceTest {
                         "GENESIS-SANDBOX",BigDecimal.TEN,"ACTIVE",null,null,null)));
 
         assertThatThrownBy(() -> new AppMarketSandboxService(mapper,env,Optional.of(saleConfig(5,0)))
-                .genesisBuy(7L,"holding-8","secondary-cap-key"))
+                .genesisBuy(7L,"holding-8","secondary-cap-key",
+                        new AppGenesisService.BuyRequest(new BigDecimal("12"))))
                 .hasMessage("GENESIS_USER_CAP_REACHED");
 
         verify(mapper,never()).debitCanonicalGenesisWallet(anyLong(),any());
@@ -571,7 +625,8 @@ class AppMarketSandboxServiceTest {
         assertThatThrownBy(() -> service.genesisPurchase(7L,"primary-"+suffix,
                 new AppGenesisService.PurchaseRequest(1)))
                 .hasMessage("GENESIS_SALE_POLICY_UNAVAILABLE");
-        assertThatThrownBy(() -> service.genesisBuy(7L,"holding-8","secondary-"+suffix))
+        assertThatThrownBy(() -> service.genesisBuy(7L,"holding-8","secondary-"+suffix,
+                new AppGenesisService.BuyRequest(new BigDecimal("12"))))
                 .hasMessage("GENESIS_SALE_POLICY_UNAVAILABLE");
 
         verify(mapper,never()).debitCanonicalGenesisWallet(anyLong(),any());

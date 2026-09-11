@@ -191,10 +191,11 @@ public class AppMarketSandboxService {
     }
 
     @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String,Object>> genesisBuy(Long userId,String holdingNo,String idempotencyKey) {
+    public ApiResult<Map<String,Object>> genesisBuy(Long userId,String holdingNo,String idempotencyKey,AppGenesisService.BuyRequest request) {
+        BigDecimal expectedPrice=AppGenesisService.expectedPurchasePrice(request);
         requireSandboxUser(userId); String key=key(idempotencyKey,"GENESIS_IDEMPOTENCY_KEY_REQUIRED"); String run=runId(); requireGenesisUserRunIsolation(run,userId);
-        AppMarketSandboxMapper.GenesisOrder prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo),run,userId);
-        AppMarketSandboxMapper.HoldingView h=mapper.holdingSnapshot(run,holdingNo); if(h==null||!"LISTED".equals(h.status())||h.listingPriceUsdt()==null) { prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo),run,userId); throw new BizException(409,"GENESIS_LISTING_NOT_ACTIVE"); } if(userId.equals(h.userId())) throw new BizException(409,"GENESIS_SELF_TRADE_FORBIDDEN");
+        AppMarketSandboxMapper.GenesisOrder prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo+":"+expectedPrice.toPlainString()),run,userId);
+        AppMarketSandboxMapper.HoldingView h=mapper.holdingSnapshot(run,holdingNo); if(h==null||!"LISTED".equals(h.status())||h.listingPriceUsdt()==null) { prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo+":"+expectedPrice.toPlainString()),run,userId); throw new BizException(409,"GENESIS_LISTING_NOT_ACTIVE"); } if(userId.equals(h.userId())) throw new BizException(409,"GENESIS_SELF_TRADE_FORBIDDEN");
         Long sellerUserId=h.userId();
         requireSandboxUser(sellerUserId);
         requireGenesisUserRunIsolation(run,sellerUserId);
@@ -203,9 +204,10 @@ public class AppMarketSandboxService {
         else { seller=lockCanonicalGenesisWallet(sellerUserId); buyer=lockCanonicalGenesisWallet(userId); }
         requireGenesisUserRunIsolation(run,userId);
         requireGenesisUserRunIsolation(run,sellerUserId);
-        prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo),run,userId);
+        prior=mapper.genesisOrderByKey(run,userId,key); if(prior!=null) return replayGenesis(prior,hash("buy:"+holdingNo+":"+expectedPrice.toPlainString()),run,userId);
         h=mapper.holding(run,holdingNo);
         if(h==null||!sellerUserId.equals(h.userId())||!"LISTED".equals(h.status())||h.listingPriceUsdt()==null) throw new BizException(409,"GENESIS_LISTING_NOT_ACTIVE");
+        if(h.listingPriceUsdt().compareTo(expectedPrice)!=0) throw new BizException(409,"GENESIS_LISTING_PRICE_CHANGED");
         requireSandboxSaleEligible(userId,sandboxHoldings(run,userId).size(),1,sandboxSalePolicy());
         BigDecimal price=money(h.listingPriceUsdt()); if(buyer.usdtAvailable().compareTo(price)<0) throw new BizException(409,"GENESIS_WALLET_INSUFFICIENT");
         String order="G4S-SBX-"+UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
@@ -220,7 +222,7 @@ public class AppMarketSandboxService {
     }
 
     private ApiResult<Map<String,Object>> replayExchange(AppMarketSandboxMapper.ExchangeOrder row,String expected,String run,Long user) { if(!row.requestHash().equals(expected)) throw new BizException(409,"IDEMPOTENCY_KEY_REUSE_CONFLICT"); return ApiResult.ok(exchangeView(run,user,mapper.exchangeWallet(run,user),row.exchangeNo())); }
-    private ApiResult<Map<String,Object>> replayGenesis(AppMarketSandboxMapper.GenesisOrder row,String expected,String run,Long user) { String basis=switch(row.orderType()){case "PRIMARY"->"purchase:"+row.amountUsdt().divide(row.priceUsdt(),0,RoundingMode.DOWN);case "SECONDARY"->"buy:"+row.holdingNo();case "LIST"->"list:"+row.holdingNo()+":"+row.priceUsdt();case "CANCEL"->"cancel:"+row.holdingNo();default->row.orderType()+":"+row.holdingNo();}; if(!hash(basis).equals(expected)&&!(("LIST".equals(row.orderType())||"CANCEL".equals(row.orderType()))&&expected.equals(hash("noop:"+row.holdingNo())))) throw new BizException(409,"IDEMPOTENCY_KEY_REUSE_CONFLICT"); return ApiResult.ok(genesisAccountView(run,user,canonicalGenesisWallet(user),row.orderNo())); }
+    private ApiResult<Map<String,Object>> replayGenesis(AppMarketSandboxMapper.GenesisOrder row,String expected,String run,Long user) { String basis=switch(row.orderType()){case "PRIMARY"->"purchase:"+row.amountUsdt().divide(row.priceUsdt(),0,RoundingMode.DOWN);case "SECONDARY"->"buy:"+row.holdingNo()+":"+money(row.priceUsdt()).toPlainString();case "LIST"->"list:"+row.holdingNo()+":"+row.priceUsdt();case "CANCEL"->"cancel:"+row.holdingNo();default->row.orderType()+":"+row.holdingNo();}; if(!hash(basis).equals(expected)&&!(("LIST".equals(row.orderType())||"CANCEL".equals(row.orderType()))&&expected.equals(hash("noop:"+row.holdingNo())))) throw new BizException(409,"IDEMPOTENCY_KEY_REUSE_CONFLICT"); return ApiResult.ok(genesisAccountView(run,user,canonicalGenesisWallet(user),row.orderNo())); }
     private AppMarketSandboxMapper.ExchangeWallet exchangeWallet(String run,Long user){ mapper.ensureExchangeWallet(run,user,nonNegativeMoneyNumber("nexion.exchange.sandbox.initial-usdt","1000"),nonNegativeMoneyNumber("nexion.exchange.sandbox.initial-nex","0")); AppMarketSandboxMapper.ExchangeWallet w=mapper.exchangeWallet(run,user); if(w==null) throw new BizException(409,"EXCHANGE_SANDBOX_WALLET_UNAVAILABLE"); return w; }
     private AppMarketSandboxMapper.CanonicalWallet canonicalGenesisWallet(Long user){ AppMarketSandboxMapper.CanonicalWallet w=mapper.canonicalGenesisWallet(user); if(w==null) throw new BizException(409,"GENESIS_SANDBOX_WALLET_UNAVAILABLE"); return w; }
     private AppMarketSandboxMapper.CanonicalWallet lockCanonicalGenesisWallet(Long user){ AppMarketSandboxMapper.CanonicalWallet w=mapper.lockCanonicalGenesisWallet(user); if(w==null) throw new BizException(409,"GENESIS_SANDBOX_WALLET_UNAVAILABLE"); return w; }

@@ -74,10 +74,11 @@ public class AppGenesisController {
     @PostMapping("/api/genesis/listings/{holdingNo}/buy")
     public ApiResult<Map<String, Object>> buy(
             @PathVariable String holdingNo,
+            @RequestBody AppGenesisService.BuyRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.buyListing(userId, holdingNo, idempotencyKey);
+        return userId == null ? forbidden() : service.buyListing(userId, holdingNo, idempotencyKey, request);
     }
 
     private Long userId(Authentication authentication) {

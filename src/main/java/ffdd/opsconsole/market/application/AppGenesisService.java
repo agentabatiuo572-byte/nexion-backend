@@ -253,20 +253,24 @@ public class AppGenesisService {
     }
 
     @Transactional
-    public ApiResult<Map<String, Object>> buyListing(Long userId, String holdingNo, String idempotencyKey) {
-        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisBuy(userId, holdingNo, idempotencyKey);
+    public ApiResult<Map<String, Object>> buyListing(Long userId, String holdingNo, String idempotencyKey, BuyRequest request) {
+        BigDecimal expectedPrice = expectedPurchasePrice(request);
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) return sandbox.get().genesisBuy(userId, holdingNo, idempotencyKey, request);
         requireGenesisSubject(userId);
         final String requestKey = requireIdempotencyKey(idempotencyKey);
         String no = normalizeHoldingNo(holdingNo);
-        return once("SECONDARY_BUY:" + no, userId, requestKey, no,
-                () -> buyListingInternal(userId, no, requestKey));
+        return once("SECONDARY_BUY:" + no, userId, requestKey, expectedPrice,
+                () -> buyListingInternal(userId, no, requestKey, expectedPrice));
     }
 
-    private ApiResult<Map<String, Object>> buyListingInternal(Long userId, String holdingNo, String key) {
+    private ApiResult<Map<String, Object>> buyListingInternal(Long userId, String holdingNo, String key, BigDecimal expectedPrice) {
         if (!marketEnabled()) throw new BizException(409, "GENESIS_MARKET_PAUSED");
         AppGenesisMapper.HoldingRow holding = requireHolding(holdingNo);
         if (!"LISTED".equals(holding.status()) || holding.listingPriceUsdt() == null) {
             throw new BizException(409, "GENESIS_LISTING_NOT_ACTIVE");
+        }
+        if (holding.listingPriceUsdt().compareTo(expectedPrice) != 0) {
+            throw new BizException(409, "GENESIS_LISTING_PRICE_CHANGED");
         }
         if (userId.equals(holding.userId())) throw new BizException(409, "GENESIS_SELF_TRADE_FORBIDDEN");
         if (!Integer.valueOf(0).equals(mapper.userSandbox(holding.userId()))) {
@@ -849,4 +853,14 @@ public class AppGenesisService {
 
     public record PurchaseRequest(Integer quantity) {}
     public record ListingRequest(BigDecimal askPriceUsdt) {}
+    public record BuyRequest(BigDecimal expectedPriceUsdt) {}
+
+    static BigDecimal expectedPurchasePrice(BuyRequest request) {
+        BigDecimal price = request == null ? null : request.expectedPriceUsdt();
+        if (price == null || price.signum() <= 0 || price.scale() > 6
+                || price.compareTo(new BigDecimal("100000000")) > 0) {
+            throw new BizException(422, "GENESIS_EXPECTED_PRICE_INVALID");
+        }
+        return price.setScale(6, RoundingMode.UNNECESSARY);
+    }
 }
