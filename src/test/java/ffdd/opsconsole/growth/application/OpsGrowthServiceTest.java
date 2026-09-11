@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -31,6 +32,7 @@ import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventBindingRequest;
+import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.mapper.GrowthQuestEventMapper;
@@ -691,6 +693,36 @@ class OpsGrowthServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_AUTO_PUSH_KILLED");
+    }
+
+    @Test
+    void trackableCampaignCreationRequiresAPositiveTarget() {
+        for (int target : new int[]{0, -1, 1_000_000_001}) {
+            var request = new GrowthQuestEventRequest("trackable-test", "Test campaign", "seasonal", "ongoing",
+                    "10 NEX", false, true, "Complete the configured condition", "", target, "", null, null,
+                    "Validate configured campaign target", "test-admin");
+            var result = service.createQuestEvent("target-" + target, request);
+            assertThat(result.getCode()).isNotZero();
+            assertThat(result.getMessage()).isEqualTo("EVENT_TARGET_VALUE_INVALID");
+        }
+        assertThat(mockingDetails(questEventMapper).getInvocations())
+                .noneMatch(invocation -> invocation.getMethod().getName().equals("insertEvent"));
+    }
+
+    @Test
+    void positiveTrackedAndDecorativeAndWheelCreationRemainSupported() {
+        for (String kind : new String[]{"seasonal", "discount", "wheel"}) {
+            boolean trackable = "seasonal".equals(kind);
+            var request = new GrowthQuestEventRequest("create-" + kind, "Test campaign", kind, "ongoing",
+                    "10 NEX", false, trackable, "Campaign condition", "", trackable ? 1 : 0, "", null, null,
+                    "Validate supported campaign creation", "test-admin");
+            assertThat(service.createQuestEvent("create-key-" + kind, request).getCode()).isZero();
+        }
+        var inserts = mockingDetails(questEventMapper).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("insertEvent")).toList();
+        assertThat(inserts).hasSize(3);
+        assertThat(inserts.stream().map(invocation -> invocation.getArgument(8, Integer.class)).toList())
+                .containsExactly(1, 0, 0);
     }
 
     @Test

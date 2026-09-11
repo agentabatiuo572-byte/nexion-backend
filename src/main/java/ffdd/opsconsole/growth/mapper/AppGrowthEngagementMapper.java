@@ -334,7 +334,7 @@ public interface AppGrowthEngagementMapper {
                    COALESCE(u.progress_value,0) progressValue,
                    CASE
                      WHEN UPPER(COALESCE(u.claim_status,''))='CLAIMED' THEN 'CLAIMED'
-                     WHEN u.id IS NOT NULL AND
+                     WHEN u.id IS NOT NULL AND q.target_value>0 AND LOWER(q.target_type)<>'wheel' AND
                           (u.progress_value>=q.target_value
                            OR UPPER(COALESCE(u.claim_status,'')) IN ('COMPLETED','CLAIMABLE'))
                        THEN 'CLAIMABLE'
@@ -405,6 +405,7 @@ public interface AppGrowthEngagementMapper {
               FROM nx_user_event_quest u
               JOIN nx_event_quest q ON q.id=u.quest_id AND q.status=1 AND q.is_deleted=0
              WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
+               AND q.target_value>0 AND LOWER(q.target_type)<>'wheel'
                AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
                AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
                AND (u.progress_value>=q.target_value OR UPPER(u.claim_status) IN ('COMPLETED','CLAIMABLE'))
@@ -418,6 +419,7 @@ public interface AppGrowthEngagementMapper {
                AND UPPER(claim_status)<>'CLAIMED' AND is_deleted=0
                AND progress_value >= (SELECT target_value FROM nx_event_quest
                                         WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
+                                          AND target_value>0 AND LOWER(target_type)<>'wheel'
                                           AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
                                           AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP()) LIMIT 1)
             """)

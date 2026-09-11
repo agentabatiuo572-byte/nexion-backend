@@ -911,7 +911,7 @@ public class OpsGrowthService implements AuditReplayable {
             int targetValue = trackable
                     ? Optional.ofNullable(request.targetValue()).orElse(1)
                     : 0;
-            if (targetValue < 0 || targetValue > 1_000_000_000) {
+            if ((trackable && targetValue <= 0) || targetValue < 0 || targetValue > 1_000_000_000) {
                 return validation("EVENT_TARGET_VALUE_INVALID");
             }
             String geo = StringUtils.hasText(request.geo()) ? normalizePlainText(request.geo(), 64) : "";

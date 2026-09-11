@@ -113,6 +113,51 @@ class EventQuestClaimWindowMySqlTest {
         });
     }
 
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_EVENT_CLAIM_IT", matches = "true")
+    void decorativeAndWheelParticipationCannotBecomeAnOrdinaryRewardClaim() throws Exception {
+        inSchema((jdbc, mapper, session) -> {
+            clock(jdbc, session, "2026-09-06 16:30:00");
+            for (String configuration : new String[]{"target_type='seasonal',target_value=0",
+                    "target_type='discount',target_value=-1", "target_type='wheel',target_value=1"}) {
+                jdbc.update("UPDATE nx_event_quest SET " + configuration);
+                for (String status : new String[]{"JOINED", "COMPLETED", "CLAIMABLE"}) {
+                    jdbc.update("UPDATE nx_user_event_quest SET progress_value=1,claim_status=? WHERE user_id=7", status);
+                    session.clearCache();
+                    var state = mapper.eventState(7L, "en").get(0);
+                    assertThat(((Number) state.get("trackable")).intValue()).isZero();
+                    assertThat(state.get("userStatus")).isEqualTo("JOINED");
+                    assertThat(mapper.lockClaimableEvent(7L, "event-1")).isNull();
+                    assertThat(mapper.claimEvent(7L, "event-1")).isZero();
+                    assertUnclaimed(jdbc, 7L);
+                }
+            }
+            // A normal positive-target campaign retains its existing reward path.
+            jdbc.update("UPDATE nx_event_quest SET target_type='seasonal',target_value=1");
+            session.clearCache();
+            assertThat(mapper.eventState(7L, "en").get(0).get("userStatus")).isEqualTo("CLAIMABLE");
+            assertThat(mapper.lockClaimableEvent(7L, "event-1")).isNotNull();
+            assertThat(mapper.claimEvent(7L, "event-1")).isEqualTo(1);
+            session.clearCache();
+            assertThat(mapper.eventState(7L, "en").get(0).get("userStatus")).isEqualTo("CLAIMED");
+            assertUnclaimed(jdbc, 8L);
+        });
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "NEXION_EVENT_CLAIM_IT", matches = "true")
+    void finalClaimRechecksTrackabilityEvenAfterAnEarlierEligibleRead() throws Exception {
+        inSchema((jdbc, mapper, session) -> {
+            clock(jdbc, session, "2026-09-06 16:30:00");
+            assertThat(mapper.lockClaimableEvent(7L, "event-1")).isNotNull();
+            jdbc.update("UPDATE nx_event_quest SET target_value=0");
+            assertThat(mapper.claimEvent(7L, "event-1")).isZero();
+            jdbc.update("UPDATE nx_event_quest SET target_value=1,target_type='wheel'");
+            assertThat(mapper.claimEvent(7L, "event-1")).isZero();
+            assertUnclaimed(jdbc, 7L);
+        });
+    }
+
     private static void clock(JdbcTemplate jdbc, SqlSession session, String localTime) {
         jdbc.update("SET timestamp=UNIX_TIMESTAMP(?)", localTime);
         session.clearCache(); // Fixture time/rows changed outside MyBatis; force the next real SELECT.
@@ -148,12 +193,16 @@ class EventQuestClaimWindowMySqlTest {
             assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(schema);
             jdbc.execute("CREATE TABLE nx_event_quest(id BIGINT PRIMARY KEY,quest_code VARCHAR(64) UNIQUE,target_value INT,"
                     + "status INT,is_deleted INT,badge_achievement_code VARCHAR(64),starts_at DATETIME,ends_at DATETIME,"
-                    + "reward_type VARCHAR(16),reward_amount DECIMAL(20,6)) ENGINE=InnoDB");
+                    + "reward_type VARCHAR(16),reward_amount DECIMAL(20,6),target_type VARCHAR(32) DEFAULT 'discount',"
+                    + "quest_name VARCHAR(64) DEFAULT 'Campaign',description TEXT,reward_name VARCHAR(64),"
+                    + "geo_scope VARCHAR(32),cta_href VARCHAR(64),updated_at DATETIME,sort_order INT DEFAULT 0) ENGINE=InnoDB");
+            jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(128),config_value TEXT,status INT,is_deleted INT) ENGINE=InnoDB");
             jdbc.execute("CREATE TABLE nx_user_event_quest(id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id BIGINT,quest_id BIGINT,"
                     + "quest_code VARCHAR(64),progress_value INT,claim_status VARCHAR(32),reward_type VARCHAR(16),"
                     + "reward_amount DECIMAL(20,6),is_deleted INT,claimed_at DATETIME,created_at DATETIME,updated_at DATETIME,"
                     + "UNIQUE KEY uk_user_event(user_id,quest_code)) ENGINE=InnoDB");
-            jdbc.update("INSERT INTO nx_event_quest VALUES(1,'event-1',1,1,0,'BADGE-A',"
+            jdbc.update("INSERT INTO nx_event_quest(id,quest_code,target_value,status,is_deleted,badge_achievement_code,"
+                    + "starts_at,ends_at,reward_type,reward_amount) VALUES(1,'event-1',1,1,0,'BADGE-A',"
                     + "'2026-09-06 09:00:00','2026-09-06 10:00:00','NEX',30.123456)");
             jdbc.update("INSERT INTO nx_user_event_quest(user_id,quest_id,quest_code,progress_value,claim_status,reward_type,reward_amount,is_deleted)"
                     + " VALUES(7,1,'event-1',1,'CLAIMABLE','NEX',10.123456,0),(8,1,'event-1',1,'CLAIMABLE','NEX',10.123456,0)");
