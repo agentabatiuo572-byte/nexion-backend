@@ -50,6 +50,23 @@ class AppEarningGoalServiceTest {
     }
 
     @Test
+    void listDerivesAchievedFromCanonicalLifetimeEarnings() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("1000"));
+        when(mapper.list(42L)).thenReturn(List.of(new AppEarningGoalMapper.GoalRow(
+                7L, 42L, new BigDecimal("1000"), LocalDateTime.now().plusDays(30), false,
+                null, LocalDateTime.now(), LocalDateTime.now())));
+
+        ApiResult<AppEarningGoalService.GoalListView> result = service.list(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().goals()).singleElement().satisfies(goal -> {
+            assertThat(goal.achieved()).isTrue();
+            assertThat(goal.progressPct()).isEqualByComparingTo("100");
+        });
+    }
+
+    @Test
     void createRejectsInvalidDeadlineBeforeWriting() {
         when(mapper.activeUser(42L)).thenReturn(42L);
 
@@ -79,6 +96,56 @@ class AppEarningGoalServiceTest {
         assertThat(result.getData().productNo()).isEqualTo("fast");
         assertThat(result.getData().source()).isEqualTo("nx_product");
         assertThat(result.getData().serverCanonical()).isTrue();
+    }
+
+    @Test
+    void recommendationRejectsADeadlineThatNoAvailableProductCanMeet() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("16023"));
+        when(catalog.catalog(42L)).thenReturn(ApiResult.ok(Map.of(
+                "source", "nx_product",
+                "products", List.of(Map.of("id", "rack-p2", "name", "StellarRack P2", "available", true,
+                        "dailyEarn", new BigDecimal("75"), "price", new BigDecimal("9000"))))));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("100000"), LocalDateTime.of(2026, 11, 29, 0, 0));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("GOAL_NO_ELIGIBLE_PRODUCT");
+        assertThat(result.getData()).isNull();
+    }
+
+    @Test
+    void recommendationDoesNotSuggestPurchaseAfterLifetimeAlreadyMeetsTarget() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("15989.57"));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("1000"), LocalDateTime.of(2026, 11, 29, 0, 0));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().purchaseRequired()).isFalse();
+        assertThat(result.getData().requiredDaily()).isEqualByComparingTo("0");
+        assertThat(result.getData().productNo()).isNull();
+        verify(catalog, never()).catalog(42L);
+    }
+
+    @Test
+    void recommendationKeepsAPositiveSubCentShortfallPurchasable() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("999.999999"));
+        when(catalog.catalog(42L)).thenReturn(ApiResult.ok(Map.of(
+                "source", "nx_product",
+                "products", List.of(Map.of("id", "daily", "name", "Daily", "available", true,
+                        "dailyEarn", new BigDecimal("1"), "price", new BigDecimal("100"))))));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("1000"), LocalDateTime.of(2026, 11, 29, 0, 0));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().purchaseRequired()).isTrue();
+        assertThat(result.getData().requiredDaily()).isEqualByComparingTo("0.000001");
+        assertThat(result.getData().productNo()).isEqualTo("daily");
     }
 
     @Test

@@ -85,29 +85,31 @@ public class AppEarningGoalService {
     public ApiResult<RecommendationView> recommendation(Long userId, BigDecimal targetUsdt, LocalDateTime deadlineAt) {
         ApiResult<Void> validation = validate(userId, targetUsdt, deadlineAt);
         if (validation.getCode() != 0) return ApiResult.fail(validation.getCode(), validation.getMessage());
+        BigDecimal lifetime = nonNegative(mapper.lifetimeEarnings(userId));
+        BigDecimal remaining = targetUsdt.subtract(lifetime).max(BigDecimal.ZERO);
+        long days = remainingUtcDays(deadlineAt);
+        if (remaining.signum() == 0) {
+            return ApiResult.ok(new RecommendationView(true, "nx_earning_goal", "PRODUCTION", "", false,
+                    null, null, null, null, BigDecimal.ZERO, targetUsdt, days));
+        }
         ApiResult<Map<String, Object>> catalog = productCatalogService.catalog(userId);
         if (catalog == null || catalog.getCode() != 0 || catalog.getData() == null) {
             return ApiResult.fail(503, "GOAL_CATALOG_UNAVAILABLE");
         }
         Map<String, Object> data = catalog.getData();
         List<Map<String, Object>> products = productRows(data.get("products"));
-        BigDecimal lifetime = nonNegative(mapper.lifetimeEarnings(userId));
-        long days = remainingUtcDays(deadlineAt);
-        BigDecimal requiredDaily = targetUsdt.subtract(lifetime).max(BigDecimal.ZERO)
-                .divide(BigDecimal.valueOf(days), 6, RoundingMode.CEILING);
+        BigDecimal requiredDaily = remaining.divide(BigDecimal.valueOf(days), 6, RoundingMode.CEILING);
         Map<String, Object> selected = products.stream()
                 .filter(item -> truthy(item.get("available")))
                 .filter(item -> positive(item.get("dailyEarn")).signum() > 0)
                 .filter(item -> positive(item.get("dailyEarn")).compareTo(requiredDaily) >= 0)
                 .min(Comparator.comparing(item -> positive(item.get("dailyEarn"))))
-                .orElseGet(() -> products.stream().filter(item -> truthy(item.get("available")))
-                        .filter(item -> positive(item.get("dailyEarn")).signum() > 0)
-                        .max(Comparator.comparing(item -> positive(item.get("dailyEarn")))).orElse(null));
+                .orElse(null);
         if (selected == null) return ApiResult.fail(409, "GOAL_NO_ELIGIBLE_PRODUCT");
         String sourceEnvironment = text(data.get("sourceEnvironment"), "PRODUCTION");
         String runId = text(data.get("runId"), "");
         return ApiResult.ok(new RecommendationView(true, text(data.get("source"), "nx_product"),
-                sourceEnvironment, runId, text(selected.get("id"), ""), text(selected.get("name"), ""),
+                sourceEnvironment, runId, true, text(selected.get("id"), ""), text(selected.get("name"), ""),
                 positive(selected.get("dailyEarn")), positive(selected.get("price")), requiredDaily,
                 targetUsdt, days));
     }
@@ -129,7 +131,9 @@ public class AppEarningGoalService {
         BigDecimal progress = row.targetUsdt() == null || row.targetUsdt().signum() <= 0 ? BigDecimal.ZERO
                 : lifetime.divide(row.targetUsdt(), 6, RoundingMode.DOWN).multiply(BigDecimal.valueOf(100))
                         .min(BigDecimal.valueOf(100));
-        return new GoalView(row.id(), row.targetUsdt(), epoch(row.deadlineAt()), epoch(row.createdAt()), row.achieved(),
+        boolean achieved = row.achieved() || (row.targetUsdt() != null && row.targetUsdt().signum() > 0
+                && lifetime.compareTo(row.targetUsdt()) >= 0);
+        return new GoalView(row.id(), row.targetUsdt(), epoch(row.deadlineAt()), epoch(row.createdAt()), achieved,
                 epoch(row.achievedAt()), progress, lifetime);
     }
 
@@ -185,6 +189,6 @@ public class AppEarningGoalService {
                            boolean achieved, Long achievedAt, BigDecimal progressPct,
                            BigDecimal lifetimeEarningsUsdt) { }
     public record RecommendationView(boolean serverCanonical, String source, String sourceEnvironment,
-                                     String runId, String productNo, String productName, BigDecimal dailyEarn,
-                                     BigDecimal price, BigDecimal requiredDaily, BigDecimal targetUsdt, long days) { }
+                                      String runId, boolean purchaseRequired, String productNo, String productName, BigDecimal dailyEarn,
+                                      BigDecimal price, BigDecimal requiredDaily, BigDecimal targetUsdt, long days) { }
 }
