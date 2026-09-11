@@ -31,6 +31,23 @@ public class AdminIdempotencyTransactionExecutor {
     private final ObjectMapper objectMapper;
     private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor;
 
+    /** Never claims, resets, deserializes a response, or executes a business action. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public AdminIdempotencyService.RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
+        AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
+        if (record == null || !Integer.valueOf(0).equals(record.getIsDeleted())) {
+            return AdminIdempotencyService.RecoveryStatus.NOT_FOUND;
+        }
+        if (!requestHash.equals(record.getRequestHash())) return AdminIdempotencyService.RecoveryStatus.MISMATCH;
+        return switch (String.valueOf(record.getStatus())) {
+            case STATUS_SUCCEEDED -> StringUtils.hasText(record.getResponseJson())
+                    ? AdminIdempotencyService.RecoveryStatus.SUCCEEDED : AdminIdempotencyService.RecoveryStatus.UNKNOWN;
+            case STATUS_FAILED -> AdminIdempotencyService.RecoveryStatus.FAILED;
+            case STATUS_PROCESSING -> AdminIdempotencyService.RecoveryStatus.PROCESSING;
+            default -> AdminIdempotencyService.RecoveryStatus.UNKNOWN;
+        };
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public <T> Claim<T> claimRetained(String scope, String idempotencyKey, String requestHash,
                                     LocalDateTime expiresAt, Class<T> responseType) {

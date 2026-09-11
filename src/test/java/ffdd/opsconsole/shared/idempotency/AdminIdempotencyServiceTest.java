@@ -32,6 +32,39 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 class AdminIdempotencyServiceTest {
+    @Test
+    void recoveryReadsExpiredStatesWithoutResettingOrExposingHistoricalResponse() {
+        for (String status : List.of("SUCCEEDED", "FAILED", "PROCESSING", "UNKNOWN")) {
+            AdminIdempotencyRecordEntity row = existing("hash", status, "not valid json; must not be parsed");
+            row.setIsDeleted(0);
+            row.setExpiresAt(LocalDateTime.of(2020, 1, 1, 0, 0));
+            when(recordMapper.selectCurrent("APP:G4:USER:7", "key")).thenReturn(row);
+            assertThat(service.recoveryStatus("app:g4:user:7", "key", "hash").name()).isEqualTo(status);
+        }
+        verify(recordMapper, org.mockito.Mockito.times(4)).selectCurrent("APP:G4:USER:7", "key");
+        org.mockito.Mockito.verifyNoMoreInteractions(recordMapper);
+        org.mockito.Mockito.verifyNoInteractions(expiryTransitionExecutor);
+    }
+
+    @Test
+    void recoveryCannotTurnMissingDeletedOrMismatchedReceiptIntoSuccess() {
+        assertThat(service.recoveryStatus("scope", "key", "hash"))
+                .isEqualTo(AdminIdempotencyService.RecoveryStatus.NOT_FOUND);
+        AdminIdempotencyRecordEntity row = existing("original", "SUCCEEDED", "{}");
+        row.setIsDeleted(0);
+        when(recordMapper.selectCurrent("SCOPE", "key")).thenReturn(row);
+        assertThat(service.recoveryStatus("scope", "key", "other"))
+                .isEqualTo(AdminIdempotencyService.RecoveryStatus.MISMATCH);
+        row.setIsDeleted(1);
+        assertThat(service.recoveryStatus("scope", "key", "original"))
+                .isEqualTo(AdminIdempotencyService.RecoveryStatus.NOT_FOUND);
+        row.setIsDeleted(0); row.setResponseJson(null);
+        assertThat(service.recoveryStatus("scope", "key", "original"))
+                .isEqualTo(AdminIdempotencyService.RecoveryStatus.UNKNOWN);
+        verify(recordMapper, org.mockito.Mockito.times(4)).selectCurrent("SCOPE", "key");
+        org.mockito.Mockito.verifyNoMoreInteractions(recordMapper);
+    }
+
     private final AdminIdempotencyRecordMapper recordMapper = org.mockito.Mockito.mock(AdminIdempotencyRecordMapper.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor =

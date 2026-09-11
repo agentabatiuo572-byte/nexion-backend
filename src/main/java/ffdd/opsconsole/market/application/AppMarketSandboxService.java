@@ -120,7 +120,33 @@ public class AppMarketSandboxService {
 
     public ApiResult<Map<String,Object>> genesisState() {
         String run=runId();
-        return ApiResult.ok(genesisStateView(run,sandboxSalePolicy()));
+        Map<String,Object> state = genesisStateView(run,sandboxSalePolicy());
+        state.put("secondaryCommandProtocol", 2);
+        return ApiResult.ok(state);
+    }
+
+    public ApiResult<Map<String,Object>> genesisCommandStatus(Long userId, String operation, String holdingNo,
+                                                               String idempotencyKey, BigDecimal priceUsdt) {
+        requireSandboxUser(userId);
+        String run = runId();
+        requireGenesisUserRunIsolation(run, userId);
+        String key = key(idempotencyKey, "GENESIS_IDEMPOTENCY_KEY_REQUIRED");
+        String expectedType = switch (operation) {
+            case "list" -> "LIST";
+            case "cancel" -> "CANCEL";
+            case "buy" -> "SECONDARY";
+            default -> throw new BizException(422, "GENESIS_COMMAND_OPERATION_INVALID");
+        };
+        AppMarketSandboxMapper.GenesisOrder prior = mapper.genesisOrderStatusByKey(run, userId, key);
+        String status = "NOT_FOUND";
+        if (prior != null) {
+            boolean matches = expectedType.equals(prior.orderType()) && holdingNo.equals(prior.holdingNo());
+            if (matches && !"cancel".equals(operation) && priceUsdt != null) {
+                matches = prior.priceUsdt() != null && prior.priceUsdt().compareTo(priceUsdt) == 0;
+            }
+            status = !matches ? "MISMATCH" : "COMPLETED".equals(prior.status()) ? "SUCCEEDED" : "UNKNOWN";
+        }
+        return ApiResult.ok(linked("status", status, "secondaryCommandProtocol", 2));
     }
 
     public ApiResult<Map<String,Object>> genesisAccount(Long userId) {

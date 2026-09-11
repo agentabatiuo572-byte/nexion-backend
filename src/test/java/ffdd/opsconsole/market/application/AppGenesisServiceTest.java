@@ -36,6 +36,61 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppGenesisServiceTest {
+    @Test
+    void recoveryDerivesTheAccountScopeAndNeverReadsOrWritesFinancialProjections() {
+        when(idempotency.recoveryStatus(anyString(), anyString(), anyString()))
+                .thenReturn(AdminIdempotencyService.RecoveryStatus.SUCCEEDED);
+        var result = service.commandStatus(42L, "list", "holding-42", "prior-key", new BigDecimal("12"));
+        assertThat(result.getData()).containsExactlyInAnyOrderEntriesOf(
+                Map.of("status", "SUCCEEDED", "secondaryCommandProtocol", 2));
+        verify(idempotency).recoveryStatus(org.mockito.ArgumentMatchers.eq("APP:G4_GENESIS_LIST:holding-42:USER:42"),
+                org.mockito.ArgumentMatchers.eq("prior-key"), org.mockito.ArgumentMatchers.eq(commandHash("12.000000")));
+        verify(mapper, never()).lockHolding(anyString());
+        assertNoTradeWrites();
+    }
+
+    @Test
+    void recoveryRejectsArbitraryOperationsAndForeignSubjectBeforeLookup() {
+        assertThatThrownBy(() -> service.commandStatus(42L, "PRIMARY_PURCHASE", "holding-42", "prior-key", BigDecimal.TEN))
+                .hasMessage("GENESIS_COMMAND_OPERATION_INVALID");
+        when(mapper.userSandbox(42L)).thenReturn(1);
+        assertThatThrownBy(() -> service.commandStatus(42L, "cancel", "holding-42", "prior-key", null))
+                .hasMessage("GENESIS_PRODUCTION_USER_REQUIRED");
+        verify(idempotency, never()).recoveryStatus(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void longHoldingScopesStayBoundedAndBothMutationAndRecoveryUseTheSameIdentity() {
+        String holding = "G".repeat(128);
+        org.mockito.Mockito.doReturn(ApiResult.ok(Map.of())).when(idempotency)
+                .executeRetained(anyString(), anyString(), anyString(), any(), any());
+        when(idempotency.recoveryStatus(anyString(), anyString(), anyString()))
+                .thenReturn(AdminIdempotencyService.RecoveryStatus.NOT_FOUND);
+        service.list(42L, holding, "long-key", new AppGenesisService.ListingRequest(BigDecimal.TEN));
+        service.commandStatus(42L, "list", holding, "long-key", BigDecimal.TEN);
+        var scope = org.mockito.ArgumentCaptor.forClass(String.class);
+        var fingerprint = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(idempotency).executeRetained(scope.capture(), anyString(), fingerprint.capture(), any(), any());
+        assertThat(scope.getValue().length()).isLessThanOrEqualTo(96);
+        assertThat(fingerprint.getValue()).isEqualTo(commandHash("LIST:" + holding + "|10.000000"));
+        verify(idempotency).recoveryStatus(scope.getValue(), "long-key", fingerprint.getValue());
+    }
+
+    @Test
+    void legacyUnquotedBuyRecoveryKeepsTheHistoricalFingerprint() {
+        when(idempotency.recoveryStatus(anyString(), anyString(), anyString()))
+                .thenReturn(AdminIdempotencyService.RecoveryStatus.SUCCEEDED);
+        service.commandStatus(42L, "buy", "holding-42", "legacy-key", null);
+        verify(idempotency).recoveryStatus("APP:G4_GENESIS_SECONDARY_BUY:holding-42:USER:42", "legacy-key", commandHash("holding-42"));
+    }
+
+    private static String commandHash(String value) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException error) { throw new AssertionError(error); }
+    }
+
     private final AppGenesisMapper mapper=mock(AppGenesisMapper.class);
     private final PlatformConfigFacade config=mock(PlatformConfigFacade.class);
     private final AdminIdempotencyService idempotency=mock(AdminIdempotencyService.class);
@@ -88,7 +143,7 @@ class AppGenesisServiceTest {
                 "tiers", List.of(), "tiersVersion", 1L, "marketOpenState", "open",
                 "marketOpenStateVersion", 1L, "closedNoticeKey", "default",
                 "catalogAvailable", true, "tradeAvailable", true, "tradeBlockedReason", ""));
-        when(idempotency.execute(anyString(),anyString(),anyString(),any(),any()))
+        when(idempotency.executeRetained(anyString(),anyString(),anyString(),any(),any()))
                 .thenAnswer(i->((Supplier)i.getArgument(4)).get());
     }
 
@@ -217,7 +272,7 @@ class AppGenesisServiceTest {
                     assertThat(ex.getMessage()).isEqualTo("GENESIS_LISTING_PRICE_INVALID");
                 });
 
-        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(idempotency, never()).executeRetained(anyString(), anyString(), anyString(), any(), any());
         verify(mapper, never()).lockHolding("GEN-MICRO");
         verify(mapper, never()).listHolding(anyLong(), anyLong(), any(), any());
         verifyNoInteractions(outbox, audit);
@@ -426,7 +481,7 @@ class AppGenesisServiceTest {
                     assertThat(ex.getMessage()).isEqualTo("GENESIS_EXPECTED_PRICE_INVALID");
                 });
 
-        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(idempotency, never()).executeRetained(anyString(), anyString(), anyString(), any(), any());
         verify(mapper, never()).lockHolding("listed-invalid");
         assertNoTradeWrites();
     }
@@ -439,7 +494,7 @@ class AppGenesisServiceTest {
                     assertThat(ex.getMessage()).isEqualTo("GENESIS_EXPECTED_PRICE_INVALID");
                 });
 
-        verify(idempotency, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(idempotency, never()).executeRetained(anyString(), anyString(), anyString(), any(), any());
         verify(mapper, never()).lockHolding("listed-missing");
         assertNoTradeWrites();
     }
@@ -505,7 +560,7 @@ class AppGenesisServiceTest {
     @Test
     void secondaryBuyFingerprintChangesWhenExpectedPriceChanges() {
         org.mockito.Mockito.doReturn(ApiResult.ok(Map.of())).when(idempotency)
-                .execute(anyString(), anyString(), anyString(), any(), any());
+                .executeRetained(anyString(), anyString(), anyString(), any(), any());
         org.mockito.ArgumentCaptor<String> fingerprint = org.mockito.ArgumentCaptor.forClass(String.class);
 
         service.buyListing(42L, "listed-fingerprint", "same-key",
@@ -514,7 +569,7 @@ class AppGenesisServiceTest {
                 new AppGenesisService.BuyRequest(new BigDecimal("121.000000")));
 
         verify(idempotency, org.mockito.Mockito.times(2))
-                .execute(anyString(), anyString(), fingerprint.capture(), any(), any());
+                .executeRetained(anyString(), anyString(), fingerprint.capture(), any(), any());
         assertThat(fingerprint.getAllValues().get(0)).isNotEqualTo(fingerprint.getAllValues().get(1));
     }
 

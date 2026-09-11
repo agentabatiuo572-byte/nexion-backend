@@ -19,6 +19,33 @@ import org.springframework.mock.env.MockEnvironment;
 
 class AppMarketSandboxServiceTest {
     @Test
+    void recoveryReadsOnlyTheExactRunAccountKeyWithoutLockingOrFinancialWrites() throws Exception {
+        MockEnvironment env = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", "run-recovery");
+        env.setActiveProfiles("test");
+        AppMarketSandboxMapper mapper = mock(AppMarketSandboxMapper.class);
+        when(mapper.userSandbox(7L)).thenReturn(1);
+        when(mapper.genesisOrderStatusByKey("run-recovery", 7L, "key")).thenReturn(
+                new AppMarketSandboxMapper.GenesisOrder(1L, "run-recovery", "order", "key", 7L, "holding-7",
+                        "LIST", BigDecimal.ZERO, BigDecimal.TEN, null, "COMPLETED", LocalDateTime.now()));
+        var service = new AppMarketSandboxService(mapper, env, Optional.empty());
+        assertThat(service.genesisCommandStatus(7L, "list", "holding-7", "key", BigDecimal.TEN).getData())
+                .containsEntry("status", "SUCCEEDED");
+        assertThat(service.genesisCommandStatus(7L, "list", "holding-7", "key", BigDecimal.ONE).getData())
+                .containsEntry("status", "MISMATCH");
+        assertThat(service.genesisCommandStatus(7L, "cancel", "holding-7", "key", null).getData())
+                .containsEntry("status", "MISMATCH");
+        verify(mapper, times(3)).userSandbox(7L);
+        verify(mapper, times(3)).genesisArtifactsInOtherRuns("run-recovery", 7L);
+        verify(mapper, times(3)).genesisOrderStatusByKey("run-recovery", 7L, "key");
+        verifyNoMoreInteractions(mapper);
+        String sql = String.join(" ", AppMarketSandboxMapper.class
+                .getMethod("genesisOrderStatusByKey", String.class, Long.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Select.class).value());
+        assertThat(sql.toUpperCase(java.util.Locale.ROOT)).doesNotContain("FOR UPDATE", "LOCK IN SHARE MODE");
+        assertThat(sql).contains("run_id=#{runId}", "user_id=#{userId}", "client_request_no=#{key}");
+    }
+
+    @Test
     void productionProfileCannotEnterSandboxWriteRail() {
         AppMarketSandboxMapper mapper=mock(AppMarketSandboxMapper.class); MockEnvironment env=new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID","run-alpha");
         AppMarketSandboxService service=new AppMarketSandboxService(mapper,env,Optional.empty());

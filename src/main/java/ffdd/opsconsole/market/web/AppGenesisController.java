@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.math.BigDecimal;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -42,6 +44,17 @@ public class AppGenesisController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : h3WeeklyParticipationObservationService.observeGenesisSecondaryMarket(userId);
+    }
+
+    @GetMapping("/api/genesis/holdings/{holdingNo}/commands/{operation}")
+    public ApiResult<Map<String, Object>> commandStatus(
+            @PathVariable String holdingNo,
+            @PathVariable String operation,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestParam(required = false) BigDecimal priceUsdt,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.commandStatus(userId, operation, holdingNo, idempotencyKey, priceUsdt);
     }
     @PostMapping("/api/genesis/purchase")
     public ApiResult<Map<String, Object>> purchase(

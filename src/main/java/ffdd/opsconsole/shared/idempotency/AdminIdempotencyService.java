@@ -30,6 +30,14 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true);
     }
 
+    /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
+    public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
+        return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),
+                normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED"));
+    }
+
+    public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH }
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         String normalizedScope = normalizeScope(scope);

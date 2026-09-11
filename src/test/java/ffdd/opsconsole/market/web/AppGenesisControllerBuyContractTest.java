@@ -17,6 +17,28 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 class AppGenesisControllerBuyContractTest {
     @Test
+    void recoveryIsReadOnlyAndRequiresANormalUserSubject() throws Exception {
+        AppGenesisService service = mock(AppGenesisService.class);
+        AppGenesisController controller = new AppGenesisController(service,
+                mock(H3WeeklyParticipationObservationService.class));
+        assertThat(controller.commandStatus("holding-42", "list", "key", BigDecimal.TEN, null).getCode()).isEqualTo(403);
+        Authentication authentication = mock(Authentication.class);
+        when(authentication.isAuthenticated()).thenReturn(true);
+        when(authentication.getPrincipal()).thenReturn("42");
+        when(authentication.getDetails()).thenReturn(Map.of("subjectType", "ADMIN"));
+        assertThat(controller.commandStatus("holding-42", "list", "key", BigDecimal.TEN, authentication).getCode()).isEqualTo(403);
+        org.mockito.Mockito.verifyNoInteractions(service);
+        when(authentication.getDetails()).thenReturn(Map.of("subjectType", "USER"));
+        when(service.commandStatus(42L, "list", "holding-42", "key", BigDecimal.TEN))
+                .thenReturn(ApiResult.ok(Map.of("status", "SUCCEEDED")));
+        assertThat(controller.commandStatus("holding-42", "list", "key", BigDecimal.TEN, authentication).getCode()).isZero();
+        verify(service).commandStatus(42L, "list", "holding-42", "key", BigDecimal.TEN);
+        Method method = AppGenesisController.class.getMethod("commandStatus", String.class, String.class, String.class,
+                BigDecimal.class, Authentication.class);
+        assertThat(method.isAnnotationPresent(org.springframework.web.bind.annotation.GetMapping.class)).isTrue();
+    }
+
+    @Test
     void buyBindsRequiredExpectedPriceBodyAndForwardsItUnchanged() throws Exception {
         AppGenesisService service = mock(AppGenesisService.class);
         AppGenesisController controller = new AppGenesisController(service,

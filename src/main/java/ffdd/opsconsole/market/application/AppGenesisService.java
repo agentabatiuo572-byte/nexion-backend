@@ -93,6 +93,7 @@ public class AppGenesisService {
                         "nx_config_item:market.genesis.ops.*"));
         result.putAll(catalogState);
         result.put("serverCanonical", true);
+        result.put("secondaryCommandProtocol", 2);
         result.put("sourceEnvironment", "PRODUCTION");
         result.put("runId", "");
         boolean tradeAvailable = marketEnabled && salePolicy.available() && catalogAvailable;
@@ -128,6 +129,30 @@ public class AppGenesisService {
         requireGenesisSubject(userId);
         AppGenesisMapper.SeriesRow series = requireSeries();
         return ApiResult.ok(eligibilityView(userId, series, salePolicy(series), marketEnabled()));
+    }
+
+    /** Only an actor's exact command status is exposed; historical account snapshots stay private. */
+    public ApiResult<Map<String, Object>> commandStatus(Long userId, String operation, String holdingNo,
+                                                        String idempotencyKey, BigDecimal priceUsdt) {
+        final String no = normalizeHoldingNo(holdingNo);
+        final String key = requireIdempotencyKey(idempotencyKey);
+        final String command = switch (String.valueOf(operation)) {
+            case "list" -> "LIST:" + no;
+            case "cancel" -> "CANCEL_LIST:" + no;
+            case "buy" -> "SECONDARY_BUY:" + no;
+            default -> throw new BizException(422, "GENESIS_COMMAND_OPERATION_INVALID");
+        };
+        // Before the quoted-buy contract, secondary buy fingerprinted only holdingNo.
+        // Null price is allowed only for read-only lookup of those historical receipts.
+        Object request = "cancel".equals(operation) || ("buy".equals(operation) && priceUsdt == null)
+                ? no : expectedPurchasePrice(new BuyRequest(priceUsdt));
+        if (runtimeMode() == RuntimeMode.SANDBOX && sandbox.isPresent()) {
+            return sandbox.get().genesisCommandStatus(userId, operation, no, key, priceUsdt);
+        }
+        requireGenesisSubject(userId);
+        CommandIdentity identity = commandIdentity(command, userId, request);
+        return ApiResult.ok(linked("status", idempotency.recoveryStatus(identity.scope(), key, identity.hash()).name(),
+                "secondaryCommandProtocol", 2));
     }
 
     @Transactional
@@ -632,9 +657,25 @@ public class AppGenesisService {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<Map<String, Object>> once(String operation, Long userId, String key, Object request,
                                                  Supplier<ApiResult<Map<String, Object>>> action) {
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                "APP:G4_GENESIS_" + operation + ":USER:" + userId, key, sha256(String.valueOf(request)),
+        CommandIdentity identity = commandIdentity(operation, userId, request);
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
+                identity.scope(), key, identity.hash(),
                 ApiResult.class, (Supplier) action);
+    }
+
+    private record CommandIdentity(String scope, String hash) { }
+
+    private CommandIdentity commandIdentity(String operation, Long userId, Object request) {
+        String scope = "APP:G4_GENESIS_" + operation + ":USER:" + userId;
+        // Existing valid scopes and fingerprints must stay byte-compatible with retained receipts.
+        if (scope.length() <= 96) return new CommandIdentity(scope, sha256(String.valueOf(request)));
+        // Oversize scopes have never been accepted by the shared guard. Bind the complete
+        // holding into the fingerprint while shortening only this formerly invalid namespace.
+        int delimiter = operation.indexOf(':');
+        String kind = delimiter < 0 ? operation : operation.substring(0, delimiter);
+        String holding = delimiter < 0 ? "" : operation.substring(delimiter + 1);
+        return new CommandIdentity("APP:G4_GENESIS_" + kind + ":H:" + sha256(holding).substring(0, 32)
+                + ":USER:" + userId, sha256(operation + "|" + request));
     }
 
     private String sha256(String value) {

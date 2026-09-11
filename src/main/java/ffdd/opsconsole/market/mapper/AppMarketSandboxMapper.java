@@ -172,6 +172,9 @@ public interface AppMarketSandboxMapper {
     @Select("SELECT id,run_id AS runId,order_no AS orderNo,client_request_no AS clientRequestNo,user_id AS userId,holding_no AS holdingNo,order_type AS orderType,amount_usdt AS amountUsdt,price_usdt AS priceUsdt,seller_user_id AS sellerUserId,status,created_at AS createdAt FROM nx_genesis_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} AND client_request_no=#{key} LIMIT 1 FOR UPDATE")
     GenesisOrder genesisOrderByKey(@Param("runId") String runId,@Param("userId") Long userId,@Param("key") String key);
 
+    @Select("SELECT id,run_id AS runId,order_no AS orderNo,client_request_no AS clientRequestNo,user_id AS userId,holding_no AS holdingNo,order_type AS orderType,amount_usdt AS amountUsdt,price_usdt AS priceUsdt,seller_user_id AS sellerUserId,status,created_at AS createdAt FROM nx_genesis_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} AND client_request_no=#{key} LIMIT 1")
+    GenesisOrder genesisOrderStatusByKey(@Param("runId") String runId,@Param("userId") Long userId,@Param("key") String key);
+
     @Select("""
             SELECT order_no AS orderNo,UPPER(order_type) AS orderType,
                    CAST(amount_usdt / NULLIF(price_usdt,0) AS UNSIGNED) AS quantity,
