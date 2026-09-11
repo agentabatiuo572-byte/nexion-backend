@@ -14,7 +14,7 @@ import sys
 import types
 
 INSTALL = Path('/srv/jenkins/release')
-FILES = frozenset({'trusted_entry.py', 'release_broker.py', 'schema_fingerprint.py',
+FILES = frozenset({'trusted_entry.py', 'release_broker.py', 'schema_fingerprint.py', 'database_migrations.py',
                    'install_release.py', 'ci-build.sh', 'main.pipeline.groovy',
                    '40-release-jobs.groovy', 'test-server.yml', 'h5-nginx.conf',
                    'public-test-policy.properties', 'nexgrid-release.service',
@@ -50,19 +50,20 @@ def main():
     if os.geteuid() != 0 or not sys.flags.isolated or Path(__file__) != INSTALL / 'trusted_entry.py':
         raise RuntimeError('ISOLATED_CANONICAL_ROOT_ENTRY_REQUIRED')
     sources = verified_sources(INSTALL)
-    if len(sys.argv) < 3 or sys.argv[1] not in ('install', 'broker'):
+    if len(sys.argv) < 3 or sys.argv[1] not in ('install', 'broker', 'migrations'):
         raise RuntimeError('ENTRY_ACTION_REQUIRED')
-    selected = 'install_release' if sys.argv[1] == 'install' else 'release_broker'
+    selected = {'install': 'install_release', 'broker': 'release_broker',
+                'migrations': 'database_migrations'}[sys.argv[1]]
     # Compile the verified bytes directly. Do not load local __pycache__, .pth,
     # extension modules or any path entries from the deployment directory.
     sys._nexgrid_verified_entry = True
-    for name in ('schema_fingerprint', 'release_broker'):
+    for name in ('schema_fingerprint', 'database_migrations', 'release_broker'):
         module = types.ModuleType(name)
         module.__file__ = str(INSTALL / (name + '.py'))
         sys.modules[name] = module
         exec(compile(sources[name + '.py'], module.__file__, 'exec'), module.__dict__)
     sys.argv = [str(INSTALL / (selected + '.py')), *sys.argv[2:]]
-    if selected == 'release_broker':
+    if selected in ('release_broker', 'database_migrations'):
         sys.modules[selected].main()
     else:
         scope = {'__name__': '__main__', '__file__': sys.argv[0]}

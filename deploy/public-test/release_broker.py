@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+import database_migrations as migrations
 
 ROOT = Path('/srv/nexgrid/cd')
 INSTALL = Path('/srv/jenkins/release')
@@ -277,6 +278,8 @@ def finish_commit(journal):
     # HEALTHY is durable before state is advanced. Repeating this operation is safe.
     save(ROOT / 'state.json', journal['new_state'])
     component = journal['component']
+    if component == 'backend':
+        migrations.complete_release()
     if component != 'backend':
         old_name = journal['old_state'][component]['container']
         existing = run('docker', 'ps', '-a', '--format', '{{.Names}}').splitlines()
@@ -290,10 +293,22 @@ def recover_transaction(journal):
     phase = journal['phase']
     require(phase in ('STAGING', 'APPLYING', 'HEALTHY'), 'UNKNOWN_TRANSACTION_PHASE')
     component = journal['component']
+    if component == 'backend' and migrations.active() and phase != 'HEALTHY':
+        # MySQL DDL may already have committed. Never restart the old JAR as if
+        # code rollback undid SQL. Preserve the DB journal; other components work.
+        migrations.stop_backend()
+        clear_restored_transaction(journal)
+        print('BACKEND_INTERRUPTED_WITH_DB_JOURNAL_RETAINED', flush=True)
+        return
     if phase == 'HEALTHY':
         try:
             health(component, journal['new_state'][component]['port'])
         except Rejected:
+            if component == 'backend' and migrations.active():
+                migrations.stop_backend()
+                clear_restored_transaction(journal)
+                print('BACKEND_UNHEALTHY_WITH_DB_JOURNAL_RETAINED', flush=True)
+                return
             restore(journal)
             save(ROOT / 'state.json', journal['old_state'])
             save(ROOT / 'HALTED.json', {'reason': 'COMMITTED_CANDIDATE_UNHEALTHY_RESTORED', **journal})
@@ -402,6 +417,17 @@ def stage_release(component, build, destination, manifest, config, journal, port
 
 
 def apply_with_rollback(journal, apply, port, old_port):
+    if journal.get('database'):
+        try:
+            apply()
+            health('backend', port)
+        except BaseException:
+            # The schema is forward-only. Keep exact SQL/backup receipts and
+            # let a new main build repair code; don't silently restore stale data.
+            migrations.stop_backend()
+            clear_restored_transaction(journal)
+            raise ComponentFailed('DB_APPLIED_CANDIDATE_FAILED_BACKEND_STOPPED') from None
+        return
     restored = False
 
     def restored_ok():
@@ -432,7 +458,8 @@ def promote(component, number, config, state, rollback_check=False):
     remote = run('git', 'ls-remote', url, 'refs/heads/main', timeout=30).split()
     require(len(remote) == 2 and remote == [sha, 'refs/heads/main'], 'BUILD_IS_NOT_CURRENT_MAIN')
     # GitHub main is the user's approved business source. Mapper/startup/source
-    # changes do not require a second fingerprint approval. No SQL is run here.
+    # changes do not require a second fingerprint approval. Versioned SQL runs
+    # through the host-owned backup/once-only migration runner, never a root shell.
     suffix = '-rollback' if rollback_check else ''
     destination = ROOT / component / f'{number}-{sha[:12]}{suffix}'
     require(not destination.exists(), 'RELEASE_ALREADY_STAGED')
@@ -455,19 +482,27 @@ def promote(component, number, config, state, rollback_check=False):
     save(ROOT / 'transaction.json', journal)
     try:
         release = stage_release(component, build, destination, manifest, config, journal, port)
+        if component == 'backend':
+            journal['database'] = migrations.apply(sha, rollback_check=rollback_check)
+            save(ROOT / 'transaction.json', journal)
     except BaseException as error:
         try:
             discard_staging(journal)
         except BaseException:
             save(ROOT / 'HALTED.json', {'reason': 'STAGING_CLEANUP_INCOMPLETE', **journal})
             raise
-        raise ComponentFailed('STAGING_FAILED: ' + failure_reason(error)) from None
+        reason = str(error) if isinstance(error, migrations.MigrationError) else failure_reason(error)
+        raise ComponentFailed('STAGING_FAILED: ' + reason) from None
     if component == 'backend':
         def apply():
             link(ROOT / 'backend/current', release)
             atomic_write(DROPIN, backend_dropin(), 0o644)
             run('systemctl', 'daemon-reload')
-            run('systemctl', 'restart', 'nexgrid-backend', timeout=90)
+            migrations.allow_candidate_start()
+            try:
+                run('systemctl', 'restart', 'nexgrid-backend', timeout=90)
+            finally:
+                migrations.revoke_candidate_start()
     else:
         def apply():
             atomic_write(NGINX, changed, 0o644)

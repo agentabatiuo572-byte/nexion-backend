@@ -31,6 +31,13 @@ class IndependentReleasesTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.config = {'job_hashes': {}, 'policy_sha256': hashlib.sha256(b'policy').hexdigest()}
+        migration = patch.object(b.migrations, 'apply', return_value=None)
+        migration.start()
+        self.addCleanup(migration.stop)
+        for name in ('allow_candidate_start', 'revoke_candidate_start'):
+            patcher = patch.object(b.migrations, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for kind in b.ARTIFACTS:
             job = b.JOBS / f'nexgrid-{kind}-main'
             artifacts = job / 'builds/2/archive/artifacts'
