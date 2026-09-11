@@ -29,12 +29,14 @@ class AppPaymentMethodServiceTest {
     private final AppPaymentMethodMapper mapper = mock(AppPaymentMethodMapper.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final PaymentMethodProviderProperties providerProperties = sandboxProperties();
+    private final ffdd.opsconsole.growth.application.H3DayOneBusinessFactService facts = mock(ffdd.opsconsole.growth.application.H3DayOneBusinessFactService.class);
     private final AppPaymentMethodService service = new AppPaymentMethodService(
-            mapper, idempotency, providerProperties, guard(providerProperties, "test"), null);
+            mapper, idempotency, providerProperties, guard(providerProperties, "test"), null, facts);
 
     @BeforeEach
     void passThroughIdempotencyAndAuthenticate() {
         when(mapper.activeUser(USER_ID)).thenReturn(USER_ID);
+        when(mapper.lockActiveUser(USER_ID)).thenReturn(USER_ID);
         when(mapper.userSandbox(USER_ID)).thenReturn(1);
         when(mapper.developmentUserScope(USER_ID, "+84", "fixed-phone")).thenReturn(1);
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
@@ -106,7 +108,7 @@ class AppPaymentMethodServiceTest {
                 "tok_0123456789abcdef01234567", "mock", "visa", "4242", "12/30", "Alice", true);
         PaymentMethodProviderProperties production = new PaymentMethodProviderProperties();
         AppPaymentMethodService productionService = new AppPaymentMethodService(
-                mapper, idempotency, production, guard(production, "prod"), null);
+                mapper, idempotency, production, guard(production, "prod"), null, facts);
 
         assertThatThrownBy(() -> productionService.bind(USER_ID, forged, "idem-forged-local-token"))
                 .isInstanceOf(BizException.class)
@@ -188,7 +190,7 @@ class AppPaymentMethodServiceTest {
     void developmentListReadsCanonicalProviderCardsForAnActiveDevelopmentUser() {
         PaymentMethodProviderProperties development = new PaymentMethodProviderProperties();
         AppPaymentMethodService developmentService = new AppPaymentMethodService(
-                mapper, idempotency, development, guard(development, "dev"), null);
+                mapper, idempotency, development, guard(development, "dev"), null, facts);
         CardRow provider = new CardRow(22L, USER_ID, "provider-token-00000022", "visa", "2222", "ALICE",
                 true, LocalDateTime.of(2026, 8, 9, 0, 0), "PRODUCTION", "", 0L);
         when(mapper.userSandbox(USER_ID)).thenReturn(0);
@@ -220,7 +222,7 @@ class AppPaymentMethodServiceTest {
         when(mapper.userSandbox(USER_ID)).thenReturn(0);
         PaymentMethodProviderProperties production = new PaymentMethodProviderProperties();
         AppPaymentMethodService productionService = new AppPaymentMethodService(
-                mapper, idempotency, production, guard(production, "prod"), null);
+                mapper, idempotency, production, guard(production, "prod"), null, facts);
         CardRow provider = new CardRow(21L, USER_ID, "provider-token-00000001", "visa", "1111", "ALICE",
                 true, LocalDateTime.of(2026, 8, 9, 0, 0), "PRODUCTION");
         when(mapper.listScoped(USER_ID, "PRODUCTION", "")).thenReturn(List.of(provider));
@@ -245,7 +247,7 @@ class AppPaymentMethodServiceTest {
 
     private static CardRow row(long id) {
         return new CardRow(id, USER_ID, TOKEN, "visa", "4242", "ALICE", true,
-                LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "", 0L, "12/30");
+                LocalDateTime.of(2026, 8, 9, 0, 0), "SANDBOX", "test-run", 0L, "12/30");
     }
 
     private static PaymentMethodSandboxProfileGuard guard(PaymentMethodProviderProperties properties, String profile) {

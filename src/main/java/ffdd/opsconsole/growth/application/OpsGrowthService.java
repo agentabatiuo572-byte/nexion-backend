@@ -175,6 +175,8 @@ public class OpsGrowthService implements AuditReplayable {
                     "H3_EXCHANGE_COMPLETED",
                     "H3_DAY_ONE_EARN_PAGE_VIEWED",
                     "H3_DAY_ONE_STORE_PAGE_VIEWED",
+                    "H3_DAY_ONE_PROFILE_SAVED",
+                    "H3_DAY_ONE_CARD_BOUND",
                     "H3_DAY_ONE_S1_ROI_VIEWED"));
     private static final Set<String> H3_BINDING_USER_FIELDS = Set.of("user_id", "inviter_user_id");
     private static final Set<String> SANDBOX_DAY_ONE_MISSION_CODES = Set.of(
@@ -792,6 +794,7 @@ public class OpsGrowthService implements AuditReplayable {
 
             Map<String, Object> before = exists ? bindingSnapshot(current) : Map.of();
             if (deleting) {
+                requireDayOneBindingRetained(mapper, expectedQuestCode, expectedStatus, true);
                 if (mapper.deleteQuestEventBindingCas(code, expectedProducer, expectedEventType, expectedQuestCode,
                         expectedUserIdField, expectedStatus) != 1) return ApiResult.fail(409, "H3_BINDING_STALE");
             } else {
@@ -809,6 +812,12 @@ public class OpsGrowthService implements AuditReplayable {
                                 producer, eventType, questCode, userIdField)) {
                     throw new IllegalArgumentException("H3_DAY_ONE_PAGE_OBSERVATION_BINDING_INVALID");
                 }
+                var businessRule = H3DayOneBusinessFactContract.forEventType(eventType);
+                if (status == 1 && businessRule != null && !businessRule.matches(producer, questCode, userIdField)) {
+                    throw new IllegalArgumentException("H3_DAY_ONE_BUSINESS_BINDING_INVALID");
+                }
+                if (exists) requireDayOneBindingRetained(mapper, expectedQuestCode, expectedStatus,
+                        status != 1 || !questCode.equals(expectedQuestCode));
                 if (mapper.activatableMissionByCode(questCode) != 1) {
                     throw new IllegalArgumentException("H3_BINDING_TARGET_NOT_ACTIVATABLE");
                 }
@@ -830,6 +839,14 @@ public class OpsGrowthService implements AuditReplayable {
             return ApiResult.ok(response);
         } catch (IllegalArgumentException ex) {
             return validation(ex.getMessage());
+        }
+    }
+
+    private void requireDayOneBindingRetained(GrowthQuestEventMapper mapper, String questCode,
+                                              int previousStatus, boolean removing) {
+        if (removing && previousStatus == 1 && mapper.activeDayOneMissionCount(questCode) > 0
+                && mapper.activeBindingCountByQuestCode(questCode) <= 1) {
+            throw new IllegalArgumentException("H3_ACTIVE_DAY_ONE_BINDING_REQUIRED");
         }
     }
 
@@ -1167,6 +1184,8 @@ public class OpsGrowthService implements AuditReplayable {
             if (!((expected == 1 && target == 0) || (expected == 0 && target == 1))) {
                 return invalidMissionTransition();
             }
+            questEventMapper.get().ensureH3ConfigMutex();
+            if (!"H3_CONFIG".equals(questEventMapper.get().lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
@@ -1197,6 +1216,8 @@ public class OpsGrowthService implements AuditReplayable {
             int expected = missionStatusCode(request.expectedStatus());
             int target = missionStatusCode(request.targetStatus());
             if ((expected != 0 && expected != 1) || target != 2) return invalidMissionTransition();
+            questEventMapper.get().ensureH3ConfigMutex();
+            if (!"H3_CONFIG".equals(questEventMapper.get().lockH3ConfigMutex())) return validation("H3_CONFIG_LOCK_UNAVAILABLE");
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");

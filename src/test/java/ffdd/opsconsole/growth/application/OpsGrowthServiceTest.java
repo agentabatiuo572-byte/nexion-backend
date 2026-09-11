@@ -1192,6 +1192,42 @@ class OpsGrowthServiceTest {
                 eq("visit_earn"), eq("inviter_user_id"), eq(1), any(), any(), any(), any(), anyInt());
     }
     @Test
+    void activeDayOneCannotLoseItsLastBindingByDeleteDisableOrRetarget() {
+        when(questEventMapper.lockQuestEventBinding("LAST_BINDING")).thenReturn(row(
+                "producer", "REFERRAL", "eventType", "H8_REFERRAL_REWARD_SETTLED",
+                "questCode", "invite_friend", "userIdField", "inviter_user_id", "status", 1));
+        when(questEventMapper.activeDayOneMissionCount("invite_friend")).thenReturn(1);
+        when(questEventMapper.activeBindingCountByQuestCode("invite_friend")).thenReturn(1);
+        var disable = new GrowthQuestEventBindingRequest("REFERRAL", "H8_REFERRAL_REWARD_SETTLED",
+                "invite_friend", "inviter_user_id", false,
+                "REFERRAL", "H8_REFERRAL_REWARD_SETTLED", "invite_friend", "inviter_user_id", true,
+                "verify binding protection", "superadmin");
+        assertThat(service.deleteQuestEventBinding("delete-last", "LAST_BINDING", disable).getMessage())
+                .isEqualTo("H3_ACTIVE_DAY_ONE_BINDING_REQUIRED");
+        assertThat(service.updateQuestEventBinding("disable-last", "LAST_BINDING", disable).getMessage())
+                .isEqualTo("H3_ACTIVE_DAY_ONE_BINDING_REQUIRED");
+        var retarget = new GrowthQuestEventBindingRequest("REFERRAL", "H8_REFERRAL_REWARD_SETTLED",
+                "ANOTHER_TASK", "inviter_user_id", true,
+                "REFERRAL", "H8_REFERRAL_REWARD_SETTLED", "invite_friend", "inviter_user_id", true,
+                "verify retarget protection", "superadmin");
+        assertThat(service.updateQuestEventBinding("retarget-last", "LAST_BINDING", retarget).getMessage())
+                .isEqualTo("H3_ACTIVE_DAY_ONE_BINDING_REQUIRED");
+        verify(questEventMapper, never()).deleteQuestEventBindingCas(any(), any(), any(), any(), any(), anyInt());
+        verify(questEventMapper, never()).updateQuestEventBindingCas(any(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void businessSuccessEventsCannotBeMappedToAnotherTaskOrActor() {
+        when(questEventMapper.lockQuestEventBinding("WRONG_BUSINESS")).thenReturn(null);
+        var request = new GrowthQuestEventBindingRequest("SYSTEM", "H3_DAY_ONE_PROFILE_SAVED",
+                "bind_bank_card", "user_id", true, null, null, null, null, null,
+                "reject wrong success fact", "superadmin");
+        assertThat(service.createQuestEventBinding("bad-business", "WRONG_BUSINESS", request).getMessage())
+                .isEqualTo("H3_DAY_ONE_BUSINESS_BINDING_INVALID");
+        verify(questEventMapper, never()).insertQuestEventBinding(any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
     void canonicalBindingCanBeCreatedForAPausedMissionBeforePublication() {
         when(questEventMapper.lockQuestEventBinding("DEVICE_CANONICAL_EVENT")).thenReturn(
                 null,

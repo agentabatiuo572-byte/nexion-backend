@@ -150,6 +150,7 @@ $migrations = @(
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
   # This is create-only: legacy rows remain explicitly unverifiable.
   (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
+  (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),

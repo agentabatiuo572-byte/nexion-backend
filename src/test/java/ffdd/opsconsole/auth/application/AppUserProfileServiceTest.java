@@ -33,7 +33,8 @@ class AppUserProfileServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final ObjectStorageService storage = mock(ObjectStorageService.class);
-    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage);
+    private final ffdd.opsconsole.growth.application.H3DayOneBusinessFactService facts = mock(ffdd.opsconsole.growth.application.H3DayOneBusinessFactService.class);
+    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage, facts);
 
     @BeforeEach
     void executeIdempotentAction() {
@@ -78,7 +79,18 @@ class AppUserProfileServiceTest {
 
         assertThat(result).containsEntry("nickname", "Nova Rover 42").containsEntry("status", "UPDATED");
         verify(mapper).updateNickname(42L, "Nova Rover 42", "Nexion 0042");
+        verify(facts).record(42L, ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract.PROFILE_SAVED);
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void unchangedOrStaleNicknameDoesNotCreateACompletionFact() {
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nova Rover 42");
+        assertThat(service.updateNickname(42L, "same", new AppUserProfileService.UpdateNicknameRequest(
+                "wrong old nickname", "Nova Rover 42"))).containsEntry("status", "UNCHANGED");
+        assertThatThrownBy(() -> service.updateNickname(42L, "stale", new AppUserProfileService.UpdateNicknameRequest(
+                "wrong old nickname", "Swift Pilot 43"))).hasMessage("USER_PROFILE_VERSION_CONFLICT");
+        org.mockito.Mockito.verifyNoInteractions(facts);
     }
 
     @Test

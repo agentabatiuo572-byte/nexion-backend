@@ -39,7 +39,9 @@ public class EventOutboxDispatchScheduler {
             "H3_EXCHANGE_COMPLETED",
             "H3_DAY_ONE_EARN_PAGE_VIEWED",
             "H3_DAY_ONE_STORE_PAGE_VIEWED",
-            "H3_DAY_ONE_S1_ROI_VIEWED");
+            "H3_DAY_ONE_PROFILE_SAVED",
+                    "H3_DAY_ONE_CARD_BOUND",
+                    "H3_DAY_ONE_S1_ROI_VIEWED");
     /**
      * Only these H3 threshold facts are retained when PC has not yet bound
      * them. Other canonical events keep their historical no-binding behavior.
@@ -52,7 +54,9 @@ public class EventOutboxDispatchScheduler {
             "H3_EXCHANGE_COMPLETED",
             "H3_DAY_ONE_EARN_PAGE_VIEWED",
             "H3_DAY_ONE_STORE_PAGE_VIEWED",
-            "H3_DAY_ONE_S1_ROI_VIEWED");
+            "H3_DAY_ONE_PROFILE_SAVED",
+                    "H3_DAY_ONE_CARD_BOUND",
+                    "H3_DAY_ONE_S1_ROI_VIEWED");
     /** The evaluator consumes this source; it is not a direct H3 quest binding. */
     static final List<String> H3_WEEKLY_PARTICIPATION_SOURCE_EVENT_TYPES = List.of("task.completed");
     /** Sprint4 阶段2: F1 被动评估触发漏斗(用户 checkout/register → evaluate,analytics 已发 outbox)。 */

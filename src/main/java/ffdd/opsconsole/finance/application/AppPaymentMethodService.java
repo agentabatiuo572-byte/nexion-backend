@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactService;
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract;
 import ffdd.opsconsole.finance.mapper.AppPaymentMethodMapper;
 import ffdd.opsconsole.finance.mapper.AppPaymentMethodMapper.CardRow;
 import ffdd.opsconsole.user.application.OpsUserPaymentMethodService;
@@ -27,6 +29,7 @@ public class AppPaymentMethodService {
     private final PaymentMethodProviderProperties providerProperties;
     private final PaymentMethodSandboxProfileGuard profileGuard;
     private final OpsUserPaymentMethodService userPaymentMethods;
+    private final H3DayOneBusinessFactService dayOneFacts;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> list(Long userId) {
@@ -135,9 +138,9 @@ public class AppPaymentMethodService {
                                             boolean makeDefault, Scope scope) {
         String sourceEnvironment = scope.sourceEnvironment();
         String runId = scope.runId();
-        mapper.lockActiveUser(userId);
+        if (mapper.lockActiveUser(userId) == null) throw new BizException(401, "USER_AUTH_REQUIRED");
         CardRow existing = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
-        if (existing != null) return bindReceipt(existing);
+        if (existing != null) return bindReceipt(userId, existing, scope);
         boolean first = mapper.listScoped(userId, sourceEnvironment, runId).isEmpty();
         boolean isDefault = makeDefault || first;
         if (isDefault) mapper.clearDefaultScoped(userId, sourceEnvironment, runId);
@@ -148,7 +151,7 @@ public class AppPaymentMethodService {
             }
             CardRow reactivated = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
             if (reactivated == null) throw new BizException(409, "PAYMENT_METHOD_BIND_RECEIPT_MISSING");
-            return bindReceipt(reactivated);
+            return bindReceipt(userId, reactivated, scope);
         }
         Long tokenOwner = mapper.tokenOwnerIncludingDeletedScoped(token, sourceEnvironment, runId);
         if (tokenOwner != null) {
@@ -158,12 +161,12 @@ public class AppPaymentMethodService {
         CardRow row = new CardRow(null, userId, token, brand, last4, holder, isDefault, null, sourceEnvironment, runId, 0L, expiry);
         if (mapper.insert(row) != 1) {
             CardRow concurrent = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
-            if (concurrent != null) return bindReceipt(concurrent);
+            if (concurrent != null) return bindReceipt(userId, concurrent, scope);
             throw new BizException(409, "PAYMENT_METHOD_BIND_CONFLICT");
         }
         CardRow saved = mapper.findActiveByTokenScoped(userId, token, sourceEnvironment, runId);
         if (saved == null || saved.id() == null) throw new BizException(409, "PAYMENT_METHOD_BIND_RECEIPT_MISSING");
-        return bindReceipt(saved);
+        return bindReceipt(userId, saved, scope);
     }
 
     private void requireVerifiedTokenBoundary(String token, String source) {
@@ -183,8 +186,16 @@ public class AppPaymentMethodService {
         throw new BizException(503, "PAYMENT_METHOD_PROVIDER_DISABLED");
     }
 
-    private ApiResult<Map<String, Object>> bindReceipt(CardRow row) {
+    private ApiResult<Map<String, Object>> bindReceipt(Long userId, CardRow row, Scope scope) {
+        if (row.id() == null || !userId.equals(row.userId())
+                || !scope.sourceEnvironment().equals(row.sourceEnvironment())
+                || !scope.runId().equals(row.runId() == null ? "" : row.runId())) {
+            throw new BizException(409, "PAYMENT_METHOD_BIND_RECEIPT_SCOPE_MISMATCH");
+        }
         boolean sandbox = sandbox(row);
+        if (!sandbox && "PRODUCTION".equals(scope.sourceEnvironment()) && scope.runId().isEmpty()) {
+            dayOneFacts.record(userId, H3DayOneBusinessFactContract.CARD_BOUND);
+        }
         return ApiResult.ok(linked(
                 "receipt", "CARD_BOUND", "card", view(row), "serverCanonical", true,
                 "source", sandbox ? "mock" : "provider", "sandbox", sandbox,

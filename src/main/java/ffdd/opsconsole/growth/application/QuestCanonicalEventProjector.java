@@ -73,10 +73,11 @@ public class QuestCanonicalEventProjector {
         List<CanonicalQuestEventBinding> bindings = bindingMapper.listActiveBindings(message.getEventType());
         if (bindings == null) bindings = List.of();
         List<DayOneSnapshotBinding> snapshotBindings = matchingSnapshotBindings(message, payload);
-        boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null;
+        boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null
+                || H3DayOneBusinessFactContract.forEventType(message.getEventType()) != null;
         List<CanonicalQuestEventBinding> effectiveBindings = dayOnePageObservation
                 ? bindings.stream()
-                        .filter(binding -> H3DayOnePageObservationContract.matches(binding, message.getEventType()))
+                        .filter(binding -> fixedDayOneRuleMatches(binding.producer(), message.getEventType(), binding.questCode(), binding.userIdField()))
                         .toList()
                 : bindings;
         // A stale wrong-slot/quest binding is not a completion route. Keep the
@@ -149,7 +150,7 @@ public class QuestCanonicalEventProjector {
             if (!matchesFrozenRule(binding)) {
                 throw new IllegalArgumentException("DAY_ONE_SNAPSHOT_BINDING_RULE_INVALID");
             }
-            return true;
+            return fixedDayOneRuleMatches(binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField());
         }).toList();
     }
 
@@ -169,6 +170,14 @@ public class QuestCanonicalEventProjector {
         } catch (Exception ex) {
             throw new IllegalArgumentException("QUEST_CANONICAL_PAYLOAD_INVALID", ex);
         }
+    }
+
+    private boolean fixedDayOneRuleMatches(String producer, String eventType, String questCode, String userIdField) {
+        var businessRule = H3DayOneBusinessFactContract.forEventType(eventType);
+        if (businessRule != null) return businessRule.matches(producer, questCode, userIdField);
+        if (H3DayOnePageObservationContract.forEventType(eventType) != null)
+            return H3DayOnePageObservationContract.matches(producer, eventType, questCode, userIdField);
+        return true;
     }
 
     private void validateBinding(CanonicalQuestEventBinding binding, String eventType) {

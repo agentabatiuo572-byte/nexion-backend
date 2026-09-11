@@ -1,5 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactService;
+import ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract;
 import ffdd.opsconsole.auth.mapper.AppUserProfileMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -45,6 +47,7 @@ public class AppUserProfileService {
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
     private final ObjectStorageService objectStorage;
+    private final H3DayOneBusinessFactService dayOneFacts;
 
     @Transactional(readOnly = true)
     public Map<String, Object> profile(Long userId) {
@@ -132,6 +135,7 @@ public class AppUserProfileService {
                 .riskLevel("LOW")
                 .detail(Map.of("before", expected, "after", nickname))
                 .build());
+        dayOneFacts.record(userId, H3DayOneBusinessFactContract.PROFILE_SAVED);
         return Map.of("nickname", nickname, "status", "UPDATED");
     }
 
