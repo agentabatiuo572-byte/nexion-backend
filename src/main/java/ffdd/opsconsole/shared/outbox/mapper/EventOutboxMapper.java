@@ -143,17 +143,30 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     List<EventOutboxMessage> listPendingByEventType(@Param("eventType") String eventType, @Param("limit") int limit);
 
+    // Each branch's first limit IDs contain every possible global first-limit result.
+    // Union IDs before loading messages so a row matching both canonical aliases appears once.
     @Select("""
             <script>
             SELECT
             """ + MESSAGE_COLUMNS + """
               FROM nx_event_outbox
-             WHERE is_deleted = 0
-               AND (LOWER(event_type) = LOWER(#{canonicalType})
-                    OR LOWER(event_name) = LOWER(#{canonicalType}))
-               AND status IN ('PENDING', 'FAILED')
-               AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
-               AND id &gt; #{afterId}
+             WHERE id IN (
+               SELECT candidate.id FROM (
+                 (SELECT id FROM nx_event_outbox
+                   WHERE is_deleted = 0 AND LOWER(event_type) = LOWER(#{canonicalType})
+                     AND status IN ('PENDING', 'FAILED')
+                     AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
+                     AND id &gt; #{afterId}
+                   ORDER BY id ASC LIMIT #{limit})
+                 UNION DISTINCT
+                 (SELECT id FROM nx_event_outbox
+                   WHERE is_deleted = 0 AND LOWER(event_name) = LOWER(#{canonicalType})
+                     AND status IN ('PENDING', 'FAILED')
+                     AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
+                     AND id &gt; #{afterId}
+                   ORDER BY id ASC LIMIT #{limit})
+               ) candidate
+             )
              ORDER BY id ASC
              LIMIT #{limit}
             </script>

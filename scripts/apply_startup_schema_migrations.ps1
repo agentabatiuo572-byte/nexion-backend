@@ -127,6 +127,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260831_app_wallet_bills_cursor_index.sql"),
   # App task-assignment previews use the per-device recent-task index on upgraded databases too.
   (Join-Path $root "scripts\migrations\20260907_task_assignment_recent_read_index.sql"),
+  (Join-Path $root "scripts\migrations\20260914_polling_read_indexes.sql"),
   # App compute-receipt cursor reads retain per-user issued high-water boundaries.
   (Join-Path $root "scripts\migrations\20260907_task_receipt_cursor_index.sql"),
   # Globe reads active jobs and last-hour completions without scanning task history.
