@@ -200,6 +200,33 @@ class PollingReadsMySqlIntegrationTest {
     }
 
     @Test
+    void wideTaskNumbersAndCompetingDeviceIndexKeepTheCountCovered() throws Exception {
+        jdbc.execute("ALTER TABLE nx_compute_task MODIFY task_no VARCHAR(512), ADD payload VARCHAR(1024)");
+        jdbc.execute("CREATE INDEX idx_task_device_latest_client ON nx_compute_task(user_device_id,is_deleted,id)");
+        migrate();
+        jdbc.update("INSERT INTO nx_user VALUES (42,0,0)");
+        jdbc.execute("SET SESSION cte_max_recursion_depth=4000");
+        jdbc.execute("""
+                INSERT INTO nx_compute_task(id,user_id,user_device_id,task_no,status,source_environment,is_deleted,payload)
+                WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<3000)
+                SELECT n,42,811,CONCAT(IF(n<=2500,'DEV-TASK-','OTHER-'),RPAD(n,220,'x')),
+                       'COMPLETED','PRODUCTION',0,REPEAT('x',1024) FROM ids
+                """);
+        jdbc.execute("ANALYZE TABLE nx_compute_task");
+        long legacy = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM nx_compute_task t
+                JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0 AND u.is_deleted=0
+                WHERE t.user_id=42 AND t.user_device_id=811 AND t.task_no LIKE 'DEV-TASK-%'
+                AND t.status='COMPLETED' AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+                """, Long.class);
+        assertThat(legacy).isEqualTo(2500);
+        assertThat(tasks.developmentCompletedTaskCount(42L, 811L)).isEqualTo(legacy);
+        String plan = explain(DevelopmentHomeSettlementMapper.class, "developmentCompletedTaskCount",
+                Map.of("userId", 42L, "userDeviceId", 811L));
+        assertThat(plan).contains("\"key\": \"" + TASK_INDEX + "\"").contains("\"using_index\": true");
+    }
+
+    @Test
     void selectiveCanonicalPlansUseBothGeneratedColumnIndexes() throws Exception {
         migrate();
         jdbc.execute("SET SESSION cte_max_recursion_depth=4000");

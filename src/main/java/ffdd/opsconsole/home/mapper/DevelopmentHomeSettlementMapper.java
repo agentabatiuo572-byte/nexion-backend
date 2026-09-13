@@ -228,8 +228,10 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
             """)
     boolean hasActiveProductionTask(@Param("userId") Long userId, @Param("userDeviceId") Long userDeviceId);
 
+    // The startup migration validates this covering index. With a long task_no column,
+    // MySQL can otherwise prefer a device-only index and fetch every historical task row.
     @Select("""
-            SELECT COUNT(*) FROM nx_compute_task t
+            SELECT COUNT(*) FROM nx_compute_task t FORCE INDEX (idx_task_development_count)
               JOIN nx_user u ON u.id=t.user_id AND u.sandbox=0 AND u.is_deleted=0
              WHERE t.user_id=#{userId} AND t.user_device_id=#{userDeviceId}
                AND t.task_no LIKE 'DEV-TASK-%' AND t.status='COMPLETED'
