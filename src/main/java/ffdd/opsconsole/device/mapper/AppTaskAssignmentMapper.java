@@ -82,7 +82,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND NOT EXISTS (SELECT 1 FROM nx_compute_task t
                                 WHERE t.user_id = d.user_id AND t.user_device_id = d.id
                                   AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
-                                  AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+                                  AND t.canonical_assignment_status = 'CLAIMED'
+                                  AND (t.lease_expires_at IS NULL OR t.lease_expires_at > CURRENT_TIMESTAMP))
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t
+                                WHERE t.user_id = d.user_id AND t.user_device_id = d.id
+                                  AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
+                                  AND t.canonical_assignment_status = 'RUNNING'
                                   AND (t.lease_expires_at IS NULL OR t.lease_expires_at > CURRENT_TIMESTAMP))
                AND NOT EXISTS (SELECT 1 FROM nx_compute_device_task_lock l
                                 WHERE l.user_id = d.user_id AND l.user_device_id = d.id
