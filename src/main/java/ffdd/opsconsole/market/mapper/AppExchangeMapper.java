@@ -354,6 +354,17 @@ public interface AppExchangeMapper {
                                 BigDecimal balanceAfterUsdt,String idempotencyKey) {}
     record FeeAllocationWrite(String exchangeNo,BigDecimal totalFeeUsdt,BigDecimal burnPoolUsdt,
                               BigDecimal feeBufferUsdt,BigDecimal priceUsdt,BigDecimal nexEquivalent) {}
+    @Select("""
+            SELECT o.exchange_no AS exchangeNo,o.from_asset AS fromAsset,o.to_asset AS toAsset,
+                   o.from_amount AS fromAmount,o.to_amount AS toAmount,o.rate,o.status,o.created_at AS createdAt
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0
+                   AND COALESCE(u.sandbox,0)=0
+             WHERE o.user_id=#{userId} AND o.exchange_no=#{exchangeNo} AND o.is_deleted=0
+             LIMIT 1
+            """)
+    ExchangeRow recoveryOrder(@Param("userId") Long userId, @Param("exchangeNo") String exchangeNo);
+
     record ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
                        BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {}
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}

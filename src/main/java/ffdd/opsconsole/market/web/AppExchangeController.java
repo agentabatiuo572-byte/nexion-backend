@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.web;
 import ffdd.opsconsole.market.application.AppExchangeService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
+import java.math.BigDecimal;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,6 +39,16 @@ public class AppExchangeController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.state(userId, pageNum, pageSize, snapshotId);
+    }
+
+    @GetMapping("/api/exchange/recovery")
+    public ApiResult<Map<String,Object>> recovery(@RequestParam String direction,
+            @RequestParam BigDecimal fromAmount, @RequestParam(defaultValue="false") Boolean queueIfCapped,
+            @RequestHeader(name="Idempotency-Key",required=false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.recovery(userId, idempotencyKey,
+                new AppExchangeService.SwapRequest(direction, fromAmount, queueIfCapped));
     }
 
     @PostMapping("/api/exchange")

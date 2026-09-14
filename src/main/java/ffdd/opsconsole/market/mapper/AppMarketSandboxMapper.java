@@ -79,6 +79,9 @@ public interface AppMarketSandboxMapper {
     @Select("SELECT id,run_id AS runId,user_id AS userId,exchange_no AS exchangeNo,idempotency_key AS idempotencyKey,request_hash AS requestHash,from_asset AS fromAsset,to_asset AS toAsset,from_amount AS fromAmount,to_amount AS toAmount,rate,status,created_at AS createdAt FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{key} LIMIT 1 FOR UPDATE")
     ExchangeOrder exchangeByKey(@Param("runId") String runId,@Param("userId") Long userId,@Param("key") String key);
 
+    @Select("SELECT id,run_id AS runId,user_id AS userId,exchange_no AS exchangeNo,idempotency_key AS idempotencyKey,request_hash AS requestHash,from_asset AS fromAsset,to_asset AS toAsset,from_amount AS fromAmount,to_amount AS toAmount,rate,status,created_at AS createdAt FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} AND idempotency_key=#{key} LIMIT 1")
+    ExchangeOrder exchangeRecoveryByKey(@Param("runId") String runId,@Param("userId") Long userId,@Param("key") String key);
+
     @Select("SELECT id,run_id AS runId,user_id AS userId,exchange_no AS exchangeNo,idempotency_key AS idempotencyKey,request_hash AS requestHash,from_asset AS fromAsset,to_asset AS toAsset,from_amount AS fromAmount,to_amount AS toAmount,rate,status,created_at AS createdAt FROM nx_exchange_sandbox_order WHERE run_id=#{runId} AND user_id=#{userId} AND exchange_no=#{exchangeNo} LIMIT 1 FOR UPDATE")
     ExchangeOrder exchangeByNo(@Param("runId") String runId,@Param("userId") Long userId,@Param("exchangeNo") String exchangeNo);
 

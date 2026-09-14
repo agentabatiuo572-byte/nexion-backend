@@ -424,6 +424,30 @@ public class AppExchangeService {
                 "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> recovery(Long userId, String idempotencyKey, SwapRequest request) {
+        if (sandboxRuntime()) return sandbox.orElseThrow().exchangeRecovery(userId, idempotencyKey, request);
+        requireExchangeSubject(userId);
+        NormalizedSwap normalized = normalize(request);
+        var receipt = idempotency.recoveryResult("APP:G2_SWAP:USER:" + userId, idempotencyKey,
+                sha256(String.valueOf(normalized)), ApiResult.class);
+        Map<String, Object> result = linked("status", receipt.status().name(),
+                "sourceEnvironment", "PRODUCTION", "runId", "");
+        if (receipt.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) return ApiResult.ok(result);
+        // The saved response identifies the order; balances and order status must never be replayed from it.
+        ApiResult<?> response = receipt.response();
+        if (response == null || response.getCode() != 0 || !(response.getData() instanceof Map<?, ?> data)
+                || !(data.get("order") instanceof Map<?, ?> order)
+                || !(order.get("exchangeNo") instanceof String exchangeNo) || exchangeNo.isBlank()) {
+            result.put("status", "UNKNOWN");
+            return ApiResult.ok(result);
+        }
+        AppExchangeMapper.ExchangeRow current = mapper.recoveryOrder(userId, exchangeNo);
+        if (current == null) result.put("status", "UNKNOWN");
+        else result.put("order", current);
+        return ApiResult.ok(result);
+    }
+
     private Map<String, Object> orderMap(AppExchangeMapper.ExchangeWrite row) {
         return linked("exchangeNo", row.exchangeNo(), "fromAsset", row.fromAsset(), "toAsset", row.toAsset(),
                 "fromAmount", row.fromAmount(), "toAmount", row.toAmount(), "rate", row.rate(), "status", row.status());

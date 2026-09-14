@@ -24,6 +24,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.util.StringUtils;
 
 /** Explicit server-owned Exchange/Genesis sandbox. Never calls production rails. */
@@ -43,6 +44,30 @@ public class AppMarketSandboxService {
         String run = runId();
         AppMarketSandboxMapper.ExchangeWallet wallet = exchangeWallet(run, userId);
         return ApiResult.ok(exchangeView(run, userId, wallet, null, requestedPageNum, requestedPageSize));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String,Object>> exchangeRecovery(Long userId, String idempotencyKey,
+                                                          AppExchangeService.SwapRequest request) {
+        requireSandboxUser(userId);
+        String run = runId();
+        String key = key(idempotencyKey, "EXCHANGE_IDEMPOTENCY_KEY_REQUIRED");
+        if (request == null) throw new BizException(422, "EXCHANGE_REQUEST_INVALID");
+        String from = direction(request.direction());
+        BigDecimal amount = amount(request.fromAmount(), "EXCHANGE_AMOUNT_INVALID");
+        String expectedHash = hash(from + ":" + amount.stripTrailingZeros() + ":" + Boolean.TRUE.equals(request.queueIfCapped()));
+        AppMarketSandboxMapper.ExchangeOrder row = mapper.exchangeRecoveryByKey(run, userId, key);
+        Map<String,Object> result = linked("status", "NOT_FOUND", "sourceEnvironment", "SANDBOX", "runId", run);
+        if (row == null) return ApiResult.ok(result);
+        if (!expectedHash.equals(row.requestHash())) {
+            result.put("status", "MISMATCH");
+            return ApiResult.ok(result);
+        }
+        result.put("status", "SUCCEEDED");
+        result.put("order", linked("exchangeNo", row.exchangeNo(), "fromAsset", row.fromAsset(),
+                "toAsset", row.toAsset(), "fromAmount", row.fromAmount(), "toAmount", row.toAmount(),
+                "rate", row.rate(), "status", row.status(), "createdAt", row.createdAt()));
+        return ApiResult.ok(result);
     }
 
     @Transactional(rollbackFor = Exception.class)

@@ -38,6 +38,15 @@ public class AdminIdempotencyService {
 
     public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH }
 
+    /** Reads an owned receipt without reclaiming even an expired key. Callers must project only safe fields. */
+    public <T> RecoveryResult<T> recoveryResult(String scope, String idempotencyKey, String requestHash,
+                                               Class<T> responseType) {
+        return transactionExecutor.recoveryResult(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),
+                normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED"), responseType);
+    }
+
+    public record RecoveryResult<T>(RecoveryStatus status, T response) {}
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         String normalizedScope = normalizeScope(scope);

@@ -35,6 +35,10 @@ public class AdminIdempotencyTransactionExecutor {
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public AdminIdempotencyService.RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
+        return recoveryStatus(record, requestHash);
+    }
+
+    private AdminIdempotencyService.RecoveryStatus recoveryStatus(AdminIdempotencyRecordEntity record, String requestHash) {
         if (record == null || !Integer.valueOf(0).equals(record.getIsDeleted())) {
             return AdminIdempotencyService.RecoveryStatus.NOT_FOUND;
         }
@@ -46,6 +50,24 @@ public class AdminIdempotencyTransactionExecutor {
             case STATUS_PROCESSING -> AdminIdempotencyService.RecoveryStatus.PROCESSING;
             default -> AdminIdempotencyService.RecoveryStatus.UNKNOWN;
         };
+    }
+
+    /** A committed read only: never locks, claims, resets, or transitions an expired receipt. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public <T> AdminIdempotencyService.RecoveryResult<T> recoveryResult(
+            String scope, String idempotencyKey, String requestHash, Class<T> responseType) {
+        AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
+        var status = recoveryStatus(record, requestHash);
+        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+            return new AdminIdempotencyService.RecoveryResult<>(status, null);
+        }
+        try {
+            T response = objectMapper.readValue(record.getResponseJson(), responseType);
+            return new AdminIdempotencyService.RecoveryResult<>(response == null
+                    ? AdminIdempotencyService.RecoveryStatus.UNKNOWN : status, response);
+        } catch (JsonProcessingException ex) {
+            return new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.UNKNOWN, null);
+        }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
