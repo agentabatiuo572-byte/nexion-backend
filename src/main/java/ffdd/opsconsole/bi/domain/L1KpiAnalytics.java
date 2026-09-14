@@ -3,6 +3,7 @@ package ffdd.opsconsole.bi.domain;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -28,6 +29,11 @@ public final class L1KpiAnalytics {
             "#f472b6", "#fb7185", "#f59e0b", "#84cc16");
 
     private L1KpiAnalytics() {
+    }
+
+    /** Calendar boundary shared by L1 reads and export selection validation. */
+    public static LocalDate businessDate(Instant instant) {
+        return instant.atZone(BUSINESS_ZONE).toLocalDate();
     }
 
     public static Map<String, Object> calculate(

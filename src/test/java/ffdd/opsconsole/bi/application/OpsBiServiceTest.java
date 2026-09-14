@@ -149,7 +149,7 @@ class OpsBiServiceTest {
         ApiResult<Map<String, Object>> l5 = service.exportOverview();
         ApiResult<Map<String, Object>> l6 = service.behaviorHeatmapOverview("7d");
 
-        assertThat(l1.getData()).isEmpty();
+        assertThat(l1.getData()).containsOnlyKeys("currentPhase");
         assertThat(l2.getData()).isEmpty();
         assertThat(l3.getData()).containsKey("ledgerLive");
         assertThat(l4.getData()).isEmpty();
@@ -171,6 +171,31 @@ class OpsBiServiceTest {
     }
 
     @Test
+    void l1NarrowReadsIncludeLiveH1PhaseWithoutInventingMetricsOrOtherModules() {
+        Map<String, Object> unavailable = Map.of("module", "L1", "available", false,
+                "kpis", List.of(), "currentPhase", Map.of("code", "P1"));
+        reportRepository.dashboards.put("L1", unavailable);
+        h1Snapshot = h1Snapshot(12, 11, "P6");
+
+        for (Map<String, Object> response : List.of(service.kpiOverview().getData(),
+                service.kpiOverview("7d", "", "P2", "zh", "").getData())) {
+            assertThat(response).containsOnlyKeys("module", "available", "kpis", "currentPhase")
+                    .containsEntry("available", false).containsEntry("kpis", List.of());
+            assertThat(response.get("currentPhase"))
+                    .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                    .containsEntry("code", "P6").containsEntry("month", 11)
+                    .containsEntry("sourceDomain", "H1");
+        }
+        assertThat(reportRepository.dashboard("L1")).isSameAs(unavailable);
+        assertThat(unavailable.get("currentPhase")).isEqualTo(Map.of("code", "P1"));
+
+        h1Snapshot = h1Snapshot(12, 4, "P2");
+        assertThat(service.kpiOverview().getData().get("currentPhase"))
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("code", "P2").containsEntry("month", 4);
+    }
+
+    @Test
     void l4RejectsUnknownSlicesAndMalformedCustomRangesInsteadOfFallingBack() {
         assertThat(service.operationsOverview("garbage", "ALL", null, null))
                 .extracting(ApiResult::getCode, ApiResult::getMessage)
@@ -187,6 +212,152 @@ class OpsBiServiceTest {
         assertThat(service.operationsOverview("custom", "ALL", "2026-07-03", "2026-07-02"))
                 .extracting(ApiResult::getCode, ApiResult::getMessage)
                 .containsExactly(400, "L4_CUSTOM_RANGE_INVALID");
+    }
+
+    @Test
+    void l1ExportUsesOneSelectedReadForCsvRowCountScopeAndFrozenDownload() {
+        reportRepository.dashboards.put("L1", Map.of("totals", Map.of("users", 999L)));
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
+        BiReportCreateRequest request = new BiReportCreateRequest(
+                "export selected KPI facts", "superadmin", "KPI 当前汇总", "当前筛选快照",
+                "8 KPI 当前值", "NONE", "NONE", "BI 管理员", "L1-KPI",
+                "2026-W36", "p2", "VI-vn", "partner:one", "custom", "2026-09-01", "2026-09-07");
+
+        ApiResult<Map<String, Object>> result = service.createReport("l1-selected", request);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(reportRepository.kpiDashboardReads).isEqualTo(1);
+        assertThat(reportRepository.lastL1Selection)
+                .containsExactly("custom|2026-09-01|2026-09-07", "2026-W36", "P2", "vi-vn", "partner:one");
+        BiReportView report = (BiReportView) result.getData().get("created");
+        assertThat(report.rowCount()).isEqualTo(8L);
+        assertThat(report.scope()).contains("window=custom", "from=2026-09-01", "to=2026-09-07", "phase=P2", "ref=partner:one");
+        String original = reportRepository.snapshots.get(report.reportId());
+        assertThat(original).contains("Selected KPI 1", "Selected KPI 8", "\"趋势 W1\"", "\"趋势 W6\"",
+                "\"true\",\"\",\"7\",\"10\",\"61\",\"62\",\"63\",\"64\",\"65\",\"66\"")
+                .doesNotContain("999");
+        reportRepository.l1SliceDashboard = Map.of("totals", Map.of("users", 777L));
+        String token = String.valueOf(service.downloadToken(report.reportId()).getData().get("downloadToken"));
+        assertThat(new String(service.downloadFile(report.reportId(), token).getData().body(), StandardCharsets.UTF_8))
+                .isEqualTo("\uFEFF" + original);
+        assertThat(reportRepository.kpiDashboardReads).isEqualTo(1);
+    }
+
+    @Test
+    void l1UnavailableSelectedMetricsCannotCreateAnArtifactOrReport() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(false);
+        ApiResult<Map<String, Object>> result = service.createReport("l1-empty", new BiReportCreateRequest(
+                "export unavailable KPIs", "superadmin", "KPI 当前汇总", "当前筛选快照",
+                "8 KPI 当前值", "NONE", "NONE", "BI 管理员", "L1-KPI",
+                null, null, null, null, "30d", null, null));
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("L1_EXPORT_NO_AVAILABLE_KPI");
+        assertThat(reportRepository.kpiDashboardReads).isEqualTo(1);
+        assertThat(reportRepository.createReportCalls).isZero();
+        assertThat(reportRepository.saveSnapshotCalls).isZero();
+    }
+
+    @Test
+    void l1InvalidSelectedWindowFailsBeforeAnyReportReadOrWrite() {
+        ApiResult<Map<String, Object>> result = service.createReport("l1-invalid", new BiReportCreateRequest(
+                "export invalid KPI range", "superadmin", "KPI 当前汇总", "当前筛选快照",
+                "8 KPI 当前值", "NONE", "NONE", "BI 管理员", "L1-KPI",
+                null, null, null, null, "custom", "2026-09-07", "2026-09-01"));
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(reportRepository.kpiDashboardReads).isZero();
+        assertThat(reportRepository.createReportCalls).isZero();
+    }
+
+    @Test
+    void l1MixedAvailabilityPreservesUnknownValuesAndMissingTrendCells() {
+        Map<String, Object> dashboard = l1ExportFixture(true);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) dashboard.get("kpis");
+        rows.get(0).put("available", false);
+        rows.get(0).put("value", null);
+        rows.get(0).put("spark", List.of());
+        rows.get(0).put("unavailableReason", "insufficient denominator");
+        rows.get(0).put("numerator", 0);
+        rows.get(0).put("denominator", 0);
+        reportRepository.l1SliceDashboard = dashboard;
+        ApiResult<Map<String, Object>> result = service.createReport("mixed-l1", l1ExportRequest("7d", null, null, null, null, null, null));
+        assertThat(result.getCode()).isZero();
+        BiReportView report = (BiReportView) result.getData().get("created");
+        assertThat(report.rowCount()).isEqualTo(8L);
+        assertThat(reportRepository.snapshots.get(report.reportId()))
+                .contains("\"1\",\"Selected KPI 1\",\"\",\"60\",\"%\",\"2026-W36\",\"\",\"false\",\"insufficient denominator\",\"0\",\"0\",\"\",\"\",\"\",\"\",\"\",\"\"");
+    }
+
+    @Test
+    void l1MalformedMetricsNeverPersistAnExport() {
+        for (Map<String, Object> invalid : List.of(
+                Map.<String, Object>of("n", 1.2), Map.<String, Object>of("kpiId", "2"), Map.<String, Object>of("value", Double.NaN),
+                Map.<String, Object>of("value", 101), Map.<String, Object>of("spark", List.of(0, 0)),
+                Map.<String, Object>of("denominator", -1), Map.<String, Object>of("available", false))) {
+            Map<String, Object> dashboard = l1ExportFixture(true);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> rows = (List<Map<String, Object>>) dashboard.get("kpis");
+            rows.get(0).putAll(invalid);
+            reportRepository.l1SliceDashboard = dashboard;
+            assertThat(service.createReport("malformed-" + invalid.keySet(), l1ExportRequest("7d", null, null, null, null, null, null)).getCode())
+                    .as(invalid.toString()).isEqualTo(502);
+        }
+        assertThat(reportRepository.createReportCalls).isZero();
+        assertThat(reportRepository.saveSnapshotCalls).isZero();
+    }
+
+    @Test
+    void l1EverySelectedFilterParticipatesInIdempotencyIdentity() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
+        List<BiReportCreateRequest> requests = List.of(
+                l1ExportRequest("custom", "2026-09-01", "2026-09-07", null, null, null, null),
+                l1ExportRequest("custom", "2026-09-02", "2026-09-07", null, null, null, null),
+                l1ExportRequest("custom", "2026-09-01", "2026-09-08", null, null, null, null),
+                l1ExportRequest("7d", null, null, null, null, null, null),
+                l1ExportRequest("30d", null, null, null, null, null, null),
+                l1ExportRequest("7d", null, null, "2026-W36", null, null, null),
+                l1ExportRequest("7d", null, null, null, "P2", null, null),
+                l1ExportRequest("7d", null, null, null, null, "vi", null),
+                l1ExportRequest("7d", null, null, null, null, null, "ref-one"));
+        for (BiReportCreateRequest request : requests) assertThat(service.createReport("same-key", request).getCode()).isZero();
+        ArgumentCaptor<String> hashes = ArgumentCaptor.forClass(String.class);
+        verify(idempotencyService, times(requests.size())).execute(org.mockito.ArgumentMatchers.eq("L_BI_REPORT_CREATE"),
+                org.mockito.ArgumentMatchers.eq("same-key"), hashes.capture(), org.mockito.ArgumentMatchers.eq(ApiResult.class), org.mockito.ArgumentMatchers.any());
+        assertThat(hashes.getAllValues()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void l1ReadOnlyOperatorCannotTriggerTheSelectedReadOrArtifact() {
+        when(permissionCache.getPermissionCodes(anyLong())).thenReturn(java.util.Set.of("bi_l1_read"));
+        assertThat(service.createReport("readonly-l1", l1ExportRequest("7d", null, null, null, null, null, null)).getCode()).isEqualTo(403);
+        assertThat(reportRepository.kpiDashboardReads).isZero();
+        assertThat(reportRepository.createReportCalls).isZero();
+        assertThat(reportRepository.saveSnapshotCalls).isZero();
+    }
+
+    private BiReportCreateRequest l1ExportRequest(String window, String from, String to, String cohort, String phase, String locale, String ref) {
+        return new BiReportCreateRequest("export selected metrics", "superadmin", "KPI 当前汇总", "当前筛选快照",
+                "8 KPI 当前值", "NONE", "NONE", "BI 管理员", "L1-KPI", cohort, phase, locale, ref, window, from, to);
+    }
+
+    private Map<String, Object> l1ExportFixture(boolean available) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int index = 1; index <= 8; index++) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("n", index);
+            row.put("kpiId", String.valueOf(index));
+            row.put("name", "Selected KPI " + index);
+            row.put("available", available);
+            row.put("value", available ? 70 : null);
+            row.put("target", 60);
+            row.put("unit", "%");
+            row.put("cohort", "2026-W36");
+            row.put("numerator", available ? 7 : 0);
+            row.put("denominator", available ? 10 : 0);
+            row.put("spark", available ? List.of(61, 62, 63, 64, 65, 66) : List.of());
+            rows.add(row);
+        }
+        return Map.of("module", "L1", "kpis", rows, "weeks", List.of("W1", "W2", "W3", "W4", "W5", "W6"));
     }
 
     @Test
@@ -230,6 +401,7 @@ class OpsBiServiceTest {
 
     @Test
     void chineseNoPrivacyLabelDoesNotCreateASensitiveReport() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
         ApiResult<Map<String, Object>> result = service.createReport(
                 "idem-no-privacy",
                 new BiReportCreateRequest(
@@ -377,6 +549,7 @@ class OpsBiServiceTest {
 
     @Test
     void supportedAggregateReportPersistsAndUsesTheCanonicalExportAuditEvent() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
         ApiResult<Map<String, Object>> result = service.createReport(
                 "idem-create-l",
                 new BiReportCreateRequest(
@@ -605,6 +778,7 @@ class OpsBiServiceTest {
 
     @Test
     void createReportUsesAuthenticatedActorInsteadOfClientOperator() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken("1", "N/A", List.of());
         authentication.setDetails(Map.of("username", "real-admin"));
@@ -1506,8 +1680,14 @@ class OpsBiServiceTest {
         @Override
         public Map<String, Object> kpiDashboard(
                 String window, String cohort, String phase, String locale, String ref) {
-            return dashboard("L1");
+            kpiDashboardReads++;
+            lastL1Selection = java.util.Arrays.asList(window, cohort, phase, locale, ref);
+            return l1SliceDashboard == null ? dashboard("L1") : l1SliceDashboard;
         }
+
+        private Map<String, Object> l1SliceDashboard;
+        private List<String> lastL1Selection;
+        private int kpiDashboardReads;
 
         @Override
         public Map<String, Object> kpiDrilldown(
