@@ -14,15 +14,17 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Clock;
-import java.time.ZoneId;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import javax.sql.DataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
@@ -32,33 +34,63 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.mybatis.spring.transaction.SpringManagedTransactionFactory;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.jdbc.datasource.init.ScriptUtils;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
 import org.springframework.transaction.support.TransactionTemplate;
 
 class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
+    private static final String SCHEMA_PREFIX = "nexion_hosted_callback_it_";
 
     @Test
-    @EnabledIfEnvironmentVariable(named = "NEXION_TEST_DB_PASSWORD", matches = ".+")
-    void realMySqlCreditsExactlyOnceAndRollsBackEveryFinancialWriteOnFailure() throws Exception {
-        DataSource dataSource = dataSource();
+    void connectionGuardRejectsBusinessEndpointsAndUnownedSchemas() {
+        String schema = SCHEMA_PREFIX + "a".repeat(32);
+        assertThat(isolatedUrl("127.0.0.1:13306", schema)).contains(":13306/" + schema + "?");
+        for (String endpoint : new String[]{null, "", "localhost:13306", "127.0.0.1:3306", "127.0.0.1:13306/other"}) {
+            assertThatThrownBy(() -> isolatedUrl(endpoint, schema)).isInstanceOf(IllegalArgumentException.class);
+        }
+        for (String invalid : new String[]{null, "nexion", "mysql", SCHEMA_PREFIX + "a", schema + "`"}) {
+            assertThatThrownBy(() -> isolatedUrl("127.0.0.1:13306", invalid)).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    @EnabledIfEnvironmentVariable(named = "NEXION_HOSTED_RAIL_IT", matches = "true")
+    void realMySqlCreditsExactlyOnceAndRollsBackEveryFinancialWriteOnFailure(boolean hosted) throws Exception {
+        String schema = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        JdbcTemplate admin = new JdbcTemplate(dataSource(""));
+        assertThat(admin.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+        admin.execute("CREATE DATABASE " + schema);
+        try {
+            DataSource dataSource = dataSource(schema);
+            assertThat(new JdbcTemplate(dataSource).queryForObject("SELECT DATABASE()", String.class)).isEqualTo(schema);
+            createFixtureSchema(dataSource);
+            verifySettlement(dataSource, hosted);
+        } finally {
+            admin.execute("DROP DATABASE " + schema);
+        }
+    }
+
+    private void verifySettlement(DataSource dataSource, boolean hosted) throws Exception {
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String intentNo = "VQR-HP-" + suffix;
         String providerOrderId = "P" + suffix;
         String bankCode = "HP" + suffix.substring(0, 10).toUpperCase();
         long userId;
-        long bankAccountId;
+        Long bankAccountId;
         BigDecimal walletBefore;
         BigDecimal cumulativeBefore;
 
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(true);
             userId = activeUserId(connection);
-            bankAccountId = insertBankAccount(connection, bankCode, suffix);
+            bankAccountId = hosted ? null : insertBankAccount(connection, bankCode, suffix);
             insertIntent(connection, intentNo, suffix, userId, bankAccountId);
             insertInFlightReconciliation(connection, intentNo, userId, bankAccountId);
             insertHdPayOrder(connection, intentNo, providerOrderId, suffix);
@@ -78,6 +110,23 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                     template, successfulOutbox, txManager);
             HdPayCallbackVerifier.VerifiedCallback callback = callback(intentNo, providerOrderId);
             HdPayGateway.PayOrder query = query(intentNo, providerOrderId);
+
+            new TransactionTemplate(txManager).executeWithoutResult(status -> {
+                assertThat(jdbc.update("UPDATE nx_vietqr_intent SET payment_rail='MANUAL' WHERE intent_no=?", intentNo)).isOne();
+                assertThat(successful.settleConfirmed(callback, query)).isEqualTo("success");
+                assertThat(decimal(jdbc, "SELECT usdt_available FROM nx_user_wallet WHERE user_id=?", userId))
+                        .isEqualByComparingTo(walletBefore);
+                assertThat(decimal(jdbc, "SELECT cumulative_deposit_usdt FROM nx_user_wallet WHERE user_id=?", userId))
+                        .isEqualByComparingTo(cumulativeBefore);
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isZero();
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_notification WHERE biz_no=?", "HDPAY:" + intentNo)).isZero();
+                assertThat(text(jdbc, "SELECT status FROM nx_vietqr_intent WHERE intent_no=?", intentNo)).isEqualTo("AWAITING_PAYMENT");
+                assertThat(text(jdbc, "SELECT settlement_status FROM nx_hdpay_payin_order WHERE merchant_order_id=?", intentNo)).isEqualTo("MANUAL_REVIEW");
+                assertThat(text(jdbc, "SELECT reason FROM nx_hdpay_settlement_review WHERE merchant_order_id=?", intentNo)).isEqualTo("VIETQR_PAYMENT_RAIL_CONFLICT");
+                assertThat(text(jdbc, "SELECT processing_status FROM nx_hdpay_callback_inbox WHERE merchant_order_id=?", intentNo)).isEqualTo("MANUAL_REVIEW");
+                status.setRollbackOnly();
+            });
+            assertUnchanged(jdbc, intentNo, userId, walletBefore, cumulativeBefore);
 
             new TransactionTemplate(txManager).executeWithoutResult(status -> {
                 assertThat(successful.settleConfirmed(callback, query)).isEqualTo("success");
@@ -137,7 +186,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 template.getMapper(VietnamPaymentMapper.class),
                 outbox,
                 mock(AuditLogService.class),
-                Clock.system(ZoneId.of("Asia/Shanghai")));
+                Clock.systemUTC());
         ProxyFactory factory = new ProxyFactory(target);
         factory.setProxyTargetClass(true);
         factory.addAdvice(new TransactionInterceptor(
@@ -168,13 +217,39 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 "SELECT COUNT(*) FROM nx_notification WHERE biz_no=?", "HDPAY:" + intentNo)).isZero();
     }
 
-    private DataSource dataSource() {
-        String url = System.getenv().getOrDefault(
-                "NEXION_TEST_DB_URL",
-                "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8"
-                        + "&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true");
-        String username = System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root");
-        return new DriverManagerDataSource(url, username, System.getenv("NEXION_TEST_DB_PASSWORD"));
+    private static String isolatedUrl(String endpoint, String schema) {
+        if (!"127.0.0.1:13306".equals(endpoint)) throw new IllegalArgumentException("isolated endpoint required");
+        if (schema == null || (!schema.isEmpty() && !schema.matches(SCHEMA_PREFIX + "[a-f0-9]{32}"))) {
+            throw new IllegalArgumentException("owned UUID schema required");
+        }
+        return "jdbc:mysql://" + endpoint + "/" + schema
+                + "?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true";
+    }
+
+    private DataSource dataSource(String schema) {
+        return new DriverManagerDataSource(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), schema),
+                "root", System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD", ""));
+    }
+
+    private void createFixtureSchema(DataSource dataSource) throws Exception {
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(100),config_value TEXT,updated_at DATETIME,is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),language VARCHAR(16),is_deleted TINYINT)");
+        jdbc.update("INSERT INTO nx_user VALUES(41,'ACTIVE','en',0)");
+        String schemaSql = Files.readString(Path.of("scripts/schema.sql"));
+        for (String table : new String[]{"nx_user_wallet", "nx_wallet_ledger", "nx_notification"}) {
+            var ddl = Pattern.compile("(?s)CREATE TABLE IF NOT EXISTS " + Pattern.quote(table) + " \\(.*?;")
+                    .matcher(schemaSql);
+            assertThat(ddl.find()).as("canonical DDL for %s", table).isTrue();
+            jdbc.execute(ddl.group());
+        }
+        jdbc.update("INSERT INTO nx_user_wallet(user_id,usdt_available,cumulative_deposit_usdt) VALUES(41,100,100)");
+        for (String migration : new String[]{"20260725_vietnam_payment_real_tables.sql", "20260725_vietqr_intent_app.sql",
+                "20260901_hdpay_hosted_payin.sql", "20260903_hdpay_commerce_direct_purchase.sql", "20260907_hdpay_optional_manual_bank.sql"}) {
+            try (Connection connection = dataSource.getConnection()) {
+                ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/" + migration));
+            }
+        }
     }
 
     private SqlSessionFactory sessionFactory(DataSource dataSource) {
@@ -219,29 +294,29 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
     }
 
     private void insertIntent(
-            Connection connection, String intentNo, String suffix, long userId, long bankAccountId)
+            Connection connection, String intentNo, String suffix, long userId, Long bankAccountId)
             throws Exception {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO nx_vietqr_intent (
                   intent_no,user_id,create_idempotency_key,create_request_hash,
                   requested_usdt,payable_vnd,credited_usdt,received_vnd,
                   locked_fx_rate_vnd_per_usdt,fx_quote_version,bank_account_id,memo_code,
-                  status,expires_at,version,created_at,updated_at,is_deleted)
-                VALUES (?,?,?, ?,10,200000,0,NULL,20000,1,?,?,'AWAITING_PAYMENT',
+                  payment_rail,status,expires_at,version,created_at,updated_at,is_deleted)
+                VALUES (?,?,?, ?,10,200000,0,NULL,20000,1,?,?,'HDPAY','AWAITING_PAYMENT',
                         DATE_ADD(NOW(),INTERVAL 30 MINUTE),0,NOW(),NOW(),0)
                 """)) {
             statement.setString(1, intentNo);
             statement.setLong(2, userId);
             statement.setString(3, "hdpay-create-" + suffix);
             statement.setString(4, sha256("hdpay-request-" + suffix));
-            statement.setLong(5, bankAccountId);
+            statement.setObject(5, bankAccountId, java.sql.Types.BIGINT);
             statement.setString(6, "NXHP" + suffix.substring(0, 8).toUpperCase());
             assertThat(statement.executeUpdate()).isOne();
         }
     }
 
     private void insertInFlightReconciliation(
-            Connection connection, String intentNo, long userId, long bankAccountId) throws Exception {
+            Connection connection, String intentNo, long userId, Long bankAccountId) throws Exception {
         try (PreparedStatement statement = connection.prepareStatement("""
                 INSERT INTO nx_vietqr_reconciliation (
                   reconciliation_no,intent_no,user_id,bank_account_id,view_type,status,
@@ -254,7 +329,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
             statement.setString(1, intentNo);
             statement.setString(2, intentNo);
             statement.setLong(3, userId);
-            statement.setLong(4, bankAccountId);
+            statement.setObject(4, bankAccountId, java.sql.Types.BIGINT);
             assertThat(statement.executeUpdate()).isOne();
         }
     }

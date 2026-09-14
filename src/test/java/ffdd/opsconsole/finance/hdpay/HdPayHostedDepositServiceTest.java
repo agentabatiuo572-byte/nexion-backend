@@ -34,7 +34,7 @@ class HdPayHostedDepositServiceTest {
 
     @Test
     void createsHostedOrderAndReturnsProviderPaymentPage() {
-        when(legacy.create(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, Map.of(
                 "merchantOrderId", "VQR-1", "submissionStatus", "PENDING"));
         when(mapper.insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any())).thenReturn(1);
@@ -53,7 +53,7 @@ class HdPayHostedDepositServiceTest {
 
     @Test
     void replaysStoredPageWithoutSubmittingTheProviderOrderAgain() {
-        when(legacy.create(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(Map.of(
                 "merchantOrderId", "VQR-1",
                 "submissionStatus", "CREATED",
@@ -68,7 +68,7 @@ class HdPayHostedDepositServiceTest {
 
     @Test
     void ambiguousProviderOutcomeIsStoredAndNeverAutomaticallyResubmitted() {
-        when(legacy.create(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(null, Map.of(
                 "merchantOrderId", "VQR-1", "submissionStatus", "PENDING"));
         when(mapper.insertPending(eq("VQR-1"), eq(new BigDecimal("659750")), any())).thenReturn(1);
@@ -87,7 +87,7 @@ class HdPayHostedDepositServiceTest {
         stored.put("merchantOrderId", "VQR-1");
         stored.put("amountVnd", new BigDecimal("659750"));
         stored.put("submissionStatus", "SUBMIT_UNKNOWN");
-        when(legacy.create(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(stored);
         when(gateway.queryPayOrder("VQR-1")).thenReturn(new HdPayGateway.PayOrder(
                 "VQR-1", "P-1", 1, new BigDecimal("659750"), "BANKQR",
@@ -111,7 +111,7 @@ class HdPayHostedDepositServiceTest {
         stored.put("merchantOrderId", "VQR-1");
         stored.put("amountVnd", new BigDecimal("659750"));
         stored.put("submissionStatus", "SUBMIT_UNKNOWN");
-        when(legacy.create(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
+        when(legacy.createHosted(7L, "idem", new BigDecimal("25"))).thenReturn(ApiResult.ok(intent()));
         when(mapper.findByMerchantOrderId("VQR-1")).thenReturn(stored);
         when(gateway.queryPayOrder("VQR-1")).thenReturn(new HdPayGateway.PayOrder(
                 "VQR-1", "P-1", 3, new BigDecimal("659750"), "BANKQR",
@@ -212,6 +212,7 @@ class HdPayHostedDepositServiceTest {
     private Map<String, Object> intent() {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("intentNo", "VQR-1");
+        value.put("paymentMode", "hosted");
         value.put("vndAmount", new BigDecimal("659750"));
         value.put("status", "awaiting_payment");
         value.put("memoCode", "NX-PRIVATE");

@@ -117,6 +117,43 @@ class HdPayCallbackSettlementServiceTest {
         verify(outbox, never()).publish(any(), any(), any(), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"MANUAL", "UNKNOWN"})
+    void nonHostedIntentIsDurablyReviewedBeforeAnyWalletMutation(String rail) {
+        var callback = callback("abc", "100000");
+        when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1"))
+                .thenReturn(order("100000", "UNSETTLED"));
+        when(hdPayMapper.insertCallbackInbox(anyString(), eq("VQR-1"), eq("P-1"), eq(3),
+                eq(new BigDecimal("100000")), eq("PROCESSING"), anyString())).thenReturn(1);
+        when(hdPayMapper.updateCallbackObservation("VQR-1", "P-1", 3)).thenReturn(1);
+        Map<String, Object> target = intent("AWAITING_PAYMENT", LocalDateTime.of(2026, 9, 2, 5, 0), "5.000000");
+        if (rail == null) target.remove("paymentRail");
+        else target.put("paymentRail", rail);
+        when(intentMapper.findIntentForUpdate("VQR-1")).thenReturn(target);
+        when(hdPayMapper.markSettlementReview("VQR-1", "P-1", 3, "VIETQR_PAYMENT_RAIL_CONFLICT"))
+                .thenReturn(1);
+        when(hdPayMapper.insertSettlementReview(anyString(), eq("VQR-1"), eq("P-1"),
+                eq("VIETQR_PAYMENT_RAIL_CONFLICT"))).thenReturn(1);
+        when(hdPayMapper.markCallbackProcessedOwned(anyString(), anyString(), eq("MANUAL_REVIEW"),
+                eq(3), eq("VIETQR_PAYMENT_RAIL_CONFLICT"))).thenReturn(1);
+        var claim = service.claimForProviderQuery(callback);
+        when(hdPayMapper.findCallbackInboxForUpdate(anyString())).thenReturn(Map.of(
+                "processingStatus", "PROCESSING", "claimToken", claim.claimToken()));
+
+        assertThat(service.settleConfirmed(claim.fact(), claim.claimToken(), payOrder("100000")))
+                .isEqualTo("success");
+
+        verify(hdPayMapper).markSettlementReview("VQR-1", "P-1", 3, "VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(hdPayMapper).insertSettlementReview(anyString(), eq("VQR-1"), eq("P-1"),
+                eq("VIETQR_PAYMENT_RAIL_CONFLICT"));
+        org.mockito.Mockito.verifyNoInteractions(paymentMapper, outbox);
+        verify(intentMapper, never()).transitionIntent(any(), any(), any(), any(), any(), any(), any());
+        verify(intentMapper, never()).closeInFlightReconciliation(any(), any());
+        verify(hdPayMapper, never()).insertDepositNotification(any(), any(), any());
+        verify(hdPayMapper, never()).markSettlementCredited(any(), any(), any(), any(), any());
+    }
+
     @Test
     void exactDuplicatePayloadIsAcknowledgedWithoutAnySecondCredit() {
         var callback = callback("abc", "100000");
@@ -229,6 +266,7 @@ class HdPayCallbackSettlementServiceTest {
         result.put("intentNo", "VQR-1");
         result.put("userId", 42L);
         result.put("status", status);
+        result.put("paymentRail", "HDPAY");
         result.put("expiresAt", expiresAt);
         result.put("requestedUsdt", new BigDecimal(requestedUsdt));
         result.put("payableVnd", new BigDecimal("100000"));

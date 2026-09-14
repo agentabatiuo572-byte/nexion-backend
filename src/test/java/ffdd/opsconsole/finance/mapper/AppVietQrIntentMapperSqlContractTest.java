@@ -77,7 +77,7 @@ class AppVietQrIntentMapperSqlContractTest {
                 String.class, Long.class, String.class, String.class,
                 java.math.BigDecimal.class, java.math.BigDecimal.class,
                 java.math.BigDecimal.class, Long.class, Long.class,
-                String.class, java.time.LocalDateTime.class);
+                String.class, java.time.LocalDateTime.class, String.class);
         String sql = String.join("\n", method.getAnnotation(Insert.class).value());
 
         assertThat(sql)
@@ -86,6 +86,8 @@ class AppVietQrIntentMapperSqlContractTest {
                 .contains("locked_fx_rate_vnd_per_usdt")
                 .contains("fx_quote_version")
                 .contains("bank_account_id")
+                .contains("payment_rail")
+                .contains("#{paymentRail}")
                 .contains("memo_code")
                 .contains("'AWAITING_PAYMENT'");
     }

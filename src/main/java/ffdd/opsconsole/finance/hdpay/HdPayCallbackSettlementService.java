@@ -261,6 +261,9 @@ public class HdPayCallbackSettlementService {
         if (!"WALLET_TOPUP".equals(settlementTarget)) {
             return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_TARGET_INVALID");
         }
+        if (!"HDPAY".equals(code(intent.get("paymentRail")))) {
+            return manualReview(fact, claimToken, "VIETQR_PAYMENT_RAIL_CONFLICT");
+        }
         Map<String, Object> wallet = paymentMapper.findUsdtWalletForUpdate(userId);
         if (wallet == null || wallet.isEmpty()) {
             throw new BizException(503, "HDPAY_TARGET_WALLET_NOT_FOUND");

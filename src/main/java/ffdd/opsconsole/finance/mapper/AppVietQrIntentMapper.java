@@ -18,6 +18,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             i.intent_no AS intentNo, i.user_id AS userId,
             i.settlement_target_type AS settlementTargetType,
             i.target_order_no AS targetOrderNo,
+            i.payment_rail AS paymentRail,
             i.create_idempotency_key AS createIdempotencyKey,
             i.create_request_hash AS createRequestHash,
             i.requested_usdt AS requestedUsdt, i.payable_vnd AS payableVnd,
@@ -64,6 +65,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
                                SELECT SUM(i.payable_vnd)
                                  FROM nx_vietqr_intent i
                                 WHERE i.bank_account_id = nx_vietqr_bank_account.id
+                                  AND i.payment_rail = 'MANUAL'
                                   AND i.status = 'AWAITING_PAYMENT'
                                   AND i.expires_at > NOW() AND i.is_deleted = 0
                            ), 0)
@@ -100,7 +102,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
     @Select("""
             SELECT bank_account_id
               FROM nx_vietqr_intent
-             WHERE is_deleted = 0
+             WHERE is_deleted = 0 AND payment_rail = 'MANUAL'
              ORDER BY id DESC
              LIMIT 1
             """)
@@ -110,6 +112,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             SELECT COALESCE(SUM(payable_vnd), 0)
               FROM nx_vietqr_intent
              WHERE bank_account_id = #{bankAccountId}
+               AND payment_rail = 'MANUAL'
                AND status = 'AWAITING_PAYMENT'
                AND expires_at > NOW()
                AND is_deleted = 0
@@ -152,13 +155,13 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
                 intent_no, user_id, create_idempotency_key, create_request_hash,
                 requested_usdt, payable_vnd, credited_usdt,
                 locked_fx_rate_vnd_per_usdt, fx_quote_version,
-                bank_account_id, memo_code, status, expires_at,
+                bank_account_id, payment_rail, memo_code, status, expires_at,
                 version, created_at, updated_at, is_deleted
             ) VALUES (
                 #{intentNo}, #{userId}, #{idempotencyKey}, #{requestHash},
                 #{requestedUsdt}, #{payableVnd}, 0,
                 #{fxRate}, #{fxQuoteVersion},
-                #{bankAccountId}, #{memoCode}, 'AWAITING_PAYMENT', #{expiresAt},
+                #{bankAccountId}, #{paymentRail}, #{memoCode}, 'AWAITING_PAYMENT', #{expiresAt},
                 0, NOW(), NOW(), 0
             )
             ON DUPLICATE KEY UPDATE id = id
@@ -174,7 +177,8 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             @Param("fxQuoteVersion") Long fxQuoteVersion,
             @Param("bankAccountId") Long bankAccountId,
             @Param("memoCode") String memoCode,
-            @Param("expiresAt") LocalDateTime expiresAt);
+            @Param("expiresAt") LocalDateTime expiresAt,
+            @Param("paymentRail") String paymentRail);
 
     @Insert("""
             INSERT INTO nx_vietqr_reconciliation (
@@ -265,6 +269,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
                SET status = 'CANCELLED', version = version + 1, updated_at = NOW()
              WHERE bank_account_id = #{bankAccountId}
                AND status = 'AWAITING_PAYMENT'
+               AND payment_rail = 'MANUAL'
                AND (#{excludedIntentNo} IS NULL OR intent_no <> #{excludedIntentNo})
                AND is_deleted = 0
             """)
@@ -280,6 +285,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
                    r.note = 'BANK_ACCOUNT_FUSED',
                    r.updated_at = NOW()
              WHERE i.bank_account_id = #{bankAccountId}
+               AND i.payment_rail = 'MANUAL'
                AND i.status = 'CANCELLED'
                AND (#{excludedIntentNo} IS NULL OR i.intent_no <> #{excludedIntentNo})
                AND r.reconciliation_no = CONCAT('APP-', i.intent_no)
@@ -341,6 +347,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
                    version = version + 1, updated_at = NOW()
              WHERE user_id = #{userId} AND intent_no = #{intentNo}
                AND status = 'AWAITING_PAYMENT' AND expires_at > NOW()
+               AND payment_rail = 'MANUAL'
                AND version = #{expectedVersion} AND is_deleted = 0
             """)
     int cancelIntent(
@@ -362,6 +369,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
               FROM nx_vietqr_intent i
               LEFT JOIN nx_vietqr_bank_account b ON b.id = i.bank_account_id
              WHERE i.memo_code = #{memoCode} AND i.is_deleted = 0
+               AND i.payment_rail = 'MANUAL'
              LIMIT 1
              FOR UPDATE
             """)
@@ -371,6 +379,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             UPDATE nx_vietqr_intent
                SET status = 'CANCELLED', version = version + 1, updated_at = NOW()
              WHERE bank_account_id = #{bankAccountId}
+               AND payment_rail = 'MANUAL'
                AND status = 'AWAITING_PAYMENT' AND is_deleted = 0
             """)
     int cancelActiveIntentsForBankAccount(@Param("bankAccountId") Long bankAccountId);
@@ -380,6 +389,7 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
             JOIN nx_vietqr_intent i ON i.intent_no = r.intent_no AND i.is_deleted = 0
                SET r.is_deleted = 1, r.note = 'ACCOUNT_DISABLED', r.updated_at = NOW()
              WHERE i.bank_account_id = #{bankAccountId}
+               AND i.payment_rail = 'MANUAL'
                AND i.status = 'CANCELLED'
                AND r.view_type = 'INFLIGHT' AND r.status = 'OPEN' AND r.is_deleted = 0
             """)

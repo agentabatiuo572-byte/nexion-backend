@@ -26,8 +26,8 @@ public class HdPayHostedDepositService {
     private final HdPayOrderMapper mapper;
 
     public ApiResult<Map<String, Object>> paymentConfig() {
-        ApiResult<Map<String, Object>> result = legacy.paymentConfig();
-        if (!properties.providerMode()) return result;
+        if (!properties.providerMode()) return legacy.paymentConfig();
+        ApiResult<Map<String, Object>> result = legacy.hostedPaymentConfig();
         Map<String, Object> root = copy(result.getData());
         Map<String, Object> vietQr = copy(map(root.get("vietQr")));
         vietQr.put("paymentMode", "hosted");
@@ -44,7 +44,7 @@ public class HdPayHostedDepositService {
             Long userId, String idempotencyKey, BigDecimal amount, String clientIp) {
         if (!properties.providerMode()) return legacy.create(userId, idempotencyKey, amount);
         requireReady();
-        ApiResult<Map<String, Object>> canonical = legacy.create(userId, idempotencyKey, amount);
+        ApiResult<Map<String, Object>> canonical = legacy.createHosted(userId, idempotencyKey, amount);
         return submitPrepared(canonical.getData(), clientIp);
     }
 
@@ -60,6 +60,9 @@ public class HdPayHostedDepositService {
             // state or making a network call so no internal caller can revive
             // the retired direct-commerce path.
             throw new BizException(409, "HDPAY_COMMERCE_DIRECT_PAYMENT_RETIRED");
+        }
+        if (!"hosted".equals(text(view.get("paymentMode")))) {
+            throw new BizException(409, "VIETQR_PAYMENT_RAIL_CONFLICT");
         }
         boolean reservedByCommerceTransaction = Boolean.TRUE.equals(
                 view.remove(SUBMISSION_RESERVED_MARKER));
@@ -125,7 +128,7 @@ public class HdPayHostedDepositService {
 
     public ApiResult<Map<String, Object>> get(Long userId, String intentNo) {
         ApiResult<Map<String, Object>> result = legacy.get(userId, intentNo);
-        return properties.providerMode()
+        return properties.providerMode() && "hosted".equals(text(result.getData().get("paymentMode")))
                 ? ApiResult.ok(overlay(result.getData(), mapper.findByMerchantOrderId(intentNo), false))
                 : result;
     }
@@ -139,7 +142,8 @@ public class HdPayHostedDepositService {
             List<Map<String, Object>> items = new java.util.ArrayList<>();
             for (Object raw : rows) {
                 Map<String, Object> item = copy(map(raw));
-                items.add(overlay(item, mapper.findByMerchantOrderId(text(item.get("intentNo"))), false));
+                items.add("hosted".equals(text(item.get("paymentMode")))
+                        ? overlay(item, mapper.findByMerchantOrderId(text(item.get("intentNo"))), false) : item);
             }
             root.put("items", items);
         }

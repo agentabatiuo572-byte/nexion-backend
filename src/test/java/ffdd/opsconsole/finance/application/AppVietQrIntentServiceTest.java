@@ -215,7 +215,7 @@ class AppVietQrIntentServiceTest {
         verify(mapper, never()).ensureInFlightReconciliation(anyString());
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -231,7 +231,7 @@ class AppVietQrIntentServiceTest {
                 .isEqualTo(503);
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -255,7 +255,7 @@ class AppVietQrIntentServiceTest {
         verify(mapper, never()).ensureInFlightReconciliation(anyString());
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -282,7 +282,7 @@ class AppVietQrIntentServiceTest {
                 anyString(), eq(41L), eq("create-1"), anyString(),
                 eq(new BigDecimal("25.00")), eq(new BigDecimal("659750")),
                 eq(new BigDecimal("26390")), eq(7L), eq(8L), anyString(),
-                eq(LocalDateTime.of(2026, 7, 25, 0, 30))))
+                eq(LocalDateTime.of(2026, 7, 25, 0, 30)), eq("MANUAL")))
                 .thenReturn(1);
 
         ApiResult<Map<String, Object>> result =
@@ -315,7 +315,7 @@ class AppVietQrIntentServiceTest {
                 .hasMessage("IDEMPOTENCY_REQUEST_CONFLICT");
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -368,7 +368,7 @@ class AppVietQrIntentServiceTest {
                 .isEqualTo(403);
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     @Test
@@ -441,7 +441,7 @@ class AppVietQrIntentServiceTest {
         when(mapper.insertIntent(
                 anyString(), eq(41L), eq("create-cap"), anyString(),
                 eq(new BigDecimal("25.00")), eq(new BigDecimal("659750")),
-                eq(new BigDecimal("26390")), eq(7L), eq(9L), anyString(), any()))
+                eq(new BigDecimal("26390")), eq(7L), eq(9L), anyString(), any(), eq("MANUAL")))
                 .thenReturn(1);
 
         assertThat(service.create(41L, "create-cap", new BigDecimal("25")).getData())
@@ -464,7 +464,7 @@ class AppVietQrIntentServiceTest {
                 .isEqualTo(422);
         verify(mapper, never()).insertIntent(
                 anyString(), anyLong(), anyString(), anyString(), any(), any(), any(), anyLong(),
-                anyLong(), anyString(), any());
+                anyLong(), anyString(), any(), anyString());
     }
 
     private Map<String, Object> accountRow(
@@ -479,11 +479,128 @@ class AppVietQrIntentServiceTest {
                 "receivedTodayVnd", received);
     }
 
+
+    @Test
+    void hostedConfigDoesNotDependOnManualBankAccountsOrAdvertiseTheirCapacity() {
+        when(mapper.countActiveBankAccounts()).thenReturn(0L);
+        Map<?, ?> value = (Map<?, ?>) service.hostedPaymentConfig().getData().get("vietQr");
+        assertThat(value.get("enabled")).isEqualTo(true);
+        assertThat(value.get("dailyCapacityKnown")).isEqualTo(false);
+        assertThat(value.get("maxDepositUsdt")).isEqualTo(new BigDecimal("5000.00"));
+        verify(mapper, never()).countActiveBankAccounts();
+        verify(mapper, never()).findMaxAvailableBankCapacityVnd();
+    }
+
+    @Test
+    void hostedCreatePersistsUnassignedBankAndRetainsCanonicalAmountAndFx() {
+        Map<String, Object> row = new java.util.LinkedHashMap<>(intentRow(
+                "VQR-HOSTED", "hosted-new", sha256("25.00"), "AWAITING_PAYMENT", 0L));
+        row.put("paymentRail", "HDPAY");
+        row.remove("bankAccountId");
+        row.remove("bankAccountStatus");
+        when(mapper.findIntentByCreateKey(41L, "hosted-new")).thenReturn(null, row);
+        service.createHosted(41L, "hosted-new", new BigDecimal("25"));
+        verify(mapper).insertIntent(anyString(), eq(41L), eq("hosted-new"), eq(sha256("25.00")),
+                eq(new BigDecimal("25.00")), eq(new BigDecimal("659750")),
+                eq(new BigDecimal("26390")), eq(7L), org.mockito.ArgumentMatchers.isNull(),
+                anyString(), eq(LocalDateTime.of(2026, 7, 25, 0, 30)), eq("HDPAY"));
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+        verify(mapper, never()).sumActiveReservedVnd(anyLong());
+        verifyNoInteractions(cipher);
+    }
+
+    @Test
+    void hostedCreateStillEnforcesKillSwitchAndAmountLimits() {
+        when(mapper.findIntentByCreateKey(eq(41L), anyString())).thenReturn(null);
+        assertThatThrownBy(() -> service.createHosted(41L, "hosted-small", new BigDecimal("9")))
+                .hasMessage("VIETQR_AMOUNT_OUT_OF_RANGE");
+        assertThatThrownBy(() -> service.createHosted(41L, "hosted-large", new BigDecimal("5001")))
+                .hasMessage("VIETQR_AMOUNT_OUT_OF_RANGE");
+        when(config.activeValue("finance.topup.channel.vietqr.enabled")).thenReturn(Optional.of("false"));
+        assertThatThrownBy(() -> service.createHosted(41L, "hosted-disabled", new BigDecimal("25")))
+                .hasMessage("VIETQR_CHANNEL_UNAVAILABLE");
+    }
+
+    @Test
+    void hostedReplayChecksAmountAndDoesNotAllocateAnotherIntent() {
+        Map<String, Object> row = new java.util.LinkedHashMap<>(intentRow(
+                "VQR-HOSTED", "hosted-replay", sha256("25.00"), "AWAITING_PAYMENT", 0L));
+        row.put("paymentRail", "HDPAY");
+        when(mapper.findIntentByCreateKey(41L, "hosted-replay")).thenReturn(row);
+        assertThat(service.createHosted(41L, "hosted-replay", new BigDecimal("25")).getData())
+                .containsEntry("intentNo", "VQR-HOSTED");
+        assertThatThrownBy(() -> service.createHosted(41L, "hosted-replay", new BigDecimal("26")))
+                .hasMessageContaining("IDEMPOTENCY");
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+    }
+
+    @Test
+    void manualIntentCannotBeReplayedIntoHostedBeforeAnyReconciliationWrite() {
+        Map<String, Object> row = railRow("MANUAL");
+        when(mapper.findIntentByCreateKey(41L, "rail-key")).thenReturn(row);
+        assertThatThrownBy(() -> service.createHosted(41L, "rail-key", new BigDecimal("25")))
+                .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(mapper, never()).ensureInFlightReconciliation(anyString());
+        verify(mapper, never()).listActiveBankAccountsForUpdate();
+        verifyNoInteractions(cipher);
+    }
+
+    @Test
+    void historicalHostedIntentCannotBecomeManualAfterProviderModeIsDisabled() {
+        when(mapper.findIntentByCreateKey(41L, "rail-key")).thenReturn(railRow("HDPAY"));
+        assertThatThrownBy(() -> service.create(41L, "rail-key", new BigDecimal("25")))
+                .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(mapper, never()).ensureInFlightReconciliation(anyString());
+        verifyNoInteractions(cipher);
+    }
+
+    @Test
+    void historicalHostedReplayWithBankAssignmentKeepsHostedShapeAndDoesNotDecrypt() {
+        when(mapper.findIntentByCreateKey(41L, "rail-key")).thenReturn(railRow("HDPAY"));
+        assertThat(service.createHosted(41L, "rail-key", new BigDecimal("25")).getData())
+                .containsEntry("paymentMode", "hosted")
+                .doesNotContainKeys("bankAccount", "memoCode", "qrPayload");
+        verifyNoInteractions(cipher);
+    }
+
+    @Test
+    void hostedGetAndListDoNotExposeOldManualInstructionsEvenWithoutProviderOverlay() {
+        Map<String, Object> row = railRow("HDPAY");
+        when(mapper.findIntentForUser(41L, "VQR-RAIL12345")).thenReturn(row);
+        when(mapper.listIntentsForUser(41L, 20)).thenReturn(List.of(row));
+        assertThat(service.get(41L, "VQR-RAIL12345").getData())
+                .containsEntry("paymentMode", "hosted")
+                .doesNotContainKeys("bankAccount", "memoCode", "qrPayload");
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(41L, 20).getData().get("items");
+        assertThat(rows).singleElement().satisfies(item -> assertThat(item)
+                .containsEntry("paymentMode", "hosted")
+                .doesNotContainKeys("bankAccount", "memoCode", "qrPayload"));
+        verifyNoInteractions(cipher);
+    }
+
+    @Test
+    void hostedLocalCancelFailsBeforeChangingIntentOrReconciliation() {
+        when(mapper.findIntentForUser(41L, "VQR-RAIL12345")).thenReturn(railRow("HDPAY"));
+        assertThatThrownBy(() -> service.cancel(41L, "VQR-RAIL12345", "cancel-key", 0L))
+                .hasMessage("HDPAY_PROVIDER_ORDER_NOT_CANCELLABLE");
+        verify(mapper, never()).expireIntentForUser(anyLong(), anyString());
+        verify(mapper, never()).closeInactiveInFlightReconciliationsForUser(anyLong());
+        verify(mapper, never()).cancelIntent(anyLong(), anyString(), anyLong(), anyString(), anyString());
+    }
+
+    private Map<String, Object> railRow(String rail) {
+        Map<String, Object> row = new java.util.LinkedHashMap<>(intentRow(
+                "VQR-RAIL12345", "rail-key", sha256("25.00"), "AWAITING_PAYMENT", 0L));
+        row.put("paymentRail", rail);
+        return row;
+    }
+
     private Map<String, Object> intentRow(
             String intentNo, String createKey, String requestHash, String status, long version) {
         return Map.ofEntries(
                 Map.entry("intentNo", intentNo),
                 Map.entry("userId", 41L),
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("createIdempotencyKey", createKey),
                 Map.entry("createRequestHash", requestHash),
                 Map.entry("requestedUsdt", new BigDecimal("25.00")),

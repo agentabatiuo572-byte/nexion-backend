@@ -167,6 +167,7 @@ class OpsVietnamPaymentServiceTest {
                 "lockedFxRateVndPerUsdt", new BigDecimal("26390"),
                 "version", 0L));
         when(appIntentMapper.findIntentForUpdate("VQR-CANONICAL")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-CANONICAL"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -227,6 +228,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", true),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-LOCKED-LIMIT")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-LOCKED-LIMIT"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "RECEIPT_REVIEW"),
@@ -277,6 +279,7 @@ class OpsVietnamPaymentServiceTest {
                 "lockedFxRateVndPerUsdt", new BigDecimal("26390"),
                 "version", 0L));
         when(appIntentMapper.findIntentForUpdate("VQR-OWNER")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-OWNER"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -312,6 +315,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("lockedFxRateVndPerUsdt", new BigDecimal("26390")),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-TARGET")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-TARGET"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -368,6 +372,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", true),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-ACCOUNT-MISMATCH")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-ACCOUNT-MISMATCH"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "MISMATCH_REVIEW"),
@@ -409,6 +414,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("lockedFxRateVndPerUsdt", new BigDecimal("26390")),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-FUTURE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-FUTURE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -540,6 +546,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", true),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-LIMIT")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-LIMIT"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "MISMATCH_REVIEW"),
@@ -596,6 +603,7 @@ class OpsVietnamPaymentServiceTest {
                         "receivedTodayVnd", new BigDecimal("659750"),
                         "status", "FUSED", "version", 1L));
         when(appIntentMapper.findIntentByMemoForUpdate("NX-EXACT")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-EXACT"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -677,6 +685,7 @@ class OpsVietnamPaymentServiceTest {
         OpsVietnamPaymentService receiptService = serviceAt("2026-07-25T00:20:00Z");
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 25, 0, 19, 59);
         when(appIntentMapper.findIntentByMemoForUpdate("NX-PREDATE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-PREDATE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -721,6 +730,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", true),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-BEFORE-EXPIRY")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-BEFORE-EXPIRY"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "RECEIPT_REVIEW"),
@@ -757,6 +767,7 @@ class OpsVietnamPaymentServiceTest {
         OpsVietnamPaymentService delayedService = serviceAt("2026-07-25T01:00:00Z");
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 25, 0, 35);
         Map<String, Object> awaiting = Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-WITHIN-GRACE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -805,6 +816,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", true),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-WITHIN-GRACE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-WITHIN-GRACE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "RECEIPT_REVIEW"),
@@ -840,6 +852,7 @@ class OpsVietnamPaymentServiceTest {
         OpsVietnamPaymentService delayedService = serviceAt("2026-07-25T01:00:00Z");
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 25, 0, 41);
         when(appIntentMapper.findIntentByMemoForUpdate("NX-AFTER-GRACE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-AFTER-GRACE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "AWAITING_PAYMENT"),
@@ -880,6 +893,7 @@ class OpsVietnamPaymentServiceTest {
         OpsVietnamPaymentService delayedService = serviceAt("2026-07-25T01:00:00Z");
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 25, 0, 0);
         when(appIntentMapper.findIntentByMemoForUpdate("NX-DUPLICATE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-DUPLICATE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "CREDITED"),
@@ -923,6 +937,7 @@ class OpsVietnamPaymentServiceTest {
                 Map.entry("intentTransitionRequired", false),
                 Map.entry("version", 0L)));
         when(appIntentMapper.findIntentForUpdate("VQR-DUPLICATE")).thenReturn(Map.ofEntries(
+                Map.entry("paymentRail", "MANUAL"),
                 Map.entry("intentNo", "VQR-DUPLICATE"),
                 Map.entry("userId", 41L),
                 Map.entry("status", "CREDITED"),
@@ -1015,6 +1030,45 @@ class OpsVietnamPaymentServiceTest {
                 .isInstanceOf(BizException.class)
                 .hasMessage("VIETQR_RECEIVED_AT_INVALID");
         verify(mapper, never()).findVietQrBankAccountForUpdate(anyLong());
+    }
+
+    @Test
+    void hostedIntentCannotBeBoundByManualReceiptEvenIfAMapperReturnsIt() {
+        when(appIntentMapper.findIntentByMemoForUpdate("NX-HOSTED")).thenReturn(hostedIntent());
+        assertThatThrownBy(() -> service.registerVietQrReceipt("receipt-hosted",
+                new VietQrReceiptRegistrationRequest(8L, "BANK-HOSTED", "NX-HOSTED",
+                        new BigDecimal("659750"), OffsetDateTime.parse("2026-07-25T00:00:00Z"),
+                        receiptEvidence(), "check hosted rail separation", "finance-admin")))
+                .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(receiptEvidence, never()).claim(anyString(), anyString(), anyString());
+        verify(appIntentMapper, never()).transitionIntent(anyString(), anyLong(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).addVietQrBankReceivedToday(anyLong(), any(), any());
+    }
+
+    @Test
+    void existingManualReconciliationCannotCreditAHostedIntent() {
+        when(mapper.findVietQrReconciliationForUpdate(80L)).thenReturn(Map.ofEntries(
+                Map.entry("reconciliationNo", "REC-HOSTED"), Map.entry("intentNo", "VQR-HOSTED"),
+                Map.entry("bankAccountId", 8L), Map.entry("viewType", "MATCHED"), Map.entry("status", "OPEN"),
+                Map.entry("receivedVnd", new BigDecimal("659750")), Map.entry("version", 0L),
+                Map.entry("intentTransitionRequired", true), Map.entry("paymentReference", "BANK-HOSTED"),
+                Map.entry("receivedAt", LocalDateTime.of(2026, 7, 25, 0, 0))));
+        when(appIntentMapper.findIntentForUpdate("VQR-HOSTED")).thenReturn(hostedIntent());
+        assertThatThrownBy(() -> service.reconcile(80L, "match-credit", "reconcile-hosted",
+                new VietQrReconciliationCommandRequest(0L, null, "VQR-HOSTED", receiptEvidence(),
+                        "check hosted rail separation", "finance-admin")))
+                .hasMessage("VIETQR_PAYMENT_RAIL_CONFLICT");
+        verify(receiptEvidence, never()).claim(anyString(), anyString(), anyString());
+        verify(mapper, never()).findUsdtWalletForUpdate(anyLong());
+        verify(appIntentMapper, never()).transitionIntent(anyString(), anyLong(), anyString(), anyString(), any(), any(), any());
+    }
+
+    private Map<String, Object> hostedIntent() {
+        return Map.ofEntries(Map.entry("intentNo", "VQR-HOSTED"), Map.entry("paymentRail", "HDPAY"),
+                Map.entry("userId", 41L), Map.entry("bankAccountId", 8L), Map.entry("status", "AWAITING_PAYMENT"),
+                Map.entry("payableVnd", new BigDecimal("659750")), Map.entry("lockedFxRateVndPerUsdt", new BigDecimal("26390")),
+                Map.entry("createdAt", LocalDateTime.of(2026, 7, 24, 23, 30)),
+                Map.entry("expiresAt", LocalDateTime.of(2026, 7, 25, 0, 30)), Map.entry("version", 0L));
     }
 
     private OpsVietnamPaymentService serviceAt(String instant) {

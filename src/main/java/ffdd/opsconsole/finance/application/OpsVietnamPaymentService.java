@@ -438,8 +438,16 @@ public class OpsVietnamPaymentService {
     }
 
     private Map<String, Object> canonicalIntent(String intentNo) {
-        return requiredMap(appIntentMapper.findIntentForUpdate(intentNo),
+        Map<String, Object> intent = requiredMap(appIntentMapper.findIntentForUpdate(intentNo),
                 "VIETQR_INTENT_NOT_FOUND", 404);
+        requireManualIntent(intent);
+        return intent;
+    }
+
+    private void requireManualIntent(Map<String, Object> intent) {
+        if (!"MANUAL".equals(text(intent.get("paymentRail")))) {
+            conflict("VIETQR_PAYMENT_RAIL_CONFLICT");
+        }
     }
 
     private ApiResult<Map<String, Object>> doRegisterVietQrReceipt(
@@ -457,6 +465,7 @@ public class OpsVietnamPaymentService {
         Map<String, Object> intent = StringUtils.hasText(memoCode)
                 ? appIntentMapper.findIntentByMemoForUpdate(memoCode)
                 : null;
+        if (intent != null) requireManualIntent(intent);
         Map<String, Object> config = requiredMap(
                 mapper.findVietQrConfig(), "VIETQR_CONFIG_UNAVAILABLE");
         String viewType = "ORPHAN";

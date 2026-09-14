@@ -30,6 +30,20 @@ class HdPaySchemaReadinessTest {
     }
 
     @Test
+    void providerModeRejectsTheOldRequiredManualBankColumn() {
+        HdPayProperties properties = providerProperties();
+        when(mapper.countRequiredSchemaTables()).thenReturn(3);
+        when(mapper.countRequiredSchemaColumns()).thenReturn(14);
+        when(mapper.countRequiredUniqueIndexes()).thenReturn(6);
+        when(mapper.countSettlementTargetCheck()).thenReturn(1);
+        when(mapper.countCallbackRecoveryIndex()).thenReturn(1);
+
+        assertThatThrownBy(() -> new HdPaySchemaReadiness(properties, mapper).verify())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("HDPAY_SCHEMA_NOT_READY");
+    }
+
+    @Test
     void providerModeStartsOnlyWithCompleteSchemaContract() {
         HdPayProperties properties = providerProperties();
         when(mapper.countRequiredSchemaTables()).thenReturn(3);
@@ -37,6 +51,8 @@ class HdPaySchemaReadinessTest {
         when(mapper.countRequiredUniqueIndexes()).thenReturn(6);
         when(mapper.countSettlementTargetCheck()).thenReturn(1);
         when(mapper.countCallbackRecoveryIndex()).thenReturn(1);
+        when(mapper.countNullableIntentBankAccountColumn()).thenReturn(1);
+        when(mapper.countIntentPaymentRailColumn()).thenReturn(1);
 
         assertThatNoException()
                 .isThrownBy(() -> new HdPaySchemaReadiness(properties, mapper).verify());

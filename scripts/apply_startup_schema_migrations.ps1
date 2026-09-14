@@ -169,7 +169,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260903_hdpay_commerce_direct_purchase.sql"),
   # Submission becomes durably unknown before any network call. Legacy
   # PENDING rows are query-only recovery candidates and are never resubmitted.
-  (Join-Path $root "scripts\migrations\20260904_hdpay_submission_unknown_before_network.sql")
+  (Join-Path $root "scripts\migrations\20260904_hdpay_submission_unknown_before_network.sql"),
+  (Join-Path $root "scripts\migrations\20260907_hdpay_optional_manual_bank.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

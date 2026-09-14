@@ -44,12 +44,21 @@ public class AppVietQrIntentService {
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> paymentConfig() {
+        return paymentConfig(false);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> hostedPaymentConfig() {
+        return paymentConfig(true);
+    }
+
+    private ApiResult<Map<String, Object>> paymentConfig(boolean hosted) {
         requirePaymentRuntime();
         Map<String, Object> config = required(mapper.findVietQrConfig(), "PAYMENT_CONFIG_UNAVAILABLE");
         Map<String, Object> fx = required(mapper.findFxQuoteConfig(), "FX_QUOTE_UNAVAILABLE");
         BigDecimal rate = VietnamPaymentPolicy.quoteRate(
                 decimal(fx.get("baseRateVndPerUsdt")), decimal(fx.get("buySpreadPct")));
-        BigDecimal remainingCapacityVnd = mapper.findMaxAvailableBankCapacityVnd();
+        BigDecimal remainingCapacityVnd = hosted ? BigDecimal.ZERO : mapper.findMaxAvailableBankCapacityVnd();
         if (remainingCapacityVnd == null || remainingCapacityVnd.signum() < 0) {
             remainingCapacityVnd = BigDecimal.ZERO;
         }
@@ -60,11 +69,13 @@ public class AppVietQrIntentService {
         // "enabled" describes whether an operational bank rail exists. Daily
         // exhaustion is a separate business limit and must not masquerade as
         // maintenance, nor overwrite the configured per-transaction maximum.
-        vietQr.put("enabled", vietQrChannelState().available() && mapper.countActiveBankAccounts() > 0);
+        vietQr.put("enabled", vietQrChannelState().available() && (hosted || mapper.countActiveBankAccounts() > 0));
         vietQr.put("minDepositUsdt", MIN_DEPOSIT_USDT);
         vietQr.put("maxDepositUsdt", configuredMax);
         vietQr.put("todayRemainingDepositUsdt", todayRemainingDepositUsdt);
         vietQr.put("todayRemainingVnd", remainingCapacityVnd);
+        // HDPay does not expose the manual bank pool's daily remaining capacity.
+        if (hosted) vietQr.put("dailyCapacityKnown", false);
         vietQr.put("toleranceVnd", decimal(config.get("toleranceVnd")));
         vietQr.put("graceMinutes", integer(config.get("graceMinutes")));
         vietQr.put("version", longValue(config.get("version")));
@@ -99,6 +110,17 @@ public class AppVietQrIntentService {
     @Transactional
     public ApiResult<Map<String, Object>> create(
             Long userId, String idempotencyKey, BigDecimal requestedAmount) {
+        return createIntent(userId, idempotencyKey, requestedAmount, false);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> createHosted(
+            Long userId, String idempotencyKey, BigDecimal requestedAmount) {
+        return createIntent(userId, idempotencyKey, requestedAmount, true);
+    }
+
+    private ApiResult<Map<String, Object>> createIntent(
+            Long userId, String idempotencyKey, BigDecimal requestedAmount, boolean hosted) {
         requirePaymentRuntime();
         requireVietQrChannelEnabled();
         requireUser(userId);
@@ -111,6 +133,7 @@ public class AppVietQrIntentService {
 
         Map<String, Object> replay = mapper.findIntentByCreateKey(userId, key);
         if (replay != null) {
+            requireMatchingRail(replay, hosted);
             mapper.ensureInFlightReconciliation(text(replay.get("intentNo")));
             return replayCreate(replay, requestHash);
         }
@@ -134,14 +157,18 @@ public class AppVietQrIntentService {
         }
         LocalDateTime expiresAt = LocalDateTime.now(clock).plusMinutes(lockMinutes);
 
-        List<Map<String, Object>> accounts = safeList(mapper.listActiveBankAccountsForUpdate());
-        if (accounts.isEmpty()) {
-            throw new BizException(503, "VIETQR_BANK_RAIL_UNAVAILABLE");
-        }
-        Map<String, Object> account = selectAccount(
-                accounts, payableVnd, text(vietQr.get("rotationStrategy")));
-        if (account == null) {
-            throw new BizException(422, "VIETQR_DAILY_CAPACITY_EXCEEDED");
+        Long bankAccountId = null;
+        if (!hosted) {
+            List<Map<String, Object>> accounts = safeList(mapper.listActiveBankAccountsForUpdate());
+            if (accounts.isEmpty()) {
+                throw new BizException(503, "VIETQR_BANK_RAIL_UNAVAILABLE");
+            }
+            Map<String, Object> account = selectAccount(
+                    accounts, payableVnd, text(vietQr.get("rotationStrategy")));
+            if (account == null) {
+                throw new BizException(422, "VIETQR_DAILY_CAPACITY_EXCEEDED");
+            }
+            bankAccountId = longValue(account.get("id"));
         }
 
         for (int attempt = 0; attempt < 5; attempt++) {
@@ -149,10 +176,12 @@ public class AppVietQrIntentService {
             String memoCode = "NX-" + compactUuid(8);
             int inserted = mapper.insertIntent(
                     intentNo, userId, key, requestHash, amount, payableVnd, rate,
-                    longValue(fx.get("version")), longValue(account.get("id")), memoCode, expiresAt);
+                    longValue(fx.get("version")), bankAccountId, memoCode, expiresAt,
+                    hosted ? "HDPAY" : "MANUAL");
             mapper.ensureInFlightReconciliation(intentNo);
             Map<String, Object> concurrentReplay = mapper.findIntentByCreateKey(userId, key);
             if (concurrentReplay != null) {
+                requireMatchingRail(concurrentReplay, hosted);
                 return replayCreate(concurrentReplay, requestHash);
             }
             if (inserted == 1) {
@@ -218,6 +247,11 @@ public class AppVietQrIntentService {
             throw new BizException(422, "VIETQR_EXPECTED_VERSION_REQUIRED");
         }
         String requestHash = sha256(normalizedIntentNo + "|" + expectedVersion);
+        Map<String, Object> current = required(
+                mapper.findIntentForUser(userId, normalizedIntentNo), "VIETQR_INTENT_NOT_FOUND", 404);
+        if (hostedRail(current)) {
+            throw new BizException(409, "HDPAY_PROVIDER_ORDER_NOT_CANCELLABLE");
+        }
         mapper.expireIntentForUser(userId, normalizedIntentNo);
         mapper.closeInactiveInFlightReconciliationsForUser(userId);
         Map<String, Object> before = required(
@@ -290,27 +324,43 @@ public class AppVietQrIntentService {
         return eligible.get(0);
     }
 
+    private boolean hostedRail(Map<String, Object> row) {
+        String rail = text(row.get("paymentRail"));
+        if ("HDPAY".equals(rail)) return true;
+        if ("MANUAL".equals(rail)) return false;
+        throw new BizException(503, "VIETQR_PAYMENT_RAIL_INVALID");
+    }
+
+    private void requireMatchingRail(Map<String, Object> row, boolean hosted) {
+        if (hostedRail(row) != hosted) throw new BizException(409, "VIETQR_PAYMENT_RAIL_CONFLICT");
+    }
+
     private Map<String, Object> toView(Map<String, Object> row) {
+        boolean hosted = hostedRail(row);
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("intentNo", text(row.get("intentNo")));
         view.put("usdtAmount", decimal(row.get("requestedUsdt")));
         view.put("fxRate", decimal(row.get("lockedFxRateVndPerUsdt")));
         view.put("vndAmount", decimal(row.get("payableVnd")));
-        view.put("memoCode", text(row.get("memoCode")));
+        if (!hosted) view.put("memoCode", text(row.get("memoCode")));
         String status = text(row.get("status"));
         String last4 = text(row.get("accountNumberLast4"));
         String accountNumber = "****" + last4;
-        if ("AWAITING_PAYMENT".equals(status)
+        if (!hosted && "AWAITING_PAYMENT".equals(status)
                 && "ACTIVE".equals(text(row.get("bankAccountStatus")))
                 && StringUtils.hasText(text(row.get("accountNumberEncrypted")))) {
             accountNumber = cipher.decrypt(
                     text(row.get("accountNumberEncrypted")),
                     text(row.get("accountNumberHash")));
         }
-        view.put("bankAccount", Map.of(
+        if (!hosted) view.put("bankAccount", Map.of(
                 "accountName", text(row.get("accountHolder")),
                 "accountNumber", accountNumber,
                 "bankName", text(row.get("bankName"))));
+        if (hosted) {
+            view.put("paymentMode", "hosted");
+            view.put("providerStatus", "not_submitted");
+        }
         view.put("status", status.toLowerCase(Locale.ROOT));
         putIfPresent(view, "expiresAt", row.get("expiresAt") == null ? null : isoInstant(row.get("expiresAt")));
         view.put("creditedUsdt", decimal(row.get("creditedUsdt")));

@@ -24,7 +24,9 @@ public class HdPaySchemaReadiness {
                 || mapper.countRequiredSchemaColumns() != 14
                 || mapper.countRequiredUniqueIndexes() != 6
                 || mapper.countSettlementTargetCheck() != 1
-                || mapper.countCallbackRecoveryIndex() != 1) {
+                || mapper.countCallbackRecoveryIndex() != 1
+                || mapper.countNullableIntentBankAccountColumn() != 1
+                || mapper.countIntentPaymentRailColumn() != 1) {
             throw new IllegalStateException("HDPAY_SCHEMA_NOT_READY");
         }
     }

@@ -45,6 +45,22 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
     int countRequiredSchemaColumns();
 
     @Select("""
+            SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema=DATABASE()
+               AND table_name='nx_vietqr_intent' AND column_name='bank_account_id'
+               AND data_type='bigint' AND is_nullable='YES'
+            """)
+    int countNullableIntentBankAccountColumn();
+
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema=DATABASE()
+               AND table_name='nx_vietqr_intent' AND column_name='payment_rail'
+               AND column_type='enum(''MANUAL'',''HDPAY'')' AND is_nullable='NO'
+            """)
+    int countIntentPaymentRailColumn();
+
+    @Select("""
             SELECT COUNT(DISTINCT CONCAT(table_name, '.', index_name))
               FROM information_schema.statistics
              WHERE table_schema=DATABASE() AND non_unique=0
@@ -148,6 +164,7 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
              WHERE o.merchant_order_id = #{merchantOrderId}
                AND o.submission_status = 'PENDING'
                AND i.status = 'AWAITING_PAYMENT'
+               AND i.payment_rail = 'HDPAY'
                AND i.expires_at > NOW()
             """)
     int authorizeSubmissionIfIntentPayable(@Param("merchantOrderId") String merchantOrderId);
