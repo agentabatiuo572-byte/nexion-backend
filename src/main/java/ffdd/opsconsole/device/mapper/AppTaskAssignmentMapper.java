@@ -54,6 +54,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             """)
     List<DeviceRow> ownedDevices(@Param("userId") Long userId);
 
+    // Large task histories can make MySQL choose a non-covering competitor despite the status key.
+    // Deploy the active-read migration first; keep these equality probes on its covering index.
     @Select("""
             SELECT d.user_id AS userId, d.id AS deviceId
               FROM nx_user_device d
@@ -79,12 +81,12 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                   AND oc.activation_status = 'ACTIVE'
                                   AND oc.source_environment = 'PRODUCTION' AND oc.run_id = ''
                                   AND oc.is_deleted = 0))
-               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t FORCE INDEX (idx_task_assignment_active)
                                 WHERE t.user_id = d.user_id AND t.user_device_id = d.id
                                   AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
                                   AND t.canonical_assignment_status = 'CLAIMED'
                                   AND (t.lease_expires_at IS NULL OR t.lease_expires_at > CURRENT_TIMESTAMP))
-               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t
+               AND NOT EXISTS (SELECT 1 FROM nx_compute_task t FORCE INDEX (idx_task_assignment_active)
                                 WHERE t.user_id = d.user_id AND t.user_device_id = d.id
                                   AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
                                   AND t.canonical_assignment_status = 'RUNNING'
