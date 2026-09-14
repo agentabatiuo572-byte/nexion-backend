@@ -267,35 +267,29 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt);
 
+    // Materialize the latest eligible ledger IDs once, then reuse that small user set.
+    // The matching index allows MySQL to skip historical rows within each user's group.
     @Select("""
-            SELECT COALESCE(SUM(ABS(COALESCE(w.usdt_available, 0) - COALESCE(latest.balance_after, 0))), 0)
-              FROM (
+            WITH latest_ids AS (
+                    SELECT user_id, MAX(id) AS latest_id
+                      FROM nx_wallet_ledger
+                     WHERE is_deleted = 0 AND asset = 'USDT' AND status = 'SUCCESS'
+                     GROUP BY user_id
+            ), users AS (
                     SELECT user_id
                       FROM nx_user_wallet
                      WHERE is_deleted = 0
                     UNION
-                    SELECT user_id
-                      FROM nx_wallet_ledger
-                     WHERE is_deleted = 0
-                       AND asset = 'USDT'
-                       AND status = 'SUCCESS'
-              ) users
+                    SELECT user_id FROM latest_ids
+            )
+            SELECT COALESCE(SUM(ABS(COALESCE(w.usdt_available, 0) - COALESCE(latest.balance_after, 0))), 0)
+              FROM users
               LEFT JOIN nx_user_wallet w
                 ON w.user_id = users.user_id
                AND w.is_deleted = 0
-              LEFT JOIN (
-                    SELECT l.user_id, l.balance_after
-                      FROM nx_wallet_ledger l
-                      JOIN (
-                            SELECT user_id, MAX(id) AS latest_id
-                              FROM nx_wallet_ledger
-                             WHERE is_deleted = 0
-                               AND asset = 'USDT'
-                               AND status = 'SUCCESS'
-                             GROUP BY user_id
-                      ) ids ON ids.latest_id = l.id
-                     WHERE l.is_deleted = 0
-              ) latest ON latest.user_id = users.user_id
+              LEFT JOIN latest_ids ids ON ids.user_id = users.user_id
+              LEFT JOIN nx_wallet_ledger latest
+                ON latest.id = ids.latest_id AND latest.user_id = users.user_id AND latest.is_deleted = 0
             """)
     BigDecimal walletLedgerReconciliationGapUsdt();
 
