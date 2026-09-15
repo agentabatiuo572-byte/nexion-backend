@@ -11,6 +11,8 @@ import org.springframework.stereotype.Component;
 
 @Component
 public final class HdPayCallbackVerifier {
+    // Both the payment order and callback inbox store DECIMAL(20, 2).
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999999999999999.99");
     private static final Set<String> ALLOWED_FIELDS = Set.of(
             "merchantId", "orderId", "transAmt", "createTime", "merchantOrderId",
             "orderStatus", "payTime", "standbyObject", "remark", "signType", "sign");
@@ -29,11 +31,12 @@ public final class HdPayCallbackVerifier {
         while (names.hasNext()) {
             if (!ALLOWED_FIELDS.contains(names.next())) invalid("HDPAY_CALLBACK_FIELD_UNSUPPORTED");
         }
+        BigDecimal transAmt = requiredAmount(body, "transAmt");
         Map<String, String> fields = new LinkedHashMap<>();
         body.fields().forEachRemaining(entry -> {
             if (!"sign".equals(entry.getKey()) && !entry.getValue().isNull()) {
                 fields.put(entry.getKey(), "transAmt".equals(entry.getKey()) && entry.getValue().isNumber()
-                        ? entry.getValue().decimalValue().setScale(2).toPlainString()
+                        ? transAmt.setScale(2).toPlainString()
                         : scalar(entry.getValue()));
             }
         });
@@ -43,7 +46,6 @@ public final class HdPayCallbackVerifier {
         String signType = requiredText(body, "signType", 16);
         String sign = requiredText(body, "sign", 64);
         int orderStatus = requiredInteger(body, "orderStatus");
-        BigDecimal transAmt = requiredAmount(body, "transAmt");
         if (!merchantId.equals(properties.getMerchantId())
                 || !"MD5".equalsIgnoreCase(signType)
                 || !Set.of(1, 3, 4, 5).contains(orderStatus)
@@ -99,9 +101,27 @@ public final class HdPayCallbackVerifier {
 
     private BigDecimal requiredAmount(JsonNode body, String name) {
         JsonNode value = body.get(name);
-        if (value == null || !value.isNumber()) invalid("HDPAY_CALLBACK_FIELD_INVALID");
-        BigDecimal amount = value.decimalValue();
-        if (amount.signum() <= 0 || amount.scale() > 2) invalid("HDPAY_CALLBACK_FIELD_INVALID");
+        if (value == null || (!value.isNumber() && !value.isTextual())) {
+            invalid("HDPAY_CALLBACK_FIELD_INVALID");
+        }
+        BigDecimal amount;
+        try {
+            if (value.isTextual()) {
+                String text = value.textValue();
+                if (text.length() > 21 || !text.matches("[0-9]+(?:\\.[0-9]{1,2})?")) {
+                    invalid("HDPAY_CALLBACK_FIELD_INVALID");
+                }
+                // Parse only for monetary checks; the signature still uses the original text.
+                amount = new BigDecimal(text);
+            } else {
+                amount = value.decimalValue();
+            }
+        } catch (NumberFormatException ex) {
+            throw new BizException(400, "HDPAY_CALLBACK_FIELD_INVALID");
+        }
+        if (amount.signum() <= 0 || amount.scale() > 2 || amount.compareTo(MAX_AMOUNT) > 0) {
+            invalid("HDPAY_CALLBACK_FIELD_INVALID");
+        }
         return amount;
     }
 

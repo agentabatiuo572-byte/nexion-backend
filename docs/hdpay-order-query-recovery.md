@@ -1,6 +1,7 @@
 # HDPay 充值确认与主动查单
 
 - 回调入口：`POST /openapi/v1/payments/hdpay/pay-in/callback`，JSON 请求，纯文本应答。`success` 是通知已受理的应答，已支付状态为 `orderStatus=3`。
+- `transAmt` 兼容 JSON 数字与十进制字符串（例如 `897260.00` / `"897260.00"`）。字符串按原文验签，另行解析为精确金额；数字沿用两位小数验签规则。金额须为正数、最多两位小数并符合订单及收件箱的 `DECIMAL(20,2)` 范围，异常格式在入账前拒绝。
 - 回调验签后先持久化，再向 HDPay 查询核对商户号、原商户订单号、供应商订单号、金额和 BANKQR 通道。有效付款进入钱包、账本、通知、审计及意向单的同一结算事务。
 - `HdPayOrderQueryScheduler` 在 `PROVIDER` 模式且配置完整时运行，默认每轮间隔 30 秒（`nexion.finance.hdpay.order-query-delay-ms`），每批最多 20 笔，选择至少 30 秒未更新且未结算的 `CREATED` / `SUBMIT_UNKNOWN` 订单。
 - 订单行的版本与更新时间用于抢占和轮转；回调或另一工作者推进版本后，旧查询结果不能再次结算。查询中断后订单仍在耐久队列中，后续轮次可重新查询；不创建替代支付订单。
