@@ -52,15 +52,17 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             """)
     List<Map<String, Object>> listActiveVietQrAccountsForKeyValidation();
 
-    @Select("""
-            SELECT COUNT(1)
-              FROM nx_vietqr_reconciliation
-             WHERE is_deleted = 0
-               AND (#{viewType} IS NULL OR view_type = #{viewType})
+    @Select("WITH " + D1HdPayReadSql.CTES + ", hdpay_matched AS (" + D1HdPayReadSql.MATCHED_ROWS + """
+            ), visible_rows AS (
+                SELECT view_type AS viewType FROM nx_vietqr_reconciliation WHERE is_deleted = 0
+                UNION ALL SELECT viewType FROM hdpay_matched
+            )
+            SELECT COUNT(1) FROM visible_rows
+             WHERE (#{viewType} IS NULL OR viewType = #{viewType})
             """)
     long countVietQrReconciliations(@Param("viewType") String viewType);
 
-    @Select("""
+    @Select("WITH " + D1HdPayReadSql.CTES + ", visible_rows AS (" + """
             SELECT r.id, r.reconciliation_no AS reconciliationNo, r.intent_no AS intentNo,
                    r.user_id AS userId, r.bank_account_id AS bankAccountId,
                    i.bank_account_id AS assignedBankAccountId, i.memo_code AS memoCode,
@@ -80,8 +82,12 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
               FROM nx_vietqr_reconciliation r
               LEFT JOIN nx_vietqr_intent i ON i.intent_no = r.intent_no AND i.is_deleted = 0
              WHERE r.is_deleted = 0
-               AND (#{viewType} IS NULL OR r.view_type = #{viewType})
-             ORDER BY r.created_at DESC, r.id DESC
+            UNION ALL
+            """ + D1HdPayReadSql.MATCHED_ROWS + """
+            )
+            SELECT * FROM visible_rows
+             WHERE (#{viewType} IS NULL OR viewType = #{viewType})
+             ORDER BY createdAt DESC, id DESC
              LIMIT #{pageSize} OFFSET #{offset}
             """)
     List<Map<String, Object>> listVietQrReconciliations(

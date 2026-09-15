@@ -77,6 +77,16 @@ class OpsVietnamPaymentServiceTest {
     }
 
     @Test
+    void hdPayReadOnlyProjectionCannotBeUsedForAnyManualReconciliationAction() {
+        for (String action : List.of("match-credit", "return", "return-confirm", "cancel")) {
+            assertThatThrownBy(() -> service.reconcile(-1L, action, "readonly-hdpay", null))
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("VIETQR_RECONCILIATION_ID_REQUIRED");
+        }
+        org.mockito.Mockito.verifyNoInteractions(mapper, appIntentMapper, idempotency, audit, outbox);
+    }
+
+    @Test
     void quoteIsDerivedWithIntegerDomainHalfUpRoundingToTenVnd() {
         assertThat(VietnamPaymentPolicy.quoteRate(new BigDecimal("26000"), new BigDecimal("1.5")))
                 .isEqualByComparingTo("26390");

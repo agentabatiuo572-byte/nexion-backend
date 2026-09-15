@@ -35,8 +35,8 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
             """)
     void createReconciliationWriteoffTable();
 
-    @Select("""
-            WITH provider_side AS (
+    @Select("WITH " + D1HdPayReadSql.CTES + """
+            , provider_facts AS (
                 SELECT channel_code AS channel, COUNT(1) AS provider_count,
                        COALESCE(SUM(amount_usdt), 0) AS provider_amount
                  FROM nx_topup_provider_statement
@@ -44,7 +44,16 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                    AND observed_at >= CURRENT_DATE
                    AND statement_status IN ('PAID', 'CONFIRMED', 'SETTLED')
                  GROUP BY channel_code
-            ), ledger_side AS (
+                UNION ALL
+                SELECT 'HDPAY', COUNT(1), COALESCE(SUM(requested_usdt), 0)
+                  FROM hdpay_wallet_orders
+                 WHERE provider_status = 3 AND settlement_status = 'CREDITED'
+                   AND settled_at >= CURRENT_DATE
+                HAVING COUNT(1) > 0
+            ), provider_side AS (
+                SELECT channel, SUM(provider_count) AS provider_count, SUM(provider_amount) AS provider_amount
+                  FROM provider_facts GROUP BY channel
+            ), ledger_facts AS (
                 SELECT COALESCE(d.chain_name,
                          CASE WHEN p.provider IN ('Checkout.com', 'Stripe', 'Card') THEN 'Card' ELSE p.provider END) AS channel,
                        COUNT(1) AS ledger_count,
@@ -63,6 +72,13 @@ public interface DepositOrderMapper extends BaseMapper<DepositOrderEntity> {
                    AND (d.id IS NOT NULL OR p.id IS NOT NULL)
                  GROUP BY COALESCE(d.chain_name,
                          CASE WHEN p.provider IN ('Checkout.com', 'Stripe', 'Card') THEN 'Card' ELSE p.provider END)
+                UNION ALL
+                SELECT 'HDPAY', COUNT(1), COALESCE(SUM(settled_usdt), 0)
+                  FROM hdpay_credited WHERE ledger_created_at >= CURRENT_DATE
+                HAVING COUNT(1) > 0
+            ), ledger_side AS (
+                SELECT channel, SUM(ledger_count) AS ledger_count, SUM(ledger_amount) AS ledger_amount
+                  FROM ledger_facts GROUP BY channel
             ), channels AS (
                 SELECT channel FROM provider_side UNION SELECT channel FROM ledger_side
             )
