@@ -39,6 +39,13 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
+        // Provider settlement notifications are not user-origin requests. The exact
+        // pay-in endpoint independently enforces mode, signature and order-query
+        // reconciliation; a provider's hosting country must not strand a payment.
+        if ("POST".equals(request.getMethod())
+                && "/openapi/v1/payments/hdpay/pay-in/callback".equals(path)) {
+            return true;
+        }
         if (!properties.isEnabled() || path == null
                 || "/api/admin".equals(path) || path.startsWith("/api/admin/")
                 // C2 impersonation is an authenticated admin support surface, not an app-user request.

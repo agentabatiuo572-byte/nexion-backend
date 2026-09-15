@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.emergency.application.GeoBlockDecision;
@@ -15,6 +16,8 @@ import jakarta.servlet.FilterChain;
 import java.util.Optional;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
@@ -25,6 +28,47 @@ class GeoBlockEnforcementFilterTest {
     private final GeoEdgeHealthMonitor healthMonitor = new GeoEdgeHealthMonitor(java.time.Clock.systemUTC());
     private final GeoBlockEnforcementFilter filter =
             new GeoBlockEnforcementFilter(policyService, repository, properties, healthMonitor);
+
+    @Test
+    void exactHdPayPostReachesSignatureValidationWithoutUserGeoMetadata() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "POST", "/openapi/v1/payments/hdpay/pay-in/callback");
+        request.setRemoteAddr("198.51.100.10");
+        request.addHeader("X-Nexion-Edge-Country", "ZZ");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        verify(chain).doFilter(request, response);
+        verifyNoInteractions(policyService, repository);
+        assertThat(healthMonitor.snapshot("nexion-gateway").sampleCount()).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "GET,/openapi/v1/payments/hdpay/pay-in/callback",
+        "PUT,/openapi/v1/payments/hdpay/pay-in/callback",
+        "OPTIONS,/openapi/v1/payments/hdpay/pay-in/callback",
+        "POST,/openapi/v1/payments/hdpay/pay-in/callback/",
+        "POST,/openapi/v1/payments/hdpay/pay-in/callback-extra",
+        "POST,/openapi/v1/payments/hdpay/pay-out/callback",
+        "POST,/openapi/v1/withdrawals/cregis/callbacks",
+        "POST,/auth/users/login",
+        "POST,/api/finance/vietqr/intents"
+    })
+    void hdPayExceptionDoesNotCoverOtherMethodsPathsOrUserRequests(String method, String path) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        request.setRemoteAddr("198.51.100.10");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("GEO_EDGE_TRUST_REQUIRED");
+        verify(chain, never()).doFilter(request, response);
+    }
 
     @Test
     void trustedEdgeCountryIsEnforcedAndRecorded() throws Exception {
