@@ -33,6 +33,7 @@ PC：`GET /api/admin/finance/withdrawals/{withdrawalNo}/bank`；人工查原单�
 
 - 独立开关 `nexion.finance.hdpay-payout.enabled=false`；充值 HDPay 启用不等于代付启用。
 - `client-ip` 和 `bank-codes` 默认空，必须由供应商确认出口 IP 白名单和银行编码；不把整个目录自动当作商户可用银行。
+- `/config.banks` 仅返回已审核银行目录与商户 `bank-codes` 的交集；空白名单返回空。绑定提交在幂等 action 内再次检查该交集，未开通银行不得消费验证码或写入换绑冷却；既有成功幂等请求仍可回放。该限制不修改代付总开关，允许总开关关闭时预绑定已配置银行。
 - 复用受管 `nexion.finance.hdpay` 传输凭据、基础地址及回调域名，以及既有金融敏感字段加密配置。不在仓库、日志或文档保存真实密钥或完整银行卡号。
 - 需四张新增表、有效加密配置及严格非沙箱运行配置。`public-test` 防护仍禁止开启真实代付，本次不改变其信任策略。
 - 调度默认 30 秒；关闭新代付不抹除在途状态，已派发单仍可查单收敛。

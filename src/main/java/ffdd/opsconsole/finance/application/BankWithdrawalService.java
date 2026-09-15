@@ -57,11 +57,19 @@ public class BankWithdrawalService {
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
         boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("channelEnabled"))
                 && Boolean.TRUE.equals(data.get("providerReady"));
-        List<Map<String, String>> banks = BANKS.entrySet().stream().sorted(Map.Entry.comparingByValue())
+        List<Map<String, String>> banks = availableBanks().entrySet().stream().sorted(Map.Entry.comparingByValue())
                 .map(e -> Map.of("code", e.getKey(), "name", e.getValue())).toList();
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", banks,
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(bank.beneficiary(userId)),
                 "policy", data, "source", "D7+HDPAY", "bindingDelayHours", 24, "changeCooldownDays", 7));
+    }
+
+    private Map<String, String> availableBanks() {
+        Set<String> allowed = payout.getBankCodes();
+        if (allowed == null || allowed.isEmpty()) return Map.of();
+        Map<String, String> available = new HashMap<>();
+        BANKS.forEach((code, name) -> { if (allowed.contains(code)) available.put(code, name); });
+        return available;
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -92,6 +100,8 @@ public class BankWithdrawalService {
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
             requireUser(userId, true);
+            // Recheck at mutation time, but let the idempotency layer replay earlier successful bindings.
+            if (!availableBanks().containsKey(request.bankCode())) throw error(422, "BANK_CODE_NOT_ENABLED");
             LocalDateTime now = LocalDateTime.now(clock);
             Beneficiary before = bank.lockBeneficiary(userId);
             if (addresses.unsettledWithdrawalCount(userId) > 0) throw error(409, "BANK_WITHDRAWAL_IN_FLIGHT");

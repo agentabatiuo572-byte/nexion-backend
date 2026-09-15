@@ -9,6 +9,10 @@ import org.springframework.mock.env.MockEnvironment;
 import java.time.*;
 import java.math.BigDecimal;
 import java.util.function.Supplier;
+import java.util.Map;
+import java.util.Set;
+import java.util.List;
+import ffdd.opsconsole.shared.api.ApiResult;
 import org.junit.jupiter.api.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -22,9 +26,12 @@ class BankWithdrawalServiceTest {
     final MockEnvironment env=new MockEnvironment();
     final LocalDateTime now=LocalDateTime.of(2026,9,15,0,0);
     final String qn="BQ-"+"a".repeat(32);
+    final HdPayPayoutProperties payout = new HdPayPayoutProperties();
+    final PayoutVndConfigService d7 = mock(PayoutVndConfigService.class);
+    final PayoutAddressOtpAttemptService otp = mock(PayoutAddressOtpAttemptService.class);
     final BankWithdrawalService service=new BankWithdrawalService(bank,wallet,addresses,mock(UserOtpDeliveryService.class),
-            mock(PayoutAddressOtpAttemptService.class),mock(FinanceSensitiveDataCipher.class),withdrawals,
-            mock(PayoutVndConfigService.class),mock(HdPayProperties.class),mock(HdPayPayoutProperties.class),idem,
+            otp,mock(FinanceSensitiveDataCipher.class),withdrawals,
+            d7,mock(HdPayProperties.class),payout,idem,
             mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
     BankWithdrawalMapper.Quote quote(long owner) {
         return new BankWithdrawalMapper.Quote(qn,owner,"BNK-fixture",1L,"VCB","***6789","cipher",new BigDecimal("100"),
@@ -64,5 +71,32 @@ class BankWithdrawalServiceTest {
     @Test void sandboxAccountsAreRejectedBeforeQuoteReads() {
         when(wallet.isSandboxUser(71L)).thenReturn(1);
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn)); verifyNoInteractions(bank);
+    }
+    @Test void bankChoicesOnlyExposeMerchantAllowlistIntersectionEvenWhilePayoutIsOff() {
+        when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
+        payout.setBankCodes(Set.of("VCB", "ACB", "UNKNOWN"));
+        var config = service.config(71).getData();
+        assertEquals(List.of(Map.of("code", "ACB", "name", "ACB"), Map.of("code", "VCB", "name", "Vietcombank")), config.get("banks"));
+        assertEquals(false, config.get("enabled"));
+        payout.setBankCodes(Set.of()); assertEquals(List.of(), service.config(71).getData().get("banks"));
+        payout.setBankCodes(null); assertEquals(List.of(), service.config(71).getData().get("banks"));
+    }
+    @Test void newlyUnlistedBankCannotConsumeOtpOrSaveRecipient() {
+        when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
+        payout.setBankCodes(Set.of("VCB")); service.config(71); clearInvocations(bank);
+        payout.setBankCodes(Set.of("ACB"));
+        var error = assertThrows(RuntimeException.class, () -> service.bind(71, binding(), "bank-fixture"));
+        assertEquals("BANK_CODE_NOT_ENABLED", error.getMessage());
+        verifyNoInteractions(bank, addresses, otp, withdrawals);
+    }
+    @Test void successfulIdempotencyReplaySurvivesBankAllowlistChanges() {
+        var receipt = ApiResult.ok(Map.<String, Object>of("beneficiary", Map.of("bankCode", "VCB", "maskedAccount", "****6789")));
+        doReturn(receipt).when(idem).executeRetained(anyString(), anyString(), anyString(), any(), any());
+        payout.setBankCodes(Set.of());
+        assertSame(receipt, service.bind(71, binding(), "bank-already-succeeded"));
+        verifyNoInteractions(bank, addresses, otp, withdrawals);
+    }
+    private BankWithdrawalService.BindRequest binding() {
+        return new BankWithdrawalService.BindRequest("VCB", "00123456789", "NGUYEN VAN A", "PAYOUT-BANK-" + "a".repeat(32), "123456");
     }
 }
