@@ -13,6 +13,41 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface HdPayOrderMapper extends BaseMapper<Object> {
+    // Drive recovery from durable orders, including orders with no callback at all.
+    // updated_at rotates attempted orders to the back of the queue; version fences
+    // concurrent workers and any callback arriving while the network query runs.
+    @Select("""
+            SELECT merchant_order_id AS merchantOrderId, version
+              FROM nx_hdpay_payin_order
+             WHERE settlement_status = 'UNSETTLED'
+               AND submission_status IN ('CREATED', 'SUBMIT_UNKNOWN')
+               AND updated_at <= #{dueBefore}
+             ORDER BY updated_at ASC, id ASC
+             LIMIT #{limit}
+            """)
+    List<Map<String, Object>> listOrdersDueForQuery(
+            @Param("dueBefore") LocalDateTime dueBefore, @Param("limit") int limit);
+
+    @Update("""
+            UPDATE nx_hdpay_payin_order
+               SET version = version + 1, updated_at = NOW()
+             WHERE merchant_order_id = #{merchantOrderId} AND version = #{version}
+               AND settlement_status = 'UNSETTLED'
+               AND submission_status IN ('CREATED', 'SUBMIT_UNKNOWN')
+               AND updated_at <= #{dueBefore}
+            """)
+    int claimOrderQuery(@Param("merchantOrderId") String merchantOrderId,
+            @Param("version") long version, @Param("dueBefore") LocalDateTime dueBefore);
+
+    @Update("""
+            UPDATE nx_hdpay_payin_order
+               SET last_error_code = #{resultCode}, version = version + 1, updated_at = NOW()
+             WHERE merchant_order_id = #{merchantOrderId} AND version = #{claimedVersion}
+               AND settlement_status = 'UNSETTLED'
+            """)
+    int finishOrderQueryAttempt(@Param("merchantOrderId") String merchantOrderId,
+            @Param("claimedVersion") long claimedVersion, @Param("resultCode") String resultCode);
+
     @Select("""
             SELECT COUNT(*) FROM information_schema.tables
              WHERE table_schema=DATABASE()

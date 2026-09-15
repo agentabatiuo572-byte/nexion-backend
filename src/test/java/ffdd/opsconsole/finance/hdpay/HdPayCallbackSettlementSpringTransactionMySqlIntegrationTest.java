@@ -111,6 +111,35 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
             HdPayCallbackVerifier.VerifiedCallback callback = callback(intentNo, providerOrderId);
             HdPayGateway.PayOrder query = query(intentNo, providerOrderId);
 
+            // Start with no callback: durable order scan, fenced claim, provider
+            // query settlement, then late callback/replay must still credit once.
+            HdPayOrderMapper orderMapper = template.getMapper(HdPayOrderMapper.class);
+            new TransactionTemplate(txManager).executeWithoutResult(status -> {
+                jdbc.update("UPDATE nx_hdpay_payin_order SET updated_at=DATE_SUB(NOW(), INTERVAL 60 SECOND) WHERE merchant_order_id=?", intentNo);
+                var dueBefore = java.time.LocalDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(30);
+                assertThat(orderMapper.listOrdersDueForQuery(dueBefore, 20))
+                        .anySatisfy(row -> assertThat(row.get("merchantOrderId")).isEqualTo(intentNo));
+                assertThat(orderMapper.claimOrderQuery(intentNo, 0L, dueBefore)).isOne();
+                assertThat(orderMapper.claimOrderQuery(intentNo, 0L, dueBefore)).isZero();
+                // Simulate the first worker crashing after its durable claim.
+                jdbc.update("UPDATE nx_hdpay_payin_order SET updated_at=DATE_SUB(NOW(), INTERVAL 60 SECOND) WHERE merchant_order_id=?", intentNo);
+                assertThat(orderMapper.claimOrderQuery(intentNo, 1L, dueBefore)).isOne();
+                assertThat(successful.settleOrderQuery(intentNo, 1L, query)).isEqualTo("success");
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isZero();
+                assertThat(successful.settleOrderQuery(intentNo, 2L, query)).isEqualTo("success");
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_hdpay_callback_inbox WHERE merchant_order_id=?", intentNo)).isZero();
+                assertThat(successful.settleOrderQuery(intentNo, 1L, query)).isEqualTo("success");
+                assertThat(successful.settleConfirmed(callback, query)).isEqualTo("success");
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_hdpay_settlement_review WHERE merchant_order_id=?", intentNo)).isZero();
+                assertThat(decimal(jdbc, "SELECT usdt_available FROM nx_user_wallet WHERE user_id=?", userId))
+                        .isEqualByComparingTo(walletBefore.add(new BigDecimal("10.000000")));
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isOne();
+                assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_notification WHERE biz_no=?", "HDPAY:" + intentNo)).isOne();
+                assertThat(orderMapper.listOrdersDueForQuery(dueBefore.plusMinutes(10), 20)).isEmpty();
+                status.setRollbackOnly();
+            });
+            assertUnchanged(jdbc, intentNo, userId, walletBefore, cumulativeBefore);
+
             new TransactionTemplate(txManager).executeWithoutResult(status -> {
                 assertThat(jdbc.update("UPDATE nx_vietqr_intent SET payment_rail='MANUAL' WHERE intent_no=?", intentNo)).isOne();
                 assertThat(successful.settleConfirmed(callback, query)).isEqualTo("success");
@@ -158,6 +187,10 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
             when(failingOutbox.publish(anyString(), anyString(), anyString(), any()))
                     .thenThrow(new IllegalStateException("forced outbox failure"));
             HdPayCallbackSettlementService failing = proxiedService(template, failingOutbox, txManager);
+            assertThatThrownBy(() -> failing.settleOrderQuery(intentNo, 0L, query))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("forced outbox failure");
+            assertUnchanged(jdbc, intentNo, userId, walletBefore, cumulativeBefore);
             assertThatThrownBy(() -> failing.settleConfirmed(callback, query))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("forced outbox failure");

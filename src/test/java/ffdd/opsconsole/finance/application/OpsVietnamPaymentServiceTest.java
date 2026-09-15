@@ -591,8 +591,10 @@ class OpsVietnamPaymentServiceTest {
         verify(mapper, never()).findVietQrReconciliationForUpdate(anyLong());
     }
 
-    @Test
-    void receiptRegistrationClassifiesExactMemoAndClosesOtherIntentsWhenTheAccountFuses() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {" ", "media:vqr_123e4567e89b12d3a456426614174000"})
+    void receiptRegistrationClassifiesExactMemoAndClosesOtherIntentsWhenTheAccountFuses(String evidence) {
         LocalDateTime receivedAt = LocalDateTime.of(2026, 7, 24, 23, 59);
         when(mapper.findVietQrBankAccountForUpdate(8L)).thenReturn(
                 Map.of(
@@ -638,7 +640,7 @@ class OpsVietnamPaymentServiceTest {
                 new VietQrReceiptRegistrationRequest(
                         8L, "BANK-EXACT-1", "nx-exact",
                         new BigDecimal("659750"), receivedAt.atOffset(ZoneOffset.UTC),
-                        receiptEvidence(), "register exact bank receipt", "finance-admin"));
+                        evidence, "register exact bank receipt", "finance-admin"));
 
         assertThat(result.getData())
                 .containsEntry("viewType", "MATCHED")
@@ -649,7 +651,11 @@ class OpsVietnamPaymentServiceTest {
                 new BigDecimal("659750"), new BigDecimal("0.000000"), receivedAt);
         verify(mapper).addVietQrBankReceivedToday(
                 8L, new BigDecimal("659750"), bankDate(receivedAt));
-        verify(receiptEvidence).claim(eq(receiptEvidence()), anyString(), anyString());
+        if (evidence == null || evidence.isBlank()) {
+            org.mockito.Mockito.verifyNoInteractions(receiptEvidence);
+        } else {
+            verify(receiptEvidence).claim(eq(evidence), anyString(), anyString());
+        }
         verify(appIntentMapper).cancelAwaitingIntentsForFusedAccount(8L, "VQR-EXACT");
         verify(appIntentMapper).closeCancelledInFlightReconciliationsForFusedAccount(
                 8L, "VQR-EXACT");

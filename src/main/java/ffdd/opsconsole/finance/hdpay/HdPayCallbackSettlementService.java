@@ -86,7 +86,7 @@ public class HdPayCallbackSettlementService {
                     fact.merchantOrderId(), fact.providerOrderId(), fact.orderStatus()),
                     "HDPAY_CALLBACK_ORDER_CONFLICT");
             if ("CREDITED".equals(code(order.get("settlementStatus")))) {
-                postCreditReview(fact, claimToken, "HDPAY_POST_CREDIT_CALLBACK_REVIEW");
+                acknowledgeCreditedOrReview(order, fact, claimToken);
                 return new QueryClaim(ClaimDisposition.ACKNOWLEDGED, fact, null);
             }
             if ("MANUAL_REVIEW".equals(code(order.get("settlementStatus")))) {
@@ -204,42 +204,79 @@ public class HdPayCallbackSettlementService {
         requireConfirmedIdentity(fact, confirmed);
         Map<String, Object> order = lockOrder(fact.merchantOrderId());
         requireProviderOrderCompatible(order, fact.providerOrderId());
+        requireOwnedProcessing(fact.payloadHash(), claimToken);
+        return settleOrder(fact, claimToken, confirmed, order, false);
+    }
+
+    /** The authenticated provider query is the evidence; no callback is fabricated. */
+    @Transactional(rollbackFor = Exception.class)
+    public String settleOrderQuery(String merchantOrderId, long claimedVersion,
+            HdPayGateway.PayOrder confirmed) {
+        Map<String, Object> order = lockOrder(merchantOrderId);
+        if (!"UNSETTLED".equals(code(order.get("settlementStatus")))
+                || nonNegativeLong(order.get("version"), "HDPAY_ORDER_VERSION_INVALID") != claimedVersion) {
+            return SUCCESS; // A callback or another worker already advanced this order.
+        }
+        String providerOrderId = text(order.get("providerOrderId"));
+        if (providerOrderId.isEmpty()) providerOrderId = confirmed.providerOrderId();
+        PaidCallbackFact fact = new PaidCallbackFact(
+                sha256("ORDER_QUERY|" + merchantOrderId + "|" + claimedVersion),
+                merchantOrderId, providerOrderId, confirmed.orderStatus(), confirmed.transAmt());
+        if (!merchantOrderId.equals(confirmed.merchantOrderId())
+                || !providerOrderId.equals(confirmed.providerOrderId())
+                || !"BANKQR".equalsIgnoreCase(confirmed.payType())
+                || decimal(order.get("amountVnd"), "HDPAY_ORDER_AMOUNT_INVALID")
+                        .compareTo(confirmed.transAmt()) != 0) {
+            return manualReview(fact, null, "HDPAY_ORDER_QUERY_MISMATCH", true);
+        }
+        if (confirmed.orderStatus() == 0 || confirmed.orderStatus() == 1) {
+            requireOne(hdPayMapper.finishOrderQueryAttempt(merchantOrderId, claimedVersion,
+                    "HDPAY_ORDER_QUERY_PENDING"), "HDPAY_ORDER_QUERY_CLAIM_LOST");
+            return SUCCESS;
+        }
+        if (confirmed.orderStatus() != HdPayCallbackService.PAID_STATUS) {
+            return manualReview(fact, null, "HDPAY_ORDER_QUERY_TERMINAL_REVIEW", true);
+        }
+        return settleOrder(fact, null, confirmed, order, true);
+    }
+
+    private String settleOrder(PaidCallbackFact fact, String claimToken,
+            HdPayGateway.PayOrder confirmed, Map<String, Object> order, boolean orderQuery) {
         BigDecimal expectedVnd = decimal(order.get("amountVnd"), "HDPAY_ORDER_AMOUNT_INVALID");
         String payloadHash = fact.payloadHash();
-        requireOwnedProcessing(payloadHash, claimToken);
 
         if (expectedVnd.compareTo(fact.transAmt()) != 0) {
-            return manualReview(fact, claimToken, "HDPAY_AMOUNT_MISMATCH");
+            return manualReview(fact, claimToken, "HDPAY_AMOUNT_MISMATCH", orderQuery);
         }
 
         String settlementStatus = code(order.get("settlementStatus"));
         if ("CREDITED".equals(settlementStatus)) {
-            postCreditReview(fact, claimToken, "HDPAY_POST_CREDIT_CALLBACK_REVIEW");
+            acknowledgeCreditedOrReview(order, fact, claimToken);
             return SUCCESS;
         }
         if ("MANUAL_REVIEW".equals(settlementStatus)) {
-            return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_ALREADY_UNDER_REVIEW");
+            return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_ALREADY_UNDER_REVIEW", orderQuery);
         }
         String submissionStatus = code(order.get("submissionStatus"));
         if (!"CREATED".equals(submissionStatus) && !"SUBMIT_UNKNOWN".equals(submissionStatus)) {
-            return manualReview(fact, claimToken, "HDPAY_ORDER_NOT_SUBMITTED");
+            return manualReview(fact, claimToken, "HDPAY_ORDER_NOT_SUBMITTED", orderQuery);
         }
 
         Map<String, Object> intent = intentMapper.findIntentForUpdate(fact.merchantOrderId());
         if (intent == null || intent.isEmpty()) {
-            return manualReview(fact, claimToken, "HDPAY_INTENT_NOT_FOUND");
+            return manualReview(fact, claimToken, "HDPAY_INTENT_NOT_FOUND", orderQuery);
         }
         if (!"AWAITING_PAYMENT".equals(code(intent.get("status")))) {
-            return manualReview(fact, claimToken, "HDPAY_INTENT_NOT_AWAITING_PAYMENT");
+            return manualReview(fact, claimToken, "HDPAY_INTENT_NOT_AWAITING_PAYMENT", orderQuery);
         }
         LocalDateTime expiresAt = localDateTime(intent.get("expiresAt"));
         LocalDateTime now = LocalDateTime.now(clock);
         if (expiresAt == null || !expiresAt.isAfter(now)) {
-            return manualReview(fact, claimToken, "HDPAY_INTENT_EXPIRED");
+            return manualReview(fact, claimToken, "HDPAY_INTENT_EXPIRED", orderQuery);
         }
         BigDecimal payableVnd = decimal(intent.get("payableVnd"), "HDPAY_INTENT_AMOUNT_INVALID");
         if (payableVnd.compareTo(expectedVnd) != 0) {
-            return manualReview(fact, claimToken, "HDPAY_INTENT_AMOUNT_MISMATCH");
+            return manualReview(fact, claimToken, "HDPAY_INTENT_AMOUNT_MISMATCH", orderQuery);
         }
 
         long userId = positiveLong(intent.get("userId"), "HDPAY_INTENT_USER_INVALID");
@@ -256,13 +293,13 @@ public class HdPayCallbackSettlementService {
             // Direct HDPay commerce checkout has been retired. Legacy callbacks
             // are durable review facts only; they never credit a wallet, mark an
             // order paid, or activate a device automatically.
-            return manualReview(fact, claimToken, "HDPAY_COMMERCE_DIRECT_PAYMENT_RETIRED");
+            return manualReview(fact, claimToken, "HDPAY_COMMERCE_DIRECT_PAYMENT_RETIRED", orderQuery);
         }
         if (!"WALLET_TOPUP".equals(settlementTarget)) {
-            return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_TARGET_INVALID");
+            return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_TARGET_INVALID", orderQuery);
         }
         if (!"HDPAY".equals(code(intent.get("paymentRail")))) {
-            return manualReview(fact, claimToken, "VIETQR_PAYMENT_RAIL_CONFLICT");
+            return manualReview(fact, claimToken, "VIETQR_PAYMENT_RAIL_CONFLICT", orderQuery);
         }
         Map<String, Object> wallet = paymentMapper.findUsdtWalletForUpdate(userId);
         if (wallet == null || wallet.isEmpty()) {
@@ -320,7 +357,7 @@ public class HdPayCallbackSettlementService {
                         "amountVnd", expectedVnd.toPlainString(),
                         "creditedUsdt", amountUsdt.toPlainString(),
                         "walletBalanceAfter", balanceAfter.toPlainString(),
-                        "confirmation", "SIGNED_CALLBACK_AND_PROVIDER_QUERY"))
+                        "confirmation", orderQuery ? "PROVIDER_ORDER_QUERY" : "SIGNED_CALLBACK_AND_PROVIDER_QUERY"))
                 .build());
         requireOne(hdPayMapper.markSettlementCredited(
                 fact.merchantOrderId(),
@@ -329,20 +366,28 @@ public class HdPayCallbackSettlementService {
                 amountUsdt,
                 ledgerBizNo),
                 "HDPAY_SETTLEMENT_STATE_CONFLICT");
-        requireOne(hdPayMapper.markCallbackProcessedOwned(
-                payloadHash, claimToken, "CREDITED", confirmed.orderStatus(), "CREDITED"),
-                "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
+        if (!orderQuery) {
+            requireOne(hdPayMapper.markCallbackProcessedOwned(
+                    payloadHash, claimToken, "CREDITED", confirmed.orderStatus(), "CREDITED"),
+                    "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
+        }
         return SUCCESS;
     }
 
     private String manualReview(PaidCallbackFact fact, String claimToken, String reason) {
+        return manualReview(fact, claimToken, reason, false);
+    }
+
+    private String manualReview(PaidCallbackFact fact, String claimToken, String reason, boolean orderQuery) {
         requireOne(hdPayMapper.markSettlementReview(
                 fact.merchantOrderId(), fact.providerOrderId(), fact.orderStatus(), reason),
                 "HDPAY_SETTLEMENT_REVIEW_WRITE_FAILED");
-        createReviewFact(fact, reason);
-        requireOne(hdPayMapper.markCallbackProcessedOwned(
-                fact.payloadHash(), claimToken, "MANUAL_REVIEW", fact.orderStatus(), reason),
-                "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
+        createReviewFact(fact, reason, orderQuery);
+        if (!orderQuery) {
+            requireOne(hdPayMapper.markCallbackProcessedOwned(
+                    fact.payloadHash(), claimToken, "MANUAL_REVIEW", fact.orderStatus(), reason),
+                    "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
+        }
         return SUCCESS;
     }
 
@@ -357,6 +402,23 @@ public class HdPayCallbackSettlementService {
     }
 
     private void createReviewFact(PaidCallbackFact fact, String reason) {
+        createReviewFact(fact, reason, false);
+    }
+
+    private void acknowledgeCreditedOrReview(Map<String, Object> order, PaidCallbackFact fact, String claimToken) {
+        if (fact.orderStatus() == HdPayCallbackService.PAID_STATUS
+                && fact.providerOrderId().equals(text(order.get("providerOrderId")))
+                && decimal(order.get("amountVnd"), "HDPAY_ORDER_AMOUNT_INVALID")
+                        .compareTo(fact.transAmt()) == 0) {
+            requireOne(hdPayMapper.markCallbackProcessedOwned(fact.payloadHash(), claimToken,
+                    "CREDITED", fact.orderStatus(), "ALREADY_CREDITED"),
+                    "HDPAY_CALLBACK_INBOX_UPDATE_FAILED");
+            return;
+        }
+        postCreditReview(fact, claimToken, "HDPAY_POST_CREDIT_CALLBACK_REVIEW");
+    }
+
+    private void createReviewFact(PaidCallbackFact fact, String reason, boolean orderQuery) {
         requireOne(hdPayMapper.insertSettlementReview(
                 fact.payloadHash(), fact.merchantOrderId(), fact.providerOrderId(), reason),
                 "HDPAY_SETTLEMENT_REVIEW_FACT_WRITE_FAILED");
@@ -373,6 +435,7 @@ public class HdPayCallbackSettlementService {
                         "merchantOrderId", fact.merchantOrderId(),
                         "providerOrderId", fact.providerOrderId(),
                         "amountVnd", fact.transAmt().toPlainString(),
+                        "confirmation", orderQuery ? "PROVIDER_ORDER_QUERY" : "SIGNED_CALLBACK_AND_PROVIDER_QUERY",
                         "reason", reason))
                 .build());
     }

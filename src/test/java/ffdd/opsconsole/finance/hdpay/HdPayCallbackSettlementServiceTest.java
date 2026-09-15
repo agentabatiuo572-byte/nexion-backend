@@ -34,8 +34,9 @@ class HdPayCallbackSettlementServiceTest {
     private final HdPayCallbackSettlementService service = new HdPayCallbackSettlementService(
             hdPayMapper, intentMapper, paymentMapper, outbox, audit, CLOCK);
 
-    @Test
-    void confirmedPaidCallbackCreditsWalletLedgerBillIntentNotificationAndOutboxAtomically() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void confirmedPaymentCreditsWalletLedgerIntentAndNotificationWithoutReceiptImage(boolean orderQuery) {
         var callback = callback("abc", "100000");
         var query = payOrder("100000");
         when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1"))
@@ -66,10 +67,16 @@ class HdPayCallbackSettlementServiceTest {
         when(outbox.publish(eq("WALLET"), eq("VQR-1"),
                 eq("wallet.topup_confirmed"), any())).thenReturn("event-1");
 
-        var claim = service.claimForProviderQuery(callback);
-        when(hdPayMapper.findCallbackInboxForUpdate(anyString())).thenReturn(Map.of(
-                "processingStatus", "PROCESSING", "claimToken", claim.claimToken()));
-        assertThat(service.settleConfirmed(claim.fact(), claim.claimToken(), query)).isEqualTo("success");
+        if (orderQuery) {
+            assertThat(service.settleOrderQuery("VQR-1", 0L, query)).isEqualTo("success");
+            verify(hdPayMapper, never()).insertCallbackInbox(any(), any(), any(), any(), any(), any(), any());
+            verify(hdPayMapper, never()).findCallbackInboxForUpdate(any());
+        } else {
+            var claim = service.claimForProviderQuery(callback);
+            when(hdPayMapper.findCallbackInboxForUpdate(anyString())).thenReturn(Map.of(
+                    "processingStatus", "PROCESSING", "claimToken", claim.claimToken()));
+            assertThat(service.settleConfirmed(claim.fact(), claim.claimToken(), query)).isEqualTo("success");
+        }
 
         verify(paymentMapper).creditUsdtWallet(42L, new BigDecimal("5.000000"), 7L);
         verify(paymentMapper).insertVietQrWalletLedger(
@@ -189,12 +196,12 @@ class HdPayCallbackSettlementServiceTest {
     }
 
     @Test
-    void newCallbackFactAfterCreditCreatesReviewInsteadOfBeingSilentlySwallowed() {
-        var callback = callback("different-sign", "100000");
+    void conflictingAmountAfterCreditCreatesReviewInsteadOfBeingSilentlySwallowed() {
+        var callback = callback("different-sign", "100001");
         when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1"))
                 .thenReturn(order("100000", "CREDITED"));
         when(hdPayMapper.insertCallbackInbox(anyString(), eq("VQR-1"), eq("P-1"), eq(3),
-                eq(new BigDecimal("100000")), eq("PROCESSING"), anyString())).thenReturn(1);
+                eq(new BigDecimal("100001")), eq("PROCESSING"), anyString())).thenReturn(1);
         when(hdPayMapper.updateCallbackObservation("VQR-1", "P-1", 3)).thenReturn(1);
         when(hdPayMapper.markPostCreditReview(
                 "VQR-1", "P-1", "HDPAY_POST_CREDIT_CALLBACK_REVIEW")).thenReturn(1);
@@ -240,6 +247,39 @@ class HdPayCallbackSettlementServiceTest {
         verify(paymentMapper, never()).insertVietQrWalletLedger(any(), any(), any(), any(), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1})
+    void pendingOrderQueryDoesNotCreditAndRemainsRetryable(int status) {
+        when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1")).thenReturn(order("100000", "UNSETTLED"));
+        when(hdPayMapper.finishOrderQueryAttempt("VQR-1", 0L, "HDPAY_ORDER_QUERY_PENDING")).thenReturn(1);
+        assertThat(service.settleOrderQuery("VQR-1", 0L,
+                new HdPayGateway.PayOrder("VQR-1", "P-1", status, new BigDecimal("100000"), "BANKQR", "")))
+                .isEqualTo("success");
+        org.mockito.Mockito.verifyNoInteractions(paymentMapper, intentMapper, outbox);
+    }
+
+    @Test
+    void callbackWinningDuringQueryFencesOffTheStaleQueryResult() {
+        when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1")).thenReturn(order("100000", "UNSETTLED"));
+        assertThat(service.settleOrderQuery("VQR-1", 9L, payOrder("100000"))).isEqualTo("success");
+        org.mockito.Mockito.verifyNoInteractions(paymentMapper, intentMapper, outbox, audit);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"OTHER,P-1,100000,BANKQR", "VQR-1,P-2,100000,BANKQR", "VQR-1,P-1,99999,BANKQR", "VQR-1,P-1,100000,OTHER"})
+    void mismatchedQueryCreatesReviewWithoutCreditingOrFabricatingCallback(String merchant, String provider, String amount, String type) {
+        when(hdPayMapper.findByMerchantOrderIdForUpdate("VQR-1")).thenReturn(order("100000", "UNSETTLED"));
+        when(hdPayMapper.markSettlementReview("VQR-1", "P-1", 3, "HDPAY_ORDER_QUERY_MISMATCH")).thenReturn(1);
+        when(hdPayMapper.insertSettlementReview(anyString(), eq("VQR-1"), eq("P-1"), eq("HDPAY_ORDER_QUERY_MISMATCH"))).thenReturn(1);
+        assertThat(service.settleOrderQuery("VQR-1", 0L,
+                new HdPayGateway.PayOrder(merchant, provider, 3, new BigDecimal(amount), type, "")))
+                .isEqualTo("success");
+        org.mockito.Mockito.verifyNoInteractions(paymentMapper, intentMapper, outbox);
+        verify(hdPayMapper, never()).insertCallbackInbox(any(), any(), any(), any(), any(), any(), any());
+        verify(hdPayMapper, never()).markCallbackProcessedOwned(any(), any(), any(), any(), any());
+        verify(audit).recordRequired(any());
+    }
+
     private HdPayCallbackVerifier.VerifiedCallback callback(String sign, String amount) {
         return new HdPayCallbackVerifier.VerifiedCallback(
                 "VQR-1", "P-1", 3, new BigDecimal(amount),
@@ -253,6 +293,7 @@ class HdPayCallbackSettlementServiceTest {
 
     private Map<String, Object> order(String amount, String settlementStatus) {
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("version", 0L);
         result.put("merchantOrderId", "VQR-1");
         result.put("amountVnd", new BigDecimal(amount));
         result.put("submissionStatus", "CREATED");
