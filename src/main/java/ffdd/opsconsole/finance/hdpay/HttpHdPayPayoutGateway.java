@@ -38,13 +38,13 @@ public final class HttpHdPayPayoutGateway implements HdPayPayoutGateway {
 
     @Override public void create(Request request) {
         if (!payout.ready(transport)) throw invalid("CONFIGURATION_INCOMPLETE");
-        if (!payout.getBankCodes().contains(request.bankCode())) throw invalid("BANK_NOT_ENABLED");
+        if (!"".equals(request.bankCode())) throw invalid("BANK_CODE_MUST_BE_EMPTY");
         String account = account(request.account());
         String holder = holder(request.holder());
         BigDecimal amount = amount(request.amount().toPlainString()).setScale(0, RoundingMode.UNNECESSARY);
         Map<String, String> fields = base(request.merchantOrderId());
-        fields.put("account", account); fields.put("name", holder); fields.put("bnkCode", request.bankCode());
-        fields.put("transAmt", amount.toPlainString()); fields.put("payType", "BANK");
+        fields.put("account", account); fields.put("name", holder); fields.put("bnkCode", "");
+        fields.put("transAmt", amount.toPlainString()); fields.put("payType", "BANKQR");
         fields.put("countryCode", "VN"); fields.put("ip", payout.getClientIp());
         fields.put("callbackUrl", payout.callbackUrl(transport));
         send("/api/order/publicWithdrawal", fields);

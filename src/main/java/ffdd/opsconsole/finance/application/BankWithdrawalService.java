@@ -11,7 +11,6 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
-import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -42,7 +41,7 @@ public class BankWithdrawalService {
     public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code) {
         @Override public String toString() { return "BindBankRequest[REDACTED]"; }
     }
-    // Reviewed subset of the provider's VN bank table. Merchant allowlist remains a separate, explicit opt-in.
+    // Historical bank labels only. New BANKQR bindings and outbound requests use an empty bank code.
     public static final Map<String, String> BANKS = Map.ofEntries(
             Map.entry("VCB", "Vietcombank"), Map.entry("BIDV", "BIDV"), Map.entry("VTB", "VietinBank"),
             Map.entry("TCB", "Techcombank"), Map.entry("ACB", "ACB"), Map.entry("MB", "MB Bank"),
@@ -57,62 +56,46 @@ public class BankWithdrawalService {
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
         boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("channelEnabled"))
                 && Boolean.TRUE.equals(data.get("providerReady"));
-        List<Map<String, String>> banks = availableBanks().entrySet().stream().sorted(Map.Entry.comparingByValue())
-                .map(e -> Map.of("code", e.getKey(), "name", e.getValue())).toList();
-        return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", banks,
+        return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
+                "bankCodeRequired", false, "bindingOtpRequired", false, "payType", "BANKQR",
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(bank.beneficiary(userId)),
                 "policy", data, "source", "D7+HDPAY", "bindingDelayHours", 24, "changeCooldownDays", 7));
     }
 
-    private Map<String, String> availableBanks() {
-        Set<String> allowed = payout.getBankCodes();
-        if (allowed == null || allowed.isEmpty()) return Map.of();
-        Map<String, String> available = new HashMap<>();
-        BANKS.forEach((code, name) -> { if (allowed.contains(code)) available.put(code, name); });
-        return available;
-    }
-
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> sendOtp(long userId) {
-        requireUser(userId, true);
-        var contact = addresses.userContact(userId);
-        if (contact == null || !SupportedUserPhonePolicy.isSupportedDestination(contact.countryCode(), contact.phone()))
-            throw error(422, "BANK_WITHDRAWAL_PHONE_INVALID");
-        if (!otpDelivery.available(contact.countryCode())) throw error(503, "PAYOUT_ADDRESS_OTP_DELIVERY_UNAVAILABLE");
-        if (addresses.recentOtpCount(userId) > 0 || addresses.todayOtpCount(userId) >= 10)
-            throw error(429, "PAYOUT_ADDRESS_OTP_COOLDOWN");
-        String challenge = "PAYOUT-BANK-" + UUID.randomUUID().toString().replace("-", "");
-        String code = otpDelivery.verificationCode(contact.countryCode());
-        if (addresses.insertOtp(userId, challenge, code) != 1) throw error(409, "BANK_OTP_CONFLICT");
-        otpDelivery.deliver(contact.countryCode(), contact.phone(), challenge, code, 5);
-        return ApiResult.ok(map("challengeNo", challenge, "expiresInSeconds", 300));
+        requireUser(userId, false);
+        // Compatibility response for old clients: never send an SMS for bank binding.
+        throw error(410, "BANK_BINDING_OTP_NOT_REQUIRED");
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> bind(long userId, BindRequest request, String key) {
         requireUser(userId, false);
-        if (request == null || !BANKS.containsKey(request.bankCode())) throw error(422, "BANK_CODE_INVALID");
+        // Accept legacy codes here solely so retained successful requests can still replay.
+        if (request == null || request.bankCode() == null
+                || (!request.bankCode().isEmpty() && !BANKS.containsKey(request.bankCode()))) throw error(422, "BANK_CODE_INVALID");
         try { HttpHdPayPayoutGateway.account(request.account()); HttpHdPayPayoutGateway.holder(request.holder()); }
         catch (HdPayGatewayException invalidRecipient) { throw error(422, "BANK_BENEFICIARY_INVALID"); }
-        if (request.challengeNo() == null || !request.challengeNo().matches("PAYOUT-BANK-[a-f0-9]{32}")
-                || request.code() == null || !request.code().matches("[0-9]{6}")) throw error(422, "BANK_OTP_INVALID");
+        // Optional legacy OTP fields only preserve hashes of already successful retained requests.
+        // They neither authorize nor block a new binding; the authenticated USER owns this resource.
         String hash = HdPayPayoutDigest.sha(userId + "|" + request.bankCode() + "|" + request.account() + "|"
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
             requireUser(userId, true);
-            // Recheck at mutation time, but let the idempotency layer replay earlier successful bindings.
-            if (!availableBanks().containsKey(request.bankCode())) throw error(422, "BANK_CODE_NOT_ENABLED");
+            // Provider-confirmed BANKQR uses an explicitly empty bnkCode; no client-selected bank routing.
+            if (!request.bankCode().isEmpty()) throw error(422, "BANK_CODE_MUST_BE_EMPTY");
             LocalDateTime now = LocalDateTime.now(clock);
             Beneficiary before = bank.lockBeneficiary(userId);
             if (addresses.unsettledWithdrawalCount(userId) > 0) throw error(409, "BANK_WITHDRAWAL_IN_FLIGHT");
             if (before != null && before.nextChangeAt().isAfter(now)) throw error(409, "BANK_CHANGE_COOLDOWN");
             cipher.validateConfiguration();
-            if (!otpAttempts.verifyAndConsume(userId, request.challengeNo(), request.code())) throw error(422, "BANK_OTP_INVALID");
             String no = "BNK-" + UUID.randomUUID().toString().replace("-", "");
             long version = before == null ? 0 : before.version() + 1;
             String recipient = cipher.encrypt(request.account() + "\n" + request.holder(), beneficiaryAad(userId, no));
             String masked = "****" + request.account().substring(request.account().length() - 4);
-            bank.saveBeneficiary(userId, no, request.bankCode(), masked, recipient, now.plusHours(24), now.plusDays(7), version, now);
+            if (bank.saveBeneficiary(userId, no, request.bankCode(), masked, recipient, now.plusHours(24), now.plusDays(7), version, now) < 1)
+                throw error(409, "BANK_BIND_CONFLICT");
             audit.recordRequired(AuditLogWriteRequest.builder().action("BANK_PAYOUT_BENEFICIARY_BOUND")
                     .resourceType("BANK_BENEFICIARY").resourceId(no).userId(userId).actorId(userId).actorType("USER")
                     .actorUsername("user:" + userId).riskLevel("CRITICAL").result("SUCCESS")
@@ -209,7 +192,6 @@ public class BankWithdrawalService {
         Beneficiary recipient = bank.lockBeneficiary(userId);
         if (recipient == null) throw error(409, "BANK_BENEFICIARY_REQUIRED");
         if (recipient.effectiveAt().isAfter(now)) throw error(409, "BANK_BENEFICIARY_PENDING");
-        if (!payout.getBankCodes().contains(recipient.bankCode())) throw error(409, "BANK_CODE_NOT_ENABLED");
         return recipient;
     }
     private void requireUser(long userId, boolean lock) {
@@ -219,13 +201,14 @@ public class BankWithdrawalService {
     }
     public static String beneficiaryAad(long userId, String no) { return "BANK-BENEFICIARY:" + userId + ":" + no; }
     public static String quoteAad(long userId, String no) { return "BANK-QUOTE:" + userId + ":" + no; }
+    private static String bankName(String code) { return "".equals(code) ? "BANKQR" : BANKS.getOrDefault(code, code); }
     private static Map<String, Object> beneficiaryView(Beneficiary b) {
-        return b == null ? null : map("bankCode", b.bankCode(), "bankName", BANKS.getOrDefault(b.bankCode(), b.bankCode()),
+        return b == null ? null : map("bankCode", b.bankCode(), "bankName", bankName(b.bankCode()),
                 "maskedAccount", b.maskedAccount(), "effectiveAt", b.effectiveAt(), "nextChangeAt", b.nextChangeAt(), "version", b.version());
     }
     public static Map<String, Object> quoteView(Quote q) {
         return map("quoteNo", q.quoteNo(), "amountUsdt", q.amountUsdt(), "feeUsdt", q.feeUsdt(), "netUsdt", q.netUsdt(),
-                "rateVnd", q.rateVnd(), "amountVnd", q.amountVnd(), "bankCode", q.bankCode(), "bankName", BANKS.getOrDefault(q.bankCode(), q.bankCode()),
+                "rateVnd", q.rateVnd(), "amountVnd", q.amountVnd(), "bankCode", q.bankCode(), "bankName", bankName(q.bankCode()),
                 "maskedAccount", q.maskedAccount(), "expiresAt", q.expiresAt(), "d7Version", q.d7Version());
     }
     private static BizException error(int code, String reason) { return new BizException(code, reason); }

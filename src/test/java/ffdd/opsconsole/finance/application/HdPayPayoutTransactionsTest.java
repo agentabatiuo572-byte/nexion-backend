@@ -18,8 +18,11 @@ class HdPayPayoutTransactionsTest {
     final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
     final EventOutboxService outbox = mock(EventOutboxService.class);
     final Clock clock = Clock.fixed(Instant.parse("2026-09-15T00:00:00Z"), ZoneOffset.UTC);
+    final HdPayProperties transport = mock(HdPayProperties.class);
+    final HdPayPayoutProperties properties = mock(HdPayPayoutProperties.class);
+    final PayoutVndConfigService config = mock(PayoutVndConfigService.class);
     final HdPayPayoutTransactions service = new HdPayPayoutTransactions(bank, users, canonical, finalizer, cipher,
-            mock(HdPayProperties.class), mock(HdPayPayoutProperties.class), mock(PayoutVndConfigService.class),
+            transport, properties, config,
             mock(OpsFinanceService.class), mock(AuditLogService.class), outbox, clock);
     final String no = "WD-TEST", qn = "BQ-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     final LocalDateTime now = LocalDateTime.now(clock);
@@ -31,6 +34,21 @@ class HdPayPayoutTransactionsTest {
     WithdrawalPayoutMapper.PayoutRow row(String status, Long user, String amount, String net) {
         return new WithdrawalPayoutMapper.PayoutRow(no, user, "BANK-VND", "BANK-VND:BNK-fixture", bd(amount), bd(net),
                 BigDecimal.ZERO, status, now, 123L, no, "hdpay", 1);
+    }
+    @Test void prepareNormalizesHistoricalBankCodeToEmptyButRetainsAllDispatchGates() {
+        when(users.lockActiveUser(71L)).thenReturn(71L);
+        when(bank.lockOrder(no)).thenReturn(order("READY"));
+        assertNull(service.prepare(no));
+        verify(bank, never()).dispatch(anyString(), any());
+        when(properties.ready(transport)).thenReturn(true);
+        when(config.overview()).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of("channelEnabled", true, "providerReady", true)));
+        when(canonical.payout(no)).thenReturn(row("REVIEW_PASSED",71L,"100","99"));
+        when(bank.processing(eq(no), any())).thenReturn(1); when(bank.dispatch(eq(no), any())).thenReturn(1);
+        var request = service.prepare(no);
+        assertNotNull(request); assertEquals("", request.bankCode());
+        assertEquals("0123456789", request.account()); assertEquals("NGUYEN VAN A", request.holder());
+        assertEquals(quote.amountVnd(), request.amount());
+        verify(bank).dispatch(eq(no), any()); verifyNoInteractions(finalizer, outbox);
     }
     HdPayPayoutGateway.Order response(int status) {
         return new HdPayPayoutGateway.Order(no, 123L, status, quote.amountVnd(), "0123456789", "NGUYEN VAN A", "2");

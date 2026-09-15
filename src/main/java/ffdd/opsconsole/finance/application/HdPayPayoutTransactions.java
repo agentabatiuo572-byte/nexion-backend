@@ -49,12 +49,12 @@ public class HdPayPayoutTransactions {
         var quote = bank.quote(order.quoteNo());
         if (!snapshotMatches(order, quote, canonical.payout(orderNo)))
             throw new BizException(409, "BANK_PAYOUT_SNAPSHOT_MISMATCH");
-        if (!properties.getBankCodes().contains(quote.bankCode())) return null;
         String[] recipient = recipient(quote);
-        var request = new HdPayPayoutGateway.Request(orderNo, quote.amountVnd(), quote.bankCode(), recipient[0], recipient[1]);
+        // Preserve historical quote labels, but normalize all new provider dispatches to BANKQR.
+        var request = new HdPayPayoutGateway.Request(orderNo, quote.amountVnd(), "", recipient[0], recipient[1]);
         LocalDateTime now = LocalDateTime.now(clock);
         if (bank.processing(orderNo, now) != 1 || bank.dispatch(orderNo, now) != 1) throw new BizException(409, "BANK_PAYOUT_CLAIM_CONFLICT");
-        record(order, "BANK_PAYOUT_DISPATCH_INTENT", Map.of("amountVnd", quote.amountVnd(), "bankCode", quote.bankCode()));
+        record(order, "BANK_PAYOUT_DISPATCH_INTENT", Map.of("amountVnd", quote.amountVnd(), "bankCode", "", "payType", "BANKQR"));
         return request;
     }
 
