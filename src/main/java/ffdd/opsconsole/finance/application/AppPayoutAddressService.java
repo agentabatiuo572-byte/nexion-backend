@@ -100,7 +100,7 @@ public class AppPayoutAddressService {
         String address = normalizeAddress(network, request.address());
         String challenge = StringUtils.hasText(request.challengeNo()) ? request.challengeNo().trim() : "";
         String code = StringUtils.hasText(request.code()) ? request.code().trim() : "";
-        if (!challenge.startsWith("PAYOUT-") || !code.matches("\\d{6}")) {
+        if (!challenge.startsWith("PAYOUT-") || challenge.startsWith("PAYOUT-BANK-") || !code.matches("\\d{6}")) {
             throw new BizException(422, "PAYOUT_ADDRESS_OTP_INVALID");
         }
         String requestHash = hash(scope.sourceEnvironment() + "|" + scope.runId() + "|" + userId + "|"

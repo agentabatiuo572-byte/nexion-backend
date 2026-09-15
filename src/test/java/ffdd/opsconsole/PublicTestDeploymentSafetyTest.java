@@ -80,6 +80,15 @@ class PublicTestDeploymentSafetyTest {
     }
 
     @Test
+    void payInApprovalCannotEnableTheNewBankPayoutRail() {
+        assertThatThrownBy(() -> processor.validate(safe()
+                .withProperty("nexion.finance.hdpay.mode", "PROVIDER")
+                .withProperty("nexion.deployment.hdpay-pay-in-approved", "true")
+                .withProperty("nexion.finance.hdpay-payout.enabled", "true")))
+                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: nexion.finance.hdpay-payout.enabled");
+    }
+
+    @Test
     void doesNotChangeLocalDevOrProductionWhenPublicTestIsNotSelected() {
         for (String profile : new String[]{"dev", "prod"}) {
             assertThatCode(() -> processor.validate(new MockEnvironment().withProperty("spring.profiles.active", profile)))

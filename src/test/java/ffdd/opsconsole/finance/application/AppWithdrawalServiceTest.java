@@ -182,6 +182,24 @@ class AppWithdrawalServiceTest {
     }
 
     @Test
+    void bankReservationReusesWalletRiskAndDistinctFeeWithoutNexOrCryptoAddress() {
+        var now = LocalDateTime.now();
+        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture")).thenReturn(
+                new WithdrawalRiskFacts("U00000007",0,BigDecimal.ZERO,30,"normal",45,"k4-v13",now,41,73,91));
+        String version = service.policy(7L).getData().get("policyVersion").toString();
+        var quote = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-"+"a".repeat(32),7L,"BNK-fixture",0L,
+                "VCB","****6789","cipher",new BigDecimal("100.000000"),new BigDecimal("2.000000"),new BigDecimal("98.000000"),
+                new BigDecimal("25000"),new BigDecimal("2450000"),1L,version,now,now.plusMinutes(5),null);
+        var result = service.reserveBank(7L,quote,"bank-reserve-fixture");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("chain","BANK-VND").containsEntry("status","REVIEW_PENDING")
+                .containsEntry("netReceive",new BigDecimal("98.000000")).containsEntry("nexBurned",new BigDecimal("0.000000"));
+        verify(mapper).reserveFunds(7L,new BigDecimal("100.000000"),new BigDecimal("0.000000"),3L);
+        verify(ledger).postLedgerEntry(anyString(),eq(7L),eq("WITHDRAW_BANK_FEE"),eq("USDT"),eq("OUT"),eq(new BigDecimal("2.000000")),eq("POSTED"),anyString());
+        verify(mapper,never()).lockPayoutAddress(anyLong(),anyString());
+    }
+
+    @Test
     void snapshotsFixedD5FeeWithoutImplicitNexBurnOrLegacyH1Penalty() {
         ApiResult<java.util.Map<String, Object>> result = service.submit(
                 7L, new BigDecimal("100"), "USDT-TRC20", "TR7NHqExampleAddress", "wd-1");

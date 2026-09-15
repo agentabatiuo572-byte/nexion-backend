@@ -485,6 +485,61 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void bankProviderFailuresAndUnknownOutcomesCannotUseManualRefund() {
+        for (String state : List.of("FAILED", "TX_FAILED", "TX_ORPHANED")) {
+            withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
+                    new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,state,
+                    null,null,null,null,1,null,null,null,LocalDateTime.now(),LocalDateTime.now());
+            var result = service.reviewWithdrawal("WD-BANK","bank-refund-"+state,
+                    new WithdrawalReviewRequest("REFUND","superadmin","provider outcome must control refund"));
+            assertThat(result.getMessage()).isEqualTo("BANK_PAYOUT_PROVIDER_REFUND_REQUIRED");
+            assertThat(withdrawalRepository.lastStatus).isNull();
+        }
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+    }
+
+    @Test
+    void bankRejectionCannotRefundAnAlreadyDispatchedOrUnknownOrder() {
+        for (String state : List.of("PROCESSING", "SENT", "TX_ORPHANED", "CONFIRMED")) {
+            withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
+                    new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,state,
+                    null,null,null,null,1,null,null,null,LocalDateTime.now(),LocalDateTime.now());
+            var result = service.reviewWithdrawal("WD-BANK","bank-reject-"+state,
+                    new WithdrawalReviewRequest("REJECT","superadmin","never refund a dispatched bank payment"));
+            assertThat(result.getMessage()).isEqualTo("BANK_PAYOUT_ALREADY_DISPATCHED");
+            assertThat(withdrawalRepository.lastStatus).isNull();
+        }
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+    }
+
+    @Test
+    void bankApprovalIsBoundToRiskFactsAndMustBeReviewedAgainAfterRiskChange() {
+        var bank = mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"bankWithdrawalMapper",bank);
+        when(bank.approveRisk(anyString(),anyString())).thenReturn(1);
+        withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
+                new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,"REVIEWING",
+                null,null,null,null,1,null,null,null,LocalDateTime.now(),LocalDateTime.now(),
+                "U00001001","fixture","***","ACTIVE",40,"","",1,"","");
+        var result = service.reviewWithdrawal("WD-BANK","bank-approve",new WithdrawalReviewRequest("APPROVE","superadmin","review current bank risk"));
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        ArgumentCaptor<String> captured = ArgumentCaptor.forClass(String.class);
+        verify(bank).approveRisk(org.mockito.ArgumentMatchers.eq("WD-BANK"),captured.capture());
+        when(bank.approvedRiskHash("WD-BANK")).thenReturn(captured.getValue());
+        assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isNull();
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new WithdrawalRiskDecision("manual",null,null,List.of()));
+        assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new WithdrawalRiskDecision("pass",null,null,List.of()));
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString())).thenReturn(currentRiskFacts(90));
+        assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString())).thenReturn(currentRiskFacts(40));
+        when(bank.approvedRiskHash("WD-BANK")).thenReturn(null);
+        assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
+    }
+
+    @Test
     void reviewWithdrawalRejectsIllegalTransitionWith409() {
         withdrawalRepository.order = withdrawal("WD-1", "SUCCESS");
         WithdrawalReviewRequest request = new WithdrawalReviewRequest("APPROVE", "superadmin", "manual review");

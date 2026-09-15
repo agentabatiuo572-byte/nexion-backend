@@ -21,6 +21,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
              FROM nx_withdrawal_order
              WHERE is_deleted=0
+               AND chain IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')
                AND EXISTS (
                    SELECT 1 FROM nx_user u
                     WHERE u.id=nx_withdrawal_order.user_id
@@ -40,6 +41,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    d5_payout_source payoutSource,chain_broadcast_attempts attempts
               FROM nx_withdrawal_order
              WHERE is_deleted=0
+               AND chain IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')
                AND EXISTS (
                    SELECT 1 FROM nx_user u
                     WHERE u.id=nx_withdrawal_order.user_id
@@ -84,6 +86,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    chain_broadcast_attempts=chain_broadcast_attempts+1,
                    last_broadcast_error=NULL,updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0
+               AND chain IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')
                AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
                  OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
             """)

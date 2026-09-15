@@ -333,6 +333,22 @@ public class AppWithdrawalService {
     private ApiResult<Map<String, Object>> submitOnce(
             Long userId, BigDecimal amount, String chain, String address, String requestedPolicyVersion,
             boolean useNexFeeOffset, String idempotencyKey) {
+        return submitOnce(userId, amount, chain, address, requestedPolicyVersion, useNexFeeOffset, idempotencyKey, null);
+    }
+
+    /** Internal adapter only: the owned, locked bank quote and its order link share the caller's transaction. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    ApiResult<Map<String, Object>> reserveBank(Long userId, ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote quote, String key) {
+        requireProductionWithdrawalSubject(userId);
+        if (quote == null || !userId.equals(quote.userId()) || mapper.lockActiveUser(userId) == null)
+            throw new BizException(404, "BANK_QUOTE_NOT_FOUND");
+        return submitOnce(userId, quote.amountUsdt(), "BANK-VND", "BANK-VND:" + quote.beneficiaryNo(),
+                quote.d5Version(), false, key, quote);
+    }
+
+    private ApiResult<Map<String, Object>> submitOnce(
+            Long userId, BigDecimal amount, String chain, String address, String requestedPolicyVersion,
+            boolean useNexFeeOffset, String idempotencyKey, ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote bankQuote) {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
@@ -343,6 +359,7 @@ public class AppWithdrawalService {
                     Map.of("policyVersion", policy.policyVersion()));
         }
         LocalDateTime businessNow = LocalDateTime.now(clock);
+        if (bankQuote == null) {
         PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_REQUIRED");
@@ -354,6 +371,7 @@ public class AppWithdrawalService {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_MISMATCH");
         }
         if (!policy.enabledNetworks().contains(chain)) return ApiResult.fail(409, "WITHDRAWAL_NETWORK_DISABLED");
+        }
 
         int dailyLimit = validatedDailyLimit();
         WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
@@ -377,7 +395,9 @@ public class AppWithdrawalService {
         if (rhythm == null || rhythm.currentMonth() <= 0 || rhythm.withdrawCooldownDays() <= 0) {
             throw new BizException(503, "H1_WITHDRAWAL_DIAL_UNAVAILABLE");
         }
-        BigDecimal networkFee = policy.networkConfirmFeeUsd().get(networkKey(chain)).setScale(6, RoundingMode.UNNECESSARY);
+        // Legacy D2 fee snapshot columns also carry the bank channel fee; posting uses a distinct BANK_FEE type.
+        BigDecimal networkFee = (bankQuote == null ? policy.networkConfirmFeeUsd().get(networkKey(chain)) : bankQuote.feeUsdt())
+                .setScale(6, RoundingMode.UNNECESSARY);
         BigDecimal penaltyPct = BigDecimal.ZERO.setScale(6);
         BigDecimal penaltyFee = BigDecimal.ZERO.setScale(6);
         BigDecimal grossFee = networkFee;
@@ -403,7 +423,7 @@ public class AppWithdrawalService {
         if (netReceive.signum() <= 0) return ApiResult.fail(422, "WITHDRAWAL_NET_AMOUNT_INVALID");
 
         String withdrawalNo = "WD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        LocalDateTime holdUntil = LocalDateTime.now().plusDays(rhythm.withdrawCooldownDays());
+        LocalDateTime holdUntil = LocalDateTime.now(clock).plusDays(rhythm.withdrawCooldownDays());
         WithdrawalRiskFacts riskFacts = mapper.withdrawalRiskFacts(userId, address);
         if (riskFacts == null || !StringUtils.hasText(riskFacts.userNo())
                 || riskFacts.withdrawalCount24h() == null || riskFacts.withdrawalSum24h() == null
@@ -440,11 +460,11 @@ public class AppWithdrawalService {
         BigDecimal strongReviewThreshold = strongReviewThreshold();
         boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean fastTrack = smallAmountEligible && !strongReview && k4Score < riskFacts.k4BandLowMax()
+        boolean fastTrack = bankQuote == null && smallAmountEligible && !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
         String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
-        String status = frozen ? "FROZEN" : strongReview ? "REVIEW_PENDING"
+        String status = frozen ? "FROZEN" : bankQuote != null ? (delayed ? "EXTENDED_HOLD" : "REVIEW_PENDING") : strongReview ? "REVIEW_PENDING"
                 : (fastTrack || delayed || "fast-pass".equals(riskRoute)) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
         String failureReason = strongReview ? "A3_STRONG_REVIEW_THRESHOLD"
                 : fastTrack ? "H1_COOLDOWN_FAST_TRACK"
@@ -465,15 +485,21 @@ public class AppWithdrawalService {
                 k4Priority, riskDecision.action(), k4Score, riskFacts.k4ModelVersion(), riskFacts.k4AsOf(),
                 riskFacts.k4BandLowMax(), riskFacts.k4BandHighMin(), riskFacts.k4AutoEscalateScore(),
                 status, failureReason,
-                (frozen || delayed) ? "REVIEW_PENDING"
+                (bankQuote != null || frozen || delayed) ? "REVIEW_PENDING"
                         : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null);
         if (mapper.insertWithdrawal(write) != 1) throw new BizException(409, "WITHDRAWAL_CREATE_CONFLICT");
         if (riskDecision.held()) {
             withdrawalRiskRuleFacade.recordDecision(riskContext, riskDecision);
         }
 
-        postWithdrawalLedgers(
+        if (bankQuote == null) postWithdrawalLedgers(
                 withdrawalNo, userId, amount, netReceive, actualNetworkFee, actualPenaltyFee, nexBurned);
+        else {
+            if (netReceive.compareTo(bankQuote.netUsdt()) != 0 || netReceive.add(actualFee).compareTo(amount) != 0)
+                throw new BizException(409, "BANK_QUOTE_FEE_MISMATCH");
+            postPositiveLedger(withdrawalNo + ":USDT:PRINCIPAL", userId, "WITHDRAW_NET_PRINCIPAL", "USDT", netReceive, "Bank payout net principal");
+            postPositiveLedger(withdrawalNo + ":USDT:BANK_FEE", userId, "WITHDRAW_BANK_FEE", "USDT", actualFee, "D7 bank payout fee");
+        }
 
         Attribution at = mapper.attribution(userId);
         if (at == null || at.accountAgeMonths() == null || !StringUtils.hasText(at.cohort())) {

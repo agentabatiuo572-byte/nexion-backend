@@ -32,12 +32,14 @@ class PayoutVndConfigServiceTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final PayoutVndProviderProperties providerProperties = new PayoutVndProviderProperties();
+    private final ffdd.opsconsole.finance.hdpay.HdPayPayoutReadiness payoutReadiness = mock(ffdd.opsconsole.finance.hdpay.HdPayPayoutReadiness.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-08T08:00:00Z"), ZoneOffset.UTC);
     private final PayoutVndConfigService service = new PayoutVndConfigService(
-            config, vietnam, coverage, audit, new ObjectMapper(), clock, providerProperties);
+            config, vietnam, coverage, audit, new ObjectMapper(), clock, providerProperties, payoutReadiness);
 
     @BeforeEach
     void setUp() {
+        when(payoutReadiness.ready()).thenReturn(true);
         when(config.activeValue(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
         when(config.activeValue(PayoutVndConfigService.VALUES_KEY)).thenReturn(Optional.of(values(false)));
         when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("false"));
@@ -49,6 +51,12 @@ class PayoutVndConfigServiceTest {
                 new BigDecimal("125"), new BigDecimal("100"), true,
                 new BigDecimal("1250"), new BigDecimal("1000"), BigDecimal.ONE,
                 new BigDecimal("1250"), new BigDecimal("1000")));
+    }
+
+    @Test void configuredFlagAloneCannotEnableActualPayout() {
+        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("true"));
+        when(payoutReadiness.ready()).thenReturn(false);
+        assertThat(service.overview().getData()).containsEntry("providerReady", false).containsEntry("payoutConfigured", false);
     }
 
     @Test

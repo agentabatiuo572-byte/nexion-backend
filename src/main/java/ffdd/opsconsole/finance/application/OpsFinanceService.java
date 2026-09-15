@@ -126,6 +126,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final AdminOperatorRoleResolver operatorRoleResolver;
     private final AppWithdrawalMapper appWithdrawalMapper;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -847,6 +849,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String operator) {
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
         if (order == null) return ApiResult.fail(404, "WITHDRAWAL_NOT_FOUND");
+        if ("BANK-VND".equals(order.chain())) return ApiResult.fail(409, "BANK_PAYOUT_PROVIDER_CONFIRMATION_REQUIRED");
         if (!D2WithdrawalStateMachine.SENT.equals(D2WithdrawalStateMachine.canonical(order.status()))) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -1006,6 +1009,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         String action = request.action().trim().toUpperCase(Locale.ROOT);
         D2CurrentRisk currentRisk = null;
+        // A bank failure is already atomically refunded by its provider finalizer. An unknown
+        // result may still be paid: the generic D2 refund must never consume another order's reserve.
+        if ("BANK-VND".equals(order.chain()) && "REFUND".equals(action))
+            return ApiResult.fail(409, "BANK_PAYOUT_PROVIDER_REFUND_REQUIRED");
+        if ("BANK-VND".equals(order.chain()) && !Set.of("REVIEW_PENDING", "REVIEWING", "REVIEW_PASSED", "EXTENDED_HOLD", "DELAYED", "FROZEN").contains(order.status()))
+            return ApiResult.fail(409, "BANK_PAYOUT_ALREADY_DISPATCHED");
         if ("APPROVE".equals(action)) {
             currentRisk = currentD2Risk(order, LocalDateTime.now());
             if (currentRisk.failureReason() != null) {
@@ -1088,6 +1097,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "WITHDRAWAL_STATE_CONFLICT");
         }
         if ("APPROVE".equals(action)) {
+            if ("BANK-VND".equals(order.chain()) && (bankWithdrawalMapper == null
+                    || bankWithdrawalMapper.approveRisk(order.withdrawalNo(), currentRisk.fingerprint()) != 1))
+                throw new IllegalStateException("BANK_PAYOUT_APPROVAL_SNAPSHOT_UNAVAILABLE");
             treasuryLedgerRepository.recordWithdrawalReserve(
                     order.withdrawalNo(), order.amount(), request.reason().trim(), authenticatedOperator, idempotencyKey);
         }
@@ -1939,6 +1951,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private D2ExpiryDecision h1FastTrackDecision(WithdrawalOrderView order, LocalDateTime now) {
+        if ("BANK-VND".equals(order.chain())) return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                "BANK_PAYOUT_MANUAL_REVIEW_REQUIRED", "withdraw.review_due", null);
         LocalDateTime effectiveNow = now;
         D2CurrentRisk currentRisk = currentD2Risk(order, now);
         if (currentRisk.failureReason() != null) {
@@ -2011,7 +2025,18 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return D2CurrentRisk.unavailable("K3_WITHDRAWAL_DECISION_UNAVAILABLE");
         }
         return new D2CurrentRisk(
-                decision.action(), d2K4Priority(facts.k4RiskScore(), facts), null);
+                decision.action(), d2K4Priority(facts.k4RiskScore(), facts), null, bankRiskFingerprint(facts, decision));
+    }
+
+    /** Bind manual approval to material facts and rule versions; refresh timestamp alone is not a risk change. */
+    private String bankRiskFingerprint(WithdrawalRiskFacts f, WithdrawalRiskDecision d) {
+        var fields = new java.util.ArrayList<String>();
+        for (Object value : new Object[]{f.userNo(), f.withdrawalCount24h(), f.withdrawalSum24h().stripTrailingZeros().toPlainString(),
+                f.accountAgeDays(), f.addressReputation(), f.k4RiskScore(), f.k4ModelVersion(), f.k4BandLowMax(),
+                f.k4BandHighMin(), f.k4AutoEscalateScore(), d.action(), d.primaryRuleId(), d.primaryDimension()})
+            fields.add(sha256(value == null ? "<null>" : value.toString()));
+        if (d.matchedRules() != null) d.matchedRules().stream().map(rule -> sha256(rule.toString())).sorted().forEach(fields::add);
+        return sha256(String.join("|", fields));
     }
 
     private boolean validD2K4Thresholds(WithdrawalRiskFacts facts) {
@@ -2031,9 +2056,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return "LOW";
     }
 
-    private record D2CurrentRisk(String k3Action, String k4Priority, String failureReason) {
+    private record D2CurrentRisk(String k3Action, String k4Priority, String failureReason, String fingerprint) {
         private static D2CurrentRisk unavailable(String reason) {
-            return new D2CurrentRisk(null, null, reason);
+            return new D2CurrentRisk(null, null, reason, null);
         }
     }
 
@@ -2116,6 +2141,21 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
         return approvalBlockReason(order, dailyLimitCount, LocalDateTime.now());
+    }
+
+    /** Bank executor re-checks the existing D2/J1/J2/I5/coverage boundaries before its first network attempt. */
+    String bankPayoutDispatchBlockReason(String withdrawalNo) {
+        var order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
+        if (order == null || !"BANK-VND".equals(order.chain()) || !"REVIEW_PASSED".equals(order.status()))
+            return "BANK_PAYOUT_REVIEW_REQUIRED";
+        String block = approvalBlockReason(order, withdrawalDailyLimitCount());
+        if (block != null) return block;
+        var risk = currentD2Risk(order, LocalDateTime.now());
+        if (risk.failureReason() != null) return risk.failureReason();
+        if (!Set.of("pass", "manual").contains(risk.k3Action()) || bankWithdrawalMapper == null
+                || !risk.fingerprint().equals(bankWithdrawalMapper.approvedRiskHash(withdrawalNo)))
+            return "BANK_PAYOUT_RISK_REVIEW_REQUIRED";
+        return null;
     }
 
     private String approvalBlockReason(

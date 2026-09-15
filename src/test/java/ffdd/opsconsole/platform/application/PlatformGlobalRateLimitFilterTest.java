@@ -86,6 +86,8 @@ class PlatformGlobalRateLimitFilterTest {
 
         assertThat(execute("POST", "/openapi/v1/payments/hdpay/pay-in/callback").getStatus())
                 .isEqualTo(429);
+        assertThat(execute("POST", "/openapi/v1/payments/hdpay/payout/callback").getStatus())
+                .isEqualTo(429);
     }
 
     @Test

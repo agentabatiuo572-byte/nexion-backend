@@ -66,7 +66,11 @@ public class HdPayProperties {
     }
 
     public boolean ready() {
-        if (!providerMode()) return false;
+        return providerMode() && "BANKQR".equals(clean(payType).toUpperCase(Locale.ROOT)) && connectionReady();
+    }
+
+    /** Shared credentials/transport only; this does not enable either money movement direction. */
+    public boolean connectionReady() {
         URI base = uri(baseUrl);
         URI callback = uri(callbackBaseUrl);
         return base != null
@@ -82,7 +86,6 @@ public class HdPayProperties {
                 && digits(merchantId)
                 && md5Key != null
                 && md5Key.length() >= 16
-                && "BANKQR".equals(clean(payType).toUpperCase(Locale.ROOT))
                 && "VN".equals(clean(countryCode).toUpperCase(Locale.ROOT))
                 && validProxyConfiguration()
                 && connectTimeoutMs >= 100

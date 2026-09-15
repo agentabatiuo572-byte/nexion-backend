@@ -32,6 +32,10 @@ final class PublicTestDeploymentSafety {
         if (!RuntimeProfile.DEV.equals(RuntimeProfile.requireSingle(environment))) {
             throw new IllegalStateException("PUBLIC_TEST_REQUIRES_DEV");
         }
+        // New, opt-in payout rail is never covered by the existing pay-in approval.
+        // Keep the external policy artifact/hash unchanged for compatible, reversible TEST upgrades.
+        if (!"false".equals(environment.getProperty("nexion.finance.hdpay-payout.enabled", "false")))
+            throw new IllegalStateException("PUBLIC_TEST_POLICY_REJECTED: nexion.finance.hdpay-payout.enabled");
         policy().forEach((key, expected) -> {
             String actual = environment.getProperty(key);
             // Root-owned deployment policy may explicitly authorize real HDPay

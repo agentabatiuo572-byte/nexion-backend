@@ -39,6 +39,7 @@ public class PayoutVndConfigService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final PayoutVndProviderProperties providerProperties;
+    private final ffdd.opsconsole.finance.hdpay.HdPayPayoutReadiness payoutReadiness;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> overview() {
@@ -163,7 +164,7 @@ public class PayoutVndConfigService {
             }
             String provider = rawProvider.orElse("").trim();
             boolean providerStatusAvailable = "true".equals(provider) || "false".equals(provider);
-            return new State(version, values, providerStatusAvailable && Boolean.parseBoolean(provider),
+            return new State(version, values, providerStatusAvailable && Boolean.parseBoolean(provider) && payoutReadiness.ready(),
                     providerStatusAvailable);
         } catch (Exception ex) {
             return null;
@@ -196,6 +197,8 @@ public class PayoutVndConfigService {
         for (String key : operationalKeys()) result.put(key, values.get(key));
         result.put("providerReady", providerReady);
         result.put("providerStatusAvailable", providerStatusAvailable);
+        result.put("provider", "HDPAY");
+        result.put("payoutConfigured", payoutReadiness.ready());
         result.put("sandboxAvailable", providerProperties.getMode() == PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         result.put("defaults", defaults());
         result.put("effectiveAt", Instant.ofEpochMilli(longValue(values.get("effectiveAt"))).toString());
