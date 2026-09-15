@@ -42,6 +42,44 @@ class PublicTestDeploymentSafetyTest {
     }
 
     @Test
+    void hdPayRequiresExplicitPayInApprovalAndAnExactProviderMode() {
+        String mode = "nexion.finance.hdpay.mode";
+        String approved = "nexion.deployment.hdpay-pay-in-approved";
+        assertThatThrownBy(() -> processor.validate(safe().withProperty(mode, "PROVIDER")))
+                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: " + mode);
+        for (String value : new String[]{"false", "TRUE", "1", "arbitrary"}) {
+            assertThatThrownBy(() -> processor.validate(safe().withProperty(mode, "PROVIDER")
+                    .withProperty(approved, value))).hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED");
+        }
+        assertThatCode(() -> processor.validate(safe().withProperty(mode, "PROVIDER")
+                .withProperty(approved, "true"))).doesNotThrowAnyException();
+        assertThatCode(() -> processor.validate(safe().withProperty(approved, "true")))
+                .doesNotThrowAnyException(); // disabling remains safe during rollback.
+        for (String value : new String[]{"provider", "MOCK", "DEV", "arbitrary"}) {
+            assertThatThrownBy(() -> processor.validate(safe().withProperty(mode, value)
+                    .withProperty(approved, "true"))).hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED");
+        }
+    }
+
+    @Test
+    void hdPayApprovalNeverRelaxesAnotherPublicTestSafetyPin() {
+        for (String key : PublicTestDeploymentSafety.policy().keySet()) {
+            if ("nexion.finance.hdpay.mode".equals(key)) continue;
+            MockEnvironment env = safe().withProperty("nexion.finance.hdpay.mode", "PROVIDER")
+                    .withProperty("nexion.deployment.hdpay-pay-in-approved", "true")
+                    .withProperty(key, "unsafe-secret-value");
+            assertThatThrownBy(() -> processor.validate(env))
+                    .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: " + key)
+                    .hasMessageNotContaining("unsafe-secret-value");
+        }
+        assertThatThrownBy(() -> processor.validate(safe()
+                .withProperty("nexion.finance.hdpay.mode", "PROVIDER")
+                .withProperty("nexion.deployment.hdpay-pay-in-approved", "true")
+                .withProperty("spring.profiles.active", "prod")))
+                .hasMessageContaining("PUBLIC_TEST_REQUIRES_DEV");
+    }
+
+    @Test
     void doesNotChangeLocalDevOrProductionWhenPublicTestIsNotSelected() {
         for (String profile : new String[]{"dev", "prod"}) {
             assertThatCode(() -> processor.validate(new MockEnvironment().withProperty("spring.profiles.active", profile)))

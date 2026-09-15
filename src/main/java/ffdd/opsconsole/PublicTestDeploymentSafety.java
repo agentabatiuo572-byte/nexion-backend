@@ -8,6 +8,9 @@ import org.springframework.core.env.ConfigurableEnvironment;
 
 /** Public TEST is intentionally narrower than a developer's local dev environment. */
 final class PublicTestDeploymentSafety {
+    private static final String HDPAY_MODE = "nexion.finance.hdpay.mode";
+    private static final String HDPAY_PAY_IN_APPROVED = "nexion.deployment.hdpay-pay-in-approved";
+
     private PublicTestDeploymentSafety() { }
 
     static Map<String, String> policy() {
@@ -30,7 +33,16 @@ final class PublicTestDeploymentSafety {
             throw new IllegalStateException("PUBLIC_TEST_REQUIRES_DEV");
         }
         policy().forEach((key, expected) -> {
-            if (!expected.equals(environment.getProperty(key))) {
+            String actual = environment.getProperty(key);
+            // Root-owned deployment policy may explicitly authorize real HDPay
+            // pay-in on the isolated test host. All other safety pins remain exact.
+            // Configuration readiness, callback signatures and D1's channel switch
+            // are still enforced by the existing HDPay/VietQR services.
+            boolean approvedHdPay = HDPAY_MODE.equals(key)
+                    && "DISABLED".equals(expected)
+                    && "PROVIDER".equals(actual)
+                    && "true".equals(environment.getProperty(HDPAY_PAY_IN_APPROVED));
+            if (!expected.equals(actual) && !approvedHdPay) {
                 // Never log user-controlled values or environment contents.
                 throw new IllegalStateException("PUBLIC_TEST_POLICY_REJECTED: " + key);
             }
