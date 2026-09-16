@@ -80,15 +80,15 @@ class PublicTestDeploymentSafetyTest {
     }
 
     @Test
-    void payInApprovalCannotEnableTheNewBankPayoutRail() {
+    void approvedHdPayTransportAlsoSupportsBankPayoutWithoutLegacyPayoutSwitches() {
         var env = safe().withProperty("nexion.finance.hdpay.mode", "PROVIDER")
-                .withProperty("nexion.deployment.hdpay-pay-in-approved", "true")
-                .withProperty("nexion.finance.hdpay-payout.enabled", "true");
+                .withProperty("nexion.deployment.hdpay-pay-in-approved", "true");
         assertThatCode(() -> processor.validate(env)).doesNotThrowAnyException();
         var transport = org.mockito.Mockito.mock(ffdd.opsconsole.finance.hdpay.HdPayProperties.class);
         org.mockito.Mockito.when(transport.ready()).thenReturn(true);
         var payout = new ffdd.opsconsole.finance.hdpay.HdPayPayoutProperties();
-        org.springframework.test.util.ReflectionTestUtils.setField(payout, "environment", env);
+        org.assertj.core.api.Assertions.assertThat(payout.ready(transport)).isTrue();
+        org.mockito.Mockito.when(transport.ready()).thenReturn(false);
         org.assertj.core.api.Assertions.assertThat(payout.ready(transport)).isFalse();
     }
 

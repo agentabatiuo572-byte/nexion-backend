@@ -32,12 +32,13 @@ final class PublicTestDeploymentSafety {
         if (!RuntimeProfile.DEV.equals(RuntimeProfile.requireSingle(environment))) {
             throw new IllegalStateException("PUBLIC_TEST_REQUIRES_DEV");
         }
-        // HdPayPayoutProperties enforces this deployment's collection-only boundary at runtime.
-        // Retired payout settings cannot grant approval; keep the external policy artifact unchanged.
+        // HDPay pay-in and payout share the explicitly enabled provider transport.
+        // All unrelated TEST policy pins remain unchanged.
         policy().forEach((key, expected) -> {
             String actual = environment.getProperty(key);
             // Root-owned deployment policy may explicitly authorize real HDPay
-            // pay-in on the isolated test host. All other safety pins remain exact.
+            // transport on the isolated test host. The existing pay-in approval key
+            // is retained for deployment compatibility. All other pins remain exact.
             // Configuration readiness, callback signatures and D1's channel switch
             // are still enforced by the existing HDPay/VietQR services.
             boolean approvedHdPay = HDPAY_MODE.equals(key)
