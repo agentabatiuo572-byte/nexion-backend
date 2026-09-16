@@ -54,6 +54,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -127,6 +128,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final AppWithdrawalMapper appWithdrawalMapper;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
+    private final Clock clock;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -861,7 +863,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (withdrawalRepository.chainTxHashUsedByOtherWithdrawal(withdrawalNo, chainTxHash)) {
             return ApiResult.fail(409, "WITHDRAWAL_CHAIN_TX_HASH_ALREADY_USED");
         }
-        LocalDateTime confirmedAt = LocalDateTime.now();
+        LocalDateTime confirmedAt = LocalDateTime.now(clock);
         if (!withdrawalRepository.confirmSent(
                 withdrawalNo, order.status(), chainTxHash, confirmedAt)) {
             return ApiResult.fail(409, "WITHDRAWAL_STATE_CONFLICT");
@@ -990,12 +992,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String withdrawalNo,
             String idempotencyKey,
             WithdrawalReviewRequest request) {
-        return (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
+        ApiResult<WithdrawalOrderView> result = (ApiResult<WithdrawalOrderView>) (ApiResult) idempotencyService.execute(
                 "D2_REVIEW_" + withdrawalNo,
                 idempotencyKey,
                 d2RequestHash(withdrawalNo, request),
                 ApiResult.class,
                 () -> executeD2ReviewOnce(withdrawalNo, idempotencyKey, request));
+        // These exact replies occur before any withdrawal/reserve mutation. Older
+        // durable receipts used 503; project their known rejection as 409 even on
+        // replay, without deleting a receipt or weakening unknown-outcome handling.
+        if (result.getCode() == 503 && result.getMessage() != null && Set.of("K3_WITHDRAWAL_FACTS_UNAVAILABLE",
+                "K4_RISK_SCORE_UNAVAILABLE", "K3_WITHDRAWAL_DECISION_UNAVAILABLE").contains(result.getMessage())) {
+            return ApiResult.fail(409, result.getMessage());
+        }
+        return result;
     }
 
     private ApiResult<WithdrawalOrderView> executeD2ReviewOnce(
@@ -1023,9 +1033,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if (recipientBlock != null) return ApiResult.fail(409, recipientBlock);
         }
         if ("APPROVE".equals(action)) {
-            currentRisk = currentD2Risk(order, LocalDateTime.now());
+            currentRisk = currentD2Risk(order, LocalDateTime.now(clock));
             if (currentRisk.failureReason() != null) {
-                return ApiResult.fail(503, currentRisk.failureReason());
+                return ApiResult.fail(409, currentRisk.failureReason());
             }
             if ("freeze".equals(currentRisk.k3Action())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_CURRENT_ROUTE_REQUIRES_FREEZE");
@@ -1137,7 +1147,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     /** Releases due lifecycles. H1 low-risk fast-track is re-evaluated, never blindly restored. */
     @Transactional(rollbackFor = Exception.class)
     public int releaseExpiredD2Lifecycles(LocalDateTime now) {
-        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now(clock) : now;
         int released = 0;
         for (String withdrawalNo : withdrawalRepository.findExpiredLifecycleNos(effectiveNow)) {
             if (releaseDueD2Lifecycle(
@@ -1160,7 +1170,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String operator,
             String trigger,
             String operatorReason) {
-        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now(clock) : now;
         WithdrawalOrderView order = withdrawalRepository.findByWithdrawalNo(withdrawalNo).orElse(null);
         if (order == null
                 || order.holdUntil() == null
@@ -2006,7 +2016,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 || facts.accountAgeDays() == null || !StringUtils.hasText(facts.addressReputation())) {
             return D2CurrentRisk.unavailable("K3_WITHDRAWAL_FACTS_UNAVAILABLE");
         }
-        LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
+        LocalDateTime effectiveNow = now == null ? LocalDateTime.now(clock) : now;
         if (facts.k4RiskScore() == null
                 || facts.k4RiskScore() < 0
                 || facts.k4RiskScore() > 100
@@ -2079,10 +2089,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     private boolean validReviewAt(String raw, int expectedDays, int toleranceDays) {
         LocalDateTime reviewAt = parseD2ReviewAt(raw);
-        if (reviewAt == null || !reviewAt.isAfter(LocalDateTime.now())) {
+        if (reviewAt == null || !reviewAt.isAfter(LocalDateTime.now(clock))) {
             return false;
         }
-        long days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), reviewAt.toLocalDate());
+        long days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(clock), reviewAt.toLocalDate());
         if (expectedDays == 365) {
             return days >= 1 && days <= 365;
         }
@@ -2147,7 +2157,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
-        return approvalBlockReason(order, dailyLimitCount, LocalDateTime.now());
+        return approvalBlockReason(order, dailyLimitCount, LocalDateTime.now(clock));
     }
 
     /** Bank executor re-checks the existing D2/J1/J2/I5/coverage boundaries before its first network attempt. */
@@ -2157,7 +2167,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return "BANK_PAYOUT_REVIEW_REQUIRED";
         String block = approvalBlockReason(order, withdrawalDailyLimitCount());
         if (block != null) return block;
-        var risk = currentD2Risk(order, LocalDateTime.now());
+        var risk = currentD2Risk(order, LocalDateTime.now(clock));
         if (risk.failureReason() != null) return risk.failureReason();
         if (!Set.of("pass", "manual").contains(risk.k3Action()) || bankWithdrawalMapper == null
                 || !risk.fingerprint().equals(bankWithdrawalMapper.approvedRiskHash(withdrawalNo)))

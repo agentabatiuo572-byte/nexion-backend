@@ -162,7 +162,7 @@ class D2WithdrawalClosureContractTest {
         String service = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/finance/application/OpsFinanceService.java"));
         assertThat(service)
-                .contains("currentD2Risk(order, LocalDateTime.now())")
+                .contains("currentD2Risk(order, LocalDateTime.now(clock))")
                 .contains("currentD2Risk(order, now)")
                 .contains("appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress())")
                 .contains("facts.k4AsOf().isBefore(effectiveNow.minusDays(1))")

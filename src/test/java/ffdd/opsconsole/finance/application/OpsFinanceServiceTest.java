@@ -47,6 +47,8 @@ import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -99,7 +101,7 @@ class OpsFinanceServiceTest {
                     operatorRoleResolver,
                     appWithdrawalMapper,
                     withdrawalRiskRuleFacade,
-                    bankWithdrawalMapper);
+                    bankWithdrawalMapper, Clock.systemDefaultZone());
 
     @BeforeEach
     void setUpRiskDefaults() {
@@ -125,6 +127,10 @@ class OpsFinanceServiceTest {
     }
 
     private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy) {
+        return service(seedPolicy, Clock.systemDefaultZone());
+    }
+
+    private OpsFinanceService service(OpsReadTimeSeedPolicy seedPolicy, Clock clock) {
         return new OpsFinanceService(
                 configFacade,
                 growthRhythmFacade,
@@ -143,7 +149,7 @@ class OpsFinanceServiceTest {
                 operatorRoleResolver,
                 appWithdrawalMapper,
                 withdrawalRiskRuleFacade,
-                bankWithdrawalMapper);
+                bankWithdrawalMapper, clock);
     }
 
     @Test
@@ -656,6 +662,91 @@ class OpsFinanceServiceTest {
     }
 
     @Test
+    void approvalUsesBusinessClockForCurrentRiskAndExpiredCooldownOnUtcHost() {
+        java.util.TimeZone original = java.util.TimeZone.getDefault();
+        try {
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"));
+            Clock businessClock = Clock.fixed(Instant.now(),
+                    ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+            LocalDateTime now = LocalDateTime.now(businessClock);
+            var businessService = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction(), businessClock);
+            withdrawalRepository.order = withLifecycle(withdrawal("WD-UTC-HOST", "REVIEW_PENDING"),
+                    now.minusMinutes(1), null, null);
+            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+                    .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
+                            3, "k4-v1", now.minusMinutes(5), 40, 70, 85));
+
+            var result = businessService.reviewWithdrawal("WD-UTC-HOST", "utc-host-review",
+                    new WithdrawalReviewRequest("APPROVE", "superadmin", "valid business-time evidence"));
+
+            assertThat(result.getCode()).isZero();
+            assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
+        } finally {
+            java.util.TimeZone.setDefault(original);
+        }
+    }
+
+    @Test
+    void businessClockStillRejectsFutureStaleRiskAndUnexpiredCooldown() {
+        Clock businessClock = Clock.fixed(Instant.parse("2026-09-16T12:00:00Z"),
+                ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDateTime now = LocalDateTime.now(businessClock);
+        var businessService = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction(), businessClock);
+        withdrawalRepository.order = withLifecycle(withdrawal("WD-CLOCK-GATES", "REVIEW_PENDING"),
+                now.plusDays(30), null, null);
+        for (LocalDateTime asOf : List.of(now.plusSeconds(1), now.minusDays(1).minusSeconds(1))) {
+            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+                    .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
+                            3, "k4-v1", asOf, 40, 70, 85));
+            var result = businessService.reviewWithdrawal("WD-CLOCK-GATES", "risk-clock-" + asOf,
+                    new WithdrawalReviewRequest("APPROVE", "superadmin", "invalid current risk timestamp"));
+            assertThat(result.getCode()).isEqualTo(409);
+            assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+        }
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+                .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
+                        3, "k4-v1", now.minusMinutes(5), 40, 70, 85));
+        var cooldown = businessService.reviewWithdrawal("WD-CLOCK-GATES", "cooldown-clock",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "cooldown must remain enforced"));
+        assertThat(cooldown.getMessage()).isEqualTo("WITHDRAWAL_COOLDOWN_ACTIVE");
+        assertThat(withdrawalRepository.lastStatus).isNull();
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+    }
+
+    @Test
+    void oldKnownRiskRejectionReplaysAsConflictWithoutExecutingFinancialAction() {
+        org.mockito.Mockito.doReturn(ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE"))
+                .when(idempotencyService).execute(anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        var result = service.reviewWithdrawal("WD-REPLAY", "same-original-command",
+                new WithdrawalReviewRequest("APPROVE", "superadmin", "keep original review request"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
+        org.mockito.Mockito.verifyNoInteractions(appWithdrawalMapper, treasuryLedgerRepository, bankWithdrawalMapper);
+    }
+
+    @Test
+    void unrelatedUnavailableResultStillKeepsUnknownOutcomeSemantics() {
+        for (String message : new String[]{"COVERAGE_UNAVAILABLE", "UNEXPECTED_BACKEND_FAILURE", null}) {
+            ApiResult<WithdrawalOrderView> original = ApiResult.fail(503, message);
+            org.mockito.Mockito.doReturn(original).when(idempotencyService)
+                    .execute(anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+            assertThat(service.reviewWithdrawal("WD-UNKNOWN", "keep-command-key",
+                    new WithdrawalReviewRequest("APPROVE", "superadmin", "retain uncertain command result")))
+                    .isSameAs(original);
+        }
+        org.mockito.Mockito.verifyNoInteractions(appWithdrawalMapper, treasuryLedgerRepository, bankWithdrawalMapper);
+    }
+
+    @Test
+    void holdSchedulerPassesBusinessTimeToLifecycleReview() {
+        Clock businessClock = Clock.fixed(Instant.parse("2026-09-16T12:00:00Z"),
+                ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+        OpsFinanceService finance = mock(OpsFinanceService.class);
+        new D2WithdrawalHoldScheduler(finance, businessClock).releaseExpiredHolds();
+        verify(finance).releaseExpiredD2Lifecycles(LocalDateTime.parse("2026-09-16T20:00:00"));
+    }
+
+    @Test
     void reviewWithdrawalFailsClosedWhenK4ScoreIsUnavailable() {
         withdrawalRepository.order = withdrawal(
                 "WD-K4-MISSING", "REVIEWING", "ACTIVE", null, "", 1);
@@ -667,7 +758,7 @@ class OpsFinanceServiceTest {
                 "WD-K4-MISSING", "idem-k4-missing",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "K4 score is required"));
 
-        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
         assertThat(withdrawalRepository.lastStatus).isNull();
         verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
@@ -690,7 +781,7 @@ class OpsFinanceServiceTest {
                 "WD-K4-STALE", "idem-k4-stale",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "current K4 facts required"));
 
-        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
         assertThat(withdrawalRepository.lastStatus).isNull();
     }
@@ -774,7 +865,7 @@ class OpsFinanceServiceTest {
                 "WD-K4-FUTURE", "idem-k4-future",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "future K4 facts are invalid"));
 
-        assertThat(future.getCode()).isEqualTo(503);
+        assertThat(future.getCode()).isEqualTo(409);
         assertThat(future.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
 
         withdrawalRepository.order = withdrawal("WD-K4-NEGATIVE", "REVIEWING");
@@ -788,7 +879,7 @@ class OpsFinanceServiceTest {
                 "WD-K4-NEGATIVE", "idem-k4-negative",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "negative K4 facts are invalid"));
 
-        assertThat(negative.getCode()).isEqualTo(503);
+        assertThat(negative.getCode()).isEqualTo(409);
         assertThat(negative.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
 
         withdrawalRepository.order = withdrawal("WD-K4-OVERFLOW", "REVIEWING");
@@ -802,7 +893,7 @@ class OpsFinanceServiceTest {
                 "WD-K4-OVERFLOW", "idem-k4-overflow",
                 new WithdrawalReviewRequest("APPROVE", "superadmin", "overflow K4 facts are invalid"));
 
-        assertThat(overflow.getCode()).isEqualTo(503);
+        assertThat(overflow.getCode()).isEqualTo(409);
         assertThat(overflow.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
         assertThat(withdrawalRepository.lastStatus).isNull();
     }
