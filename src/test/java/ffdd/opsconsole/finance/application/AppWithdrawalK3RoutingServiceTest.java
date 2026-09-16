@@ -57,7 +57,7 @@ class AppWithdrawalK3RoutingServiceTest {
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
             mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC(),
-            mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class));
+            mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class), new WithdrawalRiskTimePolicy(environment, config));
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -76,7 +76,7 @@ class AppWithdrawalK3RoutingServiceTest {
         when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(3);
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("5000.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 3, new BigDecimal("4900.000000"), 3, "low",
                         78, "k4-v13", LocalDateTime.now(), 41, 73, 91));
         when(config.activeValue("withdrawal.trc20.enabled")).thenReturn(Optional.of("true"));
@@ -96,6 +96,7 @@ class AppWithdrawalK3RoutingServiceTest {
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.1"));
         when(config.activeValue("withdrawal.fee_max_usdt")).thenReturn(Optional.of("5"));
         GrowthRhythmSnapshot rhythm = mock(GrowthRhythmSnapshot.class);
+        when(rhythm.reliable()).thenReturn(true);
         when(rhythm.currentMonth()).thenReturn(3);
         when(rhythm.currentPhase()).thenReturn("P2");
         when(rhythm.withdrawCooldownDays()).thenReturn(30);

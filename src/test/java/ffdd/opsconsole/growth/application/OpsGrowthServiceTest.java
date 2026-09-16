@@ -1897,6 +1897,23 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void zeroDayReviewWindowIsValidButNegativeAndFractionalDaysAreRejected() {
+        configFacade.values.put("H1.rhythm.totalMonths", "12");
+        configFacade.values.put("H1.rhythm.currentMonth", "3");
+        var result = service.updatePhaseMonthDial("h1-zero-days", 3, "withdrawCooldownDays",
+                new GrowthConfigUpdateRequest("withdrawCooldownDays", "0", "zero day acceptance policy", "superadmin"));
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("growth.phase.month.3.withdrawCooldownDays", "0")
+                .containsEntry("growth.phase.withdraw_cooldown_days", "0");
+        for (String value : List.of("-1", "-0.5", "0.5")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.updatePhaseMonthDial("h1-invalid-" + value, 3, "withdrawCooldownDays",
+                    new GrowthConfigUpdateRequest("withdrawCooldownDays", value, "invalid day boundary test", "superadmin")))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(configFacade.values).containsEntry("growth.phase.month.3.withdrawCooldownDays", "0");
+        }
+    }
+
+    @Test
     void disablingComplianceHoldBelowCoverageRedlineReturns422() {
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "8");

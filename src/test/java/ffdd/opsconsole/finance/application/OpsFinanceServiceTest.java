@@ -82,6 +82,7 @@ class OpsFinanceServiceTest {
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade = mock(WithdrawalRiskRuleFacade.class);
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper =
             mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
+    private final WithdrawalRiskTimePolicy riskTimePolicy = mock(WithdrawalRiskTimePolicy.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
@@ -101,10 +102,13 @@ class OpsFinanceServiceTest {
                     operatorRoleResolver,
                     appWithdrawalMapper,
                     withdrawalRiskRuleFacade,
-                    bankWithdrawalMapper, Clock.systemDefaultZone());
+                    bankWithdrawalMapper, Clock.systemDefaultZone(), riskTimePolicy);
 
     @BeforeEach
     void setUpRiskDefaults() {
+        when(appWithdrawalMapper.businessDayOrdinal(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+                .thenAnswer(invocation -> withdrawalRepository.order == null ? 1 : withdrawalRepository.order.withdrawalCount24h());
+        when(riskTimePolicy.enabled()).thenReturn(true);
         org.springframework.security.core.context.SecurityContextHolder.clearContext();
         when(riskOpsRepository.withdrawRules()).thenReturn(List.of());
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
@@ -112,7 +116,7 @@ class OpsFinanceServiceTest {
                 .thenReturn(ApiResult.ok(null));
         when(operatorRoleResolver.resolveCode()).thenReturn(null);
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(currentRiskFacts(40));
         when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new WithdrawalRiskDecision("pass", null, null, List.of()));
@@ -149,7 +153,7 @@ class OpsFinanceServiceTest {
                 operatorRoleResolver,
                 appWithdrawalMapper,
                 withdrawalRiskRuleFacade,
-                bankWithdrawalMapper, clock);
+                bankWithdrawalMapper, clock, riskTimePolicy);
     }
 
     @Test
@@ -560,9 +564,9 @@ class OpsFinanceServiceTest {
         assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
         when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new WithdrawalRiskDecision("pass",null,null,List.of()));
-        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString())).thenReturn(currentRiskFacts(90));
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(currentRiskFacts(90));
         assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
-        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString())).thenReturn(currentRiskFacts(40));
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(currentRiskFacts(40));
         when(bank.approvedRiskHash("WD-BANK")).thenReturn(null);
         assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
     }
@@ -672,7 +676,7 @@ class OpsFinanceServiceTest {
             var businessService = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction(), businessClock);
             withdrawalRepository.order = withLifecycle(withdrawal("WD-UTC-HOST", "REVIEW_PENDING"),
                     now.minusMinutes(1), null, null);
-            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                     .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
                             3, "k4-v1", now.minusMinutes(5), 40, 70, 85));
 
@@ -695,7 +699,7 @@ class OpsFinanceServiceTest {
         withdrawalRepository.order = withLifecycle(withdrawal("WD-CLOCK-GATES", "REVIEW_PENDING"),
                 now.plusDays(30), null, null);
         for (LocalDateTime asOf : List.of(now.plusSeconds(1), now.minusDays(1).minusSeconds(1))) {
-            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+            when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                     .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
                             3, "k4-v1", asOf, 40, 70, 85));
             var result = businessService.reviewWithdrawal("WD-CLOCK-GATES", "risk-clock-" + asOf,
@@ -703,7 +707,7 @@ class OpsFinanceServiceTest {
             assertThat(result.getCode()).isEqualTo(409);
             assertThat(result.getMessage()).isEqualTo("K4_RISK_SCORE_UNAVAILABLE");
         }
-        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString()))
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(new WithdrawalRiskFacts("U00001001", 1, new BigDecimal("100"), 90, "normal",
                         3, "k4-v1", now.minusMinutes(5), 40, 70, 85));
         var cooldown = businessService.reviewWithdrawal("WD-CLOCK-GATES", "cooldown-clock",
@@ -751,7 +755,7 @@ class OpsFinanceServiceTest {
         withdrawalRepository.order = withdrawal(
                 "WD-K4-MISSING", "REVIEWING", "ACTIVE", null, "", 1);
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(currentRiskFacts(null));
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
@@ -774,7 +778,7 @@ class OpsFinanceServiceTest {
                 "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
                 40, "k4-v1", LocalDateTime.now().minusDays(2), 41, 73, 91);
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(stale);
 
         ApiResult<WithdrawalOrderView> result = service.reviewWithdrawal(
@@ -856,7 +860,7 @@ class OpsFinanceServiceTest {
     void reviewWithdrawalRejectsFutureOrNegativeCurrentK4Facts() {
         withdrawalRepository.order = withdrawal("WD-K4-FUTURE", "REVIEWING");
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(new WithdrawalRiskFacts(
                         "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
                         40, "k4-v1", LocalDateTime.now().plusMinutes(1), 41, 73, 91));
@@ -870,7 +874,7 @@ class OpsFinanceServiceTest {
 
         withdrawalRepository.order = withdrawal("WD-K4-NEGATIVE", "REVIEWING");
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(new WithdrawalRiskFacts(
                         "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
                         -1, "k4-v1", LocalDateTime.now(), 41, 73, 91));
@@ -884,7 +888,7 @@ class OpsFinanceServiceTest {
 
         withdrawalRepository.order = withdrawal("WD-K4-OVERFLOW", "REVIEWING");
         when(appWithdrawalMapper.withdrawalRiskFacts(
-                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString()))
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(new WithdrawalRiskFacts(
                         "U00001001", 1, new BigDecimal("100.00"), 90, "normal",
                         101, "k4-v1", LocalDateTime.now(), 41, 73, 91));
@@ -1763,6 +1767,96 @@ class OpsFinanceServiceTest {
                 org.mockito.ArgumentMatchers.eq("H1_COOLDOWN_FAST_TRACK_APPROVED"),
                 org.mockito.ArgumentMatchers.eq("system:d2-scheduler"),
                 org.mockito.ArgumentMatchers.eq("d2-lifecycle:WD-H1-FAST-1:review-passed"));
+    }
+
+    private void prepareZeroDayBankOrder() {
+        configFacade.values.put("withdrawal.strong_review_threshold_usdt", "1000");
+        configFacade.values.put("withdrawal.daily_count_limit", "10");
+        when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12,3,"P2",0,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ZERO,0,
+                new BigDecimal("5000"),BigDecimal.ONE,false,List.of("H1"),true,List.of()));
+        var now = LocalDateTime.now();
+        var base = new WithdrawalOrderView(1L,1001L,"WD-BANK-ZERO","USDT","BANK-VND",
+                new BigDecimal("30"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,"EXTENDED_HOLD",
+                null,null,null,null,0,null,null,null,now,now,"U00001001","fixture","***","ACTIVE",3,"","",1,"","");
+        withdrawalRepository.order = withLifecycle(base, now.minusSeconds(1), "H1_ZERO_DAY_AUTO_REVIEW", "H1:M3:P2");
+        withdrawalRepository.expiredLifecycleNos = List.of("WD-BANK-ZERO");
+        when(appWithdrawalMapper.lockActiveUser(1001L)).thenReturn(1001L);
+        when(bankWithdrawalMapper.lockOrder("WD-BANK-ZERO")).thenReturn(
+                new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Order("WD-BANK-ZERO","BQ-zero",1001L,"READY",null,null,null));
+        when(bankWithdrawalMapper.quote("BQ-zero")).thenReturn(
+                new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-zero",1001L,"BNK-fixture",0L,"","****6789","cipher",
+                        new BigDecimal("30"),BigDecimal.ONE,new BigDecimal("29"),new BigDecimal("25000"),new BigDecimal("725000"),1L,"d5",now,now.plusMinutes(5),"WD-BANK-ZERO"));
+        when(bankWithdrawalMapper.lockBeneficiary(1001L)).thenReturn(
+                new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Beneficiary(1001L,"BNK-fixture","","****6789","cipher",now,now,0L));
+        when(bankWithdrawalMapper.approveRisk(anyString(),anyString())).thenReturn(1);
+    }
+
+    @Test void zeroDayBankAutoApprovalPersistsRiskAndReserveOnceWhileIgnoringOnlyTimeWhenDisabled() {
+        prepareZeroDayBankOrder();
+        when(riskTimePolicy.enabled()).thenReturn(false);
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(),org.mockito.ArgumentMatchers.eq(false)))
+                .thenReturn(new WithdrawalRiskFacts("U00001001",1,new BigDecimal("30"),90,"normal",3,"k4-v1",LocalDateTime.now().plusHours(8),40,70,85));
+        assertThat(service.releaseExpiredD2Lifecycles(LocalDateTime.now())).isEqualTo(1);
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
+        verify(bankWithdrawalMapper).approveRisk(org.mockito.ArgumentMatchers.eq("WD-BANK-ZERO"),anyString());
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        verify(treasuryLedgerRepository,org.mockito.Mockito.times(1)).recordWithdrawalReserve(
+                org.mockito.ArgumentMatchers.eq("WD-BANK-ZERO"),org.mockito.ArgumentMatchers.eq(new BigDecimal("30")),anyString(),anyString(),anyString());
+    }
+
+    @Test void zeroDayBankStillHonorsRiskFreezeAndRecipientSnapshot() {
+        prepareZeroDayBankOrder();
+        when(riskTimePolicy.enabled()).thenReturn(false);
+        when(withdrawalRiskRuleFacade.evaluate(org.mockito.ArgumentMatchers.any())).thenReturn(new WithdrawalRiskDecision("freeze",null,null,List.of()));
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("FROZEN");
+        verify(bankWithdrawalMapper,org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+        prepareZeroDayBankOrder();
+        when(bankWithdrawalMapper.lockBeneficiary(1001L)).thenReturn(null);
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
+        verify(bankWithdrawalMapper,org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
+    }
+
+    @Test void zeroDayBankStillRequiresRealRiskEvidence() {
+        prepareZeroDayBankOrder();
+        when(riskTimePolicy.enabled()).thenReturn(false);
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(),org.mockito.ArgumentMatchers.eq(false)))
+                .thenReturn(null);
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
+        verify(bankWithdrawalMapper,org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+    }
+
+    @Test void zeroDayBankStillRequiresCoverageAndCurrentStrongReviewThreshold() {
+        prepareZeroDayBankOrder();
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("80"),new BigDecimal("100"));
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
+        verify(bankWithdrawalMapper,org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedgerRepository);
+        prepareZeroDayBankOrder();
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("120"),new BigDecimal("100"));
+        configFacade.values.put("withdrawal.strong_review_threshold_usdt", "20");
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
+        verify(bankWithdrawalMapper,org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
+    }
+
+    @Test void dailyLimitUsesBusinessDateOrdinalRatherThanPriorDayVelocity() {
+        prepareZeroDayBankOrder();
+        when(appWithdrawalMapper.businessDayOrdinal(1001L,"WD-BANK-ZERO")).thenReturn(6);
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(),org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(new WithdrawalRiskFacts("U00001001",11,new BigDecimal("330"),90,"normal",3,"k4-v1",LocalDateTime.now(),40,70,85));
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
+        prepareZeroDayBankOrder();
+        when(appWithdrawalMapper.businessDayOrdinal(1001L,"WD-BANK-ZERO")).thenReturn(11);
+        service.releaseExpiredD2Lifecycles(LocalDateTime.now());
+        assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PENDING");
     }
 
     @Test

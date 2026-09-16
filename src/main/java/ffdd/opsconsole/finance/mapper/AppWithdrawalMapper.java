@@ -154,6 +154,18 @@ public interface AppWithdrawalMapper {
                          @Param("fromInclusive") LocalDateTime fromInclusive,
                          @Param("toExclusive") LocalDateTime toExclusive);
 
+    /** Vietnam UTC+7 business date, stored in Shanghai UTC+8, as in WithdrawalDayWindow. */
+    @Select("""
+            SELECT COUNT(1) FROM nx_withdrawal_order w
+            JOIN nx_withdrawal_order current_order ON current_order.withdrawal_no=#{withdrawalNo}
+             AND current_order.user_id=#{userId} AND current_order.is_deleted=0
+            WHERE w.user_id=current_order.user_id AND w.is_deleted=0
+              AND w.created_at>=DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 1 HOUR
+              AND w.created_at<DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 25 HOUR
+              AND w.id<=current_order.id
+            """)
+    int businessDayOrdinal(@Param("userId") Long userId, @Param("withdrawalNo") String withdrawalNo);
+
     @Select("""
             SELECT CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) userNo,
                    (SELECT COUNT(1) FROM nx_withdrawal_order w
@@ -190,7 +202,7 @@ public interface AppWithdrawalMapper {
               LEFT JOIN nx_admin_risk_score_user k4
                 ON k4.user_no=CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))
                AND k4.is_deleted=0
-               AND k4.as_of>=DATE_SUB(NOW(),INTERVAL 1 DAY)
+               AND (#{validateRiskTime}=FALSE OR k4.as_of>=DATE_SUB(NOW(),INTERVAL 1 DAY))
               LEFT JOIN nx_admin_risk_score_model k4m
                 ON k4m.state='active' AND k4m.is_deleted=0
                AND (k4.model_version=CONCAT('k4-v',k4m.model_version)
@@ -202,7 +214,8 @@ public interface AppWithdrawalMapper {
             """)
     WithdrawalRiskFacts withdrawalRiskFacts(
             @Param("userId") Long userId,
-            @Param("targetAddress") String targetAddress);
+            @Param("targetAddress") String targetAddress,
+            @Param("validateRiskTime") boolean validateRiskTime);
 
     @Update("""
             UPDATE nx_user_wallet

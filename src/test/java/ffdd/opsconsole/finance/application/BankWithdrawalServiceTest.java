@@ -126,7 +126,7 @@ class BankWithdrawalServiceTest {
         var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(source);
         var attributes = new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource();
         var capacityTarget = new AppWithdrawalService(wallet, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
-                null, idem, null, null, null, null, null, env, Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), bank);
+                null, idem, null, null, null, null, null, env, Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), bank, mock(WithdrawalRiskTimePolicy.class));
         var capacityProxy = new org.springframework.aop.framework.ProxyFactory(capacityTarget);
         capacityProxy.setProxyTargetClass(true);
         capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));

@@ -64,6 +64,7 @@ public class AppWithdrawalService {
     private final Environment environment;
     private final Clock clock;
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
+    private final WithdrawalRiskTimePolicy riskTimePolicy;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         return list(userId, 1, 50);
@@ -114,8 +115,8 @@ public class AppWithdrawalService {
         int dailyLimit = validatedDailyLimit();
         BigDecimal balanceMaxRatio = validatedBalanceMaxRatio();
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (rhythm == null || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
-                || rhythm.withdrawCooldownDays() <= 0) {
+        if (rhythm == null || !rhythm.reliable() || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
+                || rhythm.withdrawCooldownDays() < 0) {
             throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
         }
         boolean withdrawalEnabled = withdrawGateEnabled();
@@ -171,7 +172,7 @@ public class AppWithdrawalService {
                 && payoutAddress.effectiveAt() != null
                 && !payoutAddress.effectiveAt().isAfter(businessNow)
                 && payoutAddressMatches(normalizedChain, normalizedAddress, payoutAddress.address());
-        WithdrawalRiskFacts facts = mapper.withdrawalRiskFacts(userId, normalizedAddress);
+        WithdrawalRiskFacts facts = mapper.withdrawalRiskFacts(userId, normalizedAddress, riskTimePolicy.enabled());
         if (facts == null || facts.k4RiskScore() == null || !StringUtils.hasText(facts.k4ModelVersion())
                 || facts.k4AsOf() == null || !validK4Thresholds(facts)) {
             throw new BizException(503, "K3_WITHDRAWAL_FACTS_UNAVAILABLE");
@@ -411,7 +412,7 @@ public class AppWithdrawalService {
         }
 
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (rhythm == null || rhythm.currentMonth() <= 0 || rhythm.withdrawCooldownDays() <= 0) {
+        if (rhythm == null || !rhythm.reliable() || rhythm.currentMonth() <= 0 || rhythm.withdrawCooldownDays() < 0) {
             throw new BizException(503, "H1_WITHDRAWAL_DIAL_UNAVAILABLE");
         }
         // Legacy D2 fee snapshot columns also carry the bank channel fee; posting uses a distinct BANK_FEE type.
@@ -443,7 +444,8 @@ public class AppWithdrawalService {
 
         String withdrawalNo = "WD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         LocalDateTime holdUntil = LocalDateTime.now(clock).plusDays(rhythm.withdrawCooldownDays());
-        WithdrawalRiskFacts riskFacts = mapper.withdrawalRiskFacts(userId, address);
+        boolean validateRiskTime = riskTimePolicy.enabled();
+        WithdrawalRiskFacts riskFacts = mapper.withdrawalRiskFacts(userId, address, validateRiskTime);
         if (riskFacts == null || !StringUtils.hasText(riskFacts.userNo())
                 || riskFacts.withdrawalCount24h() == null || riskFacts.withdrawalSum24h() == null
                 || riskFacts.accountAgeDays() == null || !StringUtils.hasText(riskFacts.addressReputation())) {
@@ -453,7 +455,8 @@ public class AppWithdrawalService {
                 || !StringUtils.hasText(riskFacts.k4ModelVersion())
                 || !riskFacts.k4ModelVersion().matches("k4-v\\d+")
                 || riskFacts.k4AsOf() == null
-                || riskFacts.k4AsOf().isBefore(LocalDateTime.now().minusDays(1))
+                || (validateRiskTime && (riskFacts.k4AsOf().isAfter(LocalDateTime.now(clock))
+                    || riskFacts.k4AsOf().isBefore(LocalDateTime.now(clock).minusDays(1))))
                 || !validK4Thresholds(riskFacts)) {
             throw new BizException(503, "K4_RISK_SCORE_UNAVAILABLE");
         }
@@ -479,11 +482,15 @@ public class AppWithdrawalService {
         BigDecimal strongReviewThreshold = strongReviewThreshold();
         boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean fastTrack = bankQuote == null && smallAmountEligible && !strongReview && k4Score < riskFacts.k4BandLowMax()
+        boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0
+                && amount.compareTo(new BigDecimal("1000")) < 0;
+        boolean fastTrack = ((bankQuote == null && smallAmountEligible) || zeroDayAutoReview)
+                && !strongReview && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
         String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
         // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
-        String status = frozen ? "FROZEN" : bankQuote != null ? (delayed ? "EXTENDED_HOLD" : "REVIEW_PENDING") : strongReview ? "REVIEW_PENDING"
+        String status = frozen ? "FROZEN" : fastTrack ? "EXTENDED_HOLD"
+                : bankQuote != null ? (delayed ? "EXTENDED_HOLD" : "REVIEW_PENDING") : strongReview ? "REVIEW_PENDING"
                 : (fastTrack || delayed || "fast-pass".equals(riskRoute)) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
         String failureReason = strongReview ? "A3_STRONG_REVIEW_THRESHOLD"
                 : fastTrack ? "H1_COOLDOWN_FAST_TRACK"
@@ -499,12 +506,13 @@ public class AppWithdrawalService {
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
                 policy.policyVersion(), useNexFeeOffset, idempotencyKey,
                 frozen ? "K3_RULE_FREEZE"
-                        : delayed ? "K3_RULE_DELAY" : fastTrack ? "H1_PHASE_COOLDOWN" : null,
+                        : delayed ? "K3_RULE_DELAY" : fastTrack
+                            ? (zeroDayAutoReview ? "H1_ZERO_DAY_AUTO_REVIEW" : "H1_PHASE_COOLDOWN") : null,
                 "H1:M" + rhythm.currentMonth() + ":" + rhythm.currentPhase(),
                 k4Priority, riskDecision.action(), k4Score, riskFacts.k4ModelVersion(), riskFacts.k4AsOf(),
                 riskFacts.k4BandLowMax(), riskFacts.k4BandHighMin(), riskFacts.k4AutoEscalateScore(),
                 status, failureReason,
-                (bankQuote != null || frozen || delayed) ? "REVIEW_PENDING"
+                fastTrack ? "REVIEW_PASSED" : (bankQuote != null || frozen || delayed) ? "REVIEW_PENDING"
                         : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null);
         if (mapper.insertWithdrawal(write) != 1) throw new BizException(409, "WITHDRAWAL_CREATE_CONFLICT");
         if (riskDecision.held()) {

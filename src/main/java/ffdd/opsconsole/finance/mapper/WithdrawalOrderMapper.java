@@ -589,7 +589,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
     @Update("""
             UPDATE nx_withdrawal_order
                SET status = #{newStatus},
-                   d2_hold_until = NULL,
+                   d2_hold_until = CASE WHEN #{newStatus} = 'REVIEW_PASSED' THEN #{now} ELSE NULL END,
                    d2_lifecycle_owner = NULL,
                    d2_freeze_period = NULL,
                    d2_previous_status = NULL,
@@ -601,7 +601,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                AND d2_hold_until IS NOT NULL
                AND d2_hold_until <= #{now}
                AND (#{newStatus} != 'REVIEW_PASSED'
-                    OR (d2_previous_status = 'REVIEW_PASSED' AND d2_lifecycle_owner = 'H1_PHASE_COOLDOWN'))
+                    OR (d2_previous_status = 'REVIEW_PASSED'
+                        AND d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN', 'H1_ZERO_DAY_AUTO_REVIEW')))
                AND is_deleted = 0
             """)
     int releaseExpiredLifecycle(

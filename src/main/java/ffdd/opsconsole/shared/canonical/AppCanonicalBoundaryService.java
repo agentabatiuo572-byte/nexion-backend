@@ -134,7 +134,8 @@ public class AppCanonicalBoundaryService {
                 && positive(rhythm.inviteRewardMultiplier())
                 && positive(rhythm.reinvestMultiplier())
                 && bounded(rhythm.withdrawPenaltyFeeRate(), BigDecimal.ZERO, BigDecimal.valueOf(100))
-                && rhythm.withdrawCooldownDays() > 0
+                && rhythm.reliable()
+                && rhythm.withdrawCooldownDays() >= 0
                 && bounded(rhythm.binaryDailyCap(), BigDecimal.ZERO, BigDecimal.valueOf(50_000))
                 && positive(rhythm.questBonusMultiplier())
                 && rhythm.sourceKeys() != null

@@ -4460,7 +4460,11 @@ public class OpsGrowthService implements AuditReplayable {
             case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "questBonusMultiplier" ->
                     bounded(value, BigDecimal.ONE, new BigDecimal("4"));
             case "withdrawPenaltyFeeRate" -> bounded(ratio(value), BigDecimal.ZERO, BigDecimal.ONE);
-            case "withdrawCooldownDays" -> wholeDays(value, 7, 90);
+            case "withdrawCooldownDays" -> {
+                if (value.stripTrailingZeros().scale() > 0)
+                    throw new IllegalArgumentException("Review days must be a whole number");
+                yield wholeDays(value, 0, 90);
+            }
             case "binaryDailyCap" -> bounded(value, BigDecimal.ZERO, new BigDecimal("50000"));
             default -> throw new IllegalArgumentException("Unsupported H1 phase dial");
         };

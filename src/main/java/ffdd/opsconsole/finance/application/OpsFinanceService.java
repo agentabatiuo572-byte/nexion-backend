@@ -129,6 +129,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final Clock clock;
+    private final WithdrawalRiskTimePolicy riskTimePolicy;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
@@ -1185,7 +1186,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String authenticatedOperator = StringUtils.hasText(operator) ? operator.trim() : "system:d2-scheduler";
         String canonicalTrigger = DEVELOPMENT_SIMULATED_DUE.equals(trigger)
                 ? DEVELOPMENT_SIMULATED_DUE : D2_SCHEDULED_EXPIRY;
-        boolean h1FastTrack = "H1_PHASE_COOLDOWN".equals(order.lifecycleOwner())
+        boolean h1FastTrack = Set.of("H1_PHASE_COOLDOWN", "H1_ZERO_DAY_AUTO_REVIEW").contains(trimToEmpty(order.lifecycleOwner()))
                 && D2WithdrawalStateMachine.REVIEW_PASSED.equals(
                         D2WithdrawalStateMachine.canonical(order.previousStatus()));
         D2ExpiryDecision decision = h1FastTrack
@@ -1208,6 +1209,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return D2LifecycleReleaseResult.CONFLICT;
         }
         if (D2WithdrawalStateMachine.REVIEW_PASSED.equals(decision.status())) {
+            if ("BANK-VND".equals(order.chain()) && (decision.approvedRiskHash() == null
+                    || bankWithdrawalMapper.approveRisk(order.withdrawalNo(), decision.approvedRiskHash()) != 1))
+                throw new IllegalStateException("BANK_PAYOUT_APPROVAL_SNAPSHOT_UNAVAILABLE");
             treasuryLedgerRepository.recordWithdrawalReserve(
                     order.withdrawalNo(), order.amount(), decision.reason(), authenticatedOperator,
                     "d2-lifecycle:" + order.withdrawalNo() + ":review-passed");
@@ -1968,8 +1972,38 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private D2ExpiryDecision h1FastTrackDecision(WithdrawalOrderView order, LocalDateTime now) {
-        if ("BANK-VND".equals(order.chain())) return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
-                "BANK_PAYOUT_MANUAL_REVIEW_REQUIRED", "withdraw.review_due", null);
+        var rhythm = growthRhythmFacade.snapshot();
+        if (rhythm == null || !rhythm.reliable() || rhythm.withdrawCooldownDays() < 0)
+            return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                    "H1_WITHDRAWAL_DIAL_UNAVAILABLE", "withdraw.review_due", null);
+        if ("H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner())) {
+            BigDecimal strongThreshold = configDecimal("withdrawal.strong_review_threshold_usdt", BigDecimal.ZERO);
+            if (rhythm.withdrawCooldownDays() != 0 || strongThreshold.compareTo(new BigDecimal("20")) < 0
+                    || order.amount() == null || order.amount().compareTo(strongThreshold) >= 0)
+                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        "WITHDRAWAL_AUTO_REVIEW_POLICY_CHANGED", "withdraw.review_due", null);
+        }
+        boolean bankOrder = "BANK-VND".equals(order.chain());
+        if (bankOrder) {
+            if (!"H1_ZERO_DAY_AUTO_REVIEW".equals(order.lifecycleOwner()) || order.amount() == null
+                    || order.amount().compareTo(new BigDecimal("1000")) >= 0)
+                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        "BANK_PAYOUT_MANUAL_REVIEW_REQUIRED", "withdraw.review_due", null);
+            if (appWithdrawalMapper.lockActiveUser(order.userId()) == null)
+                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        "WITHDRAWAL_USER_STATUS_BLOCKED", "withdraw.review_due", null);
+            var payout = bankWithdrawalMapper.lockOrder(order.withdrawalNo());
+            var quote = payout == null ? null : bankWithdrawalMapper.quote(payout.quoteNo());
+            var recipient = bankWithdrawalMapper.lockBeneficiary(order.userId());
+            String recipientBlock = BankWithdrawalEligibility.quoteBlock(recipient, quote);
+            if (payout == null || !"READY".equals(payout.state()) || recipientBlock != null)
+                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        recipientBlock == null ? "BANK_PAYOUT_REVIEW_REQUIRED" : recipientBlock, "withdraw.review_due", null);
+            var disclosure = disclosureGateFacade.checkUserGate(order.userId(), "withdraw", order.withdrawalNo());
+            if (disclosure.getCode() != 0)
+                return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PENDING,
+                        disclosure.getMessage(), "withdraw.review_due", null);
+        }
         LocalDateTime effectiveNow = now;
         D2CurrentRisk currentRisk = currentD2Risk(order, now);
         if (currentRisk.failureReason() != null) {
@@ -2000,17 +2034,24 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                     gateReason, "withdraw.review_due", null);
         }
         return new D2ExpiryDecision(D2WithdrawalStateMachine.REVIEW_PASSED,
-                "H1_COOLDOWN_FAST_TRACK_APPROVED", "withdraw.approved", null);
+                "H1_COOLDOWN_FAST_TRACK_APPROVED", "withdraw.approved", null,
+                bankOrder ? currentRisk.fingerprint() : null);
     }
 
-    private record D2ExpiryDecision(String status, String reason, String eventName, LocalDateTime nextReviewAt) { }
+    private record D2ExpiryDecision(String status, String reason, String eventName, LocalDateTime nextReviewAt,
+                                   String approvedRiskHash) {
+        private D2ExpiryDecision(String status, String reason, String eventName, LocalDateTime nextReviewAt) {
+            this(status, reason, eventName, nextReviewAt, null);
+        }
+    }
 
     /**
      * D2 写操作和 H1 到期放行都必须重新读取当前 K4 模型与 K3 规则。
      * 队列表中的风险字段只是提交时快照，可用于审计展示，不能授权今天的资金动作。
      */
     private D2CurrentRisk currentD2Risk(WithdrawalOrderView order, LocalDateTime now) {
-        WithdrawalRiskFacts facts = appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress());
+        boolean validateRiskTime = riskTimePolicy.enabled();
+        WithdrawalRiskFacts facts = appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress(), validateRiskTime);
         if (facts == null || !StringUtils.hasText(facts.userNo())
                 || facts.withdrawalCount24h() == null || facts.withdrawalSum24h() == null
                 || facts.accountAgeDays() == null || !StringUtils.hasText(facts.addressReputation())) {
@@ -2023,8 +2064,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 || !StringUtils.hasText(facts.k4ModelVersion())
                 || !facts.k4ModelVersion().matches("k4-v\\d+")
                 || facts.k4AsOf() == null
-                || facts.k4AsOf().isAfter(effectiveNow)
-                || facts.k4AsOf().isBefore(effectiveNow.minusDays(1))
+                || (validateRiskTime && (facts.k4AsOf().isAfter(effectiveNow)
+                    || facts.k4AsOf().isBefore(effectiveNow.minusDays(1))))
                 || !validD2K4Thresholds(facts)) {
             return D2CurrentRisk.unavailable("K4_RISK_SCORE_UNAVAILABLE");
         }
@@ -2152,8 +2193,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     private boolean exceedsDailyLimit(WithdrawalOrderView order, int dailyLimitCount) {
-        Integer count24h = order.withdrawalCount24h();
-        return dailyLimitCount > 0 && count24h != null && count24h > dailyLimitCount;
+        int ordinal = appWithdrawalMapper.businessDayOrdinal(order.userId(), order.withdrawalNo());
+        return dailyLimitCount > 0 && (ordinal < 1 || ordinal > dailyLimitCount);
     }
 
     private String approvalBlockReason(WithdrawalOrderView order, int dailyLimitCount) {
@@ -2374,7 +2415,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private GrowthRhythmSnapshot requiredGrowthRhythm() {
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         if (rhythm == null || !rhythm.reliable() || !StringUtils.hasText(rhythm.currentPhase())
-                || rhythm.currentMonth() < 1 || rhythm.withdrawCooldownDays() <= 0
+                || rhythm.currentMonth() < 1 || rhythm.withdrawCooldownDays() < 0
                 || rhythm.withdrawPenaltyFeeRate() == null
                 || rhythm.withdrawPenaltyFeeRate().signum() < 0
                 || rhythm.withdrawPenaltyFeeRate().compareTo(new BigDecimal("100")) > 0) {

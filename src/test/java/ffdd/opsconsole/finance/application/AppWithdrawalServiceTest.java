@@ -70,7 +70,7 @@ class AppWithdrawalServiceTest {
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
         when(release.withdrawableAmountForUpdate(eq(7L), any())).thenReturn(new BigDecimal("50"));
         AppWithdrawalService guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
-                audit, outbox, k3, ledger, release, environment, java.time.Clock.systemUTC(), bank);
+                audit, outbox, k3, ledger, release, environment, java.time.Clock.systemUTC(), bank, new WithdrawalRiskTimePolicy(environment, config));
         when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("500"), new BigDecimal("50"), BigDecimal.ZERO, 3L));
         when(mapper.payoutAddressForEligibility(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
@@ -96,7 +96,7 @@ class AppWithdrawalServiceTest {
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
         var capacityClock = java.time.Clock.fixed(java.time.Instant.parse("2026-09-16T12:00:00Z"), java.time.ZoneOffset.UTC);
         var guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
-                audit, outbox, k3, ledger, release, environment, capacityClock, bank);
+                audit, outbox, k3, ledger, release, environment, capacityClock, bank, new WithdrawalRiskTimePolicy(environment, config));
         when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(7L, new BigDecimal("500"), BigDecimal.ZERO, BigDecimal.ZERO, 3L));
         when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(1);
         var capacity = guarded.bankCapacity(7L);
@@ -112,7 +112,7 @@ class AppWithdrawalServiceTest {
 
     @Test void bankReservationHonorsD7QuotesBelowTheIndependentCryptoMinimum() {
         var now = LocalDateTime.now();
-        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal", 45, "k4-v13", now, 41, 73, 91));
         String version = service.policy(7L).getData().get("policyVersion").toString();
         var quote = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-test",7L,"BNK-fixture",1L,"","****6789","cipher",
@@ -132,7 +132,7 @@ class AppWithdrawalServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC(), bank);
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC(), bank, new WithdrawalRiskTimePolicy(environment, config));
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -151,7 +151,7 @@ class AppWithdrawalServiceTest {
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
                 "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
         when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(0);
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         45, "k4-v13", LocalDateTime.now(), 41, 73, 91));
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
@@ -173,6 +173,7 @@ class AppWithdrawalServiceTest {
         when(config.activeValue("withdrawal.fee_min_usdt")).thenReturn(Optional.of("0.50"));
         when(config.activeValue("withdrawal.fee_max_usdt")).thenReturn(Optional.of("20.00"));
         GrowthRhythmSnapshot rhythm = mock(GrowthRhythmSnapshot.class);
+        when(rhythm.reliable()).thenReturn(true);
         when(rhythm.currentMonth()).thenReturn(3);
         when(rhythm.currentPhase()).thenReturn("P2");
         when(rhythm.withdrawCooldownDays()).thenReturn(30);
@@ -234,10 +235,16 @@ class AppWithdrawalServiceTest {
         verify(mapper,never()).reserveFunds(anyLong(),any(),any(),anyLong());
     }
 
+    @Test void invalidRhythmCannotBecomeZeroDayAutoApproval() {
+        when(rhythmFacade.snapshot().withdrawCooldownDays()).thenReturn(0);
+        when(rhythmFacade.snapshot().reliable()).thenReturn(false);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.policy(7L)).hasMessage("WITHDRAWAL_POLICY_UNAVAILABLE");
+    }
+
     @Test
     void bankReservationReusesWalletRiskAndDistinctFeeWithoutNexOrCryptoAddress() {
         var now = LocalDateTime.now();
-        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007",0,BigDecimal.ZERO,30,"normal",45,"k4-v13",now,41,73,91));
         String version = service.policy(7L).getData().get("policyVersion").toString();
         var quote = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-"+"a".repeat(32),7L,"BNK-fixture",0L,
@@ -250,6 +257,41 @@ class AppWithdrawalServiceTest {
         verify(mapper).reserveFunds(7L,new BigDecimal("100.000000"),new BigDecimal("0.000000"),3L);
         verify(ledger).postLedgerEntry(anyString(),eq(7L),eq("WITHDRAW_BANK_FEE"),eq("USDT"),eq("OUT"),eq(new BigDecimal("2.000000")),eq("POSTED"),anyString());
         verify(mapper,never()).lockPayoutAddress(anyLong(),anyString());
+    }
+
+    @Test
+    void zeroDayBankOrderEntersAutomaticReviewWithoutPretendingProviderPaid() {
+        when(rhythmFacade.snapshot().withdrawCooldownDays()).thenReturn(0);
+        environment.setActiveProfiles("dev");
+        environment.setProperty("nexion.deployment.public-test", "true");
+        when(config.activeValue(WithdrawalRiskTimePolicy.KEY)).thenReturn(Optional.of("false"));
+        var now = LocalDateTime.now(java.time.Clock.systemUTC());
+        when(mapper.withdrawalRiskFacts(7L, "BANK-VND:BNK-fixture", false)).thenReturn(
+                new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal", 3,
+                        "k4-v13", now.plusHours(8), 41, 73, 91));
+        String version = service.policy(7L).getData().get("policyVersion").toString();
+        var quote = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-"+"a".repeat(32),7L,"BNK-fixture",0L,
+                "","****6789","cipher",new BigDecimal("30.000000"),new BigDecimal("1.000000"),new BigDecimal("29.000000"),
+                new BigDecimal("25000"),new BigDecimal("725000"),1L,version,now,now.plusMinutes(5),null);
+        var result = service.reserveBank(7L,quote,"bank-zero-day");
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "EXTENDED_HOLD");
+        var write = ArgumentCaptor.forClass(WithdrawalWrite.class);
+        verify(mapper).insertWithdrawal(write.capture());
+        assertThat(write.getValue().lifecycleOwner()).isEqualTo("H1_ZERO_DAY_AUTO_REVIEW");
+        assertThat(write.getValue().previousStatus()).isEqualTo("REVIEW_PASSED");
+        assertThat(write.getValue().holdUntil()).isBetween(now, LocalDateTime.now(java.time.Clock.systemUTC()));
+        verify(mapper).withdrawalRiskFacts(7L, "BANK-VND:BNK-fixture", false);
+    }
+
+    @Test
+    void tenDailyRequestsAreAllowedAndTheEleventhIsBlocked() {
+        when(config.activeValue("withdrawal.daily_count_limit")).thenReturn(Optional.of("10"));
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(9);
+        assertThat(service.submit(7L,new BigDecimal("30"),"USDT-TRC20","TR7NHqExampleAddress","tenth").getCode()).isZero();
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(10);
+        assertThat(service.submit(7L,new BigDecimal("30"),"USDT-TRC20","TR7NHqExampleAddress","eleventh").getMessage())
+                .isEqualTo("WITHDRAWAL_DAILY_LIMIT_EXCEEDED");
     }
 
     @Test
@@ -627,7 +669,7 @@ class AppWithdrawalServiceTest {
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("WITHDRAWAL_POLICY_VERSION_CONFLICT");
         verify(mapper, never()).walletForEligibility(anyLong());
-        verify(mapper, never()).withdrawalRiskFacts(anyLong(), anyString());
+        verify(mapper, never()).withdrawalRiskFacts(anyLong(), anyString(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -682,7 +724,7 @@ class AppWithdrawalServiceTest {
 
     @Test
     void failsClosedWithoutCurrentK4ScoreBeforeAnyFundsSideEffect() {
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         null, null, null, 41, 73, 91));
 
@@ -700,7 +742,7 @@ class AppWithdrawalServiceTest {
 
     @Test
     void failsClosedOnStaleK4ScoreBeforeAnyFundsSideEffect() {
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         45, "k4-v13", LocalDateTime.now().minusDays(2), 41, 73, 91));
 
@@ -716,7 +758,7 @@ class AppWithdrawalServiceTest {
 
     @Test
     void lowK4WithNoStricterGateWaitsForH1CooldownBeforeCanonicalApproval() {
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         40, "k4-v13", LocalDateTime.now(), 41, 73, 91));
 
@@ -738,7 +780,7 @@ class AppWithdrawalServiceTest {
 
     @Test
     void escalatedK4UsesManualQueueWithoutFreezingAndNotifiesRiskLead() {
-        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress")).thenReturn(
+        when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal",
                         91, "k4-v13", LocalDateTime.now(), 41, 73, 91));
 

@@ -164,11 +164,27 @@ class D2WithdrawalClosureContractTest {
         assertThat(service)
                 .contains("currentD2Risk(order, LocalDateTime.now(clock))")
                 .contains("currentD2Risk(order, now)")
-                .contains("appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress())")
+                .contains("appWithdrawalMapper.withdrawalRiskFacts(order.userId(), order.targetAddress(), validateRiskTime)")
                 .contains("facts.k4AsOf().isBefore(effectiveNow.minusDays(1))")
                 .contains("withdrawalRiskRuleFacade.evaluate(new WithdrawalRiskContext(")
                 .contains("K3_CURRENT_ROUTE_REQUIRES_FREEZE")
                 .contains("K3_CURRENT_ROUTE_REQUIRES_DELAY");
+    }
+
+    @Test
+    void zeroDayApprovalSqlKeepsTheDueDeadlineRequiredByThePayoutQueue() throws Exception {
+        var method = ffdd.opsconsole.finance.mapper.WithdrawalOrderMapper.class.getMethod(
+                "releaseExpiredLifecycle", String.class,String.class,String.class,String.class,java.time.LocalDateTime.class);
+        String sql = String.join(" ",method.getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        assertThat(sql).contains("d2_hold_until = CASE WHEN #{newStatus} = 'REVIEW_PASSED' THEN #{now} ELSE NULL END")
+                .contains("'H1_ZERO_DAY_AUTO_REVIEW'")
+                .contains("d2_previous_status = 'REVIEW_PASSED'")
+                .contains("status = #{expectedStatus}");
+        var count = ffdd.opsconsole.finance.mapper.AppWithdrawalMapper.class.getMethod("businessDayOrdinal",Long.class,String.class);
+        assertThat(String.join(" ",count.getAnnotation(org.apache.ibatis.annotations.Select.class).value()))
+                .contains("w.created_at>=DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 1 HOUR")
+                .contains("w.created_at<DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 25 HOUR")
+                .contains("w.id<=current_order.id").doesNotContain("INTERVAL 24 HOUR");
     }
 
     @Test

@@ -1455,6 +1455,22 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void productPhaseAcceptsExplicitZeroReviewDaysButRejectsNegativeOrUnreliableRhythm() {
+        for (int days : new int[]{0, -1}) {
+            when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                    12,7,"P3",58,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,
+                    BigDecimal.ZERO,days,new BigDecimal("2000"),BigDecimal.ONE,
+                    false,List.of("H1"),true,List.of()));
+            assertThat(service.productPhase(42L,null,false).getCode()).isEqualTo(days == 0 ? 0 : 503);
+        }
+        when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12,7,"P3",58,BigDecimal.ONE,BigDecimal.ONE,BigDecimal.ONE,
+                BigDecimal.ZERO,0,new BigDecimal("2000"),BigDecimal.ONE,
+                false,List.of("H1"),false,List.of("missing cooldown")));
+        assertThat(service.productPhase(42L,null,false).getCode()).isEqualTo(503);
+    }
+
+    @Test
     void failsClosedWhenOneAuthoritativeH1DialIsMissing() {
         when(growthRhythmFacade.snapshot()).thenReturn(new GrowthRhythmSnapshot(
                 12, 7, "P3", 58, BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ONE,
