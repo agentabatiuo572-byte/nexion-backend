@@ -12,6 +12,7 @@ import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -29,9 +30,10 @@ class HdPayCallbackCommerceRoutingTest {
         var paymentMapper = mock(VietnamPaymentMapper.class);
         var outbox = mock(EventOutboxService.class);
         var audit = mock(AuditLogService.class);
+        var treasuryLedger = mock(TreasuryLedgerRepository.class);
         var clock = Clock.fixed(Instant.parse("2026-09-02T04:00:00Z"), ZoneOffset.UTC);
         var service = new HdPayCallbackSettlementService(
-                hdPayMapper, intentMapper, paymentMapper, outbox, audit, clock);
+                hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, clock);
         var order = new LinkedHashMap<String, Object>();
         order.put("amountVnd", new BigDecimal("26000"));
         order.put("submissionStatus", "CREATED");
@@ -73,7 +75,7 @@ class HdPayCallbackCommerceRoutingTest {
         assertThat(service.settleConfirmed(claim.fact(), claim.claimToken(), confirmed))
                 .isEqualTo("success");
 
-        verifyNoInteractions(paymentMapper, outbox);
+        verifyNoInteractions(paymentMapper, outbox, treasuryLedger);
         verify(hdPayMapper).markSettlementReview(
                 "VQR-COMMERCE-1", "PROVIDER-1", 3,
                 "HDPAY_COMMERCE_DIRECT_PAYMENT_RETIRED");

@@ -291,7 +291,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 safePaymentNo,
                 "IN",
                 nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY),
-                "D1 card topup confirmed",
+                "D1 topup confirmed",
                 "payment-gateway",
                 trim(eventId)) != 1) {
             throw new IllegalStateException("TOPUP_RESERVE_WRITE_FAILED");

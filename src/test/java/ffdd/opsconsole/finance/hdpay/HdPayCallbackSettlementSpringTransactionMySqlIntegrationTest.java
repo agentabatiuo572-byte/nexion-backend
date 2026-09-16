@@ -12,6 +12,8 @@ import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -134,6 +136,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 assertThat(decimal(jdbc, "SELECT usdt_available FROM nx_user_wallet WHERE user_id=?", userId))
                         .isEqualByComparingTo(walletBefore.add(new BigDecimal("10.000000")));
                 assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isOne();
+                assertReserve(jdbc, intentNo);
                 assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_notification WHERE biz_no=?", "HDPAY:" + intentNo)).isOne();
                 assertThat(orderMapper.listOrdersDueForQuery(dueBefore.plusMinutes(10), 20)).isEmpty();
                 status.setRollbackOnly();
@@ -167,6 +170,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                         .isEqualByComparingTo(cumulativeBefore.add(new BigDecimal("10.000000")));
                 assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo))
                         .isOne();
+                assertReserve(jdbc, intentNo);
                 assertThat(text(jdbc, "SELECT status FROM nx_vietqr_intent WHERE intent_no=?", intentNo))
                         .isEqualTo("CREDITED");
                 assertThat(text(jdbc,
@@ -195,10 +199,38 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("forced outbox failure");
             assertUnchanged(jdbc, intentNo, userId, walletBefore, cumulativeBefore);
+
+            // A pre-existing/conflicting voucher must not credit a wallet without
+            // its reserve. No INSERT IGNORE or successful duplicate fallback.
+            jdbc.update("INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd) VALUES('CONFLICT',?,'IN',9)", intentNo);
+            assertThatThrownBy(() -> successful.settleConfirmed(callback, query))
+                    .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+            assertThat(decimal(jdbc, "SELECT amount_usd FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo))
+                    .isEqualByComparingTo("9");
+            jdbc.update("DELETE FROM nx_treasury_reserve_ledger WHERE reserve_no='CONFLICT'");
+            assertUnchanged(jdbc, intentNo, userId, walletBefore, cumulativeBefore);
+
+            // Two committed transactions contend on the order lock. The callback
+            // replay and subsequent query replay must leave one wallet/reserve pair.
+            var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                var results = workers.invokeAll(java.util.List.<java.util.concurrent.Callable<String>>of(
+                        () -> successful.settleConfirmed(callback, query),
+                        () -> successful.settleConfirmed(callback, query)));
+                for (var result : results) assertThat(result.get(15, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo("success");
+            } finally {
+                workers.shutdownNow();
+            }
+            assertThat(successful.settleOrderQuery(intentNo, 0L, query)).isEqualTo("success");
+            assertThat(decimal(jdbc, "SELECT usdt_available FROM nx_user_wallet WHERE user_id=?", userId))
+                    .isEqualByComparingTo(walletBefore.add(new BigDecimal("10")));
+            assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isOne();
+            assertReserve(jdbc, intentNo);
         } finally {
             try (Connection connection = dataSource.getConnection()) {
                 connection.setAutoCommit(true);
                 execute(connection, "DELETE FROM nx_notification WHERE biz_no=?", "HDPAY:" + intentNo);
+                execute(connection, "DELETE FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo);
                 execute(connection, "DELETE FROM nx_hdpay_callback_inbox WHERE merchant_order_id=?", intentNo);
                 execute(connection, "DELETE FROM nx_wallet_ledger WHERE biz_no=?", intentNo);
                 execute(connection, "DELETE FROM nx_hdpay_payin_order WHERE merchant_order_id=?", intentNo);
@@ -219,12 +251,21 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 template.getMapper(VietnamPaymentMapper.class),
                 outbox,
                 mock(AuditLogService.class),
+                new MybatisTreasuryLedgerRepository(template.getMapper(TreasuryLedgerMapper.class), outbox),
                 Clock.systemUTC());
         ProxyFactory factory = new ProxyFactory(target);
         factory.setProxyTargetClass(true);
         factory.addAdvice(new TransactionInterceptor(
                 txManager, new AnnotationTransactionAttributeSource()));
         return (HdPayCallbackSettlementService) factory.getProxy();
+    }
+
+    private void assertReserve(JdbcTemplate jdbc, String intentNo) {
+        assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo)).isOne();
+        assertThat(decimal(jdbc, "SELECT amount_usd FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo))
+                .isEqualByComparingTo("10");
+        assertThat(text(jdbc, "SELECT direction FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo)).isEqualTo("IN");
+        assertThat(text(jdbc, "SELECT status FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo)).isEqualTo("CONFIRMED");
     }
 
     private void assertUnchanged(
@@ -244,6 +285,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                 "SELECT settlement_status FROM nx_hdpay_payin_order WHERE merchant_order_id=?", intentNo))
                 .isEqualTo("UNSETTLED");
         assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_wallet_ledger WHERE biz_no=?", intentNo)).isZero();
+        assertThat(count(jdbc, "SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=?", intentNo)).isZero();
         assertThat(count(jdbc,
                 "SELECT COUNT(*) FROM nx_hdpay_callback_inbox WHERE merchant_order_id=?", intentNo)).isZero();
         assertThat(count(jdbc,
@@ -270,7 +312,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
         jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),language VARCHAR(16),is_deleted TINYINT)");
         jdbc.update("INSERT INTO nx_user VALUES(41,'ACTIVE','en',0)");
         String schemaSql = Files.readString(Path.of("scripts/schema.sql"));
-        for (String table : new String[]{"nx_user_wallet", "nx_wallet_ledger", "nx_notification"}) {
+        for (String table : new String[]{"nx_user_wallet", "nx_wallet_ledger", "nx_notification", "nx_treasury_reserve_ledger"}) {
             var ddl = Pattern.compile("(?s)CREATE TABLE IF NOT EXISTS " + Pattern.quote(table) + " \\(.*?;")
                     .matcher(schemaSql);
             assertThat(ddl.find()).as("canonical DDL for %s", table).isTrue();
@@ -292,6 +334,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
         configuration.addMapper(HdPayOrderMapper.class);
         configuration.addMapper(AppVietQrIntentMapper.class);
         configuration.addMapper(VietnamPaymentMapper.class);
+        configuration.addMapper(TreasuryLedgerMapper.class);
         return new MybatisSqlSessionFactoryBuilder().build(configuration);
     }
 

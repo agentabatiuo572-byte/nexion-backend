@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -49,6 +50,7 @@ public class HdPayCallbackSettlementService {
     private final VietnamPaymentMapper paymentMapper;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
+    private final TreasuryLedgerRepository treasuryLedger;
     private final Clock clock;
 
     @Autowired
@@ -58,12 +60,14 @@ public class HdPayCallbackSettlementService {
             VietnamPaymentMapper paymentMapper,
             EventOutboxService outbox,
             AuditLogService audit,
+            TreasuryLedgerRepository treasuryLedger,
             Clock clock) {
         this.hdPayMapper = hdPayMapper;
         this.intentMapper = intentMapper;
         this.paymentMapper = paymentMapper;
         this.outbox = outbox;
         this.audit = audit;
+        this.treasuryLedger = treasuryLedger;
         this.clock = clock;
     }
 
@@ -320,6 +324,9 @@ public class HdPayCallbackSettlementService {
                 balanceAfter,
                 "HDPay BANKQR deposit " + fact.merchantOrderId()),
                 "HDPAY_LEDGER_WRITE_FAILED");
+        // The locked pay-in order fences callback/query replays. The unique D3 voucher
+        // and wallet credit commit together; a reserve conflict rolls back the credit.
+        treasuryLedger.recordTopupReserve(ledgerBizNo, amountUsdt, "HDPAY:" + ledgerBizNo);
         requireOne(intentMapper.transitionIntent(
                 fact.merchantOrderId(),
                 intentVersion,

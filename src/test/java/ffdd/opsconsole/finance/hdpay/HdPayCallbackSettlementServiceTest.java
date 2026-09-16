@@ -13,6 +13,7 @@ import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -31,8 +32,9 @@ class HdPayCallbackSettlementServiceTest {
     private final VietnamPaymentMapper paymentMapper = mock(VietnamPaymentMapper.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
+    private final TreasuryLedgerRepository treasuryLedger = mock(TreasuryLedgerRepository.class);
     private final HdPayCallbackSettlementService service = new HdPayCallbackSettlementService(
-            hdPayMapper, intentMapper, paymentMapper, outbox, audit, CLOCK);
+            hdPayMapper, intentMapper, paymentMapper, outbox, audit, treasuryLedger, CLOCK);
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
@@ -79,6 +81,7 @@ class HdPayCallbackSettlementServiceTest {
         }
 
         verify(paymentMapper).creditUsdtWallet(42L, new BigDecimal("5.000000"), 7L);
+        verify(treasuryLedger).recordTopupReserve("VQR-1", new BigDecimal("5.000000"), "HDPAY:VQR-1");
         verify(paymentMapper).insertVietQrWalletLedger(
                 "VQR-1", 42L, new BigDecimal("5.000000"),
                 new BigDecimal("15.000000"), "HDPay BANKQR deposit VQR-1");
@@ -119,6 +122,7 @@ class HdPayCallbackSettlementServiceTest {
         assertThat(service.settleConfirmed(
                 claim.fact(), claim.claimToken(), payOrder("100000"))).isEqualTo("success");
 
+        org.mockito.Mockito.verifyNoInteractions(treasuryLedger);
         verify(paymentMapper, never()).creditUsdtWallet(any(), any(), any());
         verify(paymentMapper, never()).insertVietQrWalletLedger(any(), any(), any(), any(), any());
         verify(outbox, never()).publish(any(), any(), any(), any());
@@ -154,7 +158,7 @@ class HdPayCallbackSettlementServiceTest {
         verify(hdPayMapper).markSettlementReview("VQR-1", "P-1", 3, "VIETQR_PAYMENT_RAIL_CONFLICT");
         verify(hdPayMapper).insertSettlementReview(anyString(), eq("VQR-1"), eq("P-1"),
                 eq("VIETQR_PAYMENT_RAIL_CONFLICT"));
-        org.mockito.Mockito.verifyNoInteractions(paymentMapper, outbox);
+        org.mockito.Mockito.verifyNoInteractions(paymentMapper, outbox, treasuryLedger);
         verify(intentMapper, never()).transitionIntent(any(), any(), any(), any(), any(), any(), any());
         verify(intentMapper, never()).closeInFlightReconciliation(any(), any());
         verify(hdPayMapper, never()).insertDepositNotification(any(), any(), any());
