@@ -78,6 +78,8 @@ class OpsFinanceServiceTest {
     private final AdminOperatorRoleResolver operatorRoleResolver = mock(AdminOperatorRoleResolver.class);
     private final AppWithdrawalMapper appWithdrawalMapper = mock(AppWithdrawalMapper.class);
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade = mock(WithdrawalRiskRuleFacade.class);
+    private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper =
+            mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
     private final OpsFinanceService service =
             new OpsFinanceService(
                     configFacade,
@@ -96,7 +98,8 @@ class OpsFinanceServiceTest {
                     eventOutboxService,
                     operatorRoleResolver,
                     appWithdrawalMapper,
-                    withdrawalRiskRuleFacade);
+                    withdrawalRiskRuleFacade,
+                    bankWithdrawalMapper);
 
     @BeforeEach
     void setUpRiskDefaults() {
@@ -139,7 +142,8 @@ class OpsFinanceServiceTest {
                 eventOutboxService,
                 operatorRoleResolver,
                 appWithdrawalMapper,
-                withdrawalRiskRuleFacade);
+                withdrawalRiskRuleFacade,
+                bankWithdrawalMapper);
     }
 
     @Test
@@ -514,8 +518,7 @@ class OpsFinanceServiceTest {
 
     @Test
     void bankApprovalIsBoundToRiskFactsAndMustBeReviewedAgainAfterRiskChange() {
-        var bank = mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
-        org.springframework.test.util.ReflectionTestUtils.setField(service,"bankWithdrawalMapper",bank);
+        var bank = bankWithdrawalMapper;
         when(bank.approveRisk(anyString(),anyString())).thenReturn(1);
         withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
                 new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,"REVIEWING",

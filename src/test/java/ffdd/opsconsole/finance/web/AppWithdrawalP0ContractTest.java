@@ -43,7 +43,7 @@ class AppWithdrawalP0ContractTest {
     void smallAmountGateIsPartOfFastTrackAndSchemaHasDurableFacts() throws Exception {
         String service = read("ffdd/opsconsole/finance/application/AppWithdrawalService.java");
         String schema = Files.readString(Path.of("scripts/schema.sql"));
-        assertThat(service).contains("boolean fastTrack = smallAmountEligible &&");
+        assertThat(service).contains("boolean fastTrack = bankQuote == null && smallAmountEligible && !strongReview &&");
         assertThat(schema).contains("terminal_reason");
         assertThat(schema).contains("retriable");
         assertThat(schema).contains("nex_refunded");

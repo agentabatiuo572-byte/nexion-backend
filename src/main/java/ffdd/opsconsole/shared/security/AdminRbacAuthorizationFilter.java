@@ -211,9 +211,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         }
     }
 
+    // Socket tickets authorize only the following read-only WebSocket session. Keep this
+    // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
-        // Socket tickets authorize only the following read-only WebSocket session. Keep this
-        // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
         if (HttpMethod.POST.matches(method)
                 && path.equals("/api/admin/content/conversations/realtime-ticket")) {
             return RequiredAuthority.exact("service_m3_read");

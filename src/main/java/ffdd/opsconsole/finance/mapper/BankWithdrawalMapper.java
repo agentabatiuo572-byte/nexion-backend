@@ -6,6 +6,8 @@ import java.util.List;
 import org.apache.ibatis.annotations.*;
 
 @Mapper
+// Statement-only command boundary spanning beneficiaries, quotes, payouts and withdrawal orders.
+@SuppressWarnings("MybatisPlusBaseMapper")
 public interface BankWithdrawalMapper {
     @Select("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('nx_bank_payout_beneficiary','nx_bank_payout_quote','nx_hdpay_payout','nx_hdpay_payout_callback')")
     int schemaTables();

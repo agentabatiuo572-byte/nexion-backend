@@ -126,8 +126,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private final AdminOperatorRoleResolver operatorRoleResolver;
     private final AppWithdrawalMapper appWithdrawalMapper;
     private final WithdrawalRiskRuleFacade withdrawalRiskRuleFacade;
-    @org.springframework.beans.factory.annotation.Autowired
-    private ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
+    private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
 
     public ApiResult<Map<String, Object>> topupOverview() {
         ensureD1FallbackSeedData();
