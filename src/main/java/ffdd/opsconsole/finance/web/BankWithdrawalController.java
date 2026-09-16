@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.*;
 public class BankWithdrawalController {
     private final BankWithdrawalService service;
     @GetMapping("/config") public ApiResult<Map<String, Object>> config(Authentication auth) { return service.config(user(auth)); }
+    @GetMapping("/recovery") public ApiResult<Map<String, Object>> recovery(Authentication auth) { return service.recovery(user(auth)); }
+    @PostMapping("/beneficiary/verify") public ApiResult<Map<String, Object>> verify(Authentication auth) { return service.verifyBeneficiary(user(auth)); }
     @PostMapping("/beneficiary/otp") public ApiResult<Map<String, Object>> otp(Authentication auth) { return service.sendOtp(user(auth)); }
     @PostMapping("/beneficiary") public ApiResult<Map<String, Object>> bind(Authentication auth,
             @RequestHeader("Idempotency-Key") String key, @RequestBody BankWithdrawalService.BindRequest request) {

@@ -28,6 +28,32 @@ public interface BankWithdrawalMapper {
             @Param("recipientCipher") String recipientCipher, @Param("effectiveAt") LocalDateTime effectiveAt,
             @Param("nextChangeAt") LocalDateTime nextChangeAt, @Param("version") long version, @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT beneficiary_no beneficiaryNo,user_id userId,beneficiary_version beneficiaryVersion,
+              verification_status verificationStatus,payout_capability payoutCapability,ownership_status ownershipStatus,
+              account_type accountType,reason_code reasonCode,checked_at checkedAt,expires_at expiresAt,
+              evidence_ref evidenceRef,capability_version capabilityVersion,provider,requested_at requestedAt
+            FROM nx_bank_beneficiary_verification WHERE beneficiary_no=#{beneficiaryNo}
+            """) Verification verification(String beneficiaryNo);
+    @Insert("""
+            INSERT INTO nx_bank_beneficiary_verification(beneficiary_no,user_id,beneficiary_version,verification_status,
+              payout_capability,ownership_status,account_type,reason_code,checked_at,expires_at,evidence_ref,
+              capability_version,provider,requested_at)
+            VALUES(#{beneficiaryNo},#{userId},#{beneficiaryVersion},#{verificationStatus},#{payoutCapability},#{ownershipStatus},
+              #{accountType},#{reasonCode},#{checkedAt},#{expiresAt},#{evidenceRef},#{capabilityVersion},#{provider},#{requestedAt})
+            ON DUPLICATE KEY UPDATE verification_status=VALUES(verification_status),payout_capability=VALUES(payout_capability),
+              ownership_status=VALUES(ownership_status),account_type=VALUES(account_type),reason_code=VALUES(reason_code),
+              checked_at=VALUES(checked_at),expires_at=VALUES(expires_at),evidence_ref=VALUES(evidence_ref),
+              capability_version=VALUES(capability_version),provider=VALUES(provider),requested_at=VALUES(requested_at)
+            """) int saveVerification(Verification verification);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_bank_payout_quote_expiry(quote_no,expired_at)
+            SELECT quote_no,#{now} FROM nx_bank_payout_quote WHERE user_id=#{userId}
+              AND withdrawal_no IS NULL AND cancelled_at IS NULL AND expires_at <= #{now}
+            """) int sealExpiredQuotes(@Param("userId") long userId, @Param("now") LocalDateTime now);
+    @Select("SELECT COUNT(*) FROM nx_bank_payout_quote_expiry WHERE quote_no=#{quoteNo}") int expired(String quoteNo);
+
     String QUOTE = "SELECT quote_no quoteNo,user_id userId,beneficiary_no beneficiaryNo,beneficiary_version beneficiaryVersion,"
             + "bank_code bankCode,masked_account maskedAccount,recipient_cipher recipientCipher,amount_usdt amountUsdt,fee_usdt feeUsdt,"
             + "net_usdt netUsdt,rate_vnd rateVnd,amount_vnd amountVnd,d7_version d7Version,d5_version d5Version,"
@@ -35,6 +61,9 @@ public interface BankWithdrawalMapper {
     @Select(QUOTE + "WHERE quote_no=#{quoteNo} AND user_id=#{userId} FOR UPDATE")
     Quote lockQuote(@Param("quoteNo") String quoteNo, @Param("userId") long userId);
     @Select(QUOTE + "WHERE quote_no=#{quoteNo}") Quote quote(String quoteNo);
+    @Select(QUOTE + "WHERE user_id=#{userId} AND withdrawal_no IS NULL AND cancelled_at IS NULL "
+            + "AND NOT EXISTS(SELECT 1 FROM nx_bank_payout_quote_expiry e WHERE e.quote_no=nx_bank_payout_quote.quote_no) ORDER BY created_at,quote_no")
+    List<Quote> activeQuotes(long userId);
     @Select("SELECT COUNT(*) FROM nx_bank_payout_quote WHERE quote_no=#{quoteNo} AND cancelled_at IS NOT NULL") int cancelled(String quoteNo);
     @Update("UPDATE nx_bank_payout_quote SET cancelled_at=CURRENT_TIMESTAMP(6) WHERE quote_no=#{quoteNo} AND withdrawal_no IS NULL") int cancelQuote(String quoteNo);
     @Select("SELECT COUNT(*) FROM nx_bank_payout_quote WHERE user_id=#{userId} AND created_at > DATE_SUB(#{now},INTERVAL 1 MINUTE)")
@@ -45,7 +74,8 @@ public interface BankWithdrawalMapper {
             VALUES(#{quoteNo},#{userId},#{beneficiaryNo},#{beneficiaryVersion},#{bankCode},#{maskedAccount},#{recipientCipher},
               #{amountUsdt},#{feeUsdt},#{netUsdt},#{rateVnd},#{amountVnd},#{d7Version},#{d5Version},#{createdAt},#{expiresAt})
             """) int insertQuote(Quote quote);
-    @Update("UPDATE nx_bank_payout_quote SET withdrawal_no=#{order} WHERE quote_no=#{quote} AND withdrawal_no IS NULL AND cancelled_at IS NULL")
+    @Update("UPDATE nx_bank_payout_quote SET withdrawal_no=#{order} WHERE quote_no=#{quote} AND withdrawal_no IS NULL AND cancelled_at IS NULL "
+            + "AND NOT EXISTS(SELECT 1 FROM nx_bank_payout_quote_expiry e WHERE e.quote_no=#{quote})")
     int useQuote(@Param("quote") String quote, @Param("order") String order);
     @Insert("""
             INSERT INTO nx_hdpay_payout(withdrawal_no,quote_no,user_id,state,created_at,updated_at)
@@ -57,6 +87,50 @@ public interface BankWithdrawalMapper {
             + "provider_status providerStatus,last_error lastError FROM nx_hdpay_payout ";
     @Select(ORDER + "WHERE withdrawal_no=#{order} FOR UPDATE") Order lockOrder(String order);
     @Select(ORDER + "WHERE withdrawal_no=#{order}") Order order(String order);
+    // Shared by receipt projection and unresolved-intent filtering: no weaker terminal-state shortcut.
+    String PROVIDER_SETTLEMENT_PROOF = """
+            l.withdrawal_no=p.withdrawal_no AND p.provider_order_id=l.provider_cid
+              AND w.withdrawal_no=p.withdrawal_no AND w.user_id=p.user_id
+              AND w.is_deleted=0 AND w.chain='BANK-VND' AND w.d5_payout_source='hdpay'
+              AND w.d5_provider_cid=p.provider_order_id AND l.source='hdpay' AND l.status=w.status
+              AND l.amount_usdt=w.d2_net_receive AND l.event_type='CALLBACK'
+              AND ((p.state='PAID' AND p.provider_status=3 AND w.status='CONFIRMED')
+                OR (p.state='FAILED' AND p.provider_status IN (4,5) AND w.status='FAILED' AND EXISTS(
+                  SELECT 1 FROM nx_wallet_ledger r WHERE r.biz_no=CONCAT(w.withdrawal_no,':PAYOUT:USDT:REFUND')
+                    AND r.user_id=w.user_id AND r.biz_type='WITHDRAW_PAYOUT_REFUND' AND r.asset='USDT'
+                    AND r.direction='IN' AND r.amount=w.amount AND r.status='POSTED' AND r.is_deleted=0)))
+            """;
+    String D2_SETTLEMENT_PROOF = """
+            w.withdrawal_no=p.withdrawal_no AND w.user_id=p.user_id
+              AND r.biz_no=CONCAT('D2-REFUND-',w.withdrawal_no) AND r.user_id=w.user_id
+              AND p.state='READY' AND p.provider_order_id IS NULL
+              AND w.chain='BANK-VND' AND w.status='REFUNDED' AND w.is_deleted=0 AND COALESCE(w.chain_broadcast_attempts,0)=0
+              AND r.biz_type='WITHDRAW_REFUND' AND r.asset='USDT' AND r.direction='IN'
+              AND r.amount=w.amount AND r.status='SUCCESS' AND r.is_deleted=0
+            """;
+    @Select("""
+            SELECT p.withdrawal_no withdrawalNo,p.quote_no quoteNo,p.user_id userId,p.state,
+              p.provider_order_id providerOrderId,p.provider_status providerStatus,p.last_error lastError
+            FROM nx_hdpay_payout p WHERE p.user_id=#{userId}
+              AND NOT EXISTS(SELECT 1 FROM nx_withdrawal_order w JOIN nx_withdrawal_payout_ledger l
+                ON l.withdrawal_no=w.withdrawal_no WHERE
+            """ + PROVIDER_SETTLEMENT_PROOF + ") AND NOT EXISTS(SELECT 1 FROM nx_withdrawal_order w "
+            + "JOIN nx_wallet_ledger r ON r.user_id=w.user_id WHERE " + D2_SETTLEMENT_PROOF
+            + ") ORDER BY p.created_at,p.withdrawal_no") List<Order> unresolvedOrders(long userId);
+    @Select("""
+            SELECT l.event_no evidenceRef,l.status,l.created_at checkedAt,w.amount amountUsdt,
+              p.provider_order_id providerOrderId,p.provider_status providerStatus
+            FROM nx_hdpay_payout p JOIN nx_withdrawal_order w ON w.withdrawal_no=p.withdrawal_no
+            JOIN nx_withdrawal_payout_ledger l ON l.withdrawal_no=p.withdrawal_no
+            WHERE p.withdrawal_no=#{order} AND
+            """ + PROVIDER_SETTLEMENT_PROOF + " UNION ALL " + """
+            SELECT r.biz_no evidenceRef,'REFUNDED' status,r.created_at checkedAt,w.amount amountUsdt,
+              p.provider_order_id providerOrderId,p.provider_status providerStatus
+            FROM nx_hdpay_payout p JOIN nx_withdrawal_order w ON w.withdrawal_no=p.withdrawal_no
+            JOIN nx_wallet_ledger r ON r.user_id=w.user_id
+            WHERE p.withdrawal_no=#{order} AND
+            """ + D2_SETTLEMENT_PROOF + " ORDER BY checkedAt,evidenceRef LIMIT 1")
+    SettlementEvidence settlementEvidence(String order);
     @Select("SELECT version FROM nx_hdpay_payout WHERE withdrawal_no=#{order}") Long version(String order);
     @Select("SELECT approved_risk_hash FROM nx_hdpay_payout WHERE withdrawal_no=#{order}") String approvedRiskHash(String order);
     @Update("UPDATE nx_hdpay_payout SET approved_risk_hash=#{hash} WHERE withdrawal_no=#{order} AND state='READY'")
@@ -125,4 +199,10 @@ public interface BankWithdrawalMapper {
         @Override public String toString() { return "BankQuote[REDACTED]"; }
     }
     record Order(String withdrawalNo, String quoteNo, Long userId, String state, Long providerOrderId, Integer providerStatus, String lastError) {}
+    record Verification(String beneficiaryNo, Long userId, Long beneficiaryVersion, String verificationStatus,
+            String payoutCapability, String ownershipStatus, String accountType, String reasonCode,
+            LocalDateTime checkedAt, LocalDateTime expiresAt, String evidenceRef, String capabilityVersion,
+            String provider, LocalDateTime requestedAt) { }
+    record SettlementEvidence(String evidenceRef, String status, LocalDateTime checkedAt, BigDecimal amountUsdt,
+            Long providerOrderId, Integer providerStatus) { }
 }

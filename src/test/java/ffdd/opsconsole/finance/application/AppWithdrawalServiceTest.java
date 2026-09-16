@@ -70,7 +70,7 @@ class AppWithdrawalServiceTest {
         when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
         when(release.withdrawableAmountForUpdate(eq(7L), any())).thenReturn(new BigDecimal("50"));
         AppWithdrawalService guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
-                audit, outbox, k3, ledger, release, environment, java.time.Clock.systemUTC());
+                audit, outbox, k3, ledger, release, environment, java.time.Clock.systemUTC(), bank);
         when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("500"), new BigDecimal("50"), BigDecimal.ZERO, 3L));
         when(mapper.payoutAddressForEligibility(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
@@ -92,6 +92,7 @@ class AppWithdrawalServiceTest {
     }
     private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
+    private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bank = mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final GrowthRhythmFacade rhythmFacade = mock(GrowthRhythmFacade.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
@@ -101,7 +102,7 @@ class AppWithdrawalServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC());
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC(), bank);
 
     private static MockEnvironment productionEnvironment() {
         MockEnvironment environment = new MockEnvironment();
@@ -179,6 +180,28 @@ class AppWithdrawalServiceTest {
         when(k3.evaluate(any())).thenReturn(new WithdrawalRiskDecision("pass", null, null, java.util.List.of()));
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+    }
+
+    @Test
+    void unresolvedBankBlocksNewCryptoReservationButSettledBankDoesNot() {
+        var order = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Order("WD-BANK","BQ-fixture",7L,"FAILED",123L,5,null);
+        when(bank.unresolvedOrders(7)).thenReturn(java.util.List.of(order));
+        var blocked = service.submit(7L,new BigDecimal("100"),"USDT-TRC20","TR7NHqExampleAddress","crypto-blocked-by-bank");
+        assertThat(blocked.getMessage()).isEqualTo("BANK_WITHDRAWAL_UNRESOLVED_INTENT");
+        verify(mapper,never()).reserveFunds(anyLong(),any(),any(),anyLong());
+        when(bank.unresolvedOrders(7)).thenReturn(java.util.List.of());
+        assertThat(service.submit(7L,new BigDecimal("100"),"USDT-TRC20","TR7NHqExampleAddress","crypto-after-bank-settled").getCode()).isZero();
+        verify(bank,never()).settlementEvidence(anyString());
+    }
+
+    @Test
+    void cryptoIdempotencyReplayDoesNotApplyANewBankIntentGateOrDebit() {
+        when(idempotency.execute(anyString(),anyString(),anyString(),eq(ApiResult.class),any()))
+                .thenReturn(ApiResult.ok(java.util.Map.of("withdrawalNo","WD-ALREADY-COMMITTED")));
+        var replay = service.submit(7L,new BigDecimal("100"),"USDT-TRC20","TR7NHqExampleAddress","crypto-existing-receipt");
+        assertThat(replay.getCode()).isZero();
+        org.mockito.Mockito.verifyNoInteractions(bank);
+        verify(mapper,never()).reserveFunds(anyLong(),any(),any(),anyLong());
     }
 
     @Test

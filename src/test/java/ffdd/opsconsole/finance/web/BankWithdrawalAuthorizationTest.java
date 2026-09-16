@@ -36,12 +36,16 @@ class BankWithdrawalAuthorizationTest {
     @Test void appEndpointsDeriveUserFromAuthenticatedUserSubjectOnly() {
         var service=mock(BankWithdrawalService.class); var controller=new BankWithdrawalController(service);
         assertThrows(RuntimeException.class,()->controller.config(null));
+        assertThrows(RuntimeException.class,()->controller.recovery(null));
+        assertThrows(RuntimeException.class,()->controller.verify(null));
         var binding = new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null);
         assertThrows(RuntimeException.class,()->controller.bind(null, "fixture-key", binding));
         var auth=new UsernamePasswordAuthenticationToken("71","unused",List.of());
         auth.setDetails(Map.of("subjectType","ADMIN"));
         assertThrows(RuntimeException.class,()->controller.bind(auth, "fixture-key", binding));
         assertThrows(RuntimeException.class,()->controller.config(auth)); verifyNoInteractions(service);
+        assertThrows(RuntimeException.class,()->controller.recovery(auth));
+        assertThrows(RuntimeException.class,()->controller.verify(auth));
         auth.setDetails(Map.of("subjectType","USER")); when(service.config(71L)).thenReturn(ApiResult.ok(Map.of("enabled",false)));
         assertEquals(false,controller.config(auth).getData().get("enabled"));
         verify(service).config(71L);

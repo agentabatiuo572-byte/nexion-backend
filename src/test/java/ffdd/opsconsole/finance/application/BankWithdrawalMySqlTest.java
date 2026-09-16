@@ -68,6 +68,7 @@ class BankWithdrawalMySqlTest {
         final EventOutboxService outbox = mock(EventOutboxService.class);
         final FinanceSensitiveDataCipher cipher = new FinanceSensitiveDataCipher("isolated-fixture-key-not-a-real-credential");
         final HdPayPayoutTransactions transactions;
+        final BankWithdrawalService service;
         Fixture(String schema) throws Exception {
             source = ds(schema); jdbc = new JdbcTemplate(source);
             assertEquals(schema, jdbc.queryForObject("SELECT DATABASE()", String.class));
@@ -89,6 +90,10 @@ class BankWithdrawalMySqlTest {
                     CREATE TABLE nx_withdrawal_payout_ledger(event_no VARCHAR(96) PRIMARY KEY,withdrawal_no VARCHAR(96),provider_cid BIGINT,
                     event_type VARCHAR(32),status VARCHAR(32),source VARCHAR(32),amount_usdt DECIMAL(24,6),txid VARCHAR(128),payload_hash CHAR(64),created_at DATETIME(6))
                     """);
+            jdbc.execute("""
+                    CREATE TABLE nx_wallet_ledger(biz_no VARCHAR(128) PRIMARY KEY,user_id BIGINT,biz_type VARCHAR(40),asset VARCHAR(16),
+                      direction VARCHAR(8),amount DECIMAL(24,6),status VARCHAR(16),created_at DATETIME(6),is_deleted TINYINT DEFAULT 0)
+                    """);
             migrate(); migrate();
             jdbc.update("INSERT INTO nx_user VALUES(71,'ACTIVE',0,0),(72,'ACTIVE',0,0)");
             jdbc.update("INSERT INTO nx_user_wallet VALUES(71,900,0,100,0,0,?),(72,900,0,100,0,0,?)", NOW, NOW);
@@ -96,10 +101,30 @@ class BankWithdrawalMySqlTest {
             var properties = mock(HdPayPayoutProperties.class);
             when(properties.ready(transport)).thenReturn(true); when(properties.getBankCodes()).thenReturn(Set.of("VCB"));
             var config = mock(PayoutVndConfigService.class);
-            when(config.overview()).thenReturn(ApiResult.ok(Map.of("channelEnabled", true, "providerReady", true)));
+            var values = new HashMap<String,Object>(Map.of("channelEnabled", true, "providerReady", true,
+                    "capabilitySummary", Map.of("status","ready","provider","fixture-provider","capabilityVersion","fixture-capability-v1",
+                        "accountVerificationAvailable",true,"ownershipVerificationAvailable",true),
+                    "version",1L,"quoteTtlMinWithdraw",5,"minAmountUsd",20,"maxAmountUsd",5000,"feeRatePct",1,"feeMinUsd",1,"feeMaxUsd",25));
+            values.put("baseRateVndPerUsdt",25000); values.put("sellSpreadPct",0);
+            when(config.overview()).thenReturn(ApiResult.ok(values));
+            doAnswer(i -> {
+                jdbc.update("INSERT INTO nx_wallet_ledger(biz_no,user_id,biz_type,asset,direction,amount,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3),i.getArgument(4),i.getArgument(5),i.getArgument(6),NOW);
+                return null;
+            }).when(ledger).postLedgerEntry(anyString(),anyLong(),anyString(),anyString(),anyString(),any(),anyString(),anyString());
             var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK));
             transactions = proxy(new HdPayPayoutTransactions(bank, users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
+            var withdrawals = mock(AppWithdrawalService.class);
+            when(withdrawals.policy(71L)).thenReturn(ApiResult.ok(Map.of("withdrawalEnabled",true,"policyVersion","d5-v1")));
+            var idempotency = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
+            when(idempotency.executeRetained(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i ->
+                    new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source))
+                            .execute(status -> ((java.util.function.Supplier<?>)i.getArgument(4)).get()));
+            var env = new org.springframework.mock.env.MockEnvironment(); env.setActiveProfiles("dev");
+            service = proxy(new BankWithdrawalService(bank, users, mock(AppPayoutAddressMapper.class),
+                    mock(ffdd.opsconsole.auth.application.UserOtpDeliveryService.class),mock(PayoutAddressOtpAttemptService.class),
+                    cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK));
         }
         @SuppressWarnings("unchecked") <T> T proxy(T target) {
             ProxyFactory proxy = new ProxyFactory(target);
@@ -109,9 +134,11 @@ class BankWithdrawalMySqlTest {
         void migrate() throws Exception {
             try (var connection = source.getConnection()) {
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20260915_hdpay_bank_withdrawal.sql"));
+                ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20260916_bank_beneficiary_verification.sql"));
             }
         }
         void seed() {
+            seedBeneficiary();
             var encrypted = cipher.encrypt("0123456789\nNGUYEN VAN A", BankWithdrawalService.quoteAad(71, QN));
             bank.insertQuote(new BankWithdrawalMapper.Quote(QN,71L,"BNK-fixture",0L,"VCB","****6789",encrypted,
                     bd("100"),bd("1"),bd("99"),bd("25000"),bd("2475000"),1L,"d5-v1",NOW,NOW.plusMinutes(5),null));
@@ -121,10 +148,20 @@ class BankWithdrawalMySqlTest {
                     d5_payout_due_at,created_at,updated_at) VALUES(1,?,71,'BANK-VND','BANK-VND:BNK-fixture',100,99,0,'REVIEW_PASSED',?,?,?,?)
                     """, NO,NOW,NOW,NOW,NOW);
         }
+        void seedBeneficiary() {
+            bank.saveBeneficiary(71,"BNK-fixture","","****6789",cipher.encrypt("0123456789\nNGUYEN VAN A",BankWithdrawalService.beneficiaryAad(71,"BNK-fixture")),
+                    NOW.minusDays(1),NOW.plusDays(1),0,NOW);
+            bank.saveVerification(new BankWithdrawalMapper.Verification("BNK-fixture",71L,0L,"verified","supported","matched","payment_account",
+                    null,NOW.minusMinutes(1),NOW.plusHours(1),"fixture-evidence","fixture-capability-v1","fixture-provider",NOW.minusMinutes(2)));
+        }
         HdPayPayoutGateway.Order response(int status) { return new HdPayPayoutGateway.Order(NO,123L,status,bd("2475000"),"0123456789","NGUYEN VAN A","2"); }
         void wallet(String available, String pending) {
             assertEquals(0, bd(available).compareTo(jdbc.queryForObject("SELECT usdt_available FROM nx_user_wallet WHERE user_id=71",BigDecimal.class)));
             assertEquals(0, bd(pending).compareTo(jdbc.queryForObject("SELECT pending_withdraw FROM nx_user_wallet WHERE user_id=71",BigDecimal.class)));
+        }
+        void proofComplement(boolean settled) {
+            assertEquals(settled, bank.settlementEvidence(NO) != null);
+            assertEquals(!settled, bank.unresolvedOrders(71).stream().anyMatch(order -> NO.equals(order.withdrawalNo())));
         }
     }
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
@@ -160,6 +197,8 @@ class BankWithdrawalMySqlTest {
                 var d = pool.submit(() -> f.transactions.reconcile(NO,f.response(3)));
                 c.get(10,TimeUnit.SECONDS); d.get(10,TimeUnit.SECONDS);
                 f.wallet("900","0"); assertEquals("CONFIRMED",f.payouts.payout(NO).status());
+                assertEquals("CONFIRMED",f.bank.settlementEvidence(NO).status());
+                f.proofComplement(true);
                 assertEquals("PAID",f.bank.order(NO).state());
                 assertEquals(1,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_payout_ledger WHERE status='CONFIRMED'",Integer.class));
                 verify(f.outbox,times(1)).publish(eq("WITHDRAWAL"),eq(NO),eq("withdraw.confirmed"),any());
@@ -171,6 +210,11 @@ class BankWithdrawalMySqlTest {
         isolated(f -> {
             f.seed(); f.transactions.prepare(NO); f.transactions.reconcile(NO,f.response(5)); f.transactions.reconcile(NO,f.response(5));
             f.wallet("1000","0"); assertEquals("FAILED",f.payouts.payout(NO).status());
+            assertEquals("FAILED",f.bank.settlementEvidence(NO).status());
+            f.proofComplement(true);
+            f.jdbc.update("DELETE FROM nx_wallet_ledger WHERE user_id=71");
+            assertNull(f.bank.settlementEvidence(NO)); // A provider FAILED label alone is not a refund receipt.
+            f.proofComplement(false);
             verify(f.ledger,times(1)).postLedgerEntry(eq(NO+":PAYOUT:USDT:REFUND"),eq(71L),eq("WITHDRAW_PAYOUT_REFUND"),eq("USDT"),eq("IN"),argThat(n -> n.compareTo(bd("100"))==0),eq("POSTED"),anyString());
         });
         isolated(f -> {
@@ -214,6 +258,115 @@ class BankWithdrawalMySqlTest {
             f.wallet("900","100"); assertEquals("SENT",f.payouts.payout(NO).status()); assertEquals("PENDING",f.bank.order(NO).state());
             assertEquals(0,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_payout_ledger WHERE status='CONFIRMED'",Integer.class));
             reset(f.audit); f.transactions.reconcile(NO,f.response(3)); f.wallet("900","0");
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void concurrentQuotesSerializeAndExpirySurvivesReadbackAndLateSubmit() throws Exception {
+        isolated(f -> {
+            f.seedBeneficiary(); var pool = Executors.newFixedThreadPool(2);
+            try {
+                Callable<Boolean> quote = () -> { try { f.service.quote(71,bd("100")); return true; }
+                    catch (ffdd.opsconsole.shared.exception.BizException conflict) {
+                        assertEquals("BANK_WITHDRAWAL_UNRESOLVED_INTENT", conflict.getMessage()); return false; } };
+                var a=pool.submit(quote); var b=pool.submit(quote);
+                assertEquals(1,(a.get(10,TimeUnit.SECONDS)?1:0)+(b.get(10,TimeUnit.SECONDS)?1:0));
+                String q = f.bank.activeQuotes(71).get(0).quoteNo();
+                assertEquals(q,f.service.recovery(71).getData().get("quoteNo"));
+                f.jdbc.update("UPDATE nx_bank_payout_quote SET expires_at=? WHERE quote_no=?",NOW.minusSeconds(1),q);
+                assertEquals("EXPIRED",f.service.recoverQuote(71,q).getData().get("state"));
+                assertEquals(1,f.bank.expired(q)); assertNull(f.service.recovery(71).getData());
+                f.jdbc.update("UPDATE nx_bank_payout_quote SET expires_at=? WHERE quote_no=?",NOW.plusHours(1),q);
+                assertEquals("BANK_QUOTE_EXPIRED",f.service.submit(71,q,"late-after-expiry").getMessage());
+                assertEquals(0,f.bank.useQuote(q,"WD-LATE"));
+                f.wallet("900","100");
+                var next = f.service.quote(71,bd("100")); assertEquals(0,next.getCode());
+                String nextQuote = next.getData().get("quoteNo").toString();
+                assertEquals("ABANDONED",f.service.abandonQuote(71,nextQuote).getData().get("state"));
+                assertEquals("ABANDONED",f.service.recoverQuote(71,nextQuote).getData().get("state"));
+                assertThrows(ffdd.opsconsole.shared.exception.BizException.class, () -> f.service.submit(71,nextQuote,"late-after-cancel"));
+                assertEquals(0,f.bank.useQuote(nextQuote,"WD-LATE-CANCEL"));
+                assertNull(f.service.recovery(71).getData());
+            } finally { pool.shutdownNow(); assertTrue(pool.awaitTermination(15,TimeUnit.SECONDS)); }
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void verificationUnavailablePersistsAndCannotBeReplacedByCoolingOrAdminFlags() throws Exception {
+        isolated(f -> {
+            f.seedBeneficiary(); f.service.verifyBeneficiary(71);
+            assertEquals("unavailable", f.bank.verification("BNK-fixture").verificationStatus());
+            assertNull(f.bank.verification("BNK-fixture").checkedAt());
+            assertFalse((Boolean)((Map<?,?>)f.service.config(71).getData().get("beneficiary")).get("canWithdraw"));
+            assertThrows(ffdd.opsconsole.shared.exception.BizException.class, () -> f.service.quote(71,bd("100")));
+            f.service.verifyBeneficiary(71);
+            assertEquals(0L, f.bank.beneficiary(71L).version());
+            assertEquals(NOW.minusDays(1),f.bank.beneficiary(71L).effectiveAt());
+            assertThrows(RuntimeException.class, () -> f.jdbc.update("UPDATE nx_bank_beneficiary_verification SET verification_status='verified'"));
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void preDispatchRejectionRequiresActualD2RefundLedgerBeforeIntentCanClear() throws Exception {
+        isolated(f -> {
+            f.seed(); f.jdbc.update("UPDATE nx_withdrawal_order SET status='REFUNDED' WHERE withdrawal_no=?",NO);
+            assertNull(f.bank.settlementEvidence(NO)); assertNotNull(f.service.recovery(71).getData());
+            f.proofComplement(false);
+            f.jdbc.update("UPDATE nx_user_wallet SET usdt_available=1000,pending_withdraw=0 WHERE user_id=71");
+            f.jdbc.update("INSERT INTO nx_wallet_ledger(biz_no,user_id,biz_type,asset,direction,amount,status,created_at) VALUES(?,71,'WITHDRAW_REFUND','USDT','IN',100,'SUCCESS',?)",
+                    "D2-REFUND-"+NO,NOW);
+            assertEquals("REFUNDED",f.bank.settlementEvidence(NO).status());
+            f.proofComplement(true);
+            assertNull(f.service.recovery(71).getData());
+            f.wallet("1000","0");
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void unresolvedOrdersUseOwnerIndexAndSameProofForEveryMismatch() throws Exception {
+        isolated(f -> {
+            f.seed(); f.transactions.prepare(NO);
+            var staleOrder = f.bank.order(NO);
+            f.transactions.reconcile(NO,f.response(3));
+            var proof = f.bank.settlementEvidence(NO);
+            var receipt = BankWithdrawalService.settlementView(staleOrder,proof);
+            assertEquals("paid",receipt.get("status")); assertEquals("123",receipt.get("providerOrderId"));
+            assertEquals(3,receipt.get("providerStatus")); // Provider fields come from the same statement as the proof.
+            f.proofComplement(true);
+            for (String[] mutation : new String[][]{
+                    {"UPDATE nx_withdrawal_order SET user_id=72", "UPDATE nx_withdrawal_order SET user_id=71"},
+                    {"UPDATE nx_hdpay_payout SET provider_order_id=124", "UPDATE nx_hdpay_payout SET provider_order_id=123"},
+                    {"UPDATE nx_withdrawal_payout_ledger SET amount_usdt=98 WHERE status='CONFIRMED'", "UPDATE nx_withdrawal_payout_ledger SET amount_usdt=99 WHERE status='CONFIRMED'"},
+                    {"UPDATE nx_hdpay_payout SET state='MANUAL_REVIEW'", "UPDATE nx_hdpay_payout SET state='PAID'"}}) {
+                f.jdbc.update(mutation[0]); f.proofComplement(false);
+                f.jdbc.update(mutation[1]); f.proofComplement(true);
+            }
+            for (int i=0; i<256; i++) f.bank.insertOrder("WD-OTHER-"+i,"BQ-OTHER-"+i,72,NOW);
+            assertTrue(f.bank.unresolvedOrders(71).isEmpty());
+            assertEquals(256,f.bank.unresolvedOrders(72).size());
+            assertEquals("user_id,created_at,withdrawal_no",f.jdbc.queryForObject("""
+                    SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_hdpay_payout' AND INDEX_NAME='idx_hdpay_payout_owner'
+                    """,String.class));
+            f.jdbc.execute("ANALYZE TABLE nx_hdpay_payout");
+            String sql = String.join(" ",BankWithdrawalMapper.class.getMethod("unresolvedOrders",long.class)
+                    .getAnnotation(org.apache.ibatis.annotations.Select.class).value()).replace("#{userId}","71");
+            var payoutPlan = f.jdbc.queryForList("EXPLAIN "+sql).stream().filter(row -> "p".equals(row.get("table"))).findFirst().orElseThrow();
+            assertEquals("idx_hdpay_payout_owner",payoutPlan.get("key"));
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void withdrawalMethodCatalogMigrationIsRepeatableAndPreservesExistingRoutes() throws Exception {
+        isolated(f -> {
+            f.jdbc.execute("""
+                    CREATE TABLE nx_behavior_page_catalog(route VARCHAR(128) PRIMARY KEY,title_zh VARCHAR(128),
+                      page_level INT,parent_l1 VARCHAR(128),parent_l2 VARCHAR(128),tracked TINYINT,
+                      source_revision VARCHAR(64),is_deleted TINYINT)
+                    """);
+            f.jdbc.update("INSERT INTO nx_behavior_page_catalog VALUES('/pages/me/wallet','existing title',1,'existing parent','existing parent',0,'fixture-original',0)");
+            for (int i=0;i<2;i++) try (var connection=f.source.getConnection()) {
+                ScriptUtils.executeSqlScript(connection,new FileSystemResource("scripts/migrations/20260916_l6_withdrawal_method_route.sql"));
+            }
+            assertEquals(2,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_behavior_page_catalog",Integer.class));
+            assertEquals(1,f.jdbc.queryForObject("SELECT tracked FROM nx_behavior_page_catalog WHERE route='/pages/me/wallet-withdraw-method'",Integer.class));
+            assertEquals("fixture-original",f.jdbc.queryForObject("SELECT source_revision FROM nx_behavior_page_catalog WHERE route='/pages/me/wallet'",String.class));
+            assertEquals(0,f.jdbc.queryForObject("SELECT tracked FROM nx_behavior_page_catalog WHERE route='/pages/me/wallet'",Integer.class));
         });
     }
 }

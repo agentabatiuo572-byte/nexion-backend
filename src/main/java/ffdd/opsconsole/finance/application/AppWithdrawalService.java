@@ -63,6 +63,7 @@ public class AppWithdrawalService {
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
     private final Clock clock;
+    private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         return list(userId, 1, 50);
@@ -359,6 +360,8 @@ public class AppWithdrawalService {
                     Map.of("policyVersion", policy.policyVersion()));
         }
         LocalDateTime businessNow = LocalDateTime.now(clock);
+        if (bankQuote == null && BankWithdrawalEligibility.hasUnresolvedIntent(bankWithdrawalMapper, userId, businessNow))
+            return ApiResult.fail(409, "BANK_WITHDRAWAL_UNRESOLVED_INTENT");
         if (bankQuote == null) {
         PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {

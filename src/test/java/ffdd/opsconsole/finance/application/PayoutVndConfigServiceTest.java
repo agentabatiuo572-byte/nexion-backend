@@ -59,6 +59,17 @@ class PayoutVndConfigServiceTest {
         assertThat(service.overview().getData()).containsEntry("providerReady", false).containsEntry("payoutConfigured", false);
     }
 
+    @Test void transportAndMerchantReadyStillCannotEnableWithoutAccountVerificationCapability() {
+        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("true"));
+        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
+        var summary = (Map<?,?>)service.overview().getData().get("capabilitySummary");
+        assertThat(summary.get("status")).isEqualTo("unavailable");
+        assertThat(summary.get("provider")).isNull();
+        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(true,4L,"enable must require account evidence"));
+        assertThat(result.getMessage()).isEqualTo("D7_ACCOUNT_VERIFICATION_NOT_READY");
+        verify(config, never()).upsertAdminValue(anyString(),anyString(),anyString(),anyString(),anyString());
+    }
+
     @Test
     void overviewCombinesD6SingleSourceWithServerCanonicalD7Aggregate() {
         ApiResult<Map<String, Object>> result = service.overview();
