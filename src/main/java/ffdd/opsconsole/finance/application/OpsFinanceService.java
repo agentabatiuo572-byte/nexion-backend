@@ -1107,6 +1107,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             treasuryLedgerRepository.refundWithdrawal(
                     order.withdrawalNo(), order.userId(), order.amount(), order.asset(),
                     order.nexBurned(), request.reason().trim());
+            if ("BANK-VND".equals(order.chain()))
+                treasuryLedgerRepository.reverseLegacyBankWithdrawalReserve(
+                        order.withdrawalNo(), order.amount(), LocalDateTime.now(clock));
             if (!withdrawalRepository.transitionStatusWithLifecycle(
                     order.withdrawalNo(), D2WithdrawalStateMachine.REVIEW_REJECTED, D2WithdrawalStateMachine.REFUNDED,
                     failureReason, null, null, null, null)) {
@@ -1123,8 +1126,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if ("BANK-VND".equals(order.chain()) && (bankWithdrawalMapper == null
                     || bankWithdrawalMapper.approveRisk(order.withdrawalNo(), currentRisk.fingerprint()) != 1))
                 throw new IllegalStateException("BANK_PAYOUT_APPROVAL_SNAPSHOT_UNAVAILABLE");
-            treasuryLedgerRepository.recordWithdrawalReserve(
-                    order.withdrawalNo(), order.amount(), request.reason().trim(), authenticatedOperator, idempotencyKey);
+            // Bank funds are already reserved in wallet.pending_withdraw and the canonical
+            // order/quote. D3 cash is posted only after verified HDPay success.
+            if (!"BANK-VND".equals(order.chain()))
+                treasuryLedgerRepository.recordWithdrawalReserve(
+                        order.withdrawalNo(), order.amount(), request.reason().trim(), authenticatedOperator, idempotencyKey);
         }
         if ("REFUND".equals(action)) {
             treasuryLedgerRepository.refundWithdrawal(
@@ -1217,9 +1223,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             if ("BANK-VND".equals(order.chain()) && (decision.approvedRiskHash() == null
                     || bankWithdrawalMapper.approveRisk(order.withdrawalNo(), decision.approvedRiskHash()) != 1))
                 throw new IllegalStateException("BANK_PAYOUT_APPROVAL_SNAPSHOT_UNAVAILABLE");
-            treasuryLedgerRepository.recordWithdrawalReserve(
-                    order.withdrawalNo(), order.amount(), decision.reason(), authenticatedOperator,
-                    "d2-lifecycle:" + order.withdrawalNo() + ":review-passed");
+            if (!"BANK-VND".equals(order.chain()))
+                treasuryLedgerRepository.recordWithdrawalReserve(
+                        order.withdrawalNo(), order.amount(), decision.reason(), authenticatedOperator,
+                        "d2-lifecycle:" + order.withdrawalNo() + ":review-passed");
         }
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("from", D2WithdrawalStateMachine.canonical(order.status()));

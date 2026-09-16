@@ -119,6 +119,14 @@ public interface TreasuryLedgerRepository {
         throw new UnsupportedOperationException("WITHDRAWAL_RESERVE_WRITER_NOT_IMPLEMENTED");
     }
 
+    default void settleBankWithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, long providerId, LocalDateTime now) {
+        throw new UnsupportedOperationException("BANK_RESERVE_SETTLEMENT_NOT_IMPLEMENTED");
+    }
+
+    default void reverseLegacyBankWithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
+        throw new UnsupportedOperationException("BANK_RESERVE_REVERSAL_NOT_IMPLEMENTED");
+    }
+
     default void refundWithdrawal(String withdrawalNo, Long userId, BigDecimal amount, String asset, String reason) {
         throw new UnsupportedOperationException("WITHDRAWAL_REFUND_WRITER_NOT_IMPLEMENTED");
     }

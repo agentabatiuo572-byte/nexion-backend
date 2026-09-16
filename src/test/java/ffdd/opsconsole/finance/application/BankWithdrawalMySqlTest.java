@@ -65,6 +65,8 @@ class BankWithdrawalMySqlTest {
         final WithdrawalPayoutMapper payouts;
         final WithdrawalOrderMapper reviews;
         final AppWithdrawalMapper users;
+        final ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper treasuryMapper;
+        final ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository treasury;
         final AuditLogService audit = mock(AuditLogService.class);
         final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
         final EventOutboxService outbox = mock(EventOutboxService.class);
@@ -79,8 +81,11 @@ class BankWithdrawalMySqlTest {
             cfg.addMapper(BankWithdrawalMapper.class); cfg.addMapper(WithdrawalPayoutMapper.class); cfg.addMapper(AppWithdrawalMapper.class);
             cfg.addMapper(AppPayoutAddressMapper.class);
             cfg.addMapper(WithdrawalOrderMapper.class);
+            cfg.addMapper(ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class);
             var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
             bank = session.getMapper(BankWithdrawalMapper.class);
+            treasuryMapper = session.getMapper(ffdd.opsconsole.treasury.mapper.TreasuryLedgerMapper.class);
+            treasury = proxy(new ffdd.opsconsole.treasury.infrastructure.MybatisTreasuryLedgerRepository(treasuryMapper, outbox));
             reviews = session.getMapper(WithdrawalOrderMapper.class);
             addresses = session.getMapper(AppPayoutAddressMapper.class); payouts = session.getMapper(WithdrawalPayoutMapper.class); users = session.getMapper(AppWithdrawalMapper.class);
             jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox TINYINT,is_deleted TINYINT)");
@@ -103,6 +108,10 @@ class BankWithdrawalMySqlTest {
                       direction VARCHAR(8),amount DECIMAL(24,6),status VARCHAR(16),created_at DATETIME(6),is_deleted TINYINT DEFAULT 0)
                     """);
             jdbc.execute("CREATE TABLE nx_config_item(config_key VARCHAR(128),config_value VARCHAR(128),status INT,is_deleted INT)");
+            String schemaSql = java.nio.file.Files.readString(java.nio.file.Path.of("scripts/schema.sql"));
+            var reserveDdl = java.util.regex.Pattern.compile("CREATE TABLE IF NOT EXISTS nx_treasury_reserve_ledger\\s*\\([\\s\\S]*?;").matcher(schemaSql);
+            assertTrue(reserveDdl.find()); jdbc.execute(reserveDdl.group());
+            jdbc.update("INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd) VALUES('FIXTURE-IN','FIXTURE-IN','IN',1000)");
             jdbc.execute("CREATE TABLE nx_user_otp_challenge(challenge_no VARCHAR(96) PRIMARY KEY,user_id BIGINT,code_hash CHAR(64),expires_at DATETIME,attempts INT,consumed_at DATETIME NULL,created_at DATETIME,updated_at DATETIME,is_deleted INT)");
             migrate(); migrate();
             jdbc.update("INSERT INTO nx_user VALUES(71,'ACTIVE',0,0),(72,'ACTIVE',0,0)");
@@ -122,6 +131,10 @@ class BankWithdrawalMySqlTest {
                         i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3),i.getArgument(4),i.getArgument(5),i.getArgument(6),NOW);
                 return null;
             }).when(ledger).postLedgerEntry(anyString(),anyLong(),anyString(),anyString(),anyString(),any(),anyString(),anyString());
+            doAnswer(i -> { treasury.settleBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2),i.getArgument(3)); return null; })
+                    .when(ledger).settleBankWithdrawalReserve(anyString(),any(),anyLong(),any());
+            doAnswer(i -> { treasury.reverseLegacyBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2)); return null; })
+                    .when(ledger).reverseLegacyBankWithdrawalReserve(anyString(),any(),any());
             var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK));
             transactions = proxy(new HdPayPayoutTransactions(bank, users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
@@ -138,6 +151,7 @@ class BankWithdrawalMySqlTest {
         }
         @SuppressWarnings("unchecked") <T> T proxy(T target) {
             ProxyFactory proxy = new ProxyFactory(target);
+            proxy.setProxyTargetClass(true);
             proxy.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source), new AnnotationTransactionAttributeSource()));
             return (T) proxy.getProxy();
         }
@@ -250,12 +264,14 @@ class BankWithdrawalMySqlTest {
                 assertEquals(1, (a.get(10,TimeUnit.SECONDS) == null ? 0 : 1) + (b.get(10,TimeUnit.SECONDS) == null ? 0 : 1));
                 assertEquals("DISPATCHING",f.bank.order(NO).state());
                 f.wallet("900","100");
+                assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("1000")));
                 var callback = new HdPayPayoutCallbackVerifier.Callback(NO,123,3,bd("2475000"),"a".repeat(64));
                 assertEquals("success",f.transactions.accept(callback)); assertEquals("success",f.transactions.accept(callback));
                 assertEquals(1,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_hdpay_payout_callback",Integer.class));
                 // A success callback can precede provider query convergence; pending must remain recoverable.
                 f.transactions.reconcile(NO,f.response(1)); f.wallet("900","100");
                 assertEquals("PENDING",f.bank.order(NO).state());
+                assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("1000")));
                 var c = pool.submit(() -> f.transactions.reconcile(NO,f.response(3)));
                 var d = pool.submit(() -> f.transactions.reconcile(NO,f.response(3)));
                 c.get(10,TimeUnit.SECONDS); d.get(10,TimeUnit.SECONDS);
@@ -263,6 +279,8 @@ class BankWithdrawalMySqlTest {
                 assertEquals("CONFIRMED",f.bank.settlementEvidence(NO).status());
                 f.proofComplement(true);
                 assertEquals("PAID",f.bank.order(NO).state());
+                assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("900")));
+                assertEquals(1, f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE direction='OUT'",Integer.class));
                 assertEquals(1,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_payout_ledger WHERE status='CONFIRMED'",Integer.class));
                 verify(f.outbox,times(1)).publish(eq("WITHDRAWAL"),eq(NO),eq("withdraw.confirmed"),any());
             } finally { pool.shutdownNow(); assertTrue(pool.awaitTermination(15,TimeUnit.SECONDS)); }
@@ -273,6 +291,7 @@ class BankWithdrawalMySqlTest {
         isolated(f -> {
             f.seed(); f.transactions.prepare(NO); f.transactions.reconcile(NO,f.response(5)); f.transactions.reconcile(NO,f.response(5));
             f.wallet("1000","0"); assertEquals("FAILED",f.payouts.payout(NO).status());
+            assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("1000")));
             assertEquals("FAILED",f.bank.settlementEvidence(NO).status());
             f.proofComplement(true);
             f.jdbc.update("DELETE FROM nx_wallet_ledger WHERE user_id=71");
@@ -319,8 +338,46 @@ class BankWithdrawalMySqlTest {
             doThrow(new IllegalStateException("fixture-audit-unavailable")).when(f.audit).recordRequired(any());
             assertThrows(RuntimeException.class,() -> f.transactions.reconcile(NO,f.response(3)));
             f.wallet("900","100"); assertEquals("SENT",f.payouts.payout(NO).status()); assertEquals("PENDING",f.bank.order(NO).state());
+            assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("1000")));
             assertEquals(0,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_payout_ledger WHERE status='CONFIRMED'",Integer.class));
             reset(f.audit); f.transactions.reconcile(NO,f.response(3)); f.wallet("900","0");
+            assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("900")));
+        });
+    }
+
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void legacyApprovalDebitIsReversedOnceAndSuccessUsesSeparateSettlementVoucher() throws Exception {
+        for (int providerStatus : List.of(3,4,5)) isolated(f -> {
+            f.seed(); f.treasury.recordWithdrawalReserve(NO,bd("100"),"legacy approval","fixture","legacy-request");
+            assertEquals(0,f.treasuryMapper.currentReserveUsd().compareTo(bd("900")));
+            f.transactions.prepare(NO);
+            f.transactions.reconcile(NO,f.response(providerStatus)); f.transactions.reconcile(NO,f.response(providerStatus));
+            assertEquals(0,f.treasuryMapper.currentReserveUsd().compareTo(bd(providerStatus==3?"900":"1000")));
+            assertEquals(1,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=?",Integer.class,"WD-REV-"+NO));
+            assertEquals(providerStatus==3?1:0,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=?",Integer.class,"WD-PAID-"+NO));
+            assertEquals(1,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=? AND amount_usd=100",Integer.class,"WD-"+NO));
+        });
+    }
+
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void legacyCorrectionReplayPreservesOriginalAndBlocksConflictingEvidence() throws Exception {
+        isolated(f -> {
+            f.seed(); f.treasury.recordWithdrawalReserve(NO,bd("100"),"legacy approval","fixture","legacy-request");
+            f.treasury.reverseLegacyBankWithdrawalReserve(NO,bd("100"),NOW);
+            f.treasury.reverseLegacyBankWithdrawalReserve(NO,bd("100"),NOW);
+            assertEquals(0,f.treasuryMapper.currentReserveUsd().compareTo(bd("1000"))); f.wallet("900","100");
+            f.transactions.prepare(NO);f.transactions.reconcile(NO,f.response(3));
+            assertEquals(0,f.treasuryMapper.currentReserveUsd().compareTo(bd("900")));
+            assertEquals(3,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no<> 'FIXTURE-IN'",Integer.class));
+            assertThrows(RuntimeException.class,()->f.treasury.settleBankWithdrawalReserve(NO,bd("100"),999,NOW));
+        });
+        isolated(f -> {
+            f.seed();f.treasury.recordWithdrawalReserve(NO,bd("99"),"wrong legacy amount","fixture","legacy-request");
+            f.transactions.prepare(NO);
+            assertThrows(RuntimeException.class,()->f.transactions.reconcile(NO,f.response(3)));
+            f.wallet("900","100");assertEquals("DISPATCHING",f.bank.order(NO).state());
+            assertEquals(0,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_payout_ledger WHERE status='CONFIRMED'",Integer.class));
+            assertEquals(0,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_treasury_reserve_ledger WHERE voucher_no=?",Integer.class,"WD-REV-"+NO));
         });
     }
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")

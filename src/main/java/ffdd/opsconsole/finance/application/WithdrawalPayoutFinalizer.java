@@ -116,10 +116,14 @@ public class WithdrawalPayoutFinalizer {
             throw new BizException(409, "WITHDRAWAL_PAYOUT_TERMINAL_STATE_CONFLICT");
         }
         if ("CONFIRMED".equals(status)) {
+            if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
+                ledger.settleBankWithdrawalReserve(row.withdrawalNo(), row.amount(), providerCid, now);
             if (mapper.settlePending(row.userId(), row.amount(), now) != 1) {
                 throw new BizException(409, "WITHDRAWAL_PENDING_SETTLEMENT_CONFLICT");
             }
         } else {
+            if ("BANK-VND".equals(row.chain()) && "hdpay".equals(source))
+                ledger.reverseLegacyBankWithdrawalReserve(row.withdrawalNo(), row.amount(), now);
             BigDecimal nexBurned = row.nexBurned() == null ? BigDecimal.ZERO : row.nexBurned();
             if (mapper.refundPending(row.userId(), row.amount(), nexBurned, now) != 1) {
                 throw new BizException(409, "WITHDRAWAL_PENDING_REFUND_CONFLICT");

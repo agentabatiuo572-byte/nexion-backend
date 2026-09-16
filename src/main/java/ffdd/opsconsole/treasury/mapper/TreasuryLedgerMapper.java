@@ -512,6 +512,29 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal currentReserveUsd();
 
+    @Select("SELECT amount FROM nx_withdrawal_order WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND is_deleted=0 FOR UPDATE")
+    BigDecimal lockBankWithdrawalAmount(@Param("order") String order);
+
+    @Select("""
+            SELECT reserve_no reserveNo,voucher_no voucherNo,direction,amount_usd amountUsd,
+              idempotency_key idempotencyKey,status,is_deleted deleted
+            FROM nx_treasury_reserve_ledger WHERE reserve_no=#{reserveNo} OR voucher_no=#{voucherNo} FOR UPDATE
+            """)
+    List<ReserveEntry> lockReserveEntries(@Param("reserveNo") String reserveNo, @Param("voucherNo") String voucherNo);
+
+    @Insert("""
+            INSERT INTO nx_treasury_reserve_ledger(reserve_no,voucher_no,direction,amount_usd,reason,operator,
+              idempotency_key,status,created_at,updated_at,is_deleted)
+            VALUES(#{reserveNo},#{voucherNo},#{direction},#{amount},#{reason},'hdpay-settlement',
+              #{evidence},'CONFIRMED',#{now},#{now},0)
+            """)
+    int insertBankReserveEntry(@Param("reserveNo") String reserveNo, @Param("voucherNo") String voucherNo,
+            @Param("direction") String direction, @Param("amount") BigDecimal amount,
+            @Param("reason") String reason, @Param("evidence") String evidence, @Param("now") LocalDateTime now);
+
+    record ReserveEntry(String reserveNo, String voucherNo, String direction, BigDecimal amountUsd,
+                        String idempotencyKey, String status, Integer deleted) { }
+
     @Select("""
             SELECT COALESCE(SUM(amount_usd), 0)
               FROM nx_treasury_reserve_ledger

@@ -556,6 +556,8 @@ class OpsFinanceServiceTest {
         var result = service.reviewWithdrawal("WD-BANK","bank-approve",new WithdrawalReviewRequest("APPROVE","superadmin","review current bank risk"));
         assertThat(result.getCode()).as(result.getMessage()).isZero();
         assertThat(withdrawalRepository.lastHoldUntil).isNotNull();
+        verify(treasuryLedgerRepository, org.mockito.Mockito.never()).recordWithdrawalReserve(
+                anyString(), org.mockito.ArgumentMatchers.any(), anyString(), anyString(), anyString());
         ArgumentCaptor<String> captured = ArgumentCaptor.forClass(String.class);
         verify(bank).approveRisk(org.mockito.ArgumentMatchers.eq("WD-BANK"),captured.capture());
         when(bank.approvedRiskHash("WD-BANK")).thenReturn(captured.getValue());
@@ -1810,7 +1812,7 @@ class OpsFinanceServiceTest {
         when(bankWithdrawalMapper.approveRisk(anyString(),anyString())).thenReturn(1);
     }
 
-    @Test void zeroDayBankAutoApprovalPersistsRiskAndReserveOnceWhileIgnoringOnlyTimeWhenDisabled() {
+    @Test void zeroDayBankAutoApprovalPersistsRiskWithoutDebitingReserveWhileIgnoringOnlyTimeWhenDisabled() {
         prepareZeroDayBankOrder();
         when(riskTimePolicy.enabled()).thenReturn(false);
         when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString(),org.mockito.ArgumentMatchers.eq(false)))
@@ -1819,7 +1821,7 @@ class OpsFinanceServiceTest {
         assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
         verify(bankWithdrawalMapper).approveRisk(org.mockito.ArgumentMatchers.eq("WD-BANK-ZERO"),anyString());
         service.releaseExpiredD2Lifecycles(LocalDateTime.now());
-        verify(treasuryLedgerRepository,org.mockito.Mockito.times(1)).recordWithdrawalReserve(
+        verify(treasuryLedgerRepository,org.mockito.Mockito.never()).recordWithdrawalReserve(
                 org.mockito.ArgumentMatchers.eq("WD-BANK-ZERO"),org.mockito.ArgumentMatchers.eq(new BigDecimal("30")),anyString(),anyString(),anyString());
     }
 

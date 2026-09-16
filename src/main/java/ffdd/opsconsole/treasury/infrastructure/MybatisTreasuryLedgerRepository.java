@@ -235,6 +235,61 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void settleBankWithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, long providerId, LocalDateTime now) {
+        if (providerId <= 0) throw new IllegalStateException("BANK_RESERVE_PROVIDER_REQUIRED");
+        BigDecimal amount = requireBankAmount(withdrawalNo, amountUsd);
+        // Earlier releases posted OUT at approval. Retain that immutable entry and
+        // compensate it exactly once before using the new settlement-only voucher.
+        reverseLegacyBankWithdrawalReserve(withdrawalNo, amount, now);
+        String key = safeBiz(withdrawalNo);
+        writeBankReserveEntry(compactKey("RSV-WD-PAID-", key, 64), compactKey("WD-PAID-", key, 96),
+                "OUT", amount, "HDPay success: withdrawal reserve settlement", "hdpay:" + providerId, now);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void reverseLegacyBankWithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
+        BigDecimal amount = requireBankAmount(withdrawalNo, amountUsd);
+        String key = safeBiz(withdrawalNo);
+        String reserveNo = compactKey("RSV-WD-", key, 64), voucherNo = compactKey("WD-", key, 96);
+        var rows = mapper.lockReserveEntries(reserveNo, voucherNo);
+        if (rows.isEmpty()) return; // New bank approvals never post an actual cash OUT.
+        requireReserveEntry(rows, reserveNo, voucherNo, "OUT", amount, null);
+        writeBankReserveEntry(compactKey("RSV-WD-REV-", key, 64), compactKey("WD-REV-", key, 96),
+                "IN", amount, "Correction of bank reserve posted before provider success: " + voucherNo,
+                "reverse:" + voucherNo, now);
+    }
+
+    private BigDecimal requireBankAmount(String withdrawalNo, BigDecimal amountUsd) {
+        BigDecimal stored = mapper.lockBankWithdrawalAmount(withdrawalNo);
+        if (amountUsd == null || amountUsd.signum() <= 0 || stored == null || stored.compareTo(amountUsd) != 0)
+            throw new IllegalStateException("BANK_RESERVE_ORDER_AMOUNT_MISMATCH");
+        return amountUsd.setScale(6, java.math.RoundingMode.UNNECESSARY);
+    }
+
+    private void writeBankReserveEntry(String reserveNo, String voucherNo, String direction, BigDecimal amount,
+                                       String reason, String evidence, LocalDateTime now) {
+        var existing = mapper.lockReserveEntries(reserveNo, voucherNo);
+        if (!existing.isEmpty()) {
+            requireReserveEntry(existing, reserveNo, voucherNo, direction, amount, evidence);
+            return;
+        }
+        if (mapper.insertBankReserveEntry(reserveNo, voucherNo, direction, amount, reason, evidence, now) != 1)
+            throw new IllegalStateException("BANK_RESERVE_POST_FAILED");
+    }
+
+    private void requireReserveEntry(List<TreasuryLedgerMapper.ReserveEntry> rows, String reserveNo, String voucherNo,
+                                     String direction, BigDecimal amount, String evidence) {
+        if (rows.size() != 1) throw new IllegalStateException("BANK_RESERVE_EVIDENCE_CONFLICT");
+        var row = rows.get(0);
+        if (!reserveNo.equals(row.reserveNo()) || !voucherNo.equals(row.voucherNo()) || !direction.equals(row.direction())
+                || row.amountUsd() == null || row.amountUsd().compareTo(amount) != 0 || !"CONFIRMED".equals(row.status())
+                || !Integer.valueOf(0).equals(row.deleted()) || (evidence != null && !evidence.equals(row.idempotencyKey())))
+            throw new IllegalStateException("BANK_RESERVE_EVIDENCE_CONFLICT");
+    }
+
+    @Override
     @Transactional
     public void refundWithdrawal(String withdrawalNo, Long userId, BigDecimal amount, String asset, String reason) {
         refundWithdrawal(withdrawalNo, userId, amount, asset, BigDecimal.ZERO, reason);
