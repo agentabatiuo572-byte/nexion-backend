@@ -28,7 +28,6 @@ import org.springframework.util.StringUtils;
 public class PayoutVndConfigService {
     public static final String VALUES_KEY = "finance.payout_vnd.values";
     public static final String VERSION_KEY = "finance.payout_vnd.version";
-    public static final String PROVIDER_READY_KEY = "finance.payout_vnd.provider_ready";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private static final BigDecimal HUNDRED = new BigDecimal("100");
 
@@ -67,7 +66,7 @@ public class PayoutVndConfigService {
         FxSource fx = readFx();
         if (fx == null) return ApiResult.fail(503, "D7_D6_SOURCE_UNAVAILABLE");
 
-        Map<String, Object> next = valuesFrom(request, booleanValue(current.values().get("channelEnabled")));
+        Map<String, Object> next = valuesFrom(request);
         if (sameOperationalValues(current.values(), next)) return ApiResult.fail(422, "D7_CONFIG_NO_CHANGES");
         if (isInverted(fx, decimal(next.get("sellSpreadPct"))) && !Boolean.TRUE.equals(request.forceInverted())) {
             return ApiResult.fail(422, "D7_PRICE_SPREAD_INVERTED");
@@ -80,32 +79,8 @@ public class PayoutVndConfigService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> updateChannel(PayoutVndChannelUpdateRequest request) {
-        if (request == null || request.enabled() == null || request.expectedVersion() == null
-                || request.expectedVersion() < 0 || !validReason(request.reason())) {
-            return ApiResult.fail(422, "D7_CHANNEL_REQUEST_INVALID");
-        }
-        State current = readState(true);
-        if (current == null || validateStored(current.values()) != null) {
-            return ApiResult.fail(503, "D7_CONFIG_UNAVAILABLE");
-        }
-        if (!current.version().equals(request.expectedVersion())) {
-            return ApiResult.fail(409, "D7_CONFIG_VERSION_CONFLICT");
-        }
-        boolean before = booleanValue(current.values().get("channelEnabled"));
-        if (before == request.enabled()) return ApiResult.fail(422, "D7_CHANNEL_NO_CHANGES");
-        if (request.enabled() && (!current.providerStatusAvailable() || !current.providerReady())) {
-            return ApiResult.fail(409, "D7_PROVIDER_NOT_READY");
-        }
-        if (request.enabled() && !coverageHealthy()) {
-            return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
-        }
-        Map<String, Object> next = new LinkedHashMap<>(current.values());
-        next.put("channelEnabled", request.enabled());
-        next.put("effectiveAt", clock.millis());
-        next.put("lastUpdatedBy", AdminActorResolver.resolve("system"));
-        return persist(current, next, request.enabled()
-                ? "D7_PAYOUT_VND_CHANNEL_ENABLED" : "D7_PAYOUT_VND_CHANNEL_DISABLED",
-                request.reason(), false);
+        // Retired compatibility endpoint: old clients cannot recreate a second channel switch.
+        return ApiResult.fail(410, "D7_CHANNEL_USES_SHARED_HDPAY_CONFIG");
     }
 
     private ApiResult<Map<String, Object>> persist(
@@ -154,18 +129,8 @@ public class PayoutVndConfigService {
             long version = Long.parseLong(rawVersion.get());
             if (version < 0) return null;
             Map<String, Object> values = objectMapper.readValue(rawValues.get(), MAP_TYPE);
-            Optional<String> rawProvider;
-            try {
-                rawProvider = config.activeValue(PROVIDER_READY_KEY);
-            } catch (RuntimeException providerLookupFailed) {
-                // Readiness is an enable-only dependency. Degrade it to unavailable
-                // so an already-open channel can still be displayed and shut down.
-                rawProvider = Optional.empty();
-            }
-            String provider = rawProvider.orElse("").trim();
-            boolean providerStatusAvailable = "true".equals(provider) || "false".equals(provider);
-            return new State(version, values, providerStatusAvailable && Boolean.parseBoolean(provider) && payoutReadiness.ready(),
-                    providerStatusAvailable);
+            // Ignore historical provider_ready/channelEnabled values, including malformed values.
+            return new State(version, values, payoutReadiness.ready(), true);
         } catch (Exception ex) {
             return null;
         }
@@ -195,10 +160,12 @@ public class PayoutVndConfigService {
         result.put("baseRateVndPerUsdt", fx.baseRateVndPerUsdt());
         result.put("buySpreadPct", fx.buySpreadPct());
         for (String key : operationalKeys()) result.put(key, values.get(key));
+        // Compatibility projection only, never a separately stored or writable setting.
+        result.put("channelEnabled", providerReady);
         result.put("providerReady", providerReady);
         result.put("providerStatusAvailable", providerStatusAvailable);
         result.put("provider", "HDPAY");
-        result.put("payoutConfigured", payoutReadiness.ready());
+        result.put("payoutConfigured", providerReady);
         result.put("sandboxAvailable", providerProperties.getMode() == PayoutVndProviderProperties.Mode.LOCAL_SANDBOX);
         result.put("defaults", defaults());
         result.put("effectiveAt", Instant.ofEpochMilli(longValue(values.get("effectiveAt"))).toString());
@@ -210,7 +177,7 @@ public class PayoutVndConfigService {
         return result;
     }
 
-    private Map<String, Object> valuesFrom(PayoutVndConfigUpdateRequest request, boolean channelEnabled) {
+    private Map<String, Object> valuesFrom(PayoutVndConfigUpdateRequest request) {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("sellSpreadPct", request.sellSpreadPct());
         values.put("quoteTtlMinWithdraw", request.quoteTtlMinWithdraw());
@@ -220,7 +187,6 @@ public class PayoutVndConfigService {
         values.put("feeMaxUsd", request.feeMaxUsd());
         values.put("minAmountUsd", request.minAmountUsd());
         values.put("maxAmountUsd", request.maxAmountUsd());
-        values.put("channelEnabled", channelEnabled);
         values.put("effectiveAt", clock.millis());
         values.put("lastUpdatedBy", AdminActorResolver.resolve("system"));
         return values;
@@ -242,7 +208,7 @@ public class PayoutVndConfigService {
 
     private String validateStored(Map<String, Object> values) {
         try {
-            if (values == null || !(values.get("channelEnabled") instanceof Boolean)
+            if (values == null
                     || !StringUtils.hasText(String.valueOf(values.get("lastUpdatedBy")))
                     || longValue(values.get("effectiveAt")) <= 0
                     || !validOperationalValues(
@@ -314,7 +280,6 @@ public class PayoutVndConfigService {
 
     private boolean sameOperationalValues(Map<String, Object> before, Map<String, Object> after) {
         for (String key : operationalKeys()) {
-            if ("channelEnabled".equals(key)) continue;
             if ("quoteTtlMinWithdraw".equals(key)) {
                 if (intValue(before.get(key)) != intValue(after.get(key))) return false;
             } else if (decimal(before.get(key)).compareTo(decimal(after.get(key))) != 0) return false;
@@ -343,7 +308,7 @@ public class PayoutVndConfigService {
 
     private String[] operationalKeys() {
         return new String[]{"sellSpreadPct", "quoteTtlMinWithdraw", "requoteTolerancePct", "feeRatePct",
-                "feeMinUsd", "feeMaxUsd", "minAmountUsd", "maxAmountUsd", "channelEnabled"};
+                "feeMinUsd", "feeMaxUsd", "minAmountUsd", "maxAmountUsd"};
     }
 
     private boolean validReason(String value) {

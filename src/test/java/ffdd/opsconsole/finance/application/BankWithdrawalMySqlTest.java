@@ -107,7 +107,7 @@ class BankWithdrawalMySqlTest {
             when(delivery.available("+84")).thenReturn(true); when(delivery.verificationCode("+84")).thenReturn("123456");
             var transport = mock(HdPayProperties.class);
             var properties = mock(HdPayPayoutProperties.class);
-            when(properties.ready(transport)).thenReturn(true); when(properties.getBankCodes()).thenReturn(Set.of("VCB"));
+            when(properties.ready(transport)).thenReturn(true);
             var config = mock(PayoutVndConfigService.class);
             var values = new HashMap<String,Object>(Map.of("channelEnabled", true, "providerReady", true,
                     "version",1L,"quoteTtlMinWithdraw",5,"minAmountUsd",20,"maxAmountUsd",5000,"feeRatePct",1,"feeMinUsd",1,"feeMaxUsd",25));
@@ -140,6 +140,7 @@ class BankWithdrawalMySqlTest {
         void migrate() throws Exception {
             try (var connection = source.getConnection()) {
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20260915_hdpay_bank_withdrawal.sql"));
+                ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20260916_hdpay_shared_config_request_ip.sql"));
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource("scripts/migrations/20260916_bank_beneficiary_verification.sql"));
             }
         }
@@ -148,7 +149,7 @@ class BankWithdrawalMySqlTest {
             var encrypted = cipher.encrypt("0123456789\nNGUYEN VAN A", BankWithdrawalService.quoteAad(71, QN));
             bank.insertQuote(new BankWithdrawalMapper.Quote(QN,71L,"BNK-fixture",0L,"VCB","****6789",encrypted,
                     bd("100"),bd("1"),bd("99"),bd("25000"),bd("2475000"),1L,"d5-v1",NOW,NOW.plusMinutes(5),null));
-            bank.useQuote(QN,NO); bank.insertOrder(NO,QN,71,NOW);
+            bank.useQuote(QN,NO); bank.insertOrder(NO,QN,71,NOW,"203.0.113.7");
             jdbc.update("""
                     INSERT INTO nx_withdrawal_order(id,withdrawal_no,user_id,chain,target_address,amount,d2_net_receive,d2_nex_burned,status,d2_hold_until,
                     d5_payout_due_at,created_at,updated_at) VALUES(1,?,71,'BANK-VND','BANK-VND:BNK-fixture',100,99,0,'REVIEW_PASSED',?,?,?,?)
@@ -169,9 +170,35 @@ class BankWithdrawalMySqlTest {
         }
     }
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void missingLegacyIpsReturnToReviewWithoutStarvingNewOrdersOrInventingDispatchEvidence() throws Exception {
+        isolated(f -> {
+            f.seed(); f.jdbc.update("UPDATE nx_withdrawal_order SET id=11 WHERE withdrawal_no=?",NO);
+            for (int i=1; i<=10; i++) {
+                String legacy = "WD-LEGACY-"+i;
+                f.bank.insertOrder(legacy,"BQ-LEGACY-"+i,71,NOW,null);
+                f.jdbc.update("""
+                        INSERT INTO nx_withdrawal_order(id,withdrawal_no,user_id,chain,target_address,amount,d2_net_receive,d2_nex_burned,status,d2_hold_until,created_at,updated_at)
+                        VALUES(?,?,71,'BANK-VND','BANK-VND:BNK-fixture',100,99,0,'REVIEW_PASSED',?,?,?)
+                        """,i,legacy,NOW,NOW,NOW);
+            }
+            var firstBatch=f.bank.ready(NOW); assertEquals(10,firstBatch.size()); assertFalse(firstBatch.contains(NO));
+            for(String legacy:firstBatch) assertNull(f.transactions.prepare(legacy));
+            assertEquals(10,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_order WHERE status='REVIEW_PENDING' AND failure_reason='BANK_PAYOUT_CLIENT_IP_REQUIRED'",Integer.class));
+            assertEquals(List.of(NO),f.bank.ready(NOW));
+            assertEquals("203.0.113.7", f.transactions.prepare(NO).clientIp());
+            String legacy=firstBatch.get(0);
+            assertEquals("READY",f.bank.order(legacy).state()); assertNull(f.bank.order(legacy).providerOrderId());
+            assertNull(f.bank.clientIp(legacy));
+            // Existing D2 refund proof remains valid for an unsent order returned to review.
+            f.jdbc.update("UPDATE nx_withdrawal_order SET status='REFUNDED' WHERE withdrawal_no=?",legacy);
+            f.jdbc.update("INSERT INTO nx_wallet_ledger(biz_no,user_id,biz_type,asset,direction,amount,status,created_at) VALUES(?,71,'WITHDRAW_REFUND','USDT','IN',100,'SUCCESS',?)", "D2-REFUND-"+legacy,NOW);
+            assertEquals("REFUNDED",f.bank.settlementEvidence(legacy).status());
+        });
+    }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
     void migrationConstraintsAndCryptoClaimsCannotCrossRails() throws Exception {
         isolated(f -> {
-            f.seed(); assertEquals(4, f.bank.schemaTables());
+            f.seed(); assertEquals(4, f.bank.schemaTables()); assertEquals(1, f.bank.clientIpColumn());
             assertEquals(List.of(NO), f.bank.ready(NOW));
             assertTrue(f.payouts.claimable(NOW,10).isEmpty());
             assertTrue(f.payouts.claimableDevelopment(NOW,10).isEmpty());
@@ -280,14 +307,14 @@ class BankWithdrawalMySqlTest {
                 assertEquals("EXPIRED",f.service.recoverQuote(71,q).getData().get("state"));
                 assertEquals(1,f.bank.expired(q)); assertNull(f.service.recovery(71).getData());
                 f.jdbc.update("UPDATE nx_bank_payout_quote SET expires_at=? WHERE quote_no=?",NOW.plusHours(1),q);
-                assertEquals("BANK_QUOTE_EXPIRED",f.service.submit(71,q,"late-after-expiry").getMessage());
+                assertEquals("BANK_QUOTE_EXPIRED",f.service.submit(71,q,"late-after-expiry","203.0.113.7").getMessage());
                 assertEquals(0,f.bank.useQuote(q,"WD-LATE"));
                 f.wallet("900","100");
                 var next = f.service.quote(71,bd("100")); assertEquals(0,next.getCode());
                 String nextQuote = next.getData().get("quoteNo").toString();
                 assertEquals("ABANDONED",f.service.abandonQuote(71,nextQuote).getData().get("state"));
                 assertEquals("ABANDONED",f.service.recoverQuote(71,nextQuote).getData().get("state"));
-                assertThrows(ffdd.opsconsole.shared.exception.BizException.class, () -> f.service.submit(71,nextQuote,"late-after-cancel"));
+                assertThrows(ffdd.opsconsole.shared.exception.BizException.class, () -> f.service.submit(71,nextQuote,"late-after-cancel","203.0.113.7"));
                 assertEquals(0,f.bank.useQuote(nextQuote,"WD-LATE-CANCEL"));
                 assertNull(f.service.recovery(71).getData());
             } finally { pool.shutdownNow(); assertTrue(pool.awaitTermination(15,TimeUnit.SECONDS)); }
@@ -385,7 +412,7 @@ class BankWithdrawalMySqlTest {
                 f.jdbc.update(mutation[0]); f.proofComplement(false);
                 f.jdbc.update(mutation[1]); f.proofComplement(true);
             }
-            for (int i=0; i<256; i++) f.bank.insertOrder("WD-OTHER-"+i,"BQ-OTHER-"+i,72,NOW);
+            for (int i=0; i<256; i++) f.bank.insertOrder("WD-OTHER-"+i,"BQ-OTHER-"+i,72,NOW,"203.0.113.8");
             assertTrue(f.bank.unresolvedOrders(71).isEmpty());
             assertEquals(256,f.bank.unresolvedOrders(72).size());
             assertEquals("user_id,created_at,withdrawal_no",f.jdbc.queryForObject("""

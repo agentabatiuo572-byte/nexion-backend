@@ -47,6 +47,7 @@ class HdPayPayoutContractTest {
 
     HdPayProperties transport(int port) {
         HdPayProperties p = new HdPayProperties();
+        p.setMode(HdPayProperties.Mode.PROVIDER);
         p.setBaseUrl("http://127.0.0.1:" + port + "/api/order");
         p.setAllowInsecureBaseUrlForTests(true);
         p.setCallbackBaseUrl("https://pay.example.com");
@@ -58,8 +59,6 @@ class HdPayPayoutContractTest {
 
     HdPayPayoutProperties payout() {
         HdPayPayoutProperties p = new HdPayPayoutProperties();
-        p.setEnabled(true);
-        p.setClientIp("18.142.169.24");
         return p;
     }
 
@@ -78,7 +77,7 @@ class HdPayPayoutContractTest {
             var p = transport(server.getAddress().getPort());
             var gateway = new HttpHdPayPayoutGateway(p, payout(), json);
             assertDoesNotThrow(() -> gateway.create(new HdPayPayoutGateway.Request(
-                    "WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A")));
+                    "WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A", "203.0.113.7")));
             Map<String, Object> body = captured.get();
             assertEquals("BANKQR", body.get("payType"));
             assertTrue(body.containsKey("bnkCode"));
@@ -86,6 +85,7 @@ class HdPayPayoutContractTest {
             assertEquals("NGUYEN VAN A", body.get("name"));
             assertFalse(body.containsKey("cvv")); assertFalse(body.containsKey("expiry"));
             assertEquals("VN", body.get("countryCode"));
+            assertEquals("203.0.113.7", body.get("ip"));
             assertEquals("0123456789", body.get("account"));
             assertEquals("https://pay.example.com/openapi/v1/payments/hdpay/payout/callback", body.get("callbackUrl"));
             assertFalse(body.containsKey("ifsc"));
@@ -95,19 +95,18 @@ class HdPayPayoutContractTest {
         } finally { server.stop(0); }
     }
 
-    @Test void bankQrStillRequiresExplicitEnableAndValidTransportAndClientIp() {
+    @Test void payoutUsesSharedProviderConfigurationWithoutSeparateFlags() {
         var transport = transport(8080); var payout = new HdPayPayoutProperties();
-        payout.setClientIp("18.142.169.24");
-        assertTrue(payout.configured(transport)); assertFalse(payout.ready(transport));
-        payout.setEnabled(true); assertTrue(payout.ready(transport));
-        payout.setClientIp(""); assertFalse(payout.ready(transport));
-        payout.setClientIp("18.142.169.24"); transport.setMd5Key(""); assertFalse(payout.ready(transport));
+        assertTrue(transport.ready()); assertTrue(payout.ready(transport));
+        transport.setMode(HdPayProperties.Mode.DISABLED); assertFalse(payout.ready(transport));
+        transport.setMode(HdPayProperties.Mode.PROVIDER); transport.setMd5Key("");
+        assertFalse(payout.ready(transport));
     }
 
     @Test void nonemptyOrMissingBankCodeNeverReachesProvider() {
         var gateway = new HttpHdPayPayoutGateway(transport(1), payout(), json);
         for (String code : new String[]{"VCB", "BANKQR", null}) {
-            var error = assertThrows(HdPayGatewayException.class, () -> gateway.create(new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), code, "0123456789", "NGUYEN VAN A")));
+            var error = assertThrows(HdPayGatewayException.class, () -> gateway.create(new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), code, "0123456789", "NGUYEN VAN A", "203.0.113.7")));
             assertTrue(error.getMessage().contains("BANK_CODE_MUST_BE_EMPTY"));
         }
     }

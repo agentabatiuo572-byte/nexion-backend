@@ -172,6 +172,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260904_hdpay_submission_unknown_before_network.sql"),
   (Join-Path $root "scripts\migrations\20260907_hdpay_optional_manual_bank.sql"),
   (Join-Path $root "scripts\migrations\20260915_hdpay_bank_withdrawal.sql"),
+  (Join-Path $root "scripts\migrations\20260916_hdpay_shared_config_request_ip.sql"),
   (Join-Path $root "scripts\migrations\20260915_l6_bank_withdrawal_route.sql")
 )
 

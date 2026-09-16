@@ -57,8 +57,7 @@ public class BankWithdrawalService {
         Beneficiary current = bank.beneficiary(userId);
         ApiResult<Map<String, Object>> response = d7.overview();
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
-        boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("channelEnabled"))
-                && Boolean.TRUE.equals(data.get("providerReady"));
+        boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("providerReady"));
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
                 "bankCodeRequired", false, "bindingOtpRequired", current != null, "payType", "BANKQR",
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
@@ -170,7 +169,7 @@ public class BankWithdrawalService {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public ApiResult<Map<String, Object>> submit(long userId, String quoteNo, String key) {
+    public ApiResult<Map<String, Object>> submit(long userId, String quoteNo, String key, String clientIp) {
         requireUser(userId, false);
         if (quoteNo == null || !quoteNo.matches("BQ-[a-f0-9]{32}")) throw error(422, "BANK_QUOTE_INVALID");
         ApiResult<Map<String, Object>> receipt = (ApiResult) idempotency.executeRetained("BANK_WITHDRAW:" + userId, key,
@@ -192,10 +191,11 @@ public class BankWithdrawalService {
                     Beneficiary recipient = requireBeneficiary(userId);
                     if (!recipient.beneficiaryNo().equals(quote.beneficiaryNo()) || !recipient.version().equals(quote.beneficiaryVersion()))
                         throw error(409, "BANK_BENEFICIARY_CHANGED");
+                    String requestIp = HdPayClientIp.requireLiteral(clientIp);
                     var result = withdrawals.reserveBank(userId, quote, "BANK:" + HdPayPayoutDigest.sha(userId + "|" + key));
                     if (result.getCode() != 0) throw error(result.getCode(), result.getMessage());
                     String order = result.getData().get("withdrawalNo").toString();
-                    if (bank.useQuote(quoteNo, order) != 1 || bank.insertOrder(order, quoteNo, userId, now) != 1)
+                    if (bank.useQuote(quoteNo, order) != 1 || bank.insertOrder(order, quoteNo, userId, now, requestIp) != 1)
                         throw error(409, "BANK_ORDER_LINK_CONFLICT");
                     return orderView(userId, order);
                 });
@@ -242,7 +242,7 @@ public class BankWithdrawalService {
 
     private Map<String, Object> requireChannel() {
         var result = d7.overview();
-        if (!payout.ready(transport) || result.getCode() != 0 || !Boolean.TRUE.equals(result.getData().get("channelEnabled"))
+        if (!payout.ready(transport) || result.getCode() != 0
                 || !Boolean.TRUE.equals(result.getData().get("providerReady")))
             throw error(409, "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE");
         return result.getData();

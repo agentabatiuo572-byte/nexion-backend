@@ -1,27 +1,23 @@
 package ffdd.opsconsole.finance.hdpay;
 
-import java.util.Set;
-import lombok.Getter;
-import lombok.Setter;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-/** Separate opt-in from HDPay pay-in. BANKQR routes without a merchant bank-code allowlist. */
-@Getter @Setter @Component
-@ConfigurationProperties(prefix = "nexion.finance.hdpay-payout")
+/** Payout uses the same HDPay configuration as pay-in; there are no payout-specific settings. */
+@Component
 public class HdPayPayoutProperties {
     public static final String CALLBACK_PATH = "/openapi/v1/payments/hdpay/payout/callback";
-    private boolean enabled;
-    private String clientIp = "";
-    /** Legacy configuration retained for compatibility; BANKQR always sends bnkCode="". */
-    private Set<String> bankCodes = Set.of();
+    private org.springframework.core.env.Environment environment;
 
-    public boolean configured(HdPayProperties transport) {
-        return transport.connectionReady() && clientIp != null
-                && clientIp.matches("[0-9A-Fa-f:.]{3,64}");
+    @org.springframework.beans.factory.annotation.Autowired
+    void captureEnvironment(org.springframework.core.env.Environment environment) { this.environment = environment; }
+
+    public boolean ready(HdPayProperties transport) {
+        // The isolated public-test deployment only has collection approval. This is a profile
+        // boundary, not a second operational switch or a replacement credential bundle.
+        return (environment == null || (!environment.getProperty("nexion.deployment.public-test", Boolean.class, false)
+                && !environment.acceptsProfiles(org.springframework.core.env.Profiles.of("public-test"))))
+                && transport.ready();
     }
-
-    public boolean ready(HdPayProperties transport) { return enabled && configured(transport); }
 
     public String callbackUrl(HdPayProperties transport) {
         return transport.getCallbackBaseUrl().replaceAll("/+$", "") + CALLBACK_PATH;

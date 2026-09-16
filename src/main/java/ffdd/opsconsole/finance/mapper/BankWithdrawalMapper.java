@@ -11,6 +11,8 @@ import org.apache.ibatis.annotations.*;
 public interface BankWithdrawalMapper {
     @Select("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('nx_bank_payout_beneficiary','nx_bank_payout_quote','nx_hdpay_payout','nx_hdpay_payout_callback')")
     int schemaTables();
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_hdpay_payout' AND column_name='client_ip'")
+    int clientIpColumn();
     // Immediate activation also applies to existing bindings. Keep the historical delay column intact.
     String BENEFICIARY = "SELECT user_id userId,beneficiary_no beneficiaryNo,bank_code bankCode,masked_account maskedAccount,"
             + "recipient_cipher recipientCipher,updated_at effectiveAt,next_change_at nextChangeAt,version FROM nx_bank_payout_beneficiary ";
@@ -79,10 +81,13 @@ public interface BankWithdrawalMapper {
             + "AND NOT EXISTS(SELECT 1 FROM nx_bank_payout_quote_expiry e WHERE e.quote_no=#{quote})")
     int useQuote(@Param("quote") String quote, @Param("order") String order);
     @Insert("""
-            INSERT INTO nx_hdpay_payout(withdrawal_no,quote_no,user_id,state,created_at,updated_at)
-            VALUES(#{order},#{quote},#{userId},'READY',#{now},#{now})
+            INSERT INTO nx_hdpay_payout(withdrawal_no,quote_no,user_id,state,created_at,updated_at,client_ip)
+            VALUES(#{order},#{quote},#{userId},'READY',#{now},#{now},#{clientIp})
             """)
-    int insertOrder(@Param("order") String order, @Param("quote") String quote, @Param("userId") long userId, @Param("now") LocalDateTime now);
+    int insertOrder(@Param("order") String order, @Param("quote") String quote, @Param("userId") long userId,
+            @Param("now") LocalDateTime now, @Param("clientIp") String clientIp);
+
+    @Select("SELECT client_ip FROM nx_hdpay_payout WHERE withdrawal_no=#{order}") String clientIp(String order);
 
     String ORDER = "SELECT withdrawal_no withdrawalNo,quote_no quoteNo,user_id userId,state,provider_order_id providerOrderId,"
             + "provider_status providerStatus,last_error lastError FROM nx_hdpay_payout ";
@@ -137,10 +142,10 @@ public interface BankWithdrawalMapper {
     @Update("UPDATE nx_hdpay_payout SET approved_risk_hash=#{hash} WHERE withdrawal_no=#{order} AND state='READY'")
     int approveRisk(@Param("order") String order, @Param("hash") String hash);
     @Update("""
-            UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',failure_reason='BANK_PAYOUT_RISK_REVIEW_REQUIRED',
+            UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',failure_reason=#{reason},
               updated_at=#{now},version=version+1
             WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND status='REVIEW_PASSED' AND is_deleted=0
-            """) int returnForReview(@Param("order") String order, @Param("now") LocalDateTime now);
+            """) int returnForReview(@Param("order") String order, @Param("now") LocalDateTime now, @Param("reason") String reason);
     @Select("""
             SELECT p.withdrawal_no FROM nx_hdpay_payout p JOIN nx_withdrawal_order w ON w.withdrawal_no=p.withdrawal_no
             JOIN nx_user u ON u.id=w.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0

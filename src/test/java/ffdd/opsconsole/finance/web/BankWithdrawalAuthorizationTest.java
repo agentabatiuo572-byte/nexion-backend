@@ -34,7 +34,7 @@ class BankWithdrawalAuthorizationTest {
         }
     }
     @Test void appEndpointsDeriveUserFromAuthenticatedUserSubjectOnly() {
-        var service=mock(BankWithdrawalService.class); var controller=new BankWithdrawalController(service);
+        var service=mock(BankWithdrawalService.class); var controller=new BankWithdrawalController(service, new ffdd.opsconsole.shared.security.GatewaySecurityProperties());
         assertThrows(RuntimeException.class,()->controller.config(null));
         assertThrows(RuntimeException.class,()->controller.recovery(null));
         assertThrows(RuntimeException.class,()->controller.verify(null));

@@ -53,16 +53,37 @@ class BankWithdrawalServiceTest {
         assertEquals("ABANDONED",service.abandonQuote(71,qn).getData().get("state"));
         verify(bank).cancelQuote(qn);
         when(bank.cancelled(qn)).thenReturn(1);
-        assertThrows(RuntimeException.class,()->service.submit(71,qn,"fixture-late-submit"));
+        assertThrows(RuntimeException.class,()->service.submit(71,qn,"fixture-late-submit","203.0.113.7"));
         verifyNoInteractions(withdrawals);
     }
     @Test void expiredQuoteCannotReserveOrCallProvider() {
         var old=quote(71);
         when(bank.lockQuote(qn,71L)).thenReturn(new BankWithdrawalMapper.Quote(qn,71L,old.beneficiaryNo(),1L,"VCB","***6789","cipher",
                 old.amountUsdt(),old.feeUsdt(),old.netUsdt(),old.rateVnd(),old.amountVnd(),1L,"d5-v1",now.minusMinutes(6),now.minusMinutes(1),null));
-        assertEquals("BANK_QUOTE_EXPIRED", service.submit(71,qn,"fixture-expired").getMessage());
+        assertEquals("BANK_QUOTE_EXPIRED", service.submit(71,qn,"fixture-expired","203.0.113.7").getMessage());
         verify(bank).sealExpiredQuotes(71, now);
         verifyNoInteractions(withdrawals);
+    }
+    @Test void submissionPersistsOriginalIpAndIdempotentReplayCannotOverwriteIt() {
+        doReturn(true).when(payout).ready(any());
+        when(d7.overview()).thenReturn(ApiResult.ok(Map.of("providerReady",true,"channelEnabled",false,"version",1L)));
+        when(bank.lockQuote(qn,71L)).thenReturn(quote(71)); when(bank.activeQuotes(71L)).thenReturn(List.of(quote(71)));
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now,now,1L));
+        when(withdrawals.reserveBank(eq(71L),any(),anyString())).thenReturn(ApiResult.ok(Map.of("withdrawalNo","WD-fixture")));
+        when(bank.useQuote(qn,"WD-fixture")).thenReturn(1);
+        when(bank.insertOrder(eq("WD-fixture"),eq(qn),eq(71L),eq(now),anyString())).thenReturn(1);
+        var tested = spy(service);
+        doReturn(ApiResult.ok(Map.of("withdrawalNo","WD-fixture"))).when(tested).orderView(71L,"WD-fixture");
+        assertThrows(HdPayGatewayException.class,()->tested.submit(71,qn,"same-key","invalid-ip"));
+        verify(withdrawals,never()).reserveBank(anyLong(),any(),anyString());
+        var receipt = new java.util.concurrent.atomic.AtomicReference<Object>();
+        when(idem.executeRetained(eq("BANK_WITHDRAW:71"),eq("same-key"),eq(HdPayPayoutDigest.sha("71|"+qn)),any(),any()))
+                .thenAnswer(i->{ if(receipt.get()==null) receipt.set(((Supplier<?>)i.getArgument(4)).get()); return receipt.get(); });
+        assertEquals(0,tested.submit(71,qn,"same-key","203.0.113.7").getCode());
+        assertEquals(0,tested.submit(71,qn,"same-key","2001:db8::9").getCode());
+        verify(bank,times(1)).insertOrder("WD-fixture",qn,71L,now,"203.0.113.7");
+        verify(bank,never()).insertOrder(anyString(),anyString(),anyLong(),any(),eq("2001:db8::9"));
+        verify(withdrawals,times(1)).reserveBank(anyLong(),any(),anyString());
     }
     @Test void invalidRecipientNeverWritesOrUsesOtp() {
         assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest("","invalid","NGUYEN VAN A",null,null),"fixture-bind"));
@@ -76,20 +97,20 @@ class BankWithdrawalServiceTest {
     }
     @Test void bankQrConfigExplicitlyRequiresNeitherBankSelectionNorOtpAndDoesNotEnablePayout() {
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
-        payout.setBankCodes(Set.of("VCB", "ACB", "UNKNOWN"));
+
         var config = service.config(71).getData();
         assertEquals(List.of(), config.get("banks"));
         assertEquals(false, config.get("bankCodeRequired"));
         assertEquals(false, config.get("bindingOtpRequired"));
         assertEquals("BANKQR", config.get("payType"));
         assertEquals(false, config.get("enabled"));
-        payout.setBankCodes(Set.of()); assertEquals(List.of(), service.config(71).getData().get("banks"));
-        payout.setBankCodes(null); assertEquals(List.of(), service.config(71).getData().get("banks"));
+        assertEquals(List.of(), service.config(71).getData().get("banks"));
+        assertEquals(List.of(), service.config(71).getData().get("banks"));
     }
     @Test void newNonemptyBankCodeIsRejectedWithoutWritingOrConsumingOtp() {
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
-        payout.setBankCodes(Set.of("VCB")); service.config(71); clearInvocations(bank);
-        payout.setBankCodes(Set.of("ACB"));
+        service.config(71); clearInvocations(bank);
+
         var error = assertThrows(RuntimeException.class, () -> service.bind(71, binding(), "bank-fixture"));
         assertEquals("BANK_CODE_MUST_BE_EMPTY", error.getMessage());
         verifyNoInteractions(bank, addresses, otp, withdrawals);
@@ -97,7 +118,7 @@ class BankWithdrawalServiceTest {
     @Test void successfulLegacyIdempotencyReplaySurvivesBankQrUpgrade() {
         var receipt = ApiResult.ok(Map.<String, Object>of("beneficiary", Map.of("bankCode", "VCB", "maskedAccount", "****6789")));
         doReturn(receipt).when(idem).executeRetained(anyString(), anyString(), anyString(), any(), any());
-        payout.setBankCodes(Set.of());
+
         assertSame(receipt, service.bind(71, binding(), "bank-already-succeeded"));
         verifyNoInteractions(bank, addresses, otp, withdrawals);
     }
@@ -188,12 +209,12 @@ class BankWithdrawalServiceTest {
         assertEquals(0,service.quote(71,new BigDecimal("100")).getCode());
         when(bank.lockQuote(qn,71)).thenReturn(quote(71)); when(bank.activeQuotes(71)).thenReturn(List.of(quote(71)));
         when(withdrawals.reserveBank(anyLong(),any(),anyString())).thenReturn(ApiResult.fail(409,"FIXTURE_WALLET_BLOCKED"));
-        assertEquals("FIXTURE_WALLET_BLOCKED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"without-verification")).getMessage());
+        assertEquals("FIXTURE_WALLET_BLOCKED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"without-verification","203.0.113.7")).getMessage());
         verify(withdrawals).reserveBank(eq(71L),any(),anyString());
         verify(bank,never()).verification(anyString());
         clearInvocations(withdrawals);
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-new","","****4321","cipher",now,now.plusDays(7),2L));
-        assertEquals("BANK_BENEFICIARY_CHANGED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"changed-recipient")).getMessage());
+        assertEquals("BANK_BENEFICIARY_CHANGED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"changed-recipient","203.0.113.7")).getMessage());
         verify(withdrawals,never()).reserveBank(anyLong(),any(),anyString());
     }
 

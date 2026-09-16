@@ -1,6 +1,9 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.application.BankWithdrawalService;
+import ffdd.opsconsole.finance.hdpay.HdPayClientIp;
+import ffdd.opsconsole.shared.security.GatewaySecurityProperties;
+import jakarta.servlet.http.HttpServletRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
@@ -13,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/withdrawals/bank")
 public class BankWithdrawalController {
     private final BankWithdrawalService service;
+    private final GatewaySecurityProperties gatewaySecurity;
     @GetMapping("/config") public ApiResult<Map<String, Object>> config(Authentication auth) { return service.config(user(auth)); }
     @GetMapping("/recovery") public ApiResult<Map<String, Object>> recovery(Authentication auth) { return service.recovery(user(auth)); }
     @PostMapping("/beneficiary/verify") public ApiResult<Map<String, Object>> verify(Authentication auth) { return service.verifyBeneficiary(user(auth)); }
@@ -31,8 +35,8 @@ public class BankWithdrawalController {
         return service.abandonQuote(user(auth), quoteNo);
     }
     @PostMapping("/orders") public ApiResult<Map<String, Object>> submit(Authentication auth,
-            @RequestHeader("Idempotency-Key") String key, @RequestBody SubmitRequest request) {
-        return service.submit(user(auth), request.quoteNo(), key);
+            @RequestHeader("Idempotency-Key") String key, @RequestBody SubmitRequest request, HttpServletRequest httpRequest) {
+        return service.submit(user(auth), request.quoteNo(), key, HdPayClientIp.resolve(httpRequest, gatewaySecurity));
     }
     @GetMapping("/orders/{orderNo}") public ApiResult<Map<String, Object>> get(Authentication auth, @PathVariable String orderNo) {
         return service.orderView(user(auth), orderNo);

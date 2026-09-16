@@ -81,11 +81,15 @@ class PublicTestDeploymentSafetyTest {
 
     @Test
     void payInApprovalCannotEnableTheNewBankPayoutRail() {
-        assertThatThrownBy(() -> processor.validate(safe()
-                .withProperty("nexion.finance.hdpay.mode", "PROVIDER")
+        var env = safe().withProperty("nexion.finance.hdpay.mode", "PROVIDER")
                 .withProperty("nexion.deployment.hdpay-pay-in-approved", "true")
-                .withProperty("nexion.finance.hdpay-payout.enabled", "true")))
-                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: nexion.finance.hdpay-payout.enabled");
+                .withProperty("nexion.finance.hdpay-payout.enabled", "true");
+        assertThatCode(() -> processor.validate(env)).doesNotThrowAnyException();
+        var transport = org.mockito.Mockito.mock(ffdd.opsconsole.finance.hdpay.HdPayProperties.class);
+        org.mockito.Mockito.when(transport.ready()).thenReturn(true);
+        var payout = new ffdd.opsconsole.finance.hdpay.HdPayPayoutProperties();
+        org.springframework.test.util.ReflectionTestUtils.setField(payout, "environment", env);
+        org.assertj.core.api.Assertions.assertThat(payout.ready(transport)).isFalse();
     }
 
     @Test

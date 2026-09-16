@@ -17,7 +17,7 @@ public class HdPayPayoutReadiness {
     public boolean ready() {
         try {
             if (!properties.ready(transport) || !FundsSandboxProfileGuard.isStrictProductionProfile(environment.getActiveProfiles())
-                    || mapper.schemaTables() != 4) return false;
+                    || mapper.schemaTables() != 4 || mapper.clientIpColumn() != 1) return false;
             cipher.validateConfiguration();
             return true;
         } catch (RuntimeException unavailable) { return false; }

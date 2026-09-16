@@ -42,7 +42,7 @@ class PayoutVndConfigServiceTest {
         when(payoutReadiness.ready()).thenReturn(true);
         when(config.activeValue(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
         when(config.activeValue(PayoutVndConfigService.VALUES_KEY)).thenReturn(Optional.of(values(false)));
-        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("false"));
+        when(config.activeValue("finance.payout_vnd.provider_ready")).thenReturn(Optional.of("false"));
         when(vietnam.findFxQuoteConfig()).thenReturn(Map.of(
                 "baseRateVndPerUsdt", new BigDecimal("26000"),
                 "buySpreadPct", new BigDecimal("1.50"),
@@ -54,18 +54,14 @@ class PayoutVndConfigServiceTest {
     }
 
     @Test void configuredFlagAloneCannotEnableActualPayout() {
-        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("true"));
+        when(config.activeValue("finance.payout_vnd.provider_ready")).thenReturn(Optional.of("true"));
         when(payoutReadiness.ready()).thenReturn(false);
         assertThat(service.overview().getData()).containsEntry("providerReady", false).containsEntry("payoutConfigured", false);
     }
 
-    @Test void readyProviderAndHealthyCoverageCanEnableWithoutAccountVerification() {
-        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("true"));
-        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-        assertThat(service.overview().getData()).doesNotContainKey("capabilitySummary");
-        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(true,4L,"enable bank withdrawals without extra verification"));
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("channelEnabled",true);
+    @Test void sharedReadyConfigurationIgnoresLegacyDisabledFlags() {
+        assertThat(service.overview().getData()).containsEntry("providerReady",true).containsEntry("channelEnabled",true);
+        verify(config, never()).activeValue("finance.payout_vnd.provider_ready");
     }
 
     @Test
@@ -77,8 +73,8 @@ class PayoutVndConfigServiceTest {
                 .containsEntry("version", 4L)
                 .containsEntry("baseRateVndPerUsdt", new BigDecimal("26000"))
                 .containsEntry("buySpreadPct", new BigDecimal("1.50"))
-                .containsEntry("channelEnabled", false)
-                .containsEntry("providerReady", false)
+                .containsEntry("channelEnabled", true)
+                .containsEntry("providerReady", true)
                 .containsEntry("providerStatusAvailable", true)
                 .containsEntry("sandboxAvailable", false)
                 .containsKeys("defaults", "effectiveAt", "sources");
@@ -132,31 +128,17 @@ class PayoutVndConfigServiceTest {
         assertThat(result.getMessage()).isEqualTo("D7_CONFIG_VALUES_OUT_OF_RANGE");
     }
 
-    @Test
-    void providerUnavailableAlwaysRejectsChannelEnable() {
-        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-
-        ApiResult<Map<String, Object>> result = service.updateChannel(
-                new PayoutVndChannelUpdateRequest(true, 4L, "enable real payout channel"));
-
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("D7_PROVIDER_NOT_READY");
+    @Test void legacyEnableEndpointIsRetiredWithoutWritingConfiguration() {
+        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(true, 4L, "legacy enable"));
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("D7_CHANNEL_USES_SHARED_HDPAY_CONFIG");
         verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
-    @Test
-    void disablingChannelRemainsAvailableWhenCoverageIsUnreliable() {
-        when(config.activeValue(PayoutVndConfigService.VALUES_KEY)).thenReturn(Optional.of(values(true)));
-        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-        when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
-                new BigDecimal("0"), new BigDecimal("100"), false));
-
-        ApiResult<Map<String, Object>> result = service.updateChannel(
-                new PayoutVndChannelUpdateRequest(false, 4L, "stop payout channel now"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).containsEntry("channelEnabled", false);
-        verify(audit).recordRequired(any());
+    @Test void legacyDisableEndpointCannotRecreateAnIndependentSwitch() {
+        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(false, 4L, "legacy disable"));
+        assertThat(result.getCode()).isEqualTo(410);
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
@@ -193,36 +175,17 @@ class PayoutVndConfigServiceTest {
         assertThat(result.getMessage()).isEqualTo("D7_TREASURY_COVERAGE_BLOCKED");
     }
 
-    @Test
-    void providerStatusReadFailureStillExposesAndAllowsStopLoss() {
-        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY))
-                .thenThrow(new IllegalStateException("provider config store unavailable"));
-        when(config.activeValue(PayoutVndConfigService.VALUES_KEY)).thenReturn(Optional.of(values(true)));
-        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-
-        ApiResult<Map<String, Object>> overview = service.overview();
-        ApiResult<Map<String, Object>> disabled = service.updateChannel(
-                new PayoutVndChannelUpdateRequest(false, 4L, "stop payout during provider outage"));
-
-        assertThat(overview.getCode()).isZero();
-        assertThat(overview.getData())
-                .containsEntry("providerReady", false)
-                .containsEntry("providerStatusAvailable", false)
-                .containsEntry("channelEnabled", true);
-        assertThat(disabled.getCode()).isZero();
-        assertThat(disabled.getData()).containsEntry("channelEnabled", false);
+    @Test void obsoleteProviderFlagFailuresCannotBlockSharedConfiguration() {
+        when(config.activeValue("finance.payout_vnd.provider_ready")).thenThrow(new IllegalStateException("retired"));
+        assertThat(service.overview().getData()).containsEntry("providerReady",true).containsEntry("channelEnabled",true);
+        verify(config, never()).activeValue("finance.payout_vnd.provider_ready");
     }
 
-    @Test
-    void unavailableProviderStatusFailsClosedForChannelEnable() {
-        when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.empty());
-        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-
-        ApiResult<Map<String, Object>> enabled = service.updateChannel(
-                new PayoutVndChannelUpdateRequest(true, 4L, "enable must fail during provider outage"));
-
-        assertThat(enabled.getCode()).isEqualTo(409);
-        assertThat(enabled.getMessage()).isEqualTo("D7_PROVIDER_NOT_READY");
+    @Test void missingLegacyFlagsAreNotRequiredButSharedConfigurationStillIs() {
+        when(config.activeValue(PayoutVndConfigService.VALUES_KEY)).thenReturn(Optional.of(values(false).replace(",\"channelEnabled\":false", "")));
+        assertThat(service.overview().getData()).containsEntry("providerReady",true);
+        when(payoutReadiness.ready()).thenReturn(false);
+        assertThat(service.overview().getData()).containsEntry("providerReady",false).containsEntry("channelEnabled",false);
     }
 
     @Test

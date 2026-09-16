@@ -112,20 +112,6 @@ public class AppVietQrIntentController {
     }
 
     private String clientIp(HttpServletRequest request) {
-        String remoteAddress = request == null ? "" : request.getRemoteAddr();
-        if (request == null || !gatewaySecurity.isTrustedProxy(remoteAddress)) return remoteAddress;
-        String clientAddress = validIpLiteral(request.getHeader("X-Nexion-Client-IP"));
-        if (clientAddress == null) {
-            String forwarded = request.getHeader("X-Forwarded-For");
-            clientAddress = validIpLiteral(forwarded == null ? null : forwarded.split(",", 2)[0]);
-        }
-        return clientAddress == null ? remoteAddress : clientAddress;
-    }
-
-    private String validIpLiteral(String value) {
-        if (value == null) return null;
-        String candidate = value.trim();
-        return candidate.isEmpty() || candidate.length() > 64 || !candidate.matches("[0-9A-Fa-f:.]+")
-                ? null : candidate;
+        return ffdd.opsconsole.finance.hdpay.HdPayClientIp.resolve(request, gatewaySecurity);
     }
 }
