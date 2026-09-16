@@ -143,7 +143,7 @@ public interface BankWithdrawalMapper {
     int approveRisk(@Param("order") String order, @Param("hash") String hash);
     @Update("""
             UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',failure_reason=#{reason},
-              updated_at=#{now},version=version+1
+              updated_at=#{now},d2_version=d2_version+1
             WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND status='REVIEW_PASSED' AND is_deleted=0
             """) int returnForReview(@Param("order") String order, @Param("now") LocalDateTime now, @Param("reason") String reason);
     @Select("""
@@ -158,7 +158,7 @@ public interface BankWithdrawalMapper {
             """) int dispatch(@Param("order") String order, @Param("now") LocalDateTime now);
     @Update("""
             UPDATE nx_withdrawal_order SET status='PROCESSING',d5_payout_source='hdpay',d5_provider_idempotency_key=withdrawal_no,
-              chain_broadcast_attempts=chain_broadcast_attempts+1,updated_at=#{now},version=version+1
+              chain_broadcast_attempts=chain_broadcast_attempts+1,updated_at=#{now},d2_version=d2_version+1
             WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND status='REVIEW_PASSED' AND d2_hold_until <= #{now} AND is_deleted=0
             """) int processing(@Param("order") String order, @Param("now") LocalDateTime now);
     @Select("""
@@ -173,12 +173,12 @@ public interface BankWithdrawalMapper {
     int progress(@Param("order") String order, @Param("state") String state, @Param("providerId") Long providerId,
                  @Param("providerStatus") Integer providerStatus, @Param("error") String error, @Param("now") LocalDateTime now);
     @Update("""
-            UPDATE nx_withdrawal_order SET status='TX_ORPHANED',failure_reason=#{error},updated_at=#{now},version=version+1
+            UPDATE nx_withdrawal_order SET status='TX_ORPHANED',failure_reason=#{error},updated_at=#{now},d2_version=d2_version+1
             WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND status IN ('PROCESSING','SENT','TX_ORPHANED') AND is_deleted=0
             """) int hold(@Param("order") String order, @Param("error") String error, @Param("now") LocalDateTime now);
     @Update("""
             UPDATE nx_withdrawal_order SET status=IF(d5_provider_cid IS NULL,'PROCESSING','SENT'),failure_reason=NULL,
-              updated_at=#{now},version=version+1
+              updated_at=#{now},d2_version=d2_version+1
             WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND d5_payout_source='hdpay'
               AND status='TX_ORPHANED' AND is_deleted=0
             """) int resumeHeld(@Param("order") String order, @Param("now") LocalDateTime now);

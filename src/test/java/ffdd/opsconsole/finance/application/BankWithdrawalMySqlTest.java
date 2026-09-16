@@ -63,6 +63,7 @@ class BankWithdrawalMySqlTest {
         final BankWithdrawalMapper bank;
         final AppPayoutAddressMapper addresses;
         final WithdrawalPayoutMapper payouts;
+        final WithdrawalOrderMapper reviews;
         final AppWithdrawalMapper users;
         final AuditLogService audit = mock(AuditLogService.class);
         final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
@@ -77,8 +78,10 @@ class BankWithdrawalMySqlTest {
             Configuration cfg = new Configuration(new Environment("isolated-bank", new SpringManagedTransactionFactory(), source));
             cfg.addMapper(BankWithdrawalMapper.class); cfg.addMapper(WithdrawalPayoutMapper.class); cfg.addMapper(AppWithdrawalMapper.class);
             cfg.addMapper(AppPayoutAddressMapper.class);
+            cfg.addMapper(WithdrawalOrderMapper.class);
             var session = new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(cfg));
             bank = session.getMapper(BankWithdrawalMapper.class);
+            reviews = session.getMapper(WithdrawalOrderMapper.class);
             addresses = session.getMapper(AppPayoutAddressMapper.class); payouts = session.getMapper(WithdrawalPayoutMapper.class); users = session.getMapper(AppWithdrawalMapper.class);
             jdbc.execute("CREATE TABLE nx_user(id BIGINT PRIMARY KEY,status VARCHAR(32),sandbox TINYINT,is_deleted TINYINT)");
             jdbc.execute("CREATE TABLE nx_user_wallet(user_id BIGINT PRIMARY KEY,usdt_available DECIMAL(24,6),nex_available DECIMAL(24,6),pending_withdraw DECIMAL(24,6),version BIGINT,is_deleted TINYINT,updated_at DATETIME(6))");
@@ -88,7 +91,8 @@ class BankWithdrawalMySqlTest {
                     d5_payout_due_at DATETIME(6),d5_provider_cid BIGINT,d5_provider_idempotency_key VARCHAR(128),d5_payout_source VARCHAR(32),
                     chain_broadcast_attempts INT DEFAULT 0,d5_payout_lease_until DATETIME(6),next_broadcast_at DATETIME(6),chain_submitted_at DATETIME(6),
                     failure_reason VARCHAR(128),last_broadcast_error VARCHAR(128),chain_tx_hash VARCHAR(128),completed_at DATETIME(6),failed_at DATETIME(6),
-                    created_at DATETIME(6),updated_at DATETIME(6),version BIGINT DEFAULT 0,is_deleted TINYINT DEFAULT 0)
+                    created_at DATETIME(6),updated_at DATETIME(6),is_deleted TINYINT DEFAULT 0,
+                    d2_version BIGINT DEFAULT 0,d2_lifecycle_owner VARCHAR(64),d2_freeze_period VARCHAR(32),d2_previous_status VARCHAR(32))
                     """);
             jdbc.execute("""
                     CREATE TABLE nx_withdrawal_payout_ledger(event_no VARCHAR(96) PRIMARY KEY,withdrawal_no VARCHAR(96),provider_cid BIGINT,
@@ -169,6 +173,34 @@ class BankWithdrawalMySqlTest {
             assertEquals(!settled, bank.unresolvedOrders(71).stream().anyMatch(order -> NO.equals(order.withdrawalNo())));
         }
     }
+    @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
+    void manualApprovalDeadlineReachesDispatchQueueExactlyOnce() throws Exception {
+        isolated(f -> {
+            f.seed();
+            f.jdbc.update("UPDATE nx_withdrawal_order SET status='REVIEW_PENDING',d2_hold_until=NULL WHERE withdrawal_no=?", NO);
+            assertTrue(f.bank.ready(NOW).isEmpty());
+            assertEquals(1, f.reviews.transitionStatusWithLifecycle(NO,"REVIEW_PENDING","REVIEW_PASSED",null,NOW,null,null,null));
+            assertEquals(List.of(NO), f.bank.ready(NOW));
+            assertEquals(NO, f.transactions.prepare(NO).merchantOrderId());
+            assertNull(f.transactions.prepare(NO));
+            assertTrue(f.bank.ready(NOW).isEmpty());
+            assertEquals(1, f.jdbc.queryForObject("SELECT chain_broadcast_attempts FROM nx_withdrawal_order WHERE withdrawal_no=?",Integer.class,NO));
+            assertEquals("DISPATCHING", f.bank.order(NO).state());
+            f.wallet("900","100");
+        });
+        isolated(f -> {
+            f.seed();
+            f.jdbc.update("UPDATE nx_withdrawal_order SET status='REVIEW_PENDING' WHERE withdrawal_no=?", NO);
+            assertEquals(1, f.reviews.transitionStatusWithLifecycle(NO,"REVIEW_PENDING","REVIEW_PASSED",null,NOW.plusDays(1),null,null,null));
+            assertTrue(f.bank.ready(NOW).isEmpty());
+            assertEquals(List.of(NO),f.bank.ready(NOW.plusDays(1)));
+            assertEquals(1, f.reviews.transitionStatusWithLifecycle(NO,"REVIEW_PASSED","FROZEN",null,null,"reviewer","INDEFINITE","REVIEW_PASSED"));
+            assertTrue(f.bank.ready(NOW.plusDays(2)).isEmpty());
+            assertEquals(0, f.reviews.transitionStatusWithLifecycle(NO,"REVIEW_PENDING","REVIEW_PASSED",null,NOW,null,null,null));
+            assertEquals(0, f.jdbc.queryForObject("SELECT chain_broadcast_attempts FROM nx_withdrawal_order WHERE withdrawal_no=?",Integer.class,NO));
+        });
+    }
+
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
     void missingLegacyIpsReturnToReviewWithoutStarvingNewOrdersOrInventingDispatchEvidence() throws Exception {
         isolated(f -> {

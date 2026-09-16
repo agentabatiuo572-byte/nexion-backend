@@ -555,6 +555,7 @@ class OpsFinanceServiceTest {
                 "U00001001","fixture","***","ACTIVE",40,"","",1,"","");
         var result = service.reviewWithdrawal("WD-BANK","bank-approve",new WithdrawalReviewRequest("APPROVE","superadmin","review current bank risk"));
         assertThat(result.getCode()).as(result.getMessage()).isZero();
+        assertThat(withdrawalRepository.lastHoldUntil).isNotNull();
         ArgumentCaptor<String> captured = ArgumentCaptor.forClass(String.class);
         verify(bank).approveRisk(org.mockito.ArgumentMatchers.eq("WD-BANK"),captured.capture());
         when(bank.approvedRiskHash("WD-BANK")).thenReturn(captured.getValue());
@@ -621,6 +622,7 @@ class OpsFinanceServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().status()).isEqualTo("REVIEW_PASSED");
         assertThat(withdrawalRepository.lastStatus).isEqualTo("REVIEW_PASSED");
+        assertThat(withdrawalRepository.lastHoldUntil).isNotNull();
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
@@ -629,6 +631,22 @@ class OpsFinanceServiceTest {
                 .containsEntry("fromStatus", "REVIEWING")
                 .containsEntry("toStatus", "REVIEW_PASSED")
                 .containsEntry("idempotencyKey", "idem-review");
+    }
+
+    @Test
+    void manualApprovalKeepsExistingDeadlineAndUsesBusinessClockWhenMissing() {
+        Clock clock = Clock.fixed(Instant.now(), ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
+        LocalDateTime now = LocalDateTime.now(clock);
+        var approvals = service(OpsReadTimeSeedPolicy.enabledForDirectConstruction(), clock);
+        when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(), anyString(), org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(new WithdrawalRiskFacts("U00001001",1,new BigDecimal("100"),90,"normal",3,"k4-v1",now.minusMinutes(5),40,70,85));
+        for (LocalDateTime hold : new LocalDateTime[]{null, now.minusDays(1), now}) {
+            withdrawalRepository.order = withLifecycle(withdrawal("WD-1", "REVIEWING"), hold, null, null);
+            var result = approvals.reviewWithdrawal("WD-1", "manual-due-" + hold,
+                    new WithdrawalReviewRequest("APPROVE", "superadmin", "preserve dispatch deadline"));
+            assertThat(result.getCode()).as(result.getMessage()).isZero();
+            assertThat(withdrawalRepository.lastHoldUntil).isEqualTo(hold == null ? now : hold);
+        }
     }
 
     @Test
@@ -2351,6 +2369,7 @@ class OpsFinanceServiceTest {
         private BigDecimal lastMaxAmountFilter;
         private Integer lastMinRiskScoreFilter;
         private String lastFailureReason;
+        private LocalDateTime lastHoldUntil;
         private List<String> expiredLifecycleNos = List.of();
 
         @Override
@@ -2398,6 +2417,15 @@ class OpsFinanceServiceTest {
             }
             updateStatus(withdrawalNo, newStatus, failureReason);
             return true;
+        }
+
+        @Override
+        public boolean transitionStatusWithLifecycle(String withdrawalNo, String expectedStatus,
+                String newStatus, String failureReason, LocalDateTime holdUntil,
+                String owner, String period, String previousStatus) {
+            boolean changed = transitionStatus(withdrawalNo, expectedStatus, newStatus, failureReason);
+            if (changed) lastHoldUntil = holdUntil;
+            return changed;
         }
 
         @Override

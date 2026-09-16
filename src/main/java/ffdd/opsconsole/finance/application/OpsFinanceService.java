@@ -1085,6 +1085,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         String failureReason = d2FailureReason(action, request);
         LocalDateTime reviewAt = Set.of("DELAY", "FREEZE").contains(action)
                 ? parseD2ReviewAt(request.reviewAt()) : null;
+        // Approval must leave a dispatch deadline. Preserve the existing H1 hold;
+        // legacy/manual-review orders without one become due at the business clock.
+        if ("APPROVE".equals(action)) {
+            reviewAt = order.holdUntil() != null ? order.holdUntil() : LocalDateTime.now(clock);
+        }
         String owner = Set.of("DELAY", "FREEZE").contains(action) ? request.owner().trim() : null;
         String period = "FREEZE".equals(action) ? request.period().trim().toUpperCase(Locale.ROOT) : null;
         String previousStatus = "FREEZE".equals(action) ? D2WithdrawalStateMachine.canonical(order.status()) : null;
