@@ -107,9 +107,48 @@ class BankWithdrawalServiceTest {
         assertEquals(List.of(), service.config(71).getData().get("banks"));
         assertEquals(List.of(), service.config(71).getData().get("banks"));
     }
+    @Test void configProjectsPcLimitsAndCapacityWithoutInventingFallbacks() {
+        var values = Map.<String,Object>of("minAmountUsd",new BigDecimal("5"),"maxAmountUsd",new BigDecimal("80"),"version",3L);
+        var capacity = Map.<String,Object>of("maxWithdrawableUsdt",new BigDecimal("40"),"dailyRemainingCount",1L);
+        when(d7.overview()).thenReturn(ApiResult.ok(values));
+        when(withdrawals.bankCapacity(71L)).thenReturn(capacity);
+        var result = service.config(71).getData();
+        assertEquals(values,result.get("policy")); assertEquals(capacity,result.get("capacity"));
+        when(withdrawals.bankCapacity(71L)).thenThrow(new ffdd.opsconsole.shared.exception.BizException(503,"WITHDRAWAL_WALLET_UNAVAILABLE"));
+        assertNull(service.config(71).getData().get("capacity"));
+        verify(withdrawals,never()).reserveBank(anyLong(),any(),anyString());
+    }
+    @Test void proxiedCapacityFailureDoesNotRollbackConfigButDatabaseFailuresDo() throws Exception {
+        var source = mock(javax.sql.DataSource.class);
+        var connection = mock(java.sql.Connection.class);
+        when(source.getConnection()).thenReturn(connection);
+        when(connection.getAutoCommit()).thenReturn(true);
+        var manager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(source);
+        var attributes = new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource();
+        var capacityTarget = new AppWithdrawalService(wallet, mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),
+                null, idem, null, null, null, null, null, env, Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), bank);
+        var capacityProxy = new org.springframework.aop.framework.ProxyFactory(capacityTarget);
+        capacityProxy.setProxyTargetClass(true);
+        capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
+        var target = new BankWithdrawalService(bank,wallet,addresses,delivery,otp,cipher,
+                (AppWithdrawalService)capacityProxy.getProxy(),d7,mock(HdPayProperties.class),payout,idem,
+                mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
+        var configProxy = new org.springframework.aop.framework.ProxyFactory(target);
+        configProxy.setProxyTargetClass(true);
+        configProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
+        var proxied = (BankWithdrawalService)configProxy.getProxy();
+        when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
+        // Missing wallet is a recoverable display failure. Original requests must remain readable.
+        assertNull(proxied.config(71).getData().get("capacity"));
+        verify(connection).commit(); verify(connection,never()).rollback();
+        clearInvocations(connection);
+        when(wallet.walletForEligibility(71L)).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("database unavailable"));
+        assertThrows(org.springframework.dao.DataAccessResourceFailureException.class,()->proxied.config(71));
+        verify(connection).rollback(); verify(connection,never()).commit();
+    }
     @Test void newNonemptyBankCodeIsRejectedWithoutWritingOrConsumingOtp() {
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
-        service.config(71); clearInvocations(bank);
+        service.config(71); clearInvocations(bank, withdrawals);
 
         var error = assertThrows(RuntimeException.class, () -> service.bind(71, binding(), "bank-fixture"));
         assertEquals("BANK_CODE_MUST_BE_EMPTY", error.getMessage());
@@ -161,6 +200,7 @@ class BankWithdrawalServiceTest {
         Map<?,?> intent = (Map<?,?>) service.config(71).getData().get("unresolvedIntent");
         assertEquals("MULTIPLE", intent.get("state")); assertNull(intent.get("quoteNo"));
         assertEquals(2, ((List<?>) intent.get("intents")).size());
+        clearInvocations(withdrawals);
         assertEquals("BANK_WITHDRAWAL_UNRESOLVED_INTENT", assertThrows(RuntimeException.class, () -> service.quote(71, BigDecimal.TEN)).getMessage());
         verifyNoInteractions(withdrawals);
     }

@@ -91,6 +91,36 @@ class AppWithdrawalServiceTest {
                 "TR7NHqExampleAddress", version).getData()).containsEntry("canSubmit", false);
     }
     private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
+    @Test void bankCapacityUsesReleasedFundsAndSeparatesDailyCapacityWithoutReserving() {
+        EarningsReleaseService release = mock(EarningsReleaseService.class);
+        when(release.withdrawableAmount(eq(7L), any())).thenReturn(new BigDecimal("50"));
+        var capacityClock = java.time.Clock.fixed(java.time.Instant.parse("2026-09-16T12:00:00Z"), java.time.ZoneOffset.UTC);
+        var guarded = new AppWithdrawalService(mapper, config, rhythmFacade, idempotency,
+                audit, outbox, k3, ledger, release, environment, capacityClock, bank);
+        when(mapper.walletForEligibility(7L)).thenReturn(new WalletRow(7L, new BigDecimal("500"), BigDecimal.ZERO, BigDecimal.ZERO, 3L));
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(1);
+        var capacity = guarded.bankCapacity(7L);
+        assertThat((BigDecimal) capacity.get("maxWithdrawableUsdt")).isEqualByComparingTo("40");
+        assertThat(capacity).containsEntry("dailyRemainingCount", 1L).containsEntry("dailyLimitCount", 2).containsEntry("withdrawalEnabled", true);
+        assertThat(capacity).containsEntry("dailyCountResetAt", "2026-09-16T17:00:00Z");
+        when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(3);
+        when(mapper.emergencyValue("killswitch.withdraw")).thenReturn("disabled");
+        assertThat(guarded.bankCapacity(7L)).containsEntry("dailyRemainingCount", 0L).containsEntry("withdrawalEnabled", false);
+        verify(mapper, never()).reserveFunds(any(), any(), any(), any());
+        verify(mapper, never()).insertWithdrawal(any());
+    }
+
+    @Test void bankReservationHonorsD7QuotesBelowTheIndependentCryptoMinimum() {
+        var now = LocalDateTime.now();
+        when(mapper.withdrawalRiskFacts(7L,"BANK-VND:BNK-fixture")).thenReturn(
+                new WithdrawalRiskFacts("U00000007", 0, BigDecimal.ZERO, 30, "normal", 45, "k4-v13", now, 41, 73, 91));
+        String version = service.policy(7L).getData().get("policyVersion").toString();
+        var quote = new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-test",7L,"BNK-fixture",1L,"","****6789","cipher",
+                new BigDecimal("5.000000"),new BigDecimal("1.000000"),new BigDecimal("4.000000"),new BigDecimal("25000"),new BigDecimal("100000"),1L,version,now,now.plusMinutes(5),null);
+        assertThat(service.reserveBank(7L,quote,"bank-five-usdt").getCode()).isZero();
+        verify(mapper).reserveFunds(7L,new BigDecimal("5.000000"),new BigDecimal("0.000000"),3L);
+        assertThat(service.submit(7L,new BigDecimal("5"),"USDT-TRC20","TR7NHqExampleAddress",version,false,"crypto-five-usdt").getCode()).isNotZero();
+    }
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bank = mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);

@@ -213,6 +213,20 @@ public class AppWithdrawalService {
                 "configVersion", policy.policyVersion()));
     }
 
+    /** Reads inside BankWithdrawalService.config's transaction, without marking recoverable reads rollback-only. */
+    public Map<String, Object> bankCapacity(Long userId) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        WalletRow wallet = mapper.walletForEligibility(userId);
+        if (wallet == null || wallet.usdtAvailable() == null) throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
+        int dailyLimit = validatedDailyLimit();
+        WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
+        long used = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive());
+        return linked("maxWithdrawableUsdt", maximumWithdrawable(userId, wallet.usdtAvailable(), validatedBalanceMaxRatio(), false),
+                "dailyRemainingCount", Math.max(0L, dailyLimit - used), "dailyLimitCount", dailyLimit,
+                "dailyCountResetAt", java.time.Instant.ofEpochMilli(day.resetAt()).toString(), "withdrawalEnabled", withdrawGateEnabled());
+    }
+
     private BigDecimal maximumWithdrawable(Long userId, BigDecimal walletAvailable, BigDecimal ratio, boolean lock) {
         BigDecimal available = safe(walletAvailable).max(BigDecimal.ZERO);
         BigDecimal released = earningsReleaseService == null ? available
@@ -386,7 +400,9 @@ public class AppWithdrawalService {
         if (wallet == null || wallet.version() == null) throw new BizException(409, "WITHDRAWAL_WALLET_UNAVAILABLE");
         BigDecimal maxRatio = validatedBalanceMaxRatio();
         BigDecimal maxAmount = maximumWithdrawable(userId, wallet.usdtAvailable(), maxRatio, true);
-        if (amount.compareTo(MIN_WITHDRAWAL) < 0) return ApiResult.fail(422, "WITHDRAWAL_MIN_AMOUNT_NOT_MET");
+        // Bank amounts have already passed the versioned D7 quote limits; the crypto floor is independent.
+        if (amount.signum() <= 0 || (bankQuote == null && amount.compareTo(MIN_WITHDRAWAL) < 0))
+            return ApiResult.fail(422, "WITHDRAWAL_MIN_AMOUNT_NOT_MET");
         if (amount.compareTo(maxAmount) > 0 || amount.compareTo(safe(wallet.usdtAvailable())) > 0) {
             return ApiResult.fail(409, "WITHDRAWAL_BALANCE_LIMIT_EXCEEDED");
         }

@@ -13,7 +13,7 @@ public final class BankWithdrawalPricing {
         try {
             if (requested == null || requested.signum() <= 0) throw new IllegalArgumentException();
             BigDecimal amount = requested.setScale(6, RoundingMode.UNNECESSARY);
-            if (amount.compareTo(number(config, "minAmountUsd").max(new BigDecimal("20"))) < 0
+            if (amount.compareTo(number(config, "minAmountUsd")) < 0
                     || amount.compareTo(number(config, "maxAmountUsd")) > 0) throw new IllegalArgumentException();
             BigDecimal fee = amount.multiply(number(config, "feeRatePct")).movePointLeft(2)
                     .max(number(config, "feeMinUsd")).min(number(config, "feeMaxUsd")).setScale(6, RoundingMode.UP);

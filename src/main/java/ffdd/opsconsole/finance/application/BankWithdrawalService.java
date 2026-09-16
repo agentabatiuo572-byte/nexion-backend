@@ -58,10 +58,13 @@ public class BankWithdrawalService {
         ApiResult<Map<String, Object>> response = d7.overview();
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
         boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("providerReady"));
+        Map<String, Object> capacity = null;
+        try { capacity = withdrawals.bankCapacity(userId); }
+        catch (BizException unavailable) { /* New quotes fail closed; original intents remain recoverable. */ }
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
                 "bankCodeRequired", false, "bindingOtpRequired", current != null, "payType", "BANKQR",
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
-                "policy", data, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
+                "policy", data, "capacity", capacity, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
                 "unresolvedIntent", intent));
     }
 

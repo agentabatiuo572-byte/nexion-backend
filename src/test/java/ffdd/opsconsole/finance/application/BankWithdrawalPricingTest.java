@@ -25,4 +25,11 @@ class BankWithdrawalPricingTest {
         assertEquals(0, p.vnd().scale());
         assertTrue(p.vnd().compareTo(p.net().multiply(p.rate())) <= 0);
     }
+    @Test void acceptsThePcConfiguredRangeInsteadOfAHardcodedTwentyUsdtFloor() {
+        var changed = new java.util.HashMap<>(config);
+        changed.put("minAmountUsd", "5"); changed.put("maxAmountUsd", "80");
+        assertEquals(0, new BigDecimal("5").compareTo(BankWithdrawalPricing.calculate(new BigDecimal("5"), changed).amount()));
+        for (String amount : new String[]{"4.999999", "80.000001"})
+            assertThrows(RuntimeException.class, () -> BankWithdrawalPricing.calculate(new BigDecimal(amount), changed));
+    }
 }
