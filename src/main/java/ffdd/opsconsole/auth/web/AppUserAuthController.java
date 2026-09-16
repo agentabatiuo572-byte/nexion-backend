@@ -45,6 +45,12 @@ public class AppUserAuthController {
         return registrationService.sendOtp(request, servletRequest.getRemoteAddr());
     }
 
+    @PostMapping("/register/otp/verify")
+    public ApiResult<Map<String, Object>> verifyRegistrationOtp(
+            @RequestBody(required = false) UserOtpLoginVerifyRequest request) {
+        return registrationService.verifyOtp(request);
+    }
+
     @PostMapping("/register")
     public ApiResult<UserLoginResponse> register(
             @RequestBody(required = false) UserRegistrationRequest request,

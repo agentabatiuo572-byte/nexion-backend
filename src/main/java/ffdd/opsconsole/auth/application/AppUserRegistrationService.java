@@ -5,6 +5,7 @@ import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
 import ffdd.opsconsole.auth.captcha.CaptchaScene;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpResponse;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
@@ -128,6 +129,29 @@ public class AppUserRegistrationService {
                 challengeNo,
                 policy.cooldownSeconds(),
                 maskPhone(phone)));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> verifyOtp(UserOtpLoginVerifyRequest request) {
+        if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
+                || !StringUtils.hasText(request.challengeNo())
+                || !request.challengeNo().trim().matches("REG-[a-f0-9]{32}")
+                || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
+            return ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID");
+        }
+        UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment).orElse(null);
+        if (audience == null) return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
+        String countryCode = normalizeCountryCode(request.countryCode());
+        String phone = request.phone().trim();
+        String challengeNo = request.challengeNo().trim();
+        AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
+        if (mapper.countValidChallengeInEnvironment(
+                challengeNo, countryCode, phone, audience.name(), request.code().trim(), policy.maxVerifyAttempts()) != 1) {
+            mapper.recordInvalidAttemptInEnvironment(challengeNo, countryCode, phone, audience.name(), policy.maxVerifyAttempts());
+            return ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID");
+        }
+        // This advances the form only; register still atomically rechecks and consumes the challenge.
+        return ApiResult.ok(Map.of("status", "REGISTRATION_OTP_VERIFIED"));
     }
 
     /**

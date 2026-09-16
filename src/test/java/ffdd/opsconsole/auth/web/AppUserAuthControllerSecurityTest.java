@@ -23,7 +23,9 @@ import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeRequest;
 import ffdd.opsconsole.auth.dto.UserOAuthSandboxChallengeResponse;
 import ffdd.opsconsole.auth.dto.UserOtpLoginChallengeResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.ApiResultHttpStatusAdvice;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminRbacAuthorizationFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
@@ -38,6 +40,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import jakarta.servlet.ServletException;
 
 @WebMvcTest(AppUserAuthController.class)
@@ -86,6 +89,50 @@ class AppUserAuthControllerSecurityTest {
             chain.doFilter(invocation.getArgument(0), invocation.getArgument(1));
             return null;
         }).when(adminRbacAuthorizationFilter).doFilter(any(), any(), any());
+    }
+
+    @Test
+    void anonymousRegistrationOtpVerificationReachesServiceWithoutIssuingASession() throws Exception {
+        var request = new UserOtpLoginVerifyRequest(
+                "+84", "901234567", "REG-0123456789abcdef0123456789abcdef", "123456");
+        when(registrationService.verifyOtp(request))
+                .thenReturn(ApiResult.ok(java.util.Map.of("status", "REGISTRATION_OTP_VERIFIED")));
+
+        mockMvc.perform(post("/auth/users/register/otp/verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"countryCode":"+84","phone":"901234567",
+                                 "challengeNo":"REG-0123456789abcdef0123456789abcdef","code":"123456"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.status").value("REGISTRATION_OTP_VERIFIED"));
+
+        verify(registrationService).verifyOtp(request);
+        verifyNoInteractions(authService, passwordResetService, refreshCookieService);
+    }
+
+    @Test
+    void emptyRegistrationOtpVerificationBodyKeepsTheValidationErrorContract() throws Exception {
+        when(registrationService.verifyOtp(null))
+                .thenReturn(ApiResult.fail(422, "USER_REGISTRATION_OTP_INVALID"));
+        MockMvc withStatusAdvice = MockMvcBuilders.standaloneSetup(new AppUserAuthController(
+                        authService, registrationService, passwordResetService, oauthService, refreshCookieService))
+                .setControllerAdvice(new ApiResultHttpStatusAdvice()).build();
+
+        withStatusAdvice.perform(post("/auth/users/register/otp/verify").contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value(422))
+                .andExpect(jsonPath("$.message").value("USER_REGISTRATION_OTP_INVALID"));
+
+        verify(registrationService).verifyOtp(null);
+        when(registrationService.verifyOtp(any()))
+                .thenReturn(ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN"));
+        withStatusAdvice.perform(post("/auth/users/register/otp/verify")
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message").value("USER_REGISTRATION_PROFILE_FORBIDDEN"));
+        verifyNoInteractions(authService, passwordResetService, refreshCookieService);
     }
 
     @Test

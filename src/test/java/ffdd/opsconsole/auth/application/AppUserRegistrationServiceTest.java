@@ -12,9 +12,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOtpLoginVerifyRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationOtpRequest;
 import ffdd.opsconsole.auth.dto.UserRegistrationRequest;
 import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
@@ -97,6 +99,55 @@ class AppUserRegistrationServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[] { "prod" });
         when(mapper.insertTeamMemberProjection(anyLong(), anyLong(), anyInt(), anyInt())).thenReturn(1);
         when(mapper.listActiveSponsorChain(anyLong(), anyInt())).thenReturn(List.of());
+    }
+
+    @Test
+    void registrationOtpVerificationRejectsMalformedAndOtherSceneChallengesWithoutWrites() {
+        String challenge = "REG-" + "a".repeat(32);
+        List<UserOtpLoginVerifyRequest> invalid = List.of(
+                new UserOtpLoginVerifyRequest("+81", "901234567", challenge, "123456"),
+                new UserOtpLoginVerifyRequest("+84", "bad-phone", challenge, "123456"),
+                new UserOtpLoginVerifyRequest("+84", "901234567", "RESET-" + "a".repeat(32), "123456"),
+                new UserOtpLoginVerifyRequest("+84", "901234567", "OTP-" + "a".repeat(32), "123456"),
+                new UserOtpLoginVerifyRequest("+84", "901234567", "REG-short", "123456"),
+                new UserOtpLoginVerifyRequest("+84", "901234567", challenge, "12345"));
+
+        assertThat(service.verifyOtp(null).getMessage()).isEqualTo("USER_REGISTRATION_OTP_INVALID");
+        for (UserOtpLoginVerifyRequest request : invalid) {
+            var result = service.verifyOtp(request);
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_OTP_INVALID");
+        }
+        verifyNoInteractions(mapper, userMapper, authService, otpDeliveryService, outboxService);
+    }
+
+    @Test
+    void registrationOtpVerificationRejectsAnAmbiguousRuntimeProfileWithoutWrites() {
+        when(environment.getActiveProfiles()).thenReturn(new String[] { "dev", "prod" });
+
+        var result = service.verifyOtp(new UserOtpLoginVerifyRequest(
+                "+84", "901234567", "REG-" + "a".repeat(32), "123456"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("USER_REGISTRATION_PROFILE_FORBIDDEN");
+        verifyNoInteractions(mapper, userMapper, authService, otpDeliveryService, outboxService);
+    }
+
+    @Test
+    void registrationOtpVerificationUsesTheCurrentAttemptLimitAndLeavesConsumptionToRegistration() {
+        String challenge = "REG-" + "a".repeat(32);
+        when(configFacade.activeValue("auth.risk.otp_max_verify_attempts")).thenReturn(Optional.of("2"));
+        when(mapper.countValidChallengeInEnvironment(challenge, "+84", "901234567", "PRODUCTION", "123456", 2))
+                .thenReturn(1);
+
+        var result = service.verifyOtp(new UserOtpLoginVerifyRequest(
+                "84", " 901234567 ", " " + challenge + " ", " 123456 "));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "REGISTRATION_OTP_VERIFIED");
+        verify(mapper, never()).consumeValidChallengeInEnvironment(any(), any(), any(), any(), any(), anyInt());
+        verify(mapper, never()).recordInvalidAttemptInEnvironment(any(), any(), any(), any(), anyInt());
+        verifyNoInteractions(userMapper, passwordEncoder, authService, otpDeliveryService, outboxService, dayOneInstanceFacade);
     }
 
     @Test
