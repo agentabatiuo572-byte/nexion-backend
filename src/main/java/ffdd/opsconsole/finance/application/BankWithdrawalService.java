@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -53,16 +54,16 @@ public class BankWithdrawalService {
     public ApiResult<Map<String, Object>> config(long userId) {
         requireUser(userId, true);
         Map<String, Object> intent = currentIntent(userId);
+        Beneficiary current = bank.beneficiary(userId);
         ApiResult<Map<String, Object>> response = d7.overview();
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
         boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("channelEnabled"))
-                && Boolean.TRUE.equals(data.get("providerReady"))
-                && BankWithdrawalEligibility.capabilityReady(data.get("capabilitySummary"));
+                && Boolean.TRUE.equals(data.get("providerReady"));
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
-                "bankCodeRequired", false, "bindingOtpRequired", false, "payType", "BANKQR",
-                "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(bank.beneficiary(userId)),
-                "policy", data, "source", "D7+HDPAY", "bindingDelayHours", 24, "changeCooldownDays", 7,
-                "capabilitySummary", BankWithdrawalEligibility.capabilitySummary(), "unresolvedIntent", intent));
+                "bankCodeRequired", false, "bindingOtpRequired", current != null, "payType", "BANKQR",
+                "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
+                "policy", data, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
+                "unresolvedIntent", intent));
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
@@ -73,28 +74,36 @@ public class BankWithdrawalService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> verifyBeneficiary(long userId) {
-        requireUser(userId, true);
-        Beneficiary b = bank.lockBeneficiary(userId);
-        if (b == null) throw error(409, "BANK_BENEFICIARY_REQUIRED");
-        LocalDateTime now = LocalDateTime.now(clock);
-        Verification prior = bank.verification(b.beneficiaryNo());
-        if (prior == null || !"unavailable".equals(prior.verificationStatus()) || !prior.requestedAt().plusMinutes(1).isAfter(now)) {
-            Verification unavailable = new Verification(b.beneficiaryNo(), userId, b.version(), "unavailable", "unknown",
-                    "unknown", "unknown", "BANK_VERIFICATION_PROVIDER_UNAVAILABLE", null, null, null, null, null, now);
-            if (bank.saveVerification(unavailable) < 1) throw error(409, "BANK_VERIFICATION_WRITE_CONFLICT");
-            audit.recordRequired(AuditLogWriteRequest.builder().action("BANK_BENEFICIARY_VERIFICATION_UNAVAILABLE")
-                    .resourceType("BANK_BENEFICIARY").resourceId(b.beneficiaryNo()).userId(userId).actorId(userId)
-                    .actorType("USER").actorUsername("user:" + userId).riskLevel("HIGH").result("FAILED")
-                    .detail(map("reasonCode", "BANK_VERIFICATION_PROVIDER_UNAVAILABLE", "version", b.version())).build());
-        }
-        return ApiResult.ok(map("beneficiary", beneficiaryView(b), "capabilitySummary", BankWithdrawalEligibility.capabilitySummary()));
+        requireUser(userId, false);
+        // Retired endpoint for older clients. Never fabricate a successful verification result.
+        throw error(410, "BANK_BENEFICIARY_VERIFICATION_NOT_REQUIRED");
     }
 
-    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> sendOtp(long userId) {
-        requireUser(userId, false);
-        // Compatibility response for old clients: never send an SMS for bank binding.
-        throw error(410, "BANK_BINDING_OTP_NOT_REQUIRED");
+        requireUser(userId, true);
+        if (bank.lockBeneficiary(userId) == null) throw error(409, "BANK_CHANGE_OTP_NOT_REQUIRED");
+        requireNoPendingWithdrawal(userId);
+        var contact = addresses.userContact(userId);
+        if (contact == null || !SupportedUserPhonePolicy.isSupportedDestination(contact.countryCode(), contact.phone()))
+            throw error(422, "BANK_CHANGE_PHONE_INVALID");
+        if (!otpDelivery.available(contact.countryCode())) throw error(503, "BANK_CHANGE_OTP_UNAVAILABLE");
+        if (addresses.recentOtpCount(userId) > 0) throw error(429, "BANK_CHANGE_OTP_COOLDOWN");
+        if (addresses.todayOtpCount(userId) >= 10) throw error(429, "BANK_CHANGE_OTP_DAILY_LIMIT");
+        String challenge = "PAYOUT-BANK-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String code = otpDelivery.verificationCode(contact.countryCode());
+        if (addresses.insertOtp(userId, challenge, code) != 1) throw error(409, "BANK_CHANGE_OTP_CONFLICT");
+        try { otpDelivery.deliver(contact.countryCode(), contact.phone(), challenge, code, 5); }
+        catch (RuntimeException deliveryFailure) {
+            // A timeout may still deliver the SMS. Commit the challenge so rate limits cannot reset.
+            return ApiResult.fail(503, "BANK_CHANGE_OTP_DELIVERY_UNCONFIRMED");
+        }
+        return ApiResult.ok(map("challengeNo", challenge, "expiresInSeconds", 300, "retryAfterSeconds", 60));
+    }
+
+    private void requireNoPendingWithdrawal(long userId) {
+        if (addresses.unsettledWithdrawalCount(userId) > 0) throw error(409, "BANK_WITHDRAWAL_IN_FLIGHT");
+        if (currentIntent(userId) != null) throw error(409, "BANK_WITHDRAWAL_UNRESOLVED_INTENT");
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -105,8 +114,7 @@ public class BankWithdrawalService {
                 || (!request.bankCode().isEmpty() && !BANKS.containsKey(request.bankCode()))) throw error(422, "BANK_CODE_INVALID");
         try { HttpHdPayPayoutGateway.account(request.account()); HttpHdPayPayoutGateway.holder(request.holder()); }
         catch (HdPayGatewayException invalidRecipient) { throw error(422, "BANK_BENEFICIARY_INVALID"); }
-        // Optional legacy OTP fields only preserve hashes of already successful retained requests.
-        // They neither authorize nor block a new binding; the authenticated USER owns this resource.
+        // Keep the retained request hash stable so successful requests replay without consuming another OTP.
         String hash = HdPayPayoutDigest.sha(userId + "|" + request.bankCode() + "|" + request.account() + "|"
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
@@ -115,24 +123,27 @@ public class BankWithdrawalService {
             if (!request.bankCode().isEmpty()) throw error(422, "BANK_CODE_MUST_BE_EMPTY");
             LocalDateTime now = LocalDateTime.now(clock);
             Beneficiary before = bank.lockBeneficiary(userId);
-            if (addresses.unsettledWithdrawalCount(userId) > 0) throw error(409, "BANK_WITHDRAWAL_IN_FLIGHT");
-            if (currentIntent(userId) != null) throw error(409, "BANK_WITHDRAWAL_UNRESOLVED_INTENT");
-            if (before != null && before.nextChangeAt().isAfter(now)) throw error(409, "BANK_CHANGE_COOLDOWN");
+            requireNoPendingWithdrawal(userId);
             cipher.validateConfiguration();
+            if (before != null) {
+                if (request.challengeNo() == null || !request.challengeNo().matches("PAYOUT-BANK-[A-Fa-f0-9]{32}")
+                        || request.code() == null || !request.code().matches("[0-9]{6}"))
+                    throw error(422, "BANK_CHANGE_OTP_INVALID");
+                // REQUIRES_NEW keeps failed attempts and one-time consumption durable on outer rollback.
+                if (!otpAttempts.verifyAndConsume(userId, request.challengeNo(), request.code()))
+                    throw error(422, "BANK_CHANGE_OTP_INVALID");
+            }
             String no = "BNK-" + UUID.randomUUID().toString().replace("-", "");
             long version = before == null ? 0 : before.version() + 1;
             String recipient = cipher.encrypt(request.account() + "\n" + request.holder(), beneficiaryAad(userId, no));
             String masked = "****" + request.account().substring(request.account().length() - 4);
-            if (bank.saveBeneficiary(userId, no, request.bankCode(), masked, recipient, now.plusHours(24), now.plusDays(7), version, now) < 1)
+            if (bank.saveBeneficiary(userId, no, request.bankCode(), masked, recipient, now, now, version, now) < 1)
                 throw error(409, "BANK_BIND_CONFLICT");
-            if (bank.saveVerification(new Verification(no, userId, version, "unavailable", "unknown", "unknown", "unknown",
-                    "BANK_VERIFICATION_PROVIDER_UNAVAILABLE", null, null, null, null, null, now)) < 1)
-                throw error(409, "BANK_VERIFICATION_WRITE_CONFLICT");
             audit.recordRequired(AuditLogWriteRequest.builder().action("BANK_PAYOUT_BENEFICIARY_BOUND")
                     .resourceType("BANK_BENEFICIARY").resourceId(no).userId(userId).actorId(userId).actorType("USER")
                     .actorUsername("user:" + userId).riskLevel("CRITICAL").result("SUCCESS")
                     .detail(map("bankCode", request.bankCode(), "maskedAccount", masked, "version", version,
-                            "effectiveAt", now.plusHours(24))).build());
+                            "effectiveAt", now)).build());
             return ApiResult.ok(map("beneficiary", beneficiaryView(bank.beneficiary(userId))));
         });
     }
@@ -144,7 +155,7 @@ public class BankWithdrawalService {
         Map<String, Object> config = requireChannel();
         LocalDateTime now = LocalDateTime.now(clock);
         if (bank.recentQuotes(userId, now) >= 10) throw error(429, "BANK_QUOTE_RATE_LIMIT");
-        Beneficiary recipient = requireBeneficiary(userId, now, config);
+        Beneficiary recipient = requireBeneficiary(userId);
         var price = BankWithdrawalPricing.calculate(requested, config);
         var policy = withdrawals.policy(userId);
         if (policy.getCode() != 0 || !Boolean.TRUE.equals(policy.getData().get("withdrawalEnabled"))) throw error(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
@@ -178,7 +189,7 @@ public class BankWithdrawalService {
                         throw error(409, "BANK_WITHDRAWAL_UNRESOLVED_INTENT");
                     var current = requireChannel();
                     if (!current.get("version").toString().equals(quote.d7Version().toString())) throw error(409, "BANK_QUOTE_RECONFIRM_REQUIRED");
-                    Beneficiary recipient = requireBeneficiary(userId, now, current);
+                    Beneficiary recipient = requireBeneficiary(userId);
                     if (!recipient.beneficiaryNo().equals(quote.beneficiaryNo()) || !recipient.version().equals(quote.beneficiaryVersion()))
                         throw error(409, "BANK_BENEFICIARY_CHANGED");
                     var result = withdrawals.reserveBank(userId, quote, "BANK:" + HdPayPayoutDigest.sha(userId + "|" + key));
@@ -232,20 +243,14 @@ public class BankWithdrawalService {
     private Map<String, Object> requireChannel() {
         var result = d7.overview();
         if (!payout.ready(transport) || result.getCode() != 0 || !Boolean.TRUE.equals(result.getData().get("channelEnabled"))
-                || !Boolean.TRUE.equals(result.getData().get("providerReady"))
-                || !BankWithdrawalEligibility.capabilityReady(result.getData().get("capabilitySummary")))
+                || !Boolean.TRUE.equals(result.getData().get("providerReady")))
             throw error(409, "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE");
         return result.getData();
     }
-    private Beneficiary requireBeneficiary(long userId, LocalDateTime now, Map<String, Object> config) {
+    private Beneficiary requireBeneficiary(long userId) {
         Beneficiary recipient = bank.lockBeneficiary(userId);
-        if (recipient == null) throw error(409, "BANK_BENEFICIARY_REQUIRED");
-        if (recipient.effectiveAt().isAfter(now)) throw error(409, "BANK_BENEFICIARY_PENDING");
-        Verification verification = bank.verification(recipient.beneficiaryNo());
-        String block = BankWithdrawalEligibility.block(verification, recipient.beneficiaryNo(), userId, recipient.version(), now);
+        String block = BankWithdrawalEligibility.beneficiaryBlock(recipient, userId);
         if (block != null) throw error(409, block);
-        if (!BankWithdrawalEligibility.matchesCapability(verification, config.get("capabilitySummary")))
-            throw error(409, "BANK_BENEFICIARY_UNVERIFIED");
         return recipient;
     }
     private void requireUser(long userId, boolean lock) {
@@ -258,15 +263,9 @@ public class BankWithdrawalService {
     private static String bankName(String code) { return "".equals(code) ? "BANKQR" : BANKS.getOrDefault(code, code); }
     private Map<String, Object> beneficiaryView(Beneficiary b) {
         if (b == null) return null;
-        Verification verification = bank.verification(b.beneficiaryNo());
-        Map<String, Object> view = BankWithdrawalEligibility.evidenceView(verification);
-        boolean eligible = !b.effectiveAt().isAfter(LocalDateTime.now(clock))
-                && BankWithdrawalEligibility.block(verification, b.beneficiaryNo(), b.userId(), b.version(), LocalDateTime.now(clock)) == null
-                && BankWithdrawalEligibility.matchesCapability(verification, BankWithdrawalEligibility.capabilitySummary());
-        view.putAll(map("beneficiaryNo", b.beneficiaryNo(), "bankCode", b.bankCode(), "bankName", bankName(b.bankCode()),
-                "maskedAccount", b.maskedAccount(), "effectiveAt", b.effectiveAt(), "nextChangeAt", b.nextChangeAt(),
-                "version", b.version(), "canWithdraw", eligible));
-        return view;
+        return map("beneficiaryNo", b.beneficiaryNo(), "bankCode", b.bankCode(), "bankName", bankName(b.bankCode()),
+                "maskedAccount", b.maskedAccount(), "effectiveAt", b.effectiveAt(), "nextChangeAt", b.effectiveAt(),
+                "version", b.version(), "canWithdraw", true);
     }
 
     private Map<String, Object> currentIntent(long userId) {

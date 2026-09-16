@@ -123,7 +123,7 @@ class AppPayoutAddressWithdrawalRaceMySqlIntegrationTest {
             AppPayoutAddressService service = transactional(service(mapper), dataSource);
             Future<Throwable> save = executor.submit(() -> {
                 try {
-                    service.save(USER_ID, new SaveRequest(NETWORK, NEW_ADDRESS, "PAYOUT-RACE", "123456"), "race-key");
+                    service.save(USER_ID, new SaveRequest(NETWORK, NEW_ADDRESS, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "race-key");
                     return null;
                 } catch (Throwable failure) {
                     return failure;
@@ -188,7 +188,7 @@ class AppPayoutAddressWithdrawalRaceMySqlIntegrationTest {
             AppPayoutAddressService service = transactional(service(mapper), dataSource);
             Future<Throwable> save = executor.submit(() -> {
                 try {
-                    service.save(USER_ID, new SaveRequest(NETWORK, NEW_ADDRESS, "PAYOUT-RACE", "123456"), "race-key");
+                    service.save(USER_ID, new SaveRequest(NETWORK, NEW_ADDRESS, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "race-key");
                     return null;
                 } catch (Throwable failure) {
                     return failure;
@@ -230,7 +230,7 @@ class AppPayoutAddressWithdrawalRaceMySqlIntegrationTest {
 
     private AppPayoutAddressService service(AppPayoutAddressMapper mapper) {
         PayoutAddressOtpAttemptService otp = mock(PayoutAddressOtpAttemptService.class);
-        org.mockito.Mockito.when(otp.verifyAndConsume(USER_ID, "PAYOUT-RACE", "123456")).thenReturn(true);
+        org.mockito.Mockito.when(otp.verifyAndConsume(USER_ID, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456")).thenReturn(true);
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get()).when(idempotency)
                 .execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());

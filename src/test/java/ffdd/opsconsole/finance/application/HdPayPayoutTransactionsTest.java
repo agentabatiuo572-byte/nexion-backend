@@ -41,12 +41,8 @@ class HdPayPayoutTransactionsTest {
         assertNull(service.prepare(no));
         verify(bank, never()).dispatch(anyString(), any());
         when(properties.ready(transport)).thenReturn(true);
-        when(config.overview()).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of("channelEnabled", true, "providerReady", true,
-                "capabilitySummary", java.util.Map.of("status","ready","provider","fixture-provider","capabilityVersion","fixture-capability-v1",
-                        "accountVerificationAvailable",true,"ownershipVerificationAvailable",true))));
-        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.minusHours(1),now.plusDays(1),1L));
-        when(bank.verification("BNK-fixture")).thenReturn(new BankWithdrawalMapper.Verification("BNK-fixture",71L,1L,"verified","supported","matched","payment_account",
-                null,now.minusMinutes(1),now.plusHours(1),"fixture-evidence","fixture-capability-v1","fixture-provider",now));
+        when(config.overview()).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of("channelEnabled", true, "providerReady", true)));
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.plusHours(24),now.plusDays(7),1L));
         when(canonical.payout(no)).thenReturn(row("REVIEW_PASSED",71L,"100","99"));
         when(bank.processing(eq(no), any())).thenReturn(1); when(bank.dispatch(eq(no), any())).thenReturn(1);
         var request = service.prepare(no);
@@ -55,7 +51,7 @@ class HdPayPayoutTransactionsTest {
         assertEquals(quote.amountVnd(), request.amount());
         verify(bank).dispatch(eq(no), any()); verifyNoInteractions(finalizer, outbox);
         clearInvocations(bank);
-        when(bank.verification("BNK-fixture")).thenReturn(null);
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-changed","","****6789","cipher",now,now.plusDays(7),2L));
         assertNull(service.prepare(no)); verify(bank,never()).dispatch(anyString(),any());
     }
     HdPayPayoutGateway.Order response(int status) {

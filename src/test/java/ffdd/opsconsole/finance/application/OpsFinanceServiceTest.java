@@ -517,23 +517,20 @@ class OpsFinanceServiceTest {
     }
 
     @Test
-    void bankApprovalCannotPromoteAnUnverifiedAccountWithNoProvider() {
+    void bankApprovalStillRequiresAnActiveAccount() {
+        when(appWithdrawalMapper.lockActiveUser(1001L)).thenReturn(null);
         withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
                 new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,"REVIEWING",
                 null,null,null,null,1,null,null,null,LocalDateTime.now(),LocalDateTime.now(),
                 "U00001001","fixture","***","ACTIVE",40,"","",1,"","");
-        var result = service.reviewWithdrawal("WD-BANK","unverified-bank-approve",new WithdrawalReviewRequest("APPROVE","superadmin","unverified account must not pass"));
-        assertThat(result.getMessage()).isEqualTo("BANK_VERIFICATION_PROVIDER_UNAVAILABLE");
+        var result = service.reviewWithdrawal("WD-BANK","inactive-bank-approve",new WithdrawalReviewRequest("APPROVE","superadmin","inactive account must not pass"));
+        assertThat(result.getMessage()).isEqualTo("USER_NOT_FOUND");
         assertThat(withdrawalRepository.lastStatus).isNull();
         verify(bankWithdrawalMapper, org.mockito.Mockito.never()).approveRisk(anyString(),anyString());
     }
 
     @Test
     void bankApprovalIsBoundToRiskFactsAndMustBeReviewedAgainAfterRiskChange() {
-        // Approved provider evidence is a test fixture only; production capability remains unavailable.
-        try (var eligibility = org.mockito.Mockito.mockStatic(BankWithdrawalEligibility.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
-        eligibility.when(BankWithdrawalEligibility::capabilitySummary).thenReturn(Map.of("status","ready","provider","fixture-provider",
-                "capabilityVersion","fixture-v1","accountVerificationAvailable",true,"ownershipVerificationAvailable",true));
         var bank = bankWithdrawalMapper;
         LocalDateTime now = LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE);
         when(appWithdrawalMapper.lockActiveUser(1001L)).thenReturn(1001L);
@@ -541,8 +538,6 @@ class OpsFinanceServiceTest {
         when(bank.quote("BQ-fixture")).thenReturn(new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote("BQ-fixture",1001L,"BNK-fixture",0L,"","****6789","cipher",
                 new BigDecimal("100"),BigDecimal.ONE,new BigDecimal("99"),new BigDecimal("25000"),new BigDecimal("2475000"),1L,"d5",now,now.plusMinutes(5),"WD-BANK"));
         when(bank.lockBeneficiary(1001L)).thenReturn(new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Beneficiary(1001L,"BNK-fixture","","****6789","cipher",now.minusDays(1),now.plusDays(1),0L));
-        when(bank.verification("BNK-fixture")).thenReturn(new ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Verification("BNK-fixture",1001L,0L,"verified","supported","matched","payment_account",
-                null,now.minusMinutes(1),now.plusHours(1),"fixture-evidence","fixture-v1","fixture-provider",now));
         when(bank.approveRisk(anyString(),anyString())).thenReturn(1);
         withdrawalRepository.order = new WithdrawalOrderView(1L,1001L,"WD-BANK","USDT","BANK-VND",
                 new BigDecimal("100"),BigDecimal.ONE,"BANK-VND:BNK-fixture",null,null,"REVIEWING",
@@ -564,7 +559,6 @@ class OpsFinanceServiceTest {
         when(appWithdrawalMapper.withdrawalRiskFacts(org.mockito.ArgumentMatchers.anyLong(),anyString())).thenReturn(currentRiskFacts(40));
         when(bank.approvedRiskHash("WD-BANK")).thenReturn(null);
         assertThat(service.bankPayoutDispatchBlockReason("WD-BANK")).isEqualTo("BANK_PAYOUT_RISK_REVIEW_REQUIRED");
-        }
     }
 
     @Test

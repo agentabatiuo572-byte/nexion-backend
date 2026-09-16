@@ -11,8 +11,9 @@ import org.apache.ibatis.annotations.*;
 public interface BankWithdrawalMapper {
     @Select("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ('nx_bank_payout_beneficiary','nx_bank_payout_quote','nx_hdpay_payout','nx_hdpay_payout_callback')")
     int schemaTables();
+    // Immediate activation also applies to existing bindings. Keep the historical delay column intact.
     String BENEFICIARY = "SELECT user_id userId,beneficiary_no beneficiaryNo,bank_code bankCode,masked_account maskedAccount,"
-            + "recipient_cipher recipientCipher,effective_at effectiveAt,next_change_at nextChangeAt,version FROM nx_bank_payout_beneficiary ";
+            + "recipient_cipher recipientCipher,updated_at effectiveAt,next_change_at nextChangeAt,version FROM nx_bank_payout_beneficiary ";
     @Select(BENEFICIARY + "WHERE user_id=#{userId}") Beneficiary beneficiary(Long userId);
     @Select(BENEFICIARY + "WHERE user_id=#{userId} FOR UPDATE") Beneficiary lockBeneficiary(Long userId);
     @Insert("""

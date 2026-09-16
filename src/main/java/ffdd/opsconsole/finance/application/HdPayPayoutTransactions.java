@@ -37,8 +37,7 @@ public class HdPayPayoutTransactions {
         if (order == null || !"READY".equals(order.state()) || !properties.ready(transport)) return null;
         var gate = config.overview();
         if (gate.getCode() != 0 || !Boolean.TRUE.equals(gate.getData().get("channelEnabled"))
-                || !Boolean.TRUE.equals(gate.getData().get("providerReady"))
-                || !BankWithdrawalEligibility.capabilityReady(gate.getData().get("capabilitySummary"))) return null;
+                || !Boolean.TRUE.equals(gate.getData().get("providerReady"))) return null;
         String block = finance.bankPayoutDispatchBlockReason(orderNo);
         if (block != null) {
             if (block.equals("BANK_PAYOUT_RISK_REVIEW_REQUIRED")) {
@@ -51,12 +50,8 @@ public class HdPayPayoutTransactions {
         if (!snapshotMatches(order, quote, canonical.payout(orderNo)))
             throw new BizException(409, "BANK_PAYOUT_SNAPSHOT_MISMATCH");
         var beneficiary = bank.lockBeneficiary(order.userId());
-        var verification = bank.verification(quote.beneficiaryNo());
         LocalDateTime now = LocalDateTime.now(clock);
-        if (beneficiary == null || !quote.beneficiaryNo().equals(beneficiary.beneficiaryNo())
-                || !quote.beneficiaryVersion().equals(beneficiary.version()) || beneficiary.effectiveAt().isAfter(now)
-                || BankWithdrawalEligibility.block(verification, quote.beneficiaryNo(), order.userId(), quote.beneficiaryVersion(), now) != null
-                || !BankWithdrawalEligibility.matchesCapability(verification, gate.getData().get("capabilitySummary"))) return null;
+        if (BankWithdrawalEligibility.quoteBlock(beneficiary, quote) != null) return null;
         String[] recipient = recipient(quote);
         // Preserve historical quote labels, but normalize all new provider dispatches to BANKQR.
         var request = new HdPayPayoutGateway.Request(orderNo, quote.amountVnd(), "", recipient[0], recipient[1]);

@@ -1015,16 +1015,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if ("BANK-VND".equals(order.chain()) && !Set.of("REVIEW_PENDING", "REVIEWING", "REVIEW_PASSED", "EXTENDED_HOLD", "DELAYED", "FROZEN").contains(order.status()))
             return ApiResult.fail(409, "BANK_PAYOUT_ALREADY_DISPATCHED");
         if ("BANK-VND".equals(order.chain()) && "APPROVE".equals(action)) {
-            if (!BankWithdrawalEligibility.capabilityReady(BankWithdrawalEligibility.capabilitySummary()))
-                return ApiResult.fail(409, "BANK_VERIFICATION_PROVIDER_UNAVAILABLE");
             if (appWithdrawalMapper.lockActiveUser(order.userId()) == null) return ApiResult.fail(409, "USER_NOT_FOUND");
             var payout = bankWithdrawalMapper.lockOrder(withdrawalNo);
             var quote = payout == null ? null : bankWithdrawalMapper.quote(payout.quoteNo());
             var beneficiary = bankWithdrawalMapper.lockBeneficiary(order.userId());
-            var verification = quote == null ? null : bankWithdrawalMapper.verification(quote.beneficiaryNo());
-            if (quote == null || !Boolean.TRUE.equals(BankWithdrawalEligibility.quoteEvidenceView(verification, beneficiary, quote,
-                    LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE)).get("canWithdraw")))
-                return ApiResult.fail(409, "BANK_BENEFICIARY_UNVERIFIED");
+            String recipientBlock = BankWithdrawalEligibility.quoteBlock(beneficiary, quote);
+            if (recipientBlock != null) return ApiResult.fail(409, recipientBlock);
         }
         if ("APPROVE".equals(action)) {
             currentRisk = currentD2Risk(order, LocalDateTime.now());

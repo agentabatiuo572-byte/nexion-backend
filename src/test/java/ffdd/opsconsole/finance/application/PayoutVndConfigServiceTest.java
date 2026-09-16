@@ -59,15 +59,13 @@ class PayoutVndConfigServiceTest {
         assertThat(service.overview().getData()).containsEntry("providerReady", false).containsEntry("payoutConfigured", false);
     }
 
-    @Test void transportAndMerchantReadyStillCannotEnableWithoutAccountVerificationCapability() {
+    @Test void readyProviderAndHealthyCoverageCanEnableWithoutAccountVerification() {
         when(config.activeValue(PayoutVndConfigService.PROVIDER_READY_KEY)).thenReturn(Optional.of("true"));
         when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
-        var summary = (Map<?,?>)service.overview().getData().get("capabilitySummary");
-        assertThat(summary.get("status")).isEqualTo("unavailable");
-        assertThat(summary.get("provider")).isNull();
-        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(true,4L,"enable must require account evidence"));
-        assertThat(result.getMessage()).isEqualTo("D7_ACCOUNT_VERIFICATION_NOT_READY");
-        verify(config, never()).upsertAdminValue(anyString(),anyString(),anyString(),anyString(),anyString());
+        assertThat(service.overview().getData()).doesNotContainKey("capabilitySummary");
+        var result = service.updateChannel(new PayoutVndChannelUpdateRequest(true,4L,"enable bank withdrawals without extra verification"));
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("channelEnabled",true);
     }
 
     @Test

@@ -101,22 +101,21 @@ class BankWithdrawalServiceTest {
         assertSame(receipt, service.bind(71, binding(), "bank-already-succeeded"));
         verifyNoInteractions(bank, addresses, otp, withdrawals);
     }
-    @Test void emptyBankCodeBindsWithoutAnyOtpAndKeepsLeadingZerosAndCoolingPeriods() {
+    @Test void firstBindingIsImmediateWithoutOtpOrExternalVerificationAndKeepsLeadingZeros() {
         when(cipher.encrypt(anyString(), anyString())).thenReturn("encrypted-fixture");
         when(bank.saveBeneficiary(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyLong(), any())).thenReturn(1);
-        when(bank.saveVerification(any())).thenReturn(1);
-        when(bank.beneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","encrypted-fixture",now.plusHours(24),now.plusDays(7),0L));
+        when(bank.beneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","encrypted-fixture",now,now.plusDays(7),0L));
         var result = service.bind(71, new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null), "fixture-no-otp");
         assertEquals(0, result.getCode());
         assertEquals("BANKQR", ((Map<?, ?>)result.getData().get("beneficiary")).get("bankName"));
         verify(cipher).encrypt(eq("00123456789\nNGUYEN VAN A"), startsWith("BANK-BENEFICIARY:71:"));
-        verify(bank).saveBeneficiary(eq(71L), anyString(), eq(""), eq("****6789"), eq("encrypted-fixture"), eq(now.plusHours(24)), eq(now.plusDays(7)), eq(0L), eq(now));
+        verify(bank).saveBeneficiary(eq(71L), anyString(), eq(""), eq("****6789"), eq("encrypted-fixture"), eq(now), eq(now), eq(0L), eq(now));
         verifyNoInteractions(otp, delivery, withdrawals);
     }
-    @Test void removedOtpEndpointDoesNotSendSms() {
+    @Test void firstBindingDoesNotSendSms() {
         var error = assertThrows(RuntimeException.class, () -> service.sendOtp(71));
-        assertEquals("BANK_BINDING_OTP_NOT_REQUIRED", error.getMessage());
-        verifyNoInteractions(otp, delivery, addresses, bank);
+        assertEquals("BANK_CHANGE_OTP_NOT_REQUIRED", error.getMessage());
+        verifyNoInteractions(otp, delivery, addresses);
     }
     @Test void bindingStillRequiresAnActiveNonSandboxOwner() {
         when(wallet.findActiveUser(72L)).thenReturn(null);
@@ -125,12 +124,12 @@ class BankWithdrawalServiceTest {
         assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "fixture-sandbox"));
         verifyNoInteractions(bank, cipher, otp, delivery);
     }
-    @Test void cooldownAndUnsettledWithdrawalsStillBlockRecipientReplacement() {
+    @Test void replacementNeedsOtpAndUnsettledWithdrawalsStillBlockIt() {
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","VCB","****6789","encrypted-fixture",now.minusHours(1),now.plusDays(6),0L));
-        assertEquals("BANK_CHANGE_COOLDOWN", assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "fixture-cooldown")).getMessage());
+        assertEquals("BANK_CHANGE_OTP_INVALID", assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "fixture-cooldown")).getMessage());
         when(addresses.unsettledWithdrawalCount(71L)).thenReturn(1);
         assertEquals("BANK_WITHDRAWAL_IN_FLIGHT", assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "fixture-inflight")).getMessage());
-        verifyNoInteractions(cipher, otp, delivery, withdrawals);
+        verifyNoInteractions(otp, delivery, withdrawals);
         verify(bank, never()).saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any());
     }
     @Test void accountDiscoveryRetainsAllLegacyIntentsWithChannelDisabled() {
@@ -144,21 +143,29 @@ class BankWithdrawalServiceTest {
         assertEquals("BANK_WITHDRAWAL_UNRESOLVED_INTENT", assertThrows(RuntimeException.class, () -> service.quote(71, BigDecimal.TEN)).getMessage());
         verifyNoInteractions(withdrawals);
     }
-    @Test void elapsedProtectionPeriodDoesNotVerifyOrEnableARecipient() {
+    @Test void retiredVerificationEndpointNeverWritesOrClaimsVerificationAndLegacyBindingIsReady() {
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
-        var recipient = new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.minusDays(2),now.minusDays(1),1L);
-        when(bank.beneficiary(71L)).thenReturn(recipient); when(bank.lockBeneficiary(71L)).thenReturn(recipient);
-        when(bank.saveVerification(any())).thenReturn(1);
-        var verified = new java.util.concurrent.atomic.AtomicReference<BankWithdrawalMapper.Verification>();
-        doAnswer(i -> { verified.set(i.getArgument(0)); return 1; }).when(bank).saveVerification(any());
-        when(bank.verification("BNK-fixture")).thenAnswer(i -> verified.get());
-        var first = service.verifyBeneficiary(71).getData();
-        assertEquals("unavailable", ((Map<?,?>)first.get("beneficiary")).get("verificationStatus"));
-        assertEquals(false, ((Map<?,?>)first.get("beneficiary")).get("canWithdraw"));
-        service.verifyBeneficiary(71);
-        verify(bank, times(1)).saveVerification(any());
-        verify(bank, never()).saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any());
+        var recipient = new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.plusHours(24),now.plusDays(7),0L);
+        when(bank.beneficiary(71L)).thenReturn(recipient);
+        assertEquals("BANK_BENEFICIARY_VERIFICATION_NOT_REQUIRED", assertThrows(RuntimeException.class, () -> service.verifyBeneficiary(71)).getMessage());
+        var config = service.config(71).getData();
+        assertEquals(0, config.get("bindingDelayHours"));
+        assertEquals(true, ((Map<?,?>)config.get("beneficiary")).get("canWithdraw"));
+        assertFalse(((Map<?,?>)config.get("beneficiary")).containsKey("verificationStatus"));
+        verify(bank, never()).saveVerification(any());
+        verify(bank, never()).verification(anyString());
     }
+    @Test void replacementWithinSevenDaysTakesEffectImmediatelyWithOtp() {
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now.minusHours(1),now.plusDays(7),0L));
+        when(cipher.encrypt(anyString(),anyString())).thenReturn("encrypted-fixture");
+        when(bank.saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any())).thenReturn(1);
+        when(otp.verifyAndConsume(71L, bankChallenge(), "123456")).thenReturn(true);
+        assertEquals(0,service.bind(71,changeBinding(),"replacement-immediate").getCode());
+        verify(otp).verifyAndConsume(71L,bankChallenge(),"123456");
+        verify(bank).saveBeneficiary(eq(71L),anyString(),eq(""),eq("****6789"),eq("encrypted-fixture"),eq(now),eq(now),eq(1L),eq(now));
+        verify(bank,never()).saveVerification(any());
+    }
+
     @Test void terminalLabelWithoutSettlementEvidenceStaysDiscoverable() {
         var order = new BankWithdrawalMapper.Order("WD-fixture",qn,71L,"FAILED",123L,5,null);
         when(bank.unresolvedOrders(71)).thenReturn(List.of(order)); when(bank.quote(qn)).thenReturn(quote(71));
@@ -168,27 +175,61 @@ class BankWithdrawalServiceTest {
         assertNull(service.recovery(71).getData());
         verify(bank,never()).settlementEvidence(anyString());
     }
-    @Test void trustedFixtureAllowsQuoteButUnknownOrExpiredEvidenceNeverReserves() {
-        var capability = Map.<String,Object>of("status","ready","provider","fixture-provider","capabilityVersion","fixture-capability-v1",
-                "accountVerificationAvailable",true,"ownershipVerificationAvailable",true);
-        var pricing = new java.util.HashMap<String,Object>(Map.of("channelEnabled",true,"providerReady",true,"capabilitySummary",capability,
+    @Test void quoteAndSubmitReachWalletWithoutVerificationButStillRejectChangedRecipient() {
+        var pricing = new java.util.HashMap<String,Object>(Map.of("channelEnabled",true,"providerReady",true,
                 "version",1L,"quoteTtlMinWithdraw",5,"minAmountUsd",20,"maxAmountUsd",5000,"feeRatePct",1,"feeMinUsd",1,"feeMaxUsd",25));
         pricing.put("baseRateVndPerUsdt",25000); pricing.put("sellSpreadPct",0);
         doReturn(true).when(payout).ready(any()); when(d7.overview()).thenReturn(ApiResult.ok(pricing));
-        var b = new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.minusDays(1),now.plusDays(1),1L);
+        var b = new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.plusHours(24),now.plusDays(7),1L);
         when(bank.lockBeneficiary(71L)).thenReturn(b);
-        assertEquals("BANK_BENEFICIARY_UNVERIFIED", assertThrows(RuntimeException.class, () -> service.quote(71, new BigDecimal("100"))).getMessage());
-        when(bank.verification(b.beneficiaryNo())).thenReturn(new BankWithdrawalMapper.Verification(b.beneficiaryNo(),71L,1L,"verified","supported",
-                "matched","payment_account",null,now.minusMinutes(1),now.plusHours(1),"fixture-evidence","fixture-capability-v1","fixture-provider",now));
         when(withdrawals.policy(71L)).thenReturn(ApiResult.ok(Map.of("withdrawalEnabled",true,"policyVersion","d5-v1")));
         when(cipher.decrypt(anyString(),anyString())).thenReturn("0123456789\nNGUYEN VAN A");
         when(cipher.encrypt(anyString(),anyString())).thenReturn("snapshot"); when(bank.insertQuote(any())).thenReturn(1);
-        assertEquals(0, service.quote(71,new BigDecimal("100")).getCode());
+        assertEquals(0,service.quote(71,new BigDecimal("100")).getCode());
         when(bank.lockQuote(qn,71)).thenReturn(quote(71)); when(bank.activeQuotes(71)).thenReturn(List.of(quote(71)));
-        when(bank.verification(b.beneficiaryNo())).thenReturn(null);
-        assertEquals("BANK_BENEFICIARY_UNVERIFIED", assertThrows(RuntimeException.class, () -> service.submit(71,qn,"fixture-unknown")).getMessage());
+        when(withdrawals.reserveBank(anyLong(),any(),anyString())).thenReturn(ApiResult.fail(409,"FIXTURE_WALLET_BLOCKED"));
+        assertEquals("FIXTURE_WALLET_BLOCKED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"without-verification")).getMessage());
+        verify(withdrawals).reserveBank(eq(71L),any(),anyString());
+        verify(bank,never()).verification(anyString());
+        clearInvocations(withdrawals);
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-new","","****4321","cipher",now,now.plusDays(7),2L));
+        assertEquals("BANK_BENEFICIARY_CHANGED",assertThrows(RuntimeException.class,()->service.submit(71,qn,"changed-recipient")).getMessage());
         verify(withdrawals,never()).reserveBank(anyLong(),any(),anyString());
     }
+
+    @Test void changeOtpIsRequiredAndCannotUseAnotherPurpose() {
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now,now,0L));
+        for (String challenge : new String[]{null,"PAYOUT-"+"a".repeat(32),"REGISTER-"+"a".repeat(32),"PAYOUT-BANK-short"}) {
+            var request = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456");
+            assertEquals("BANK_CHANGE_OTP_INVALID",assertThrows(RuntimeException.class,()->service.bind(71,request,"wrong-purpose")).getMessage());
+        }
+        verifyNoInteractions(otp);
+        assertEquals("BANK_CHANGE_OTP_INVALID",assertThrows(RuntimeException.class,()->service.bind(71,changeBinding(),"wrong-code")).getMessage());
+        verify(otp).verifyAndConsume(71L,bankChallenge(),"123456");
+        verify(bank,never()).saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any());
+    }
+    @Test void changeSmsUsesOnlyRegisteredPhoneAndSharedRateLimits() {
+        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now,now,0L));
+        when(addresses.userContact(71L)).thenReturn(new AppPayoutAddressMapper.UserContact("+84","912345678"));
+        when(delivery.available("+84")).thenReturn(true); when(delivery.verificationCode("+84")).thenReturn("123456");
+        when(addresses.insertOtp(eq(71L),startsWith("PAYOUT-BANK-"),eq("123456"))).thenReturn(1);
+        var result=service.sendOtp(71).getData();
+        assertEquals(300,result.get("expiresInSeconds")); assertEquals(60,result.get("retryAfterSeconds"));
+        assertFalse(result.containsKey("code")); assertFalse(result.containsKey("phone"));
+        verify(delivery).deliver(eq("+84"),eq("912345678"),eq(result.get("challengeNo").toString()),eq("123456"),eq(5));
+        clearInvocations(delivery,addresses);
+        when(addresses.recentOtpCount(71L)).thenReturn(1);
+        assertEquals("BANK_CHANGE_OTP_COOLDOWN",assertThrows(RuntimeException.class,()->service.sendOtp(71)).getMessage());
+        when(addresses.recentOtpCount(71L)).thenReturn(0); when(addresses.todayOtpCount(71L)).thenReturn(10);
+        assertEquals("BANK_CHANGE_OTP_DAILY_LIMIT",assertThrows(RuntimeException.class,()->service.sendOtp(71)).getMessage());
+        when(delivery.available("+84")).thenReturn(false);
+        assertEquals("BANK_CHANGE_OTP_UNAVAILABLE",assertThrows(RuntimeException.class,()->service.sendOtp(71)).getMessage());
+        verify(delivery,never()).deliver(anyString(),anyString(),anyString(),anyString(),anyInt());
+        when(addresses.unsettledWithdrawalCount(71L)).thenReturn(1);
+        assertEquals("BANK_WITHDRAWAL_IN_FLIGHT",assertThrows(RuntimeException.class,()->service.sendOtp(71)).getMessage());
+    }
+    private String bankChallenge() { return "PAYOUT-BANK-"+"a".repeat(32); }
+    private BankWithdrawalService.BindRequest changeBinding() { return new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",bankChallenge(),"123456"); }
     private BankWithdrawalService.BindRequest emptyBinding() { return new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null); }
     private BankWithdrawalService.BindRequest binding() {
         return new BankWithdrawalService.BindRequest("VCB", "00123456789", "NGUYEN VAN A", "PAYOUT-BANK-" + "a".repeat(32), "123456");

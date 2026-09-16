@@ -4,8 +4,8 @@
 
 ## 资金和状态约束
 
-- 绑定只提交收款账号、户名与空银行编码，不要求短信验证码。登录 USER 身份决定平台资源所属账号，**不能证明银行账户归属**。首次绑定保护期 24 小时、换绑间隔 7 天；保护期到期不等于核验通过。有未决报价或在途单时不可换绑。登录、找回密码及其他提现地址验证码不变。
-- 账户存在、本人归属、VND 支付账户及商户代付能力必须有当前有效的服务端证据；报价、提交、派发分别校验。尚未接入已确认的账户验证服务商，能力摘要固定 `unavailable`，新绑定/重查保持 `unavailable/unknown`，不能通过 D7 开关或人工勾选放行；历史已派发单仍仅查询原单。
+- 首次绑定只提交收款账号、户名与空银行编码，不要求短信验证码；换卡必须验证当前账号绑定手机号的短信验证码。登录 USER 身份决定平台资源所属账号，**不能证明银行账户归属**。首次绑定、换绑均立即生效；历史绑定的 24 小时等待期也取消，使用实际绑定时间。取消 7 天换卡间隔；每次换卡都需要一次有效短信验证。有未决报价或在途单时不可换绑。登录、找回密码及其他提现地址验证码不变。
+- 按 2026-09-16 用户确认取消额外的外部账户/归属核验前置条件，不生成伪造的 verified 证据。报价、提交、D2 审核及派发仍检查当前用户的收款账户和报价中的账户编号/版本一致；真实 HDPay 配置、通道开关及资金约束继续生效。历史已派发单仍仅查询原单。
 - 服务端锁定 D5/D7 版本、D6 汇率、银行卡版本和报价有效期。手续费由 USDT 总额扣除，净额按锁定汇率折算为整数 VND，向下取整；客户端不决定资金结果。
 - 提交复用钱包冻结、限额及风险检查；同一报价只能生成一个订单。App 在发送请求前持久保存当前账户的报价号，响应丢失后只查原单或先完成耐久取消，不能直接重发新单。
 - D2 审核通过才进入代付；发送前再次核对审核时的风险指纹和当前规则。先持久化 `DISPATCHING`，后调用 HDPay。网络超时或进程中断后只查原商户订单，不再次创建代付。
@@ -19,11 +19,11 @@ App 用户鉴权资源前缀：`/api/withdrawals/bank`（`BankWithdrawalControll
 
 | 方法 | 后缀 | 用途 |
 | --- | --- | --- |
-| GET | `/config` | 就绪状态、`payType=BANKQR`、`bankCodeRequired=false`、`bindingOtpRequired=false`、脱敏绑定资料 |
+| GET | `/config` | 就绪状态、`payType=BANKQR`、`bankCodeRequired=false`、`bindingOtpRequired`（有绑定账户时为 true）、脱敏绑定资料 |
 | GET | `/recovery` | 当前账号全部未决银行意图；无意图为 null，多单不猜测覆盖 |
-| POST | `/beneficiary/otp` | 已停用；鉴权后返回 410，不发送短信 |
+| POST | `/beneficiary/otp` | 已绑卡用户申请换卡短信；仅发送至当前用户注册手机号，返回 challengeNo、300 秒有效期和 60 秒重发间隔，不返回验证码或完整手机号 |
 | POST | `/beneficiary` | 幂等绑定 |
-| POST | `/beneficiary/verify` | 无请求体/幂等键；每分钟复用当前持久结果，不重启保护期；未配置提供方返回 unavailable |
+| POST | `/beneficiary/verify` | 已停用；鉴权后返回 410 `BANK_BENEFICIARY_VERIFICATION_NOT_REQUIRED`，不写核验记录 |
 | POST | `/quotes` | 服务端报价 |
 | GET | `/quotes/{quoteNo}` | 当前用户原报价恢复 |
 | POST | `/quotes/{quoteNo}/abandon` | 原报价耐久取消 |
@@ -34,21 +34,21 @@ PC：`GET /api/admin/finance/withdrawals/{withdrawalNo}/bank`；人工查原单�
 
 增量返回字段（均在现有 `ApiResult.data` 内，空值显式为 null）：
 
-- `config.capabilitySummary` 与 D7 同源只读摘要：`status/provider/country/currency/recipientIdentifier/accountVerificationAvailable/ownershipVerificationAvailable/reasonCode/capabilityVersion/checkedAt`。本次 `status=unavailable`、VN/VND/bank_account、能力布尔值 false、provider/版本/检查时间 null。
-- `beneficiary` 保留原字段，新增 `beneficiaryNo/verificationStatus/payoutCapability/ownershipStatus/accountType/reasonCode/checkedAt/expiresAt/evidenceRef/capabilityVersion/canWithdraw`。核验状态为 pending/verified/rejected/unavailable；能力 supported/unsupported/unknown；归属 matched/mismatched/unknown；账户类型 payment_account/credit_card/prepaid/unknown。缺证据时不放行。
+- `config.bindingDelayHours=0`、`config.changeCooldownDays=0`，不再返回 `capabilitySummary`。
+- `beneficiary` 返回原绑定字段、`beneficiaryNo` 和 `canWithdraw`；存在当前用户绑定时 `canWithdraw=true`。不再返回外部核验状态或证据，通道是否可用须同时读取 `config.enabled`。
 - `config.unresolvedIntent` 与 `/recovery` 的 data 相同：null，或 `{state,quoteNo,withdrawalNo,intents:[{state,quoteNo,withdrawalNo,expiresAt,providerState}]}`。单意图 state 为 NOT_SUBMITTED/COMMITTED；多个为 MULTIPLE，顶层两个编号 null。停用通道不会隐藏意图。
 - 原报价恢复支持 EXPIRED，服务端已持久写入过期封存，允许重新报价；ABANDONED 是主动耐久取消。二者均禁止迟到提交。账号行锁串行化报价、提交、取消和换绑，单活跃报价/未结订单互斥。
 - 所有 COMMITTED 返回及 D2 详情含 `settlementEvidence:{status,evidenceRef,providerOrderId,providerStatus,checkedAt,amountUsdt}`。status 为 unconfirmed/paid/refunded/review_required。只有匹配原单、金额、供应商与现有账本的证据才展示 paid/refunded；退款还需实际钱包账本。D2 审核拒绝的未派发单按已有 D2 退款账本核对。未知绝不自动退款或重发。
-- D2 `beneficiaryVerification` 展示该报价所指受益账户的核验证据（不包含明文账号/姓名，不等同于历史到账证据）。
+- D2 `beneficiaryEligibility:{canWithdraw,reasonCode}` 展示当前用户收款账户与报价的编号/版本是否一致；不包含明文账号/姓名，也不表示已经到账。
 
-409 拒绝原因新增 `BANK_WITHDRAWAL_UNRESOLVED_INTENT`、`BANK_BENEFICIARY_UNVERIFIED`、`BANK_BENEFICIARY_INELIGIBLE`、`BANK_BENEFICIARY_VERIFICATION_EXPIRED`；D7 新开通还要求能力就绪，否则 `D7_ACCOUNT_VERIFICATION_NOT_READY`。前端将原因转为可读文案，不能自行变更资格。
+409 拒绝原因保留 `BANK_WITHDRAWAL_UNRESOLVED_INTENT`、`BANK_BENEFICIARY_REQUIRED`、`BANK_BENEFICIARY_CHANGED` 和 `BANK_PAYOUT_SNAPSHOT_MISMATCH` 等本地一致性检查。D7 不再要求外部核验能力，实际供应商配置和资金覆盖检查继续生效。
 
 ## 配置与启用前条件
 
 - 独立开关 `nexion.finance.hdpay-payout.enabled=false`；充值 HDPay 启用不等于代付启用。
 - `client-ip` 默认空，仍必须配置经供应商确认的出口 IP。旧 `bank-codes` 属性仅保留兼容，不再作为 BANKQR 就绪条件；独立 enabled 与 D7 门禁不变。
 - 用户经 HDPay 客服确认代付创建使用 `payType="BANKQR"`，必须明确发送 `bnkCode=""`（不是省略或 null）。`/config.banks` 返回空列表；新绑定拒绝非空银行编码，历史成功请求仍按旧摘要回放，旧账户/报价保留历史标签而派发时统一传空编码。
-- 新绑定不采集有效期、CVV 或 OTP。请求的旧 OTP 字段仅为旧幂等结果回放保留，不参与新绑定授权。允许代付开关关闭时预绑定，不代表实际出款已启用。
+- 绑定不采集银行卡有效期、CVV。首次绑定不需要 OTP；换卡必须提供专属 `PAYOUT-BANK-` challengeNo 和六位短信验证码，服务端校验用户、用途、过期、失败次数及单次消费。复用现有短信服务与 OTP 表，与提现地址共享 60 秒/每日 10 次发送限制；短信发送结果未知也保留计数。错误尝试和验证码消费在独立事务中持久化，成功绑定的幂等重放不二次消费。允许代付开关关闭时预绑定，不代表实际出款已启用。
 - 复用受管 `nexion.finance.hdpay` 传输凭据、基础地址及回调域名，以及既有金融敏感字段加密配置。不在仓库、日志或文档保存真实密钥或完整银行卡号。
 - 需执行下列全部银行提现迁移、有效加密配置及严格非沙箱运行配置。`public-test` 防护仍禁止开启真实代付，本次不改变其信任策略。
 - 调度默认 30 秒；关闭新代付不抹除在途状态，已派发单仍可查单收敛。
@@ -60,7 +60,7 @@ PC：`GET /api/admin/finance/withdrawals/{withdrawalNo}/bank`；人工查原单�
 
 - `scripts/migrations/20260915_hdpay_bank_withdrawal.sql`：四张 BANK/HDPay 表（受益账户、报价、代付、回调收件箱）。
 - `scripts/migrations/20260915_l6_bank_withdrawal_route.sql`：追加 App 页面行为目录。
-- `scripts/migrations/20260916_bank_beneficiary_verification.sql`：账户核验证据和报价过期封存；不更改历史迁移、不写 verified、不启用通道。
+- `scripts/migrations/20260916_bank_beneficiary_verification.sql`：历史账户核验证据和报价过期封存；核验表保留兼容，不再读写作为提现门禁，不更改历史迁移、不写 verified、不启用通道。
 - `scripts/migrations/20260916_l6_withdrawal_method_route.sql`：登记 App 提现方式选择入口的行为目录，保留既有页面记录。
 
 现有 public-test 发布代理会先校验历史脚本、检查磁盘容量、停止后端写入、备份并验证数据库转储，再逐个执行新 SQL，成功后记录一次性迁移回执。SQL 失败必须保留错误和备份，不跳过迁移、不改历史校验和，不自动恢复覆盖新业务数据。

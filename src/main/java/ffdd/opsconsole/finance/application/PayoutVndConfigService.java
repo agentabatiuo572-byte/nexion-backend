@@ -96,9 +96,6 @@ public class PayoutVndConfigService {
         if (request.enabled() && (!current.providerStatusAvailable() || !current.providerReady())) {
             return ApiResult.fail(409, "D7_PROVIDER_NOT_READY");
         }
-        if (request.enabled() && !BankWithdrawalEligibility.capabilityReady(BankWithdrawalEligibility.capabilitySummary())) {
-            return ApiResult.fail(409, "D7_ACCOUNT_VERIFICATION_NOT_READY");
-        }
         if (request.enabled() && !coverageHealthy()) {
             return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
         }
@@ -199,7 +196,6 @@ public class PayoutVndConfigService {
         result.put("buySpreadPct", fx.buySpreadPct());
         for (String key : operationalKeys()) result.put(key, values.get(key));
         result.put("providerReady", providerReady);
-        result.put("capabilitySummary", BankWithdrawalEligibility.capabilitySummary());
         result.put("providerStatusAvailable", providerStatusAvailable);
         result.put("provider", "HDPAY");
         result.put("payoutConfigured", payoutReadiness.ready());

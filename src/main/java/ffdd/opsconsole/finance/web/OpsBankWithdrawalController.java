@@ -29,9 +29,7 @@ public class OpsBankWithdrawalController {
                 "providerStatus", order.providerStatus(), "lastError", order.lastError(),
                 "version", mapper.version(withdrawalNo),
                 "quote", BankWithdrawalService.quoteView(quote),
-                "beneficiaryVerification", BankWithdrawalEligibility.quoteEvidenceView(mapper.verification(quote.beneficiaryNo()),
-                        mapper.beneficiary(order.userId()), quote,
-                        java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE)),
+                "beneficiaryEligibility", BankWithdrawalEligibility.quoteEligibilityView(mapper.beneficiary(order.userId()), quote),
                 "settlementEvidence", BankWithdrawalService.settlementView(order, mapper.settlementEvidence(withdrawalNo))));
     }
     @PostMapping("/{withdrawalNo}/bank/requery")

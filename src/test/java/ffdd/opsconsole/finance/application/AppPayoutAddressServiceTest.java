@@ -56,18 +56,30 @@ class AppPayoutAddressServiceTest {
         String address = "0x" + "ab".repeat(20);
         when(mapper.activeUser(userId)).thenReturn(userId);
         when(mapper.lockActiveUser(userId)).thenReturn(userId);
-        when(otpAttempts.verifyAndConsume(userId, "PAYOUT-ABC", "123456")).thenReturn(true);
+        when(otpAttempts.verifyAndConsume(userId, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456")).thenReturn(true);
         when(mapper.unsettledWithdrawalCount(userId)).thenReturn(0);
         when(mapper.lock(userId, "USDT-BEP20")).thenReturn(null, new PayoutAddressRow(
                 "USDT-BEP20", address, "ACTIVE", LocalDateTime.now().plusHours(24),
                 LocalDateTime.now(), LocalDateTime.now().plusDays(7), 0L));
         when(mapper.insert(userId, "USDT-BEP20", address)).thenReturn(1);
 
-        service.save(userId, new SaveRequest("USDT-BEP20", address, "PAYOUT-ABC", "123456"), "cmd-1");
+        service.save(userId, new SaveRequest("USDT-BEP20", address, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "cmd-1");
 
         verify(idempotency).execute(eq("USER_PAYOUT_ADDRESS:7"), eq("cmd-1"), anyString(),
                 eq(ApiResult.class), any());
         verify(mapper).insert(userId, "USDT-BEP20", address);
+    }
+
+    @Test
+    void bankOtpCannotAuthorizeAnAddressEvenUnderCaseInsensitiveDatabaseCollation() {
+        when(mapper.activeUser(7L)).thenReturn(7L);
+        for (String prefix : new String[]{"PAYOUT-BANK-", "PAYOUT-bank-", "PAYOUT-bAnK-", "PAYOUT-bánk-", "REGISTER-"}) {
+            assertThatThrownBy(() -> service.save(7L,
+                    new SaveRequest("USDT-BEP20", "0x" + "ab".repeat(20), prefix + "a".repeat(32), "123456"), "purpose-key"))
+                    .isInstanceOf(BizException.class).hasMessage("PAYOUT_ADDRESS_OTP_INVALID");
+        }
+        verifyNoInteractions(otpAttempts, idempotency, audit);
+        verify(mapper, never()).lockActiveUser(7L);
     }
 
     @Test
@@ -76,14 +88,14 @@ class AppPayoutAddressServiceTest {
         String address = "T" + "A".repeat(33);
         when(mapper.activeUser(userId)).thenReturn(userId);
         when(mapper.lockActiveUser(userId)).thenReturn(userId);
-        when(otpAttempts.verifyAndConsume(userId, "PAYOUT-DEF", "654321")).thenReturn(false);
+        when(otpAttempts.verifyAndConsume(userId, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "654321")).thenReturn(false);
 
         assertThatThrownBy(() -> service.save(userId,
-                new SaveRequest("USDT-TRC20", address, "PAYOUT-DEF", "654321"), "cmd-2"))
+                new SaveRequest("USDT-TRC20", address, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "654321"), "cmd-2"))
                 .isInstanceOf(BizException.class)
                 .hasMessage("PAYOUT_ADDRESS_OTP_INVALID");
 
-        verify(otpAttempts).verifyAndConsume(userId, "PAYOUT-DEF", "654321");
+        verify(otpAttempts).verifyAndConsume(userId, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "654321");
     }
 
     @Test
@@ -93,7 +105,7 @@ class AppPayoutAddressServiceTest {
         when(mapper.lockActiveUser(userId)).thenReturn(null);
 
         assertThatThrownBy(() -> service.save(userId,
-                new SaveRequest("USDT-TRC20", "T" + "A".repeat(33), "PAYOUT-DEF", "654321"), "cmd-lost-user"))
+                new SaveRequest("USDT-TRC20", "T" + "A".repeat(33), "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "654321"), "cmd-lost-user"))
                 .isInstanceOf(BizException.class).hasMessage("USER_AUTH_REQUIRED");
 
         verifyNoInteractions(otpAttempts, audit);
@@ -112,7 +124,7 @@ class AppPayoutAddressServiceTest {
             LocalDateTime businessNow = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
             when(mapper.activeUser(userId)).thenReturn(userId);
             when(mapper.lockActiveUser(userId)).thenReturn(userId);
-            when(otpAttempts.verifyAndConsume(userId, "PAYOUT-UTC", "123456")).thenReturn(true);
+            when(otpAttempts.verifyAndConsume(userId, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456")).thenReturn(true);
             when(mapper.lock(userId, "USDT-BEP20")).thenReturn(
                     new PayoutAddressRow("USDT-BEP20", "0x" + "ab".repeat(20), "ACTIVE",
                             businessNow.minusDays(6), businessNow.minusDays(8), businessNow.minusHours(1), 1L),
@@ -121,7 +133,7 @@ class AppPayoutAddressServiceTest {
             when(mapper.update(userId, "USDT-BEP20", address, 1L)).thenReturn(1);
 
             var result = service.save(userId,
-                    new SaveRequest("USDT-BEP20", address, "PAYOUT-UTC", "123456"), "cmd-utc");
+                    new SaveRequest("USDT-BEP20", address, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "cmd-utc");
 
             org.assertj.core.api.Assertions.assertThat(result.getData()).containsEntry("address", address)
                     .containsEntry("changePending", true);
