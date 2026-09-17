@@ -96,7 +96,7 @@ class BankWithdrawalMySqlTest {
                     d5_payout_due_at DATETIME(6),d5_provider_cid BIGINT,d5_provider_idempotency_key VARCHAR(128),d5_payout_source VARCHAR(32),
                     chain_broadcast_attempts INT DEFAULT 0,d5_payout_lease_until DATETIME(6),next_broadcast_at DATETIME(6),chain_submitted_at DATETIME(6),
                     failure_reason VARCHAR(128),last_broadcast_error VARCHAR(128),chain_tx_hash VARCHAR(128),completed_at DATETIME(6),failed_at DATETIME(6),
-                    created_at DATETIME(6),updated_at DATETIME(6),is_deleted TINYINT DEFAULT 0,
+                    created_at DATETIME(6),updated_at DATETIME(6),is_deleted TINYINT DEFAULT 0,d2_k4_risk_score INT,
                     d2_version BIGINT DEFAULT 0,d2_lifecycle_owner VARCHAR(64),d2_freeze_period VARCHAR(32),d2_previous_status VARCHAR(32))
                     """);
             jdbc.execute("""

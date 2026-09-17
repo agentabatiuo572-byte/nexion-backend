@@ -10,6 +10,25 @@ import org.springframework.mock.env.MockEnvironment;
 import static org.mockito.Mockito.*;
 
 class HdPayPayoutSchedulerTest {
+    @Test void successfulQueryWithLocalSettlementFailureUsesReconciliationRetryAndNeverRecreates() {
+        var bank = mock(BankWithdrawalMapper.class);
+        var transport = mock(HdPayProperties.class);
+        var payout = mock(HdPayPayoutProperties.class);
+        var gateway = mock(HdPayPayoutGateway.class);
+        var transactions = mock(HdPayPayoutTransactions.class);
+        var env = new MockEnvironment(); env.setActiveProfiles("dev");
+        when(transport.connectionReady()).thenReturn(true);
+        when(bank.schemaTables()).thenReturn(4);
+        when(bank.queryDue(any())).thenReturn(List.of("WD-TEST"));
+        var success = new HdPayPayoutGateway.Order("WD-TEST",123L,3,new BigDecimal("1000000"),"0123456789","NGUYEN VAN A","2");
+        when(gateway.query("WD-TEST")).thenReturn(success);
+        doThrow(new ffdd.opsconsole.shared.exception.BizException(400,"A4_SCHEMA_PROPERTY_NOT_REGISTERED"))
+                .when(transactions).reconcile("WD-TEST",success);
+        new HdPayPayoutScheduler(bank,transport,payout,gateway,transactions,env,Clock.systemUTC()).tick();
+        verify(transactions).deferReconciliation("WD-TEST");
+        verify(transactions,never()).defer(anyString());
+        verify(gateway,never()).create(any());
+    }
     @Test void ambiguousCreateIsOnlyQueriedOnSubsequentTicksNeverCreatedAgain() {
         var bank = mock(BankWithdrawalMapper.class);
         var transport = mock(HdPayProperties.class);

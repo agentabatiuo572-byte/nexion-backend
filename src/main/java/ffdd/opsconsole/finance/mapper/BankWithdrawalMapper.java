@@ -194,6 +194,12 @@ public interface BankWithdrawalMapper {
     int conflictingCallbacks(@Param("order") String order, @Param("providerId") long providerId,
                 @Param("amount") BigDecimal amount, @Param("status") int status);
 
+    @Select("""
+            SELECT withdrawal_no withdrawalNo,d2_k4_risk_score riskScore,completed_at completedAt FROM nx_withdrawal_order
+            WHERE withdrawal_no=#{order} AND chain='BANK-VND' AND is_deleted=0
+            """) SettlementEventFacts settlementEventFacts(String order);
+
+    record SettlementEventFacts(String withdrawalNo, Integer riskScore, LocalDateTime completedAt) {}
     record Beneficiary(Long userId, String beneficiaryNo, String bankCode, String maskedAccount, String recipientCipher,
             LocalDateTime effectiveAt, LocalDateTime nextChangeAt, Long version) {
         @Override public String toString() { return "BankBeneficiary[REDACTED]"; }

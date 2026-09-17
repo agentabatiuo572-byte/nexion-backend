@@ -141,9 +141,24 @@ public class HdPayPayoutTransactions {
                 status, null, outcome == HdPayPayoutOutcome.FAILED
                         ? response.status() == 4 ? "HDPAY_PAYOUT_RETURNED" : "HDPAY_PAYOUT_FAILED" : null)) throw new BizException(409, "BANK_PAYOUT_SETTLEMENT_CONFLICT");
         bank.progress(orderNo, outcome.name(), response.providerOrderId(), response.status(), null, now);
+        var facts = bank.settlementEventFacts(orderNo);
+        if (facts == null || !orderNo.equals(facts.withdrawalNo())) throw new BizException(409, "BANK_PAYOUT_EVENT_FACTS_MISSING");
+        var payload = BankWithdrawalService.map("withdrawal_id", orderNo, "user_id", order.userId(),
+                "amount", quote.amountUsdt(), "currency", "USDT", "state", status, "rail", "BANK-VND",
+                "provider", "HDPAY", "provider_order_id", Long.toString(response.providerOrderId()),
+                "amount_vnd", quote.amountVnd(), "operator", "hdpay-payout");
+        if (outcome == HdPayPayoutOutcome.PAID) {
+            if (facts.completedAt() == null) throw new BizException(409, "BANK_PAYOUT_EVENT_FACTS_MISSING");
+            payload.put("confirmed_at", facts.completedAt().toString());
+            payload.put("reason", "HDPAY_PAYOUT_CONFIRMED");
+        } else {
+            payload.put("reason", response.status() == 4 ? "HDPAY_PAYOUT_RETURNED" : "HDPAY_PAYOUT_FAILED");
+            payload.put("address_hash", HdPayPayoutDigest.sha(withdrawal.targetAddress()));
+            if (facts.riskScore() == null) payload.put("risk_score_status", "UNAVAILABLE");
+            else payload.put("risk_score", facts.riskScore());
+        }
         outbox.publish("WITHDRAWAL", orderNo, outcome == HdPayPayoutOutcome.PAID ? "withdraw.confirmed" : "withdraw.refunded",
-                BankWithdrawalService.map("withdrawal_id", orderNo, "user_id", order.userId(), "amount", quote.amountUsdt(),
-                        "currency", "USDT", "amount_vnd", quote.amountVnd(), "state", status, "provider", "HDPAY"));
+                payload);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
@@ -167,9 +182,18 @@ public class HdPayPayoutTransactions {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public void defer(String orderNo) {
+        defer(orderNo, "BANK_PAYOUT_QUERY_UNAVAILABLE");
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void deferReconciliation(String orderNo) {
+        defer(orderNo, "BANK_PAYOUT_RECONCILIATION_RETRY");
+    }
+
+    private void defer(String orderNo, String error) {
         var order = bank.lockOrder(orderNo);
         if (order != null && ("DISPATCHING".equals(order.state()) || "PENDING".equals(order.state())))
-            bank.progress(orderNo, order.state(), null, order.providerStatus(), "BANK_PAYOUT_QUERY_UNAVAILABLE", LocalDateTime.now(clock));
+            bank.progress(orderNo, order.state(), null, order.providerStatus(), error, LocalDateTime.now(clock));
     }
 
     private void hold(BankWithdrawalMapper.Order order, String reason) {

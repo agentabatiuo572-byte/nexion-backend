@@ -391,6 +391,7 @@ public class EventOutboxService {
                 throw validation("A4_SCHEMA_REQUIRED_PROPERTY_MISSING");
             }
         }
+        WithdrawalSettlementEventContract.validate(eventName, payload);
     }
 
     private boolean matchesType(JsonNode value, String propertyType) {

@@ -63,6 +63,7 @@ class HdPayPayoutTransactionsTest {
         when(bank.order(no)).thenReturn(order("PENDING"));
         when(bank.lockOrder(no)).thenReturn(order("PENDING"));
         when(bank.quote(qn)).thenReturn(quote);
+        when(bank.settlementEventFacts(no)).thenReturn(new BankWithdrawalMapper.SettlementEventFacts(no, null, now));
         when(cipher.decrypt(eq("encrypted-fixture"), anyString())).thenReturn("0123456789\nNGUYEN VAN A");
         when(canonical.payout(no)).thenReturn(row("SENT", 71L, "100", "99"));
         when(finalizer.terminal(any(), anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any())).thenReturn(true);

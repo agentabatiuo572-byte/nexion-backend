@@ -26,8 +26,18 @@ public class HdPayPayoutScheduler {
         if (!FundsSandboxProfileGuard.isStrictProductionProfile(environment.getActiveProfiles()) || !transport.connectionReady()) return;
         if (bank.schemaTables() != 4) return;
         for (String order : bank.queryDue(LocalDateTime.now(clock))) {
-            try { transactions.reconcile(order, gateway.query(order)); }
-            catch (RuntimeException unavailable) { transactions.defer(order); log.warn("HDPay payout query deferred order={}", order); }
+            HdPayPayoutGateway.Order response;
+            try { response = gateway.query(order); }
+            catch (RuntimeException unavailable) {
+                transactions.defer(order);
+                log.warn("HDPay payout query deferred order={} code={}", order, safeCode(unavailable));
+                continue;
+            }
+            try { transactions.reconcile(order, response); }
+            catch (RuntimeException failed) {
+                transactions.deferReconciliation(order);
+                log.warn("HDPay payout reconciliation deferred order={} code={}", order, safeCode(failed));
+            }
         }
         if (!properties.ready(transport)) return;
         for (String order : bank.ready(LocalDateTime.now(clock))) {
@@ -39,5 +49,12 @@ public class HdPayPayoutScheduler {
                 log.warn("HDPay payout attempt requires query/readback order={}", order);
             }
         }
+    }
+
+    private static String safeCode(RuntimeException failure) {
+        String message = failure.getMessage();
+        return failure instanceof ffdd.opsconsole.shared.exception.BizException
+                && message != null && message.matches("[A-Z][A-Z0-9_]{0,127}")
+                ? message : failure.getClass().getSimpleName();
     }
 }
