@@ -123,6 +123,7 @@ nexion:
       md5-key: ${NEXION_HDPAY_MD5_KEY:}
       pay-type: ${NEXION_HDPAY_PAY_TYPE:BANKQR}
       country-code: ${NEXION_HDPAY_COUNTRY_CODE:VN}
+      server-ip: ${NEXION_HDPAY_SERVER_IP:}
       payment-page-hosts: ${NEXION_HDPAY_PAYMENT_PAGE_HOSTS:api.hdpayadmin.com}
       # Optional server-side egress proxy used only by the HDPay HTTP client.
       proxy-host: ${NEXION_HDPAY_PROXY_HOST:}

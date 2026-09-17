@@ -54,6 +54,7 @@ class HdPayPayoutContractTest {
         p.setCallbackHosts(java.util.List.of("pay.example.com"));
         p.setMerchantId("123456");
         p.setMd5Key("fixture-key-not-a-real-secret");
+        p.setServerIp("1.1.1.1");
         return p;
     }
 
@@ -77,15 +78,16 @@ class HdPayPayoutContractTest {
             var p = transport(server.getAddress().getPort());
             var gateway = new HttpHdPayPayoutGateway(p, payout(), json);
             assertDoesNotThrow(() -> gateway.create(new HdPayPayoutGateway.Request(
-                    "WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A", "203.0.113.7")));
+                    "WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A")));
             Map<String, Object> body = captured.get();
-            assertEquals("BANKQR", body.get("payType"));
+            assertEquals("BANK", body.get("payType"));
+            assertEquals("BANKQR", p.getPayType()); // Pay-in configuration is independent.
             assertTrue(body.containsKey("bnkCode"));
             assertEquals("", body.get("bnkCode"));
             assertEquals("NGUYEN VAN A", body.get("name"));
             assertFalse(body.containsKey("cvv")); assertFalse(body.containsKey("expiry"));
             assertEquals("VN", body.get("countryCode"));
-            assertEquals("203.0.113.7", body.get("ip"));
+            assertEquals("1.1.1.1", body.get("ip"));
             assertEquals("0123456789", body.get("account"));
             assertEquals("https://pay.example.com/openapi/v1/payments/hdpay/payout/callback", body.get("callbackUrl"));
             assertFalse(body.containsKey("ifsc"));
@@ -106,7 +108,7 @@ class HdPayPayoutContractTest {
     @Test void nonemptyOrMissingBankCodeNeverReachesProvider() {
         var gateway = new HttpHdPayPayoutGateway(transport(1), payout(), json);
         for (String code : new String[]{"VCB", "BANKQR", null}) {
-            var error = assertThrows(HdPayGatewayException.class, () -> gateway.create(new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), code, "0123456789", "NGUYEN VAN A", "203.0.113.7")));
+            var error = assertThrows(HdPayGatewayException.class, () -> gateway.create(new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), code, "0123456789", "NGUYEN VAN A")));
             assertTrue(error.getMessage().contains("BANK_CODE_MUST_BE_EMPTY"));
         }
     }
@@ -149,7 +151,10 @@ class HdPayPayoutContractTest {
         });
         server.start();
         try {
-            var gateway = new HttpHdPayPayoutGateway(transport(server.getAddress().getPort()), payout(), json);
+            var p = transport(server.getAddress().getPort());
+            p.setServerIp(""); // Missing submission configuration must never stop query recovery.
+            assertFalse(payout().ready(p));
+            var gateway = new HttpHdPayPayoutGateway(p, payout(), json);
             var response = gateway.query("WD-TEST");
             assertEquals("2", response.type());
             assertEquals(1794920973526048768L, response.providerOrderId());
@@ -159,5 +164,22 @@ class HdPayPayoutContractTest {
                 type.set(bad); assertThrows(HdPayGatewayException.class, () -> gateway.query("WD-TEST"));
             }
         } finally { server.stop(0); }
+    }
+
+    @Test void invalidServerAddressesCannotCreateButPayInRemainsReady() {
+        var p = transport(1);
+        var gateway = new HttpHdPayPayoutGateway(p, payout(), json);
+        for (String ip : new String[]{null, "", "localhost", "https://1.1.1.1", "127.0.0.1", "10.0.0.1",
+                "172.31.29.251", "192.168.1.1", "169.254.169.254", "100.64.0.1", "203.0.113.7",
+                "0.0.0.0", "224.0.0.1", "255.255.255.255", "256.1.1.1", "01.1.1.1", "::1", "1.1.1.1,8.8.8.8"}) {
+            p.setServerIp(ip);
+            assertTrue(p.ready());
+            assertFalse(payout().ready(p));
+            var error = assertThrows(HdPayGatewayException.class, () -> gateway.create(
+                    new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A")));
+            assertEquals("HDPAY_PAYOUT_CONFIGURATION_INCOMPLETE", error.getMessage());
+        }
+        p.setServerIp(" 1.1.1.1 ");
+        assertEquals("1.1.1.1", payout().serverIp(p));
     }
 }

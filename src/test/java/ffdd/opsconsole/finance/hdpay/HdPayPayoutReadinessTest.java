@@ -10,6 +10,7 @@ import static org.mockito.Mockito.*;
 class HdPayPayoutReadinessTest {
     @Test void publicTestUsesSharedProviderButStillRequiresStorageEncryptionAndNormalProfile() {
         var transport = mock(HdPayProperties.class); when(transport.ready()).thenReturn(true);
+        when(transport.getServerIp()).thenReturn("1.1.1.1");
         var properties = new HdPayPayoutProperties();
         var bank = mock(BankWithdrawalMapper.class); when(bank.schemaTables()).thenReturn(4);
         var cipher = mock(FinanceSensitiveDataCipher.class);
@@ -25,6 +26,8 @@ class HdPayPayoutReadinessTest {
         env.setActiveProfiles("test"); assertFalse(readiness.ready());
         env.setActiveProfiles("dev", "prod"); assertFalse(readiness.ready());
         env.setActiveProfiles("dev"); assertTrue(readiness.ready());
+        when(transport.getServerIp()).thenReturn(""); assertFalse(readiness.ready());
+        when(transport.getServerIp()).thenReturn("1.1.1.1");
         doThrow(new IllegalStateException("missing key")).when(cipher).validateConfiguration(); assertFalse(readiness.ready());
     }
 }

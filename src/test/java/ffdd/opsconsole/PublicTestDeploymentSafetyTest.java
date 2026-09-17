@@ -86,6 +86,7 @@ class PublicTestDeploymentSafetyTest {
         assertThatCode(() -> processor.validate(env)).doesNotThrowAnyException();
         var transport = org.mockito.Mockito.mock(ffdd.opsconsole.finance.hdpay.HdPayProperties.class);
         org.mockito.Mockito.when(transport.ready()).thenReturn(true);
+        org.mockito.Mockito.when(transport.getServerIp()).thenReturn("1.1.1.1");
         var payout = new ffdd.opsconsole.finance.hdpay.HdPayPayoutProperties();
         org.assertj.core.api.Assertions.assertThat(payout.ready(transport)).isTrue();
         org.mockito.Mockito.when(transport.ready()).thenReturn(false);

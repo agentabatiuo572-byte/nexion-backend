@@ -42,7 +42,7 @@ public class BankWithdrawalService {
     public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code) {
         @Override public String toString() { return "BindBankRequest[REDACTED]"; }
     }
-    // Historical bank labels only. New BANKQR bindings and outbound requests use an empty bank code.
+    // Historical bank labels only. New bindings and BANK payout requests use an empty bank code.
     public static final Map<String, String> BANKS = Map.ofEntries(
             Map.entry("VCB", "Vietcombank"), Map.entry("BIDV", "BIDV"), Map.entry("VTB", "VietinBank"),
             Map.entry("TCB", "Techcombank"), Map.entry("ACB", "ACB"), Map.entry("MB", "MB Bank"),
@@ -62,6 +62,7 @@ public class BankWithdrawalService {
         try { capacity = withdrawals.bankCapacity(userId); }
         catch (BizException unavailable) { /* New quotes fail closed; original intents remain recoverable. */ }
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
+                // Existing App versions use BANKQR as their direct-binding capability token, not a provider request field.
                 "bankCodeRequired", false, "bindingOtpRequired", current != null, "payType", "BANKQR",
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
                 "policy", data, "capacity", capacity, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
@@ -121,7 +122,7 @@ public class BankWithdrawalService {
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
             requireUser(userId, true);
-            // Provider-confirmed BANKQR uses an explicitly empty bnkCode; no client-selected bank routing.
+            // BANK payout uses an explicitly empty bnkCode; no client-selected bank routing.
             if (!request.bankCode().isEmpty()) throw error(422, "BANK_CODE_MUST_BE_EMPTY");
             LocalDateTime now = LocalDateTime.now(clock);
             Beneficiary before = bank.lockBeneficiary(userId);
@@ -263,6 +264,7 @@ public class BankWithdrawalService {
     }
     public static String beneficiaryAad(long userId, String no) { return "BANK-BENEFICIARY:" + userId + ":" + no; }
     public static String quoteAad(long userId, String no) { return "BANK-QUOTE:" + userId + ":" + no; }
+    // Preserve the existing App display alias; this label never determines the provider payType.
     private static String bankName(String code) { return "".equals(code) ? "BANKQR" : BANKS.getOrDefault(code, code); }
     private Map<String, Object> beneficiaryView(Beneficiary b) {
         if (b == null) return null;

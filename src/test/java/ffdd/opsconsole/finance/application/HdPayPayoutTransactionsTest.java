@@ -41,14 +41,14 @@ class HdPayPayoutTransactionsTest {
         assertNull(service.prepare(no));
         verify(bank, never()).dispatch(anyString(), any());
         when(properties.ready(transport)).thenReturn(true);
+        when(properties.serverIp(transport)).thenReturn("1.1.1.1");
         when(config.overview()).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of("channelEnabled", true, "providerReady", true)));
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.plusHours(24),now.plusDays(7),1L));
         when(canonical.payout(no)).thenReturn(row("REVIEW_PASSED",71L,"100","99"));
-        when(bank.clientIp(no)).thenReturn("203.0.113.7");
         when(bank.processing(eq(no), any())).thenReturn(1); when(bank.dispatch(eq(no), any())).thenReturn(1);
         var request = service.prepare(no);
         assertNotNull(request); assertEquals("", request.bankCode());
-        assertEquals("203.0.113.7", request.clientIp());
+        verify(bank, never()).clientIp(anyString()); // Client IP is audit data, not provider routing.
         assertEquals("0123456789", request.account()); assertEquals("NGUYEN VAN A", request.holder());
         assertEquals(quote.amountVnd(), request.amount());
         verify(bank).dispatch(eq(no), any()); verifyNoInteractions(finalizer, outbox);

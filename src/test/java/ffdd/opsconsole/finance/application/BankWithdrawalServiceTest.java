@@ -95,7 +95,7 @@ class BankWithdrawalServiceTest {
         when(wallet.isSandboxUser(71L)).thenReturn(1);
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn)); verifyNoInteractions(bank);
     }
-    @Test void bankQrConfigExplicitlyRequiresNeitherBankSelectionNorOtpAndDoesNotEnablePayout() {
+    @Test void configPreservesAppBindingCapabilityTokenAndDoesNotEnablePayout() {
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
 
         var config = service.config(71).getData();

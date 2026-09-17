@@ -38,8 +38,8 @@ public final class HttpHdPayPayoutGateway implements HdPayPayoutGateway {
         BigDecimal amount = amount(request.amount().toPlainString()).setScale(0, RoundingMode.UNNECESSARY);
         Map<String, String> fields = base(request.merchantOrderId());
         fields.put("account", account); fields.put("name", holder); fields.put("bnkCode", "");
-        fields.put("transAmt", amount.toPlainString()); fields.put("payType", "BANKQR");
-        fields.put("countryCode", "VN"); fields.put("ip", HdPayClientIp.requireLiteral(request.clientIp()));
+        fields.put("transAmt", amount.toPlainString()); fields.put("payType", HdPayPayoutProperties.PAY_TYPE);
+        fields.put("countryCode", "VN"); fields.put("ip", payout.serverIp(transport));
         fields.put("callbackUrl", payout.callbackUrl(transport));
         send("/api/order/publicWithdrawal", fields);
     }

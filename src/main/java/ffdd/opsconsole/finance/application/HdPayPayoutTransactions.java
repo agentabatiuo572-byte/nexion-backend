@@ -38,14 +38,6 @@ public class HdPayPayoutTransactions {
         var gate = config.overview();
         if (gate.getCode() != 0
                 || !Boolean.TRUE.equals(gate.getData().get("providerReady"))) return null;
-        String clientIp;
-        try { clientIp = HdPayClientIp.requireLiteral(bank.clientIp(orderNo)); }
-        catch (HdPayGatewayException missingRequestEvidence) {
-            // Legacy unsent orders stay refundable and leave the bounded dispatch queue.
-            if (bank.returnForReview(orderNo, LocalDateTime.now(clock), "BANK_PAYOUT_CLIENT_IP_REQUIRED") == 1)
-                record(order, "BANK_PAYOUT_CLIENT_IP_REQUIRED", Map.of("reason", "BANK_PAYOUT_CLIENT_IP_REQUIRED"));
-            return null;
-        }
         String block = finance.bankPayoutDispatchBlockReason(orderNo);
         if (block != null) {
             if (block.equals("BANK_PAYOUT_RISK_REVIEW_REQUIRED")) {
@@ -61,11 +53,11 @@ public class HdPayPayoutTransactions {
         LocalDateTime now = LocalDateTime.now(clock);
         if (BankWithdrawalEligibility.quoteBlock(beneficiary, quote) != null) return null;
         String[] recipient = recipient(quote);
-        // Preserve historical quote labels, but normalize all new provider dispatches to BANKQR.
-        // Persist the original submission IP; scheduler/restarts must not substitute a server IP.
-        var request = new HdPayPayoutGateway.Request(orderNo, quote.amountVnd(), "", recipient[0], recipient[1], clientIp);
+        // The gateway uses deployment-owned egress IP; client_ip remains original user audit evidence.
+        var request = new HdPayPayoutGateway.Request(orderNo, quote.amountVnd(), "", recipient[0], recipient[1]);
         if (bank.processing(orderNo, now) != 1 || bank.dispatch(orderNo, now) != 1) throw new BizException(409, "BANK_PAYOUT_CLAIM_CONFLICT");
-        record(order, "BANK_PAYOUT_DISPATCH_INTENT", Map.of("amountVnd", quote.amountVnd(), "bankCode", "", "payType", "BANKQR"));
+        record(order, "BANK_PAYOUT_DISPATCH_INTENT", Map.of("amountVnd", quote.amountVnd(), "bankCode", "", "payType", HdPayPayoutProperties.PAY_TYPE,
+                "serverIp", properties.serverIp(transport)));
         return request;
     }
 

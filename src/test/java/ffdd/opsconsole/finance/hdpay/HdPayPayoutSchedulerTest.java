@@ -23,7 +23,7 @@ class HdPayPayoutSchedulerTest {
         when(bank.schemaTables()).thenReturn(4);
         when(bank.ready(any())).thenReturn(List.of("WD-TEST"), List.of());
         when(bank.queryDue(any())).thenReturn(List.of(), List.of("WD-TEST"));
-        var request = new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), "VCB", "0123456789", "NGUYEN VAN A", "203.0.113.7");
+        var request = new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A");
         when(transactions.prepare("WD-TEST")).thenReturn(request);
         doThrow(new RuntimeException("timeout-after-acceptance")).when(gateway).create(request);
         when(gateway.query("WD-TEST")).thenThrow(new RuntimeException("still-unknown"));

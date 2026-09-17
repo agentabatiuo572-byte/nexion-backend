@@ -121,6 +121,7 @@ class BankWithdrawalMySqlTest {
             var transport = mock(HdPayProperties.class);
             var properties = mock(HdPayPayoutProperties.class);
             when(properties.ready(transport)).thenReturn(true);
+            when(properties.serverIp(transport)).thenReturn("1.1.1.1");
             var config = mock(PayoutVndConfigService.class);
             var values = new HashMap<String,Object>(Map.of("channelEnabled", true, "providerReady", true,
                     "version",1L,"quoteTtlMinWithdraw",5,"minAmountUsd",20,"maxAmountUsd",5000,"feeRatePct",1,"feeMinUsd",1,"feeMaxUsd",25));
@@ -216,29 +217,17 @@ class BankWithdrawalMySqlTest {
     }
 
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")
-    void missingLegacyIpsReturnToReviewWithoutStarvingNewOrdersOrInventingDispatchEvidence() throws Exception {
+    void legacyMissingClientIpDoesNotBlockDispatchOrInventUserIp() throws Exception {
         isolated(f -> {
-            f.seed(); f.jdbc.update("UPDATE nx_withdrawal_order SET id=11 WHERE withdrawal_no=?",NO);
-            for (int i=1; i<=10; i++) {
-                String legacy = "WD-LEGACY-"+i;
-                f.bank.insertOrder(legacy,"BQ-LEGACY-"+i,71,NOW,null);
-                f.jdbc.update("""
-                        INSERT INTO nx_withdrawal_order(id,withdrawal_no,user_id,chain,target_address,amount,d2_net_receive,d2_nex_burned,status,d2_hold_until,created_at,updated_at)
-                        VALUES(?,?,71,'BANK-VND','BANK-VND:BNK-fixture',100,99,0,'REVIEW_PASSED',?,?,?)
-                        """,i,legacy,NOW,NOW,NOW);
-            }
-            var firstBatch=f.bank.ready(NOW); assertEquals(10,firstBatch.size()); assertFalse(firstBatch.contains(NO));
-            for(String legacy:firstBatch) assertNull(f.transactions.prepare(legacy));
-            assertEquals(10,f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_withdrawal_order WHERE status='REVIEW_PENDING' AND failure_reason='BANK_PAYOUT_CLIENT_IP_REQUIRED'",Integer.class));
+            f.seed();
+            f.jdbc.update("UPDATE nx_hdpay_payout SET client_ip=NULL WHERE withdrawal_no=?",NO);
             assertEquals(List.of(NO),f.bank.ready(NOW));
-            assertEquals("203.0.113.7", f.transactions.prepare(NO).clientIp());
-            String legacy=firstBatch.get(0);
-            assertEquals("READY",f.bank.order(legacy).state()); assertNull(f.bank.order(legacy).providerOrderId());
-            assertNull(f.bank.clientIp(legacy));
-            // Existing D2 refund proof remains valid for an unsent order returned to review.
-            f.jdbc.update("UPDATE nx_withdrawal_order SET status='REFUNDED' WHERE withdrawal_no=?",legacy);
-            f.jdbc.update("INSERT INTO nx_wallet_ledger(biz_no,user_id,biz_type,asset,direction,amount,status,created_at) VALUES(?,71,'WITHDRAW_REFUND','USDT','IN',100,'SUCCESS',?)", "D2-REFUND-"+legacy,NOW);
-            assertEquals("REFUNDED",f.bank.settlementEvidence(legacy).status());
+            assertEquals(NO, f.transactions.prepare(NO).merchantOrderId());
+            assertEquals("DISPATCHING",f.bank.order(NO).state());
+            assertNull(f.bank.clientIp(NO));
+            assertNull(f.transactions.prepare(NO));
+            f.wallet("900","100");
+            assertEquals(0, f.treasuryMapper.currentReserveUsd().compareTo(bd("1000")));
         });
     }
     @Test @EnabledIfEnvironmentVariable(named="NEXION_BANK_PAYOUT_IT",matches="true")

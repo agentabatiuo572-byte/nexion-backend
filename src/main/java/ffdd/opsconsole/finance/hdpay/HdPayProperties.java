@@ -37,6 +37,8 @@ public class HdPayProperties {
     private String md5Key = "";
     private String payType = "BANKQR";
     private String countryCode = "VN";
+    /** Verified public egress IPv4 supplied by server deployment, never by an App request. */
+    private String serverIp = "";
     /** Exact public hosts allowed to receive the provider callback. */
     private List<String> callbackHosts = new ArrayList<>();
     private List<String> paymentPageHosts = new ArrayList<>();
