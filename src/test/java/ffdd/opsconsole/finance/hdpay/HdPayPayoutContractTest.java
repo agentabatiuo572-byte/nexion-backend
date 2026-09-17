@@ -182,4 +182,36 @@ class HdPayPayoutContractTest {
         p.setServerIp(" 1.1.1.1 ");
         assertEquals("1.1.1.1", payout().serverIp(p));
     }
+
+    @Test void createResponseEvidenceNeverLogsRecipientSecretSignatureOrArbitraryProviderText() throws Exception {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(HttpHdPayPayoutGateway.class);
+        var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logs.start(); logger.addAppender(logs);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var message = new AtomicReference<>("该ip禁止访问");
+        var signature = new AtomicReference<String>();
+        server.createContext("/api/order/api/order/publicWithdrawal", exchange -> {
+            var fields = json.readValue(exchange.getRequestBody(), Map.class);
+            signature.set(fields.get("sign").toString());
+            byte[] body = json.writeValueAsBytes(Map.of("code", 408, "msg", message.get()));
+            exchange.sendResponseHeaders(200, body.length); exchange.getResponseBody().write(body); exchange.close();
+        });
+        server.start();
+        try {
+            var p = transport(server.getAddress().getPort());
+            var gateway = new HttpHdPayPayoutGateway(p, payout(), json);
+            var request = new HdPayPayoutGateway.Request("WD-TEST", new BigDecimal("1000000"), "", "0123456789", "NGUYEN VAN A");
+            assertThrows(HdPayGatewayException.class, () -> gateway.create(request));
+            message.set("echo 0123456789 NGUYEN VAN A\nunsafe log content");
+            assertThrows(HdPayGatewayException.class, () -> gateway.create(request));
+            String output = logs.list.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(output.contains("order=WD-TEST payType=BANK serverIp=1.1.1.1 amountVnd=1000000"));
+            assertTrue(output.contains("httpStatus=200 bodySha256="));
+            assertTrue(output.contains("providerCode=408 reason=IP_NOT_ALLOWED"));
+            assertTrue(output.contains("reason=UNCLASSIFIED_REJECTION"));
+            for (String secret : new String[]{request.account(), request.holder(), p.getMd5Key(), signature.get(), "unsafe log content"})
+                assertFalse(output.contains(secret));
+        } finally { server.stop(0); logger.detachAppender(logs); logs.stop(); }
+    }
 }

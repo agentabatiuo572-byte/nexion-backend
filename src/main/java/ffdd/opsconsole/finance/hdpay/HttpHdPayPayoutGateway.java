@@ -15,10 +15,11 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /** No retry here. After *any* create attempt, recovery is query-only using the same merchant order. */
-@Component
+@Component @Slf4j
 public final class HttpHdPayPayoutGateway implements HdPayPayoutGateway {
     private final HdPayProperties transport;
     private final HdPayPayoutProperties payout;
@@ -65,25 +66,49 @@ public final class HttpHdPayPayoutGateway implements HdPayPayoutGateway {
     }
 
     private JsonNode send(String path, Map<String, String> fields) {
+        boolean create = "/api/order/publicWithdrawal".equals(path);
         fields.put("sign", HdPaySigner.sign(fields, transport.getMd5Key()));
         try {
             var request = HttpRequest.newBuilder(URI.create(transport.getBaseUrl().replaceAll("/+$", "") + path))
                     .timeout(Duration.ofMillis(transport.getReadTimeoutMs()))
                     .header("Content-Type", "application/json").header("Accept", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofByteArray(json.writeValueAsBytes(fields))).build();
+            if (create) log.info("HDPay payout create started order={} payType={} serverIp={} amountVnd={}",
+                    fields.get("merchantOrderId"), fields.get("payType"), fields.get("ip"), fields.get("transAmt"));
             var pending = client.sendAsync(request, ignored -> new HdPayPayoutBodySubscriber());
             HttpResponse<byte[]> response;
             try { response = pending.get(transport.getReadTimeoutMs(), TimeUnit.MILLISECONDS); }
             finally { if (!pending.isDone()) pending.cancel(true); }
             byte[] body = response.body();
+            if (create) log.info("HDPay payout create HTTP response order={} httpStatus={} bodySha256={}",
+                    fields.get("merchantOrderId"), response.statusCode(), java.util.HexFormat.of().formatHex(sha256(body)));
             if (response.statusCode() != 200) throw invalid("HTTP_RESPONSE_INVALID");
             JsonNode result = json.readTree(body);
+            if (create) log.info("HDPay payout create business response order={} providerCode={} reason={}",
+                    fields.get("merchantOrderId"), result != null && result.path("code").isIntegralNumber()
+                            ? result.path("code").asText() : "INVALID", safeResponseReason(result));
             if (result == null || !result.path("code").isIntegralNumber() || result.path("code").asInt() != 200)
                 throw invalid("REQUEST_NOT_CONFIRMED");
             return result;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt(); throw invalid("REQUEST_INTERRUPTED");
         } catch (IOException | ExecutionException | TimeoutException ex) { throw invalid("REQUEST_UNKNOWN"); }
+    }
+
+    // Provider text may echo the account/name; log only known fixed reasons, never the raw body or message.
+    private static String safeResponseReason(JsonNode result) {
+        if (result == null) return "INVALID";
+        if (result.path("code").isIntegralNumber() && result.path("code").asInt() == 200) return "ACCEPTED";
+        return switch (result.path("msg").asText("")) {
+            case "该ip禁止访问" -> "IP_NOT_ALLOWED";
+            case "代付订单不存在" -> "ORDER_NOT_FOUND";
+            default -> "UNCLASSIFIED_REJECTION";
+        };
+    }
+
+    private static byte[] sha256(byte[] body) {
+        try { return java.security.MessageDigest.getInstance("SHA-256").digest(body); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
     private Map<String, String> base(String order) {
