@@ -7,6 +7,8 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -17,18 +19,47 @@ import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessEventFact;
 import ffdd.opsconsole.content.domain.NovaBusinessFanoutProgress;
 import ffdd.opsconsole.content.domain.NovaChannelView;
+import ffdd.opsconsole.content.domain.NovaChannelDispatchResult;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.util.TimeZone;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 
 class NovaBusinessRuntimeServiceTest {
+    @ParameterizedTest
+    @ValueSource(strings = {"UTC", "Asia/Shanghai", "Asia/Tokyo"})
+    void scheduledNotificationTimeUsesTheBusinessZoneInsteadOfTheHostZone(String hostZone) {
+        TimeZone previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone(hostZone));
+            NovaBusinessRuntimeService scheduled = spy(service);
+            doReturn(NovaChannelDispatchResult.skipped("welcome", "TEST"))
+                    .when(scheduled).dispatchChannelAt(eq("welcome"), any(LocalDateTime.class));
+            LocalDateTime before = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+            scheduled.runScheduledChannel("welcome");
+            LocalDateTime after = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+            ArgumentCaptor<LocalDateTime> timestamp = ArgumentCaptor.forClass(LocalDateTime.class);
+            verify(scheduled).dispatchChannelAt(eq("welcome"), timestamp.capture());
+            assertThat(timestamp.getValue()).isBetween(before, after);
+        } finally {
+            TimeZone.setDefault(previous);
+        }
+    }
+
     private final NovaRepository novaRepository = mock(NovaRepository.class);
     private final NovaSocialRuntimeRepository runtimeRepository =
             mock(NovaSocialRuntimeRepository.class);
@@ -36,8 +67,22 @@ class NovaBusinessRuntimeServiceTest {
             mock(CopyAudiencePhaseProvider.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final NovaBusinessRuntimeService service =
-            new NovaBusinessRuntimeService(novaRepository, runtimeRepository, phaseProvider, outbox);
+            new NovaBusinessRuntimeService(novaRepository, runtimeRepository, phaseProvider, outbox,
+                    Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
     private final LocalDateTime now = LocalDateTime.of(2026, 7, 27, 12, 0);
+
+    @Test
+    void scheduledWelcomeUsesTheInjectedBusinessClockForTheDispatchTimestamp() {
+        Clock fixed = Clock.fixed(Instant.parse("2026-09-18T03:38:00Z"), DateTimeFormatConfig.BUSINESS_ZONE);
+        NovaBusinessRuntimeService scheduled = spy(new NovaBusinessRuntimeService(
+                novaRepository, runtimeRepository, phaseProvider, outbox, fixed));
+        doReturn(NovaChannelDispatchResult.skipped("welcome", "TEST"))
+                .when(scheduled).dispatchChannelAt(eq("welcome"), any(LocalDateTime.class));
+
+        scheduled.runScheduledChannel("welcome");
+
+        verify(scheduled).dispatchChannelAt("welcome", LocalDateTime.of(2026, 9, 18, 11, 38));
+    }
 
     @BeforeEach
     void setUp() {

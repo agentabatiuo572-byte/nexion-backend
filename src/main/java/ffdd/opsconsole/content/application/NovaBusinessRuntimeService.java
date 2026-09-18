@@ -10,6 +10,7 @@ import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -47,6 +48,7 @@ public class NovaBusinessRuntimeService {
     private final NovaSocialRuntimeRepository runtimeRepository;
     private final CopyAudiencePhaseProvider phaseProvider;
     private final EventOutboxService eventOutboxService;
+    private final Clock clock;
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public List<String> channelKeys() {
@@ -61,7 +63,7 @@ public class NovaBusinessRuntimeService {
 
     @Transactional
     public NovaChannelDispatchResult runScheduledChannel(String channel) {
-        NovaChannelDispatchResult result = dispatchChannelAt(channel, LocalDateTime.now());
+        NovaChannelDispatchResult result = dispatchChannelAt(channel, LocalDateTime.now(clock));
         if (result.dispatched()) {
             log.info("Nova business notifications delivered: channel={}, source={}, users={}",
                     result.channel(), result.sourceEventId(), result.notificationCount());

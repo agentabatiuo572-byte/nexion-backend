@@ -31,6 +31,7 @@ import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -97,6 +98,7 @@ public class OpsNovaService {
     private final NovaRepository novaRepository;
     private final AuditLogService auditLogService;
     private final CopyAudiencePhaseProvider audiencePhaseProvider;
+    private final Clock clock;
 
     public ApiResult<NovaOverview> overview() {
         novaRepository.ensureTables();
@@ -175,7 +177,7 @@ public class OpsNovaService {
         }
 
         novaRepository.ensureTables();
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         List<NovaSocialSyncResult.SourceResult> results = new ArrayList<>();
         int discoveredTotal = 0;
         int insertedTotal = 0;
@@ -294,7 +296,7 @@ public class OpsNovaService {
         if ("EXPIRED".equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_EXPIRED_IS_TERMINAL");
         }
-        if ("ACTIVE".equals(status) && !current.get().expiresAt().isAfter(LocalDateTime.now())) {
+        if ("ACTIVE".equals(status) && !current.get().expiresAt().isAfter(LocalDateTime.now(clock))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_ALREADY_EXPIRED");
         }
         if (!novaRepository.updateSocialEventStatusIfCurrent(
@@ -334,7 +336,7 @@ public class OpsNovaService {
             return ApiResult.fail(guard.getCode(), guard.getMessage());
         }
         novaRepository.ensureTables();
-        int expired = novaRepository.expireSocialEvents(LocalDateTime.now());
+        int expired = novaRepository.expireSocialEvents(LocalDateTime.now(clock));
         audit("I2_NOVA_SOCIAL_EVENTS_EXPIRED", "social-events", operator(request.operator()), idempotencyKey, request.reason(),
                 Map.of("expired", expired));
         return ApiResult.ok(Map.of("expired", expired));
@@ -358,7 +360,7 @@ public class OpsNovaService {
         Map<String, Integer> weights = novaRepository.socialDistribution().stream()
                 .collect(Collectors.toMap(NovaSocialDistributionItem::key, NovaSocialDistributionItem::pct,
                         (left, right) -> right, LinkedHashMap::new));
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         Map<String, List<NovaSocialEventView>> candidates = new LinkedHashMap<>();
         weights.forEach((type, weight) -> {
             if (weight > 0) {
@@ -707,7 +709,7 @@ public class OpsNovaService {
     }
 
     private void expireDueEvents() {
-        int expired = novaRepository.expireSocialEvents(LocalDateTime.now());
+        int expired = novaRepository.expireSocialEvents(LocalDateTime.now(clock));
         if (expired > 0) {
             audit("I2_NOVA_SOCIAL_EVENTS_AUTO_EXPIRED", "social-events", "system", "system-auto-expire",
                     "事件超过有效期自动过期", Map.of("expired", expired));
@@ -735,7 +737,7 @@ public class OpsNovaService {
                 && source.occurredAt() != null
                 && expiresAt != null
                 && expiresAt.isAfter(source.occurredAt())
-                && expiresAt.isAfter(LocalDateTime.now())
+                && expiresAt.isAfter(LocalDateTime.now(clock))
                 && trimToEmpty(source.actorName()).length() <= 255
                 && trimToEmpty(source.city()).length() <= 255
                 && trimToEmpty(source.amountUnit()).length() <= 16

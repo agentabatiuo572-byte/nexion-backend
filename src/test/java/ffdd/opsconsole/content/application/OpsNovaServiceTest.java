@@ -25,6 +25,13 @@ import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
+import java.util.TimeZone;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import static org.mockito.Mockito.spy;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -39,17 +46,74 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsNovaServiceTest {
+    private static final Clock TEST_CLOCK = Clock.fixed(
+            Instant.parse("2026-09-18T03:38:00Z"), DateTimeFormatConfig.BUSINESS_ZONE);
     private final FakeNovaRepository novaRepository = new FakeNovaRepository();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AtomicReference<String> currentPhase = new AtomicReference<>("P3");
     private final OpsNovaService service = new OpsNovaService(
             novaRepository,
             auditLogService,
-            currentPhase::get);
+            currentPhase::get, TEST_CLOCK);
 
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"UTC", "Asia/Shanghai", "Asia/Tokyo"})
+    void syncWindowsUseFixedBusinessClockAcrossHostZones(String hostZone) {
+        TimeZone previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone(hostZone));
+            FakeNovaRepository repository = spy(new FakeNovaRepository());
+            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK);
+
+            var result = fixed.syncSocialEvents("idem-clock-sync", new NovaSocialEventSyncRequest(
+                    List.of("withdrawal", "newUsers"), 24, 12, "system", "验证业务时间窗口"));
+
+            assertThat(result.getCode()).isZero();
+            verify(repository).trustedSourceEvents("withdrawal",
+                    LocalDateTime.of(2026, 9, 17, 11, 38), LocalDateTime.of(2026, 9, 18, 11, 38));
+            verify(repository).trustedSourceEvents("newUsers",
+                    LocalDateTime.of(2026, 9, 17, 11, 0), LocalDateTime.of(2026, 9, 18, 11, 0));
+        } finally {
+            TimeZone.setDefault(previous);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"UTC", "Asia/Shanghai", "Asia/Tokyo"})
+    void expiryAndPreviewUseTheSameFixedBusinessClock(String hostZone) {
+        TimeZone previous = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone(hostZone));
+            FakeNovaRepository repository = spy(new FakeNovaRepository());
+            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK);
+            LocalDateTime now = LocalDateTime.of(2026, 9, 18, 11, 38);
+            repository.channels.put("social", new NovaChannelView(
+                    "social", "真实动态", "真实事件", "20 min", "30 min", "", BigDecimal.ZERO, true));
+            repository.templates.put("social", new NovaTemplateView(
+                    "social", "真实动态", "NONE", "v1", "动态", "{actor}", "Activity", "{actor}",
+                    "Activity", "{actor}", "PUBLISHED"));
+            repository.distribution.add(new NovaSocialDistributionItem("withdrawal", "提现到账", 100, "red"));
+            NovaSocialEventView expired = repository.addEvent("withdrawal", "clock-expired", "E***", "H***", "",
+                    "ACTIVE", now.minusHours(1), now.minusSeconds(1));
+            NovaSocialEventView active = repository.addEvent("withdrawal", "clock-active", "A***", "H***", "",
+                    "ACTIVE", now.minusMinutes(1), now.plusSeconds(1));
+
+            var result = fixed.sampleSocialEvent("ZH");
+
+            assertThat(result.getCode()).isZero();
+            assertThat(result.getData().id()).isEqualTo(active.id());
+            assertThat(repository.socialEvent(expired.id())).get().extracting(NovaSocialEventView::status)
+                    .isEqualTo("EXPIRED");
+            verify(repository).expireSocialEvents(now);
+            verify(repository).activeSocialEventsByType("withdrawal", now, 100);
+        } finally {
+            TimeZone.setDefault(previous);
+        }
     }
 
     @Test
@@ -416,7 +480,7 @@ class OpsNovaServiceTest {
 
     @Test
     void createSocialEventMasksSensitiveDisplayFieldsAndAudits() {
-        LocalDateTime occurredAt = LocalDateTime.now().minusHours(1);
+        LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusHours(1);
         var result = service.ingestTrustedSocialEvent("idem-social-create", new TrustedNovaSocialEvent(
                         "withdrawal", "withdrawal-90001", "NEXION_CORE", "nx_withdrawal_order",
                         "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("18420"), "NEX",
@@ -438,9 +502,9 @@ class OpsNovaServiceTest {
     void createSocialEventIsIdempotentBySourceEventId() {
         TrustedNovaSocialEvent request = socialEventRequest("withdrawal", "source-1");
 
-        var first = service.ingestTrustedSocialEvent("idem-create-first", request, LocalDateTime.now().plusHours(6),
+        var first = service.ingestTrustedSocialEvent("idem-create-first", request, LocalDateTime.now(TEST_CLOCK).plusHours(6),
                 "Marina K.", "同步真实业务事件来源");
-        var replay = service.ingestTrustedSocialEvent("idem-create-replay", request, LocalDateTime.now().plusHours(6),
+        var replay = service.ingestTrustedSocialEvent("idem-create-replay", request, LocalDateTime.now(TEST_CLOCK).plusHours(6),
                 "Marina K.", "同步真实业务事件来源");
 
         assertThat(first.getCode()).isZero();
@@ -451,7 +515,7 @@ class OpsNovaServiceTest {
 
     @Test
     void newUserEventUsesPrivacyThresholdBandRatherThanMoneyBand() {
-        LocalDateTime occurredAt = LocalDateTime.now().minusHours(1);
+        LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusHours(1);
         TrustedNovaSocialEvent event = new TrustedNovaSocialEvent(
                 "newUsers", "newUsers:2026071210", "NEXION_CORE", "nx_user",
                 "", "全网", new BigDecimal("42"), "人", "完整小时注册用户聚合", occurredAt);
@@ -468,11 +532,11 @@ class OpsNovaServiceTest {
         TrustedNovaSocialEvent withdrawal = socialEventRequest("withdrawal", "shared-1");
         TrustedNovaSocialEvent genesis = new TrustedNovaSocialEvent(
                 "genesis", "shared-1", "NEXION_CORE", "nx_genesis_order", "An", "HCMC",
-                new BigDecimal("4200"), "USDT", "SERIES-A", LocalDateTime.now().minusMinutes(1));
+                new BigDecimal("4200"), "USDT", "SERIES-A", LocalDateTime.now(TEST_CLOCK).minusMinutes(1));
 
-        assertThat(service.ingestTrustedSocialEvent("idem-composite-w", withdrawal, LocalDateTime.now().plusHours(2),
+        assertThat(service.ingestTrustedSocialEvent("idem-composite-w", withdrawal, LocalDateTime.now(TEST_CLOCK).plusHours(2),
                 "Marina K.", "同步真实提现业务事件").getCode()).isZero();
-        assertThat(service.ingestTrustedSocialEvent("idem-composite-g", genesis, LocalDateTime.now().plusHours(2),
+        assertThat(service.ingestTrustedSocialEvent("idem-composite-g", genesis, LocalDateTime.now(TEST_CLOCK).plusHours(2),
                 "Marina K.", "同步真实成交业务事件").getCode()).isZero();
 
         assertThat(novaRepository.socialEvents).hasSize(2);
@@ -481,7 +545,7 @@ class OpsNovaServiceTest {
     @Test
     void createSocialEventRejectsUnknownSourceType() {
         var result = service.ingestTrustedSocialEvent("idem-bad-source", socialEventRequest("fabricated", "source-bad"),
-                LocalDateTime.now().plusHours(6), "Marina K.", "同步真实业务事件来源");
+                LocalDateTime.now(TEST_CLOCK).plusHours(6), "Marina K.", "同步真实业务事件来源");
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("NOVA_SOCIAL_EVENT_TYPE_UNSUPPORTED");
@@ -490,9 +554,9 @@ class OpsNovaServiceTest {
     @Test
     void listSocialEventsMarksExpiredRowsAndCanFilter() {
         NovaSocialEventView active = novaRepository.addEvent("withdrawal", "active-1", "A***", "H***", "1K–5K NEX",
-                "ACTIVE", LocalDateTime.now().minusMinutes(5), LocalDateTime.now().plusHours(1));
+                "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusMinutes(5), LocalDateTime.now(TEST_CLOCK).plusHours(1));
         novaRepository.addEvent("vrank", "expired-1", "B***", "D***", "",
-                "ACTIVE", LocalDateTime.now().minusDays(2), LocalDateTime.now().minusHours(1));
+                "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusDays(2), LocalDateTime.now(TEST_CLOCK).minusHours(1));
 
         var result = service.socialEvents("withdrawal", "ACTIVE");
 
@@ -507,7 +571,7 @@ class OpsNovaServiceTest {
     @Test
     void statusAndDeleteCommandsAreReplaySafe() {
         NovaSocialEventView created = novaRepository.addEvent("genesis", "genesis-1", "N***", "H***", "",
-                "ACTIVE", LocalDateTime.now(), LocalDateTime.now().plusDays(1));
+                "ACTIVE", LocalDateTime.now(TEST_CLOCK), LocalDateTime.now(TEST_CLOCK).plusDays(1));
         NovaSocialEventStatusRequest disable = new NovaSocialEventStatusRequest("DISABLED", "Marina K.", "停止异常成交事件");
 
         assertThat(service.updateSocialEventStatus(created.id(), "idem-disable-1", disable).getCode()).isZero();
@@ -517,7 +581,7 @@ class OpsNovaServiceTest {
         assertThat(service.deleteSocialEvent(created.id(), "idem-delete-2", delete).getCode()).isZero();
 
         NovaSocialEventView expiring = novaRepository.addEvent("withdrawal", "withdrawal-expire-now", "A***", "H***", "1K–5K NEX",
-                "ACTIVE", LocalDateTime.now(), LocalDateTime.now().plusDays(1));
+                "ACTIVE", LocalDateTime.now(TEST_CLOCK), LocalDateTime.now(TEST_CLOCK).plusDays(1));
         NovaSocialEventStatusRequest expire = new NovaSocialEventStatusRequest("EXPIRED", "Marina K.", "运营确认立即过期");
         assertThat(service.updateSocialEventStatus(expiring.id(), "idem-expire-now", expire).getCode()).isZero();
         assertThat(novaRepository.socialEvent(expiring.id())).get().extracting(NovaSocialEventView::status).isEqualTo("EXPIRED");
@@ -542,7 +606,7 @@ class OpsNovaServiceTest {
         assertThat(empty.getData()).isNull();
 
         novaRepository.addEvent("withdrawal", "withdrawal-sample", "N***", "H***", "10K–50K NEX",
-                "ACTIVE", LocalDateTime.now().minusMinutes(1), LocalDateTime.now().plusHours(1));
+                "ACTIVE", LocalDateTime.now(TEST_CLOCK).minusMinutes(1), LocalDateTime.now(TEST_CLOCK).plusHours(1));
         var sample = service.sampleSocialEvent("VI");
 
         assertThat(sample.getCode()).isZero();
@@ -581,7 +645,7 @@ class OpsNovaServiceTest {
     }
 
     private static TrustedNovaSocialEvent socialEventRequest(String type, String sourceEventId) {
-        LocalDateTime occurredAt = LocalDateTime.now().minusMinutes(1);
+        LocalDateTime occurredAt = LocalDateTime.now(TEST_CLOCK).minusMinutes(1);
         return new TrustedNovaSocialEvent(type, sourceEventId, "NEXION_CORE", "nx_withdrawal_order",
                 "Nguyen Van An", "Ho Chi Minh City", new BigDecimal("4200"), "NEX", "Verified source", occurredAt);
     }
@@ -746,7 +810,7 @@ class OpsNovaServiceTest {
         public void createSocialEvent(TrustedNovaSocialEvent source, String actorDisplay, String cityDisplay,
                                       String amountDisplay, LocalDateTime expiresAt, String operator, String reason) {
             if (socialEventBySource(source.eventType(), source.sourceSystem(), source.sourceEventId()).isEmpty()) {
-                LocalDateTime now = LocalDateTime.now();
+                LocalDateTime now = LocalDateTime.now(TEST_CLOCK);
                 socialEvents.add(new NovaSocialEventView(nextSocialEventId++, source.eventType(), source.sourceEventId(),
                         actorDisplay, cityDisplay, amountDisplay, source.sourceNote(), source.sourceSystem(), source.sourceTable(),
                         "ACTIVE", source.occurredAt(), expiresAt, now, null, 0L, now, now));
@@ -792,7 +856,7 @@ class OpsNovaServiceTest {
             socialEvents.set(index, new NovaSocialEventView(current.id(), current.eventType(), current.sourceEventId(),
                     current.actorDisplay(), current.cityDisplay(), current.amountDisplay(), current.sourceNote(),
                     current.sourceSystem(), current.sourceTable(), status, current.occurredAt(), current.expiresAt(),
-                    current.verifiedAt(), lastDispatchedAt, dispatchCount, current.createdAt(), LocalDateTime.now()));
+                    current.verifiedAt(), lastDispatchedAt, dispatchCount, current.createdAt(), LocalDateTime.now(TEST_CLOCK)));
         }
 
         NovaSocialEventView addEvent(String type, String sourceEventId, String actor, String city, String amount,

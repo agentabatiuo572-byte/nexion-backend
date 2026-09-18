@@ -45,6 +45,7 @@ public class OpsPlatformParamRegistryService {
 
     public ApiResult<PlatformParamRegistryOverview> overview() {
         LinkedHashMap<String, PlatformParamRegistryRow> rows = new LinkedHashMap<>();
+        int unmappedConfigCount = 0;
         for (PlatformConfigItem item : configSource.findAllActive()) {
             // H9 acceptance runs store payloads here, not operational parameters.
             // Keep those payloads private without hiding unknown config families.
@@ -53,7 +54,13 @@ public class OpsPlatformParamRegistryService {
                     && item.configKey().matches("h9\\.sb\\.[A-Za-z0-9][A-Za-z0-9._-]{7,95}\\.(v|data)")) {
                 continue;
             }
-            merge(rows, fromConfig(item));
+            PlatformParamRegistryRow row = fromConfig(item);
+            if (row == null) {
+                // An unregistered family must not disclose values or take down known parameters.
+                unmappedConfigCount++;
+                continue;
+            }
+            merge(rows, row);
         }
         int configCount = rows.size();
 
@@ -79,8 +86,11 @@ public class OpsPlatformParamRegistryService {
         int highSensitivityCount = (int) ordered.stream().filter(PlatformParamRegistryRow::operationConfirm).count();
         List<PlatformParamRegistrySourceState> sources = List.of(
                 new PlatformParamRegistrySourceState(
-                        "config", "服务端配置中心", configCount == 0 ? "EMPTY" : "READY", configCount,
-                        "仅统计数据库中启用且未删除的配置"),
+                        "config", "服务端配置中心",
+                        unmappedConfigCount > 0 ? "PARTIAL" : configCount == 0 ? "EMPTY" : "READY", configCount,
+                        unmappedConfigCount > 0
+                                ? "有 " + unmappedConfigCount + " 项参数归属尚未登记，已隔离且未展示参数值；请联系平台运维补齐归属。"
+                                : "仅统计数据库中启用且未删除的配置"),
                 new PlatformParamRegistrySourceState(
                         "emergency", "应急控制实时态", emergencyPartial ? "PARTIAL" : "READY", emergencyCount,
                         emergencyPartial ? "部分 J1/J2 状态读取失败，未将未知值伪装为正常" : "J1/J2 服务端权威状态"));
@@ -94,6 +104,7 @@ public class OpsPlatformParamRegistryService {
         String rawKey = required(item.configKey(), "A5_CONFIG_KEY_REQUIRED");
         String canonicalKey = canonicalConfigKey(rawKey);
         Owner owner = ownerFor(item.configGroup(), canonicalKey);
+        if (owner == null) return null;
         String displayName = displayName(canonicalKey, owner);
         boolean secret = isSecretKey(canonicalKey);
         String description = secret
@@ -203,6 +214,9 @@ public class OpsPlatformParamRegistryService {
         if ("e2".equals(group) || key.startsWith("e.task.")) {
             return new Owner("E", "E2", "E2 收益与任务引擎", "/devices/tasks");
         }
+        if (key.startsWith("store.bundle.discount.")) {
+            return new Owner("E", "E1", "E1 商品目录 & 上架门", "/devices/pricing");
+        }
         if ("e6_compute".equals(group) || key.startsWith("e.compute.")) {
             return new Owner("E", "E6", "E6 算力与设备配置", "/devices/compute-config");
         }
@@ -281,7 +295,7 @@ public class OpsPlatformParamRegistryService {
         if (key.startsWith("withdrawal.")) {
             return new Owner("D", "D5", "D5 提现参数", "/finance/params");
         }
-        throw new IllegalStateException("A5_OWNER_MAPPING_MISSING:" + keyValue);
+        return null;
     }
 
     private String displayName(String key, Owner owner) {

@@ -178,13 +178,70 @@ class OpsPlatformParamRegistryServiceTest {
     }
 
     @Test
-    void registryStillRejectsAnUnknownConfigFamilyFailClosed() {
-        when(source.findAllActive()).thenReturn(List.of(item("unknown/family", "1", "unknown")));
+    void registryIsolatesUnknownFamiliesWithoutReturningTheirValuesOrInventingOwners() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("feature.ops.maintenanceBanner", "off", "admin_feature_flag"),
+                item("openapi.developer.default_qps_limit", "20", "openapi"),
+                item("unknown/family", "private-configuration-payload", "unknown")));
         when(emergency.currentKillSwitches()).thenReturn(List.of());
 
-        assertThatThrownBy(service::overview)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("A5_OWNER_MAPPING_MISSING:unknown/family");
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).singleElement().satisfies(row -> {
+            assertThat(row.canonicalKey()).isEqualTo("feature.ops.maintenanceBanner");
+            assertThat(row.ownerCode()).isEqualTo("A3");
+            assertThat(row.currentValue()).isEqualTo("off");
+        });
+        assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
+        assertThat(overview.sources().get(0).detail()).contains("2 项", "未展示");
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(1);
+        assertThat(overview.stats().registeredCount()).isEqualTo(1);
+        assertThat(overview.toString()).doesNotContain("private-configuration-payload");
+    }
+
+    @Test
+    void registryRoutesBundleDiscountsToTheirAuthoritativeE1Owner() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("store.bundle.discount.2.rate", "0.05", "store"),
+                item("store.bundle.discount.3.rate", "0.08", "store"),
+                item("store.bundle.discount.4plus.rate", "0.12", "store"),
+                item("store.bundle.discount.version", "1", "store")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).hasSize(4).allSatisfy(row -> {
+            assertThat(row.ownerCode()).isEqualTo("E1");
+            assertThat(row.ownerRoute()).isEqualTo("/devices/pricing");
+        });
+        assertThat(overview.sources().get(0).status()).isEqualTo("READY");
+    }
+
+    @Test
+    void unmappedSecretsDoNotBlockEmergencyStateOrBecomePartOfItsCounts() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("future.provider.credentials", "private-provider-value", "future")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of(
+                Map.of("key", "exchange", "name", "兑换闸", "status", "disabled")));
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).singleElement()
+                .satisfies(row -> assertThat(row.canonicalKey()).isEqualTo("emergency.gate.exchange"));
+        assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
+        assertThat(overview.sources().get(0).rowCount()).isZero();
+        assertThat(overview.sources().get(1).rowCount()).isEqualTo(1);
+        assertThat(overview.stats().registeredCount()).isEqualTo(1);
+        assertThat(overview.toString()).doesNotContain("private-provider-value", "future.provider.credentials");
+    }
+
+    @Test
+    void registryDoesNotDowngradeInvalidKeysOrDatabaseFailuresToPartialSuccess() {
+        when(source.findAllActive()).thenReturn(List.of(item(" ", "value", "unknown")));
+        assertThatThrownBy(service::overview).hasMessage("A5_CONFIG_KEY_REQUIRED");
+
+        when(source.findAllActive()).thenThrow(new IllegalStateException("database unavailable"));
+        assertThatThrownBy(service::overview).hasMessage("database unavailable");
     }
 
     @Test
@@ -211,7 +268,11 @@ class OpsPlatformParamRegistryServiceTest {
                 item("unknown/family", "1", "growth_sandbox"),
                 item("h9.sb.example.data", "1", "unknown"))) {
             when(source.findAllActive()).thenReturn(List.of(unknown));
-            assertThatThrownBy(service::overview).hasMessageContaining("A5_OWNER_MAPPING_MISSING:");
+            when(emergency.currentKillSwitches()).thenReturn(List.of());
+            PlatformParamRegistryOverview overview = service.overview().getData();
+            assertThat(overview.rows()).isEmpty();
+            assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
+            assertThat(overview.sources().get(0).detail()).contains("1 项", "未展示");
         }
     }
 

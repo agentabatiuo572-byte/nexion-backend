@@ -11,6 +11,7 @@ import ffdd.opsconsole.content.domain.NovaTemplateView;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -37,6 +38,7 @@ public class NovaSocialRuntimeService {
     private final OpsNovaService novaService;
     private final CopyAudiencePhaseProvider phaseProvider;
     private final EventOutboxService eventOutboxService;
+    private final Clock clock;
     private final String leaseOwner = UUID.randomUUID().toString();
 
     public void runScheduledSync() {
@@ -54,7 +56,7 @@ public class NovaSocialRuntimeService {
 
     public void runScheduledDispatch() {
         try {
-            NovaSocialDispatchResult result = dispatchAt(LocalDateTime.now());
+            NovaSocialDispatchResult result = dispatchAt(LocalDateTime.now(clock));
             if (result.dispatched()) {
                 log.info("Nova social notifications queued: eventId={}, users={}", result.eventId(), result.notificationCount());
             }

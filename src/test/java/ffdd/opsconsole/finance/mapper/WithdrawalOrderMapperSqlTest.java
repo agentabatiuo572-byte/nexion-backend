@@ -275,6 +275,10 @@ class WithdrawalOrderMapperSqlTest {
                 .contains("SET status = #{newStatus}")
                 .contains("failure_reason = #{failureReason}")
                 .contains("d2_previous_status = 'REVIEW_PASSED'")
-                .contains("d2_lifecycle_owner = 'H1_PHASE_COOLDOWN'");
+                .contains("d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN', 'H1_ZERO_DAY_AUTO_REVIEW')")
+                .contains("AND status = #{expectedStatus}")
+                .contains("AND d2_hold_until <= #{now}")
+                .contains("AND (#{newStatus} != 'REVIEW_PASSED'")
+                .contains("AND is_deleted = 0");
     }
 }

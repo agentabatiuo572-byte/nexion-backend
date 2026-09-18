@@ -45,6 +45,8 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.mock.env.MockEnvironment;
 
 class AppWithdrawalK3RoutingServiceTest {
+    private static final java.time.Clock clock = java.time.Clock.fixed(
+            java.time.Instant.parse("2026-09-18T03:00:00Z"), java.time.ZoneOffset.UTC);
     private final ConcurrentHashMap<String, WithdrawalAttemptRow> attempts = new ConcurrentHashMap<>();
     private final AppWithdrawalMapper mapper = mock(AppWithdrawalMapper.class);
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
@@ -56,7 +58,7 @@ class AppWithdrawalK3RoutingServiceTest {
     private final TreasuryLedgerPostingFacade ledger = mock(TreasuryLedgerPostingFacade.class);
     private final MockEnvironment environment = productionEnvironment();
     private final AppWithdrawalService service = new AppWithdrawalService(
-            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, java.time.Clock.systemUTC(),
+            mapper, config, rhythmFacade, idempotency, audit, outbox, k3, ledger, null, environment, clock,
             mock(ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.class), new WithdrawalRiskTimePolicy(environment, config));
 
     private static MockEnvironment productionEnvironment() {
@@ -72,13 +74,13 @@ class AppWithdrawalK3RoutingServiceTest {
         when(mapper.emergencyValue("killswitch.withdraw")).thenReturn("enabled");
         when(mapper.lockActiveUser(7L)).thenReturn(7L);
         when(mapper.lockPayoutAddress(7L, "USDT-TRC20")).thenReturn(new PayoutAddressRow(
-                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(6)));
+                "USDT-TRC20", "TR7NHqExampleAddress", LocalDateTime.now(clock).minusDays(1), LocalDateTime.now(clock).plusDays(6)));
         when(mapper.countBusinessDay(eq(7L), any(), any())).thenReturn(3);
         when(mapper.lockWallet(7L)).thenReturn(new WalletRow(
                 7L, new BigDecimal("5000.000000"), new BigDecimal("50.000000"), BigDecimal.ZERO, 3L));
         when(mapper.withdrawalRiskFacts(7L, "TR7NHqExampleAddress", true)).thenReturn(
                 new WithdrawalRiskFacts("U00000007", 3, new BigDecimal("4900.000000"), 3, "low",
-                        78, "k4-v13", LocalDateTime.now(), 41, 73, 91));
+                        78, "k4-v13", LocalDateTime.now(clock), 41, 73, 91));
         when(config.activeValue("withdrawal.trc20.enabled")).thenReturn(Optional.of("true"));
         when(config.activeValue("withdrawal.bep20.enabled")).thenReturn(Optional.of("true"));
         when(config.activeValue("withdrawal.erc20.enabled")).thenReturn(Optional.of("true"));
@@ -215,6 +217,6 @@ class AppWithdrawalK3RoutingServiceTest {
     private RiskRuleView rule(String id, String dimension, String condition, String action, int priority) {
         return new RiskRuleView(
                 id, dimension, condition, action, "active", false, priority, 0L,
-                LocalDateTime.now().minusDays(1), LocalDateTime.now());
+                LocalDateTime.now(clock).minusDays(1), LocalDateTime.now(clock));
     }
 }
