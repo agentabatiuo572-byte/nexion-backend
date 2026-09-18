@@ -66,7 +66,7 @@ class L6BehaviorEvidenceMySqlTest {
               first_seen_at DATETIME,last_seen_at DATETIME,created_at DATETIME,updated_at DATETIME,is_deleted INT DEFAULT 0,
               UNIQUE KEY uk_event_consumer_event_group(event_id,consumer_group))
             """);
-        jdbc.execute("CREATE TABLE nx_audit_log(biz_no VARCHAR(96),is_deleted INT DEFAULT 0,KEY idx_audit_biz_no(biz_no))");
+        jdbc.execute("CREATE TABLE nx_audit_log(biz_no VARCHAR(96),detail_json JSON,is_deleted INT DEFAULT 0,KEY idx_audit_biz_no(biz_no))");
         jdbc.execute("CREATE TABLE nx_event_schema_registry(event_name VARCHAR(128) PRIMARY KEY,status VARCHAR(16),is_deleted INT)");
         jdbc.update("INSERT INTO nx_event_schema_registry VALUES('app.page_viewed','ACTIVE',0),('app.element_clicked','ACTIVE',0)");
         var config=new Configuration(new Environment("isolated-l6",new SpringManagedTransactionFactory(),source));

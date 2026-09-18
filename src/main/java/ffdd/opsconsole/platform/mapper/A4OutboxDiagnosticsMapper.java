@@ -13,6 +13,17 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
                WHERE a.biz_no = CONCAT('C1-VIEW-', o.event_id)
                  AND BINARY a.biz_no = BINARY CONCAT('C1-VIEW-', o.event_id) AND a.is_deleted = 0))
             """;
+    String F4_ALERT_AUDIT_MATCH = """
+        a.biz_no=CONCAT('F4-CONFIG-BLOCKED-',o.aggregate_id)
+        AND BINARY a.biz_no=BINARY CONCAT('F4-CONFIG-BLOCKED-',o.aggregate_id)
+        AND a.is_deleted=0
+        AND BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.source'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.source'))
+        AND BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.configKey'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.config_key'))
+        AND BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.reason'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.reason'))
+        AND BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.valueFingerprint'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.value_fingerprint'))
+        AND BINARY JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.blockedAt'))=BINARY JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.blocked_at'))
+        """;
+
     String BACKLOG = " o.is_deleted = 0 AND o.status IN ('PENDING','FAILED') ";
     String SAFE_STATUS = "CASE WHEN BINARY o.status IN ('PENDING','FAILED') THEN o.status ELSE 'OTHER' END";
     // Registry names passed A4's PII validation; legacy transport constants are explicitly enumerated.
@@ -48,12 +59,17 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
             + "o.retry_count AS retryCount, o.created_at AS createdAt, o.next_retry_at AS nextRetryAt, "
             + "CASE WHEN BINARY o.event_type IN ('app.page_viewed','app.element_clicked') AND NOT EXISTS ("
             + "SELECT 1 FROM nx_behavior_event_fact f WHERE f.event_id=o.event_id AND BINARY f.event_id=BINARY o.event_id) THEN 'L6_EVIDENCE_FACT_MISSING' "
+            + "WHEN BINARY o.event_type='leadership_pool.settlement_blocked' AND NOT EXISTS (SELECT 1 FROM nx_audit_log a WHERE "
+            + F4_ALERT_AUDIT_MATCH + ") THEN 'F4_ALERT_AUDIT_MISSING' "
             + "WHEN o.last_error IS NULL OR o.last_error = '' THEN NULL "
             + "WHEN BINARY o.last_error IN ('C1_AUDIT_EVIDENCE_NOT_UNIQUE','C1_AUDIT_ENVELOPE_INVALID',"
             + "'C1_AUDIT_PAYLOAD_INVALID','C1_AUDIT_DELIVERY_NOT_COMPLETE','C1_AUDIT_RECEIPT_NOT_PERSISTED','C1_AUDIT_SOURCE_INVALID',"
             + "'H3_EVENT_BINDING_PENDING','L6_EVIDENCE_ENVELOPE_INVALID','L6_EVIDENCE_PAYLOAD_INVALID',"
             + "'L6_EVIDENCE_FACT_CONFLICT','L6_EVIDENCE_RECEIPT_FAILED','L6_EVIDENCE_RECEIPT_CONFLICT',"
-            + "'L6_EVIDENCE_PUBLICATION_FAILED','L6_EVIDENCE_VERIFICATION_UNAVAILABLE') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
+            + "'L6_EVIDENCE_PUBLICATION_FAILED','L6_EVIDENCE_VERIFICATION_UNAVAILABLE',"
+            + "'F4_ALERT_ENVELOPE_INVALID','F4_ALERT_PAYLOAD_INVALID','F4_ALERT_AUDIT_NOT_UNIQUE',"
+            + "'F4_ALERT_AUDIT_CONFLICT','F4_ALERT_AUDIT_ALREADY_CLAIMED','F4_ALERT_RECEIPT_FAILED',"
+            + "'F4_ALERT_RECEIPT_CONFLICT','F4_ALERT_PUBLICATION_FAILED','F4_ALERT_VERIFICATION_UNAVAILABLE') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
             + UNRESOLVED + " AS auditLinkUnresolved FROM nx_event_outbox o WHERE " + BACKLOG
             + " AND o.id &gt; #{afterId}"
             + "<if test='eventType != null'><choose><when test='eventType == &quot;UNREGISTERED_EVENT_TYPE&quot;'> AND "
