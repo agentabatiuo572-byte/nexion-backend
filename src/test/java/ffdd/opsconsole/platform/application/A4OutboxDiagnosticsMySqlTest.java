@@ -23,6 +23,7 @@ class A4OutboxDiagnosticsMySqlTest {
         jdbc = new JdbcTemplate(source(SCHEMA));
         jdbc.execute("CREATE TABLE nx_event_outbox (id BIGINT PRIMARY KEY AUTO_INCREMENT,event_id VARCHAR(64),event_type VARCHAR(96),status VARCHAR(32),retry_count INT DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,next_retry_at DATETIME,last_error VARCHAR(512),payload JSON,is_deleted INT DEFAULT 0,KEY idx_event_outbox_status_next(status,next_retry_at,id),KEY idx_event_outbox_type_time(event_type,created_at))");
         jdbc.execute("CREATE TABLE nx_audit_log (id BIGINT PRIMARY KEY AUTO_INCREMENT,biz_no VARCHAR(96),is_deleted INT DEFAULT 0,KEY idx_audit_biz_no(biz_no))");
+        jdbc.execute("CREATE TABLE nx_behavior_event_fact (event_id VARCHAR(64) PRIMARY KEY)");
         jdbc.execute("CREATE TABLE nx_event_schema_registry (id BIGINT PRIMARY KEY AUTO_INCREMENT,event_name VARCHAR(128),status VARCHAR(32) DEFAULT 'ACTIVE',is_deleted INT DEFAULT 0,UNIQUE KEY uk_event_schema_name(event_name))");
         jdbc.execute("CREATE TABLE nx_event_consumer_delivery (id BIGINT PRIMARY KEY AUTO_INCREMENT,event_id VARCHAR(64),consumer_group VARCHAR(128),status VARCHAR(32),is_deleted INT DEFAULT 0,UNIQUE KEY uk_event_consumer_event_group(event_id,consumer_group))");
         var config = new Configuration(new Environment("bug4-diagnostic-isolated", new JdbcTransactionFactory(),source(SCHEMA)));

@@ -46,10 +46,14 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
 
     @Select("<script>SELECT /*+ MAX_EXECUTION_TIME(1500) */ o.id, o.event_id AS eventId, " + SAFE_TYPE + " AS eventType, " + SAFE_STATUS + " AS status, "
             + "o.retry_count AS retryCount, o.created_at AS createdAt, o.next_retry_at AS nextRetryAt, "
-            + "CASE WHEN o.last_error IS NULL OR o.last_error = '' THEN NULL "
+            + "CASE WHEN BINARY o.event_type IN ('app.page_viewed','app.element_clicked') AND NOT EXISTS ("
+            + "SELECT 1 FROM nx_behavior_event_fact f WHERE f.event_id=o.event_id AND BINARY f.event_id=BINARY o.event_id) THEN 'L6_EVIDENCE_FACT_MISSING' "
+            + "WHEN o.last_error IS NULL OR o.last_error = '' THEN NULL "
             + "WHEN BINARY o.last_error IN ('C1_AUDIT_EVIDENCE_NOT_UNIQUE','C1_AUDIT_ENVELOPE_INVALID',"
             + "'C1_AUDIT_PAYLOAD_INVALID','C1_AUDIT_DELIVERY_NOT_COMPLETE','C1_AUDIT_RECEIPT_NOT_PERSISTED','C1_AUDIT_SOURCE_INVALID',"
-            + "'H3_EVENT_BINDING_PENDING') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
+            + "'H3_EVENT_BINDING_PENDING','L6_EVIDENCE_ENVELOPE_INVALID','L6_EVIDENCE_PAYLOAD_INVALID',"
+            + "'L6_EVIDENCE_FACT_CONFLICT','L6_EVIDENCE_RECEIPT_FAILED','L6_EVIDENCE_RECEIPT_CONFLICT',"
+            + "'L6_EVIDENCE_PUBLICATION_FAILED','L6_EVIDENCE_VERIFICATION_UNAVAILABLE') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
             + UNRESOLVED + " AS auditLinkUnresolved FROM nx_event_outbox o WHERE " + BACKLOG
             + " AND o.id &gt; #{afterId}"
             + "<if test='eventType != null'><choose><when test='eventType == &quot;UNREGISTERED_EVENT_TYPE&quot;'> AND "
