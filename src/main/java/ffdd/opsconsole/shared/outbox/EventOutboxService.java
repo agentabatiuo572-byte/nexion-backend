@@ -34,6 +34,16 @@ public class EventOutboxService {
     private static final String STATUS_PUBLISHED = "PUBLISHED";
     private static final String STATUS_DEAD = "DEAD";
     private static final String STATUS_PENDING_BINDING = "PENDING_BINDING";
+    /**
+     * A durable record whose delivery path is the table itself (Nova runtime,
+     * A4/B3 reports, notification evidence) rather than a bus listener. The
+     * broad dispatcher only scans an explicit allowlist because publishing an
+     * event with no listener still "succeeds" and would falsely mark it
+     * PUBLISHED. Such facts therefore stay PENDING forever, inflating the A3
+     * backlog and masking genuine delivery failures, so they are retired into
+     * an explicit terminal state once they are past the dispatch window.
+     */
+    private static final String STATUS_RECORDED = "RECORDED";
     private static final Set<String> COMMON_FIELDS = Set.of(
             "event_id", "event_name", "ts", "user_id", "anon_id", "session_id", "phase",
             "account_age_months", "cohort", "ref", "source", "platform", "app_version", "locale",
@@ -290,6 +300,104 @@ public class EventOutboxService {
     public boolean markFailed(String eventId, String errorMessage) {
         String clippedError = clip(errorMessage);
         return mapper.markFailed(eventId, clippedError, properties.maxRetries(), STATUS_DEAD, STATUS_FAILED, STATUS_PENDING) > 0;
+    }
+
+    /**
+     * Facts whose only delivery path is the outbox table itself: Nova runtime
+     * projections, A4/B3 report reads and notification evidence queries. No
+     * Spring listener consumes them, so no dispatcher may ever mark them
+     * PUBLISHED; they are retired explicitly instead of aging in the A3
+     * backlog forever. Any type that gains a listener must be removed here.
+     *
+     * Deliberately excluded: the dispatcher allowlist families, the developer
+     * webhook canonical types, the L6 behaviour facts, the F4 configuration
+     * alert, and every H3 binding-wait fact (those are requeued from PUBLISHED
+     * back to PENDING when a binding appears, so they must stay dispatchable).
+     */
+    static final Set<String> RECORD_ONLY_EVENT_TYPES = Set.of(
+            "C2_USER_IMPERSONATION_PAGE_VIEWED",
+            "C2_USER_STATUS_CHANGED_BY_K1",
+            "C2_USER_STATUS_RESTORED_BY_K1",
+            "COMPUTE_SHARE_DEVICE_CONNECTED",
+            "COMPUTE_SHARE_ENROLLMENT_CREATED",
+            "F_TEAM_UI_CONFIG_APPROVED",
+            "H7_VOUCHER_GRANTED",
+            "H8_REFERRAL_REWARD_BATCH_COMPLETED",
+            "H8_REFERRAL_REWARD_PARAM_CHANGED",
+            "J1_KILLSWITCH_CHANGED",
+            "JANUS_DEVICE_COMMAND_",
+            "JANUS_DEVICE_STATUS_REQUESTED",
+            "JANUS_STRATEGY_",
+            "JANUS_STRATEGY_COMMAND_PUBLISHED",
+            "JANUS_STRATEGY_DRAFT_DELETED",
+            "JANUS_STRATEGY_ROLLED_BACK",
+            "TASK_ASSIGNMENT_CLAIMED",
+            "TASK_ASSIGNMENT_LEASE_EXPIRED",
+            "VRANK_REWARD_PAYOUT_REISSUED",
+            "VRANK_REWARD_PAYOUT_REVERSED",
+            "admin.commission_anomaly_config_changed",
+            "admin.commission_exported",
+            "admin.commission_reissued",
+            "admin.commission_reversed",
+            "admin.exchange_paused",
+            "admin.exchange_queue_batch_processed",
+            "admin.exchange_queue_cancelled",
+            "admin.genesis_emission_batch_rerun",
+            "admin.genesis_market_paused",
+            "admin.genesis_param_changed",
+            "admin.growth_config_changed",
+            "admin.i18n_published",
+            "admin.i18n_rolledback",
+            "admin.market_schedule_changed",
+            "admin.nex_price_curve_changed",
+            "admin.order_refunded",
+            "admin.report_exported",
+            "admin.staking_pool_config_changed",
+            "admin.staking_pool_enabled_changed",
+            "admin.staking_pool_killed",
+            "admin.staking_pool_restored",
+            "admin.support_faq_updated",
+            "admin.task_pricing_changed",
+            "admin.tradein_action_executed",
+            "admin.tradein_config_changed",
+            "admin.trust_content_archived",
+            "auth.password_reset_completed",
+            "capacity_replacement.completed",
+            "commission.paid",
+            "compute.config_changed",
+            "content.trust_section_viewed",
+            "device.activated",
+            "device.deactivated",
+            "device.purchase_completed",
+            "disclosure.reack_triggered",
+            "event.spin_awarded",
+            "exchange.gated",
+            "exchange.queue_cancelled",
+            "genesis.emission_paid",
+            "notification.delivered",
+            "nova.push_sent",
+            "quest.completed",
+            "risk.score_overridden",
+            "risk.score_updated",
+            "risk.trial_cycle_detected",
+            "risk.withdraw_held",
+            "sku.entitlement.granted",
+            "staking.claimed",
+            "staking.early_withdrawn",
+            "staking.opened",
+            "tradein.completed");
+
+    /** A record-only fact is left dispatchable for this long before retiring. */
+    static final int RECORD_ONLY_GRACE_MINUTES = 15;
+
+    /**
+     * Retires record-only facts that no dispatcher can ever deliver. Bounded per
+     * call so a large historical backlog drains over several ticks without
+     * holding a long transaction or starving genuine delivery work.
+     */
+    public int retireRecordOnlyPending(int limit) {
+        return mapper.retireRecordOnlyPending(List.copyOf(RECORD_ONLY_EVENT_TYPES), RECORD_ONLY_GRACE_MINUTES,
+                normalizeLimit(limit), "EVENT_RECORDED_NO_BUS_CONSUMER", STATUS_RECORDED, STATUS_PENDING, STATUS_FAILED);
     }
 
     /**

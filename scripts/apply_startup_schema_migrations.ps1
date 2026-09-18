@@ -173,7 +173,12 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260907_hdpay_optional_manual_bank.sql"),
   (Join-Path $root "scripts\migrations\20260915_hdpay_bank_withdrawal.sql"),
   (Join-Path $root "scripts\migrations\20260916_hdpay_shared_config_request_ip.sql"),
-  (Join-Path $root "scripts\migrations\20260915_l6_bank_withdrawal_route.sql")
+  (Join-Path $root "scripts\migrations\20260915_l6_bank_withdrawal_route.sql"),
+  # The inbox dismissal table entered the automatic migration chain as a
+  # recorded-but-never-replayed baseline entry, so a baseline-built database
+  # had no table and the App read returned an opaque 500. Re-assert it as a
+  # forward, idempotent step for both fresh and upgraded databases.
+  (Join-Path $root "scripts\migrations\20260918_app_conversation_dismissal_repair.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

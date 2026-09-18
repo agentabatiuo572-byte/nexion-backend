@@ -216,6 +216,30 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """)
     int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
 
+    @Update("""
+            UPDATE nx_event_outbox
+               SET status = #{recordedStatus},
+                   next_retry_at = NULL,
+                   last_error = #{reason},
+                   updated_at = NOW()
+             WHERE is_deleted = 0
+               AND status IN (#{pendingStatus}, #{failedStatus})
+               AND event_type IN
+               <foreach item="eventType" collection="eventTypes" open="(" separator="," close=")">
+                   #{eventType}
+               </foreach>
+               AND created_at < DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
+             ORDER BY id
+             LIMIT #{limit}
+            """)
+    int retireRecordOnlyPending(@Param("eventTypes") List<String> eventTypes,
+                                @Param("graceMinutes") int graceMinutes,
+                                @Param("limit") int limit,
+                                @Param("reason") String reason,
+                                @Param("recordedStatus") String recordedStatus,
+                                @Param("pendingStatus") String pendingStatus,
+                                @Param("failedStatus") String failedStatus);
+
     /**
      * Revives only a published H3 event whose one H3 consumer is explicitly
      * waiting for an active binding. The active-mission join avoids a replay

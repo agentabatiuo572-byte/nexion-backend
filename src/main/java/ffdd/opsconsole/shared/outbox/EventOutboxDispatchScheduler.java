@@ -110,6 +110,17 @@ public class EventOutboxDispatchScheduler {
             initialDelayString = "${nexion.outbox.dispatch-initial-delay-ms:1000}")
     public void dispatchPending() {
         logHeartbeat();
+        // Facts with no bus consumer can never be delivered by any dispatcher.
+        // Retire them explicitly; otherwise they stay PENDING forever and both
+        // inflate the A3 backlog and hide real delivery failures.
+        try {
+            int retired = outboxService.retireRecordOnlyPending(BATCH_SIZE);
+            if (retired > 0) {
+                log.info("event-outbox retired record-only facts count={}", retired);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("event-outbox record-only retirement failed error={}", ex.getMessage());
+        }
         // Only dispatch event types that have a synchronous, durable consumer.
         // Publishing an unknown Spring event succeeds even when it has no listener;
         // selecting all event types here would therefore falsely mark them PUBLISHED.

@@ -68,6 +68,28 @@ class StartupSchemaMigrationContractTest {
         }
     }
 
+    /**
+     * The inbox dismissal table reached the automatic chain as a recorded,
+     * never-replayed baseline entry while the canonical baseline omitted it,
+     * so every dismissal read answered with a SQL error. The table must exist
+     * in both the baseline and a forward repair step, and the original
+     * migration stays untouched because the runner pins its checksum.
+     */
+    @Test
+    void inboxDismissalTableIsInTheBaselineAndRepairedForward() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String baseline = Files.readString(Path.of("scripts/schema.sql"));
+        String repair = Files.readString(Path.of(
+                "scripts/migrations/20260918_app_conversation_dismissal_repair.sql"));
+
+        assertThat(runner).contains("20260918_app_conversation_dismissal_repair.sql");
+        assertThat(baseline).contains("CREATE TABLE IF NOT EXISTS nx_app_conversation_dismissal",
+                "PRIMARY KEY (user_id, conversation_no)");
+        assertThat(repair).contains("CREATE TABLE IF NOT EXISTS nx_app_conversation_dismissal",
+                "through_message_id BIGINT NOT NULL",
+                "PRIMARY KEY (user_id, conversation_no)");
+    }
+
     @Test
     void developmentRetiresFundsSandboxWhileKeepingLoopbackGeoDevelopmentAccess() throws Exception {
         String profile = Files.readString(Path.of("src/main/resources/application-dev.yml"));

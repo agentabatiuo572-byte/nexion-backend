@@ -21,7 +21,7 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
     @Delete("""
             DELETE FROM nx_event_outbox
              WHERE is_deleted=0 AND analytics_event=1
-               AND status IN ('PUBLISHED','DEAD')
+               AND status IN ('PUBLISHED','DEAD','RECORDED')
                AND event_ts < #{cutoff}
              ORDER BY event_ts,id
              LIMIT #{limit}
