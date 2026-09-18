@@ -848,7 +848,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     BigDecimal sumTeamVolume(@Param("userId") Long userId);
 
     @Select("""
-            SELECT biz_no AS bizNo,
+            SELECT id AS notificationId, biz_no AS bizNo,
                    type,
                    title,
                    body,

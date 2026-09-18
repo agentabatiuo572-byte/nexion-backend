@@ -350,6 +350,7 @@ class OpsUser360ServiceTest {
                 new BigDecimal("18800.00"),
                 now.minusDays(35));
         UserNotificationView notification = new UserNotificationView(
+                2231L,
                 "seed:notice-2231",
                 "EARNING",
                 "收益完成",
