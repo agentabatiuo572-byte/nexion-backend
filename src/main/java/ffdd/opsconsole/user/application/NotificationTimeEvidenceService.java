@@ -9,11 +9,13 @@ import ffdd.opsconsole.user.domain.UserOpsRepository;
 import ffdd.opsconsole.user.mapper.NotificationTimeEvidenceMapper;
 import ffdd.opsconsole.user.mapper.NotificationTimeEvidenceMapper.EventRow;
 import ffdd.opsconsole.user.mapper.NotificationTimeEvidenceMapper.NotificationRow;
+import ffdd.opsconsole.user.mapper.NotificationTimeEvidenceMapper.ReceiptRow;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +41,14 @@ public class NotificationTimeEvidenceService {
         Long userId = users.findUserIdByLookupKey(userKey.trim()).orElse(null);
         NotificationRow notification = userId == null ? null : mapper.notification(userId, notificationId);
         if (notification == null) return ApiResult.fail(404, "NOTIFICATION_NOT_FOUND");
+        return evaluate(notification, userId, mapper::deliveries, mapper::registration, mapper::receipts);
+    }
+
+    // The correction command supplies locking reads; the GET retains its read-only mapper.
+    ApiResult<EvidenceView> evaluate(NotificationRow notification, long userId,
+            Function<String, List<EventRow>> readDeliveries, Function<String, List<EventRow>> readRegistration,
+            Function<String, List<ReceiptRow>> readReceipts) {
+        long notificationId = notification.notificationId();
         // App acknowledgement changes the notification status to READ; delivery receipts remain DELIVERED.
         if (!"NOVA_WELCOME".equals(notification.type())
                 || !("DELIVERED".equals(notification.pushStatus()) || "READ".equals(notification.pushStatus()))) {
@@ -49,9 +59,9 @@ public class NotificationTimeEvidenceService {
             return ApiResult.ok(view(notification, "CONFLICT", "来源关联无法核对", null, List.of()));
         }
         String sourceId = bizNo.substring("NOVA-welcome-".length());
-        var deliveries = mapper.deliveries(String.valueOf(notificationId));
-        var sources = mapper.registration(sourceId);
-        var receipts = mapper.receipts(sourceId);
+        var deliveries = readDeliveries.apply(String.valueOf(notificationId));
+        var sources = readRegistration.apply(sourceId);
+        var receipts = readReceipts.apply(sourceId);
         if (deliveries.isEmpty() || sources.isEmpty() || receipts.isEmpty()) {
             return ApiResult.ok(view(notification, "NO_EVIDENCE", "持久证据缺失，保持待核验", null, List.of()));
         }

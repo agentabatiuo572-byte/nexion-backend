@@ -159,6 +159,15 @@ public class AdminIdempotencyTransactionExecutor {
     // a concurrent command is waiting on the same mutex.
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public <T> T runClaimed(Long recordId, Supplier<T> action) {
+        return completeClaim(recordId, action);
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ, timeout = 10, rollbackFor = Exception.class)
+    public <T> T runClaimedRepeatableRead(Long recordId, Supplier<T> action) {
+        return completeClaim(recordId, action);
+    }
+
+    private <T> T completeClaim(Long recordId, Supplier<T> action) {
         T result = action.get();
         if (recordMapper.markSucceeded(recordId, writeJson(result)) != 1) {
             throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");

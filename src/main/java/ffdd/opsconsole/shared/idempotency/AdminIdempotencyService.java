@@ -25,6 +25,11 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, false);
     }
 
+    /** For commands that lock a bounded evidence range and must reject phantom facts. */
+    public <T> T executeRepeatableRead(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, false, true);
+    }
+
     /** Financial intents can be recovered long after the processing lease expires. */
     public <T> T executeRetained(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true);
@@ -49,6 +54,11 @@ public class AdminIdempotencyService {
 
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, false);
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -64,7 +74,8 @@ public class AdminIdempotencyService {
         }
 
         try {
-            return transactionExecutor.runClaimed(claim.recordId(), action);
+            return repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
+                    : transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
             try {
                 transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
