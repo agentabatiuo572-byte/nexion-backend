@@ -68,6 +68,27 @@ class NotificationTimeEvidenceServiceTest {
         setup(); when(mapper.deliveries("99")).thenReturn(List.of());
         assertThat(service.preview("U7",99L).getData().status()).isEqualTo("NO_EVIDENCE");
     }
+    @Test void readWelcomeStillRequiresTheSameIndependentDeliveryEvidence() throws Exception {
+        setup();
+        when(mapper.notification(7L,99L)).thenReturn(new NotificationRow(99L,7L,BIZ,"NOVA_WELCOME","READ",LocalDateTime.of(2026,9,18,3,38)));
+        var view = service.preview("U7",99L).getData();
+        assertThat(view.status()).isEqualTo("MATCHED");
+        assertThat(view.facts()).hasSize(3);
+        when(mapper.receipts(SOURCE)).thenReturn(List.of(new ReceiptRow(SOURCE,"auth.register_completed","READ",1)));
+        view = service.preview("U7",99L).getData();
+        assertThat(view.status()).isEqualTo("CONFLICT");
+        assertThat(view.deliveryFactTime()).isNull();
+        assertThat(view.facts()).isEmpty();
+    }
+    @ParameterizedTest @ValueSource(strings={"QUEUED", "PENDING", "FAILED", "CANCELLED", "read", "READ "})
+    void undeliveredOrNonCanonicalStatusCannotReadEvidence(String status) throws Exception {
+        setup();
+        when(mapper.notification(7L,99L)).thenReturn(new NotificationRow(99L,7L,BIZ,"NOVA_WELCOME",status,LocalDateTime.of(2026,9,18,3,38)));
+        assertThat(service.preview("U7",99L).getData().status()).isEqualTo("UNSUPPORTED");
+        verify(mapper,never()).deliveries(anyString());
+        verify(mapper,never()).registration(anyString());
+        verify(mapper,never()).receipts(anyString());
+    }
     @Test void duplicateFactsAreNotSilentlyChosen() throws Exception {
         setup(); List<EventRow> events = new ArrayList<>(deliveryFacts()); events.add(events.get(0));
         when(mapper.deliveries("99")).thenReturn(events);

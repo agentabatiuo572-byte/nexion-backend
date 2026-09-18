@@ -39,7 +39,9 @@ public class NotificationTimeEvidenceService {
         Long userId = users.findUserIdByLookupKey(userKey.trim()).orElse(null);
         NotificationRow notification = userId == null ? null : mapper.notification(userId, notificationId);
         if (notification == null) return ApiResult.fail(404, "NOTIFICATION_NOT_FOUND");
-        if (!"NOVA_WELCOME".equals(notification.type()) || !"DELIVERED".equals(notification.pushStatus())) {
+        // App acknowledgement changes the notification status to READ; delivery receipts remain DELIVERED.
+        if (!"NOVA_WELCOME".equals(notification.type())
+                || !("DELIVERED".equals(notification.pushStatus()) || "READ".equals(notification.pushStatus()))) {
             return ApiResult.ok(view(notification, "UNSUPPORTED", "仅支持已投递的欢迎通知", null, List.of()));
         }
         String bizNo = notification.bizNo();
