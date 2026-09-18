@@ -98,6 +98,8 @@ public class EventOutboxDispatchScheduler {
             "admin.treasury_reserve_injected");
     static final String D6_FX_QUOTE_CHANGED_EVENT_TYPE = "admin.fx_quote_updated";
     static final String D4_WALLET_LEDGER_EVENT_TYPE = "wallet.ledger_posted";
+    static final List<String> C1_AUDIT_EVENT_TYPES = List.of(
+            "ADMIN_USER_PROFILE_VIEWED", "ADMIN_USER_LIST_EXPORTED");
 
     private final EventOutboxService outboxService;
     private final ApplicationEventPublisher eventPublisher;
@@ -119,6 +121,7 @@ public class EventOutboxDispatchScheduler {
                         K4_WITHDRAWAL_ESCALATED_EVENT_TYPE,
                         VRANK_PROMOTION_COMPLETED_EVENT_TYPE));
         supportedEventTypes.addAll(C2_HIGH_RISK_EVENT_TYPES);
+        supportedEventTypes.addAll(C1_AUDIT_EVENT_TYPES);
         supportedEventTypes.addAll(C5_SECURITY_EVENT_TYPES);
         supportedEventTypes.addAll(C3_ASSET_ADJUSTMENT_EVENT_TYPES);
         supportedEventTypes.addAll(D1_TOPUP_LIFECYCLE_EVENT_TYPES);
@@ -145,6 +148,11 @@ public class EventOutboxDispatchScheduler {
             log.info("event-outbox dispatch batch eventType={} pending={}", eventType, pending.size());
             for (EventOutboxMessage message : pending) {
                 try {
+                    // MySQL collations may also match case/accent/padding aliases. A
+                    // C1 scan must never acknowledge a row its exact consumer ignores.
+                    if (C1_AUDIT_EVENT_TYPES.contains(eventType) && !eventType.equals(message.getEventType())) {
+                        throw new IllegalStateException("C1_AUDIT_ENVELOPE_INVALID");
+                    }
                     outboxService.assertDispatchAllowed(message);
                     eventPublisher.publishEvent(message);
                     if (!outboxService.markPublished(message.getEventId())) {

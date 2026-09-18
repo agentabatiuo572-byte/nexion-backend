@@ -39,7 +39,12 @@ public interface PlatformConfigItemMapper extends BaseMapper<PlatformConfigItemE
 
     @Select("""
             SELECT COUNT(*) AS backlog,
-                   COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), CURRENT_TIMESTAMP), 0) AS oldest_seconds
+                   COALESCE(TIMESTAMPDIFF(SECOND, MIN(created_at), CURRENT_TIMESTAMP), 0) AS oldest_seconds,
+                   COALESCE(SUM(CASE WHEN event_type = 'ADMIN_USER_PROFILE_VIEWED' AND NOT EXISTS (
+                       SELECT 1 FROM nx_audit_log a
+                        WHERE a.biz_no = CONCAT('C1-VIEW-', nx_event_outbox.event_id)
+                          AND a.is_deleted = 0)
+                       THEN 1 ELSE 0 END), 0) AS audit_link_unresolved
               FROM nx_event_outbox
              WHERE is_deleted = 0
                AND status IN ('PENDING', 'FAILED')

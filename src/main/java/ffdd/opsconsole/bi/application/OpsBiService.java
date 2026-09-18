@@ -1092,6 +1092,13 @@ public class OpsBiService implements AuditReplayable {
     }
 
     private L1ExportSelection l1ExportSelection(BiReportCreateRequest request) {
+        // Legacy L1 buttons used these default-window labels. A user-supplied
+        // month/week/date range is not a 7-day query and must never silently become one.
+        if (!StringUtils.hasText(request.window())
+                && !java.util.Set.of("当前时间窗", "当前快照", "当前筛选快照", "近 7 天")
+                        .contains(trimOrDefault(request.timeRange(), ""))) {
+            throw new IllegalArgumentException("L1_EXPORT_WINDOW_REQUIRED");
+        }
         return L1ExportSelection.parse(request.window(), request.from(), request.to(),
                 request.cohort(), request.phase(), request.locale(), request.ref(),
                 java.time.Instant.now());

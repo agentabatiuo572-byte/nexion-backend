@@ -10,6 +10,7 @@ import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,17 +37,38 @@ public class OpsBiExportQueryService {
             LocalDateTime startTime,
             LocalDateTime endTime,
             Integer limit) {
-        AuditLogQueryRequest query = new AuditLogQueryRequest();
-        query.setAction("ADMIN.REPORT_EXPORTED");
-        query.setOperator(operator);
-        query.setStartTime(startTime);
-        query.setEndTime(endTime);
-        query.setLimit(limit == null ? 50 : Math.max(1, Math.min(limit, 100)));
-        return ApiResult.ok(auditLogService.list(query).stream().map(this::auditRow).toList());
+        int boundedLimit = limit == null ? 50 : Math.max(1, Math.min(limit, 100));
+        Map<Long, AuditLogRecord> records = new LinkedHashMap<>();
+        for (String action : List.of("ADMIN.REPORT_EXPORTED", "ADMIN.USER_LIST_EXPORTED")) {
+            AuditLogQueryRequest query = new AuditLogQueryRequest();
+            query.setAction(action);
+            query.setOperator(operator);
+            query.setStartTime(startTime);
+            query.setEndTime(endTime);
+            query.setLimit(boundedLimit);
+            // Use the original audit query boundary; L5 access remains guarded by bi_l5_read in the controller.
+            for (AuditLogRecord record : auditLogService.list(query)) {
+                if (action.equals(record.getAction()) && record.getId() != null) records.put(record.getId(), record);
+            }
+        }
+        // Same canonical append order as each A2 query, so each bounded head is sufficient.
+        return ApiResult.ok(records.values().stream()
+                .sorted(Comparator.comparing(AuditLogRecord::getId).reversed())
+                .limit(boundedLimit).map(this::auditRow).toList());
     }
 
     private Map<String, Object> auditRow(AuditLogRecord audit) {
         JsonNode detail = detail(audit.getDetailJson());
+        if ("ADMIN.USER_LIST_EXPORTED".equals(audit.getAction())) {
+            String hash = text(detail, "filterHash");
+            String scope = hash.matches("[a-fA-F0-9]{64}") ? "检索条件摘要 " + hash.substring(0, 12) : "检索条件摘要不可用";
+            return linked("ts", audit.getCreatedAt() == null ? "—" : audit.getCreatedAt().toString(),
+                    "who", StringUtils.hasText(audit.getActorUsername()) ? audit.getActorUsername() : "system",
+                    "what", "用户列表 / " + scope, "rows", number(detail, "rowCount", 0),
+                    // Masking is not anonymization: the CSV still contains user identifiers and financial data.
+                    "pii", true, "mask", bool(detail, "masked", false) ? "masked" : "—",
+                    "chain", "服务端权限 → 理由确认 → 强制审计", "dl", "已记录");
+        }
         String exportType = text(detail, "exportType");
         BiReportView report = reportRepository.findReport(audit.getResourceId()).orElse(null);
         if (!StringUtils.hasText(exportType) && report != null) exportType = report.type();

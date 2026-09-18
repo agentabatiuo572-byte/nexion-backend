@@ -215,6 +215,45 @@ class OpsBiServiceTest {
     }
 
     @Test
+    void l5ExplicitTextRangeCannotSilentlyFallBackToSevenDays() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
+        for (String range : List.of("2026-09", "2026-W17 ~ W22", "2026-09-01 / 2026-09-07", "ON_DEMAND")) {
+            var result = service.createReport("explicit-" + range, new BiReportCreateRequest(
+                    "export selected KPI range", "superadmin", "KPI 序列", range,
+                    "聚合指标", "NONE", "NONE", "BI", "BUG5-L5-RANGE"));
+            assertThat(result.getCode()).as(range).isEqualTo(400);
+            assertThat(result.getMessage()).isEqualTo("L1_EXPORT_WINDOW_REQUIRED");
+        }
+        assertThat(reportRepository.kpiDashboardReads).isZero();
+        assertThat(reportRepository.createReportCalls).isZero();
+        assertThat(reportRepository.saveSnapshotCalls).isZero();
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        verify(auditLogService, never()).recordRequired(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void l1LegacySnapshotLabelsRetainTheirActualSevenDayWindow() {
+        reportRepository.l1SliceDashboard = l1ExportFixture(true);
+        for (String label : List.of("当前时间窗", "当前快照", "当前筛选快照", "近 7 天")) {
+            assertThat(service.createReport("legacy-" + label, new BiReportCreateRequest(
+                    "export selected KPI facts", "superadmin", "KPI 当前汇总", label,
+                    "聚合指标", "NONE", "NONE", "BI", "L1-KPI")).getCode()).isZero();
+            assertThat(reportRepository.lastL1Selection.get(0)).isEqualTo("7d");
+            assertThat(reportRepository.report.scope()).contains("window=7d");
+        }
+    }
+
+    @Test
+    void l5FutureCustomDateIsRejectedWithoutClampingOrCreatingAnArtifact() {
+        String tomorrow = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).plusDays(1).toString();
+        var result = service.createReport("future-date", l1ExportRequest("custom", "2026-09-01", tomorrow, null, null, null, null));
+        assertThat(result.getCode()).isEqualTo(400);
+        assertThat(result.getMessage()).isEqualTo("L1_CUSTOM_WINDOW_INVALID");
+        assertThat(reportRepository.kpiDashboardReads).isZero();
+        assertThat(reportRepository.createReportCalls).isZero();
+    }
+
+    @Test
     void l1ExportUsesOneSelectedReadForCsvRowCountScopeAndFrozenDownload() {
         reportRepository.dashboards.put("L1", Map.of("totals", Map.of("users", 999L)));
         reportRepository.l1SliceDashboard = l1ExportFixture(true);
@@ -561,7 +600,7 @@ class OpsBiServiceTest {
                         "NONE",
                         "NONE",
                         "BI 管理员",
-                        "T-1001"));
+                        "T-1001", null, null, null, null, "custom", "2026-06-01", "2026-06-30"));
 
         assertThat(result.getCode()).isZero();
         assertThat(reportRepository.report.reportId()).startsWith("EXP-");

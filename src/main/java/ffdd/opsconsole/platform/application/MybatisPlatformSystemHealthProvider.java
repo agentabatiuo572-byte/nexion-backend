@@ -32,8 +32,10 @@ public class MybatisPlatformSystemHealthProvider implements PlatformSystemHealth
         Map<String, Object> result = mapper.selectA3EventBacklog();
         long backlog = number(result.get("backlog"));
         long oldest = number(result.get("oldest_seconds"));
+        long unresolved = number(result.getOrDefault("audit_link_unresolved", 0));
         String tone = backlog > 1000 || oldest > 3600 ? "bad" : backlog > 100 || oldest > 300 ? "warn" : "ok";
-        return new HealthMetric(tone, backlog + " 条 · 最久 " + oldest + " 秒");
+        return new HealthMetric(unresolved > 0 ? "bad" : tone, backlog + " 条 · 最久 " + oldest + " 秒"
+                + (unresolved > 0 ? " · " + unresolved + " 条画像事件缺少审计关联，待核验" : ""));
     }
 
     private HealthMetric ledgerRead() {

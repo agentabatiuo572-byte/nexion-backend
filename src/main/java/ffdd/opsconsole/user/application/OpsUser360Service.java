@@ -84,6 +84,7 @@ public class OpsUser360Service {
         return ApiResult.fail(404, "USER_NOT_FOUND");
     }
 
+    @Transactional
     public ApiResult<Map<String, Object>> detail(Long userId) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
@@ -217,10 +218,19 @@ public class OpsUser360Service {
         List<String> cardsViewed = response.keySet().stream()
                 .filter(key -> !Set.of("sources", "redlines", "hub").contains(key))
                 .toList();
+        // Both writes commit together. The stable audit key lets the C1 consumer
+        // verify this particular view without matching actors or timestamps approximately.
+        String eventId = outboxService.publish("USER_PROFILE", profile.userNo(), "ADMIN_USER_PROFILE_VIEWED", Map.of(
+                "target_user_id", userId,
+                "viewer_operator", AdminActorResolver.resolve("SYSTEM"),
+                "viewer_role", role,
+                "cards_viewed", cardsViewed,
+                "occurred_at", Instant.now().toString()));
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("ADMIN.USER_PROFILE_VIEWED")
                 .resourceType("USER_PROFILE")
                 .resourceId(profile.userNo())
+                .bizNo("C1-VIEW-" + eventId)
                 .userId(userId)
                 .actorType("ADMIN")
                 .result("SUCCESS")
@@ -229,12 +239,6 @@ public class OpsUser360Service {
                         "role", role,
                         "cardsViewed", cardsViewed))
                 .build());
-        outboxService.publish("USER_PROFILE", profile.userNo(), "ADMIN_USER_PROFILE_VIEWED", Map.of(
-                "target_user_id", userId,
-                "viewer_operator", AdminActorResolver.resolve("SYSTEM"),
-                "viewer_role", role,
-                "cards_viewed", cardsViewed,
-                "occurred_at", Instant.now().toString()));
         return ApiResult.ok(response);
     }
 

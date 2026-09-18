@@ -136,6 +136,10 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
              WHERE is_deleted = 0
                AND event_type = #{eventType}
                AND status IN ('PENDING', 'FAILED')
+               AND (event_type != 'ADMIN_USER_PROFILE_VIEWED' OR EXISTS (
+                   SELECT 1 FROM nx_audit_log a
+                    WHERE a.biz_no = CONCAT('C1-VIEW-', nx_event_outbox.event_id)
+                      AND a.is_deleted = 0))
               AND (next_retry_at IS NULL OR next_retry_at &lt;= NOW())
              ORDER BY id ASC
              LIMIT #{limit}
