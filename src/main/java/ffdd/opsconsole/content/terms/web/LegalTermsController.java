@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -30,8 +31,15 @@ public class LegalTermsController {
     public ApiResult<LegalTermsCurrentView> current(
             @RequestParam(defaultValue = "en") String locale,
             @RequestParam(defaultValue = "GLOBAL") String jurisdiction,
-            Authentication authentication) {
-        return service.current(locale, jurisdiction, userId(authentication));
+            Authentication authentication,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        Long userId = userId(authentication);
+        // Public registration reads have no credential; an invalid supplied identity must not become anonymous consent state.
+        if (userId == null && (authorization != null || (authentication != null
+                && !(authentication instanceof org.springframework.security.authentication.AnonymousAuthenticationToken)))) {
+            return ApiResult.fail(401, "USER_AUTH_REQUIRED");
+        }
+        return service.current(locale, jurisdiction, userId);
     }
 
     @PostMapping("/api/legal/terms/acknowledgment")
