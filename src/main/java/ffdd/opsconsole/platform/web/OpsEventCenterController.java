@@ -2,6 +2,8 @@ package ffdd.opsconsole.platform.web;
 
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsEventCenterService;
+import ffdd.opsconsole.platform.application.A4OutboxDiagnosticsService;
+import ffdd.opsconsole.platform.dto.OutboxDiagnosticsView;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A4EventRetentionService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
@@ -38,6 +40,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -52,6 +55,17 @@ public class OpsEventCenterController {
     private final AdminIdempotencyService idempotencyService;
     private final H3DeadLetterRedriveService h3DeadLetterRedriveService;
     private final ObjectMapper objectMapper;
+    private final A4OutboxDiagnosticsService outboxDiagnosticsService;
+
+    @GetMapping("/outbox-diagnostics")
+    public ApiResult<OutboxDiagnosticsView> outboxDiagnostics(
+            @RequestParam(required = false) String eventType,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "false") boolean unresolvedOnly,
+            @RequestParam(defaultValue = "0") String afterId,
+            @RequestParam(defaultValue = "25") int pageSize) {
+        return ApiResult.ok(outboxDiagnosticsService.read(eventType, status, unresolvedOnly, afterId, pageSize));
+    }
 
     @GetMapping("/overview")
     public ApiResult<EventCenterOverview> overview() {

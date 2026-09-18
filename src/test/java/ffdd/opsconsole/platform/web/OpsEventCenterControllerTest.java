@@ -36,7 +36,8 @@ class OpsEventCenterControllerTest {
     private final H3DeadLetterRedriveService h3DeadLetterRedriveService = mock(H3DeadLetterRedriveService.class);
     private final OpsEventCenterController controller = new OpsEventCenterController(eventCenterService, eventRetentionService,
             a2RuntimePolicy, auditLogService, idempotencyService, h3DeadLetterRedriveService,
-            new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
+            new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules(),
+            mock(ffdd.opsconsole.platform.application.A4OutboxDiagnosticsService.class));
 
     {
         when(a2RuntimePolicy.reasonMinChars()).thenReturn(8);
