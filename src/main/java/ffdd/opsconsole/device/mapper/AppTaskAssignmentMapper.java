@@ -551,7 +551,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               created_at, updated_at, is_deleted)
             SELECT #{taskNo}, #{userId}, #{deviceId}, #{task.taskClass}, #{task.taskId}, #{task.name},
               #{task.modelName}, #{rewardUsdt}, #{requiredSeconds}, #{taskLockMinutes}, #{completionNonce},
-              #{proofExpiresAt}, 'PRODUCTION', 'Nexion App',
+              #{proofExpiresAt}, 'PRODUCTION', 'NexGrid App',
               'RUNNING', #{now}, #{now}, #{leaseExpiresAt}, 1, 3, #{now}, #{now}, 0
               FROM nx_user u
              WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -582,7 +582,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, active_task_no, client_name,
               heartbeat_at, created_at, updated_at, is_deleted)
-            SELECT d.id, 'ONLINE', #{taskNo}, 'Nexion App', #{now}, #{now}, #{now}, 0
+            SELECT d.id, 'ONLINE', #{taskNo}, 'NexGrid App', #{now}, #{now}, #{now}, 0
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id AND u.status = 'ACTIVE'
                 AND u.is_deleted = 0 AND u.sandbox = 0

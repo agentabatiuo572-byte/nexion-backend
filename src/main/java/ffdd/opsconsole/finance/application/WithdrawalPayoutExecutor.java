@@ -88,7 +88,7 @@ public class WithdrawalPayoutExecutor {
                     row.netReceive(),
                     row.providerIdempotencyKey(),
                     router.payoutCallbackUrl(),
-                    "Nexion withdrawal " + row.withdrawalNo()));
+                    "NexGrid withdrawal " + row.withdrawalNo()));
             if (!row.providerIdempotencyKey().equals(submission.thirdPartyId())) {
                 finalizer.orphaned(row, submission.cid(), source, "CREGIS_SUBMISSION_ID_MISMATCH");
                 return;

@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "nexion.admin-auth.mfa")
 public class AdminMfaProperties {
     private String encryptionKey = System.getenv("NEXION_ADMIN_MFA_ENCRYPTION_KEY");
-    private String issuer = "Nexion Ops";
+    private String issuer = "NexGrid Ops";
     private long challengeTtlSeconds = 300;
     private int challengeMaxAttempts = 5;
     /**

@@ -167,7 +167,7 @@ class OpsOptionsServiceTest {
                 .containsExactly("/job", "/1k", "/min");
         assertThat(service.options("devices", "task-requirements").getData())
                 .extracting(AdminOption::value)
-                .containsExactly("S1+", "需 NexionBox Pro", "需 NexionRack");
+                .containsExactly("S1+", "需 NexGridBox Pro", "需 NexGridRack");
     }
 
     @Test

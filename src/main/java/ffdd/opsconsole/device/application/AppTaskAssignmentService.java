@@ -386,7 +386,7 @@ public class AppTaskAssignmentService {
         }
         if ("PRODUCTION".equals(sourceEnvironment)) mapper.bindRuntimeTask(deviceId, taskNo, userId, now);
         AppTaskAssignmentView result = new AppTaskAssignmentView(taskNo, deviceId, task.taskId(), task.name(),
-                task.taskClass(), task.modelName(), "Nexion App", "RUNNING", reward, requiredSeconds,
+                task.taskClass(), task.modelName(), "NexGrid App", "RUNNING", reward, requiredSeconds,
                 now, now.plusSeconds(requiredSeconds), null, null, completionNonce, leaseExpiresAt,
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()

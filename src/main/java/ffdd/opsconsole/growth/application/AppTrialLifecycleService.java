@@ -304,7 +304,7 @@ public class AppTrialLifecycleService {
         BigDecimal usdtAfter = wallet.usdt().subtract(amount).add(settlement.remainderUsdt());
         BigDecimal nexAfter = wallet.nex().add(settlement.shadowNex());
         if (amount.signum() > 0) mapper.insertLedger(userId, row.claimNo() + ":CHARGE", "TRIAL_CHARGE",
-                "USDT", "OUT", amount, wallet.usdt().subtract(amount), "H2 conversion via Nexion USDT wallet");
+                "USDT", "OUT", amount, wallet.usdt().subtract(amount), "H2 conversion via NexGrid USDT wallet");
         if (settlement.remainderUsdt().signum() > 0) mapper.insertLedger(
                 userId, row.claimNo() + ":REMAINDER", "TRIAL_BONUS", "USDT", "IN",
                 settlement.remainderUsdt(), usdtAfter, "H2 shadow remainder credited after purchase");

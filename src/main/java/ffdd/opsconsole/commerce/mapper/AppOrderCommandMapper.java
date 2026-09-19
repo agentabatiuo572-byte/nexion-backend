@@ -405,7 +405,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
-                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'Nexion accelerator'),
+                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                         ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,
@@ -438,7 +438,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
-                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'Nexion accelerator'),
+                   COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'NexGrid accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                         ELSE CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6)) END,

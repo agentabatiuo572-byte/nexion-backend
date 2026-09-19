@@ -60,7 +60,7 @@ final class NovaSocialMessageRenderer {
                 case "vrank" -> actor + " vừa được thăng hạng V";
                 case "genesis" -> actor + " tại " + city + " vừa hoàn tất giao dịch Genesis " + amount;
                 case "newUsers" -> city + " vừa ghi nhận " + amount.replace("人", "người dùng") + " mới";
-                default -> "Hoạt động thực đã được xác minh trên Nexion";
+                default -> "Hoạt động thực đã được xác minh trên NexGrid";
             };
         }
         if ("EN".equals(language)) {
@@ -69,7 +69,7 @@ final class NovaSocialMessageRenderer {
                 case "vrank" -> actor + " advanced to a new V rank";
                 case "genesis" -> actor + " in " + city + " completed a Genesis trade of " + amount;
                 case "newUsers" -> city + " recorded " + amount.replace("人", "users");
-                default -> "Verified activity on Nexion";
+                default -> "Verified activity on NexGrid";
             };
         }
         return switch (event.eventType()) {
@@ -77,7 +77,7 @@ final class NovaSocialMessageRenderer {
             case "vrank" -> actor + " 的 V 等级刚刚晋升";
             case "genesis" -> actor + " 在 " + city + " 完成一笔 " + amount + " Genesis 成交";
             case "newUsers" -> city + " 刚刚新增 " + amount;
-            default -> "Nexion 已验证真实动态";
+            default -> "NexGrid 已验证真实动态";
         };
     }
 

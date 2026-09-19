@@ -117,7 +117,7 @@ class OpsUserPaymentMethodServiceTest {
                 new UserPaymentMethodCommandRequest(
                         "inappropriate nickname confirmed", null, "old-name", "superadmin"));
 
-        assertThat(result.get("nickname").toString()).startsWith("Nexion-").hasSize(15);
+        assertThat(result.get("nickname").toString()).startsWith("NexGrid-").hasSize(16);
         verify(audit).recordRequired(any());
     }
 

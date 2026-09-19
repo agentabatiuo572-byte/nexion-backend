@@ -73,6 +73,10 @@ public class MybatisLegalTermsRepository implements LegalTermsRepository {
     @Override public Optional<LegalTermsAcknowledgement> findAck(Long userId, String sourceEnvironment, String runId, String locale, String jurisdiction) {
         return Optional.ofNullable(acknowledgements.findOne(userId, sourceEnvironment, runId, locale, jurisdiction)).map(row -> new LegalTermsAcknowledgement(row.getVersionLabel(), row.getAcknowledgedAt(), row.getIdempotencyKey()));
     }
+    @Override public Optional<LegalTermsAcknowledgement> findAckByVersion(Long userId, String sourceEnvironment, String runId, String locale, String jurisdiction, String version) {
+        return Optional.ofNullable(acknowledgements.findByVersion(userId, sourceEnvironment, runId, locale, jurisdiction, version))
+                .map(row -> new LegalTermsAcknowledgement(row.getVersionLabel(), row.getAcknowledgedAt(), row.getIdempotencyKey()));
+    }
     @Override public LegalTermsAcknowledgement saveAck(Long userId, String sourceEnvironment, String runId, String locale, String jurisdiction, String version, String idempotencyKey, LocalDateTime now) {
         LegalTermsAckEntity row = acknowledgements.findOne(userId, sourceEnvironment, runId, locale, jurisdiction);
         if (row == null) { row = new LegalTermsAckEntity(); row.setUserId(userId); row.setSourceEnvironment(sourceEnvironment); row.setRunId(runId); row.setLocale(locale); row.setJurisdiction(jurisdiction); row.setCreatedAt(now); row.setIsDeleted(0); }

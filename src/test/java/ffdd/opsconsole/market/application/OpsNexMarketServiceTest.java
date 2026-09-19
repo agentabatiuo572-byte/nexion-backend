@@ -542,6 +542,30 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void pinningADayWritesThatFrameTargetPriceIntoTheSinglePriceSource() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", steppedCurveJson());
+        configFacade.values.put("wallet.exchange.nex_usdt_price", "0.119");
+        marketRepository.latestPrice = Optional.of(new BigDecimal("0.119"));
+
+        ApiResult<Map<String, Object>> result = service.updateControl(
+                "idem-pin-price",
+                "pin",
+                new NexMarketValueUpdateRequest("D3", "pin demo day", "superadmin", "未钉住"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("wallet.nex_market.control.pin", "D3")
+                .containsEntry("wallet.nex_market.control.active_day_index", "2")
+                .containsEntry("wallet.exchange.nex_usdt_price", "0.12");
+        assertThat(marketRepository.lastPrice).isEqualByComparingTo("0.12");
+        assertThat((BigDecimal) result.getData().get("currentPrice")).isEqualByComparingTo("0.12");
+        assertThat(((NexMarketCurveFrame) result.getData().get("activeFrame")).targetPrice())
+                .isEqualByComparingTo("0.12");
+        assertThat((BigDecimal) service.exchangeOverview().getData().get("currentPrice"))
+                .isEqualByComparingTo("0.12");
+    }
+
+    @Test
     void updateControlWritesConfigAndAudits() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         ApiResult<Map<String, Object>> result = service.updateControl(

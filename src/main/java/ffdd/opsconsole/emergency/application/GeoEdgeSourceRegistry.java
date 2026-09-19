@@ -8,7 +8,7 @@ public final class GeoEdgeSourceRegistry {
     public static final String DEFAULT_SOURCE = "nexion-gateway";
 
     private static final Map<String, Source> SOURCES = Map.of(
-            DEFAULT_SOURCE, new Source(DEFAULT_SOURCE, "Nexion 网关", "X-Nexion-Edge-Country"),
+            DEFAULT_SOURCE, new Source(DEFAULT_SOURCE, "NexGrid 网关", "X-Nexion-Edge-Country"),
             "cloudflare", new Source("cloudflare", "Cloudflare 边缘网络", "CF-IPCountry"));
 
     private GeoEdgeSourceRegistry() {

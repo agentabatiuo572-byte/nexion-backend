@@ -59,7 +59,7 @@ public class OpsOptionsService {
             case "sku-lifecycle", "sku-lifecycles" -> ApiResult.ok(options("active(在产)", "active", "legacy(停代)", "legacy"));
             case "sku-unlock-phase", "sku-unlock-phases" -> ApiResult.ok(options("P1(立即开放)", "P1", "P2(门控)", "P2", "P3(门控)", "P3", "P4(门控)", "P4", "P5(门控)", "P5", "P6(门控)", "P6"));
             case "task-unit", "task-units" -> ApiResult.ok(options("按任务", "/job", "按 1k tokens", "/1k", "按分钟", "/min"));
-            case "task-requirement", "task-requirements" -> ApiResult.ok(options("S1+", "S1+", "需 NexionBox Pro", "需 NexionBox Pro", "需 NexionRack", "需 NexionRack"));
+            case "task-requirement", "task-requirements" -> ApiResult.ok(options("S1+", "S1+", "需 NexGridBox Pro", "需 NexGridBox Pro", "需 NexGridRack", "需 NexGridRack"));
             case "order-terminal-state", "order-terminal-states" -> ApiResult.ok(options("支付失败", "payment_failed", "订单过期", "expired", "已退款", "refunded", "开通失败", "provisioning_failed"));
             case "review-rating", "review-ratings" -> ApiResult.ok(options("5 星", "5", "4 星", "4", "3 星", "3", "2 星", "2", "1 星", "1"));
             case "review-status", "review-statuses" -> ApiResult.ok(options("展示", "published", "隐藏", "hidden"));

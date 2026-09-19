@@ -388,7 +388,7 @@ public class AppUserAuthService {
         UserSessionEntity session = new UserSessionEntity();
         session.setUserId(user.getId());
         session.setRefreshTokenId(sessionId);
-        session.setDeviceName("Nexion App / H5");
+        session.setDeviceName("NexGrid App / H5");
         session.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
         session.setSessionChainId(UUID.randomUUID().toString());
         session.setLastActiveAt(LocalDateTime.now());

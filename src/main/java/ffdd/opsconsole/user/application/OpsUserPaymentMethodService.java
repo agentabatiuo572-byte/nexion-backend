@@ -87,7 +87,7 @@ public class OpsUserPaymentMethodService {
             if (!request.expectedValue().trim().equals(before)) {
                 throw new BizException(409, "NICKNAME_VERSION_CONFLICT");
             }
-            String nickname = "Nexion-" + hash(userId + ":" + key).substring(0, 8).toUpperCase();
+            String nickname = "NexGrid-" + hash(userId + ":" + key).substring(0, 8).toUpperCase();
             if (mapper.resetNickname(userId, nickname, request.expectedValue().trim()) != 1) {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NICKNAME_RESET_CONFLICT");
             }
@@ -125,7 +125,7 @@ public class OpsUserPaymentMethodService {
             mapper.promoteFallbackDefault(userId, sourceEnvironment);
         }
         mapper.queueNotification(userId, "PAYMENT_METHOD_UNBOUND:" + methodId + ":" + key,
-                "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 Nexion 账户解绑，不再用于后续扣款。",
+                "支付方式已解绑", "尾号 " + row.last4() + " 的支付方式已从 NexGrid 账户解绑，不再用于后续扣款。",
                 "/pages/me/wallet/cards");
         audit("USER_PAYMENT_METHOD_UNBIND", "USER_PAYMENT_METHOD", String.valueOf(methodId), userId, request, key,
                 Map.of("last4", row.last4(), "provider", row.provider(),

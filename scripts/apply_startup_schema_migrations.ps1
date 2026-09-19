@@ -178,7 +178,13 @@ $migrations = @(
   # recorded-but-never-replayed baseline entry, so a baseline-built database
   # had no table and the App read returned an opaque 500. Re-assert it as a
   # forward, idempotent step for both fresh and upgraded databases.
-  (Join-Path $root "scripts\migrations\20260918_app_conversation_dismissal_repair.sql")
+  (Join-Path $root "scripts\migrations\20260918_app_conversation_dismissal_repair.sql"),
+  # Upgraded databases kept I5 disclosure matrix rows while the versions they
+  # reference were never provisioned (read-time seeding was retired and the
+  # canonical G7 provisioning migration is not in this chain). The App then got
+  # RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND forever. Provision the published
+  # v1 snapshots and repair only mappings that reference a missing version.
+  (Join-Path $root "scripts\migrations\20260920_i5_published_disclosure_provisioning.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

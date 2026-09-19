@@ -53,6 +53,14 @@ public class LegalTermsService {
             if (userId != null && userId > 0) {
                 Optional<LegalTermsRepository.LegalTermsAcknowledgement> ack = repository.findAck(
                         userId, env.name(), runId, resolved.locale, resolved.jurisdiction);
+                // The same published version may already be confirmed under
+                // another locale: the receipt is per-locale, but the statement
+                // is about the version. Without this fallback, switching the
+                // interface language re-asks for terms the user already accepted.
+                if (ack.isEmpty()) {
+                    ack = repository.findAckByVersion(userId, env.name(), runId,
+                            resolved.locale, resolved.jurisdiction, resolved.version.version());
+                }
                 acknowledged = ack.isPresent() && resolved.version.version().equals(ack.get().version());
                 acknowledgedAt = acknowledged ? ack.get().acknowledgedAt() : null;
             }
@@ -90,6 +98,19 @@ public class LegalTermsService {
         try {
             Optional<LegalTermsRepository.LegalTermsAcknowledgement> existing = repository.findAck(
                     userId, env.name(), expectedRun, resolved.locale, resolved.jurisdiction);
+            if (existing.isEmpty()) {
+                // Already confirmed under another locale: accept the same
+                // idempotency key as a retry and record a receipt for this
+                // locale, so the two locales agree instead of one of them
+                // reporting the version as unconfirmed.
+                existing = repository.findAckByVersion(userId, env.name(), expectedRun,
+                        resolved.locale, resolved.jurisdiction, resolved.version.version());
+                if (existing.isPresent() && resolved.version.version().equals(existing.get().version())) {
+                    repository.saveAck(userId, env.name(), expectedRun, resolved.locale, resolved.jurisdiction,
+                            resolved.version.version(), request.idempotencyKey().trim(), now());
+                    return current(locale, jurisdiction, userId);
+                }
+            }
             if (existing.isPresent() && resolved.version.version().equals(existing.get().version())) {
                 if (request.idempotencyKey().trim().equals(existing.get().idempotencyKey())) {
                     return current(locale, jurisdiction, userId);

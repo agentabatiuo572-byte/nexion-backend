@@ -62,7 +62,7 @@ public class OpsSessionTemplateService {
             new SessionSegmentField("holdings", "持仓节点数", List.of(">=", "<=", "="), List.of(), null),
             new SessionSegmentField("regdays", "注册天数", List.of("<=", ">="), List.of(), "天"),
             new SessionSegmentField("jurisdiction", "司法辖区", List.of("="), List.of("越南", "印尼", "泰国"), null),
-            new SessionSegmentField("device", "持有设备", List.of("="), List.of("NexionBox Air", "NexionBox Pro", "创世节点", "未购机"), null));
+            new SessionSegmentField("device", "持有设备", List.of("="), List.of("NexGridBox Air", "NexGridBox Pro", "创世节点", "未购机"), null));
     private static final List<SessionCtaOption> CTA_OPTIONS = List.of(
             new SessionCtaOption("无跳转", "—", "content"),
             new SessionCtaOption("设备商城", "/store", "device"),

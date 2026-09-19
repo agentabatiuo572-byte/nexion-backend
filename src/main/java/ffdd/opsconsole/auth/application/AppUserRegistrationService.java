@@ -305,7 +305,7 @@ public class AppUserRegistrationService {
         user.setPhone(phone);
         user.setClientIp(registrationIp.trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setNickname("Nexion " + phone.substring(Math.max(0, phone.length() - 4)));
+        user.setNickname("NexGrid " + phone.substring(Math.max(0, phone.length() - 4)));
         user.setReferralCode(nextReferralCode());
         user.setSponsorUserId(sponsor == null ? null : sponsor.getId());
         user.setSponsorCode(sponsor == null ? null : sponsor.getReferralCode());

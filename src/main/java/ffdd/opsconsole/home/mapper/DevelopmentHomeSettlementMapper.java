@@ -106,7 +106,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
                    COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid Box') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'Nexion accelerator') AS modelName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
                    d.product_code AS productCode, d.device_type AS deviceType,
                    d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,
                    GREATEST(COALESCE(d.daily_usdt, 0), 0) AS dailyUsdt
@@ -128,7 +128,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
                    COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'Nexion accelerator') AS modelName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
                     d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
                     d.row_version AS rowVersion,
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,
@@ -171,7 +171,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
                    COALESCE(NULLIF(d.name, ''), NULLIF(d.product_code, ''), 'NexGrid device') AS deviceName,
-                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'Nexion accelerator') AS modelName,
+                   COALESCE(NULLIF(d.gpu_model, ''), NULLIF(d.product_code, ''), 'NexGrid accelerator') AS modelName,
                     d.product_code AS productCode, d.device_type AS deviceType, d.status AS status,
                     d.row_version AS rowVersion,
                     COALESCE(d.vram_total_gb, 0) AS vramTotalGb,

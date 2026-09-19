@@ -1183,7 +1183,20 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (normalizedCurrent.equals(value)) {
             return validation("G3_NO_CHANGES");
         }
+        // Pin freezes the effective day on the chosen frame and pauses automatic advance. The
+        // frozen day must also become the live price, otherwise the single site-wide price source
+        // keeps quoting the previous frame while the control claims Dn is pinned.
+        NexMarketCurveFrame pinned = "pin".equals(controlKey) ? resolvePinnedFrame(loadCurve(), value) : null;
+        if (pinned != null && pinned.targetPrice().compareTo(currentPrice()) > 0) {
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) {
+                return redline;
+            }
+        }
         configFacade.upsertAdminValue(configKey, value, "STRING", "wallet", "G3 NEX market curve control");
+        if (pinned != null) {
+            applyFrame(pinned, loadCurve());
+        }
         auditRequired("G3_CONTROL_CHANGED", "NEX_MARKET_CONTROL", configKey, request.operator(), Map.of(
                 "controlKey", controlKey,
                 "oldValue", normalizedCurrent,
@@ -1191,6 +1204,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return overview();
+    }
+
+    /** Resolves the frame a valid pin value freezes on; {@code null} when the value is not a day pin. */
+    private NexMarketCurveFrame resolvePinnedFrame(List<NexMarketCurveFrame> frames, String pinValue) {
+        if (!pinValue.matches("D[1-7]") || frames.isEmpty()) {
+            return null;
+        }
+        return frameFor(frames, Integer.parseInt(pinValue.substring(1)) - 1);
     }
 
     public ApiResult<Map<String, Object>> updateOverride(

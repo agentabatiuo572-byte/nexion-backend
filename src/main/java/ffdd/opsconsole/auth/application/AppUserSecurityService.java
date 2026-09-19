@@ -323,7 +323,7 @@ public class AppUserSecurityService {
         LocalDateTime lastActiveAt = row.getLastActiveAt() == null ? row.getCreatedAt() : row.getLastActiveAt();
         return new AppSecurityStateResponse.Session(
                 row.getRefreshTokenId(),
-                StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "Nexion App / H5",
+                StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "NexGrid App / H5",
                 maskIp(row.getClientIp()),
                 lastActiveAt,
                 currentSessionId.equals(row.getRefreshTokenId()));

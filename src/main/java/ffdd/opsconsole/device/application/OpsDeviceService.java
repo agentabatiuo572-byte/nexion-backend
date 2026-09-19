@@ -123,7 +123,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final Set<String> REVIEW_STATUSES = Set.of("published", "hidden");
     private static final Set<String> TASK_STATUSES = Set.of("active", "paused", "inactive");
     private static final Set<String> TASK_UNITS = Set.of("/job", "/1k", "/min");
-    private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 NexionBox Pro", "需 NexionRack");
+    private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 NexGridBox Pro", "需 NexGridRack");
     private static final List<String> E2_TASK_CLASS_ORDER = List.of("IG", "VG", "LL", "FT", "EM", "SP");
     private static final Set<String> TASK_CLASSES = Set.copyOf(E2_TASK_CLASS_ORDER);
     private static final Map<String, String> E2_CANONICAL_TASK_ID = Map.of(

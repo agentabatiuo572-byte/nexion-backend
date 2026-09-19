@@ -119,6 +119,63 @@ class LegalTermsServiceTest {
         verify(repository, never()).saveAck(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
+    /**
+     * Each locale carries its own published version row and its own receipt, so
+     * accepting v6 in Chinese used to leave English unconfirmed: switching the
+     * interface language re-asked for the same version. The confirmation is
+     * about the published version, not the language it was rendered in.
+     */
+    @Test
+    void acknowledgementUnderAnotherLocaleConfirmsTheSameVersion() {
+        LegalTermsVersionView current = version("en", "VN", "v6");
+        when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(current));
+        when(repository.findAck(42L, "PRODUCTION", "", "en", "VN"))
+                .thenReturn(java.util.Optional.empty());
+        when(repository.findAckByVersion(42L, "PRODUCTION", "", "en", "VN", "v6"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v6", LocalDateTime.parse("2026-08-17T00:00:00"), "idem-zh")));
+
+        ApiResult<LegalTermsCurrentView> result = service.current("en", "VN", 42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().acknowledged()).isTrue();
+    }
+
+    @Test
+    void acknowledgementUnderAnotherLocaleRecordsThisLocaleWithoutConflict() {
+        LegalTermsVersionView current = version("en", "VN", "v6");
+        when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(current));
+        when(repository.findAck(42L, "PRODUCTION", "", "en", "VN"))
+                .thenReturn(java.util.Optional.empty());
+        when(repository.findAckByVersion(42L, "PRODUCTION", "", "en", "VN", "v6"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v6", LocalDateTime.parse("2026-08-17T00:00:00"), "idem-zh")));
+
+        ApiResult<LegalTermsCurrentView> result = service.acknowledge(42L,
+                new LegalTermsAckRequest("en", "VN", "v6", true, "idem-en", ""));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().acknowledged()).isTrue();
+        verify(repository).saveAck(42L, "PRODUCTION", "", "en", "VN", "v6", "idem-en",
+                LocalDateTime.parse("2026-08-17T00:00:00"));
+    }
+
+    @Test
+    void acknowledgementOfADifferentVersionInAnotherLocaleDoesNotConfirm() {
+        LegalTermsVersionView current = version("en", "VN", "v6");
+        when(repository.findPublished("en", "VN")).thenReturn(java.util.Optional.of(current));
+        when(repository.findAck(42L, "PRODUCTION", "", "en", "VN"))
+                .thenReturn(java.util.Optional.empty());
+        when(repository.findAckByVersion(42L, "PRODUCTION", "", "en", "VN", "v6"))
+                .thenReturn(java.util.Optional.of(new LegalTermsRepository.LegalTermsAcknowledgement(
+                        "v5", LocalDateTime.parse("2026-08-17T00:00:00"), "idem-old")));
+
+        ApiResult<LegalTermsCurrentView> result = service.current("en", "VN", 42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().acknowledged()).isFalse();
+    }
+
     @Test
     void newPublishedVersionMakesPreviousAcknowledgementStale() {
         LegalTermsVersionView current = version("en", "VN", "v5");
