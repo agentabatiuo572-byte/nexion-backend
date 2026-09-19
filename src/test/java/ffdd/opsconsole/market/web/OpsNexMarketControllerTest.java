@@ -1,20 +1,31 @@
 package ffdd.opsconsole.market.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.market.application.G2G3AdminCommandService;
+import ffdd.opsconsole.market.application.G4AdminCommandService;
 import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
+import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 class OpsNexMarketControllerTest {
     private final OpsNexMarketService marketService = mock(OpsNexMarketService.class);
@@ -123,8 +134,7 @@ class OpsNexMarketControllerTest {
     @Test
     void initializeGenesisSeriesDelegatesWithIdempotencyHeaderAndReturnsRefreshedOverview() {
         GenesisCatalogService.SeriesBootstrapRequest request =
-                new GenesisCatalogService.SeriesBootstrapRequest("GENESIS-2026", "Genesis 2026", 500,
-                        new BigDecimal("0.1"), "acquired_price_usdt",
+                new GenesisCatalogService.SeriesBootstrapRequest("GENESIS-2026", "Genesis 2026",
                         "initialize active series", "superadmin");
         when(genesisCatalogService.initializeSeries("idem-g4-series", request)).thenReturn(ApiResult.ok());
         when(marketService.genesisOverview()).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
@@ -135,6 +145,42 @@ class OpsNexMarketControllerTest {
 
         verify(genesisCatalogService).initializeSeries("idem-g4-series", request);
         verify(marketService).genesisOverview();
+    }
+
+    @Test
+    void initializeGenesisSeriesRejectsReadOnlyAuthorityThroughTheRealMethodSecurityProxy() {
+        try (var context = new AnnotationConfigApplicationContext(SecurityFixture.class)) {
+            var securedController = context.getBean(OpsNexMarketController.class);
+            var securedCatalog = context.getBean(GenesisCatalogService.class);
+            SecurityContextHolder.getContext().setAuthentication(
+                    new TestingAuthenticationToken("operator", "unused", "finprod_g4_read"));
+
+            assertThatThrownBy(() -> securedController.initializeGenesisSeries("idem-denied",
+                    new GenesisCatalogService.SeriesBootstrapRequest(
+                            "GENESIS-2026", "Genesis 2026", "initialize catalog safely", "operator")))
+                    .isInstanceOf(AccessDeniedException.class);
+            verifyNoInteractions(securedCatalog);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Configuration
+    @EnableMethodSecurity
+    static class SecurityFixture {
+        @Bean OpsNexMarketService marketService() { return mock(OpsNexMarketService.class); }
+        @Bean G2G3AdminCommandService commandService() { return mock(G2G3AdminCommandService.class); }
+        @Bean G4AdminCommandService g4CommandService() { return mock(G4AdminCommandService.class); }
+        @Bean OpsRepurchaseAdminService repurchaseService() { return mock(OpsRepurchaseAdminService.class); }
+        @Bean GenesisCatalogService genesisCatalogService() { return mock(GenesisCatalogService.class); }
+        @Bean OpsNexMarketController controller(OpsNexMarketService marketService,
+                                                G2G3AdminCommandService commandService,
+                                                G4AdminCommandService g4CommandService,
+                                                OpsRepurchaseAdminService repurchaseService,
+                                                GenesisCatalogService genesisCatalogService) {
+            return new OpsNexMarketController(marketService, commandService, g4CommandService,
+                    repurchaseService, genesisCatalogService);
+        }
     }
 
     @Test

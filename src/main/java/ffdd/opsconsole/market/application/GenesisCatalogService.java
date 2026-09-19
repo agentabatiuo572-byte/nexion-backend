@@ -33,6 +33,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class GenesisCatalogService {
     private static final Set<String> NOTICE_KEYS = Set.of("default", "phase_control", "maintenance", "compliance");
+    private static final int SAFE_INITIAL_ROYALTY_BPS = 0;
+    private static final BigDecimal SAFE_INITIAL_DAILY_EMISSION_RATE_PCT = BigDecimal.ZERO;
+    private static final String SAFE_INITIAL_DIVIDEND_BASE_FORMULA = "";
     private final GenesisCatalogMapper mapper;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
@@ -42,13 +45,15 @@ public class GenesisCatalogService {
         if (base == null || base.getCode() != 0 || base.getData() == null) return base;
         CatalogState state = mapper.state();
         CatalogReadiness readiness = state == null || !Set.of("open", "closed").contains(state.marketOpenState())
-                ? new CatalogReadiness(false,"GENESIS_CATALOG_UNAVAILABLE",false) : readiness();
+                ? new CatalogReadiness(false,"GENESIS_CATALOG_UNAVAILABLE",false,false,false) : readiness();
         Map<String,Object> data = new LinkedHashMap<>(base.getData());
         List<TierRow> tiers = mapper.activeTiers();
         data.put("tiers", tierViews(tiers == null ? List.of() : tiers));
         data.put("tiersVersion", state == null ? 0L : state.tiersVersion());
         data.put("catalogAvailable", readiness.available());
         data.put("seriesSetupRequired", readiness.seriesSetupRequired());
+        data.put("seriesInitializationAvailable", readiness.seriesInitializationAvailable());
+        data.put("seriesRecoveryRequired", readiness.seriesRecoveryRequired());
         Map<String,Object> market = new LinkedHashMap<>((Map<String,Object>) data.getOrDefault("market", Map.of()));
         boolean configuredOpen = state != null && "open".equals(state.marketOpenState());
         boolean killSwitchOpen = Boolean.TRUE.equals(market.get("enabled"));
@@ -62,6 +67,8 @@ public class GenesisCatalogService {
         market.put("marketOpenStateVersion", state == null ? 0L : state.marketOpenStateVersion());
         market.put("prerequisiteStatus", readiness.reason());
         market.put("seriesSetupRequired", readiness.seriesSetupRequired());
+        market.put("seriesInitializationAvailable", readiness.seriesInitializationAvailable());
+        market.put("seriesRecoveryRequired", readiness.seriesRecoveryRequired());
         data.put("market", market);
         return ApiResult.ok(data);
     }
@@ -69,7 +76,7 @@ public class GenesisCatalogService {
     public Map<String,Object> publicState() {
         CatalogState state = mapper.state();
         if (state == null || !Set.of("open", "closed").contains(state.marketOpenState())) {
-            return unavailablePublicState("GENESIS_CATALOG_UNAVAILABLE");
+            return unavailablePublicState(new CatalogReadiness(false,"GENESIS_CATALOG_UNAVAILABLE",false,false,false));
         }
         CatalogReadiness readiness = readiness();
         if (readiness.available()) {
@@ -80,9 +87,10 @@ public class GenesisCatalogService {
                     "closedNoticeKey", state.closedNoticeKey(), "catalogAvailable", true,
                     "tradeAvailable", "open".equals(state.marketOpenState()), "tradeBlockedReason",
                     "open".equals(state.marketOpenState()) ? "" : "GENESIS_MARKET_CLOSED",
-                    "seriesSetupRequired", false);
+                    "seriesSetupRequired", false, "seriesInitializationAvailable", false,
+                    "seriesRecoveryRequired", false);
         }
-        return unavailablePublicState(readiness.reason());
+        return unavailablePublicState(readiness);
     }
 
     public boolean marketOpen() {
@@ -121,15 +129,23 @@ public class GenesisCatalogService {
     protected ApiResult<Void> createTierOnce(TierRequest request) {
         requireReason(request == null ? null : request.reason());
         CatalogState state = lockVersion(request == null ? null : request.expectedTiersVersion());
-        List<TierRow> tiers = requireTiers();
-        TierRow last = tiers.get(tiers.size() - 1);
-        validateBoundary(request.to(), request.priceUSDT(), last.rangeTo());
+        List<TierRow> tiers = mapper.activeTiers();
+        if (tiers == null) tiers = List.of();
+        final int from;
+        if (tiers.isEmpty()) {
+            if (mapper.soldCount() != 0) throw new BizException(409,"GENESIS_SERIES_RECOVERY_REQUIRED");
+            from = 0;
+        } else {
+            validateTiers(tiers);
+            from = tiers.get(tiers.size() - 1).rangeTo();
+        }
+        validateBoundary(request.to(), request.priceUSDT(), from);
         String tierId = "t" + state.nextTierSeq();
-        if (mapper.insertTier(new TierRow(tierId,last.rangeTo(),request.to(),request.priceUSDT())) != 1
+        if (mapper.insertTier(new TierRow(tierId,from,request.to(),request.priceUSDT())) != 1
                 || mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq() + 1) != 1) {
             throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
         }
-        audit("GENESIS_TIER_CREATED",tierId,request.operator(),request.reason(),Map.of("from",last.rangeTo(),"to",request.to(),"priceUSDT",request.priceUSDT()));
+        audit("GENESIS_TIER_CREATED",tierId,request.operator(),request.reason(),Map.of("from",from,"to",request.to(),"priceUSDT",request.priceUSDT()));
         return ApiResult.ok();
     }
 
@@ -205,26 +221,16 @@ public class GenesisCatalogService {
             throw new BizException(422,"GENESIS_SERIES_CODE_INVALID");
         }
         requireText(request.name(),"GENESIS_SERIES_NAME_INVALID",2,128);
-        if (request.royaltyBps() == null || request.royaltyBps() < 0 || request.royaltyBps() > 10000) {
-            throw new BizException(422,"GENESIS_SERIES_ROYALTY_INVALID");
-        }
-        if (request.dailyEmissionRatePct() == null || request.dailyEmissionRatePct().signum() < 0
-                || request.dailyEmissionRatePct().compareTo(new BigDecimal("100")) > 0
-                || request.dailyEmissionRatePct().stripTrailingZeros().scale() > 6) {
-            throw new BizException(422,"GENESIS_SERIES_EMISSION_RATE_INVALID");
-        }
-        String formula = request.dividendBaseFormula() == null ? "" : request.dividendBaseFormula().trim();
-        if (formula.length() > 255) throw new BizException(422,"GENESIS_SERIES_DIVIDEND_FORMULA_INVALID");
         CatalogState state = requireStateForUpdate();
         if (mapper.activeSeriesCount() != 0) throw new BizException(409,"GENESIS_ACTIVE_SERIES_ALREADY_EXISTS");
-        if (mapper.soldCount() != 0) throw new BizException(409,"GENESIS_SERIES_INIT_EXISTING_HOLDINGS");
+        if (mapper.soldCount() != 0) throw new BizException(409,"GENESIS_SERIES_RECOVERY_REQUIRED");
         String seriesCode = request.seriesCode().trim();
         if (mapper.seriesCodeCount(seriesCode) != 0) throw new BizException(409,"GENESIS_SERIES_CODE_CONFLICT");
         List<TierRow> tiers = requireTiers();
         TierRow first = tiers.get(0);
         TierRow last = tiers.get(tiers.size() - 1);
         SeriesBootstrapRow row = new SeriesBootstrapRow(seriesCode,request.name().trim(),last.rangeTo(),first.priceUsdt(),
-                request.royaltyBps(),request.dailyEmissionRatePct(),formula);
+                SAFE_INITIAL_ROYALTY_BPS,SAFE_INITIAL_DAILY_EMISSION_RATE_PCT,SAFE_INITIAL_DIVIDEND_BASE_FORMULA);
         if (mapper.insertActiveSeries(row) != 1) throw new BizException(409,"GENESIS_SERIES_INIT_CONFLICT");
         String actor = AdminActorResolver.resolve(request.operator());
         String change = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
@@ -234,7 +240,9 @@ public class GenesisCatalogService {
         }
         audit("GENESIS_SERIES_INITIALIZED",seriesCode,actor,request.reason(),linked(
                 "seriesCode",seriesCode,"name",request.name().trim(),"totalSupply",last.rangeTo(),
-                "openingPriceUSDT",first.priceUsdt(),"marketState","closed"));
+                "openingPriceUSDT",first.priceUsdt(),"royaltyBps",SAFE_INITIAL_ROYALTY_BPS,
+                "dailyEmissionRatePct",SAFE_INITIAL_DAILY_EMISSION_RATE_PCT,
+                "dividendBaseFormula",SAFE_INITIAL_DIVIDEND_BASE_FORMULA,"marketState","closed"));
         return ApiResult.ok();
     }
 
@@ -244,20 +252,24 @@ public class GenesisCatalogService {
     private void validateTiers(List<TierRow> rows){int next=0;for(TierRow row:rows){if(row.rangeFrom()!=next||row.rangeTo()<=row.rangeFrom()||row.priceUsdt()==null||row.priceUsdt().signum()<=0)throw new BizException(503,"GENESIS_TIERS_INVALID");next=row.rangeTo();}if(next<mapper.soldCount())throw new BizException(503,"GENESIS_TIERS_BELOW_SOLD");}
     private CatalogReadiness readiness(){
         long activeCount=mapper.activeSeriesCount();
-        if(activeCount==0)return new CatalogReadiness(false,"GENESIS_SERIES_UNAVAILABLE",true);
-        if(activeCount!=1)return new CatalogReadiness(false,"GENESIS_ACTIVE_SERIES_AMBIGUOUS",false);
+        if(activeCount==0){
+            if(mapper.soldCount()!=0)return new CatalogReadiness(false,"GENESIS_SERIES_RECOVERY_REQUIRED",true,false,true);
+            try{requireTiers();return new CatalogReadiness(false,"GENESIS_SERIES_UNAVAILABLE",true,true,false);}
+            catch(BizException ex){return new CatalogReadiness(false,ex.getMessage(),true,false,false);}
+        }
+        if(activeCount!=1)return new CatalogReadiness(false,"GENESIS_ACTIVE_SERIES_AMBIGUOUS",false,false,false);
         SeriesRow series=mapper.activeSeries();
         if(series==null||series.totalSupply()==null||series.totalSupply()<=0||series.priceUsdt()==null||series.priceUsdt().signum()<=0)
-            return new CatalogReadiness(false,"GENESIS_SERIES_INVALID",false);
+            return new CatalogReadiness(false,"GENESIS_SERIES_INVALID",false,false,false);
         try{
             List<TierRow> tiers=requireTiers();
             if(!Objects.equals(tiers.get(tiers.size()-1).rangeTo(),series.totalSupply()))
-                return new CatalogReadiness(false,"GENESIS_TIERS_SUPPLY_MISMATCH",false);
+                return new CatalogReadiness(false,"GENESIS_TIERS_SUPPLY_MISMATCH",false,false,false);
             long sold=mapper.soldCount();
             if(sold<series.totalSupply()&&tiers.stream().noneMatch(t->sold>=t.rangeFrom()&&sold<t.rangeTo()))
-                return new CatalogReadiness(false,"GENESIS_TIER_QUOTE_UNAVAILABLE",false);
-            return new CatalogReadiness(true,"READY",false);
-        }catch(BizException ex){return new CatalogReadiness(false,ex.getMessage(),false);}
+                return new CatalogReadiness(false,"GENESIS_TIER_QUOTE_UNAVAILABLE",false,false,false);
+            return new CatalogReadiness(true,"READY",false,false,false);
+        }catch(BizException ex){return new CatalogReadiness(false,ex.getMessage(),false,false,false);}
     }
     private void requireReadyForOpen(){CatalogReadiness readiness=readiness();if(!readiness.available())throw new BizException(409,readiness.reason());}
     private void validateBoundary(Integer to,BigDecimal price,int from){if(to==null||to<=from||price==null||price.signum()<=0||price.stripTrailingZeros().scale()>0)throw new BizException(422,"GENESIS_TIER_INVALID");}
@@ -269,13 +281,15 @@ public class GenesisCatalogService {
     @SuppressWarnings({"rawtypes","unchecked"}) private ApiResult<Void> once(String action,String key,Object req,Supplier<ApiResult<Void>> supplier){return (ApiResult<Void>)(ApiResult)idempotency.execute("G4_"+action,key,hash(String.valueOf(req)),ApiResult.class,(Supplier)supplier);}
     private String hash(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
 
-    private Map<String,Object> unavailablePublicState(String reason) {
+    private Map<String,Object> unavailablePublicState(CatalogReadiness readiness) {
         CatalogState state = mapper.state();
         return linked("tiers", List.of(), "tiersVersion", state == null ? 0L : state.tiersVersion(),
                 "marketOpenState", "closed", "marketOpenStateVersion",
                 state == null ? 0L : state.marketOpenStateVersion(), "closedNoticeKey", "maintenance",
-                "catalogAvailable", false, "tradeAvailable", false, "tradeBlockedReason", reason,
-                "seriesSetupRequired", "GENESIS_SERIES_UNAVAILABLE".equals(reason));
+                "catalogAvailable", false, "tradeAvailable", false, "tradeBlockedReason", readiness.reason(),
+                "seriesSetupRequired", readiness.seriesSetupRequired(),
+                "seriesInitializationAvailable", readiness.seriesInitializationAvailable(),
+                "seriesRecoveryRequired", readiness.seriesRecoveryRequired());
     }
 
     private Map<String,Object> linked(Object... values) {
@@ -288,8 +302,7 @@ public class GenesisCatalogService {
     public record DeleteTierRequest(Long expectedTiersVersion,String reason,String operator){}
     public record MarketStateRequest(String value,String reason,String operator,String noticeKey,
                                      Long expectedMarketOpenStateVersion){}
-    public record SeriesBootstrapRequest(String seriesCode,String name,Integer royaltyBps,
-                                         BigDecimal dailyEmissionRatePct,String dividendBaseFormula,
-                                         String reason,String operator){}
-    private record CatalogReadiness(boolean available,String reason,boolean seriesSetupRequired){}
+    public record SeriesBootstrapRequest(String seriesCode,String name,String reason,String operator){}
+    private record CatalogReadiness(boolean available,String reason,boolean seriesSetupRequired,
+                                    boolean seriesInitializationAvailable,boolean seriesRecoveryRequired){}
 }
