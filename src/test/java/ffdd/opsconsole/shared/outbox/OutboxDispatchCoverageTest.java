@@ -6,8 +6,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -25,8 +28,13 @@ import org.junit.jupiter.api.Test;
  * failure rather than a silent backlog.
  */
 class OutboxDispatchCoverageTest {
+    /**
+     * Only the outbox service's own publish methods carry an event type in the
+     * third argument. Other {@code publish} receivers (tamper detection, mappers,
+     * repositories) take unrelated payloads and must not be scanned.
+     */
     private static final Pattern PUBLISH = Pattern.compile(
-            "\\.publish(?:UserEventAt|UserEvent)?\\(\\s*\"([^\"]+)\"\\s*,\\s*[^,]+,\\s*\"([^\"]+)\"");
+            "(?:outbox|outboxService|eventOutboxService)\\.publish(?:UserEventAt|UserEvent)?\\(");
 
     @Test
     void everyProducedEventTypeHasADeliveryPath() throws IOException {
@@ -100,13 +108,176 @@ class OutboxDispatchCoverageTest {
         Set<String> types = new LinkedHashSet<>();
         try (Stream<Path> files = Files.walk(Path.of("src/main/java"))) {
             for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
-                Matcher matcher = PUBLISH.matcher(Files.readString(file, StandardCharsets.UTF_8));
+                String source = Files.readString(file, StandardCharsets.UTF_8);
+                Matcher matcher = PUBLISH.matcher(source);
                 while (matcher.find()) {
-                    types.add(matcher.group(2));
+                    types.addAll(resolveThirdArgument(source, matcher));
                 }
             }
         }
         return types;
+    }
+
+    /**
+     * Resolves the event-type argument beyond a bare literal. The original scan
+     * read only literal third arguments, so a producer that passed the name
+     * through a local constant or a helper parameter was invisible — that is how
+     * dozens of facts with no delivery channel reached PENDING and stayed there.
+     * Same-file {@code String} constants and the literals supplied to the
+     * enclosing method at its call sites are now included.
+     */
+    private static Set<String> resolveThirdArgument(String source, Matcher matcher) {
+        List<String> args = splitArguments(source, matcher.end());
+        if (args.size() < 3) {
+            return Set.of();
+        }
+        String expression = args.get(2).trim();
+        // A bare literal is authoritative and stays unfiltered, so an unusual
+        // name is still reported rather than silently discarded.
+        if (expression.matches("\"[^\"]+\"")) {
+            return Set.copyOf(stringLiterals(expression));
+        }
+        // Any other expression is resolved by inference, so keep only literals
+        // shaped like an event type: dotted lowercase or SCREAMING_SNAKE. That
+        // drops the field names and comparison operands that share a ternary or
+        // payload map with the real name (e.g. "enabled".equals(field) ? "a.b" : "c.d").
+        Set<String> literals = new LinkedHashSet<>(stringLiterals(expression));
+        if (!literals.isEmpty()) {
+            literals.removeIf(name -> !isEventTypeName(name));
+            return literals;
+        }
+        Map<String, Set<String>> constants = new LinkedHashMap<>();
+        Matcher constant = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*\"([^\"]+)\"\\s*;").matcher(source);
+        while (constant.find()) {
+            constants.computeIfAbsent(constant.group(1), key -> new LinkedHashSet<>()).add(constant.group(2));
+        }
+        for (String identifier : identifiers(expression)) {
+            literals.addAll(constants.getOrDefault(identifier, Set.of()));
+        }
+        if (!literals.isEmpty()) {
+            literals.removeIf(name -> !isEventTypeName(name));
+            return literals;
+        }
+        String passed = firstIdentifier(expression);
+        if (passed == null) {
+            return Set.of();
+        }
+        String enclosing = enclosingMethod(source, matcher.start());
+        if (enclosing == null) {
+            return Set.of();
+        }
+        Matcher signature = Pattern.compile(
+                "(?:private|public|protected|static|final|\\s)+[\\w<>,\\[\\]]+\\s+" + Pattern.quote(enclosing) + "\\s*\\((.*?)\\)",
+                Pattern.DOTALL).matcher(source);
+        if (!signature.find()) {
+            return Set.of();
+        }
+        List<String> parameters = new ArrayList<>();
+        for (String parameter : signature.group(1).split(",")) {
+            String[] tokens = parameter.trim().split("\\s+");
+            if (tokens.length >= 2) {
+                parameters.add(tokens[tokens.length - 1].replace("...", "").trim());
+            }
+        }
+        int position = parameters.indexOf(passed);
+        if (position < 0) {
+            return Set.of();
+        }
+        Matcher call = Pattern.compile("\\b" + Pattern.quote(enclosing) + "\\s*\\(").matcher(source);
+        while (call.find()) {
+            List<String> callArgs = splitArguments(source, call.end());
+            if (callArgs.size() > position) {
+                literals.addAll(stringLiterals(callArgs.get(position)));
+            }
+        }
+        literals.removeIf(name -> !isEventTypeName(name));
+        return literals;
+    }
+
+    /** Dotted lowercase or SCREAMING_SNAKE — the only shapes a producer publishes. */
+    private static boolean isEventTypeName(String value) {
+        return value.matches("[a-z][a-z0-9_]*\\.[a-z0-9_]+") || value.matches("[A-Z][A-Z0-9_]*");
+    }
+
+    /** Splits a call's argument list, ignoring commas nested in calls or literals. */
+    private static List<String> splitArguments(String source, int start) {
+        List<String> args = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        int depth = 1;
+        char quote = 0;
+        for (int i = start; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (quote != 0) {
+                if (c == '\\') {
+                    current.append(c).append(source.charAt(i + 1));
+                    i++;
+                    continue;
+                }
+                if (c == quote) {
+                    quote = 0;
+                }
+                current.append(c);
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                quote = c;
+                current.append(c);
+            } else if (c == '(') {
+                depth++;
+                current.append(c);
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    args.add(current.toString());
+                    return args;
+                }
+                current.append(c);
+            } else if (c == ',' && depth == 1) {
+                args.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+        }
+        return args;
+    }
+
+    /** The declaration whose body contains {@code offset}, by brace depth. */
+    private static String enclosingMethod(String source, int offset) {
+        String head = source.substring(0, offset);
+        List<String> lines = new ArrayList<>(List.of(head.split("\n", -1)));
+        for (int index = lines.size() - 1; index >= 0 && index > lines.size() - 200; index--) {
+            Matcher declaration = Pattern.compile(
+                    "\\s{4}(?:private|public|protected|static|final|\\s)*[\\w<>,\\[\\]\\s]+\\s(\\w+)\\s*\\(")
+                    .matcher(lines.get(index));
+            if (declaration.find()) {
+                return declaration.group(1);
+            }
+        }
+        return null;
+    }
+
+    private static Set<String> stringLiterals(String expression) {
+        Set<String> literals = new LinkedHashSet<>();
+        Matcher matcher = Pattern.compile("\"([^\"]+)\"").matcher(expression);
+        while (matcher.find()) {
+            literals.add(matcher.group(1));
+        }
+        return literals;
+    }
+
+    private static List<String> identifiers(String expression) {
+        List<String> identifiers = new ArrayList<>();
+        Matcher matcher = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*").matcher(expression);
+        while (matcher.find()) {
+            identifiers.add(matcher.group());
+        }
+        return identifiers;
+    }
+
+    private static String firstIdentifier(String expression) {
+        List<String> identifiers = identifiers(expression);
+        return identifiers.isEmpty() ? null : identifiers.get(0);
     }
 
     /** Mirrors the runtime allowlist so the guard fails when the two drift apart. */

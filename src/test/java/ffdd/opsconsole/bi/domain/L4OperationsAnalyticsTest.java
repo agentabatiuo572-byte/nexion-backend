@@ -79,6 +79,59 @@ class L4OperationsAnalyticsTest {
         assertThat(map(map(result.get("network")).get("summary")).get("commissionTriggerRate")).isNull();
     }
 
+    /**
+     * The reported defect: the same window showed "完成 7" in the trend table while the
+     * summary card stayed at 0, because the summary derived completions from a
+     * dispatch→completion join and {@code quest.dispatched} has no producer at all.
+     * The summary must now report the trend's own total, and the missing dispatch
+     * denominator must only suppress the acceptance rate — never the completion volume.
+     */
+    @Test
+    void completionVolumeMatchesTheTrendTotalEvenWhenNoDispatchFactsExist() {
+        List<Map<String, Object>> facts = List.of(
+                fact("q1", "quest.completed", "1", null, "2026-07-25T09:00:00",
+                        Map.of("questKey", "task-1", "tier", "T1")),
+                fact("q2", "quest.completed", "2", null, "2026-07-25T10:00:00",
+                        Map.of("questKey", "task-2", "tier", "T1")),
+                fact("q3", "quest.completed", "3", null, "2026-07-26T10:00:00",
+                        Map.of("questKey", "task-3", "tier", "T2")));
+
+        Map<String, Object> result = L4OperationsAnalytics.calculate(facts, "week", "ALL", null, null, NOW);
+        Map<String, Object> summary = map(map(result.get("tasks")).get("summary"));
+        List<Map<String, Object>> history = maps(result.get("history"));
+
+        long trendTotal = history.stream().mapToLong(row -> ((Number) row.get("tasksCompleted")).longValue()).sum();
+        assertThat(trendTotal).isEqualTo(3);
+        assertThat(summary.get("completed")).isEqualTo(3L);
+        assertThat((Long) summary.get("completed")).isEqualTo(trendTotal);
+        // 无派发事实 ⇒ 没有承接率分母，但完成量仍然权威。
+        assertThat(summary.get("dispatched")).isEqualTo(0L);
+        assertThat(summary.get("acceptanceRate")).isNull();
+        assertThat(summary.get("orderedTaskJoin")).isEqualTo(false);
+        // tier 分布与趋势同口径：每个 (actor, task) 完成实例计数一次。
+        assertThat(maps(map(result.get("tasks")).get("byTier")))
+                .containsExactlyInAnyOrder(
+                        map(Map.of("key", "T1", "count", 2L)),
+                        map(Map.of("key", "T2", "count", 1L)));
+    }
+
+    @Test
+    void completionVolumeStaysConsistentWhenDispatchFactsDoExist() {
+        List<Map<String, Object>> facts = List.of(
+                fact("d1", "quest.dispatched", "1", null, "2026-07-25T08:00:00", Map.of("questKey", "T1")),
+                fact("q1", "quest.completed", "1", null, "2026-07-25T09:00:00", Map.of("questKey", "T1")),
+                fact("q2", "quest.completed", "1", null, "2026-07-25T11:00:00", Map.of("questKey", "T1")));
+
+        Map<String, Object> result = L4OperationsAnalytics.calculate(facts, "week", "ALL", null, null, NOW);
+        Map<String, Object> summary = map(map(result.get("tasks")).get("summary"));
+        long trendTotal = maps(result.get("history")).stream()
+                .mapToLong(row -> ((Number) row.get("tasksCompleted")).longValue()).sum();
+
+        assertThat(summary.get("dispatched")).isEqualTo(1L);
+        assertThat(summary.get("completed")).isEqualTo(trendTotal);
+        assertThat(summary.get("orderedTaskJoin")).isEqualTo(true);
+    }
+
     private static Map<String, Object> fact(
             String eventId,
             String eventName,

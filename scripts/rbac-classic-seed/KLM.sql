@@ -1,9 +1,10 @@
--- 域 K+L+M · 风控+BI+客服 · 54 权限点
+-- 域 K+L+M · 风控+BI+客服 · 53 权限点
 -- 源：docs/superpowers/specs/rbac-classic/KLM.md（收敛自 rbac-matrix/KLM.md 147 按钮级）
 -- 幂等：ON DUPLICATE KEY UPDATE。手动执行（schema.sql 不自动跑，见 schema-manual-init 记忆）：
 --   mysql -uroot -p nexion < scripts/rbac-classic-seed/KLM.sql
 -- 前置：00-permission-alter.sql（perm_type/amplifies 字段）
--- amplifies=1 共 18 个（K 高敏 13 + L 敏感导出/监管 5）；M 客服全 write=0；K/L read/write=0
+-- amplifies=1 共 17 个（K 高敏 13 + L 敏感导出/监管 4）；M 客服全 write=0；K/L read/write=0
+-- L5 不登记「解密导出」：明文 PII 导出由服务端永久阻断，不存在可调用的对应能力。
 -- 不含 role_permission（后续统一处理）；不含 menu_id（后续 A8 字典挂菜单时回填）
 
 INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type, resource_path, perm_type, amplifies, status, is_deleted) VALUES
@@ -63,11 +64,13 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('bi_l4_write',                  '运营报表-聚合导出CSV(无用户明细)',                    'API', '/analytics/operations',   'WRITE', 0, 1, 0),
   ('bi_l4_export_tree',            '导出网络团队结构明细(高敏·PII敏感·userId维度·操作确认)', 'API', '/analytics/operations', 'HIGH',  1, 1, 0),
 
-  -- L5 导出 & 监管报告（5 点）
+  -- L5 导出 & 监管报告（4 点）
+  -- 明文 PII 导出由服务端永久阻断（OpsBiService 对 includeDecrypted/maskingPolicy=DECRYPTED
+  -- 一律返回 RETIRED_FEATURE），因此不再登记任何「解密导出」权限点：登记一个没有可调用
+  -- 服务端能力的权限会把角色设计、审计与后续实现引向一个不存在的明文出口。
   ('bi_l5_read',                   '导出监管报告-读(任务/安全参数/模板/排程/审计/脱敏规则)', 'API', '/analytics/export',     'READ',  0, 1, 0),
   ('bi_l5_write',                  '导出-常规写(发起/重试/下载/5安全参数/排程/新建模板)',  'API', '/analytics/export',       'WRITE', 0, 1, 0),
   ('bi_l5_task_approve',           '操作确认放行/执行门槛(高敏·不可逆·数据出境·超限拆分)', 'API', '/analytics/export',       'HIGH',  1, 1, 0),
-  ('bi_l5_decrypt_export',         '解密导出(高敏·最高敏感档·强操作确认+强制事由·PII明文)','API', '/analytics/export',       'HIGH',  1, 1, 0),
   ('bi_l5_regulatory_generate',    '生成监管报告(高敏·资金兑付/AML/辖区·风控→超管)', 'API', '/analytics/export',  'HIGH',  1, 1, 0),
 
   -- L6 用户行为热力图（1 点）

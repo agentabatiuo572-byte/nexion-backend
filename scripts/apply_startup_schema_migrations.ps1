@@ -190,7 +190,17 @@ $migrations = @(
   # on-chain deposit flow (区块确认/交易哈希) while the only remote top-up rail is
   # VietQR/bank. Rewrites each answer only while it still carries the defective
   # text, so an operator correction is never overwritten.
-  (Join-Path $root "scripts\migrations\20260920_help_faq_product_shape_repair.sql")
+  (Join-Path $root "scripts\migrations\20260920_help_faq_product_shape_repair.sql"),
+  # L5 advertised a bound bi_l5_decrypt_export permission while the management API
+  # permanently blocks plaintext PII export. Retire the permission and every live
+  # role binding so the A8 dictionary, role grants and the L5 page agree that no
+  # such capability exists. Must run after 20260712_rbac_classic.sql, which seeds it.
+  (Join-Path $root "scripts\migrations\20260920_l5_retire_decrypt_export_permission.sql"),
+  # OpsDeviceService publishes 'admin.device_deactivation_requested' for a
+  # settlement-gated deactivation, but the type was never registered, so every
+  # deferred deactivation threw A4_SCHEMA_NOT_REGISTERED. Register it with the
+  # same property contract as its 'admin.device_deactivated' sibling.
+  (Join-Path $root "scripts\migrations\20260920_register_deferred_device_deactivation_event.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

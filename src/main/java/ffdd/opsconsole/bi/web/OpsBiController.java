@@ -304,8 +304,11 @@ public class OpsBiController {
     }
 
     @PostMapping("/reports/{reportId}/{action}")
-    // action 路径变量多态：可能含 HIGH（放行/执行门槛 bi_l5_task_approve、解密导出 bi_l5_decrypt_export、生成监管报告 bi_l5_regulatory_generate），建议 OpsBiService 层按 action 取值做二次细粒度校验
-    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_task_approve','bi_l5_decrypt_export','bi_l5_regulatory_generate')")
+    // action 路径变量多态：可能含 HIGH（放行/执行门槛 bi_l5_task_approve、生成监管报告
+    // bi_l5_regulatory_generate）。明文 PII 导出已永久退役，不存在 bi_l5_decrypt_export
+    // 权限点：任何携带 includeDecrypted/maskingPolicy=DECRYPTED 的请求都在 OpsBiService
+    // 二次校验处失败关闭，与「不登记该权限」保持一致。
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_write','bi_l5_task_approve','bi_l5_regulatory_generate')")
     public ApiResult<Map<String, Object>> reportAction(
             @PathVariable String reportId,
             @PathVariable String action,

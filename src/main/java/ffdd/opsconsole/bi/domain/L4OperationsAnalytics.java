@@ -79,6 +79,14 @@ public final class L4OperationsAnalytics {
         boolean actorComplete = actorRequired == actorPresent;
         double actorCoverage = actorRequired == 0 ? 100.0 : pct(actorPresent, actorRequired);
 
+        // The trend table and the summary card render the same window, so they must
+        // not disagree. The trend is the displayed authority for per-bucket completion
+        // volume; the summary reports its total, making the two recomputable by
+        // construction instead of by two independent derivations that can drift.
+        List<Map<String, Object>> history = history(selected, normalizedPeriod);
+        long completionVolume = history.stream()
+                .mapToLong(row -> ((Number) row.get("tasksCompleted")).longValue())
+                .sum();
         Map<String, Object> result = linked(
                 "module", "L4",
                 "available", !selected.isEmpty(),
@@ -89,10 +97,10 @@ public final class L4OperationsAnalytics {
                         "to", range.to().toLocalDate().toString()),
                 "phaseFilter", normalizedPhase,
                 "device", device(selected),
-                "tasks", tasks(selected, actorComplete),
+                "tasks", tasks(selected, actorComplete, completionVolume, normalizedPeriod),
                 "network", network(selected, actorComplete),
                 "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
-                "history", history(selected, normalizedPeriod),
+                "history", history,
                 "quality", linked(
                         "serverCanonical", true,
                         "sameActorRates", actorComplete,
@@ -142,36 +150,58 @@ public final class L4OperationsAnalytics {
                 "degradation", degradation(earnings));
     }
 
-    private static Map<String, Object> tasks(List<Fact> rows, boolean actorComplete) {
+    private static Map<String, Object> tasks(
+            List<Fact> rows, boolean actorComplete, long completionVolume, String period) {
         List<Fact> dispatched = events(rows, "quest.dispatched");
         List<Fact> completed = events(rows, "quest.completed");
         boolean keysComplete = merge(dispatched, completed).stream()
                 .allMatch(item -> hasText(item.actor()) && hasText(item.questKey()));
         Map<String, LocalDateTime> dispatchTimes = firstTimes(dispatched, L4OperationsAnalytics::taskKey);
-        Map<String, Fact> completedTasks = new LinkedHashMap<>();
-        if (keysComplete) {
-            for (Fact item : completed) {
-                String key = taskKey(item);
-                LocalDateTime dispatchedAt = dispatchTimes.get(key);
-                if (dispatchedAt != null && item.ts().isAfter(dispatchedAt)) completedTasks.putIfAbsent(key, item);
-            }
-        }
         long dispatchedCount = keysComplete ? dispatchTimes.size() : distinctKey(dispatched, Fact::eventId);
-        long completedCount = keysComplete ? completedTasks.size() : distinctKey(completed, Fact::eventId);
+        // 「完成量」与「周期趋势」同源同式：两者都读窗口内 quest.completed 的完成实例。
+        // 派发-完成 join 只用于判定承接率分母是否可用，绝不能反过来把完成量压成 0：
+        // quest.dispatched 当前没有生产方，若以 join 结果作完成量，汇总会恒为 0，
+        // 而同一窗口的趋势表仍显示真实完成数，形成两个互相矛盾的权威值。
+        boolean orderedJoin = actorComplete && keysComplete && dispatchedCount > 0;
+        return linked(
+                "summary", linked(
+                        "dispatched", dispatchedCount,
+                        "completed", completionVolume,
+                        "acceptanceRate", orderedJoin ? pct(completionVolume, dispatchedCount) : null,
+                        "queueSaturation", saturation(rows),
+                        "checkinActive", distinctActors(events(rows, "daily.checkin")),
+                        "orderedTaskJoin", orderedJoin),
+                "byTier", distribution(completionInstances(completed, period), Fact::tier));
+    }
+
+    /**
+     * The single completion derivation shared by the trend table and the summary card: one completion
+     * instance per (actor, task) inside each time bucket, so the trend's per-bucket counts sum exactly
+     * to the summary's completion volume. Two independent derivations could drift and contradict.
+     */
+    private static List<Fact> completionInstances(List<Fact> completed, String period) {
+        Map<String, List<Fact>> buckets = new TreeMap<>();
+        for (Fact item : completed) {
+            buckets.computeIfAbsent(bucket(item.ts().toLocalDate(), period), ignored -> new ArrayList<>()).add(item);
+        }
+        List<Fact> result = new ArrayList<>();
+        for (List<Fact> facts : buckets.values()) {
+            Map<String, Fact> firstByKey = new LinkedHashMap<>();
+            for (Fact item : facts) {
+                firstByKey.putIfAbsent(taskKey(item), item);
+            }
+            result.addAll(firstByKey.values());
+        }
+        return result;
+    }
+
+    private static Double saturation(List<Fact> rows) {
         Double saturation = rows.stream()
                 .filter(item -> item.queueSaturation() != null)
                 .max(Comparator.comparing(Fact::ts))
                 .map(Fact::queueSaturation)
                 .orElse(null);
-        return linked(
-                "summary", linked(
-                        "dispatched", dispatchedCount,
-                        "completed", completedCount,
-                        "acceptanceRate", actorComplete && keysComplete && dispatchedCount > 0 ? pct(completedCount, dispatchedCount) : null,
-                        "queueSaturation", saturation == null ? null : round(saturation),
-                        "checkinActive", distinctActors(events(rows, "daily.checkin")),
-                        "orderedTaskJoin", actorComplete && keysComplete),
-                "byTier", distribution(keysComplete ? new ArrayList<>(completedTasks.values()) : completed, Fact::tier));
+        return saturation == null ? null : round(saturation);
     }
 
     private static Map<String, Object> network(List<Fact> rows, boolean actorComplete) {
@@ -252,7 +282,7 @@ public final class L4OperationsAnalytics {
                 "devicePurchases", distinctKey(events(facts, "device.purchase_completed"), Fact::deviceId),
                 "deviceRetirements", distinctKey(events(facts, "device.retired"), Fact::deviceId),
                 "yieldUsdt", decimal(sum(events(facts, "earnings.credited"), Fact::amountUsdt)),
-                "tasksCompleted", distinctKey(events(facts, "quest.completed"), L4OperationsAnalytics::taskKey),
+                "tasksCompleted", completionInstances(facts, period).size(),
                 "directRefs", distinctKey(events(facts, "referral.bound"), Fact::actor),
                 "commissionPaidUsdt", decimal(sum(events(facts, "commission.paid"), Fact::amountUsdt)))));
         return result;
