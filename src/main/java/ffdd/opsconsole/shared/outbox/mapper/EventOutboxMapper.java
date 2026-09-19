@@ -217,6 +217,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     int markPublished(@Param("eventId") String eventId, @Param("publishedStatus") String publishedStatus);
 
     @Update("""
+            <script>
             UPDATE nx_event_outbox
                SET status = #{recordedStatus},
                    next_retry_at = NULL,
@@ -228,9 +229,10 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                <foreach item="eventType" collection="eventTypes" open="(" separator="," close=")">
                    #{eventType}
                </foreach>
-               AND created_at < DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
+               AND created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
              ORDER BY id
              LIMIT #{limit}
+            </script>
             """)
     int retireRecordOnlyPending(@Param("eventTypes") List<String> eventTypes,
                                 @Param("graceMinutes") int graceMinutes,

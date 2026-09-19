@@ -30,6 +30,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.outbox.JanusOutboxEventTypes;
 import java.nio.charset.StandardCharsets;
 import java.net.URI;
 import java.security.MessageDigest;
@@ -206,13 +207,26 @@ public class OpsJanusService {
                             evaluation.remoteTargetVersion(), evaluation.remoteTargetCatalogVersion(), null,
                             authoritative.reportId());
                 }
-                outboxService.publish("JANUS_DEVICE", sid, "JANUS_STRATEGY_COMMAND_PUBLISHED", command);
+                outboxService.publish("JANUS_DEVICE", sid, JanusOutboxEventTypes.STRATEGY_COMMAND_PUBLISHED, command);
                 persisted = repository.findDevice(sid).orElse(persisted);
             } else if (evaluation.quotaReserved() && COMMAND_ACTIONS.contains(evaluation.action())) {
                 repository.releaseDailyEvaluation(evaluation.strategyId(), evaluation.action());
             }
         }
         return ApiResult.ok(persisted);
+    }
+
+    /**
+     * Maps a validated lifecycle action to its exact record-only event name. The
+     * retirement set matches {@code event_type} with {@code IN}, so a
+     * concatenated prefix would never match and the fact would age in PENDING.
+     */
+    private static String strategyLifecycleEventType(String normalizedAction) {
+        return switch (normalizedAction) {
+            case "publish" -> JanusOutboxEventTypes.STRATEGY_PUBLISH;
+            case "pause" -> JanusOutboxEventTypes.STRATEGY_PAUSE;
+            default -> JanusOutboxEventTypes.STRATEGY_ARCHIVE;
+        };
     }
 
     private ApiResult<JanusDeviceView> reportReplay(String sid, String requestHash,
@@ -353,7 +367,11 @@ public class OpsJanusService {
             event.put("success", request.success());
             if (applied != null) event.put("appliedStatus", applied);
             if (StringUtils.hasText(request.message())) event.put("message", request.message().trim());
-            outboxService.publish("JANUS_DEVICE", sid, "JANUS_DEVICE_COMMAND_" + state, event);
+            // The retirement set matches event_type exactly, so the name must be a
+            // shared constant rather than a concatenated prefix.
+            outboxService.publish("JANUS_DEVICE", sid, request.success()
+                    ? JanusOutboxEventTypes.DEVICE_COMMAND_ACKED
+                    : JanusOutboxEventTypes.DEVICE_COMMAND_FAILED, event);
         }
         if(Boolean.TRUE.equals(request.success())&&proof!=null){
             earningsReleaseService.recordTrustedAttestation(new ffdd.opsconsole.finance.application.EarningsReleaseService.TrustedAttestationProof(
@@ -466,7 +484,7 @@ public class OpsJanusService {
                     remoteTarget.remoteTargetVersion(), remoteTarget.catalogVersion());
         }
         repository.completeCommand(idempotencyKey.trim(), "PUBLISHED", json(after));
-        outboxService.publish("JANUS_DEVICE", sid, "JANUS_DEVICE_STATUS_REQUESTED", payload);
+        outboxService.publish("JANUS_DEVICE", sid, JanusOutboxEventTypes.DEVICE_STATUS_REQUESTED, payload);
         requiredAudit("K6_DEVICE_STATUS_REQUESTED", "JANUS_DEVICE", sid, request.reasonText(),
                 Map.of("before", before, "after", after, "reasonCategory", request.reasonCategory(), "idempotencyKey", idempotencyKey));
         return ApiResult.ok(after);
@@ -676,7 +694,7 @@ public class OpsJanusService {
             repository.addStrategyVersion(strategyId, nextVersion, reason.trim(), currentActor(), snapshot.toString(), hash(snapshot));
         }
         repository.completeCommand(idempotencyKey.trim(), "PUBLISHED", json(after));
-        outboxService.publish("JANUS_STRATEGY", strategyId, "JANUS_STRATEGY_" + normalized.toUpperCase(), Map.of(
+        outboxService.publish("JANUS_STRATEGY", strategyId, strategyLifecycleEventType(normalized), Map.of(
                 "strategyId", strategyId, "version", nextVersion, "status", targetStatus));
         requiredAudit("K6_STRATEGY_" + normalized.toUpperCase(), "JANUS_STRATEGY", strategyId, reason,
                 Map.of("before", before, "after", after, "idempotencyKey", idempotencyKey));
@@ -710,7 +728,7 @@ public class OpsJanusService {
         snapshot.put("rolledBackFrom", request.targetVersion());
         repository.addStrategyVersion(strategyId, nextVersion, request.reason().trim(), currentActor(), snapshot.toString(), hash(snapshot));
         repository.completeCommand(idempotencyKey.trim(), "PUBLISHED", json(after));
-        outboxService.publish("JANUS_STRATEGY", strategyId, "JANUS_STRATEGY_ROLLED_BACK", snapshot);
+        outboxService.publish("JANUS_STRATEGY", strategyId, JanusOutboxEventTypes.STRATEGY_ROLLED_BACK, snapshot);
         requiredAudit("K6_STRATEGY_ROLLED_BACK", "JANUS_STRATEGY", strategyId, request.reason(),
                 Map.of("before", before, "after", after, "targetVersion", request.targetVersion()));
         return ApiResult.ok(after);
@@ -741,7 +759,7 @@ public class OpsJanusService {
             return ApiResult.fail(409, "STRATEGY_DELETE_FORBIDDEN");
         }
         repository.completeCommand(idempotencyKey.trim(), "ACKED", json(request));
-        outboxService.publish("JANUS_STRATEGY", strategyId, "JANUS_STRATEGY_DRAFT_DELETED",
+        outboxService.publish("JANUS_STRATEGY", strategyId, JanusOutboxEventTypes.STRATEGY_DRAFT_DELETED,
                 Map.of("strategyId", strategyId, "expectedVersion", request.expectedVersion()));
         requiredAudit("K6_STRATEGY_DELETED", "JANUS_STRATEGY", strategyId, reason,
                 Map.of("before", before, "after", Map.of()));

@@ -52,6 +52,50 @@ class OutboxDispatchCoverageTest {
                 .doesNotContainAnyElementsOf(dispatcherEventTypes());
     }
 
+    /**
+     * Retirement matches {@code event_type} with {@code IN}, which is an exact
+     * comparison. A name that is a proper prefix of another covered name is
+     * therefore a silent no-op: it binds a value no row can equal, so the fact
+     * ages in PENDING forever while the tick reports success. The previous
+     * retirement set carried {@code "JANUS_STRATEGY_"} and
+     * {@code "JANUS_DEVICE_COMMAND_"} for producers that build names by
+     * concatenation, so neither the ACK/FAILED device commands nor the
+     * publish/pause/archive strategy facts were ever retired.
+     */
+    @Test
+    void noDeliveryPathIsAPrefixOfAnother() {
+        Set<String> covered = new LinkedHashSet<>(EventOutboxService.RECORD_ONLY_EVENT_TYPES);
+        covered.addAll(dispatcherEventTypes());
+        covered.addAll(developerWebhookEventTypes());
+        covered.addAll(familySchedulerEventTypes());
+
+        assertThat(covered)
+                .as("a prefix entry can never match an exact IN comparison")
+                .allSatisfy(type -> assertThat(covered.stream()
+                        .filter(other -> !other.equals(type) && other.startsWith(type))
+                        .toList())
+                        .as("event type %s is a proper prefix of a longer covered type", type)
+                        .isEmpty());
+    }
+
+    /**
+     * The producer scan only sees literal third arguments, so a name built by
+     * concatenation is invisible to it — that blind spot is how the two prefix
+     * entries survived. Producers now reference
+     * {@link JanusOutboxEventTypes}, so every Janus name is checkable, and this
+     * asserts the record-only set covers all of them.
+     */
+    @Test
+    void everyJanusOutboxEventTypeIsRecordOnly() {
+        assertThat(EventOutboxService.RECORD_ONLY_EVENT_TYPES)
+                .as("Janus facts have no bus consumer, so all of them must be retired")
+                .containsAll(JanusOutboxEventTypes.ALL);
+        assertThat(JanusOutboxEventTypes.ALL)
+                .as("device command and strategy lifecycle names must be enumerated, not concatenated")
+                .contains("JANUS_DEVICE_COMMAND_ACKED", "JANUS_DEVICE_COMMAND_FAILED",
+                        "JANUS_STRATEGY_PUBLISH", "JANUS_STRATEGY_PAUSE", "JANUS_STRATEGY_ARCHIVE");
+    }
+
     private static Set<String> producedEventTypes() throws IOException {
         Set<String> types = new LinkedHashSet<>();
         try (Stream<Path> files = Files.walk(Path.of("src/main/java"))) {
