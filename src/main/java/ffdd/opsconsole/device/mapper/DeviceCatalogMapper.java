@@ -12,6 +12,7 @@ import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
 import ffdd.opsconsole.device.domain.DeviceReviewView;
 import ffdd.opsconsole.device.domain.DeviceTaskView;
 import ffdd.opsconsole.device.infrastructure.DeviceSkuEntity;
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -94,6 +95,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             s.tag,
             """ + SKU_STATUS_SQL + """
              AS status,
+            """ + StorefrontProductPublishGate.BLOCKED_SQL + """
+             AS publishBlocked,
+            """ + StorefrontProductPublishGate.BLOCK_REASON_SQL + """
+             AS publishBlockReason,
             p.created_at AS createdAt,
             p.updated_at AS updatedAt
             """;
@@ -1760,6 +1765,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String imagePreviewUrl,
             String tag,
             String status,
+            Boolean publishBlocked,
+            String publishBlockReason,
             LocalDateTime createdAt,
             LocalDateTime updatedAt) {
     }

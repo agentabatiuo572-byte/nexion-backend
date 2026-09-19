@@ -1,6 +1,7 @@
 package ffdd.opsconsole.home.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -291,6 +292,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND p.store_visible = 1
                AND UPPER(COALESCE(p.status,'')) IN ('ACTIVE','ON_SALE')
                AND p.price_usdt IS NOT NULL AND p.price_usdt > 0
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
              ORDER BY p.estimated_daily_usdt DESC, p.sort_order, p.updated_at DESC, p.id DESC
              LIMIT 20
             """)

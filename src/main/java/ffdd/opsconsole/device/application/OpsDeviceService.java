@@ -78,6 +78,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.canonical.BundleDiscountPolicy;
 import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -297,6 +298,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_ALREADY_EXISTS");
         }
         if ("on".equals(normalizeSkuStatus(writeRequest.status()))) {
+            ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(skuId, writeRequest);
+            if (publishGuard != null) {
+                return publishGuard;
+            }
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(skuId, writeRequest.unlockPhase());
             if (listingGuard != null) {
                 return listingGuard;
@@ -359,6 +364,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 : orderManagedWriteRequest;
         String nextStatus = normalizeSkuStatus(writeRequest.status());
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
+            ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, effectiveWriteRequest);
+            if (publishGuard != null) {
+                return publishGuard;
+            }
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized, writeRequest.unlockPhase());
             if (listingGuard != null) {
                 return listingGuard;
@@ -447,6 +456,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.ok(before);
         }
         if ("on".equals(status)) {
+            ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, null);
+            if (publishGuard != null) {
+                return publishGuard;
+            }
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized);
             if (listingGuard != null) {
                 return listingGuard;
@@ -3584,6 +3597,41 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private ApiResult<DeviceSkuView> requireE1SkuListingAllowed(String skuId, String nextUnlockPhase) {
         return requireE1SkuListingAllowed(skuId, nextUnlockPhase, true);
+    }
+
+    /**
+     * The storefront publish gate applied on the E1 write path. {@code on}
+     * writes {@code store_visible=1}, so listing is the moment an operator
+     * decides a row may reach users: a test/mock identity or a row with no
+     * configured yield must be refused here instead of silently reaching the App
+     * catalogue and the App home statistics.
+     *
+     * <p>Values are taken from the incoming write when present so an update that
+     * fixes the yield is judged on its new state rather than the stored one.
+     */
+    private ApiResult<DeviceSkuView> requireE1SkuPublishable(String skuId, DeviceSkuUpsertRequest next) {
+        String productNo = StringUtils.hasText(skuId) ? skuId : null;
+        String name = null;
+        BigDecimal dailyEarn = null;
+        BigDecimal dailyEarnNex = null;
+        if (next != null) {
+            if (productNo == null) productNo = next.skuId();
+            name = next.name();
+            dailyEarn = next.dailyEarn();
+            dailyEarnNex = next.dailyEarnNex();
+        }
+        if (!StringUtils.hasText(name) || dailyEarn == null || dailyEarnNex == null) {
+            DeviceSkuView stored = catalogRepository.findSku(skuId).orElse(null);
+            if (stored == null) return null;
+            if (!StringUtils.hasText(name)) name = stored.name();
+            if (dailyEarn == null) dailyEarn = stored.dailyEarn();
+            if (dailyEarnNex == null) dailyEarnNex = stored.dailyEarnNex();
+        }
+        StorefrontProductPublishGate.Decision decision =
+                StorefrontProductPublishGate.evaluate(productNo, name, dailyEarn, dailyEarnNex);
+        return decision.publishable()
+                ? null
+                : ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_" + decision.reason());
     }
 
     private ApiResult<DeviceSkuView> requireE1SkuListingAllowed(

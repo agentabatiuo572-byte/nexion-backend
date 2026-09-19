@@ -64,6 +64,11 @@ public class BankWithdrawalService {
         return ApiResult.ok(map("enabled", enabled, "provider", "HDPAY", "currency", "VND", "banks", List.of(),
                 // Existing App versions use BANKQR as their direct-binding capability token, not a provider request field.
                 "bankCodeRequired", false, "bindingOtpRequired", current != null, "payType", "BANKQR",
+                // The provider takes no client-selected bank code: it routes by the receiving account
+                // number at payout time. Expose that contract so the App states the truth instead of
+                // rendering a bank picker whose selection the server would have to reject.
+                "bankSelection", "ACCOUNT_ROUTED", "bankSelectionNotice", "BANK_ACCOUNT_ROUTED_BY_NUMBER",
+                "bankNameSource", "PAYOUT_PROVIDER",
                 "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
                 "policy", data, "capacity", capacity, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
                 "unresolvedIntent", intent));

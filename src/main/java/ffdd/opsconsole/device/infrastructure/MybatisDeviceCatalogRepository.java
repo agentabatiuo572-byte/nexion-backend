@@ -569,6 +569,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.imagePreviewUrl(),
                 row.tag(),
                 row.status(),
+                row.publishBlocked(),
+                row.publishBlockReason(),
                 row.createdAt(),
                 row.updatedAt(),
                 row.productType(),

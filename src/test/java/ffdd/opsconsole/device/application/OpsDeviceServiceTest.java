@@ -740,20 +740,20 @@ class OpsDeviceServiceTest {
     void e1GenerationGateRejectsLegacyDiscountWrites() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 1, "P1", new BigDecimal("300"), true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 1, "P1", new BigDecimal("300"), true, 0, false, "active"));
 
         ApiResult<Map<String, Object>> result = service.updateE1GenerationGate(
                 "idem-gate-discount",
                 new E3ConfigUpdateRequest(
-                        "E.gen.stellarbox-test.discount", "100", "禁止旧折扣字段写入", "superadmin"));
+                        "E.gen.stellarbox-legacy.discount", "100", "禁止旧折扣字段写入", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("E1_GATE_KEY_INVALID");
         assertThat(service.e1GenerationGates().getData().toString())
                 .doesNotContain("discount")
                 .doesNotContain("tradeinDiscount");
-        assertThat(catalogRepository.generationGates.get("stellarbox-test").discount()).isEqualByComparingTo("300");
+        assertThat(catalogRepository.generationGates.get("stellarbox-legacy").discount()).isEqualByComparingTo("300");
     }
 
     @Test
@@ -978,12 +978,12 @@ class OpsDeviceServiceTest {
     @Test
     void createSkuRequiresCommandAndAudits() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
-        DeviceSkuUpsertRequest request = skuRequest("stellarbox-test", "NexionBox Test", "pending");
+        DeviceSkuUpsertRequest request = skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending");
 
         ApiResult<DeviceSkuView> result = service.createSku("idem-sku", request);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().skuId()).isEqualTo("stellarbox-test");
+        assertThat(result.getData().skuId()).isEqualTo("stellarbox-legacy");
         assertThat(catalogRepository.sku.status()).isEqualTo("pending");
 
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
@@ -998,31 +998,31 @@ class OpsDeviceServiceTest {
 
         assertThat(service.createSku(
                         "idem-sku",
-                        skuRequest("stellarbox-test", "NexionBox Test", "pending", "Enterprise", "HK-1", 1, "active", "P1"))
+                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending", "Enterprise", "HK-1", 1, "active", "P1"))
                 .getMessage()).isEqualTo("SKU_TIER_INVALID");
         assertThat(service.createSku(
                         "idem-sku",
-                        skuRequest("stellarbox-test", "NexionBox Test", "pending", "Entry", "", 1, "active", "P1"))
+                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending", "Entry", "", 1, "active", "P1"))
                 .getMessage()).isEqualTo("SKU_DATACENTER_REQUIRED");
         assertThat(service.createSku(
                         "idem-sku",
-                        skuRequest("stellarbox-test", "NexionBox Test", "pending", "Entry", "HK-1", 4, "active", "P1"))
+                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending", "Entry", "HK-1", 4, "active", "P1"))
                 .getMessage()).isEqualTo("SKU_GENERATION_INVALID");
         assertThat(service.createSku(
                         "idem-sku",
-                        skuRequest("stellarbox-test", "NexionBox Test", "pending", "Entry", "HK-1", 1, "sunset", "P1"))
+                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending", "Entry", "HK-1", 1, "sunset", "P1"))
                 .getMessage()).isEqualTo("SKU_LIFECYCLE_INVALID");
         assertThat(service.createSku(
                         "idem-sku",
-                        skuRequest("stellarbox-test", "NexionBox Test", "pending", "Entry", "HK-1", 1, "active", ""))
+                        skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending", "Entry", "HK-1", 1, "active", ""))
                 .getMessage()).isEqualTo("SKU_UNLOCK_PHASE_INVALID");
         assertThat(service.createSku(
                         "idem-sku",
-                        withStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), "unlimited"))
+                        withStock(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"), "unlimited"))
                 .getMessage()).isEqualTo("SKU_STOCK_INVALID");
         assertThat(service.createSku(
                         "idem-sku",
-                        withStock(skuRequest("stellarbox-test", "NexionBox Test", "pending"), ""))
+                        withStock(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"), ""))
                 .getMessage()).isEqualTo("SKU_STOCK_INVALID");
     }
 
@@ -1051,7 +1051,7 @@ class OpsDeviceServiceTest {
     void createSkuPersistsStructuredPurchaseGateForServerEnforcedCheckout() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         DeviceSkuUpsertRequest request = withPurchaseGate(
-                skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
                 new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                         2, null, null, "all", null, null, null, true));
 
@@ -1066,19 +1066,19 @@ class OpsDeviceServiceTest {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
 
         ApiResult<DeviceSkuView> tooManyDirects = service.createSku("idem-sku-gate-direct",
-                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                withPurchaseGate(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
                         new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                                 null, 1_000_001, null, "all", null, null, null, true)));
         ApiResult<DeviceSkuView> capWithoutSold = service.createSku("idem-sku-gate-cap",
-                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                withPurchaseGate(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
                         new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                                 null, null, null, "all", 10, null, null, true)));
         ApiResult<DeviceSkuView> soldWithoutCap = service.createSku("idem-sku-gate-sold",
-                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                withPurchaseGate(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
                         new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                                 null, null, null, "all", null, 1, null, true)));
         ApiResult<DeviceSkuView> unsupportedMonth = service.createSku("idem-sku-gate-month",
-                withPurchaseGate(skuRequest("stellarbox-test", "NexionBox Test", "pending"),
+                withPurchaseGate(skuRequest("stellarbox-legacy", "NexionBox Legacy", "pending"),
                         new ffdd.opsconsole.device.domain.DevicePurchaseGateView(
                                 null, null, null, "all", 10, 0, "month", true)));
 
@@ -1255,8 +1255,8 @@ class OpsDeviceServiceTest {
     void createSkuRejectsPreviewUrlStoredAsImageAssetId() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         DeviceSkuUpsertRequest request = skuRequest(
-                "stellarbox-test",
-                "NexionBox Test",
+                "stellarbox-legacy",
+                "NexionBox Legacy",
                 "pending",
                 "Entry",
                 "HK-1",
@@ -1345,39 +1345,39 @@ class OpsDeviceServiceTest {
         catalogRepository.phases.put("2", phase("2", "启动期", 20));
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "1");
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "pending", "1");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "pending", "1");
 
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, false, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 1, "1", BigDecimal.ZERO, false, 0, false, "active"));
         ApiResult<DeviceSkuView> ineligible = service.updateSkuStatus(
-                "stellarbox-test", "idem-list-ineligible", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+                "stellarbox-legacy", "idem-list-ineligible", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
 
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 1, "2", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 1, "2", BigDecimal.ZERO, true, 0, false, "active"));
         ApiResult<DeviceSkuView> phaseBlocked = service.updateSkuStatus(
-                "stellarbox-test", "idem-list-phase", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+                "stellarbox-legacy", "idem-list-phase", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
 
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 2, "1", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 2, "1", BigDecimal.ZERO, true, 0, false, "active"));
         ApiResult<DeviceSkuView> monthBlocked = service.updateSkuStatus(
-                "stellarbox-test", "idem-list-month", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+                "stellarbox-legacy", "idem-list-month", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
 
         assertThat(ineligible.getMessage()).isEqualTo("E1_SKU_E5_ELIGIBILITY_REQUIRED");
         assertThat(phaseBlocked.getMessage()).isEqualTo("E1_SKU_H1_PHASE_NOT_REACHED");
         assertThat(monthBlocked.getMessage()).isEqualTo("E1_SKU_RELEASE_MONTH_NOT_REACHED");
 
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
         ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
-                "stellarbox-test", "idem-list-ok", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
+                "stellarbox-legacy", "idem-list-ok", new DeviceSkuStatusRequest("on", "发布商品门槛校验", "superadmin"));
 
         assertThat(listed.getCode()).isZero();
-        verify(outboxService).publish("DEVICE_SKU", "stellarbox-test", "admin.product_listed", Map.of(
-                "sku_key", "stellarbox-test",
+        verify(outboxService).publish("DEVICE_SKU", "stellarbox-legacy", "admin.product_listed", Map.of(
+                "sku_key", "stellarbox-legacy",
                 "before_status", "pending",
                 "after_status", "on",
                 "operator", "superadmin",
@@ -1385,9 +1385,58 @@ class OpsDeviceServiceTest {
     }
 
     @Test
-    void skuWithoutActiveGateCanBeListed() {
+    void listingRefusesTestIdentifiedSkuSoItNeverReachesTheAppCatalogue() {
+        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "pending", "");
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "stellarbox-test", "idem-list-test-identity",
+                new DeviceSkuStatusRequest("on", "测试标识商品不可上架", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_TEST_IDENTIFIER");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void listingRefusesSkuWithoutEffectiveEarnings() {
+        catalogRepository.sku = skuWithEarnings("hd1-0902", "HDPay1U", "pending", "", null,
+                new BigDecimal("1"), BigDecimal.ZERO, BigDecimal.ZERO);
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "hd1-0902", "idem-list-no-earnings",
+                new DeviceSkuStatusRequest("on", "零收益商品不可上架", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_NO_EFFECTIVE_EARNINGS");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void skuWithEffectiveEarningsStillLists() {
         catalogRepository.sku = sku("cloud-share", "Nexion Cloud Share", "pending", "");
 
+        ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
+                "cloud-share", "idem-list-earns", new DeviceSkuStatusRequest("on", "有收益商品可上架", "superadmin"));
+
+        assertThat(listed.getCode()).isZero();
+        assertThat(listed.getData().status()).isEqualTo("on");
+    }
+
+    @Test
+    void creatingAnOnSaleSkuWithoutEffectiveEarningsIsRefused() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        DeviceSkuUpsertRequest request = withEarnings(
+                skuRequest("hd1-0902", "HDPay1U", "on"), BigDecimal.ZERO, BigDecimal.ZERO);
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-create-no-earnings", request);
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_NO_EFFECTIVE_EARNINGS");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
+    void skuWithoutActiveGateCanBeListed() {
+        catalogRepository.sku = sku("cloud-share", "Nexion Cloud Share", "pending", "");
         ApiResult<DeviceSkuView> listed = service.updateSkuStatus(
                 "cloud-share", "idem-list-no-gate", new DeviceSkuStatusRequest("on", "无需阶段商品上架", "superadmin"));
 
@@ -1486,22 +1535,22 @@ class OpsDeviceServiceTest {
     @Test
     void skuPriceAndUnlistChangesUseExistingOutbox() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "P1");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on", "P1");
         BigDecimal beforePrice = catalogRepository.sku.price();
         DeviceSkuUpsertRequest repriced = withPriceAndStatus(
-                skuRequest("stellarbox-test", "NexionBox Test", "on"), beforePrice.add(BigDecimal.ONE), "on");
+                skuRequest("stellarbox-legacy", "NexionBox Legacy", "on"), beforePrice.add(BigDecimal.ONE), "on");
 
         ApiResult<DeviceSkuView> priceResult = service.updateSku(
-                "stellarbox-test", catalogRepository.sku.updatedAt().toString(), "idem-price-change", repriced);
+                "stellarbox-legacy", catalogRepository.sku.updatedAt().toString(), "idem-price-change", repriced);
         ApiResult<DeviceSkuView> offResult = service.updateSkuStatus(
-                "stellarbox-test", "idem-unlist", new DeviceSkuStatusRequest("off", "商品下架运营处理", "superadmin"));
+                "stellarbox-legacy", "idem-unlist", new DeviceSkuStatusRequest("off", "商品下架运营处理", "superadmin"));
 
         assertThat(priceResult.getCode()).isZero();
         assertThat(offResult.getCode()).isZero();
         verify(outboxService).publish(
-                eq("DEVICE_SKU"), eq("stellarbox-test"), eq("admin.product_price_changed"), argThat(payload ->
+                eq("DEVICE_SKU"), eq("stellarbox-legacy"), eq("admin.product_price_changed"), argThat(payload ->
                         payload instanceof Map<?, ?> event
-                                && "stellarbox-test".equals(event.get("sku_key"))
+                                && "stellarbox-legacy".equals(event.get("sku_key"))
                                 && "price".equals(event.get("scope"))
                                 && "price".equals(event.get("field"))
                                 && beforePrice.equals(event.get("before"))
@@ -1509,8 +1558,8 @@ class OpsDeviceServiceTest {
                                 && "2026-06-17T00:00".equals(event.get("effective_at"))
                                 && "superadmin".equals(event.get("operator"))
                                 && "catalog update".equals(event.get("reason"))));
-        verify(outboxService).publish("DEVICE_SKU", "stellarbox-test", "admin.product_unlisted", Map.of(
-                "sku_key", "stellarbox-test",
+        verify(outboxService).publish("DEVICE_SKU", "stellarbox-legacy", "admin.product_unlisted", Map.of(
+                "sku_key", "stellarbox-legacy",
                 "before_status", "on",
                 "after_status", "off",
                 "operator", "superadmin",
@@ -1746,10 +1795,10 @@ class OpsDeviceServiceTest {
     @Test
     void e1PhaseRenameKeepsInternalReferencesStable() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "1");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on", "1");
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 1, "1", BigDecimal.ZERO, true, 0, false, "active"));
         configFacade.values.put("growth.phase.current", "1");
 
         ApiResult<Map<String, Object>> result = service.patchE1Phase(
@@ -1761,7 +1810,7 @@ class OpsDeviceServiceTest {
         assertThat(catalogRepository.phases).containsKey("1");
         assertThat(catalogRepository.phases.get("1").label()).isEqualTo("代际第一代");
         assertThat(catalogRepository.sku.unlockPhase()).isEqualTo("1");
-        assertThat(catalogRepository.generationGates.get("stellarbox-test").phase()).isEqualTo("1");
+        assertThat(catalogRepository.generationGates.get("stellarbox-legacy").phase()).isEqualTo("1");
         assertThat(configFacade.values).containsEntry("growth.phase.current", "1");
     }
 
@@ -1834,7 +1883,7 @@ class OpsDeviceServiceTest {
     void e1PhaseArchiveRejectsReferencedPhase() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.phases.put("2", phase("2", "代际第一代", 20));
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "2");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on", "2");
         configFacade.values.put("growth.phase.current", "1");
 
         ApiResult<Map<String, Object>> result = service.archiveE1Phase(
@@ -1902,8 +1951,8 @@ class OpsDeviceServiceTest {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.phases.put("2", phase("2", "P2", 20));
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 3, "2", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 3, "2", BigDecimal.ZERO, true, 0, false, "active"));
         configFacade.values.put("growth.phase.current", "1");
 
         ApiResult<Map<String, Object>> result = service.patchE1Phase(
@@ -1920,19 +1969,19 @@ class OpsDeviceServiceTest {
     void forceUnlockRequiresEligibilityReachedPhaseAndFinePermission() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.phases.put("2", phase("2", "P2", 20));
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on", "1");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on", "1");
         configFacade.values.put("H1.rhythm.totalMonths", "12");
         configFacade.values.put("H1.rhythm.currentMonth", "1");
 
         ApiResult<Map<String, Object>> ineligible = service.createE1GenerationGate(
                 "idem-force-ineligible",
-                gateRequest("stellarbox-test", "1", false, true));
+                gateRequest("stellarbox-legacy", "1", false, true));
         ApiResult<Map<String, Object>> phaseNotReached = service.createE1GenerationGate(
                 "idem-force-phase",
-                gateRequest("stellarbox-test", "2", true, true));
+                gateRequest("stellarbox-legacy", "2", true, true));
         ApiResult<Map<String, Object>> forbidden = service.createE1GenerationGate(
                 "idem-force-forbidden",
-                gateRequest("stellarbox-test", "1", true, true));
+                gateRequest("stellarbox-legacy", "1", true, true));
 
         assertThat(ineligible.getMessage()).isEqualTo("E1_FORCE_UNLOCK_ELIGIBILITY_REQUIRED");
         assertThat(phaseNotReached.getMessage()).isEqualTo("E1_FORCE_UNLOCK_PHASE_NOT_REACHED");
@@ -1942,12 +1991,12 @@ class OpsDeviceServiceTest {
         authenticate("device_e1_generation_gate_force_unlock");
         ApiResult<Map<String, Object>> allowed = service.createE1GenerationGate(
                 "idem-force-allowed",
-                gateRequest("stellarbox-test", "1", true, true));
+                gateRequest("stellarbox-legacy", "1", true, true));
         assertThat(allowed.getCode()).isZero();
-        assertThat(catalogRepository.generationGates.get("stellarbox-test").forceUnlock()).isTrue();
+        assertThat(catalogRepository.generationGates.get("stellarbox-legacy").forceUnlock()).isTrue();
 
         ApiResult<Map<String, Object>> lockForbidden = service.patchE1GenerationGate(
-                "stellarbox-test",
+                "stellarbox-legacy",
                 "idem-force-lock-forbidden",
                 new DeviceGenerationGatePatchRequest(
                         null, null, null, null, null, false, null, "关闭强制解锁配置", "superadmin"));
@@ -1956,26 +2005,26 @@ class OpsDeviceServiceTest {
 
         authenticate("device_e1_generation_gate_force_lock");
         ApiResult<Map<String, Object>> locked = service.patchE1GenerationGate(
-                "stellarbox-test",
+                "stellarbox-legacy",
                 "idem-force-lock-allowed",
                 new DeviceGenerationGatePatchRequest(
                         null, null, null, null, null, false, null, "关闭强制解锁配置", "superadmin"));
         assertThat(locked.getCode()).isZero();
-        assertThat(catalogRepository.generationGates.get("stellarbox-test").forceUnlock()).isFalse();
+        assertThat(catalogRepository.generationGates.get("stellarbox-legacy").forceUnlock()).isFalse();
     }
 
     @Test
     void patchGenerationGateRejectsExistingOrphanPhaseReference() {
         catalogRepository.phases.put("1", phase("1", "P1", 10));
         catalogRepository.generationGates.put(
-                "stellarbox-test",
-                gate("stellarbox-test", "NexionBox Test", 3, "missing", BigDecimal.ZERO, true, 0, false, "active"));
+                "stellarbox-legacy",
+                gate("stellarbox-legacy", "NexionBox Legacy", 3, "missing", BigDecimal.ZERO, true, 0, false, "active"));
 
         ApiResult<Map<String, Object>> result = service.patchE1GenerationGate(
-                "stellarbox-test",
+                "stellarbox-legacy",
                 "idem-fix-orphan",
                 new DeviceGenerationGatePatchRequest(
-                        "NexionBox Test", null, null, null, null, null, null, "修复孤儿引用原因", "superadmin"));
+                        "NexionBox Legacy", null, null, null, null, null, null, "修复孤儿引用原因", "superadmin"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("E1_GATE_PHASE_INVALID");
@@ -1983,10 +2032,10 @@ class OpsDeviceServiceTest {
 
     @Test
     void updateSkuStatusRejectsUnsupportedStatus() {
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on");
 
         ApiResult<DeviceSkuView> result = service.updateSkuStatus(
-                "stellarbox-test",
+                "stellarbox-legacy",
                 "idem-sku",
                 new DeviceSkuStatusRequest("deleted", "wrong status", "superadmin"));
 
@@ -1996,7 +2045,7 @@ class OpsDeviceServiceTest {
 
     @Test
     void reviewStatusChangeWritesAudit() {
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on");
         catalogRepository.review = review("rv-1", "published");
 
         ApiResult<DeviceReviewView> result = service.updateReviewStatus(
@@ -2729,11 +2778,11 @@ class OpsDeviceServiceTest {
 
     @Test
     void replayE1SkuStatusChangesStatusAndAudits() {
-        catalogRepository.sku = sku("stellarbox-test", "NexionBox Test", "on");
+        catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on");
 
         ApiResult<?> result = service.replay(
                 new AuditReplayCommand("E", "e1_sku_status", Map.of(
-                        "skuId", "stellarbox-test",
+                        "skuId", "stellarbox-legacy",
                         "status", "off",
                         "expectedUpdatedAt", "2026-06-17T00:00")),
                 new AuditReplayContext("superadmin", "e1 replay sku status", "idem-replay-e1-sku-status"));
@@ -3102,7 +3151,7 @@ class OpsDeviceServiceTest {
             String skuId, String phaseId, boolean eligibility, boolean forceUnlock) {
         return new DeviceGenerationGateUpsertRequest(
                 skuId,
-                "NexionBox Test",
+                "NexionBox Legacy",
                 3,
                 phaseId,
                 eligibility,
@@ -3134,6 +3183,21 @@ class OpsDeviceServiceTest {
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(), source.lifecycle(),
                 source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(), source.purchaseGate(), source.imageAssetId(),
                 source.imageObjectKey(), source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator());
+    }
+
+    private static DeviceSkuUpsertRequest withEarnings(
+            DeviceSkuUpsertRequest source, BigDecimal dailyEarn, BigDecimal dailyEarnNex) {
+        return new DeviceSkuUpsertRequest(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(), source.vram(),
+                source.hashRate(), source.power(), source.datacenter(), source.uptime(), source.warranty(),
+                source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(), dailyEarn, dailyEarnNex,
+                source.shareYieldMin(), source.shareYieldMax(), source.baseRate(), source.sold(), source.stock(),
+                source.rating(), source.reviews(), source.aiImageGenPerMin(), source.aiLlmTokensPerSec(),
+                source.aiVideoMinPerHour(), source.aiFineTuneMins(), source.aiUnlocks(), source.features(),
+                source.generation(), source.lifecycle(), source.supersededBy(), source.tradeinDiscount(),
+                source.unlockPhase(), source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(),
+                source.imagePreviewUrl(), source.tag(), source.status(), source.reason(), source.operator(),
+                source.inventoryMode(), source.trialEligible());
     }
 
     private static DeviceSkuUpsertRequest withSoldAndStock(
@@ -3242,6 +3306,13 @@ class OpsDeviceServiceTest {
 
     private static DeviceSkuView sku(
             String skuId, String name, String status, String unlockPhase, String aiUnlocks, BigDecimal price) {
+        return skuWithEarnings(skuId, name, status, unlockPhase, aiUnlocks, price,
+                new BigDecimal("12.3"), new BigDecimal("24"));
+    }
+
+    private static DeviceSkuView skuWithEarnings(
+            String skuId, String name, String status, String unlockPhase, String aiUnlocks, BigDecimal price,
+            BigDecimal dailyEarn, BigDecimal dailyEarnNex) {
         return new DeviceSkuView(
                 skuId,
                 name,
@@ -3254,8 +3325,8 @@ class OpsDeviceServiceTest {
                 "1200W",
                 "HK-1",
                 price,
-                new BigDecimal("12.3"),
-                new BigDecimal("24"),
+                dailyEarn,
+                dailyEarnNex,
                 null,
                 null,
                 "$12.30/d",
@@ -3295,7 +3366,8 @@ class OpsDeviceServiceTest {
                 source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(),
                 source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
                 source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
-                source.tag(), source.status(), source.createdAt(), source.updatedAt(), source.productType(),
+                source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
+                source.createdAt(), source.updatedAt(), source.productType(),
                 source.inventoryMode(), trialEligible);
     }
 
@@ -3327,8 +3399,8 @@ class OpsDeviceServiceTest {
     private static DeviceReviewView review(String reviewId, String status) {
         return new DeviceReviewView(
                 reviewId,
-                "stellarbox-test",
-                "NexionBox Test",
+                "stellarbox-legacy",
+                "NexionBox Legacy",
                 "Maya",
                 5,
                 "Good yield",
@@ -3368,8 +3440,8 @@ class OpsDeviceServiceTest {
         return new DeviceOrderView(
                 orderNo,
                 "usr_1",
-                "stellarbox-test",
-                "NexionBox Test",
+                "stellarbox-legacy",
+                "NexionBox Legacy",
                 "ORDER_ITEM",
                 new BigDecimal("1299"),
                 state,
@@ -3392,7 +3464,7 @@ class OpsDeviceServiceTest {
                 orderNo, 1L, 1, "SINGLE",
                 new BigDecimal("1299"), BigDecimal.ZERO, new BigDecimal("1299"),
                 null, "USDT_WALLET", paymentStatus, orderStatus, activationStatus,
-                1L, "stellarbox-test", "NexionBox Test",
+                1L, "stellarbox-legacy", "NexionBox Legacy",
                 deviceId, deviceInstanceNo, dcLocation,
                 LocalDateTime.now().minusMinutes(1), LocalDateTime.now().minusSeconds(30),
                 activatedAt, LocalDateTime.now());

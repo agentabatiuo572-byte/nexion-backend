@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.UserDeviceEntity;
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -282,9 +283,32 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              WHERE p.is_deleted=0 AND p.store_visible=1
                AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
                AND p.price_usdt>0 AND (p.inventory_mode='UNLIMITED' OR p.stock>=0)
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
              ORDER BY p.store_featured DESC,p.sort_order ASC,p.id ASC
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
+
+    /**
+     * Rows the store predicates admit but the publish gate withholds, with the
+     * reason. The catalogue projection reports these instead of dropping them
+     * silently, so an unpublished test/placeholder row is visible to operators
+     * and to release verification rather than merely absent.
+     */
+    @Select("""
+            SELECT p.product_no AS productNo,
+                   p.name,
+            """ + StorefrontProductPublishGate.BLOCK_REASON_SQL + """
+             AS reason
+              FROM nx_product p
+             WHERE p.is_deleted=0 AND p.store_visible=1
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND p.price_usdt>0 AND (p.inventory_mode='UNLIMITED' OR p.stock>=0)
+               AND
+            """ + StorefrontProductPublishGate.BLOCKED_SQL + """
+             ORDER BY p.id ASC
+            """)
+    List<CatalogPublishBlock> listPublishBlockedCatalogTargets();
 
     @Select("""
             SELECT id, product_no AS productNo, name, tier, status, price_usdt AS priceUsdt, stock,
@@ -527,6 +551,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             this(id, productNo, name, tier, status, priceUsdt, stock, null, deviceType, generation,
                     gpuModel, vramTotalGb, hashrate, dailyUsdt, dailyNex, "FINITE");
         }
+    }
+
+    record CatalogPublishBlock(String productNo, String name, String reason) {
     }
 
     record CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,

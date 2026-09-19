@@ -64,6 +64,7 @@ public class AppProductCatalogService {
         try {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
             if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
+            reportPublishBlockedProducts();
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
@@ -82,6 +83,28 @@ public class AppProductCatalogService {
             return ApiResult.ok(response);
         } catch (RuntimeException ex) {
             return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
+        }
+    }
+
+    /**
+     * The catalogue silently omits rows the store predicates admit but the
+     * publish gate withholds. Report them with their reason so an unpublished
+     * test or placeholder row is an explicit, auditable exclusion rather than an
+     * unexplained absence from the user-facing catalogue.
+     */
+    private void reportPublishBlockedProducts() {
+        List<AppTradeinMapper.CatalogPublishBlock> blocked;
+        try {
+            blocked = tradeinMapper.listPublishBlockedCatalogTargets();
+        } catch (RuntimeException ex) {
+            log.warn("Storefront publish gate report unavailable: type={}, message={}",
+                    ex.getClass().getSimpleName(), ex.getMessage());
+            return;
+        }
+        if (blocked == null || blocked.isEmpty()) return;
+        for (AppTradeinMapper.CatalogPublishBlock row : blocked) {
+            log.warn("Storefront publish gate withheld product={} name={} reason={}",
+                    row.productNo(), row.name(), row.reason());
         }
     }
 

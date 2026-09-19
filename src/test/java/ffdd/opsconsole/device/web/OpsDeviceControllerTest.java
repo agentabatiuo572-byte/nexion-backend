@@ -162,28 +162,28 @@ class OpsDeviceControllerTest {
         DeviceSkuStatusRequest status = new DeviceSkuStatusRequest("off", "maintenance", "superadmin");
         when(deviceService.skus(query)).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
         when(deviceService.createSku("idem-sku", request)).thenReturn(ApiResult.ok(mock(DeviceSkuView.class)));
-        when(deviceService.updateSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", request))
+        when(deviceService.updateSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", request))
                 .thenReturn(ApiResult.ok(mock(DeviceSkuView.class)));
-        when(deviceService.updateSkuStatus("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status)).thenReturn(ApiResult.ok(mock(DeviceSkuView.class)));
-        when(deviceService.deleteSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status)).thenReturn(ApiResult.ok(Map.of("deleted", true)));
+        when(deviceService.updateSkuStatus("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status)).thenReturn(ApiResult.ok(mock(DeviceSkuView.class)));
+        when(deviceService.deleteSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status)).thenReturn(ApiResult.ok(Map.of("deleted", true)));
 
         assertThat(controller.skus(query).getData().getTotal()).isZero();
         assertThat(controller.createSku("idem-sku", request).getCode()).isZero();
-        assertThat(controller.updateSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", request).getCode()).isZero();
-        assertThat(controller.updateSkuStatus("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status).getCode()).isZero();
-        assertThat(controller.deleteSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status).getData()).containsEntry("deleted", true);
+        assertThat(controller.updateSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", request).getCode()).isZero();
+        assertThat(controller.updateSkuStatus("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status).getCode()).isZero();
+        assertThat(controller.deleteSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status).getData()).containsEntry("deleted", true);
 
         verify(deviceService).skus(query);
         verify(deviceService).createSku("idem-sku", request);
-        verify(deviceService).updateSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", request);
-        verify(deviceService).updateSkuStatus("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status);
-        verify(deviceService).deleteSku("stellarbox-test", "2026-06-17T00:00:00", "idem-sku", status);
+        verify(deviceService).updateSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", request);
+        verify(deviceService).updateSkuStatus("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status);
+        verify(deviceService).deleteSku("stellarbox-legacy", "2026-06-17T00:00:00", "idem-sku", status);
     }
 
     @Test
     void reviewCrudDelegatesWithIdempotencyHeader() {
-        DeviceReviewQueryRequest query = new DeviceReviewQueryRequest("stellarbox-test", "published", 5, "Maya", 1L, 20L);
-        DeviceReviewUpsertRequest request = new DeviceReviewUpsertRequest("stellarbox-test", "Maya", 5, "Great", "刚刚", "published", "content ops", "superadmin");
+        DeviceReviewQueryRequest query = new DeviceReviewQueryRequest("stellarbox-legacy", "published", 5, "Maya", 1L, 20L);
+        DeviceReviewUpsertRequest request = new DeviceReviewUpsertRequest("stellarbox-legacy", "Maya", 5, "Great", "刚刚", "published", "content ops", "superadmin");
         DeviceReviewStatusRequest status = new DeviceReviewStatusRequest("hidden", "content ops", "superadmin");
         when(deviceService.reviews(query)).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
         when(deviceService.createReview("idem-review", request)).thenReturn(ApiResult.ok(mock(DeviceReviewView.class)));
@@ -296,8 +296,8 @@ class OpsDeviceControllerTest {
 
     private static DeviceSkuUpsertRequest skuRequest() {
         return new DeviceSkuUpsertRequest(
-                "stellarbox-test",
-                "NexionBox Test",
+                "stellarbox-legacy",
+                "NexionBox Legacy",
                 "Entry",
                 "test",
                 "New",

@@ -47,6 +47,8 @@ public record DeviceSkuView(
         String imagePreviewUrl,
         String tag,
         String status,
+        Boolean publishBlocked,
+        String publishBlockReason,
         LocalDateTime createdAt,
         @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS") LocalDateTime updatedAt,
         String productType,
@@ -70,7 +72,7 @@ public record DeviceSkuView(
                 shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec,
                 aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy,
                 tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl,
-                tag, status, createdAt, updatedAt, null, null, false);
+                tag, status, null, null, createdAt, updatedAt, null, null, false);
     }
 
     /** Compatibility constructor for pre-P2 callers that did not project product specs. */
@@ -88,6 +90,7 @@ public record DeviceSkuView(
                 price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating,
                 reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks,
                 features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate,
-                imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, createdAt, updatedAt, null, null, false);
+                imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, null, null,
+                createdAt, updatedAt, null, null, false);
     }
 }
