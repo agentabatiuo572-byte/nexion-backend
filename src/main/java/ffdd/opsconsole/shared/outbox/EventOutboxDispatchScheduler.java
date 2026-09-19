@@ -121,6 +121,17 @@ public class EventOutboxDispatchScheduler {
         } catch (RuntimeException ex) {
             log.warn("event-outbox record-only retirement failed error={}", ex.getMessage());
         }
+        // Legacy C1 profile facts without their audit link can never be selected
+        // for dispatch and can never be retried. Give them a terminal state too,
+        // isolated like the sweep above so a failure here cannot stop delivery.
+        try {
+            int retiredUnlinked = outboxService.retireUnlinkedC1ProfileEvidence(BATCH_SIZE);
+            if (retiredUnlinked > 0) {
+                log.info("event-outbox retired unlinked C1 profile evidence count={}", retiredUnlinked);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("event-outbox unlinked C1 profile retirement failed error={}", ex.getMessage());
+        }
         // Only dispatch event types that have a synchronous, durable consumer.
         // Publishing an unknown Spring event succeeds even when it has no listener;
         // selecting all event types here would therefore falsely mark them PUBLISHED.

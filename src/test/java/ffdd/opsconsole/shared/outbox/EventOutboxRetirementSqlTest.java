@@ -63,6 +63,44 @@ class EventOutboxRetirementSqlTest {
         assertThat(sql).doesNotContain("LIKE");
     }
 
+    /**
+     * Legacy C1 profile facts without their audit link are refused by the
+     * dispatch scan and are not retryable, so only this sweep can end them. It
+     * must stay byte-exact on the audit link (an alias row must not mask a real
+     * gap) and must never touch a linked row.
+     */
+    @Test
+    void unlinkedProfileSweepBindsTheAuditLinkByteExact() throws Exception {
+        var method = EventOutboxMapper.class.getDeclaredMethod("retireUnlinkedC1ProfileEvidence",
+                String.class, int.class, int.class, String.class, String.class, String.class, String.class);
+        String script = String.join("\n", method.getAnnotation(Update.class).value());
+        Map<String, Object> params = new HashMap<>();
+        params.put("eventType", "ADMIN_USER_PROFILE_VIEWED");
+        params.put("graceMinutes", 15);
+        params.put("limit", 100);
+        params.put("reason", "C1_AUDIT_EVIDENCE_UNLINKED");
+        params.put("recordedStatus", "RECORDED");
+        params.put("pendingStatus", "PENDING");
+        params.put("failedStatus", "FAILED");
+        String raw = new XMLLanguageDriver().createSqlSource(new Configuration(), script, Map.class)
+                .getBoundSql(params).getSql();
+        String sql = compact(raw);
+
+        assertThat(raw).doesNotContain("<script>").doesNotContain("&lt;");
+        assertThat(sql).contains(
+                "SETstatus=?",
+                "last_error=?",
+                "statusIN(?,?)",
+                "BINARYo.event_type=BINARY?",
+                "created_at<DATE_SUB(NOW(),INTERVAL?MINUTE)",
+                "LIMIT?",
+                // The link predicate must be byte-exact on both sides, matching A4.
+                "a.biz_no=CONCAT('C1-VIEW-',o.event_id)",
+                "BINARYa.biz_no=BINARYCONCAT('C1-VIEW-',o.event_id)",
+                "NOTEXISTS");
+        assertThat(sql).doesNotContain("LIKE");
+    }
+
     /** Tag bodies carry their own newlines and indentation; compare on whitespace-free text. */
     private static String compact(String sql) {
         return sql.replaceAll("\\s+", "");

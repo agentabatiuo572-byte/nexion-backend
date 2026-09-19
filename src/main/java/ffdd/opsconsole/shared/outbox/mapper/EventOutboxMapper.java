@@ -243,6 +243,46 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                                 @Param("failedStatus") String failedStatus);
 
     /**
+     * Terminal sweep for legacy C1 profile-view facts whose audit row carries no
+     * {@code C1-VIEW-<eventId>} link. {@link #listPendingByEventType} refuses to
+     * select them (the consumer would reject an unlinked fact), and the type has
+     * a real bus consumer so it cannot join the record-only set — without this
+     * sweep they stay PENDING forever: neither deliverable nor retryable, which
+     * is what kept A3 reporting a permanently growing oldest-wait.
+     *
+     * <p>New writes are linked in the same transaction as their audit row, so
+     * only historical rows can match. BINARY keeps the comparison byte-exact, the
+     * same rule the A4 diagnostics use, so an alias row cannot mask a real gap.
+     */
+    @Update("""
+            <script>
+            UPDATE nx_event_outbox o
+               SET status = #{recordedStatus},
+                   next_retry_at = NULL,
+                   last_error = #{reason},
+                   updated_at = NOW()
+             WHERE o.is_deleted = 0
+               AND o.status IN (#{pendingStatus}, #{failedStatus})
+               AND BINARY o.event_type = BINARY #{eventType}
+               AND o.created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_audit_log a
+                    WHERE a.biz_no = CONCAT('C1-VIEW-', o.event_id)
+                      AND BINARY a.biz_no = BINARY CONCAT('C1-VIEW-', o.event_id)
+                      AND a.is_deleted = 0)
+             ORDER BY o.id
+             LIMIT #{limit}
+            </script>
+            """)
+    int retireUnlinkedC1ProfileEvidence(@Param("eventType") String eventType,
+                                        @Param("graceMinutes") int graceMinutes,
+                                        @Param("limit") int limit,
+                                        @Param("reason") String reason,
+                                        @Param("recordedStatus") String recordedStatus,
+                                        @Param("pendingStatus") String pendingStatus,
+                                        @Param("failedStatus") String failedStatus);
+
+    /**
      * Revives only a published H3 event whose one H3 consumer is explicitly
      * waiting for an active binding. The active-mission join avoids a replay
      * after a binding has been disabled or its target mission retired.

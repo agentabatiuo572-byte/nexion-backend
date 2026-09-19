@@ -32,6 +32,35 @@ class OutboxRecordOnlyRetirementTest {
         verify(service).retireRecordOnlyPending(100);
     }
 
+    /**
+     * Legacy C1 profile facts without an audit link are refused by the dispatch
+     * scan, so no consumer will ever retry them. They need the same per-tick
+     * terminal sweep, or they keep A3's oldest-wait growing forever.
+     */
+    @Test
+    void unlinkedProfileEvidenceIsSweptOnEveryDispatchTick() {
+        when(service.retireUnlinkedC1ProfileEvidence(anyInt())).thenReturn(3);
+
+        scheduler.dispatchPending();
+
+        verify(service).retireUnlinkedC1ProfileEvidence(100);
+    }
+
+    @Test
+    void aFailingProfileSweepNeverStopsGenuineDelivery() {
+        doThrow(new IllegalStateException("retention unavailable"))
+                .when(service).retireUnlinkedC1ProfileEvidence(anyInt());
+        EventOutboxMessage message = new EventOutboxMessage();
+        message.setEventId("event-still-delivered");
+        when(service.listPendingByEventType(EventOutboxDispatchScheduler.SUPPORTED_EVENT_TYPE, 100))
+                .thenReturn(List.of(message));
+
+        scheduler.dispatchPending();
+
+        verify(publisher).publishEvent(message);
+        verify(service).markPublished("event-still-delivered");
+    }
+
     @Test
     void aFailingRetirementNeverStopsGenuineDelivery() {
         doThrow(new IllegalStateException("retention unavailable")).when(service).retireRecordOnlyPending(anyInt());

@@ -405,6 +405,27 @@ public class EventOutboxService {
                 normalizeLimit(limit), "EVENT_RECORDED_NO_BUS_CONSUMER", STATUS_RECORDED, STATUS_PENDING, STATUS_FAILED);
     }
 
+    /** The one C1 type whose audit link decides whether it is dispatchable. */
+    static final String C1_PROFILE_VIEW_EVENT_TYPE = "ADMIN_USER_PROFILE_VIEWED";
+
+    /**
+     * Retires legacy C1 profile-view facts that can never be delivered: the
+     * dispatch scan refuses to select a profile fact without its
+     * {@code C1-VIEW-<eventId>} audit row (the consumer would reject it), and the
+     * type has a real bus consumer so it may not join the record-only set.
+     * Without this terminal sweep those rows sit in PENDING forever — neither
+     * deliverable nor retryable — which is what kept A3 reporting a permanently
+     * growing oldest-wait with a non-zero unlinked count.
+     *
+     * <p>Producers link the audit row in the same transaction as the publish, so
+     * only historical rows can match. The reason string keeps the distinction
+     * auditable instead of presenting them as ordinary delivered facts.
+     */
+    public int retireUnlinkedC1ProfileEvidence(int limit) {
+        return mapper.retireUnlinkedC1ProfileEvidence(C1_PROFILE_VIEW_EVENT_TYPE, RECORD_ONLY_GRACE_MINUTES,
+                normalizeLimit(limit), "C1_AUDIT_EVIDENCE_UNLINKED", STATUS_RECORDED, STATUS_PENDING, STATUS_FAILED);
+    }
+
     /**
      * Requeues an already published fact only after the canonical H3 consumer
      * recorded a binding wait and an active PC-owned binding now exists.
