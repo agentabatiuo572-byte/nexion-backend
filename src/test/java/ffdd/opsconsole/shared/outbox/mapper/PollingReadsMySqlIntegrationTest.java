@@ -292,6 +292,42 @@ class PollingReadsMySqlIntegrationTest {
         migrate();
     }
 
+    /**
+     * Executes the record-only retirement against real MySQL. The render test in
+     * {@code EventOutboxRetirementSqlTest} only proves the tags are parsed; it
+     * cannot prove MySQL accepts the statement, and the coverage that existed
+     * when the backlog was reported mocked the service so the SQL never ran at
+     * all. This runs the exact mapper method the scheduler calls.
+     */
+    @Test
+    void recordOnlyRetirementActuallyRetiresEligibleRowsInMysql() {
+        String covered = "JANUS_STRATEGY_PUBLISH";
+        String unlisted = "ORDER.PAID";
+        event(1, covered, null, "PENDING", null, 0);
+        event(2, covered, null, "FAILED", null, 0);
+        event(3, covered, null, "PENDING", null, 0);
+        event(4, unlisted, null, "PENDING", null, 0);
+        event(5, covered, null, "PUBLISHED", null, 0);
+        event(6, covered, null, "PENDING", null, 1);
+        // The helper writes created_at=NOW(), which is inside the 15-minute grace
+        // window. Backdate every candidate except id=3, which must stay too recent.
+        jdbc.update("UPDATE nx_event_outbox SET created_at = DATE_SUB(NOW(), INTERVAL 30 MINUTE) WHERE id <> 3");
+
+        int retired = outbox.retireRecordOnlyPending(List.of(covered), 15, 100,
+                "EVENT_RECORDED_NO_BUS_CONSUMER", "RECORDED", "PENDING", "FAILED");
+
+        assertThat(retired).isEqualTo(2);
+        assertThat(jdbc.queryForList("SELECT id FROM nx_event_outbox WHERE status='RECORDED' ORDER BY id", Long.class))
+                .containsExactly(1L, 2L);
+        assertThat(jdbc.queryForObject("SELECT last_error FROM nx_event_outbox WHERE id=1", String.class))
+                .isEqualTo("EVENT_RECORDED_NO_BUS_CONSUMER");
+        assertThat(jdbc.queryForObject("SELECT next_retry_at FROM nx_event_outbox WHERE id=1", LocalDateTime.class))
+                .isNull();
+        // The unlisted, the too-recent and the already-published rows are untouched.
+        assertThat(jdbc.queryForList("SELECT id FROM nx_event_outbox WHERE status IN ('PENDING','PUBLISHED') ORDER BY id", Long.class))
+                .containsExactly(3L, 4L, 5L, 6L);
+    }
+
     private void migrate() throws Exception {
         ScriptUtils.executeSqlScript(connection, new FileSystemResource(MIGRATION));
     }
