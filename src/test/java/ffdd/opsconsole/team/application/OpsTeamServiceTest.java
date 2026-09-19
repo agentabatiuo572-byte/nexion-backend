@@ -340,6 +340,46 @@ class OpsTeamServiceTest {
         assertThat(configFacade.values).isEmpty();
     }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> leadershipPool(OpsTeamService service) {
+        return (Map<String, Object>) service.overview().getData().get("leadershipPool");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void podiumDropsMembersBelowTheConfiguredLeaderboardMinimum() {
+        // #133: 8 名参赛者本期 GV 全为 0、奖池为 0 时,页面仍固定展示第 1/2/3 名。
+        // 领奖台必须与结算同口径套用 F.leaderboard.minUsd,零业绩不得产生名次。
+        configFacade.values.put("team.ui.F.leaderboard.minUsd", "100");
+        commissionRepository.leaderboardPodium.add(Map.of(
+                "rank", 1, "memberUserId", 11L, "userId", "U00000011",
+                "volume", new BigDecimal("0"), "gmvLabel", "$0", "tip", "本期 GV", "className", "r-1"));
+        commissionRepository.leaderboardPodium.add(Map.of(
+                "rank", 2, "memberUserId", 12L, "userId", "U00000012",
+                "volume", new BigDecimal("250"), "gmvLabel", "$250", "tip", "本期 GV", "className", "r-2"));
+
+        Map<String, Object> pool = leadershipPool(service);
+
+        assertThat((List<Map<String, Object>>) pool.get("podium"))
+                .singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("memberUserId", 12L));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void podiumKeepsEveryPositiveMemberWhenNoMinimumIsConfigured() {
+        // 未配置最小额时退化为 0 门槛:有真实业绩的成员仍正常上榜。
+        commissionRepository.leaderboardPodium.add(Map.of(
+                "rank", 1, "memberUserId", 21L, "userId", "U00000021",
+                "volume", new BigDecimal("5"), "gmvLabel", "$5", "tip", "本期 GV", "className", "r-1"));
+
+        Map<String, Object> pool = leadershipPool(service);
+
+        assertThat((List<Map<String, Object>>) pool.get("podium"))
+                .singleElement()
+                .satisfies(row -> assertThat(row).containsEntry("memberUserId", 21L));
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void ratesReturnEmptyReadModelWhenDatabaseIsEmpty() {
@@ -865,16 +905,20 @@ class OpsTeamServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void updateF4UiConfigWritesBackendStateAndLeadershipPoolEchoesValue() {
+        // 简报 #48:版本号是生效信号。先置版本 4,只写比例(其余四项仍缺)时
+        // 值必须落库并回显,但版本号不得推进 —— 部分配置不进入生效态。
+        configFacade.values.put("team.ui.F.pool.configVersion", "4");
+
         ApiResult<Map<String, Object>> result = service.updateConfig(
                 "idem-f4-pool-ratio",
                 new TeamCommissionConfigUpdateRequest("F.pool.ratio", "6%", "raise leadership pool", "superadmin"));
 
         assertThat(result.getCode()).isZero();
         assertThat(configFacade.values).containsEntry("team.ui.F.pool.ratio", "6%");
-        assertThat(configFacade.values).containsEntry("team.ui.F.pool.configVersion", "1");
+        assertThat(configFacade.values).containsEntry("team.ui.F.pool.configVersion", "4");
         Map<String, Object> pool = service.leadershipPool().getData();
         assertThat(pool)
-                .containsEntry("configVersion", "1")
+                .containsEntry("configVersion", "4")
                 .containsEntry("settlementConfigStatus", "HOLD")
                 .containsEntry("settlementConfigUnavailableKey", "F.pool.unlockVRank")
                 .containsEntry("poolRatio", "6%")
@@ -884,6 +928,67 @@ class OpsTeamServiceTest {
                 .containsEntry("weeklyInjectedUsd", 0);
         Map<String, Object> config = (Map<String, Object>) pool.get("config");
         assertThat(config).containsEntry("poolRatio", "6%");
+    }
+
+    /**
+     * 简报 #48:配置版本号是 F4 生效信号,部分配置绝不能推进它。
+     * 改前:任一 F.pool.* 写入都会 bump → 「版本已为 4 但比例缺失」的部分配置被读成已发布态。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void incompleteLeadershipPoolWritePersistsValueButDoesNotAdvanceThePublishedVersion() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f4-incomplete-monthly-cap",
+                new TeamCommissionConfigUpdateRequest("F.pool.monthlyCap", "5000", "complete monthly cap only", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("team.ui.F.pool.monthlyCap", "5000")
+                .containsEntry("team.ui.F.pool.configVersion", "4");
+        Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
+        assertThat(updated)
+                .doesNotContainKey("settlementConfigVersion")
+                .containsEntry("settlementConfigIncompleteKey", "F.pool.ratio")
+                .containsEntry("settlementConfigIncompleteReason", "F4_SETTLEMENT_CONFIG_INCOMPLETE");
+    }
+
+    /** 整组配齐后,写入才推进版本号并把五项一起交给结算边界。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void completeLeadershipPoolWriteAdvancesThePublishedVersion() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "4");
+        configFacade.values.put("team.ui.F.pool.ratio", "10%");
+        configFacade.values.put("team.ui.F.pool.unlockVRank", "V3");
+        configFacade.values.put("team.ui.F.pool.monthlyCap", "5000");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f4-complete-cron",
+                new TeamCommissionConfigUpdateRequest("F.pool.settleCron", "59 23 * * 0", "complete settle schedule", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.pool.configVersion", "5");
+        Map<String, Object> updated = (Map<String, Object>) result.getData().get("updated");
+        assertThat(updated)
+                .containsEntry("settlementConfigVersion", 5L)
+                .doesNotContainKey("settlementConfigIncompleteKey");
+        assertThat(service.leadershipPool().getData()).containsEntry("settlementConfigStatus", "READY");
+    }
+
+    /** 非 F4 键的写入路径不受该门禁影响,版本号保持不动。 */
+    @Test
+    void nonPoolUiConfigWriteNeverTouchesTheLeadershipPoolVersion() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig(
+                "idem-f3-period-non-pool",
+                new TeamCommissionConfigUpdateRequest("F.binary.settlePeriod", "每周", "change binary period", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values)
+                .containsEntry("team.ui.F.binary.settlePeriod", "每周")
+                .containsEntry("team.ui.F.pool.configVersion", "4");
     }
 
     @Test
@@ -1764,8 +1869,13 @@ class OpsTeamServiceTest {
         }
 
         @Override
-        public List<Map<String, Object>> leaderboardPodium(int limit) {
-            return leaderboardPodium.stream().limit(limit).toList();
+        public List<Map<String, Object>> leaderboardPodium(BigDecimal minVolumeUsd, int limit) {
+            // Mirrors the real mapper: members below the leaderboard minimum never reach the podium.
+            BigDecimal minimum = minVolumeUsd == null ? BigDecimal.ZERO : minVolumeUsd;
+            return leaderboardPodium.stream()
+                    .filter(row -> new BigDecimal(String.valueOf(row.getOrDefault("volume", "0"))).compareTo(minimum) >= 0)
+                    .limit(limit)
+                    .toList();
         }
 
         @Override

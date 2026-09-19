@@ -52,7 +52,9 @@ public class PublishedHowContentService {
             if (payload == null || !validLocale(payload)) return unavailable();
             Map<String, Object> out = new LinkedHashMap<>(payload);
             out.put("contentKey", contentKey);
-            out.put("version", text(document.get("version")));
+            // 简报 #49:六个 contentKey 共用文档级 version,导致 genesis/复投/兑换 都显示
+            // commissions-guide。页面必须展示本页自己的发布修订;条目未单独记录时退回文档版本。
+            out.put("version", entryVersion(entry, document));
             out.put("locale", locale);
             out.put("status", "PUBLISHED");
             out.put("source", "server");
@@ -91,7 +93,8 @@ public class PublishedHowContentService {
                 || reason == null || reason.trim().length() < 8 || reason.trim().length() > 500)
             return invalid();
         for (Map.Entry<String, Object> item : contents.entrySet()) {
-            if (!CONTENT_KEYS.contains(item.getKey()) || !validContentEntry(map(item.getValue()))) return invalid();
+            if (!CONTENT_KEYS.contains(item.getKey()) || !validContentEntry(map(item.getValue()))
+                    || !validEntryVersion(map(item.getValue()))) return invalid();
         }
         try {
             Map<String, Object> before = read(true);
@@ -147,6 +150,23 @@ public class PublishedHowContentService {
         }
         return true;
     }
+    /**
+     * 简报 #49:每个 contentKey 必须能声明自己的发布修订,而不是六页共用文档级 version。
+     * 条目携带 version 时以它为准;未携带时退回文档版本,保持既有已发布数据的可读性。
+     */
+    private String entryVersion(Map<String, Object> entry, Map<String, Object> document) {
+        String own = entry == null ? null : text(entry.get("version"));
+        return own != null ? own : text(document.get("version"));
+    }
+
+    /** 条目级 version 可缺省;一旦提供必须是有界文本,防止把任意长串写进公开响应。 */
+    private boolean validEntryVersion(Map<String, Object> entry) {
+        if (entry == null || !entry.containsKey("version")) return true;
+        Object raw = entry.get("version");
+        return raw != null && raw instanceof String value
+                && !value.isBlank() && value.length() <= 64;
+    }
+
     private boolean hasAdminDocumentShape(Map<String, Object> value) {
         if (value == null || !value.containsKey("version") || !value.containsKey("status")
                 || !Set.of("UNPUBLISHED", "DRAFT", "PUBLISHED").contains(value.get("status"))) return false;

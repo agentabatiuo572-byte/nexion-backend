@@ -665,7 +665,7 @@ class VRankPromotionEngineTest {
         }
 
         @Override
-        public List<Map<String, Object>> leaderboardPodium(int limit) {
+        public List<Map<String, Object>> leaderboardPodium(BigDecimal minVolumeUsd, int limit) {
             return List.of();
         }
 

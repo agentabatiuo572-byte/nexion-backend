@@ -184,7 +184,13 @@ $migrations = @(
   # canonical G7 provisioning migration is not in this chain). The App then got
   # RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND forever. Provision the published
   # v1 snapshots and repair only mappings that reference a missing version.
-  (Join-Path $root "scripts\migrations\20260920_i5_published_disclosure_provisioning.sql")
+  (Join-Path $root "scripts\migrations\20260920_i5_published_disclosure_provisioning.sql"),
+  # Two published Help Center answers still describe a product shape the App does
+  # not have: a 「我的 - 团队 - 等级进度」 hierarchy that never existed, and an
+  # on-chain deposit flow (区块确认/交易哈希) while the only remote top-up rail is
+  # VietQR/bank. Rewrites each answer only while it still carries the defective
+  # text, so an operator correction is never overwritten.
+  (Join-Path $root "scripts\migrations\20260920_help_faq_product_shape_repair.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

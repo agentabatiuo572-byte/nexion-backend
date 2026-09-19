@@ -1058,7 +1058,15 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         long ready = playbooks.stream().filter(row -> "active".equals(row.get("state"))).count();
         long emergency = playbooks.stream().filter(row -> Boolean.TRUE.equals(row.get("emergency"))).count();
         LocalDateTime since90d = LocalDateTime.now().minusDays(90);
-        long drill90d = emergencyRepository.countExecutionsSinceByMode("drill", since90d);
+        // 「近 90d 演练」必须与「演练就绪」同源,否则同页自相矛盾(#151):
+        // 就绪度读剧本的 last_drill_at,而执行台账只保留最近 20 行且会被迁移/清理,
+        // 于是剧本显示「最近演练 2026-07-15」(未超 90 天、判为就绪)而台账计数为 0。
+        // 这里改为按同一权威事实(剧本 last_drill_at 在 90 天内)计数。
+        long drilledPlaybooks90d = playbooks.stream()
+                .filter(row -> isJ4DrillFresh(stringValue(row.get("lastDrill"), "")))
+                .count();
+        // 台账计数仅作对照,单独暴露,不再冒充「近 90d 演练」总数。
+        long drillExecutions90d = emergencyRepository.countExecutionsSinceByMode("drill", since90d);
         long liveExec90d = emergencyRepository.countExecutionsSinceByMode("regular", since90d)
                 + emergencyRepository.countExecutionsSinceByMode("emergency", since90d);
         Map<String, Object> response = map(
@@ -1070,7 +1078,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "todoCount", playbooks.size() - ready,
                         "emergencyCount", emergency,
                         "liveExec90d", liveExec90d,
-                        "drill90d", drill90d),
+                        "drill90d", drilledPlaybooks90d,
+                        "drillExecutionRows90d", drillExecutions90d),
                 "scenes", List.of("全部", "监管点名", "资金异常", "数据泄露", "舆情挤兑", "技术故障"),
                 "actionOptions", defaultActionOptions(),
                 "rollbackOptions", defaultRollbackOptions(),

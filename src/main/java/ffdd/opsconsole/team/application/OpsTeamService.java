@@ -916,7 +916,14 @@ public class OpsTeamService implements AuditReplayable {
             persistedValue = value;
         }
         configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
-        Long settlementConfigVersion = bumpLeadershipPoolConfigVersion(key);
+        // F4 发布即校验(简报 #48):F.pool.* 的 configVersion 是 LeadershipPoolConfigGuard 的
+        // 生效信号,必须整组通过权威预检才允许推进。此前任一次 F.pool.* 写入都会 bump 版本,
+        // 于是「版本已为 4 但比例缺失」的部分配置被读成已发布态。
+        // 这里在 bump 之前复用结算边界的同一 requireValid() 整组预检:不过则不推进版本,
+        // 部分配置绝不进入生效态;值本身仍落库,运营才能逐项补齐(硬拒写会让整组永远无法配齐)。
+        // 结算链路独立 fail-closed,不依赖此版本号。
+        String settlementConfigIncompleteKey = key.startsWith("F.pool.") ? leadershipPoolConfigIncompleteKey() : null;
+        Long settlementConfigVersion = settlementConfigIncompleteKey == null ? bumpLeadershipPoolConfigVersion(key) : null;
         postCommissionLedgerIfStatusChanged(key, value);
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("key", key);
@@ -925,6 +932,7 @@ public class OpsTeamService implements AuditReplayable {
         auditDetail.put("reason", request.reason().trim());
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
         if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
+        if (settlementConfigIncompleteKey != null) auditDetail.put("settlementConfigIncompleteKey", settlementConfigIncompleteKey);
         audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail);
         publishApprovedUiConfigOutbox(key, oldValue, value, request);
         Map<String, Object> response = overview().getData();
@@ -934,8 +942,28 @@ public class OpsTeamService implements AuditReplayable {
         updated.put("oldValue", oldValue);
         updated.put("newValue", value);
         if (settlementConfigVersion != null) updated.put("settlementConfigVersion", settlementConfigVersion);
+        if (settlementConfigIncompleteKey != null) {
+            updated.put("settlementConfigIncompleteKey", settlementConfigIncompleteKey);
+            updated.put("settlementConfigIncompleteReason", "F4_SETTLEMENT_CONFIG_INCOMPLETE");
+        }
         response.put("updated", updated);
         return ApiResult.ok(response);
+    }
+
+    /**
+     * F4 发布即校验:返回第一个仍不可执行的 F.pool.* 键,整组通过时返回 null。
+     *
+     * <p>复用结算边界的同一权威解析器,不另造一套浏览器可绕过的宽松判断。判定顺序固定为
+     * 版本/比例/门槛/月度 cap/结算周期,便于运营按同一顺序补齐。这里只报告第一个缺项
+     * (不暴露整组指纹),既让错误可定位,也不把资金配置细节外泄到响应体。</p>
+     */
+    private String leadershipPoolConfigIncompleteKey() {
+        try {
+            new LeadershipPoolConfigGuard(configFacade).requireValid();
+            return null;
+        } catch (LeadershipPoolConfigGuard.ConfigUnavailableException failure) {
+            return failure.key().replaceFirst("^team\\.ui\\.", "");
+        }
     }
 
     private Long bumpLeadershipPoolConfigVersion(String key) {
@@ -1926,9 +1954,22 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> leaderboardPodium() {
-        return commissionRepository.leaderboardPodium(3).stream()
+        // 领奖台与榜单结算同口径:低于 F.leaderboard.minUsd 的成员不进榜。
+        // 否则全员业绩为 0 时仍会产出第 1/2/3 名,误导运营并给派发提供错误对象(#133)。
+        return commissionRepository.leaderboardPodium(leaderboardMinVolumeUsd(), 3).stream()
                 .map(this::normalizePodium)
                 .toList();
+    }
+
+    private BigDecimal leaderboardMinVolumeUsd() {
+        String configured = configText("F.leaderboard.minUsd", "");
+        if (!StringUtils.hasText(configured)) return BigDecimal.ZERO;
+        try {
+            BigDecimal parsed = new BigDecimal(configured.trim());
+            return parsed.signum() < 0 ? BigDecimal.ZERO : parsed;
+        } catch (NumberFormatException invalid) {
+            return BigDecimal.ZERO;
+        }
     }
 
     private Map<String, Object> normalizePodium(Map<String, Object> raw) {

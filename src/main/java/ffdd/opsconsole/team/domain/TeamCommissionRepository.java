@@ -60,7 +60,8 @@ public interface TeamCommissionRepository {
 
     default boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) { return false; }
 
-    List<Map<String, Object>> leaderboardPodium(int limit);
+    /** 领奖台必须与结算同口径:低于榜单最小额(F.leaderboard.minUsd)的成员不进榜。 */
+    List<Map<String, Object>> leaderboardPodium(BigDecimal minVolumeUsd, int limit);
 
     Map<String, Object> leaderboardSummary();
 

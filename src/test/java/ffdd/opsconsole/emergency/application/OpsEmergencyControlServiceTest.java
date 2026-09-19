@@ -2123,6 +2123,53 @@ class OpsEmergencyControlServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void drill90dCountsPlaybookReadinessNotPrunedExecutionLedgerRows() {
+        // #151: SOP-CUSTOM-2 显示「最近演练 2026-07-15」(未超 90 天)且被判为「演练就绪」,
+        // 同页「近 90d 演练」却是 0 —— 因为就绪度读剧本 last_drill_at,而执行台账只保留最近 20 行。
+        // 演练统计必须与就绪度同源:剧本 lastDrill 在 90 天内即计入。
+        service.createPlaybook(
+                "idem-j4-drill-count-create",
+                new SopPlaybookCreateRequest(
+                        "演练计数", "监管点名", "合规审计", "15 分钟", true,
+                        "J1·熔断提现通道", "", "", "根因消除后逐步恢复", true,
+                        "create drill count candidate", "superadmin"));
+        markPlaybookReady("SOP-CUSTOM-1");
+        emergencyRepository.playbooks.stream()
+                .filter(row -> "SOP-CUSTOM-1".equals(row.get("code")))
+                .findFirst()
+                .orElseThrow()
+                .put("lastDrill", LocalDateTime.now().minusDays(45).format(
+                        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+
+        Map<String, Object> stats = (Map<String, Object>) service.sopOverview().getData().get("stats");
+
+        assertThat(stats).containsEntry("readyCount", 1L).containsEntry("drill90d", 1L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void drill90dExcludesPlaybooksWhoseLastDrillIsOlderThanNinetyDays() {
+        service.createPlaybook(
+                "idem-j4-drill-count-create",
+                new SopPlaybookCreateRequest(
+                        "演练计数", "监管点名", "合规审计", "15 分钟", true,
+                        "J1·熔断提现通道", "", "", "根因消除后逐步恢复", true,
+                        "create drill count candidate", "superadmin"));
+        markPlaybookReady("SOP-CUSTOM-1");
+        emergencyRepository.playbooks.stream()
+                .filter(row -> "SOP-CUSTOM-1".equals(row.get("code")))
+                .findFirst()
+                .orElseThrow()
+                .put("lastDrill", LocalDateTime.now().minusDays(120).format(
+                        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+
+        Map<String, Object> stats = (Map<String, Object>) service.sopOverview().getData().get("stats");
+
+        assertThat(stats).containsEntry("drill90d", 0L);
+    }
+
+    @Test
     void rollbackRefusesAValidationOnlyDrillBeforeAnyProductionRecoveryBoundary() {
         service.createPlaybook(
                 "idem-j4-drill-rollback-guard-create",

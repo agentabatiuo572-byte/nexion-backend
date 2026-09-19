@@ -289,24 +289,33 @@ public class OpsPhaseOverviewService {
     private List<Map<String, Object>> leverCombo(GrowthRhythmSnapshot snapshot) {
         List<Map<String, Object>> candidates = new ArrayList<>();
         if (snapshot.newUserBonusMultiplier().compareTo(BigDecimal.ONE) > 0) {
-            candidates.add(lever("获客", "新用户加成 " + snapshot.newUserBonusMultiplier() + " 倍", "降低新用户上手成本"));
+            candidates.add(lever("获客", "新用户加成 " + plain(snapshot.newUserBonusMultiplier()) + " 倍", "降低新用户上手成本"));
         }
         if (snapshot.inviteRewardMultiplier().compareTo(BigDecimal.ONE) > 0) {
-            candidates.add(lever("推荐", "邀请加成 " + snapshot.inviteRewardMultiplier() + " 倍", "增强可信推荐"));
+            candidates.add(lever("推荐", "邀请加成 " + plain(snapshot.inviteRewardMultiplier()) + " 倍", "增强可信推荐"));
         }
         if (snapshot.reinvestMultiplier().compareTo(BigDecimal.ONE) > 0) {
-            candidates.add(lever("复投", "复投加成 " + snapshot.reinvestMultiplier() + " 倍", "鼓励继续持有"));
+            candidates.add(lever("复投", "复投加成 " + plain(snapshot.reinvestMultiplier()) + " 倍", "鼓励继续持有"));
         }
         if (snapshot.questBonusMultiplier().compareTo(BigDecimal.ONE) > 0) {
-            candidates.add(lever("任务", "任务加成 " + snapshot.questBonusMultiplier() + " 倍", "提升任务参与"));
+            candidates.add(lever("任务", "任务加成 " + plain(snapshot.questBonusMultiplier()) + " 倍", "提升任务参与"));
         }
         if (snapshot.complianceHoldEnabled()) {
             candidates.add(lever("合规", "增强合规审查已开启", "加强高风险期审查"));
         }
-        candidates.add(lever("提现", "费率 " + snapshot.withdrawPenaltyFeeRate() + "% / 冷却 "
+        candidates.add(lever("提现", "费率 " + plain(snapshot.withdrawPenaltyFeeRate()) + "% / 冷却 "
                 + snapshot.withdrawCooldownDays() + " 天", "控制资金流出节奏"));
-        candidates.add(lever("结算", "双轨日封顶 " + snapshot.binaryDailyCap() + " USDT", "限制单日佣金峰值"));
+        candidates.add(lever("结算", "双轨日封顶 " + plain(snapshot.binaryDailyCap()) + " USDT", "限制单日佣金峰值"));
         return List.copyOf(candidates.subList(0, Math.min(3, candidates.size())));
+    }
+
+    /**
+     * H1 权威 dial 走 {@code stripTrailingZeros()},scale 为负时 {@code toString()} 会输出科学计数法
+     * (0.20 → {@code 2E+1}),与同页 8-dial 表(读同一份值、JSON 序列化成 20)自相矛盾。
+     * 摘要文案必须走 {@code toPlainString()},与表格同一可读口径。
+     */
+    private static String plain(BigDecimal value) {
+        return value == null ? "0" : value.stripTrailingZeros().toPlainString();
     }
 
     private Map<String, Object> lever(String key, String label, String purpose) {

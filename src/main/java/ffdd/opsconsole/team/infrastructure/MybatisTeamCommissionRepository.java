@@ -173,8 +173,10 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
-    public List<Map<String, Object>> leaderboardPodium(int limit) {
-        return mapper.leaderboardPodium(Math.max(1, Math.min(limit, 50)));
+    public List<Map<String, Object>> leaderboardPodium(BigDecimal minVolumeUsd, int limit) {
+        return mapper.leaderboardPodium(
+                minVolumeUsd == null ? BigDecimal.ZERO : minVolumeUsd,
+                Math.max(1, Math.min(limit, 50)));
     }
 
     @Override

@@ -428,7 +428,12 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0) AS deviceCount,
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0 AND d.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')) AS activeDeviceCount,
                    u.created_at AS registeredAt,
-                   s.last_login_at AS lastLoginAt
+                   COALESCE(
+                       s.last_login_at,
+                       (SELECT MAX(COALESCE(sess.last_active_at, sess.created_at))
+                          FROM nx_user_session sess
+                         WHERE sess.user_id = u.id AND sess.is_deleted = 0)
+                   ) AS lastLoginAt
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0
@@ -521,7 +526,12 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0) AS deviceCount,
                    (SELECT COUNT(*) FROM nx_user_device d WHERE d.user_id = u.id AND d.is_deleted = 0 AND d.status IN ('ONLINE','BUSY','ACTIVE','RUNNING')) AS activeDeviceCount,
                    u.created_at AS registeredAt,
-                   s.last_login_at AS lastLoginAt
+                   COALESCE(
+                       s.last_login_at,
+                       (SELECT MAX(COALESCE(sess.last_active_at, sess.created_at))
+                          FROM nx_user_session sess
+                         WHERE sess.user_id = u.id AND sess.is_deleted = 0)
+                   ) AS lastLoginAt
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
               LEFT JOIN nx_user_wallet w ON w.user_id = u.id AND w.is_deleted = 0

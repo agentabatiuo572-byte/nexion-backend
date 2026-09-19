@@ -307,6 +307,17 @@ public interface AppGrowthEngagementMapper {
                            ORDER BY candidate.updated_at DESC,candidate.id DESC LIMIT 1)
                      WHERE m.is_deleted=0 AND (m.status=1 OR historical.id IS NOT NULL)
                        AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
+                       -- BUG 139: 生效中但没有生效规范事件绑定的任务必须从 App 隐藏。
+                       -- H3 的启用门(H3_MISSION_ACTIVE_BINDING_REQUIRED)只拦「新启用」,
+                       -- 历史遗留的 active+unbound 行会照常下发,引导用户做真实动作却无法完成发奖。
+                       -- 已进入过的实例(historical 命中)仍然保留,避免清掉用户既有进度。
+                       AND (
+                         m.status <> 1
+                         OR EXISTS (
+                           SELECT 1 FROM nx_growth_quest_event_binding b
+                            WHERE b.quest_code = m.mission_code AND b.status = 1 AND b.is_deleted = 0
+                         )
+                       )
                    ) q
               LEFT JOIN nx_user_mission um
                 ON um.mission_id=q.id AND um.user_id=#{userId}

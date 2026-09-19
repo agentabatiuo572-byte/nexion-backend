@@ -115,4 +115,57 @@ class PublishedHowContentServiceTest {
         assertThat(service.update("v2", "PUBLISHED", oneKey, 0L, "Publish reviewed how content").getCode()).isEqualTo(422);
         verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
     }
+
+    /**
+     * 简报 #49:六个 contentKey 共用文档级 version,导致 genesis/复投/兑换 都显示
+     * commissions-guide。每个 contentKey 必须能展示自己的发布修订。
+     */
+    @Test
+    void eachContentKeyReportsItsOwnPublishedRevisionInsteadOfTheSharedDocumentVersion() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        String document = """
+            {"version":"2026.08.31-commissions-guide","status":"PUBLISHED","revision":14,"sourceEnvironment":"PRODUCTION","runId":"","contents":{
+              "genesis-how":{"version":"2026.09.01-genesis-guide","locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Genesis","body":"Genesis text"}]}}},
+              "wallet-exchange-how":{"version":"2026.09.02-exchange-guide","locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Exchange","body":"Exchange text"}]}}},
+              "wallet-repurchase-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Repurchase","body":"Repurchase text"}]}}},
+              "team-binary-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Binary","body":"Binary text"}]}}},
+              "team-commissions-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Commissions","body":"Commissions text"}]}}},
+              "team-unilevel-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Unilevel","body":"Unilevel text"}]}}}
+            }}
+            """;
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(document));
+        var service = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class));
+
+        assertThat(service.publicContent("genesis-how", "en").getData())
+                .containsEntry("version", "2026.09.01-genesis-guide");
+        assertThat(service.publicContent("wallet-exchange-how", "en").getData())
+                .containsEntry("version", "2026.09.02-exchange-guide");
+        // 未单独声明修订的页面退回文档版本,而不是凭空编造。
+        assertThat(service.publicContent("wallet-repurchase-how", "en").getData())
+                .containsEntry("version", "2026.08.31-commissions-guide");
+        assertThat(service.publicContent("team-commissions-how", "en").getData())
+                .containsEntry("version", "2026.08.31-commissions-guide");
+    }
+
+    /** 条目级 version 必须是有界非空文本;非法值整体拒绝,不落库。 */
+    @Test
+    void entryVersionRejectsBlankOrOverlongValuesWithoutPersisting() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        when(config.activeValueForUpdate("how-it-works.published")).thenReturn(Optional.of("{}"));
+        var service = new PublishedHowContentService(config, new MockEnvironment(), mock(AuditLogService.class));
+        Map<String, Object> blocks = Map.of("locales", Map.of("en", Map.of(
+                "blocks", java.util.List.of(Map.of("id", "intro", "kind", "text", "title", "Intro", "body", "Text")))));
+        for (String bad : new String[]{"", "   ", "v".repeat(65)}) {
+            Map<String, Object> contents = new java.util.LinkedHashMap<>();
+            for (String key : java.util.List.of("genesis-how", "wallet-exchange-how", "wallet-repurchase-how",
+                    "team-binary-how", "team-commissions-how", "team-unilevel-how")) {
+                Map<String, Object> entry = new java.util.LinkedHashMap<>(blocks);
+                if ("genesis-how".equals(key)) entry.put("version", bad);
+                contents.put(key, entry);
+            }
+            assertThat(service.update("v2", "PUBLISHED", contents, 0L, "Publish reviewed how content").getCode())
+                    .isEqualTo(422);
+        }
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+    }
 }

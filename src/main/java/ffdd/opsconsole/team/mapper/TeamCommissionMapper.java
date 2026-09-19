@@ -583,6 +583,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            ROW_NUMBER() OVER (ORDER BY volume DESC, id ASC) AS rank_no
                       FROM nx_team_member
                      WHERE is_deleted = 0
+                       AND volume >= #{minVolumeUsd}
                    ) ranked
               LEFT JOIN nx_team_leaderboard_action a
                 ON a.member_user_id = ranked.member_user_id
@@ -592,7 +593,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE ranked.rank_no <= #{limit}
              ORDER BY ranked.rank_no ASC
             """)
-    List<Map<String, Object>> leaderboardPodium(@Param("limit") int limit);
+    List<Map<String, Object>> leaderboardPodium(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
+                                                @Param("limit") int limit);
 
     @Select("""
             SELECT (
