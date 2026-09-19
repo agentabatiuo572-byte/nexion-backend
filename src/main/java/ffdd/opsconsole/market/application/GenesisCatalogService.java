@@ -131,8 +131,9 @@ public class GenesisCatalogService {
         CatalogState state = lockVersion(request == null ? null : request.expectedTiersVersion());
         List<TierRow> tiers = mapper.activeTiers();
         if (tiers == null) tiers = List.of();
+        boolean firstTier = tiers.isEmpty();
         final int from;
-        if (tiers.isEmpty()) {
+        if (firstTier) {
             if (mapper.soldCount() != 0) throw new BizException(409,"GENESIS_SERIES_RECOVERY_REQUIRED");
             from = 0;
         } else {
@@ -145,7 +146,20 @@ public class GenesisCatalogService {
                 || mapper.advanceTierVersion(state.tiersVersion(), state.nextTierSeq() + 1) != 1) {
             throw new BizException(409,"GENESIS_TIERS_VERSION_CONFLICT");
         }
-        audit("GENESIS_TIER_CREATED",tierId,request.operator(),request.reason(),Map.of("from",from,"to",request.to(),"priceUSDT",request.priceUSDT()));
+        Map<String,Object> detail = linked("from",from,"to",request.to(),"priceUSDT",request.priceUSDT());
+        if (firstTier) {
+            String actor = AdminActorResolver.resolve(request.operator());
+            String change = LocalDateTime.now(clock)+" "+actor+" "+state.marketOpenState()
+                    +"->closed:first tier created; explicit reopen required";
+            if (mapper.updateMarketState("closed","default",change,state.marketOpenStateVersion()) != 1) {
+                throw new BizException(409,"GENESIS_MARKET_STATE_CONFLICT");
+            }
+            detail.put("marketStateBefore",state.marketOpenState());
+            detail.put("marketState","closed");
+            detail.put("marketOpenStateVersion",state.marketOpenStateVersion() + 1);
+            detail.put("marketForcedClosed",true);
+        }
+        audit("GENESIS_TIER_CREATED",tierId,request.operator(),request.reason(),detail);
         return ApiResult.ok();
     }
 

@@ -16,6 +16,7 @@ import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,35 @@ class OpsNexMarketControllerTest {
                             "GENESIS-2026", "Genesis 2026", "initialize catalog safely", "operator")))
                     .isInstanceOf(AccessDeniedException.class);
             verifyNoInteractions(securedCatalog);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void priceWriterCanCreateFirstTierButCannotToggleGenesisMarketThroughRealMethodSecurity() {
+        try (var context = new AnnotationConfigApplicationContext(SecurityFixture.class)) {
+            var securedController = context.getBean(OpsNexMarketController.class);
+            var securedCatalog = context.getBean(GenesisCatalogService.class);
+            var securedMarket = context.getBean(OpsNexMarketService.class);
+            SecurityContextHolder.getContext().setAuthentication(
+                    new TestingAuthenticationToken("operator", "unused", "finprod_g4_price_write"));
+            var tierRequest = new GenesisCatalogService.TierRequest(
+                    1000, new BigDecimal("9999"), 7L, "create first quote tier", "operator");
+            when(securedCatalog.createTier("idem-first-tier", tierRequest)).thenReturn(ApiResult.ok());
+            when(securedMarket.genesisOverview()).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
+            when(securedCatalog.enrich(org.mockito.ArgumentMatchers.any()))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            assertThat(securedController.createGenesisTier("idem-first-tier", tierRequest).getCode()).isZero();
+            assertThatThrownBy(() -> securedController.updateGenesisMarketOpenState("idem-toggle-denied",
+                    new GenesisCatalogService.MarketStateRequest(
+                            "open", "reopen after review", "operator", "default", 3L)))
+                    .isInstanceOf(AccessDeniedException.class);
+
+            verify(securedCatalog).createTier("idem-first-tier", tierRequest);
+            verify(securedCatalog, org.mockito.Mockito.never()).updateMarketState(
+                    org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
         } finally {
             SecurityContextHolder.clearContext();
         }

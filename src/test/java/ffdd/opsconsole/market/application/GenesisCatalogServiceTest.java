@@ -18,8 +18,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.CatalogState;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.SeriesBootstrapRow;
+import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.SeriesRow;
 import ffdd.opsconsole.market.mapper.GenesisCatalogMapper.TierRow;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -208,20 +210,155 @@ class GenesisCatalogServiceTest {
     }
 
     @Test
-    void createsTheFirstTierFromZeroWhenCatalogHasNoHoldings() {
-        when(mapper.lockState()).thenReturn(new CatalogState(1L, 7L, "closed", 2L,
+    @SuppressWarnings("unchecked")
+    void creatingFirstTierFromOpenStateForcesMarketClosedAndAuditsTheSafetyTransition() {
+        when(mapper.lockState()).thenReturn(new CatalogState(1L, 7L, "open", 2L,
                 "default", "seed", 3L));
-        when(mapper.activeTiers()).thenReturn(List.of());
+        TierRow createdTier = new TierRow("t3", 0, 1000, new BigDecimal("9999"));
+        when(mapper.activeTiers()).thenReturn(List.of(), List.of(createdTier));
         when(mapper.soldCount()).thenReturn(0L);
+        when(mapper.activeSeriesCount()).thenReturn(1L);
+        when(mapper.activeSeries()).thenReturn(
+                new SeriesRow("GENESIS-2026", "Genesis 2026", 1000, new BigDecimal("9999")));
         when(mapper.insertTier(any(TierRow.class))).thenReturn(1);
         when(mapper.advanceTierVersion(7L, 4L)).thenReturn(1);
+        when(mapper.updateMarketState(eq("closed"), eq("default"), anyString(), eq(2L))).thenReturn(1);
 
         assertThat(service.createTierOnce(new GenesisCatalogService.TierRequest(
                 1000, new BigDecimal("9999"), 7L, "create first quote tier", "superadmin")).getCode()).isZero();
 
         ArgumentCaptor<TierRow> tier = ArgumentCaptor.forClass(TierRow.class);
         verify(mapper).insertTier(tier.capture());
-        assertThat(tier.getValue()).isEqualTo(new TierRow("t3", 0, 1000, new BigDecimal("9999")));
+        assertThat(tier.getValue()).isEqualTo(createdTier);
+        ArgumentCaptor<String> change = ArgumentCaptor.forClass(String.class);
+        verify(mapper).updateMarketState(eq("closed"), eq("default"), change.capture(), eq(2L));
+        assertThat(change.getValue()).contains("superadmin open->closed:first tier created; explicit reopen required");
+        ArgumentCaptor<AuditLogWriteRequest> auditRequest = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(audit).recordRequired(auditRequest.capture());
+        assertThat(auditRequest.getValue().getAction()).isEqualTo("GENESIS_TIER_CREATED");
+        assertThat((Map<String,Object>) auditRequest.getValue().getDetail())
+                .containsEntry("marketStateBefore", "open")
+                .containsEntry("marketState", "closed")
+                .containsEntry("marketOpenStateVersion", 3L)
+                .containsEntry("marketForcedClosed", true);
+
+        when(mapper.state()).thenReturn(new CatalogState(1L, 8L, "closed", 3L,
+                "default", change.getValue(), 4L));
+        assertThat(service.publicState())
+                .containsEntry("catalogAvailable", true)
+                .containsEntry("marketOpenState", "closed")
+                .containsEntry("marketOpenStateVersion", 3L)
+                .containsEntry("tradeAvailable", false)
+                .containsEntry("tradeBlockedReason", "GENESIS_MARKET_CLOSED");
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void firstTierIdempotencyReplaysOnceAndRejectsPayloadConflict() {
+        Map<String, String> hashes = new java.util.concurrent.ConcurrentHashMap<>();
+        Map<String, ApiResult<Void>> responses = new java.util.concurrent.ConcurrentHashMap<>();
+        when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
+                .thenAnswer(invocation -> {
+                    String key = invocation.getArgument(1);
+                    String hash = invocation.getArgument(2);
+                    String previous = hashes.putIfAbsent(key, hash);
+                    if (previous != null && !previous.equals(hash)) {
+                        throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                    }
+                    if (responses.containsKey(key)) return responses.get(key);
+                    ApiResult<Void> response = ((Supplier<ApiResult<Void>>) invocation.getArgument(4)).get();
+                    responses.put(key, response);
+                    return response;
+                });
+        when(mapper.lockState()).thenReturn(new CatalogState(1L, 7L, "open", 2L,
+                "default", "seed", 3L));
+        when(mapper.activeTiers()).thenReturn(List.of());
+        when(mapper.soldCount()).thenReturn(0L);
+        when(mapper.insertTier(any(TierRow.class))).thenReturn(1);
+        when(mapper.advanceTierVersion(7L, 4L)).thenReturn(1);
+        when(mapper.updateMarketState(eq("closed"), eq("default"), anyString(), eq(2L))).thenReturn(1);
+        var request = new GenesisCatalogService.TierRequest(
+                1000, new BigDecimal("9999"), 7L, "create first quote tier", "superadmin");
+
+        assertThat(service.createTier("first-tier-key", request).getCode()).isZero();
+        assertThat(service.createTier("first-tier-key", request).getCode()).isZero();
+        assertThatThrownBy(() -> service.createTier("first-tier-key",
+                new GenesisCatalogService.TierRequest(
+                        1000, new BigDecimal("10000"), 7L, "create first quote tier", "superadmin")))
+                .isInstanceOfSatisfying(BizException.class, ex ->
+                        assertThat(ex.getMessage()).isEqualTo("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH"));
+
+        verify(mapper, times(1)).insertTier(any());
+        verify(mapper, times(1)).updateMarketState(anyString(), anyString(), anyString(), anyLong());
+        verify(audit, times(1)).recordRequired(any());
+    }
+
+    @Test
+    void concurrentFirstTierCreationsAllowOnlyOneMarketClose() throws Exception {
+        GenesisCatalogMapper concurrentMapper = mock(GenesisCatalogMapper.class);
+        AuditLogService concurrentAudit = mock(AuditLogService.class);
+        GenesisCatalogService concurrentService = new GenesisCatalogService(concurrentMapper,
+                idempotency, concurrentAudit,
+                Clock.fixed(Instant.parse("2026-08-07T12:00:00Z"), ZoneOffset.UTC));
+        CyclicBarrier readers = new CyclicBarrier(2);
+        AtomicInteger insertWinner = new AtomicInteger();
+        when(concurrentMapper.lockState()).thenReturn(new CatalogState(1L, 7L, "open", 2L,
+                "default", "seed", 3L));
+        when(concurrentMapper.activeTiers()).thenAnswer(invocation -> {
+            readers.await(2, TimeUnit.SECONDS);
+            return List.of();
+        });
+        when(concurrentMapper.soldCount()).thenReturn(0L);
+        when(concurrentMapper.insertTier(any())).thenAnswer(invocation ->
+                insertWinner.getAndIncrement() == 0 ? 1 : 0);
+        when(concurrentMapper.advanceTierVersion(7L, 4L)).thenReturn(1);
+        when(concurrentMapper.updateMarketState(anyString(), anyString(), anyString(), anyLong())).thenReturn(1);
+
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var first = pool.submit(() -> createFirstTierOutcome(concurrentService, "A"));
+            var second = pool.submit(() -> createFirstTierOutcome(concurrentService, "B"));
+            assertThat(List.of(first.get(3, TimeUnit.SECONDS), second.get(3, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder("ok", "GENESIS_TIERS_VERSION_CONFLICT");
+            verify(concurrentMapper, times(1))
+                    .updateMarketState(eq("closed"), eq("default"), anyString(), eq(2L));
+            verify(concurrentAudit, times(1)).recordRequired(any());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void failedFirstTierMarketCloseRollsBackTierAndDoesNotAuditSuccess() {
+        when(mapper.lockState()).thenReturn(new CatalogState(1L, 7L, "open", 2L,
+                "default", "seed", 3L));
+        when(mapper.activeTiers()).thenReturn(List.of());
+        when(mapper.soldCount()).thenReturn(0L);
+        when(mapper.insertTier(any(TierRow.class))).thenReturn(1);
+        when(mapper.advanceTierVersion(7L, 4L)).thenReturn(1);
+        when(mapper.updateMarketState(anyString(), anyString(), anyString(), anyLong())).thenReturn(0);
+        RecordingTransactionManager transactions = new RecordingTransactionManager();
+        AdminIdempotencyTransactionExecutor target = new AdminIdempotencyTransactionExecutor(
+                mock(AdminIdempotencyRecordMapper.class), new ObjectMapper(),
+                mock(AdminIdempotencyExpiryTransitionExecutor.class));
+        ProxyFactory factory = new ProxyFactory(target);
+        factory.addAdvice(new TransactionInterceptor(
+                transactions, new AnnotationTransactionAttributeSource()));
+        AdminIdempotencyTransactionExecutor executor =
+                (AdminIdempotencyTransactionExecutor) factory.getProxy();
+
+        assertThatThrownBy(() -> executor.runClaimed(5301L, () -> service.createTierOnce(
+                new GenesisCatalogService.TierRequest(
+                        1000, new BigDecimal("9999"), 7L, "rollback failed close", "superadmin"))))
+                .isInstanceOfSatisfying(BizException.class, ex ->
+                        assertThat(ex.getMessage()).isEqualTo("GENESIS_MARKET_STATE_CONFLICT"));
+
+        assertThat(transactions.begun).isEqualTo(1);
+        assertThat(transactions.committed).isZero();
+        assertThat(transactions.rolledBack).isEqualTo(1);
+        verify(mapper).insertTier(any());
+        verify(mapper).advanceTierVersion(7L, 4L);
+        verifyNoInteractions(audit);
     }
 
     @Test
@@ -363,6 +500,17 @@ class GenesisCatalogServiceTest {
         try {
             target.initializeSeriesOnce(new GenesisCatalogService.SeriesBootstrapRequest(
                     "GENESIS-" + suffix, "Genesis " + suffix, "concurrent initialize safely", "superadmin"));
+            return "ok";
+        } catch (BizException ex) {
+            return ex.getMessage();
+        }
+    }
+
+    private String createFirstTierOutcome(GenesisCatalogService target, String suffix) {
+        try {
+            target.createTierOnce(new GenesisCatalogService.TierRequest(
+                    1000, new BigDecimal("9999"), 7L,
+                    "concurrent first tier " + suffix, "superadmin"));
             return "ok";
         } catch (BizException ex) {
             return ex.getMessage();
