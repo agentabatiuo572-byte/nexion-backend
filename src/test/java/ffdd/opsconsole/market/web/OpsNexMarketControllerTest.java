@@ -11,6 +11,7 @@ import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -117,6 +118,23 @@ class OpsNexMarketControllerTest {
         assertThat(controller.updateGenesisMarketStatus("idem-g4-switch", request).getCode()).isZero();
 
         verify(marketService).updateGenesisMarketStatus("idem-g4-switch", request);
+    }
+
+    @Test
+    void initializeGenesisSeriesDelegatesWithIdempotencyHeaderAndReturnsRefreshedOverview() {
+        GenesisCatalogService.SeriesBootstrapRequest request =
+                new GenesisCatalogService.SeriesBootstrapRequest("GENESIS-2026", "Genesis 2026", 500,
+                        new BigDecimal("0.1"), "acquired_price_usdt",
+                        "initialize active series", "superadmin");
+        when(genesisCatalogService.initializeSeries("idem-g4-series", request)).thenReturn(ApiResult.ok());
+        when(marketService.genesisOverview()).thenReturn(ApiResult.ok(Map.of("domain", "G4")));
+        when(genesisCatalogService.enrich(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(controller.initializeGenesisSeries("idem-g4-series", request).getData())
+                .containsEntry("domain", "G4");
+
+        verify(genesisCatalogService).initializeSeries("idem-g4-series", request);
+        verify(marketService).genesisOverview();
     }
 
     @Test

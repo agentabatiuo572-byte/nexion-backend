@@ -20,6 +20,18 @@ public interface GenesisCatalogMapper {
     @Select("SELECT tier_id tierId,range_from rangeFrom,range_to rangeTo,price_usdt priceUsdt FROM nx_genesis_tier WHERE status='ACTIVE' AND is_deleted=0 ORDER BY range_from,id")
     List<TierRow> activeTiers();
 
+    @Select("SELECT COUNT(*) FROM nx_genesis_series WHERE UPPER(status)='ACTIVE' AND is_deleted=0")
+    long activeSeriesCount();
+
+    @Select("SELECT series_code seriesCode,name,total_supply totalSupply,price_usdt priceUsdt FROM nx_genesis_series WHERE UPPER(status)='ACTIVE' AND is_deleted=0 ORDER BY id DESC LIMIT 1")
+    SeriesRow activeSeries();
+
+    @Select("SELECT COUNT(*) FROM nx_genesis_series WHERE series_code=#{seriesCode}")
+    long seriesCodeCount(@Param("seriesCode") String seriesCode);
+
+    @Insert("INSERT INTO nx_genesis_series(series_code,name,total_supply,sold_supply,price_usdt,status,royalty_bps,daily_dividend_rate_pct,dividend_base_formula,is_deleted) VALUES(#{seriesCode},#{name},#{totalSupply},0,#{priceUsdt},'ACTIVE',#{royaltyBps},#{dailyEmissionRatePct},#{dividendBaseFormula},0)")
+    int insertActiveSeries(SeriesBootstrapRow row);
+
     @Select("SELECT tier_id tierId,range_from rangeFrom,range_to rangeTo,price_usdt priceUsdt FROM nx_genesis_tier WHERE tier_id=#{tierId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     TierRow lockTier(@Param("tierId") String tierId);
 
@@ -51,4 +63,7 @@ public interface GenesisCatalogMapper {
     record CatalogState(Long id,Long tiersVersion,String marketOpenState,Long marketOpenStateVersion,
                         String closedNoticeKey,String lastChange,Long nextTierSeq) { }
     record TierRow(String tierId,Integer rangeFrom,Integer rangeTo,BigDecimal priceUsdt) { }
+    record SeriesRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt) { }
+    record SeriesBootstrapRow(String seriesCode,String name,Integer totalSupply,BigDecimal priceUsdt,
+                              Integer royaltyBps,BigDecimal dailyEmissionRatePct,String dividendBaseFormula) { }
 }

@@ -170,6 +170,15 @@ public class OpsNexMarketController {
         return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
     }
 
+    @PostMapping("/genesis/series/initialize")
+    @PreAuthorize("hasAuthority('finprod_g4_write')")
+    public ApiResult<Map<String,Object>> initializeGenesisSeries(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GenesisCatalogService.SeriesBootstrapRequest request) {
+        ApiResult<Void> result=genesisCatalogService.initializeSeries(idempotencyKey,request);
+        return result.getCode()==0?genesisCatalogService.enrich(marketService.genesisOverview()):ApiResult.fail(result.getCode(),result.getMessage());
+    }
+
     @PostMapping("/genesis/dividend-batches/{batchNo}/rerun")
     @PreAuthorize("hasAuthority('finprod_g4_write')")
     public ApiResult<Map<String, Object>> rerunGenesisDividendBatch(

@@ -864,6 +864,9 @@ class AppGenesisServiceTest {
         GenesisCatalogMapper catalogMapper = mock(GenesisCatalogMapper.class);
         when(catalogMapper.state()).thenReturn(new GenesisCatalogMapper.CatalogState(
                 1L, 2L, "open", 4L, "default", "catalog-fixture", 2L));
+        when(catalogMapper.activeSeriesCount()).thenReturn(1L);
+        when(catalogMapper.activeSeries()).thenReturn(new GenesisCatalogMapper.SeriesRow(
+                "genesis-main", "Genesis", 1000, new BigDecimal("120")));
         when(catalogMapper.activeTiers()).thenReturn(switch (defect) {
             case "empty" -> List.of();
             case "negative" -> List.of(new GenesisCatalogMapper.TierRow("tier-1", 0, 1000, new BigDecimal("-1")));
@@ -872,8 +875,8 @@ class AppGenesisServiceTest {
         });
         Clock fixedClock = Clock.fixed(Instant.parse("2026-07-22T04:00:00Z"), ZoneOffset.UTC);
         GenesisCatalogService realCatalog = new GenesisCatalogService(catalogMapper, idempotency, audit, fixedClock);
-        // The real catalog reproduces the disagreement: raw switch open, validated catalog unavailable.
-        assertThat(realCatalog.marketOpen()).isTrue();
+        // Raw switch says open, but invalid prerequisites must project one effective closed state.
+        assertThat(realCatalog.marketOpen()).isFalse();
         assertThat(realCatalog.publicState()).containsEntry("catalogAvailable", false);
         return new AppGenesisService(mapper, config, idempotency, outbox, audit, fixedClock,
                 realCatalog, environment, Optional.empty());
