@@ -227,7 +227,13 @@ $migrations = @(
   # config table and was shown on every visit. Rewrite only the row that still leads
   # with test punctuation; the server-side gate now rejects new writes of the same
   # shape.
-  (Join-Path $root "scripts\migrations\20260920_e6_download_copy_test_punctuation_cleanup.sql")
+  (Join-Path $root "scripts\migrations\20260920_e6_download_copy_test_punctuation_cleanup.sql"),
+  # E2 had a tier ladder but no authoritative pricing rows, so the console showed
+  # six empty task classes and an empty task list (PURGE_GATE / read failed). The
+  # seed script existed but was never registered here, so it never ran on deploy.
+  # It is idempotent (INSERT ... ON DUPLICATE KEY UPDATE) and already documents the
+  # canonical six-class vocabulary, so registering it is the whole fix.
+  (Join-Path $root "scripts\seed_e2_task_pricing.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
