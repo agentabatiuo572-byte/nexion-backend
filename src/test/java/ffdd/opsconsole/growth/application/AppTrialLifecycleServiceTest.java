@@ -130,6 +130,57 @@ class AppTrialLifecycleServiceTest {
         assertThat(state.get("trialGateEnabled")).isEqualTo(true);
     }
 
+    /**
+     * zentao #78:试用 hero 报出的日收益必须与商品卡是同一个数。
+     *
+     * 原缺陷:policy 里存着运营旧值(种子行 38.52),而 safePolicy 只覆盖了商品名与价格,
+     * **没有**用商品值覆盖 shadowDailyUSD —— 于是 App 算出 3 × 38.52 封顶 $50,而 S1 商品卡
+     * 写 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,按构造必然对不上。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void projectedDailyRateComesFromTheProductNotTheStalePolicyValue() {
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE",
+                        new BigDecimal("1.00"), new BigDecimal("10")));
+
+        Map<String, Object> config = (Map<String, Object>) service.state(7L).getData().get("config");
+
+        // policy 里的 40 不得胜出 —— 权威来源是商品的 estimated_daily_usdt / daily_nex。
+        assertThat(config.get("shadowDailyUSD")).isEqualTo("1");
+        assertThat(config.get("shadowDailyNEX")).isEqualTo("10");
+    }
+
+    /** 商品未配收益时才回落到 policy,且回落值原样保留(不能悄悄变成 0)。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void projectedDailyRateFallsBackToPolicyWhenTheProductHasNoRate() {
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
+
+        Map<String, Object> config = (Map<String, Object>) service.state(7L).getData().get("config");
+
+        assertThat(config.get("shadowDailyUSD")).isEqualTo("40");
+    }
+
+    /** 已领取的试用按 claim 快照报价:用户已按当时的数计息,中途改目录不该让他的数字跳。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void claimedTrialKeepsItsSnapshotRateEvenIfTheCatalogChanged() {
+        when(mapper.trial(7L)).thenReturn(trialWithStatus("ACTIVE", null, 1L));
+        when(mapper.catalogProduct("stellarbox-s1")).thenReturn(
+                new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE",
+                        new BigDecimal("9.99"), new BigDecimal("99")));
+
+        Map<String, Object> config = (Map<String, Object>) service.state(7L).getData().get("config");
+
+        // 该 claim 的快照值(40),不是目录里改过的 9.99。
+        assertThat(config.get("shadowDailyUSD")).isEqualTo("40");
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void stateProjectsAnUninitializedDayWithoutWritingQuota() {

@@ -481,7 +481,9 @@ public class AppTrialLifecycleService {
             result.put("paymentRail", "NEXION_USDT_WALLET");
             result.put("config", safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? null : catalogProduct.name(),
-                    catalogProduct == null ? null : catalogProduct.priceUsdt()));
+                    catalogProduct == null ? null : catalogProduct.priceUsdt(),
+                    catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
+                    catalogProduct == null ? null : catalogProduct.dailyNex()));
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -522,9 +524,14 @@ public class AppTrialLifecycleService {
         result.put("paymentRail", "NEXION_USDT_WALLET");
         putCanonicalProvenance(result, "nx_trial_claim + nx_user_wallet");
         boolean frozenProduct = !restartable(effectiveState);
+        // 已领取的试用:日收益以**该笔 claim 的快照**为准(row.dailyUsdt/dailyNex),不是当前目录价 ——
+        // 用户已经按当时的数开始计息,中途改目录不该让他的 hero 数字跟着跳(zentao #78)。
+        // 未领取/可重开时才回落目录商品值。
         result.put("config", safePolicy(policy, configuredProductCode,
                 frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
-                frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt()));
+                frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
+                frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
+                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex()));
         return result;
     }
 
@@ -556,7 +563,8 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, Object> safePolicy(
-            Map<String, String> policy, String productCode, String productName, BigDecimal productPrice) {
+            Map<String, String> policy, String productCode, String productName, BigDecimal productPrice,
+            BigDecimal productDailyUsdt, BigDecimal productDailyNex) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
@@ -589,6 +597,18 @@ public class AppTrialLifecycleService {
         if (StringUtils.hasText(productName)) result.put("trialProductName", productName.trim());
         if (productPrice != null && productPrice.signum() > 0) {
             result.put("trialPriceUSD", productPrice.stripTrailingZeros().toPlainString());
+        }
+        // 🔴 试用日收益必须与商品卡同一个数(zentao #78)。上面两个 shadow* 键只在商品未配收益时
+        //   兜底,但此前**没有任何地方**用商品值覆盖它们 —— safePolicy 只覆盖了商品名与价格,
+        //   于是 App 读到的是库里存的运营旧值(种子行 38.52),试用 hero 算出 3 × 38.52 封顶 $50,
+        //   而 S1 商品卡写的是 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,且按构造必然
+        //   对不上。claim 时的结算早已改读商品值(AppTrialLifecycleService:137-142),这里把**展示
+        //   侧**也对齐到同一权威来源,商品没配收益时才回落到 policy。
+        if (productDailyUsdt != null && productDailyUsdt.signum() > 0) {
+            result.put("shadowDailyUSD", productDailyUsdt.stripTrailingZeros().toPlainString());
+        }
+        if (productDailyNex != null && productDailyNex.signum() > 0) {
+            result.put("shadowDailyNEX", productDailyNex.stripTrailingZeros().toPlainString());
         }
         return result;
     }

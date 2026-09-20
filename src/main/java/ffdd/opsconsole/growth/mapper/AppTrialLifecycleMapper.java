@@ -126,7 +126,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
-                   product_type productType,inventory_mode inventoryMode
+                   product_type productType,inventory_mode inventoryMode,
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
