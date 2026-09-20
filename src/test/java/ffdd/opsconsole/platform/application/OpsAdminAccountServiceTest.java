@@ -82,6 +82,8 @@ class OpsAdminAccountServiceTest {
     private final OpsPlatformRoleService platformRoleService = mock(OpsPlatformRoleService.class);
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper =
             mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class);
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade =
+            new ffdd.opsconsole.platform.application.PlatformConfigFacadeAdapter(repository);
     private final List<AdminEntity> admins = new ArrayList<>();
     private final Map<Long, String> roleRelations = new LinkedHashMap<>();
     private final Map<Long, AdminAccountStateEntity> accountStates = new LinkedHashMap<>();
@@ -91,7 +93,8 @@ class OpsAdminAccountServiceTest {
     private final OpsAdminAccountService service =
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
-                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService);
+                    adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
+                    configFacade);
 
     @BeforeEach
     void setUp() {
@@ -361,6 +364,69 @@ class OpsAdminAccountServiceTest {
         assertThat(result.getData().operators()).filteredOn(operator -> "1".equals(operator.id()))
                 .extracting(AdminAccountOverview.OperatorRecord::role)
                 .containsExactly("super");
+    }
+
+    /**
+     * A1 锁定基线必须与 C6 登录风控(auth.risk.*)同源 —— 此前 A1 读存量固定串
+     * "5次 / 15min",C6 与真实登录拦截读 auth.risk.*,同一条策略两个真相。
+     * 值格式必须保持前端 a1-accounts.tsx 四个正则可解析。
+     */
+    @Test
+    void lockBaselineIsDerivedFromTheC6AuthRiskThresholds() {
+        repository.put("auth.risk.login_lock_threshold", "6", "auth");
+        repository.put("auth.risk.lock_duration_minutes", "30", "auth");
+        repository.put("auth.risk.login_long_lock_threshold", "12", "auth");
+        repository.put("auth.risk.long_lock_duration_hours", "36", "auth");
+        registerTestSecurity("lock", "登录锁定基线", "旧文案", "5次 / 15min", true, 20);
+
+        ApiResult<AdminAccountOverview> result = service.overview();
+
+        assertThat(result.getCode()).isZero();
+        AdminAccountOverview.SecurityBaseline lock = result.getData().securityBaselines().stream()
+                .filter(baseline -> "lock".equals(baseline.key()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(lock.value()).isEqualTo("6次 / 30min + 12次 / 36h");
+        assertThat(lock.sub())
+                .contains("6 次").contains("30 分钟").contains("12 次").contains("36 小时");
+        // 派生行恒只读:改阈值只能去 C6。
+        assertThat(lock.locked()).isTrue();
+    }
+
+    /** 未配置时回落到与登录拦截相同的默认阈值,而不是旧的硬编码串。 */
+    @Test
+    void lockBaselineFallsBackToTheSameDefaultsTheLoginGuardUses() {
+        registerTestSecurity("lock", "登录锁定基线", "旧文案", "5次 / 15min", true, 20);
+
+        ApiResult<AdminAccountOverview> result = service.overview();
+
+        AdminAccountOverview.SecurityBaseline lock = result.getData().securityBaselines().stream()
+                .filter(baseline -> "lock".equals(baseline.key()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(lock.value()).isEqualTo("5次 / 15min + 10次 / 24h");
+    }
+
+    /** 存量行会被收敛到 auth.risk.* 当前值,不再保留会漂移的旧串。 */
+    @Test
+    void lockBaselineRewritesAStaleStoredRowOnRead() {
+        repository.put("auth.risk.login_lock_threshold", "7", "auth");
+        registerTestSecurity("lock", "登录锁定基线", "旧文案", "5次 / 15min", true, 20);
+        when(securityBaselineMapper.upsertBaseline(
+                any(String.class), any(String.class), any(String.class), any(String.class), anyInt(), anyInt()))
+                .thenAnswer(invocation -> {
+                    AdminSecurityBaselineEntity row = securityBaselineRows.get(invocation.getArgument(0));
+                    row.setLabel(invocation.getArgument(1));
+                    row.setDescription(invocation.getArgument(2));
+                    row.setBaselineValue(invocation.getArgument(3));
+                    row.setLocked(invocation.getArgument(4));
+                    return 1;
+                });
+
+        service.overview();
+
+        assertThat(securityBaselineRows.get("lock").getBaselineValue())
+                .isEqualTo("7次 / 15min + 10次 / 24h");
     }
 
     @Test

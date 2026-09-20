@@ -312,16 +312,32 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
                        WHEN #{action} = 'ENABLE' THEN 'ACTIVE'
                        WHEN #{action} = 'DISABLE' THEN 'DISABLED'
                        WHEN #{action} = 'RECOVER' THEN 'ACTIVE'
+                       WHEN #{action} = 'REPROVISION' THEN 'ACTIVE'
                        ELSE status
                    END,
-                   fuse_reason = CASE WHEN #{action} = 'RECOVER' THEN NULL ELSE fuse_reason END,
+                   fuse_reason = CASE
+                       WHEN #{action} IN ('RECOVER', 'REPROVISION') THEN NULL
+                       ELSE fuse_reason
+                   END,
+                   bank_code = CASE WHEN #{action} = 'REPROVISION' THEN #{bankCode} ELSE bank_code END,
+                   bank_name = CASE WHEN #{action} = 'REPROVISION' THEN #{bankName} ELSE bank_name END,
+                   account_holder = CASE WHEN #{action} = 'REPROVISION' THEN #{accountHolder} ELSE account_holder END,
+                   account_number_encrypted = CASE WHEN #{action} = 'REPROVISION'
+                       THEN #{accountNumberEncrypted} ELSE account_number_encrypted END,
+                   account_number_hash = CASE WHEN #{action} = 'REPROVISION'
+                       THEN #{accountNumberHash} ELSE account_number_hash END,
+                   account_number_last4 = CASE WHEN #{action} = 'REPROVISION'
+                       THEN #{accountNumberLast4} ELSE account_number_last4 END,
                    daily_cap_vnd = CASE WHEN #{action} = 'UPDATE_CAP' THEN #{dailyCapVnd} ELSE daily_cap_vnd END,
                    version = version + 1, updated_at = NOW()
              WHERE id = #{id} AND version = #{expectedVersion} AND is_deleted = 0
                AND (
                     (#{action} = 'ENABLE' AND status = 'DISABLED')
                  OR (#{action} = 'DISABLE' AND status = 'ACTIVE')
-                 OR (#{action} = 'RECOVER' AND status = 'FUSED')
+                 OR (#{action} = 'RECOVER' AND status = 'FUSED'
+                     AND COALESCE(fuse_reason, '') <> 'MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION')
+                 OR (#{action} = 'REPROVISION'
+                     AND (status = 'FUSED' OR fuse_reason = 'MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION'))
                  OR (#{action} = 'UPDATE_CAP')
                )
             """)
@@ -329,7 +345,13 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             @Param("id") Long id,
             @Param("action") String action,
             @Param("dailyCapVnd") BigDecimal dailyCapVnd,
-            @Param("expectedVersion") Long expectedVersion);
+            @Param("expectedVersion") Long expectedVersion,
+            @Param("bankCode") String bankCode,
+            @Param("bankName") String bankName,
+            @Param("accountHolder") String accountHolder,
+            @Param("accountNumberEncrypted") String accountNumberEncrypted,
+            @Param("accountNumberHash") String accountNumberHash,
+            @Param("accountNumberLast4") String accountNumberLast4);
 
     @Update("""
             UPDATE nx_vietqr_config

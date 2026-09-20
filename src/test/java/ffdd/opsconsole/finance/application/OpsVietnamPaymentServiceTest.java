@@ -13,12 +13,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.dto.FxQuoteUpdateRequest;
+import ffdd.opsconsole.finance.dto.VietQrBankAccountCommandRequest;
 import ffdd.opsconsole.finance.dto.VietQrReconciliationCommandRequest;
 import ffdd.opsconsole.finance.dto.VietQrReceiptRegistrationRequest;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -35,6 +37,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class OpsVietnamPaymentServiceTest {
     private final VietnamPaymentMapper mapper = mock(VietnamPaymentMapper.class);
@@ -670,6 +673,122 @@ class OpsVietnamPaymentServiceTest {
         verify(appIntentMapper).closeCancelledInFlightReconciliationsForFusedAccount(
                 8L, "VQR-EXACT");
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void reprovisionRewritesAccountIdentityAndClearsTheMigrationFuseReason() {
+        when(mapper.findVietQrBankAccount(8L)).thenReturn(
+                Map.ofEntries(
+                        Map.entry("id", 8L),
+                        Map.entry("bankCode", "VCB"),
+                        Map.entry("accountLast4", "1111"),
+                        Map.entry("dailyCapVnd", new BigDecimal("500000000")),
+                        Map.entry("status", "FUSED"),
+                        Map.entry("fuseReason", "MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION"),
+                        Map.entry("version", 3L)),
+                Map.ofEntries(
+                        Map.entry("id", 8L),
+                        Map.entry("bankCode", "TCB"),
+                        Map.entry("accountLast4", "9999"),
+                        Map.entry("dailyCapVnd", new BigDecimal("500000000")),
+                        Map.entry("status", "ACTIVE"),
+                        Map.entry("version", 4L)));
+        when(sensitiveDataCipher.encrypt(eq("123456789"), anyString())).thenReturn("NEW-CIPHER");
+        when(mapper.updateVietQrBankAccount(
+                eq(8L), eq("REPROVISION"), any(), eq(3L),
+                eq("TCB"), eq("Techcombank"), eq("Nguyen Van A"),
+                eq("NEW-CIPHER"), anyString(), eq("6789"))).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.updateBankAccount(
+                8L, "reprovision-8",
+                new VietQrBankAccountCommandRequest(
+                        "REPROVISION", null, 3L, "re-enter the migrated bank account", "finance-admin",
+                        "TCB", "Techcombank", "Nguyen Van A", "123456789"));
+
+        assertThat(result.getCode()).isZero();
+        // 响应只回脱敏后的 last4,绝不回显账号全号。
+        assertThat(result.getData()).containsEntry("accountLast4", "9999");
+        assertThat(result.getData().toString()).doesNotContain("123456789");
+
+        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(audit).recordRequired(captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("VIETQR_BANK_ACCOUNT_REPROVISION");
+        // 审计只留 id 与前后 bank_code/last4,不得出现账号全号。
+        assertThat(captor.getValue().getDetail().toString())
+                .contains("VCB").contains("TCB").contains("1111").contains("9999")
+                .doesNotContain("123456789");
+    }
+
+    /**
+     * 密文用旧密钥写入、现密钥解不开的行恢复成 ACTIVE 只会让分派必然失败。
+     * 恢复必须被拒绝,并指向唯一的出路:重新录入账号。
+     */
+    @Test
+    void recoverIsRefusedForAMigratedCiphertextAccountAndPointsAtReprovision() {
+        when(mapper.findVietQrBankAccount(8L)).thenReturn(Map.ofEntries(
+                Map.entry("id", 8L),
+                Map.entry("bankCode", "VCB"),
+                Map.entry("accountLast4", "1111"),
+                Map.entry("dailyCapVnd", new BigDecimal("500000000")),
+                Map.entry("status", "FUSED"),
+                Map.entry("fuseReason", "MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION"),
+                Map.entry("version", 3L)));
+
+        assertThatThrownBy(() -> service.updateBankAccount(
+                8L, "recover-8",
+                new VietQrBankAccountCommandRequest(
+                        "RECOVER", null, 3L, "recover the fused bank account", "finance-admin")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_BANK_ACCOUNT_REPROVISION_REQUIRED");
+
+        verify(mapper, never()).updateVietQrBankAccount(
+                any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    /** 普通熔断(限额超限)仍可恢复,拒绝只针对密文不可解。 */
+    @Test
+    void recoverStillWorksForAnOrdinaryCapFuse() {
+        when(mapper.findVietQrBankAccount(8L)).thenReturn(
+                Map.ofEntries(
+                        Map.entry("id", 8L),
+                        Map.entry("bankCode", "VCB"),
+                        Map.entry("accountLast4", "1111"),
+                        Map.entry("dailyCapVnd", new BigDecimal("500000000")),
+                        Map.entry("status", "FUSED"),
+                        Map.entry("fuseReason", "DAILY_CAP_EXCEEDED_AFTER_RECEIPT"),
+                        Map.entry("version", 3L)),
+                Map.ofEntries(
+                        Map.entry("id", 8L),
+                        Map.entry("bankCode", "VCB"),
+                        Map.entry("accountLast4", "1111"),
+                        Map.entry("dailyCapVnd", new BigDecimal("500000000")),
+                        Map.entry("status", "ACTIVE"),
+                        Map.entry("version", 4L)));
+        when(mapper.updateVietQrBankAccount(
+                eq(8L), eq("RECOVER"), any(), eq(3L),
+                eq(null), eq(null), eq(null), eq(null), eq(null), eq(null))).thenReturn(1);
+
+        ApiResult<Map<String, Object>> result = service.updateBankAccount(
+                8L, "recover-cap-8",
+                new VietQrBankAccountCommandRequest(
+                        "RECOVER", null, 3L, "recover the fused bank account", "finance-admin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("status", "ACTIVE");
+    }
+
+    @Test
+    void reprovisionRejectsAnInvalidAccountNumberBeforeAnyDatabaseWrite() {
+        assertThatThrownBy(() -> service.updateBankAccount(
+                8L, "reprovision-bad",
+                new VietQrBankAccountCommandRequest(
+                        "REPROVISION", null, 3L, "re-enter the migrated bank account", "finance-admin",
+                        "TCB", "Techcombank", "Nguyen Van A", "not-a-number")))
+                .isInstanceOf(BizException.class)
+                .hasMessage("VIETQR_BANK_ACCOUNT_INVALID");
+
+        verify(mapper, never()).updateVietQrBankAccount(
+                any(), anyString(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

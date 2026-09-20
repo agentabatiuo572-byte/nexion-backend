@@ -79,6 +79,19 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             "23456789abcdefghjkmnpqrstuvwxyz";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final Set<String> SESSION_REVOKE_ROLES = Set.of("super");
+    /**
+     * 登录锁定基线是 C6 登录风控(auth.risk.*)的只读投影,不是第二套可调阈值。
+     *
+     * <p>此前 A1 把 "5次 / 15min" 固化进 nx_admin_security_baseline,而 C6 与真实登录拦截
+     * (AppUserAuthService.recordFailure)读 auth.risk.* —— 同一件事两个真相:A1 显示
+     * 5/15min+15/24h,C6 显示 5/30min+10/24h,运营无法判断哪套在生效。现在 A1 实时派生,
+     * 与 C6、与拦截同源;该行恒为只读,改阈值只能去 C6。</p>
+     */
+    private static final String LOCK_BASELINE_KEY = "lock";
+    private static final String LOCK_SHORT_COUNT_KEY = "auth.risk.login_lock_threshold";
+    private static final String LOCK_SHORT_MINUTES_KEY = "auth.risk.lock_duration_minutes";
+    private static final String LOCK_LONG_COUNT_KEY = "auth.risk.login_long_lock_threshold";
+    private static final String LOCK_LONG_HOURS_KEY = "auth.risk.long_lock_duration_hours";
     private static final Map<String, String> ROLE_CODE_TO_KEY = Map.ofEntries(
             Map.entry("SUPER_ADMIN", "super"),
             Map.entry("CONFIG_ADMIN", "config"),
@@ -111,6 +124,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private final OpsAuditCenterService auditCenterService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
     private final OpsPlatformRoleService platformRoleService;
+    /** C6 登录风控阈值(auth.risk.*)的唯一权威读取口;A1 锁定基线只是它的只读投影。 */
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade;
 
     public ApiResult<AdminAccountOverview> overview() {
         ensureA1BusinessTables();
@@ -663,18 +678,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             if (idle < 15 || idle > 60 || abs < 4 || abs > 12) {
                 return ApiResult.fail(422, "SESSION_LIMIT_OUT_OF_RANGE");
             }
-        } else if ("lock".equals(key)) {
-            Matcher matcher = Pattern.compile("(\\d+)\\s*次?\\s*/\\s*(\\d+)\\s*min?", Pattern.CASE_INSENSITIVE)
-                    .matcher(value);
-            if (!matcher.find()) {
-                return ApiResult.fail(422, "LOCK_LIMIT_FORMAT_INVALID");
-            }
-            int count = Integer.parseInt(matcher.group(1));
-            int minutes = Integer.parseInt(matcher.group(2));
-            if (count < 3 || count > 10 || minutes < 5 || minutes > 60) {
-                return ApiResult.fail(422, "LOCK_LIMIT_OUT_OF_RANGE");
-            }
         }
+        // lock 行不可达:它恒为派生只读(见 LOCK_BASELINE_KEY),上面已按 SECURITY_BASELINE_LOCKED
+        // 拒绝。登录阈值只能改 C6 的 auth.risk.*,这里不再保留第二套校验。
         securityBaselineMapper.upsertValue(key, value);
         audit("A1_SECURITY_BASELINE_CHANGED", "A1_SECURITY_BASELINE", key, request.operator(), request.reason(), idempotencyKey,
                 Map.of("value", value));
@@ -788,16 +794,71 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
      * 幂等 seed 安全基线默认值:仅当行缺席时插入,绝不覆盖管理员已调整的阈值。
      *
      * <p>值字符串格式对齐前端 a1-accounts.tsx 的正则提取:
-     * session 行 "Xmin / Yh"(滑动过期 min / 绝对上限 h);lock 行 "X次 / Ymin"(短锁触发次数 / 锁定时长)。
-     * 长锁策略(24h 内累计短锁≥3 次→长锁 24h 自动解)为服务端硬性、不可调,记入 description,不走可调阈值。</p>
+     * session 行 "Xmin / Yh"(滑动过期 min / 绝对上限 h)。
+     * lock 行只 seed 一个占位壳,真实值由 {@link #securityBaseline(AdminSecurityBaselineEntity)}
+     * 从 auth.risk.* 实时派生 —— 见 {@link #LOCK_BASELINE_KEY} 的说明。</p>
      */
     private void seedSecurityBaselines() {
         seedBaselineIfAbsent("session", "会话基线",
                 "session 滑动过期(无操作自动登出) / 绝对上限(一次登录最长存活);比用户侧更短,操盘台高敏",
                 "30min / 8h", 0, 10);
-        seedBaselineIfAbsent("lock", "登录锁定基线",
-                "登录失败 5 次短锁 15 分钟;24 小时累计失败 15 次升级长锁 24 小时(固定安全基线)",
-                "5次 / 15min", 1, 20);
+        seedDerivedLockBaseline();
+    }
+
+    /**
+     * 锁定基线是派生行:存量里那条历史固定串("5次 / 15min")会与 C6 漂移,必须收敛到
+     * auth.risk.* 的当前值。该行恒 locked,运营改不了,所以重写不会覆盖任何人工调整。
+     */
+    private void seedDerivedLockBaseline() {
+        String value = lockBaselineValue();
+        String description = lockBaselineDescription();
+        AdminSecurityBaselineEntity row = securityBaselineMapper.selectActiveByKey(LOCK_BASELINE_KEY);
+        if (row == null) {
+            securityBaselineMapper.upsertBaseline(LOCK_BASELINE_KEY, "登录锁定基线", description, value, 1, 20);
+            return;
+        }
+        if (!value.equals(row.getBaselineValue()) || !description.equals(row.getDescription())) {
+            securityBaselineMapper.upsertBaseline(LOCK_BASELINE_KEY, "登录锁定基线", description, value, 1, 20);
+        }
+    }
+
+    /**
+     * A1 锁定基线值 = 短锁(次数/时长) + 长锁(次数/时长),全部取自 C6 现网生效值。
+     *
+     * <p>格式必须是 {@code 5次 / 15min + 10次 / 24h}:前端 a1-accounts.tsx:232-240 用
+     * /(\d+)\s*(?:times|次)/、/\/\s*(\d+)\s*min/、/\+\s*(\d+)\s*(?:times|次)/、
+     * /\+\s*\d+\s*(?:times|次)\s*\/\s*(\d+)\s*h/ 四个正则分别提取四个数字,
+     * 少任何一段都会让对应行显示为 "—"。</p>
+     */
+    private String lockBaselineValue() {
+        return lockBaselineCount(LOCK_SHORT_COUNT_KEY, 5) + "次 / "
+                + lockBaselineCount(LOCK_SHORT_MINUTES_KEY, 15) + "min + "
+                + lockBaselineCount(LOCK_LONG_COUNT_KEY, 10) + "次 / "
+                + lockBaselineCount(LOCK_LONG_HOURS_KEY, 24) + "h";
+    }
+
+    private String lockBaselineDescription() {
+        return "登录失败 " + lockBaselineCount(LOCK_SHORT_COUNT_KEY, 5) + " 次短锁 "
+                + lockBaselineCount(LOCK_SHORT_MINUTES_KEY, 15) + " 分钟;累计失败 "
+                + lockBaselineCount(LOCK_LONG_COUNT_KEY, 10) + " 次升级长锁 "
+                + lockBaselineCount(LOCK_LONG_HOURS_KEY, 24) + " 小时。"
+                + "阈值由 C6 登录风控(auth.risk.*)统一配置,此处仅展示当前生效值。";
+    }
+
+    private int lockBaselineCount(String configKey, int fallback) {
+        if (configFacade == null) {
+            return fallback;
+        }
+        try {
+            return configFacade.activeValue(configKey)
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .map(Integer::parseInt)
+                    .filter(value -> value > 0)
+                    .orElse(fallback);
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private void seedBaselineIfAbsent(String key, String label, String description, String value, int locked, int sortOrder) {
@@ -1090,12 +1151,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private AdminAccountOverview.SecurityBaseline securityBaseline(AdminSecurityBaselineEntity row) {
+        boolean derivedLock = LOCK_BASELINE_KEY.equals(roleKey(row.getBaselineKey()));
         return new AdminAccountOverview.SecurityBaseline(
                 roleKey(row.getBaselineKey()),
                 firstText(row.getLabel(), row.getBaselineKey()),
-                firstText(row.getDescription()),
-                firstText(row.getBaselineValue()),
-                Integer.valueOf(1).equals(row.getLocked()));
+                derivedLock ? lockBaselineDescription() : firstText(row.getDescription()),
+                derivedLock ? lockBaselineValue() : firstText(row.getBaselineValue()),
+                derivedLock || Integer.valueOf(1).equals(row.getLocked()));
     }
 
     private AdminAccountOverview.OperatorRecord requireOperator(String accountId) {

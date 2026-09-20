@@ -1064,6 +1064,57 @@ class OpsNexMarketServiceTest {
                 .containsEntry("configKey", "killswitch.staking");
     }
 
+    /**
+     * J1 整池熔断时,四档必须同时报告对客不可售,且原因码为 GLOBAL_GATE ——
+     * 此前只看档位级 killed/enabled,PC 显示"营业中"而 App 已停售。
+     * 档位自身配置状态(enabled/status/statusLabel)保持独立,运营才能区分两者。
+     */
+    @Test
+    void stakingPoolRowsReportSellableFalseAndGlobalGateWhenTheWholePoolIsKilled() {
+        emergencyRepository.settings.put("killswitch.staking", "disabled");
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        List<Map<String, Object>> pools = poolRows(result);
+        assertThat(pools).hasSize(4);
+        assertThat(pools).allSatisfy(pool -> assertThat(pool)
+                .containsEntry("sellable", false)
+                .containsEntry("blockedBy", "GLOBAL_GATE")
+                // 档位自身仍被配置为启用,所以配置状态与对客状态必须分开展示。
+                .containsEntry("enabled", true)
+                .containsEntry("status", "active"));
+    }
+
+    /** 整池闸打开时,档位级熔断/停用才是阻断原因。 */
+    @Test
+    void stakingPoolRowsReportTierLevelBlockedByWhenTheGlobalGateIsOpen() {
+        emergencyRepository.settings.put("killswitch.staking", "enabled");
+        configFacade.values.put("G.staking.usdt90d.killed", "true");
+        configFacade.values.put("G.staking.enabled.usdt180d", "false");
+
+        ApiResult<Map<String, Object>> result = service.stakingOverview();
+
+        assertThat(result.getCode()).isZero();
+        Map<String, Map<String, Object>> byTier = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> pool : poolRows(result)) {
+            byTier.put(String.valueOf(pool.get("tierKey")), pool);
+        }
+        assertThat(byTier.get("usdt90d"))
+                .containsEntry("sellable", false).containsEntry("blockedBy", "TIER_KILLED")
+                .containsEntry("killed", true);
+        assertThat(byTier.get("usdt180d"))
+                .containsEntry("sellable", false).containsEntry("blockedBy", "TIER_DISABLED")
+                .containsEntry("enabled", false);
+        assertThat(byTier.get("usdt30d"))
+                .containsEntry("sellable", true).containsEntry("blockedBy", null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> poolRows(ApiResult<Map<String, Object>> result) {
+        return (List<Map<String, Object>>) result.getData().get("pools");
+    }
+
     @Test
     void stakingOverviewShowsI5DisclosureAsPerUserRequirementWithoutStoppingG1() {
         configFacade.values.put("disclosure.gate.staking", "true");

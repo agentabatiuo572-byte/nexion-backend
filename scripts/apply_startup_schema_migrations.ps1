@@ -200,7 +200,18 @@ $migrations = @(
   # settlement-gated deactivation, but the type was never registered, so every
   # deferred deactivation threw A4_SCHEMA_NOT_REGISTERED. Register it with the
   # same property contract as its 'admin.device_deactivated' sibling.
-  (Join-Path $root "scripts\migrations\20260920_register_deferred_device_deactivation_event.sql")
+  (Join-Path $root "scripts\migrations\20260920_register_deferred_device_deactivation_event.sql"),
+  # F1 kept serving the retired "Nexion V-Rank" brand because the stored
+  # team.ui.F.prize.name value predates the rename and the controller only falls
+  # back to NexGrid when the key is absent. Rebrand only rows that still carry
+  # the old token.
+  (Join-Path $root "scripts\migrations\20260920_vrank_prize_brand_rebrand.sql"),
+  # G4 had a tier ladder but no series row, so activeSeriesCount()==0 made
+  # readiness() return GENESIS_SERIES_UNAVAILABLE and the whole primary purchase
+  # flow unavailable. Derive the single ACTIVE series from the ladder operators
+  # already maintain; no-op when the ladder is absent or not in the state the
+  # service itself accepts for initialization.
+  (Join-Path $root "scripts\migrations\20260920_genesis_active_series_provisioning.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

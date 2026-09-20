@@ -2,6 +2,7 @@ package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -1442,6 +1443,7 @@ class OpsGrowthServiceTest {
     void updateQuestEventStatusWritesBusinessTableAndAudit() {
         seedQuestEvents(
                 "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+        seedEventLocalizedContent("regional-pk");
 
         ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
                 "idem-h4-status",
@@ -1455,6 +1457,65 @@ class OpsGrowthServiceTest {
         ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("H4_EVENT_STATUS_CHANGED");
+    }
+
+    /**
+     * 发布门:转入 ongoing 前 zh/vi 必须填全,否则 App 会静默回退英文原文
+     * (中文 App 显示 "Daily Lucky Spin")。缺失清单随错误码一起返回给 PC。
+     */
+    @Test
+    void publishingAnEventWithoutChineseAndVietnameseContentIsBlockedWithTheMissingList() {
+        seedQuestEvents(
+                "{\"id\":\"evt-spring-spin\",\"name\":\"Daily Lucky Spin\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+
+        ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
+                "idem-h4-status-unlocalized",
+                "evt-spring-spin",
+                new GrowthConfigUpdateRequest("status", "ongoing", "launch event", "superadmin", "upcoming"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("EVENT_LOCALIZED_CONTENT_INCOMPLETE");
+        assertThat(gapKeys(result)).containsExactlyInAnyOrder(
+                "evt-spring-spin/name/zh", "evt-spring-spin/description/zh", "evt-spring-spin/rewardName/zh",
+                "evt-spring-spin/name/vi", "evt-spring-spin/description/vi", "evt-spring-spin/rewardName/vi");
+        // 未通过发布门就绝不能落到业务表。
+        verify(questEventMapper, never()).updateStatus(anyString(), anyInt(), any());
+    }
+
+    /** en 允许回退事件原文,只有 zh/vi 是发布必需。 */
+    @Test
+    void publishingAnEventWithOnlyEnglishConfiguredIsStillBlocked() {
+        seedQuestEvents(
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+        configFacade.values.put("growth.content.localized",
+                "{\"event\":{\"regional-pk\":{\"en\":{\"name\":\"Regional PK\",\"description\":\"English copy\","
+                        + "\"rewardName\":\"10 NEX\"}}}}");
+
+        ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
+                "idem-h4-status-en-only",
+                "regional-pk",
+                new GrowthConfigUpdateRequest("status", "ongoing", "launch event", "superadmin", "upcoming"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("EVENT_LOCALIZED_CONTENT_INCOMPLETE");
+        assertThat(gapKeys(result)).containsExactly(
+                "regional-pk/name/zh", "regional-pk/description/zh", "regional-pk/rewardName/zh",
+                "regional-pk/name/vi", "regional-pk/description/vi", "regional-pk/rewardName/vi");
+    }
+
+    /** 下架(→ended)不受发布门约束:门只拦"对用户发布"。 */
+    @Test
+    void endingAnEventIsNotBlockedByMissingLocalizedContent() {
+        seedQuestEvents(
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"ongoing\",\"reward\":\"10 NEX\",\"featured\":false}");
+
+        ApiResult<Map<String, Object>> result = service.updateQuestEventStatus(
+                "idem-h4-status-end",
+                "regional-pk",
+                new GrowthConfigUpdateRequest("status", "ended", "retire event", "superadmin", "ongoing"));
+
+        assertThat(result.getCode()).isZero();
+        verify(questEventMapper).updateStatus(anyString(), anyInt(), any());
     }
 
     @Test
@@ -2309,6 +2370,26 @@ class OpsGrowthServiceTest {
     private static String findValue(List<Map<String, Object>> rows, String keyField, String key, String valueField) {
         Map<String, Object> row = findRow(rows, keyField, key);
         return row == null ? null : String.valueOf(row.get(valueField));
+    }
+
+    /** 把发布门的缺失清单压成 eventCode/field/locale 字符串,便于断言。 */
+    private List<String> gapKeys(ApiResult<Map<String, Object>> result) {
+        List<?> missing = (List<?>) result.getData().get("missing");
+        List<String> keys = new ArrayList<>();
+        for (Object raw : missing) {
+            Map<?, ?> row = (Map<?, ?>) raw;
+            keys.add(row.get("eventCode") + "/" + row.get("field") + "/" + row.get("locale"));
+        }
+        return keys;
+    }
+
+    /** 把某个 H4 事件的 zh/vi 三字段填全,使其满足发布门。 */
+    private void seedEventLocalizedContent(String eventCode) {
+        configFacade.values.put("growth.content.localized",
+                "{\"event\":{\"" + eventCode + "\":{"
+                        + "\"zh\":{\"name\":\"区域 PK 赛\",\"description\":\"中文说明\",\"rewardName\":\"10 NEX\"},"
+                        + "\"vi\":{\"name\":\"Giải PK khu vực\",\"description\":\"Mô tả\",\"rewardName\":\"10 NEX\"}"
+                        + "}}}");
     }
 
     @SuppressWarnings("unchecked")

@@ -43,7 +43,13 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsVietnamPaymentService {
     private static final Set<String> VIEW_TYPES = Set.of("INFLIGHT", "MATCHED", "ORPHAN", "MISMATCH", "LATE");
-    private static final Set<String> ACCOUNT_ACTIONS = Set.of("ENABLE", "DISABLE", "RECOVER", "UPDATE_CAP");
+    private static final Set<String> ACCOUNT_ACTIONS =
+            Set.of("ENABLE", "DISABLE", "RECOVER", "UPDATE_CAP", "REPROVISION");
+    /**
+     * 迁移期用旧密钥写入的账号密文,现密钥解不开。这类行不可恢复,只能重新录入。
+     * 该枚举由 test 环境存量数据写入,不在仓库代码里产生。
+     */
+    static final String MIGRATED_CIPHERTEXT_FUSE_REASON = "MIGRATED_CIPHERTEXT_REQUIRES_REPROVISION";
     private static final Set<String> ROTATION_STRATEGIES = Set.of("ROUND_ROBIN", "REMAINING_CAPACITY");
     private static final ZoneId VIETNAM_BANK_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private final VietnamPaymentMapper mapper;
@@ -174,22 +180,47 @@ public class OpsVietnamPaymentService {
         if (!ACCOUNT_ACTIONS.contains(action)) {
             validation("VIETQR_BANK_ACCOUNT_ACTION_INVALID");
         }
+        boolean reprovision = "REPROVISION".equals(action);
         if ("UPDATE_CAP".equals(action)) {
             requireIntegerRange(request.dailyCapVnd(), BigDecimal.valueOf(1_000_000),
                     BigDecimal.valueOf(10_000_000_000L), "VIETQR_DAILY_CAP_OUT_OF_RANGE");
         }
+        if (reprovision) {
+            validateReprovision(request);
+        }
         String requestHash = hash(id + ":" + action + ":" + request.dailyCapVnd() + ":"
-                + request.expectedVersion() + ":" + request.reason().trim());
+                + request.expectedVersion() + ":" + request.reason().trim()
+                + (reprovision ? ":" + reprovisionFingerprint(request) : ""));
         @SuppressWarnings({"rawtypes", "unchecked"})
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 "D1_VIETQR_BANK_ACCOUNT_UPDATE", idempotencyKey, requestHash, ApiResult.class, () -> {
                     Map<String, Object> before = requiredMap(mapper.findVietQrBankAccount(id),
                             "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
+                    if ("RECOVER".equals(action)
+                            && MIGRATED_CIPHERTEXT_FUSE_REASON.equals(text(before.get("fuseReason")))) {
+                        // 密文用旧密钥写入、现密钥解不开:恢复成 ACTIVE 只会让分派必然失败。
+                        // 唯一的出路是重新录入账号,不是把行"恢复"。
+                        throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                                "VIETQR_BANK_ACCOUNT_REPROVISION_REQUIRED");
+                    }
                     BigDecimal cap = "UPDATE_CAP".equals(action)
                             ? request.dailyCapVnd().setScale(0, RoundingMode.UNNECESSARY)
                             : decimal(before.get("dailyCapVnd"));
-                    if (mapper.updateVietQrBankAccount(id, action, cap, request.expectedVersion()) != 1) {
-                        conflict("VIETQR_BANK_ACCOUNT_VERSION_OR_STATE_CONFLICT");
+                    String accountNumber = reprovision ? request.accountNumber().trim() : null;
+                    String accountHash = reprovision ? hash(accountNumber) : null;
+                    try {
+                        if (mapper.updateVietQrBankAccount(
+                                id, action, cap, request.expectedVersion(),
+                                reprovision ? request.bankCode().trim().toUpperCase(Locale.ROOT) : null,
+                                reprovision ? request.bankName().trim() : null,
+                                reprovision ? request.accountHolder().trim() : null,
+                                reprovision ? sensitiveDataCipher.encrypt(accountNumber, accountHash) : null,
+                                accountHash,
+                                reprovision ? last4(accountNumber) : null) != 1) {
+                            conflict("VIETQR_BANK_ACCOUNT_VERSION_OR_STATE_CONFLICT");
+                        }
+                    } catch (DuplicateKeyException ex) {
+                        throw new BizException(409, "VIETQR_BANK_ACCOUNT_ALREADY_EXISTS");
                     }
                     if ("DISABLE".equals(action)) {
                         appIntentMapper.cancelActiveIntentsForBankAccount(id);
@@ -197,15 +228,43 @@ public class OpsVietnamPaymentService {
                     }
                     Map<String, Object> updated = requiredMap(mapper.findVietQrBankAccount(id),
                             "VIETQR_BANK_ACCOUNT_NOT_FOUND", 404);
-                    requiredAudit("VIETQR_BANK_ACCOUNT_" + action, "VIETQR_BANK_ACCOUNT",
-                            String.valueOf(id), operator(request.operator()), request.reason(), idempotencyKey,
-                            Map.of("beforeStatus", text(before.get("status")),
-                                    "afterStatus", text(updated.get("status")),
-                                    "beforeDailyCapVnd", decimal(before.get("dailyCapVnd")),
-                                    "afterDailyCapVnd", decimal(updated.get("dailyCapVnd"))));
+                    if (reprovision) {
+                        // 审计只留账户 id 与前后 bank_code/last4,绝不记录账号全号。
+                        requiredAudit("VIETQR_BANK_ACCOUNT_REPROVISION", "VIETQR_BANK_ACCOUNT",
+                                String.valueOf(id), operator(request.operator()), request.reason(), idempotencyKey,
+                                Map.of("accountId", id,
+                                        "beforeBankCode", text(before.get("bankCode")),
+                                        "afterBankCode", text(updated.get("bankCode")),
+                                        "beforeAccountLast4", text(before.get("accountLast4")),
+                                        "afterAccountLast4", text(updated.get("accountLast4")),
+                                        "beforeStatus", text(before.get("status")),
+                                        "afterStatus", text(updated.get("status"))));
+                    } else {
+                        requiredAudit("VIETQR_BANK_ACCOUNT_" + action, "VIETQR_BANK_ACCOUNT",
+                                String.valueOf(id), operator(request.operator()), request.reason(), idempotencyKey,
+                                Map.of("beforeStatus", text(before.get("status")),
+                                        "afterStatus", text(updated.get("status")),
+                                        "beforeDailyCapVnd", decimal(before.get("dailyCapVnd")),
+                                        "afterDailyCapVnd", decimal(updated.get("dailyCapVnd"))));
+                    }
                     return ApiResult.ok(updated);
                 });
         return result;
+    }
+
+    /**
+     * REPROVISION 复用 createBankAccount 的字段校验与脱敏约定;响应仍只回 accountLast4。
+     */
+    private void validateReprovision(VietQrBankAccountCommandRequest request) {
+        validateBankAccountFields(new VietQrBankAccountCreateRequest(
+                request.bankCode(), request.bankName(), request.accountHolder(), request.accountNumber(),
+                null, request.reason(), request.operator()));
+    }
+
+    /** 幂等指纹只含新账号的哈希,避免把账号明文写进 idempotency 记录。 */
+    private String reprovisionFingerprint(VietQrBankAccountCommandRequest request) {
+        return hash(request.bankCode().trim().toUpperCase(Locale.ROOT) + ":"
+                + hash(request.accountNumber().trim()) + ":" + last4(request.accountNumber().trim()));
     }
 
     @Transactional
@@ -714,6 +773,15 @@ public class OpsVietnamPaymentService {
     }
 
     private void validateBankAccount(VietQrBankAccountCreateRequest request) {
+        validateBankAccountFields(request);
+        requireIntegerRange(request.dailyCapVnd(), BigDecimal.valueOf(1_000_000),
+                BigDecimal.valueOf(10_000_000_000L), "VIETQR_DAILY_CAP_OUT_OF_RANGE");
+    }
+
+    /**
+     * 账户身份字段校验(不含日限额):创建与 REPROVISION 共用同一套规则与脱敏约定。
+     */
+    private void validateBankAccountFields(VietQrBankAccountCreateRequest request) {
         if (request == null || !StringUtils.hasText(request.bankCode())
                 || !request.bankCode().trim().matches("[A-Za-z0-9_-]{2,16}")
                 || !StringUtils.hasText(request.bankName()) || request.bankName().trim().length() > 80
@@ -722,8 +790,6 @@ public class OpsVietnamPaymentService {
                 || !request.accountNumber().trim().matches("[0-9]{6,34}")) {
             validation("VIETQR_BANK_ACCOUNT_INVALID");
         }
-        requireIntegerRange(request.dailyCapVnd(), BigDecimal.valueOf(1_000_000),
-                BigDecimal.valueOf(10_000_000_000L), "VIETQR_DAILY_CAP_OUT_OF_RANGE");
     }
 
     private BigDecimal reconciliationAmount(

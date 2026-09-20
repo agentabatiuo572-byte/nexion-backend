@@ -1966,6 +1966,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         String min = readText(minDef.configKey(), minDef.defaultValue());
         boolean killed = stakingPoolKilled(pool);
         boolean enabled = stakingPoolEnabled(pool);
+        // 对客可售必须并入整池闸:此前只看档位级 killed/enabled,于是 J1 整池熔断时
+        // PC 四档仍显示"营业中",而 App(AppStakingService.policy)已按 globalGateEnabled()
+        // 停售 —— 同一条产品两个状态。enabled/killed/status/statusLabel 保留为档位自身
+        // 配置状态,运营才能区分"产品配置启用"与"对客实际可售"。
+        boolean globalGateOn = stakingGateOn();
+        boolean sellable = enabled && !killed && globalGateOn;
+        String blockedBy = globalGateOn ? (killed ? "TIER_KILLED" : enabled ? null : "TIER_DISABLED")
+                : "GLOBAL_GATE";
         return map(
                 "product", pool.product(),
                 "tierKey", pool.tierKey(),
@@ -1981,6 +1989,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 "lockedDisplay", displayStakingLocked(pool.lockedUsd()),
                 "enabled", enabled,
                 "killed", killed,
+                "sellable", sellable,
+                "blockedBy", blockedBy,
                 "status", killed ? "killed" : enabled ? "active" : "stopped",
                 "statusLabel", killed ? "已熔断" : enabled ? "营业中" : "已停售",
                 "statusTone", killed ? "bad" : enabled ? "ok" : "dim",

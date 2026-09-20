@@ -206,6 +206,7 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("currentMonth", currentMonth);
         response.put("currentPhase", currentPhaseForRhythm(currentMonth, totalMonths));
         response.put("rhythm", rhythmOverview());
+        response.put("schedule", phaseSchedule());
         response.put("phaseConfig", phaseConfig());
         Map<String, Object> activeDials = activeDials();
         response.put("dialCount", activeDials.size());
@@ -2087,6 +2088,17 @@ public class OpsGrowthService implements AuditReplayable {
         if (!validTransition) {
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
+        // 转入 ongoing = 对用户发布。App 的三语文案来自 growth.content.localized,
+        // 缺 zh/vi 时 AppGrowthEngagementMapper.eventState 会静默回退事件原文
+        // (中文 App 显示 "Daily Lucky Spin")。发布前必须填全,否则不该发布。
+        // en 允许回退原文,不校验。
+        if ("ongoing".equals(status)) {
+            List<Map<String, Object>> missing = eventLocalizedContentGaps(id);
+            if (!missing.isEmpty()) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                        "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
+            }
+        }
         if ("ongoing".equals(status) && rewardFlow(eventReward(id)).signum() > 0
                 && coverageBelowRedline()) {
             return coverageRedline();
@@ -3777,12 +3789,38 @@ public class OpsGrowthService implements AuditReplayable {
         response.put("currentPhase", currentPhase);
         response.put("phaseProgressPct", phaseProgressPct);
         response.put("options", RHYTHM_TOTAL_OPTIONS);
+        response.put("schedule", phaseSchedule());
         response.put("sources", List.of(
                 "nx_config_item:" + RHYTHM_TOTAL_MONTHS_KEY,
                 "nx_config_item:" + RHYTHM_CURRENT_MONTH_KEY,
                 "nx_config_item:" + RHYTHM_PHASE_PROGRESS_KEY,
-                "nx_config_item:" + CURRENT_MONTH_KEY));
+                "nx_config_item:" + CURRENT_MONTH_KEY,
+                "nx_config_item:" + CONTROL_PREFIX + "schedule"));
         return response;
+    }
+
+    /**
+     * H1 排程的权威事实,页头与「Phase 切换控制」同源。
+     *
+     * <p>此前页头把「每月自动推进」写死成常量,与下方控制项读的
+     * growth.phase.control.schedule 无关 —— 同一页可以一边声称自动推进、一边显示排程未设置。</p>
+     *
+     * <p>{@code automatic} 恒为 false:仓库内没有任何 H1 月度自动推进实现。currentMonth 只由
+     * 运营经 updateRhythmParam 显式改写,唯一的 growth 域 @Scheduled 是 H2 试用生命周期。
+     * 所以未配置排程时不声称自动,已配置时也只陈述配置原文,不编造 cron/时区/下次执行时刻。</p>
+     */
+    private Map<String, Object> phaseSchedule() {
+        String expression = configFacade.activeValue(CONTROL_PREFIX + "schedule")
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .orElse(null);
+        Map<String, Object> schedule = new LinkedHashMap<>();
+        schedule.put("configured", expression != null);
+        schedule.put("expression", expression);
+        schedule.put("timezone", null);
+        schedule.put("nextAdvanceAt", null);
+        schedule.put("automatic", false);
+        return schedule;
     }
 
     private int rhythmTotalMonths() {
@@ -5044,6 +5082,31 @@ public class OpsGrowthService implements AuditReplayable {
         Object value = root.get(key);
         if (value instanceof Map<?, ?> map) return new LinkedHashMap<>((Map<String, Object>) map);
         return new LinkedHashMap<>();
+    }
+
+    /** H4 事件必须显式配置的语言:en 允许回退事件原文,zh/vi 必须人工填写。 */
+    private static final List<String> REQUIRED_EVENT_LOCALES = List.of("zh", "vi");
+    private static final List<String> REQUIRED_EVENT_FIELDS = List.of("name", "description", "rewardName");
+
+    /**
+     * 该事件缺哪些 locale/field,是"能否发布"的唯一判定来源。
+     *
+     * <p>PC 从同一响应的 contentLocales 派生同一份清单;这里给出发布门的判定,
+     * 两侧读同一份 growth.content.localized,不存在第二套真相。</p>
+     */
+    private List<Map<String, Object>> eventLocalizedContentGaps(String eventCode) {
+        Map<String, Object> eventContent = localizedBranch(localizedContent(), "event");
+        Map<String, Object> item = localizedBranch(eventContent, eventCode);
+        List<Map<String, Object>> missing = new ArrayList<>();
+        for (String locale : REQUIRED_EVENT_LOCALES) {
+            Map<String, Object> languages = localizedBranch(item, locale);
+            for (String field : REQUIRED_EVENT_FIELDS) {
+                if (!StringUtils.hasText(String.valueOf(languages.getOrDefault(field, "")))) {
+                    missing.add(row("eventCode", eventCode, "field", field, "locale", locale));
+                }
+            }
+        }
+        return missing;
     }
 
     private ApiResult<Map<String, Object>> updateLocalizedContent(
