@@ -10,6 +10,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.application.QuestCompletionFactConsumer.CompletionResult;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
@@ -34,7 +35,8 @@ class AppShareEventServiceTest {
     private final AppGrowthEngagementService service = new AppGrowthEngagementService(
             mapper, mock(VoucherGrantFacade.class), mock(GrowthRhythmFacade.class),
             mock(TreasuryCoverageFacade.class), idempotency, audit,
-            outbox, null, sandbox, factConsumer, java.util.Optional.empty(), null);
+            outbox, null, sandbox, factConsumer, mock(StreakPerkBusinessAvailabilityFacade.class),
+            java.util.Optional.empty(), null);
 
     @BeforeEach
     void setUp() {

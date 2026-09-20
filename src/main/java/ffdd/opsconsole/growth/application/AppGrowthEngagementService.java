@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade.VoucherGrantCommand;
@@ -66,6 +67,16 @@ public class AppGrowthEngagementService {
     private static final Set<String> SHARE_SURFACES = Set.of(
             "team_hero", "poster_sheet", "share_sheet", "proof");
 
+    /**
+     * 连签增益里依赖业务的那些目标路径。
+     *
+     * <p>路径来自 {@code nx_streak_power_up.target_path} 的权威定义(见
+     * 20260722_h_domain_closure.sql 的种子);此处只做「这条权益依赖哪个业务」的归类,
+     * 不决定「那个业务现在开不开」——后者由 StreakPerkBusinessAvailabilityFacade 回答。</p>
+     */
+    private static final Set<String> STAKING_PERK_PATHS = Set.of("/wallet/staking");
+    private static final Set<String> GENESIS_PERK_PATHS = Set.of("/market/genesis");
+
     private final AppGrowthEngagementMapper mapper;
     private final VoucherGrantFacade voucherGrantFacade;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -77,6 +88,7 @@ public class AppGrowthEngagementService {
 
     private final AppGrowthWheelSandboxService sandboxService;
     private final QuestCompletionFactConsumer questFactConsumer;
+    private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
 
     /** The run-fenced projection is absent from production-only deployments.
      * Optional is constructor-resolved by Spring and avoids mutable field injection. */
@@ -96,11 +108,13 @@ public class AppGrowthEngagementService {
             EarningsReleaseService earningsReleaseService,
             AppGrowthWheelSandboxService sandboxService,
             QuestCompletionFactConsumer questFactConsumer,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
             Environment environment) {
         this(mapper, voucherGrantFacade, growthRhythmFacade, coverageFacade, idempotencyService,
                 auditLogService, outboxService, earningsReleaseService, sandboxService, questFactConsumer,
-                voucherSandboxService, environment, Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
+                streakPerkAvailability, voucherSandboxService, environment,
+                Clock.system(DateTimeFormatConfig.BUSINESS_ZONE));
     }
 
     @Autowired
@@ -115,6 +129,7 @@ public class AppGrowthEngagementService {
             EarningsReleaseService earningsReleaseService,
             AppGrowthWheelSandboxService sandboxService,
             QuestCompletionFactConsumer questFactConsumer,
+            StreakPerkBusinessAvailabilityFacade streakPerkAvailability,
             Optional<AppGrowthVoucherSandboxService> voucherSandboxService,
             Environment environment,
             Clock clock) {
@@ -128,6 +143,7 @@ public class AppGrowthEngagementService {
         this.earningsReleaseService = earningsReleaseService;
         this.sandboxService = sandboxService;
         this.questFactConsumer = questFactConsumer;
+        this.streakPerkAvailability = streakPerkAvailability;
         this.voucherSandboxService = voucherSandboxService;
         this.environment = environment;
         this.clock = clock;
@@ -267,9 +283,41 @@ public class AppGrowthEngagementService {
                 "earningMilestones", safeList(mapper.earningMilestoneState(userId)),
                 "badgeAchievements", safeList(mapper.achievementState(userId)),
                 "rules", safeList(mapper.checkInRuleState()),
-                "powerUps", safeList(mapper.streakPowerUpState(userId)),
+                "powerUps", streakPowerUpsWithAvailability(userId),
                 "topStreakers", safeList(mapper.topStreakers()),
                 "source", "nx_user_streak + nx_daily_check_in + NEX wallet + milestone ledgers + nx_achievement")));
+    }
+
+    /**
+     * 连签增益 + 业务可用性。
+     *
+     * <p>权益行本身来自 {@code nx_streak_power_up}(天数、目标路径、文案),这里只**附加**
+     * 一个 {@code businessAvailable}:该权益指向的业务当前是否对客可用。App 据此在业务
+     * 停用时不再给「激活」入口,PC 据此标停用态 —— 两端读同一份事实。</p>
+     *
+     * <p>只有指向受管业务的权益才带这个字段(其余为 null = 不适用),避免把「没有业务依赖」
+     * 与「业务停了」混成一件事。</p>
+     */
+    private List<Map<String, Object>> streakPowerUpsWithAvailability(Long userId) {
+        List<Map<String, Object>> rows = safeList(mapper.streakPowerUpState(userId));
+        if (rows.isEmpty()) return rows;
+        // 只在真的存在受管权益时才去读市场态,避免每次签到页都多打两枪无关查询。
+        boolean needsStaking = rows.stream()
+                .anyMatch(row -> STAKING_PERK_PATHS.contains(String.valueOf(row.get("targetPath"))));
+        boolean needsGenesis = rows.stream()
+                .anyMatch(row -> GENESIS_PERK_PATHS.contains(String.valueOf(row.get("targetPath"))));
+        Boolean staking = needsStaking ? streakPerkAvailability.stakingAvailable() : null;
+        Boolean genesis = needsGenesis ? streakPerkAvailability.genesisPrimaryAvailable() : null;
+        List<Map<String, Object>> enriched = new java.util.ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> next = new LinkedHashMap<>(row);
+            String path = String.valueOf(row.get("targetPath"));
+            Boolean available = STAKING_PERK_PATHS.contains(path) ? staking
+                    : GENESIS_PERK_PATHS.contains(path) ? genesis : null;
+            next.put("businessAvailable", available);
+            enriched.add(next);
+        }
+        return enriched;
     }
 
     public ApiResult<Map<String, Object>> voucherState(Long userId) {

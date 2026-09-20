@@ -40,8 +40,17 @@ public class OpsPlatformParamRegistryService {
             Map.entry("L", "数据与分析 BI"),
             Map.entry("M", "客服中心"));
 
+    /**
+     * 健康类参数键 → A3 实时指标名。两边必须是同一份事实:键名不同但指向同一管道时,
+     * 只允许在这里做一次映射,不允许各自维护一份取值逻辑。
+     */
+    private static final Map<String, String> HEALTH_METRIC_NAMES = Map.of(
+            "admin.health.event_pipeline", "事件待投递",
+            "admin.health.ledger_write", "资金账本可读性");
+
     private final PlatformParamRegistrySource configSource;
     private final PlatformEmergencyStateProvider emergencyStateProvider;
+    private final PlatformSystemHealthProvider healthProvider;
 
     public ApiResult<PlatformParamRegistryOverview> overview() {
         LinkedHashMap<String, PlatformParamRegistryRow> rows = new LinkedHashMap<>();
@@ -107,6 +116,12 @@ public class OpsPlatformParamRegistryService {
         if (owner == null) return null;
         String displayName = displayName(canonicalKey, owner);
         boolean secret = isSecretKey(canonicalKey);
+        // admin_system_health 组的行是**存量快照**(种于 2026-06-24),不是当前事实。
+        // 同一个事件管道 A3 实时现算、A5 读死行,于是同屏出现「严重积压」与「正常 · 延迟 1.2s」。
+        // 这些键改由 A3 的实时 provider 供值;取不到就如实标过期,绝不把旧值当当前值。
+        if ("admin_system_health".equalsIgnoreCase(item.configGroup())) {
+            return liveHealthRow(canonicalKey, displayName, owner);
+        }
         String description = secret
                 ? "该敏感参数由" + owner.label() + "在服务端维护；A5 只确认已配置，不返回原始值。"
                 : "该参数由" + owner.label() + "在服务端维护；A5 仅展示当前值和归属入口。";
@@ -128,8 +143,63 @@ public class OpsPlatformParamRegistryService {
                 "nx_config_item",
                 "READY",
                 item.updatedAt() == null ? "未知" : item.updatedAt().format(ISO),
-                !"admin_system_health".equalsIgnoreCase(item.configGroup()),
-                true);
+                true,
+                true,
+                false,
+                "",
+                false);
+    }
+
+    /**
+     * 健康类参数的实时取值。
+     *
+     * <p>键名与 {@code MybatisPlatformSystemHealthProvider.currentHealth()} 的指标名对应:
+     * {@code admin.health.event_pipeline} 即「事件待投递」。provider 每次现算并带 observedAt,
+     * 与 A3 页读的是同一份事实,因此两页不可能再给出相反结论。</p>
+     *
+     * <p>provider 抛错或指标缺失时返回 {@code stale=true} 且值为「读取失败 · 不推测正常状态」——
+     * 页面据此标「已过期」,而不是把 2026-06-24 的快照冒充当前权威值。</p>
+     */
+    private PlatformParamRegistryRow liveHealthRow(String canonicalKey, String displayName, Owner owner) {
+        String metricName = HEALTH_METRIC_NAMES.get(canonicalKey);
+        Map<String, Object> metric = null;
+        boolean failed = metricName == null;
+        if (!failed) {
+            try {
+                metric = healthProvider.currentHealth().stream()
+                        .filter(row -> metricName.equals(text(row.get("name"))))
+                        .findFirst()
+                        .orElse(null);
+                failed = metric == null;
+            } catch (RuntimeException ex) {
+                failed = true;
+            }
+        }
+        String value = failed
+                ? "读取失败 · 不推测正常状态"
+                : text(metric.get("metric"));
+        String observedAt = failed ? "" : text(metric.get("observedAt"));
+        boolean stale = failed || Boolean.TRUE.equals(metric.get("stale"));
+        return new PlatformParamRegistryRow(
+                canonicalKey,
+                displayName,
+                "该指标由 A3 系统健康实时采样(与 A3 页同一事实来源)；A5 不缓存、不代替实时告警。",
+                owner.domain(),
+                DOMAIN_LABELS.get(owner.domain()),
+                owner.code(),
+                owner.label(),
+                owner.route(),
+                StringUtils.hasText(value) ? value : "—",
+                "STRING",
+                "",
+                "A3 系统健康实时采样",
+                failed ? "PARTIAL" : "READY",
+                StringUtils.hasText(observedAt) ? observedAt : "未知",
+                false,
+                false,
+                true,
+                observedAt,
+                stale);
     }
 
     private boolean isSecretKey(String keyValue) {
@@ -164,7 +234,10 @@ public class OpsPlatformParamRegistryService {
                 "READY",
                 StringUtils.hasText(text(state.get("lastChange"))) ? text(state.get("lastChange")) : "未知",
                 true,
-                true);
+                true,
+                true,
+                StringUtils.hasText(text(state.get("lastChange"))) ? text(state.get("lastChange")) : "",
+                false);
     }
 
     private void merge(Map<String, PlatformParamRegistryRow> rows, PlatformParamRegistryRow candidate) {

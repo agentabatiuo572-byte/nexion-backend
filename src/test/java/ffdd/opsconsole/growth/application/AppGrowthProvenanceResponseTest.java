@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.mapper.AppGrowthEngagementMapper;
@@ -31,6 +32,7 @@ class AppGrowthProvenanceResponseTest {
             null,
             null,
             null,
+            mock(StreakPerkBusinessAvailabilityFacade.class),
             java.util.Optional.empty(),
             null);
 

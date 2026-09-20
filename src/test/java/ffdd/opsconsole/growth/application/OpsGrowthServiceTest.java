@@ -26,6 +26,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
@@ -241,7 +242,8 @@ class OpsGrowthServiceTest {
                     Optional.empty(),
                     lockMapper,
                     null,
-                    Optional.empty());
+                    Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
 
     @BeforeEach
     void stubLocksNoActive() {
@@ -1830,7 +1832,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
 
         ApiResult<Map<String, Object>> rhythm = realOnlyService.rhythm();
         ApiResult<Map<String, Object>> phases = realOnlyService.phases();
@@ -1868,7 +1871,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
 
         ApiResult<Map<String, Object>> trials = realOnlyService.trials();
         ApiResult<Map<String, Object>> checkIn = realOnlyService.checkIn();
@@ -2117,7 +2121,8 @@ class OpsGrowthServiceTest {
                 Optional.of(voucherMapper),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
 
         ApiResult<Map<String, Object>> vouchers = voucherService.vouchers();
 
@@ -2142,7 +2147,8 @@ class OpsGrowthServiceTest {
                 Optional.of(voucherMapper),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
         Map<String, Object> createdRow = voucherDbRow("vc-test-25", "active");
         Map<String, Object> pausedRow = voucherDbRow("vc-test-25", "paused");
         when(voucherMapper.listVouchers()).thenReturn(
@@ -2301,7 +2307,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
     }
 
     private static DeviceSkuView trialSku(
@@ -2333,7 +2340,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
     }
 
     private OpsGrowthService serviceWithConfigAndMapper(
@@ -2352,7 +2360,8 @@ class OpsGrowthServiceTest {
                 Optional.empty(),
                 lockMapper,
                 null,
-                Optional.empty());
+                Optional.empty(),
+                mock(StreakPerkBusinessAvailabilityFacade.class));
     }
 
     @SuppressWarnings("unchecked")

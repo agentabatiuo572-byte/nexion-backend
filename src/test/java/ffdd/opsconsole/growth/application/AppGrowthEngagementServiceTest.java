@@ -13,6 +13,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -63,8 +64,12 @@ class AppGrowthEngagementServiceTest {
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    /** 连签增益的业务可用性投影:测试里默认「可用」,具体用例按需覆盖。 */
+    private final StreakPerkBusinessAvailabilityFacade availability =
+            mock(StreakPerkBusinessAvailabilityFacade.class);
+
     private final AppGrowthEngagementService service =
-            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, null, null,
+            new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, null, null, availability,
                     java.util.Optional.empty(), null);
 
     @BeforeEach
@@ -88,7 +93,7 @@ class AppGrowthEngagementServiceTest {
         AppGrowthWheelSandboxService sandbox = mock(AppGrowthWheelSandboxService.class);
         when(sandbox.enabled()).thenReturn(true);
         AppGrowthEngagementService isolated = new AppGrowthEngagementService(
-                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null,
+                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null, availability,
                 java.util.Optional.empty(), null);
 
         assertThatThrownBy(() -> isolated.eventState(42L))
@@ -101,7 +106,7 @@ class AppGrowthEngagementServiceTest {
         AppGrowthWheelSandboxService sandbox = mock(AppGrowthWheelSandboxService.class);
         when(sandbox.unknownProfile()).thenReturn(true);
         AppGrowthEngagementService isolated = new AppGrowthEngagementService(
-                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null,
+                mapper, voucher, rhythm, coverage, idempotency, audit, outbox, null, sandbox, null, availability,
                 java.util.Optional.empty(), null);
 
         assertThatThrownBy(() -> isolated.checkIn(42L, "unknown-runtime-key"))
@@ -646,7 +651,7 @@ class AppGrowthEngagementServiceTest {
         EarningsReleaseService earningsRelease = mock(EarningsReleaseService.class);
         AppGrowthEngagementService developmentService = new AppGrowthEngagementService(
                 mapper, voucher, rhythm, coverage, idempotency, audit, outbox, earningsRelease,
-                null, null, java.util.Optional.empty(), environment);
+                null, null, availability, java.util.Optional.empty(), environment);
         LocalDate today = LocalDate.now(H5_BUSINESS_ZONE);
         when(mapper.lockActiveSandboxUser(42L)).thenReturn(42L);
         when(mapper.dailyMissionId()).thenReturn(2L);
@@ -884,7 +889,7 @@ class AppGrowthEngagementServiceTest {
 
     private AppGrowthEngagementService serviceAt(Clock clock) {
         return new AppGrowthEngagementService(mapper, voucher, rhythm, coverage, idempotency, audit, outbox,
-                null, null, null, java.util.Optional.empty(), null, clock);
+                null, null, null, availability, java.util.Optional.empty(), null, clock);
     }
     private DayOneSnapshot dayOneSnapshot(
             String status, int requiredTaskCount, LocalDateTime enteredAt, LocalDateTime eligibleUntil,

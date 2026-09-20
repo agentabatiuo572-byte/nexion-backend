@@ -16,7 +16,10 @@ import org.junit.jupiter.api.Test;
 class OpsPlatformParamRegistryServiceTest {
     private final PlatformParamRegistrySource source = mock(PlatformParamRegistrySource.class);
     private final PlatformEmergencyStateProvider emergency = mock(PlatformEmergencyStateProvider.class);
-    private final OpsPlatformParamRegistryService service = new OpsPlatformParamRegistryService(source, emergency);
+    /** A3 系统健康的实时来源:健康类参数键由它供值,不再读 nx_config_item 的存量快照。 */
+    private final PlatformSystemHealthProvider health = mock(PlatformSystemHealthProvider.class);
+    private final OpsPlatformParamRegistryService service =
+            new OpsPlatformParamRegistryService(source, emergency, health);
 
     @Test
     void registryUsesAllActiveServerConfigsAndAuthoritativeEmergencyState() {
@@ -274,6 +277,60 @@ class OpsPlatformParamRegistryServiceTest {
             assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
             assertThat(overview.sources().get(0).detail()).contains("1 项", "未展示");
         }
+    }
+
+    /**
+     * 健康类参数必须来自 A3 的实时采样,不得把 nx_config_item 的存量快照当当前值。
+     *
+     * 缺陷原形:A3 显示「事件待投递 严重异常 8 条 · 最久 41481 秒」,A5 同屏显示
+     * 2026-06-24 的「正常 · 延迟 1.2s」并标成「当前服务端值」。
+     */
+    @Test
+    void healthParametersReportTheLiveSamplingInsteadOfTheStoredSnapshot() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("admin.health.event_pipeline", "正常 · 延迟 1.2s", "admin_system_health"),
+                item("admin.health.ledger_write", "正常 · p99 84ms", "admin_system_health")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+        when(health.currentHealth()).thenReturn(List.of(
+                Map.of("name", "事件待投递", "tone", "bad", "metric", "8 条 · 最久 41481 秒",
+                        "source", "nx_event_outbox", "observedAt", "2026-09-20T04:41:07", "stale", false),
+                Map.of("name", "资金账本可读性", "tone", "ok", "metric", "24h 120 笔 · 查询 12ms",
+                        "source", "nx_wallet_ledger", "observedAt", "2026-09-20T04:41:07", "stale", false)));
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).hasSize(2);
+        assertThat(overview.rows()).allSatisfy(row -> {
+            assertThat(row.live()).isTrue();
+            assertThat(row.stale()).isFalse();
+            assertThat(row.observedAt()).isEqualTo("2026-09-20T04:41:07");
+        });
+        assertThat(overview.rows())
+                .filteredOn(row -> row.canonicalKey().equals("admin.health.event_pipeline"))
+                .singleElement()
+                .satisfies(row -> {
+                    // 存量的「正常 · 延迟 1.2s」绝不能再出现。
+                    assertThat(row.currentValue()).isEqualTo("8 条 · 最久 41481 秒");
+                    assertThat(row.currentValue()).doesNotContain("1.2s");
+                });
+    }
+
+    /** 实时采样读不到时必须标过期,不得把旧快照冒充当前权威值。 */
+    @Test
+    void healthParametersMarkTheRowStaleWhenTheLiveProbeIsUnavailable() {
+        when(source.findAllActive()).thenReturn(List.of(
+                item("admin.health.event_pipeline", "正常 · 延迟 1.2s", "admin_system_health")));
+        when(emergency.currentKillSwitches()).thenReturn(List.of());
+        when(health.currentHealth()).thenThrow(new IllegalStateException("probe down"));
+
+        PlatformParamRegistryOverview overview = service.overview().getData();
+
+        assertThat(overview.rows()).singleElement().satisfies(row -> {
+            assertThat(row.stale()).isTrue();
+            assertThat(row.sourceStatus()).isEqualTo("PARTIAL");
+            assertThat(row.currentValue()).contains("读取失败");
+            assertThat(row.currentValue()).doesNotContain("1.2s");
+        });
     }
 
     private PlatformConfigItem item(String key, String value, String group) {

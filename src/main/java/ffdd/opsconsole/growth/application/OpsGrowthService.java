@@ -16,6 +16,7 @@ import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
+import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
@@ -196,6 +197,7 @@ public class OpsGrowthService implements AuditReplayable {
     private final AppTrialLifecycleService appTrialLifecycleService;
 
     private final Optional<OpsReferralRewardService> referralRewardService;
+    private final StreakPerkBusinessAvailabilityFacade streakPerkAvailability;
 
     public ApiResult<Map<String, Object>> phases() {
         ensurePhaseSeedData();
@@ -3502,9 +3504,35 @@ public class OpsGrowthService implements AuditReplayable {
         return row;
     }
 
+    /**
+     * 连签增益 + 业务可用性(PC 侧)。
+     *
+     * <p>与 App 的 {@code AppGrowthEngagementService.streakPowerUpsWithAvailability} 同源:
+     * 权益行来自 {@code nx_streak_power_up},可用性来自各域自己的权威读模型。PC 运营页据此
+     * 标出「该档指向的业务当前已停用」,不再让运营看到一条会承诺不可用入口的权益却毫不知情。</p>
+     */
     private List<Map<String, Object>> powerUps() {
-        return growthRows(GrowthQuestEventMapper::powerUps);
+        List<Map<String, Object>> rows = growthRows(GrowthQuestEventMapper::powerUps);
+        if (rows.isEmpty()) return rows;
+        boolean needsStaking = rows.stream()
+                .anyMatch(row -> STAKING_PERK_PATHS.contains(String.valueOf(row.get("downstream"))));
+        boolean needsGenesis = rows.stream()
+                .anyMatch(row -> GENESIS_PERK_PATHS.contains(String.valueOf(row.get("downstream"))));
+        Boolean staking = needsStaking ? streakPerkAvailability.stakingAvailable() : null;
+        Boolean genesis = needsGenesis ? streakPerkAvailability.genesisPrimaryAvailable() : null;
+        List<Map<String, Object>> enriched = new java.util.ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> next = new LinkedHashMap<>(row);
+            String path = String.valueOf(row.get("downstream"));
+            next.put("businessAvailable", STAKING_PERK_PATHS.contains(path) ? staking
+                    : GENESIS_PERK_PATHS.contains(path) ? genesis : null);
+            enriched.add(next);
+        }
+        return enriched;
     }
+
+    private static final Set<String> STAKING_PERK_PATHS = Set.of("/wallet/staking");
+    private static final Set<String> GENESIS_PERK_PATHS = Set.of("/market/genesis");
 
     private List<Map<String, Object>> earnMilestones() {
         return growthRows(GrowthQuestEventMapper::earnMilestones);
