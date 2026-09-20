@@ -790,7 +790,13 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getPublishedAtLabel(),
                 affected,
                 ackProgress,
-                entity.getBlockedCount() == null ? 0 : entity.getBlockedCount());
+                // 🔴 拦截数改读事件台账的「近 7 天」窗口(zentao #149)。
+                //   原读 nx_disclosure_jurisdiction.blocked_count —— 一个只增不减的累加列,
+                //   与上面两个来自 ack_status 的实时计数不同表、不同时间基准,于是同一行
+                //   能同时显示「受影响 0 / 待确认 0」和「拦截 17」。台账每条拦截一行且带
+                //   blocked_at,「本周」因此是可核验的时间窗,与覆盖人数同页不再矛盾。
+                disclosureAckStatusMapper.countBlocksSince(entity.getJurisdictionCode(),
+                        LocalDateTime.now().minusDays(7)));
     }
 
     private DisclosureChapterView toChapter(DisclosureChapterEntity entity) {
@@ -806,14 +812,23 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getEnBody());
     }
 
+    /**
+     * 受限动作的**单一状态源**。
+     *
+     * <p>此前 badge 文案读 {@code status_label} 列、按钮读派生出的 {@code active},
+     * 两者可能相反:提现行显示 {@code ACTIVE},按钮却是「已移出 · 纳入」——
+     * 同一行给出两个互斥答案,运营无法判断提现到底有没有被闸住(zentao #149)。
+     * 现在文案与色调都由 {@code active} 派生,列里的静态值只作为**未启用时的原因说明**
+     * 保留,不再参与「当前是否受限」的判断。
+     */
     private DisclosureGateActionView toGateAction(DisclosureGateActionEntity entity) {
         boolean active = !NEX_V2.equalsIgnoreCase(entity.getActionKey()) && Boolean.TRUE.equals(entity.getActive());
         return new DisclosureGateActionView(
                 entity.getActionKey(),
                 entity.getActionName(),
                 entity.getDescription(),
-                entity.getStatusLabel(),
-                entity.getTone(),
+                active ? "ACTIVE" : "REMOVED",
+                active ? entity.getTone() : "dim",
                 active);
     }
 

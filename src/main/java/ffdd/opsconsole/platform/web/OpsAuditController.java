@@ -30,6 +30,7 @@ import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationWithdrawRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionView;
+import ffdd.opsconsole.platform.dto.RetentionPreviewView;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -80,6 +81,15 @@ public class OpsAuditController {
         List<AuditLogRecord> rows = auditLogService.list(query);
         if (rows == null || rows.isEmpty()) return ApiResult.ok(null);
         return ApiResult.ok(retentionView(rows.get(0)));
+    }
+
+    @GetMapping("/retention-preview")
+    public ApiResult<RetentionPreviewView> retentionPreview() {
+        AuditRetentionService.RetentionPreview preview = auditRetentionService.preview();
+        return ApiResult.ok(new RetentionPreviewView(
+                preview.retentionMonths(), preview.eligibleRows(), preview.earliestExpireAt(),
+                preview.notYetExpiredRows(), preview.legacyRowsWithoutExpireAt(),
+                preview.archiveRequired(), preview.approvalAuthority()));
     }
 
     @PostMapping("/retention-runs")

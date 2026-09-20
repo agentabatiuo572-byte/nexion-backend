@@ -36,6 +36,53 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
             """)
     List<Long> lockExpiredForArchive(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
+    /**
+     * 与 {@link #lockExpiredForArchive} 完全同口径的计数,只是不加锁、不取行。
+     * 「立即清理」按钮在操作前必须能说清本次会动多少行,所以预览与执行必须共用同一组谓词;
+     * 任何一边单独改条件都会让预览数字与真实删除量分叉。
+     */
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_audit_log
+             WHERE is_deleted=0
+               AND expire_at IS NOT NULL
+               AND expire_at <= #{now}
+               AND action NOT LIKE 'A2_AUDIT_RETENTION_%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_audit_log_archive archive
+                    WHERE archive.original_audit_id=nx_audit_log.id)
+            """)
+    long countEligibleForArchive(@Param("now") LocalDateTime now);
+
+    /** 同口径下最早的一条 expire_at:操作前展示「最早可清理日期」用。 */
+    @Select("""
+            SELECT MIN(expire_at)
+              FROM nx_audit_log
+             WHERE is_deleted=0
+               AND expire_at IS NOT NULL
+               AND expire_at <= #{now}
+               AND action NOT LIKE 'A2_AUDIT_RETENTION_%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_audit_log_archive archive
+                    WHERE archive.original_audit_id=nx_audit_log.id)
+            """)
+    LocalDateTime earliestEligibleExpireAt(@Param("now") LocalDateTime now);
+
+    /** 已带 expire_at 但尚未到期:清理不会触及,用来证明「未满足保留期的数据无法被清理」。 */
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_audit_log
+             WHERE is_deleted=0
+               AND expire_at IS NOT NULL
+               AND expire_at > #{now}
+               AND action NOT LIKE 'A2_AUDIT_RETENTION_%'
+            """)
+    long countNotYetExpired(@Param("now") LocalDateTime now);
+
+    /** 政策上线前的历史行(无 expire_at):永远不参与归档。 */
+    @Select("SELECT COUNT(*) FROM nx_audit_log WHERE is_deleted=0 AND expire_at IS NULL")
+    long countLegacyWithoutExpireAt();
+
     @Insert("""
             INSERT IGNORE INTO nx_audit_log_archive
               (original_audit_id,retention_policy_months,expire_at,original_created_at,

@@ -874,7 +874,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return computeDownloadUrlValidationError(value);
         }
         if (paramKey.startsWith(ComputeConfigRegistry.PARAM_PREFIX + "download.")) {
-            return value.isBlank() || value.length() > 320 ? "COMPUTE_DOWNLOAD_TEXT_INVALID" : null;
+            // 与 PC 侧 lib/admin/installer-url.ts 的 E6_DOWNLOAD_COPY_PATTERN 同一口径:
+            // 只校验长度会让「！！！Download the desktop client...」这类测试标点写进库并
+            // 下发给用户端(zentao #45)。文案质量必须在服务端也拦一次 —— 前端门禁挡不住
+            // 直接调 API 的写入,也拦不住早已存在于库里的脏值。
+            return value.isBlank() || value.length() > COMPUTE_DOWNLOAD_TEXT_MAX_LENGTH
+                    || TEST_PUNCTUATION.matcher(value).find()
+                    ? "COMPUTE_DOWNLOAD_TEXT_INVALID" : null;
         }
         return "COMPUTE_PARAM_KEY_INVALID";
     }
@@ -892,6 +898,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private boolean isApprovedComputeDownloadUrl(String value) {
         return computeDownloadUrlValidationError(value) == null;
     }
+
+    /** 与 PC 侧一致的长度门。 */
+    private static final int COMPUTE_DOWNLOAD_TEXT_MAX_LENGTH = 320;
+
+    /**
+     * 连续测试标点(2 个及以上)。与 PC 侧 E6_DOWNLOAD_COPY_PATTERN 的正则同义:
+     * 单行正式文案里出现「！！」或「??」是未审内容,不是正式文案。
+     */
+    private static final Pattern TEST_PUNCTUATION = Pattern.compile("[!?\uFF01\uFF1F]{2,}");
 
     private String computeDownloadUrlValidationError(String value) {
         if (value == null || value.length() > 300 || value.isBlank()) {

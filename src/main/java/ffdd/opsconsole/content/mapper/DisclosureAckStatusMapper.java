@@ -134,6 +134,22 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
                          @Param("now") LocalDateTime now,
                          @Param("readBefore") LocalDateTime readBefore);
 
+    /**
+     * 拦截事件计数 —— **台账是唯一口径**(zentao #149)。
+     *
+     * <p>{@code nx_disclosure_jurisdiction.blocked_count} 是一个只增不减的累加列:
+     * 它与受影响/已确认人数来自不同表、不同时间基准,于是同一页能同时出现
+     * 「受影响 0、待确认 0」和「拦截 17」,运营无法判断提现到底有没有被闸住。
+     * 台账 {@code nx_disclosure_gate_block_event} 每条拦截一行、带 {@code blocked_at},
+     * 因此「本周」是一个真实时间窗,可以和覆盖人数放在同一页而不自相矛盾。
+     */
+    @Select("""
+            SELECT COUNT(*) FROM nx_disclosure_gate_block_event
+             WHERE jurisdiction_code = #{jurisdiction}
+               AND blocked_at >= #{from}
+            """)
+    long countBlocksSince(@Param("jurisdiction") String jurisdiction, @Param("from") LocalDateTime from);
+
     @Insert("""
             INSERT IGNORE INTO nx_disclosure_gate_block_event
               (user_id, jurisdiction_code, action_key, business_flow_id, blocked_at)

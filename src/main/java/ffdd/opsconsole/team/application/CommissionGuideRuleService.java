@@ -1,5 +1,6 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.team.domain.TeamCommissionCapabilities;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
@@ -55,8 +56,12 @@ public class CommissionGuideRuleService {
         guide.put("binary", binary());
         guide.put("leadership", leadership());
         // No peer/genesis event generator is deployed. Other categories' generators and
-        // F5 labels alone are not proof that peer/genesis generation exists.
-        guide.put("capabilities", Map.of("peer", false, "genesis", false));
+        // F5 labels alone are not proof that peer/genesis generation exists. The verdict
+        // lives in TeamCommissionCapabilities so the V-Rank ladder endpoint reports the
+        // same fact instead of letting the rank page imply these rewards are live (#79).
+        guide.put("capabilities", Map.of(
+                "peer", TeamCommissionCapabilities.PEER_DISPATCHED,
+                "genesis", TeamCommissionCapabilities.GENESIS_DISPATCHED));
         return guide;
     }
 

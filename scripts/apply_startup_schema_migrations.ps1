@@ -211,7 +211,23 @@ $migrations = @(
   # flow unavailable. Derive the single ACTIVE series from the ladder operators
   # already maintain; no-op when the ladder is absent or not in the state the
   # service itself accepts for initialization.
-  (Join-Path $root "scripts\migrations\20260920_genesis_active_series_provisioning.sql")
+  (Join-Path $root "scripts\migrations\20260920_genesis_active_series_provisioning.sql"),
+  # I3's cap policy copy said 「超出部分按 LIFO 淘汰」 while the mapper keeps the
+  # newest N rows (ROW_NUMBER ... ORDER BY created_at DESC) and drops the oldest.
+  # The wording was corrected in a migration that was never registered here, so
+  # the console kept serving the contradictory copy. Register it.
+  (Join-Path $root "scripts\migrations\20260920_i3_retention_policy_wording.sql"),
+  # Three published Nova push templates still carry the retired "Nexion" brand in
+  # all three languages, so real pushes kept showing it. Rewrite only rows that
+  # still match the whole token; the Java RetiredBrandGate now blocks new
+  # publishes of the same defect.
+  (Join-Path $root "scripts\migrations\20260920_i2_nova_brand_retire.sql"),
+  # E6's stored English download guide still led with test punctuation ("！！！Download
+  # ..."). The page already refused to ship it, but the dirty value stayed in the
+  # config table and was shown on every visit. Rewrite only the row that still leads
+  # with test punctuation; the server-side gate now rejects new writes of the same
+  # shape.
+  (Join-Path $root "scripts\migrations\20260920_e6_download_copy_test_punctuation_cleanup.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

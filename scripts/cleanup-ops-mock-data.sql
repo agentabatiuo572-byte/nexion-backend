@@ -47,6 +47,25 @@ SELECT id
  WHERE role_code NOT IN ('SUPER_ADMIN', 'OPS_ADMIN')
    AND REGEXP_LIKE(CONCAT_WS(' ', role_code, role_name, COALESCE(remark, '')), @cleanup_regex, 'i');
 
+-- 自动验收产生的临时角色(zentao #101)。
+--
+-- 用例运行器直接建角色并留下真实行:code 是随机后缀(M3RAMRP0ZDPJ / F2_RO_MRUBHW1P /
+-- K2_FLAG_2202430),remark 写着 "M3 reaccept temporary role" 之类,状态为启用、账号数 0。
+-- 上面那条正则按「测试词」匹配,这些 code 里没有测试词,所以一条都没被清掉。
+--
+-- 判据改为**结构性**而非词表:code 匹配自动生成后缀形状(大写字母数字混排的长随机段),
+-- 且 **零账号绑定**(nx_admin_role_relation 无有效行)。零绑定是硬条件 —— 任何被真实账号
+-- 引用的角色无论 code 长什么样都不会进清理集,内置与业务自定义角色因此不会被误删。
+INSERT IGNORE INTO tmp_ops_mock_role (role_id)
+SELECT r.id
+  FROM nx_admin_role r
+ WHERE r.is_deleted = 0
+   AND r.role_code NOT IN ('SUPER_ADMIN', 'OPS_ADMIN')
+   AND r.role_code REGEXP '^(M3|F2_RO|K2_FLAG|K[0-9]_FLAG)[A-Z0-9_]{4,}$'
+   AND NOT EXISTS (
+       SELECT 1 FROM nx_admin_role_relation rr
+        WHERE rr.role_id = r.id AND COALESCE(rr.is_deleted, 0) = 0);
+
 UPDATE nx_admin_role_relation rr
   LEFT JOIN tmp_ops_mock_admin a ON a.admin_id = rr.admin_id
   LEFT JOIN tmp_ops_mock_role r ON r.role_id = rr.role_id

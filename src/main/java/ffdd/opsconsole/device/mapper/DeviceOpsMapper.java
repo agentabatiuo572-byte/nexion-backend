@@ -111,6 +111,22 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                AND """ + E5_RUNTIME_ONLINE)
     long countOnlineDevices();
 
+    /**
+     * 累计已完成的用户提现总额(USDT)。
+     *
+     * <p>对外页面的「已付」此前由运营配置的设备数 × 公布档位推算而来(zentao #59):
+     * 那是把人工配置当财务事实发布。这里给出可核验口径 —— 只统计真正完成的提现单,
+     * 含手续费与不含手续费的差别不影响「已付给用户」的语义,故取 amount。
+     */
+    @Select("""
+            SELECT COALESCE(SUM(amount), 0)
+              FROM nx_withdrawal_order
+             WHERE is_deleted = 0
+               AND status = 'COMPLETED'
+               AND completed_at IS NOT NULL
+            """)
+    BigDecimal completedWithdrawalTotal();
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_user_device d

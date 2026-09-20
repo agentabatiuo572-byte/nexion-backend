@@ -6,6 +6,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
+import ffdd.opsconsole.team.domain.TeamCommissionCapabilities;
 import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
@@ -81,6 +82,12 @@ public class AppVRankController {
                 "promotionMode", "STEPWISE",
                 "conditionSemantics", "POSITIVE_FIELDS_ONLY"));
         response.put("prizeName", configuredPrizeName());
+        // 等级阶梯里的 peerBonus 是**该等级配置的比例**,不代表今天会派发。把服务端
+        // 能力位一并下发,App 才能在展示「平级 5%」的同时标注当前不派发 —— 否则
+        // /pages/team/rank 会把未开放的收益写成已生效权益,与玩法说明自相矛盾(#79)。
+        response.put("capabilities", Map.of(
+                "peer", TeamCommissionCapabilities.PEER_DISPATCHED,
+                "genesis", TeamCommissionCapabilities.GENESIS_DISPATCHED));
         response.put("ranks", rankRows(configuredRankTitles()));
         return ApiResult.ok(response);
     }

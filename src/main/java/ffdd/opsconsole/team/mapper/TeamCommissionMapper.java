@@ -583,6 +583,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            ROW_NUMBER() OVER (ORDER BY volume DESC, id ASC) AS rank_no
                       FROM nx_team_member
                      WHERE is_deleted = 0
+                       AND volume > 0
                        AND volume >= #{minVolumeUsd}
                    ) ranked
               LEFT JOIN nx_team_leaderboard_action a

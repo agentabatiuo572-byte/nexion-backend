@@ -24,6 +24,7 @@ import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -644,6 +645,12 @@ public class OpsNovaService {
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
         }
+        // 退役品牌门禁:模板一旦发布就会真实推送给用户,三语正文里的旧品牌必须在这里拦住。
+        // 与「三语齐全」是两件事 —— social/welcome/wrapped 三条存量模板三语都在,正文却仍是
+        // 旧品牌,所以只查完整性的门放它们过去了(#147)。
+        if ("PUBLISHED".equals(status) && carriesRetiredBrand(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
+        }
         if (!novaRepository.updateTemplateStatusIfCurrent(
                 normalizedChannel, current.get().status(), status,
                 operator(request.operator()), request.reason().trim())) {
@@ -957,6 +964,14 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         return null;
+    }
+
+    /** 三语标题与正文中任一仍带退役品牌,即不允许发布。 */
+    private boolean carriesRetiredBrand(NovaTemplateView template) {
+        return RetiredBrandGate.anyCarriesRetiredBrand(
+                template.titleZh(), template.bodyZh(),
+                template.titleVi(), template.bodyVi(),
+                template.titleEn(), template.bodyEn());
     }
 
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {

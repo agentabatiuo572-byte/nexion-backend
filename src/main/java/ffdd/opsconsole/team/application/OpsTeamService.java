@@ -1954,8 +1954,10 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> leaderboardPodium() {
-        // 领奖台与榜单结算同口径:低于 F.leaderboard.minUsd 的成员不进榜。
+        // 领奖台与榜单结算同口径:低于 F.leaderboard.minUsd 的成员不进榜,且业绩必须为正。
         // 否则全员业绩为 0 时仍会产出第 1/2/3 名,误导运营并给派发提供错误对象(#133)。
+        // 门槛未配置时不能退化成 0 —— 0 会让「零业绩」恰好满足 `volume >= 0`,领奖台照样满员;
+        // 未配置意味着没有权威门槛,此时只保留「正业绩」这一条不可协商的底线。
         return commissionRepository.leaderboardPodium(leaderboardMinVolumeUsd(), 3).stream()
                 .map(this::normalizePodium)
                 .toList();

@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -29,10 +30,11 @@ class GrowthPublicStatsServiceTest {
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final UserOpsMapper users = mock(UserOpsMapper.class);
     private final AuditLogService audit = mock(AuditLogService.class);
+    private final DeviceOpsMapper deviceOps = mock(DeviceOpsMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-07T10:15:30Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
     private final GrowthPublicStatsService service = new GrowthPublicStatsService(
-            config, users, audit, new ObjectMapper(), clock, environment);
+            config, users, deviceOps, audit, new ObjectMapper(), clock, environment);
 
     @BeforeEach
     void setUp() {
@@ -83,7 +85,7 @@ class GrowthPublicStatsServiceTest {
                 .withProperty("NEXION_ACCEPTANCE_RUN_ID", "home-public-stats-20260819");
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, audit, new ObjectMapper(), clock, sandbox);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -103,7 +105,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment development = new MockEnvironment();
         development.setActiveProfiles("dev");
         GrowthPublicStatsService developmentService = new GrowthPublicStatsService(
-                config, users, audit, new ObjectMapper(), clock, development);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, development);
 
         ApiResult<Map<String, Object>> result = developmentService.publicProjection();
 
@@ -172,7 +174,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment sandbox = new MockEnvironment();
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, audit, new ObjectMapper(), clock, sandbox);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -187,7 +189,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment mixed = new MockEnvironment();
         mixed.setActiveProfiles("dev", "prod");
         GrowthPublicStatsService mixedService = new GrowthPublicStatsService(
-                config, users, audit, new ObjectMapper(), clock, mixed);
+                config, users, deviceOps, audit, new ObjectMapper(), clock, mixed);
 
         ApiResult<Map<String, Object>> result = mixedService.publicProjection();
 
@@ -299,7 +301,7 @@ class GrowthPublicStatsServiceTest {
     private GrowthPublicStatsService sandboxService(String runId) {
         MockEnvironment sandbox = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", runId);
         sandbox.setActiveProfiles("test");
-        return new GrowthPublicStatsService(config, users, audit, new ObjectMapper(), clock, sandbox);
+        return new GrowthPublicStatsService(config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox);
     }
 
     private void stubSandbox(String runId, int fleetDevices) {

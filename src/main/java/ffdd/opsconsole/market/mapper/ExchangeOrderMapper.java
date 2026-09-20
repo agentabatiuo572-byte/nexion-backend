@@ -98,7 +98,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超 cap 排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
                      ELSE NULL
                    END AS gateReason,
                    CASE UPPER(eo.status)
@@ -169,7 +169,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超 cap 排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
                      ELSE NULL
                    END AS gateReason,
                    CASE UPPER(eo.status)

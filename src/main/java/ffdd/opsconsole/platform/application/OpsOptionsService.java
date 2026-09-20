@@ -50,7 +50,7 @@ public class OpsOptionsService {
             case "report-status", "report-statuses" -> ApiResult.ok(reportStatusOptions());
             case "media-usage" -> ApiResult.ok(options("商品主图", "sku-image", "商品视频", "sku-video", "内容封面", "content-cover", "公告附件", "notice-attachment"));
             case "exchange-queue-mode", "exchange-queue-modes" -> ApiResult.ok(options("排队", "QUEUE", "拒绝", "REJECT"));
-            case "exchange-param", "exchange-params" -> ApiResult.ok(options("单用户日额度", "userDailyCap", "平台日额度", "platformDailyCap", "兑换手续费率", "fee", "最低手续费", "feeMin", "超 cap 处置策略", "queueMode"));
+            case "exchange-param", "exchange-params" -> ApiResult.ok(options("单用户日额度", "userDailyCap", "平台日额度", "platformDailyCap", "兑换手续费率", "fee", "最低手续费", "feeMin", "超额度处置策略", "queueMode"));
             case "exchange-gate", "exchange-gates" -> ApiResult.ok(options("单用户超限", "user", "平台超限", "platform", "地域封锁", "geo"));
             case "device-status" -> ApiResult.ok(options("空闲", "OFFLINE", "运行中", "ACTIVE", "暂停", "SUSPENDED", "回收站", "RECYCLED"));
             case "datacenters", "datacenter" -> ApiResult.ok(datacenterOptions());

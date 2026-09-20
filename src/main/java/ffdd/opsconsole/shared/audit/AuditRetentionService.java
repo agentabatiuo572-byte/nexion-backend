@@ -68,4 +68,36 @@ public class AuditRetentionService {
 
     public record RetentionRun(
             int retentionMonths, LocalDateTime cutoff, int affectedRows, int archivedRows, boolean lockAcquired) {}
+
+    /**
+     * 一次清理的操作前范围。与 {@link RetentionRun} 同处 shared 层:platform 的 web 层
+     * 依赖 shared,反向依赖会形成环,所以这里只带事实,HTTP 形状由控制器负责。
+     */
+    public record RetentionPreview(
+            int retentionMonths,
+            long eligibleRows,
+            LocalDateTime earliestExpireAt,
+            long notYetExpiredRows,
+            long legacyRowsWithoutExpireAt,
+            boolean archiveRequired,
+            String approvalAuthority) {}
+
+    /**
+     * 「立即清理」的操作前预览。
+     *
+     * 计数与最早日期走的是 {@link AuditLogMapper#lockExpiredForArchive} 的同一组谓词(见 mapper 注释),
+     * 因此预览数字与随后真实删除量不会分叉。执行该动作需要 {@code platform_a2_write},由控制器上的
+     * {@code @PreAuthorize} 强制,这里只把它作为可见信息回给页面。
+     */
+    public RetentionPreview preview() {
+        LocalDateTime now = LocalDateTime.now();
+        return new RetentionPreview(
+                policy.retentionMonths(),
+                mapper.countEligibleForArchive(now),
+                mapper.earliestEligibleExpireAt(now),
+                mapper.countNotYetExpired(now),
+                mapper.countLegacyWithoutExpireAt(),
+                true,
+                "platform_a2_write");
+    }
 }

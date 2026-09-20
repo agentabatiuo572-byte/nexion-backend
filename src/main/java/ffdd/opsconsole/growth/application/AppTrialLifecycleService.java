@@ -116,8 +116,6 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_COOLDOWN_ACTIVE");
         }
         int days = positiveInt(policy, "trialDays", 3);
-        BigDecimal dailyUsdt = decimal(policy, "shadowDailyUSD", "38.52");
-        BigDecimal dailyNex = decimal(policy, "shadowDailyNEX", "65");
         BigDecimal offsetCap = decimal(policy, "trialOffsetCapUSD",
                 policy.getOrDefault("discountCapUSD", "50"));
         String productCode = trialProductCode(policy);
@@ -131,6 +129,17 @@ public class AppTrialLifecycleService {
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
+        // 🔴 试用抵扣金必须与该商品的**权威日收益**同源(zentao #78)。
+        //   此前 dailyUsdt 取运营配置的 `shadowDailyUSD`(默认 38.52),与商城 S1 的
+        //   实际 $1.00/天相差约 38.5 倍,于是同一屏出现「3 天预计抵扣金 $116」和
+        //   「S1 上限 $1.00/d」。现在直接读 nx_product 的 estimated_daily_usdt / daily_nex,
+        //   配置值只在商品未配收益时兜底(并在快照里标明来源)。
+        BigDecimal productDailyUsdt = positiveOrNull(product.estimatedDailyUsdt());
+        BigDecimal productDailyNex = positiveOrNull(product.dailyNex());
+        BigDecimal dailyUsdt = productDailyUsdt != null ? productDailyUsdt
+                : decimal(policy, "shadowDailyUSD", "0");
+        BigDecimal dailyNex = productDailyNex != null ? productDailyNex
+                : decimal(policy, "shadowDailyNEX", "0");
         int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
         if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
             return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
@@ -142,7 +151,10 @@ public class AppTrialLifecycleService {
         int seatsAfterClaim = seatsAfterClaimValue;
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=NEXION_USDT_WALLET,productCode=" + productCode
-                + ",trialDays=" + days + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
+                + ",trialDays=" + days
+                + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
+                + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
+                + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
                 + ",offsetCapUsdt=" + offsetCap + ",priceUsdt=" + price
                 + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
         int changed = existing == null
@@ -418,6 +430,11 @@ public class AppTrialLifecycleService {
                 .setScale(6, RoundingMode.DOWN);
     }
 
+    /** 商品未配收益时列为 0/NULL —— 只有正值才算「有权威收益」。 */
+    private static BigDecimal positiveOrNull(BigDecimal value) {
+        return value != null && value.signum() > 0 ? value : null;
+    }
+
     private boolean validExpectedAmount(BigDecimal expected) {
         return expected != null && expected.signum() >= 0 && expected.scale() <= 2
                 && expected.compareTo(MAX_EXPECTED_AMOUNT) <= 0;
@@ -546,7 +563,11 @@ public class AppTrialLifecycleService {
                 "discountRate", "0.15", "discountCapUSD", "20", "trialOffsetCapUSD", "50",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
-                "shadowDailyUSD", "38.52", "shadowDailyNEX", "65", "cooldownDays", "30",
+                // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
+                //   真正的日收益来自该商品的 estimated_daily_usdt / daily_nex,这两个键只在
+                //   商品未配收益时兜底。给它们一个显式 0 而不是一个可观金额,运营看到
+                //   「0 + 提示」才会去查商品配置,而不是误以为 38.52 是权威值。
+                "shadowDailyUSD", "0", "shadowDailyNEX", "0", "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
                 "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
                 "seatsLeftToday", "0");

@@ -1683,6 +1683,30 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return Boolean.TRUE.equals(parseBooleanValue(readText(PAUSED_KEY, "false")));
     }
 
+    /**
+     * 引擎是否暂停。供 {@link NexMarketPriceSampler} 判定「暂停期间不采样」——
+     * 暂停时权威价格不变,写重复采样点会把静止状态伪装成「市场仍在运行」(zentao #66)。
+     */
+    boolean isEnginePaused() {
+        return enginePaused();
+    }
+
+    /**
+     * 最新现价相对上一点的涨跌幅,供采样器落点用。
+     *
+     * <p>取不到上一点时返回 0 —— 曲线的第一个采样点没有「相对变化」,
+     * 与 {@code curveHistory} 对首点的处理一致。
+     */
+    BigDecimal latestPriceDeltaPercent() {
+        List<NexPricePointView> points = latestPricePointsChronological(2);
+        if (points.size() < 2) {
+            return BigDecimal.ZERO;
+        }
+        NexPricePointView latest = points.get(points.size() - 1);
+        NexPricePointView previous = points.get(points.size() - 2);
+        return deltaPercent(safeBig(previous.priceUsdt()), safeBig(latest.priceUsdt()));
+    }
+
     private BigDecimal currentPrice() {
         return marketRepository.latestNexUsdtPrice()
                 .orElse(BigDecimal.ZERO);
@@ -2846,7 +2870,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "范围 0%-10% · 降费=放大流出过红线", true, null),
                 cap("feeMin", "最低手续费", "开费后小额兑换的保底费", feeMin, displayUsd(feeMin),
                         "范围 $0-5 · 随费率启用生效", true, null),
-                cap("queueMode", "超 cap 处置策略", "用户超 cap 时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
+                cap("queueMode", "超额度处置策略", "用户当日兑换超过额度时进次日队列还是直接拒绝", queueMode, displayQueueMode(queueMode),
                         "枚举: 排队 / 拒绝", "QUEUE".equals(queueMode), null));
     }
 

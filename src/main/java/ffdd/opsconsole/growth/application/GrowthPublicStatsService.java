@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -38,6 +39,7 @@ public class GrowthPublicStatsService {
 
     private final PlatformConfigFacade config;
     private final UserOpsMapper users;
+    private final DeviceOpsMapper deviceOps;
     private final AuditLogService audit;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -69,7 +71,19 @@ public class GrowthPublicStatsService {
         return ApiResult.ok(response(version.get(), values.get(), dailyUsd.get(), realUserCount));
     }
 
-    /** Safe public projection. A missing/invalid aggregate remains unavailable rather than falling back. */
+    /**
+     * Safe public projection. A missing/invalid aggregate remains unavailable rather than falling back.
+     *
+     * <p><b>真实聚合(zentao #59)。</b>对外页面此前只能拿到运营手填的
+     * {@code fleetDevices} / {@code registeredUsersBase} / 月增长率,再由它们派生「日支付额」
+     * 「每秒支付流」「本月新增」等**事实性**指标 —— 等于把人工配置的规模当成实测数据对外发布,
+     * 并叠加人为抖动让数字「看起来有呼吸感」。这一节把可核验的服务端事实单独下发:
+     * {@code verified} 里的每个数都来自真实表聚合,并自带口径与统计时刻;消费方必须优先读它,
+     * 不得再拿配置值派生「已付 / 收入 / 在线」这类事实表述。
+     *
+     * <p>{@code values} 仍然保留 —— 它是运营面(H9)自己的编辑视图,也是沙箱验收所需的
+     * 可控输入,但它的 {@code provenance} 明确标为人工配置,消费方据此决定是否展示。
+     */
     public ApiResult<Map<String, Object>> publicProjection() {
         String runtimeError = runtimeError();
         if (runtimeError != null) {
@@ -87,9 +101,47 @@ public class GrowthPublicStatsService {
         projection.put("runId", scope.runId());
         projection.put("version", result.getData().get("version"));
         projection.put("values", result.getData().get("values"));
+        projection.put("provenance", Map.of(
+                "values", "OPERATOR_CONFIGURED",
+                "verified", scope.sandbox() ? "SANDBOX_UNAVAILABLE" : "SERVER_AGGREGATE"));
+        // 复用 overview 已经算好的真实账号数:同一请求里重复聚合没有意义,
+        // 也让「本次投影的所有数字来自同一次读取」这个不变量成立。
+        projection.put("verified", verifiedAggregates(scope, result.getData().get("realUserCount")));
         projection.put("realUserCount", result.getData().get("realUserCount"));
         projection.put("effectiveAt", result.getData().get("effectiveAt"));
         return ApiResult.ok(projection);
+    }
+
+    /**
+     * 可核验事实聚合。沙箱环境没有真实数据,所以整体缺席(null)——「不知道」不能变成 0,
+     * 也不能退回运营配置值:那正是本缺陷要消除的混淆。
+     */
+    private Map<String, Object> verifiedAggregates(RuntimeScope scope, Object realUserCount) {
+        if (scope.sandbox()) {
+            return null;
+        }
+        Map<String, Object> verified = new LinkedHashMap<>();
+        // 每个数都标注自己的口径与统计时刻,消费方无需再猜「这是实时还是推算」。
+        verified.put("activeAccounts", aggregate(users.countActiveUsers(), "nx_user.status=ACTIVE", "COUNT"));
+        // 注册账号数复用 overview 已读到的值,口径与 realUserCount 完全一致。
+        verified.put("registeredAccounts", aggregate(longValue(realUserCount), "nx_user.is_deleted=0", "COUNT"));
+        verified.put("installedDevices", aggregate(deviceOps.countTotalDevices(), "nx_user_device.is_deleted=0", "COUNT"));
+        verified.put("onlineDevices", aggregate(deviceOps.countOnlineDevices(),
+                "nx_user_device OWNED+ACTIVATED 且 runtime.online_status=ONLINE", "COUNT"));
+        verified.put("completedPayoutUsdt", aggregate(deviceOps.completedWithdrawalTotal(),
+                "nx_withdrawal_order.status=COMPLETED 的 amount 合计", "SUM_USDT"));
+        verified.put("capturedAt", Instant.ofEpochMilli(clock.millis()).toString());
+        return verified;
+    }
+
+    private Map<String, Object> aggregate(long value, String definition, String kind) {
+        return Map.of("value", value, "definition", definition, "kind", kind);
+    }
+
+    /** 金额聚合:保留 6 位小数,避免把 USDT 精度截断成整数。 */
+    private Map<String, Object> aggregate(BigDecimal value, String definition, String kind) {
+        BigDecimal amount = value == null ? BigDecimal.ZERO : value;
+        return Map.of("value", amount, "definition", definition, "kind", kind);
     }
 
     private String runtimeError() {
