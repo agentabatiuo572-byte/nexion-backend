@@ -233,7 +233,12 @@ $migrations = @(
   # seed script existed but was never registered here, so it never ran on deploy.
   # It is idempotent (INSERT ... ON DUPLICATE KEY UPDATE) and already documents the
   # canonical six-class vocabulary, so registering it is the whole fix.
-  (Join-Path $root "scripts\seed_e2_task_pricing.sql")
+  (Join-Path $root "scripts\seed_e2_task_pricing.sql"),
+  # H4 event evt-spring-spin only had its operator-authored English copy, so the
+  # Chinese App fell back to "Daily Lucky Spin". The publish gate blocks new
+  # publishes with missing zh/vi content, but the event is already ongoing, so the
+  # gate cannot reach it. Fill only the fields that are still empty.
+  (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
