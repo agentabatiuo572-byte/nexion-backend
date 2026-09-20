@@ -304,6 +304,9 @@ class OpsPlatformParamRegistryServiceTest {
             assertThat(row.live()).isTrue();
             assertThat(row.stale()).isFalse();
             assertThat(row.observedAt()).isEqualTo("2026-09-20T04:41:07");
+            // 🔴 实时行也是服务端权威事实:PC 契约拒绝 serverCanonical != true 的行,
+            //    这里误传 false 会让 A5 整页判为一致性失败(一条参数都读不到)。
+            assertThat(row.serverCanonical()).isTrue();
         });
         assertThat(overview.rows())
                 .filteredOn(row -> row.canonicalKey().equals("admin.health.event_pipeline"))

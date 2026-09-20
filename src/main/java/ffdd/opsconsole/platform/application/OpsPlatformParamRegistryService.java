@@ -196,7 +196,11 @@ public class OpsPlatformParamRegistryService {
                 failed ? "PARTIAL" : "READY",
                 StringUtils.hasText(observedAt) ? observedAt : "未知",
                 false,
-                false,
+                // 🔴 serverCanonical 必须为 true(与 fromConfig / fromEmergency 一致)。
+                //    这里的值来自 A3 的实时 provider,是**服务端权威事实**;此前误传 false,
+                //    而 PC 契约拒绝任何 serverCanonical != true 的行 —— 后端一部署,A5 就会
+                //    因为这两行把整页判成「数据一致性校验未通过」,一条参数都读不到。
+                true,
                 true,
                 observedAt,
                 stale);
