@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
@@ -499,18 +500,35 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     @Override
     public List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now) {
         Map<String, List<String>> samples = new LinkedHashMap<>();
-        for (String code : List.of("missing-zh", "missing-en", "missing-vi", "placeholder")) samples.put(code, new ArrayList<>());
+        for (String code : List.of("missing-zh", "missing-en", "missing-vi", "placeholder",
+                "placeholder-text", "retired-brand")) {
+            samples.put(code, new ArrayList<>());
+        }
         for (I18nMessagePairView message : listMessagePairs()) {
             if (!StringUtils.hasText(message.zh())) samples.get("missing-zh").add(message.messageKey());
             if (!StringUtils.hasText(message.en())) samples.get("missing-en").add(message.messageKey());
             if (!StringUtils.hasText(message.vi())) samples.get("missing-vi").add(message.messageKey());
             Set<String> zh = placeholders(message.zh()), en = placeholders(message.en()), vi = placeholders(message.vi());
             if ((!zh.equals(en) || !zh.equals(vi)) && StringUtils.hasText(message.zh()) && StringUtils.hasText(message.en()) && StringUtils.hasText(message.vi())) samples.get("placeholder").add(message.messageKey());
+            // 🔴 占位符 token 一致 ≠ 文案已写好(zentao #67)。
+            //   已发布 v3 的中文正文是 "ccccc",三种语言的 token 集完全一致(都为空),
+            //   所以上面那条判据放它过门,扫描结论是「完整」。这里补两类**内容**判据:
+            //   · placeholder-text:整段是重复字符的占位文本(ccccc / xxxx / 测试);
+            //   · retired-brand:正文仍带退役品牌(与 RetiredBrandGate 同一口径,
+            //     旧品牌已经在 Nova 模板和 V-Rank 奖品名上出过两次同样的问题)。
+            if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
+                samples.get("placeholder-text").add(message.messageKey());
+            }
+            if (RetiredBrandGate.anyCarriesRetiredBrand(message.zh(), message.en(), message.vi())) {
+                samples.get("retired-brand").add(message.messageKey());
+            }
         }
         upsertIntegrity("missing-zh", "缺少中文镜像", samples.get("missing-zh"), 10, now);
         upsertIntegrity("missing-en", "缺少英文镜像", samples.get("missing-en"), 20, now);
         upsertIntegrity("missing-vi", "缺少越南语镜像", samples.get("missing-vi"), 30, now);
         upsertIntegrity("placeholder", "占位符不一致", samples.get("placeholder"), 40, now);
+        upsertIntegrity("placeholder-text", "占位文本未替换", samples.get("placeholder-text"), 50, now);
+        upsertIntegrity("retired-brand", "仍使用退役品牌", samples.get("retired-brand"), 60, now);
         return listIntegrityIssues();
     }
 
@@ -944,6 +962,24 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     private String versionLabel(Integer versionNo) {
         return "v" + Math.max(1, value(versionNo));
+    }
+
+    /**
+     * 整段文案是否为未替换的占位文本。
+     *
+     * <p>判据:去掉空白与标点后,整串只由同一种字符重复构成(ccccc / xxxxx / ----),
+     * 或命中明确的测试词。这是「已发布内容其实是占位」的检测 —— 与占位符 token 校验
+     * 互补,后者只看结构、看不到内容(zentao #67)。
+     */
+    static boolean isPlaceholderText(String value) {
+        if (!StringUtils.hasText(value)) return false;
+        // 重复字符判据先做,且只去空白、保留标点:整串 "-----" 同样是占位文本,
+        // 先剥标点会把它变成空串从而漏判。
+        String bare = value.replaceAll("\\s+", "");
+        if (bare.matches("(.)\\1{2,}")) return true;
+        // 测试词判据去掉标点后再比对(to do / place-holder 这类写法也能命中)。
+        String compact = bare.replaceAll("\\p{Punct}+", "").toLowerCase(Locale.ROOT);
+        return !compact.isEmpty() && compact.matches("(test|todo|tbd|placeholder|dummy|样例|测试|占位)+");
     }
 
     private void upsertIntegrity(String code, String kind, List<String> samples, int sortOrder, LocalDateTime now) {
