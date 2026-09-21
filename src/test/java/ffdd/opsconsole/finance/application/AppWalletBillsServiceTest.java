@@ -361,6 +361,61 @@ class AppWalletBillsServiceTest {
                 .isInstanceOf(BizException.class).hasMessageContaining("WALLET_BILLS_PAGE_INVALID");
     }
 
+    /**
+     * zentao #219:三门课程当天各发 10 NEX,奖励账本里三笔完全同名(通用「奖励入账」)
+     * 且无来源,用户与客服无法逐笔追溯。课程奖励必须有**自己的**表现码与可区分来源。
+     */
+    @Test
+    void appProjectionDistinguishesCourseRewardsByCourseIdentity() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(3L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
+                new AppWalletBillsMapper.LedgerRow(31L, "LEARN:7:account-security:v1", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("30"), "SUCCESS",
+                        "完成课程 account-security v1", LocalDateTime.of(2026, 9, 21, 8, 0)),
+                new AppWalletBillsMapper.LedgerRow(32L, "LEARN:7:orders-and-bills:v1", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
+                        "完成课程 orders-and-bills v1", LocalDateTime.of(2026, 9, 21, 9, 0)),
+                // 沙箱行多一段 runId,形状不同但课程身份仍在末两段。
+                new AppWalletBillsMapper.LedgerRow(33L, "LEARN:RUN-9:7:tasks-and-learning:v1", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "完成课程 tasks-and-learning v1", LocalDateTime.of(2026, 9, 21, 10, 0))));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).extracting(bill -> String.valueOf(bill.get("presentationCode")))
+                .containsOnly("learningReward");
+        // 三笔同日同额,靠来源标识才能逐笔区分;每个标识只含课程身份,不含用户信息。
+        assertThat(rows).extracting(bill -> String.valueOf(bill.get("publicReference")))
+                .containsExactly("account-security@v1", "orders-and-bills@v1", "tasks-and-learning@v1");
+        assertThat(rows).extracting(bill -> String.valueOf(bill.get("publicReference")))
+                .allSatisfy(reference -> assertThat(reference).doesNotContain("7").doesNotContain("RUN-9"));
+    }
+
+    /** 形状对不上的旧行宁可不放出 —— 内部账本串绝不能当来源标识漏给用户端。 */
+    @Test
+    void appProjectionWithholdsCourseReferenceWhenTheLedgerNumberIsNotCourseShaped() {
+        AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
+        when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
+        when(mapper.count(7L)).thenReturn(2L);
+        when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
+                new AppWalletBillsMapper.LedgerRow(41L, "LEARN:7", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
+                        "legacy", LocalDateTime.of(2026, 9, 21, 8, 0)),
+                new AppWalletBillsMapper.LedgerRow(42L, "LEARN:7:UPPER CASE:v1", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "legacy", LocalDateTime.of(2026, 9, 21, 9, 0))));
+        var service = new AppWalletBillsService(mapper, environment("dev"));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) service.list(7L, 1, 50).getData().get("bills");
+
+        assertThat(rows).extracting(bill -> bill.get("publicReference")).containsOnlyNulls();
+    }
+
     private AppWalletBillsMapper.LedgerRow ledgerRow(long id, String status) {
         return ledgerRow(id, status, "TEST", "USDT", "IN", LocalDateTime.of(2026, 8, 27, 9, 0));
     }

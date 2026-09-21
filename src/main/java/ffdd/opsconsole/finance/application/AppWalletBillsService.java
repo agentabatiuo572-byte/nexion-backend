@@ -30,6 +30,9 @@ public class AppWalletBillsService {
     private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
     private static final Set<String> ISOLATED_PROFILES = Set.of("test");
     private static final int MAX_CURSOR_LENGTH = 128;
+    /** 课程身份白名单形状,与 OpsI18nLearningService.COURSE_ID_PATTERN 同源。 */
+    private static final java.util.regex.Pattern COURSE_ID = java.util.regex.Pattern.compile("^[a-z0-9][a-z0-9-]{2,80}$");
+    private static final java.util.regex.Pattern COURSE_VERSION = java.util.regex.Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$");
     private static final LocalDateTime MYSQL_DATETIME_MIN = LocalDateTime.of(1000, 1, 1, 0, 0);
     private static final LocalDateTime MYSQL_DATETIME_MAX = LocalDateTime.of(9999, 12, 31, 23, 59, 59, 999_999_000);
     private final AppWalletBillsMapper mapper;
@@ -267,6 +270,9 @@ public class AppWalletBillsService {
             case "TRIAL_BONUS" -> "trialBonus";
             case "QUEST_REWARD" -> "questReward";
             case "PURCHASE_REWARD" -> "purchaseReward";
+            // 课程奖励此前落进通用 bonus 码,三笔同日 +10 NEX 在奖励账本里完全同名
+            // 且无来源,用户与客服无法逐笔追溯(zentao #219)。给这一族自己的码位。
+            case "LEARNING_REWARD" -> "learningReward";
             case "WITHDRAW_NET_PRINCIPAL" -> "withdrawPrincipal";
             case "WITHDRAW_NETWORK_FEE" -> "withdrawNetworkFee";
             case "WITHDRAW_PENALTY_FEE" -> "withdrawPenaltyFee";
@@ -288,6 +294,10 @@ public class AppWalletBillsService {
         if (bizNo == null || bizNo.isBlank()) return null;
         String value = bizType == null ? "" : bizType.trim().toUpperCase(Locale.ROOT);
         return switch (value) {
+            // 课程奖励的 biz_no 形如 LEARN:{userId}:{courseId}:{version}(沙箱多一段 runId)。
+            // 逐笔追溯需要的是**课程身份**,不是内部账本主键 —— 只放出 courseId@version
+            // (courseId 受 ^[a-z0-9][a-z0-9-]{2,80}$ 约束,不含用户信息)。
+            case "LEARNING_REWARD" -> learningCourseReference(bizNo);
             case "ORDER_PURCHASE", "GENESIS_PURCHASE", "WITHDRAWAL", "WITHDRAW_PAYOUT", "DEPOSIT", "TOPUP", "RECHARGE", "VIETQR_DEPOSIT" -> bizNo;
             case "WITHDRAW_NET_PRINCIPAL" -> withdrawalComponentReference(bizNo, ":USDT:PRINCIPAL");
             case "WITHDRAW_NETWORK_FEE" -> withdrawalComponentReference(bizNo, ":USDT:NETWORK_FEE");
@@ -303,6 +313,24 @@ public class AppWalletBillsService {
 
     private String withdrawalComponentReference(String bizNo, String suffix) {
         return bizNo.endsWith(suffix) ? validWithdrawalReference(bizNo.substring(0, bizNo.length() - suffix.length())) : null;
+    }
+
+    /**
+     * 课程奖励的 biz_no 形如 {@code LEARN:{userId}:{courseId}:{version}}(沙箱再前置一段 runId)。
+     * 逐笔追溯需要的是**课程身份**:只放出 {@code courseId@version}。courseId 由
+     * {@code ^[a-z0-9][a-z0-9-]{2,80}$} 约束、version 由 {@code ^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$}
+     * 约束,都不含用户信息;任何对不上形状的旧行一律不放出(宁缺勿错)。
+     */
+    private String learningCourseReference(String bizNo) {
+        int versionSeparator = bizNo.lastIndexOf(':');
+        if (versionSeparator <= 0 || versionSeparator == bizNo.length() - 1) return null;
+        String version = bizNo.substring(versionSeparator + 1);
+        String head = bizNo.substring(0, versionSeparator);
+        int courseSeparator = head.lastIndexOf(':');
+        if (courseSeparator <= 0) return null;
+        String courseId = head.substring(courseSeparator + 1);
+        if (!COURSE_ID.matcher(courseId).matches() || !COURSE_VERSION.matcher(version).matches()) return null;
+        return courseId + "@" + version;
     }
 
     private String withdrawalReferenceAfterPrefix(String bizNo, String prefix) {

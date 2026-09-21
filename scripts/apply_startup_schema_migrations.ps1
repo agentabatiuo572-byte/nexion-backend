@@ -246,7 +246,20 @@ $migrations = @(
   # Chinese App fell back to "Daily Lucky Spin". The publish gate blocks new
   # publishes with missing zh/vi content, but the event is already ongoing, so the
   # gate cannot reach it. Fill only the fields that are still empty.
-  (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql")
+  (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql"),
+  # I6 reported published entries whose body is literally "ccccc" but nothing ever
+  # cleaned them up: the integrity scan gained the placeholder/retired-brand content
+  # criteria, yet the offending rows stayed published, so every visit showed the same
+  # unresolved list. Return only rows that still match the scan's own criteria to
+  # draft; no replacement copy is invented.
+  (Join-Path $root "scripts\migrations\20260921_i6_published_placeholder_text_cleanup.sql"),
+  # The retired "Nexion" brand was only rewritten for one product row, so the App
+  # catalogue and the E2 task list kept showing "NexionBox Pro v2" / "需 NexionRack".
+  # Worse, the E2 requirement vocabulary is now a fixed server-side allowlist, so an
+  # operator saving such a row got TASK_REQUIREMENT_INVALID -- the row could be shown
+  # but not saved. Rewrite the remaining rows onto the current brand and the allowlist
+  # wording; new writes are already blocked by RetiredBrandGate.
+  (Join-Path $root "scripts\migrations\20260921_h2_e2_retired_brand_cleanup.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

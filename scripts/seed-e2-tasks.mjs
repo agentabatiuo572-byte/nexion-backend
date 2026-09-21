@@ -36,11 +36,11 @@ async function login() {
 
 // 6 类任务（task_class/model/reward/vram 对齐后端 backfill 期望值）
 const TASKS = [
-  { name: "405B 大模型推理", price: 2.4,   unit: "/1k",  requirement: "需 NexionRack",    saturation: 0.55, taskClass: "llm-inference", model: "Llama-3.1-405B", minReward: 0.8,  maxReward: 2.4, minVram: "80GB" },
-  { name: "70B 模型推理",    price: 0.9,   unit: "/1k",  requirement: "需 NexionBox Pro", saturation: 0.65, taskClass: "llm-inference", model: "Llama-3.1-70B",  minReward: 0.3,  maxReward: 0.9, minVram: "24GB" },
+  { name: "405B 大模型推理", price: 2.4,   unit: "/1k",  requirement: "需 NexGridRack",    saturation: 0.55, taskClass: "llm-inference", model: "Llama-3.1-405B", minReward: 0.8,  maxReward: 2.4, minVram: "80GB" },
+  { name: "70B 模型推理",    price: 0.9,   unit: "/1k",  requirement: "需 NexGridBox Pro", saturation: 0.65, taskClass: "llm-inference", model: "Llama-3.1-70B",  minReward: 0.3,  maxReward: 0.9, minVram: "24GB" },
   { name: "图像生成",        price: 0.7,   unit: "/job", requirement: "S1+",              saturation: 0.72, taskClass: "image-gen",     model: "SDXL",           minReward: 0.2,  maxReward: 0.7, minVram: "12GB" },
-  { name: "视频生成",        price: 4.2,   unit: "/job", requirement: "需 NexionBox Pro", saturation: 0.38, taskClass: "video-render",  model: "HunyuanVideo",   minReward: 1.6,  maxReward: 4.2, minVram: "48GB" },
-  { name: "模型微调",        price: 7.5,   unit: "/job", requirement: "需 NexionBox Pro", saturation: 0.25, taskClass: "fine-tune",     model: "LoRA",           minReward: 3.0,  maxReward: 7.5, minVram: "48GB" },
+  { name: "视频生成",        price: 4.2,   unit: "/job", requirement: "需 NexGridBox Pro", saturation: 0.38, taskClass: "video-render",  model: "HunyuanVideo",   minReward: 1.6,  maxReward: 4.2, minVram: "48GB" },
+  { name: "模型微调",        price: 7.5,   unit: "/job", requirement: "需 NexGridBox Pro", saturation: 0.25, taskClass: "fine-tune",     model: "LoRA",           minReward: 3.0,  maxReward: 7.5, minVram: "48GB" },
   { name: "向量嵌入",        price: 0.22,  unit: "/1k",  requirement: "手机+",            saturation: 0.80, taskClass: "embedding",     model: "BGE-M3",         minReward: 0.06, maxReward: 0.22, minVram: "8GB"  },
 ];
 
