@@ -147,6 +147,39 @@ class PublishedHowContentServiceTest {
                 .containsEntry("version", "2026.08.31-commissions-guide");
     }
 
+    /**
+     * 简报 #49:条目未声明自己的修订时,读侧必须**如实标注**版本来自文档级兜底,
+     * 而不是让 genesis/复投/兑换 三页都静默显示同一个「commissions-guide」——
+     * 运营与用户要能判断自己看的是本页专属修订,还是整个文档的共用版本。
+     */
+    @Test
+    void entryWithoutOwnRevisionReportsTheDocumentFallbackExplicitly() {
+        PlatformConfigFacade config = mock(PlatformConfigFacade.class);
+        String document = """
+            {"version":"2026.08.31-commissions-guide","status":"PUBLISHED","revision":14,"sourceEnvironment":"PRODUCTION","runId":"","contents":{
+              "genesis-how":{"version":"2026.09.01-genesis-guide","locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Genesis","body":"Genesis text"}]}}},
+              "wallet-exchange-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Exchange","body":"Exchange text"}]}}},
+              "wallet-repurchase-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Repurchase","body":"Repurchase text"}]}}},
+              "team-binary-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Binary","body":"Binary text"}]}}},
+              "team-commissions-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Commissions","body":"Commissions text"}]}}},
+              "team-unilevel-how":{"locales":{"en":{"blocks":[{"id":"intro","kind":"text","title":"Unilevel","body":"Unilevel text"}]}}}
+            }}
+            """;
+        when(config.activeValue("how-it-works.published")).thenReturn(Optional.of(document));
+        var service = new PublishedHowContentService(config, productionEnvironment(), mock(AuditLogService.class));
+
+        // 声明了本页修订:用本页的,并标注来源为条目。
+        assertThat(service.publicContent("genesis-how", "en").getData())
+                .containsEntry("version", "2026.09.01-genesis-guide")
+                .containsEntry("versionSource", "ENTRY");
+        // 未声明:退回文档版本,但**必须**标出来源,不能让人误以为是本页专属修订。
+        assertThat(service.publicContent("wallet-exchange-how", "en").getData())
+                .containsEntry("version", "2026.08.31-commissions-guide")
+                .containsEntry("versionSource", "DOCUMENT_FALLBACK");
+        assertThat(service.publicContent("wallet-repurchase-how", "en").getData())
+                .containsEntry("versionSource", "DOCUMENT_FALLBACK");
+    }
+
     /** 条目级 version 必须是有界非空文本;非法值整体拒绝,不落库。 */
     @Test
     void entryVersionRejectsBlankOrOverlongValuesWithoutPersisting() {

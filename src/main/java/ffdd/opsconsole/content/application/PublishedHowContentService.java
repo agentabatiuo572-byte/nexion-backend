@@ -52,9 +52,13 @@ public class PublishedHowContentService {
             if (payload == null || !validLocale(payload)) return unavailable();
             Map<String, Object> out = new LinkedHashMap<>(payload);
             out.put("contentKey", contentKey);
-            // 简报 #49:六个 contentKey 共用文档级 version,导致 genesis/复投/兑换 都显示
-            // commissions-guide。页面必须展示本页自己的发布修订;条目未单独记录时退回文档版本。
-            out.put("version", entryVersion(entry, document));
+            // 简报 #49:六个 contentKey 是六个不同业务域,页脚必须能看出**本页自己的**发布修订。
+            // 条目未单独记录时只能退回文档级版本(不能凭空编造),但必须如实标注来源 ——
+            // 否则 genesis/复投/兑换 三页都显示「commissions-guide」,运营与用户都无法判断
+            // 自己看的是本页哪一版,还是整个文档的共用版本。
+            String ownVersion = entry == null ? null : text(entry.get("version"));
+            out.put("version", ownVersion != null ? ownVersion : text(document.get("version")));
+            out.put("versionSource", ownVersion != null ? "ENTRY" : "DOCUMENT_FALLBACK");
             out.put("locale", locale);
             out.put("status", "PUBLISHED");
             out.put("source", "server");
@@ -151,15 +155,10 @@ public class PublishedHowContentService {
         return true;
     }
     /**
+     * 条目级 version 可缺省;一旦提供必须是有界文本,防止把任意长串写进公开响应。
      * 简报 #49:每个 contentKey 必须能声明自己的发布修订,而不是六页共用文档级 version。
-     * 条目携带 version 时以它为准;未携带时退回文档版本,保持既有已发布数据的可读性。
+     * 未声明时读侧退回文档版本并标注 versionSource=DOCUMENT_FALLBACK,不凭空编造。
      */
-    private String entryVersion(Map<String, Object> entry, Map<String, Object> document) {
-        String own = entry == null ? null : text(entry.get("version"));
-        return own != null ? own : text(document.get("version"));
-    }
-
-    /** 条目级 version 可缺省;一旦提供必须是有界文本,防止把任意长串写进公开响应。 */
     private boolean validEntryVersion(Map<String, Object> entry) {
         if (entry == null || !entry.containsKey("version")) return true;
         Object raw = entry.get("version");
