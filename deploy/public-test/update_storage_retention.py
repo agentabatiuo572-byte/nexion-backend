@@ -98,8 +98,8 @@ def replace_bound(path, data):
 
 def idle_jobs():
     expected = {f'nexgrid-{kind}-test' for kind in ('backend', 'pc', 'uniapp')}
-    require({path.name for path in JOBS.iterdir() if path.is_dir()} == expected,
-            'UNEXPECTED_JENKINS_JOBS')
+    require(expected <= {path.name for path in JOBS.iterdir() if path.is_dir()},
+            'MISSING_TEST_JENKINS_JOBS')
     for name in expected:
         builds = JOBS / name / 'builds'
         numbers = [int(path.name) for path in builds.iterdir() if path.name.isdigit()]
