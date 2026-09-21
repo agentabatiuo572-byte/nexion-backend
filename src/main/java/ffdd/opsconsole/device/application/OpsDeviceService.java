@@ -3,6 +3,8 @@ package ffdd.opsconsole.device.application;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
+import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -3532,6 +3534,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private List<Map<String, Object>> e1GenerationReleases(List<DeviceGenerationGateView> gates) {
         List<Map<String, Object>> response = new ArrayList<>();
+        // 简报 #38:强制提前开放(forceUnlock)绕过了平台月龄门,属于放大开放范围的动作。
+        // 验收要求页面能显示「批准人与审计编号」—— 数据一直在审计日志里
+        // (E1_GENERATION_GATE_UPDATED 记了 operator / reason / before-after),
+        // 只是此前没有投影到门视图,页面 tooltip 只能写「后端未返回批准人与审计编号」。
+        // 这里按门 id 批量取最近一次变更记录,把溯源一并下发;取不到就留空,
+        // 前端据此显示「未记录」而不是编造。
+        Map<String, Map<String, Object>> forceUnlockProvenance = forceUnlockProvenance(gates);
         for (DeviceGenerationGateView gate : gates) {
             int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
             int phaseOffset = gate.phaseOffset() == null ? 0 : gate.phaseOffset();
@@ -3545,9 +3554,42 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             row.put("forceUnlock", Boolean.TRUE.equals(gate.forceUnlock()));
             row.put("status", gate.status());
             row.put("effectiveReleaseMonth", releaseMonth + phaseOffset);
+            Map<String, Object> provenance = forceUnlockProvenance.get(gate.id());
+            row.put("forceUnlockApprovedBy", provenance == null ? "" : provenance.get("operator"));
+            row.put("forceUnlockAuditId", provenance == null ? "" : provenance.get("auditId"));
+            row.put("forceUnlockApprovedAt", provenance == null ? "" : provenance.get("approvedAt"));
             response.add(row);
         }
         return response;
+    }
+
+    /**
+     * 取每个门最近一次发布门变更的审计溯源(操作者 / 审计记录号 / 时间)。
+     *
+     * <p>只查 E1_GENERATION_GATE_UPDATED —— 新建门不构成「强制提前开放」的批准行为。
+     * 每门一次查询而非全表扫描:门数量是个位数,而审计表可能很大。</p>
+     */
+    private Map<String, Map<String, Object>> forceUnlockProvenance(List<DeviceGenerationGateView> gates) {
+        Map<String, Map<String, Object>> provenance = new LinkedHashMap<>();
+        for (DeviceGenerationGateView gate : gates) {
+            if (!Boolean.TRUE.equals(gate.forceUnlock())) continue;
+            try {
+                AuditLogQueryRequest query = new AuditLogQueryRequest();
+                query.setAction("E1_GENERATION_GATE_UPDATED");
+                query.setResourceId(gate.id());
+                List<AuditLogRecord> records = auditLogService.list(query);
+                if (records == null || records.isEmpty()) continue;
+                AuditLogRecord latest = records.get(0);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("operator", latest.getActorUsername() == null ? "" : latest.getActorUsername());
+                row.put("auditId", latest.getId() == null ? "" : String.valueOf(latest.getId()));
+                row.put("approvedAt", latest.getCreatedAt() == null ? "" : latest.getCreatedAt().toString());
+                provenance.put(gate.id(), row);
+            } catch (RuntimeException ignored) {
+                // 溯源取不到不能让整页失败:页面会显示「未记录」,而不是伪造一个批准人。
+            }
+        }
+        return provenance;
     }
 
     private int currentPlatformMonth() {
