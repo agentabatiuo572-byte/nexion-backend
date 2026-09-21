@@ -31,8 +31,8 @@ class PolicyUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             jobs = Path(temp)
             for kind in ['backend', 'pc', 'uniapp']:
-                (jobs / f'nexgrid-{kind}-main/builds/1').mkdir(parents=True)
-            path = jobs / 'nexgrid-backend-main/builds/1'
+                (jobs / f'nexgrid-{kind}-test/builds/1').mkdir(parents=True)
+            path = jobs / 'nexgrid-backend-test/builds/1'
             (path / 'build.xml').write_bytes(b'<flow-build><completed>false</completed></flow-build>')
             with patch.object(u, 'JOBS', jobs), patch.object(u, 'command') as command:
                 with self.assertRaisesRegex(RuntimeError, 'WAIT_FOR_IDLE_CI'):
@@ -51,7 +51,7 @@ class PolicyUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             jobs = Path(temp)
             for kind in ['backend', 'pc', 'uniapp']:
-                path = jobs / f'nexgrid-{kind}-main/builds/1'
+                path = jobs / f'nexgrid-{kind}-test/builds/1'
                 path.mkdir(parents=True)
                 (path / 'build.xml').write_bytes(b'<flow-build><completed>true</completed></flow-build>')
             with patch.object(u, 'JOBS', jobs), patch.object(u, 'command', return_value='PID COMMAND\n100 docker-init\n101 java') as command:

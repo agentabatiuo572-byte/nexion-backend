@@ -1,5 +1,5 @@
 [Unit]
-Description=Check successful Jenkins main artifacts for guarded TEST promotion
+Description=Check successful Jenkins test artifacts for guarded TEST promotion
 
 [Timer]
 OnBootSec=2min

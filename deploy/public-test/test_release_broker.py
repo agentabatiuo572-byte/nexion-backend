@@ -50,7 +50,7 @@ class ReleaseBrokerTests(unittest.TestCase):
         (self.root / 'nexgrid-release-v1-initial-builds-queued').write_text('fixture')
         jobs = self.root / 'jobs'
         for kind in b.ARTIFACTS:
-            job = jobs / f'nexgrid-{kind}-main'
+            job = jobs / f'nexgrid-{kind}-test'
             job.mkdir(parents=True)
             (job / 'config.xml').write_text('DEPLOYMENT_HELD' if kind == 'pc' else 'RELEASE_ARTIFACT_READY')
         with patch.object(installer, 'HOME', self.root), patch.object(b, 'JOBS', jobs):
@@ -113,12 +113,12 @@ class ReleaseBrokerTests(unittest.TestCase):
         sha = 'a' * 40
         xml = ('<flow-build><result>SUCCESS</result><completed>true</completed>'
                '<actions><hudson.plugins.git.util.BuildData><lastBuiltRevision><SHA1>' + sha +
-               '</SHA1><branches><hudson.plugins.git.Branch><name>origin/main</name>'
+               '</SHA1><branches><hudson.plugins.git.Branch><name>origin/test</name>'
                '</hudson.plugins.git.Branch></branches></lastBuiltRevision></hudson.plugins.git.util.BuildData>'
                '</actions></flow-build>')
         self.assertEqual(b.build_identity(xml.encode()), sha)
         for wrong in (xml.replace('SUCCESS', 'UNSTABLE'), xml.replace('SUCCESS', 'FAILURE'),
-                      xml.replace('<completed>true', '<completed>false'), xml.replace('origin/main', 'origin/dev'),
+                      xml.replace('<completed>true', '<completed>false'), xml.replace('origin/test', 'origin/dev'),
                       '<flow-build><actions><result>SUCCESS</result></actions></flow-build>'):
             with self.assertRaises(b.Rejected):
                 b.build_identity(wrong.encode())
@@ -173,7 +173,7 @@ class ReleaseBrokerTests(unittest.TestCase):
         stop.assert_called_once_with('nexgrid-cd-pc-9')
 
     def test_manifest_requires_exact_component_main_and_policy(self):
-        manifest = {'version': 1, 'component': 'backend', 'branch': 'main', 'sha': 'a'*40,
+        manifest = {'version': 1, 'component': 'backend', 'branch': 'test', 'sha': 'a'*40,
                     'artifact': 'backend.jar', 'sha256': 'b'*64, 'schema': 'c'*64}
         self.assertEqual(b.validate_manifest(manifest, 'backend', 'a'*40), manifest)
         for field, value in [('branch', 'dev'), ('component', 'pc'), ('sha', 'd'*40),
@@ -200,7 +200,7 @@ class ReleaseBrokerTests(unittest.TestCase):
         data = ('<flow-build><result>SUCCESS</result><completed>true</completed><actions>'
                 '<hudson.plugins.git.util.BuildData><buildsByBranchName><entry><hudson.plugins.git.util.Build>'
                 '<marked><sha1>' + 'a'*40 + '</sha1><branches><hudson.plugins.git.Branch>'
-                '<sha1 reference="../../../sha1"/><name>refs/remotes/origin/main</name>'
+                '<sha1 reference="../../../sha1"/><name>refs/remotes/origin/test</name>'
                 '</hudson.plugins.git.Branch></branches></marked><revision reference="../marked"/>'
                 '</hudson.plugins.git.util.Build></entry></buildsByBranchName>'
                 '</hudson.plugins.git.util.BuildData></actions></flow-build>')
@@ -231,6 +231,70 @@ class ReleaseBrokerTests(unittest.TestCase):
             b.recover_transaction(journal)
         restore.assert_not_called()
         stop.assert_called_once_with('nexgrid-cd-pc-9')
+
+    def test_retention_keeps_latest_rollback_and_mounted_release_only(self):
+        backend = self.root / 'backend'
+        backend.mkdir()
+        releases = []
+        for number in range(1, 9):
+            path = backend / f'{number}-{number:012x}'
+            (path / 'app').mkdir(parents=True)
+            releases.append(path)
+        (backend / 'operator-notes').mkdir()
+        journal = {
+            'component': 'backend',
+            'new_state': {'backend': {'release': str(releases[7] / 'app')}},
+            'old_state': {'backend': {'release': str(releases[6] / 'app')}},
+        }
+
+        def docker(*args, **_kwargs):
+            if args == ('docker', 'ps', '-aq'):
+                return 'fixture-container'
+            if args[:3] == ('docker', 'inspect', '--format'):
+                return str(releases[1] / 'app')
+            self.fail(args)
+
+        with patch.object(b, 'ROOT', self.root), patch.object(b, 'run', side_effect=docker), \
+                patch.object(b, 'backend_current_release', return_value=releases[0]):
+            b.prune_releases(journal)
+        self.assertTrue(releases[0].exists())
+        self.assertTrue(releases[1].exists())
+        self.assertFalse(releases[2].exists())
+        self.assertTrue(all(path.exists() for path in releases[3:]))
+        self.assertTrue((backend / 'operator-notes').exists())
+
+    def test_retention_removes_only_stopped_managed_component_containers(self):
+        pc = self.root / 'pc'
+        releases = []
+        for number in range(1, 8):
+            path = pc / f'{number}-{number:012x}'
+            (path / 'app').mkdir(parents=True)
+            releases.append(path)
+        journal = {
+            'component': 'pc',
+            'new_state': {'pc': {'release': str(releases[6] / 'app'), 'container': 'nexgrid-cd-pc-7'}},
+            'old_state': {'pc': {'release': str(releases[5] / 'app'), 'container': 'nexgrid-cd-pc-6'}},
+        }
+        calls = []
+
+        def docker(*args, **_kwargs):
+            calls.append(args)
+            if args[1:3] == ('ps', '-a'):
+                return 'nexgrid-cd-pc-1\nnexgrid-cd-pc-2\nnexgrid-cd-pc-6\nnexgrid-cd-pc-7\nnexgrid-cd-uniapp-1'
+            if args[1] == 'inspect' and args[-1] == '{{.State.Running}}':
+                return 'true' if args[2] == 'nexgrid-cd-pc-2' else 'false'
+            if args[1] == 'rm':
+                return ''
+            if args == ('docker', 'ps', '-aq'):
+                return ''
+            self.fail(args)
+
+        with patch.object(b, 'ROOT', self.root), patch.object(b, 'run', side_effect=docker):
+            b.prune_releases(journal)
+        self.assertIn(('docker', 'rm', 'nexgrid-cd-pc-1'), calls)
+        self.assertNotIn(('docker', 'rm', 'nexgrid-cd-pc-2'), calls)
+        self.assertNotIn(('docker', 'rm', 'nexgrid-cd-pc-6'), calls)
+        self.assertNotIn(('docker', 'rm', 'nexgrid-cd-pc-7'), calls)
 
 
 if __name__ == '__main__':

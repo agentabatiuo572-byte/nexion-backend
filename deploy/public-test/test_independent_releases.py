@@ -39,7 +39,7 @@ class IndependentReleasesTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         for kind in b.ARTIFACTS:
-            job = b.JOBS / f'nexgrid-{kind}-main'
+            job = b.JOBS / f'nexgrid-{kind}-test'
             artifacts = job / 'builds/2/archive/artifacts'
             artifacts.mkdir(parents=True)
             (job / 'config.xml').write_text('trusted job ' + kind)
@@ -47,7 +47,7 @@ class IndependentReleasesTests(unittest.TestCase):
             (job / 'builds/2/build.xml').write_text(
                 '<flow-build><result>SUCCESS</result><completed>true</completed><actions>'
                 '<hudson.plugins.git.util.BuildData><SHA1>' + 'a'*40 + '</SHA1>'
-                '<name>origin/main</name></hudson.plugins.git.util.BuildData></actions></flow-build>')
+                '<name>origin/test</name></hudson.plugins.git.util.BuildData></actions></flow-build>')
             artifact = artifacts / b.ARTIFACTS[kind]
             if kind == 'backend':
                 with zipfile.ZipFile(artifact, 'w') as jar:
@@ -55,7 +55,7 @@ class IndependentReleasesTests(unittest.TestCase):
                     jar.writestr('BOOT-INF/classes/ffdd/opsconsole/PublicTestDeploymentSafety.class', b'fixture')
             else:
                 artifact.write_bytes(b'bad archive')
-            b.save(artifacts / 'release.json', {'version': 1, 'component': kind, 'branch': 'main',
+            b.save(artifacts / 'release.json', {'version': 1, 'component': kind, 'branch': 'test',
                    'sha': 'a'*40, 'artifact': b.ARTIFACTS[kind], 'sha256': b.digest(artifact), 'schema': 'c'*64})
             (self.root / kind).mkdir()
 
@@ -79,7 +79,7 @@ class IndependentReleasesTests(unittest.TestCase):
         self.assertTrue(failures['backend']['retryable'])
 
     def test_failed_build_does_not_block_other_repositories(self):
-        path = b.JOBS / 'nexgrid-backend-main/builds/2/build.xml'
+        path = b.JOBS / 'nexgrid-backend-test/builds/2/build.xml'
         path.write_text(path.read_text().replace('SUCCESS', 'FAILURE'))
         with patch.object(b, 'promote') as promote:
             b.poll(self.config, self.state)
@@ -92,7 +92,7 @@ class IndependentReleasesTests(unittest.TestCase):
             b.poll(self.config, self.state)
             b.poll(self.config, self.state)
             self.assertEqual(promote.call_count, 3)
-        build = b.JOBS / 'nexgrid-uniapp-main/builds'
+        build = b.JOBS / 'nexgrid-uniapp-test/builds'
         (build / '3').mkdir()
         (build / '3/build.xml').write_bytes((build / '2/build.xml').read_bytes())
         with patch.object(b, 'promote') as promote:
@@ -131,7 +131,7 @@ class IndependentReleasesTests(unittest.TestCase):
 
     def test_staging_failure_cleans_candidate_without_touching_ingress(self):
         before = self.nginx.read_bytes()
-        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/main') as run, \
+        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test') as run, \
                 patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=100*1024**3)), \
                 patch.object(b, 'stop_candidate') as stop, patch.object(b, 'health') as health:
             with self.assertRaisesRegex(b.ComponentFailed, 'STAGING_FAILED'):
@@ -154,7 +154,7 @@ class IndependentReleasesTests(unittest.TestCase):
 
     def test_main_backend_without_schema_approval_reaches_normal_build_validation(self):
         # No config['schema']; the old source-fingerprint gate would fail here.
-        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/main') as run, \
+        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test') as run, \
                 patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=100*1024**3)), \
                 patch.object(b, 'apply_with_rollback'), patch.object(b, 'finish_commit'):
             b.promote('backend', 2, self.config, self.state)
@@ -165,7 +165,7 @@ class IndependentReleasesTests(unittest.TestCase):
 
     def test_policy_guard_still_blocks_backend_and_leaves_no_transaction(self):
         self.config['policy_sha256'] = '0'*64
-        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/main'), \
+        with patch.object(b, 'run', return_value='a'*40 + ' refs/heads/test'), \
                 patch.object(b.shutil, 'disk_usage', return_value=SimpleNamespace(free=100*1024**3)):
             with self.assertRaisesRegex(b.ComponentFailed, 'JAR_POLICY_REJECTED'):
                 b.promote('backend', 2, self.config, self.state)

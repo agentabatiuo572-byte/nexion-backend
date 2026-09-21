@@ -72,10 +72,10 @@ def validate_change(old, new):
 
 
 def assert_idle():
-    expected = {f'nexgrid-{kind}-main' for kind in ['backend', 'pc', 'uniapp']}
+    expected = {f'nexgrid-{kind}-test' for kind in ['backend', 'pc', 'uniapp']}
     require({p.name for p in JOBS.iterdir() if p.is_dir()} == expected, 'UNEXPECTED_JENKINS_JOBS')
     for kind in ['backend', 'pc', 'uniapp']:
-        builds = JOBS / f'nexgrid-{kind}-main/builds'
+        builds = JOBS / f'nexgrid-{kind}-test/builds'
         numbers = [int(p.name) for p in builds.iterdir() if p.name.isdigit()]
         require(numbers, 'MISSING_BUILD_HISTORY')
         data = (builds / str(max(numbers)) / 'build.xml').read_bytes()
@@ -136,7 +136,7 @@ def update(stage, lock_hash):
     config = json.loads((INSTALL / 'config.json').read_bytes())
     require(config['trusted_files']['release_broker.py'] == old['files']['release_broker.py'], 'BROKER_PIN_DRIFT')
     for kind, expected in config['job_hashes'].items():
-        require(sha((JOBS / f'nexgrid-{kind}-main/config.xml').read_bytes()) == expected, 'JOB_DRIFT')
+        require(sha((JOBS / f'nexgrid-{kind}-test/config.xml').read_bytes()) == expected, 'JOB_DRIFT')
     assert_idle()
     require(command('systemctl', 'is-active', 'nexgrid-release.timer') == 'active', 'EXPECTED_AUTO_TIMER')
     backup = BACKUPS / ('independent-releases-' + time.strftime('%Y%m%d-%H%M%S', time.gmtime()))

@@ -2,18 +2,17 @@
 set -euo pipefail
 bash /opt/nexgrid-ci/ci-network-check.sh
 kind=${1:?kind required}
-test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/main)"
+test "$(git rev-parse HEAD)" = "$(git rev-parse refs/remotes/origin/test)"
 mkdir -p artifacts
-git rev-parse HEAD > artifacts/main-sha.txt
+git rev-parse HEAD > artifacts/test-sha.txt
 case "$kind" in
   backend)
     export JAVA_HOME="$JAVA17_HOME" PATH="$JAVA17_HOME/bin:$PATH"
     export MAVEN_OPTS='-Xms128m -Xmx1536m -XX:MaxMetaspaceSize=384m'
     export JAVA_TOOL_OPTIONS='-Djava.io.tmpdir=/home/jenkins/agent/tmp'
-    # main has already passed the user's local business acceptance. CI compiles
-    # and packages it without repeating business regression suites. These five
-    # automatic checks cover only TEST isolation, database routing and proxy trust.
-    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml -Dtest=RuntimeProfileEnvironmentPostProcessorTest,DatabaseEnvironmentResolverTest,PublicTestDeploymentIsolationTest,PublicTestDeploymentSafetyTest,DeploymentForwardedHeadersConfigurationTest package
+    # test is the daily integration branch, so every deployable backend artifact
+    # must pass the repository's complete Maven test suite before packaging.
+    mvn -B -ntp -s /opt/nexgrid-ci/maven-settings.xml package
     cp target/nexion-backend-0.0.1-SNAPSHOT.jar artifacts/backend.jar
     ;;
   pc)
@@ -52,9 +51,9 @@ const kind = process.argv[2];
 const artifact = {backend:'backend.jar',pc:'pc-build.tgz',uniapp:'uniapp-h5-build.tgz'}[kind];
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const schema = process.argv[3];
-const manifest = {version:1,component:kind,branch:'main',sha:fs.readFileSync('artifacts/main-sha.txt','utf8').trim(),
+const manifest = {version:1,component:kind,branch:'test',sha:fs.readFileSync('artifacts/test-sha.txt','utf8').trim(),
   artifact,sha256:hash(fs.readFileSync('artifacts/'+artifact)),schema};
 fs.writeFileSync('artifacts/release.json', JSON.stringify(manifest, null, 2)+'\n');
 JS
-(cd artifacts && shopt -s nullglob && sha256sum main-sha.txt release.json *.jar *.tgz | tee SHA256SUMS)
+(cd artifacts && shopt -s nullglob && sha256sum test-sha.txt release.json *.jar *.tgz | tee SHA256SUMS)
 echo 'RELEASE_ARTIFACT_READY: isolated CI passed; host broker independently controls promotion and rollback.'

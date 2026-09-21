@@ -1,6 +1,6 @@
-# GitHub main to TEST release
+# GitHub test to TEST release
 
-Business source of truth is each repository's GitHub main. Do not merge old server
+Business source of truth is each repository's GitHub test. Do not merge old server
 uploads or local uncommitted work into CI. Preserve existing data, media, model/KB
 storage, credentials, administrator MFA and login channels.
 
@@ -8,7 +8,7 @@ storage, credentials, administrator MFA and login channels.
 
 The authenticated Jenkins controller has zero executors. Its isolated build agent
 has no host socket, business secrets or deployment API. A root-owned broker accepts
-completed SUCCESS builds from pinned job definitions, verifies current main SCM
+completed SUCCESS builds from pinned job definitions, verifies current test SCM
 identity and artifact digest, then runs business code as existing non-root users.
 Main and controller administrators are trusted; this is not a reproducible-build proof.
 
@@ -19,19 +19,17 @@ The `python3 -I trusted_entry.py` entry checks the complete fixed closure and al
 root-owned, non-symlink, non-writable ancestors before compiling verified bytes.
 Never regenerate a trust lock from unverified host files. Infra updates need review.
 
-GitHub main is approved business source: ordinary mapper, startup and source changes
-do not require a second schema fingerprint approval. CI compiles/packages main; it
-does not repeat the business contract suites previously imposed at deploy. Five
-automatic backend checks retain TEST/profile isolation, database environment routing
-and forwarded-header trust; they require no manual approval.
+GitHub test is approved business source: ordinary mapper, startup and source changes
+do not require a second schema fingerprint approval. CI compiles/packages test and
+runs the complete backend Maven test suite before an artifact reaches the broker.
 UniApp type checking and actual frontend/backend compilation remain build checks.
 Frontends use alternate local ports before Nginx cutover. Backend restarts only its
 own service. For a code-only release, a durable journal restores the old release on
 failure. New versioned SQL uses the automatic backup/migration flow below instead;
-code rollback cannot undo committed MySQL DDL. Main may contain its own startup
+code rollback cannot undo committed MySQL DDL. Test may contain its own startup
 effects, which are not equivalent to tracked incremental SQL migrations.
 
-Each repository polls main every five minutes. The host checks completed artifacts
+Each repository polls test every five minutes. The host checks completed artifacts
 about once per minute. Component failures are recorded in `component-failures.json`
 and do not block the other repositories after staging cleanup or a verified rollback.
 A failed staged artifact is not repeatedly restarted: push a fix or rebuild it with
@@ -58,6 +56,13 @@ Failed/unstable builds, config drift, low disk or HALTED block the relevant prom
 Do not clear HALTED without checking recovery and the journal. Keep one working
 rollback release and its images/config. Never clean paths used by data/model mounts.
 
+Storage retention is enforced by the broker after a healthy commit and once daily:
+keep the newest five releases per component plus the current, previous healthy and
+any container-mounted release; remove only stopped, broker-managed older frontend
+containers. Jenkins keeps ten build records and five artifact sets. Daily maintenance
+also prunes build cache older than seven days down to 5 GB, dangling images older
+than fourteen days, journal history above 512 MB, and downloaded apt packages.
+
 Local gate: `python -m unittest discover -v`. Isolated tests alone do not prove live
 deployment, business acceptance or real rollback completion.
 
@@ -72,7 +77,7 @@ job configuration, policy or EC2 instance is restarted/modified by this migratio
 
 ## Automatic database migrations (TEST)
 
-Push a **new** UTF-8 forward migration into backend main at
+Push a **new** UTF-8 forward migration into backend test at
 `scripts/migrations/YYYYMMDD_descriptive_name.sql`. Files in the same batch execute
 in filename order; use a numeric order in the descriptive part when dependencies
 require it. Do not modify/delete previously recorded files: add another forward
@@ -81,7 +86,7 @@ reset, rollback, nested SQL directories and arbitrary `.sql` elsewhere are not r
 Historical files were explicitly baselined without replay; that does not claim all
 historical SQL had run. The registration snapshot repair has its own backup receipt.
 
-After Jenkins successfully builds current main, the root-owned host broker:
+After Jenkins successfully builds current test, the root-owned host broker:
 
 1. Downloads the SQL catalog from that exact immutable GitHub SHA, validates tracked
    checksums and the database route/grants. Jenkins never receives DB credentials.

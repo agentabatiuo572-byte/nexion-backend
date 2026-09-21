@@ -33,6 +33,9 @@ MAX_EXPANDED = 1024 * 1024 * 1024
 MAX_ARCHIVE = 300 * 1024 * 1024
 SHA = re.compile(r'[0-9a-f]{40}')
 HASH = re.compile(r'[0-9a-f]{64}')
+RELEASE_NAME = re.compile(r'([0-9]+)-[0-9a-f]{12}(?:-rollback)?')
+RELEASE_KEEP = 5
+MAINTENANCE_INTERVAL = 24 * 60 * 60
 
 
 class Rejected(RuntimeError):
@@ -124,13 +127,13 @@ def build_identity(data):
     shas = {e.text for e in builds[0].iter() if e.tag in ('sha1', 'SHA1') and e.text}
     names = {e.text for e in builds[0].iter('name')}
     require(len(shas) == 1 and all(SHA.fullmatch(s or '') for s in shas)
-            and names and names <= {'origin/main', 'refs/remotes/origin/main'}, 'SCM_MAIN_REQUIRED')
+            and names and names <= {'origin/test', 'refs/remotes/origin/test'}, 'SCM_TEST_REQUIRED')
     return shas.pop()
 
 
 def validate_manifest(manifest, component, sha):
     require(manifest.get('version') == 1 and manifest.get('component') == component
-            and manifest.get('branch') == 'main' and manifest.get('sha') == sha
+            and manifest.get('branch') == 'test' and manifest.get('sha') == sha
             and manifest.get('artifact') == ARTIFACTS[component]
             and HASH.fullmatch(manifest.get('sha256', ''))
             and HASH.fullmatch(manifest.get('schema', '')), 'RELEASE_MANIFEST_REJECTED')
@@ -274,6 +277,84 @@ def stop_candidate(name):
         run('docker', 'stop', '--time', '15', name)
 
 
+def backend_current_release(root):
+    current = root / 'current'
+    return current.resolve().parent if current.is_symlink() else None
+
+
+def prune_releases(journal):
+    """Keep rollback-safe releases and remove only broker-owned, unmounted history."""
+    component = journal['component']
+    root = ROOT / component
+    require(not root.is_symlink() and root.resolve() == root, 'RELEASE_ROOT_REJECTED')
+    releases = [path for path in root.iterdir()
+                if path.is_dir() and not path.is_symlink() and RELEASE_NAME.fullmatch(path.name)]
+    releases.sort(key=lambda path: (int(RELEASE_NAME.fullmatch(path.name).group(1)), path.name), reverse=True)
+    protected = {Path(item['release']).parent.resolve() for item in
+                 (journal['new_state'][component], journal['old_state'][component]) if item.get('release')}
+    current_release = backend_current_release(root) if component == 'backend' else None
+    if current_release:
+        protected.add(current_release)
+    protected.update(path.resolve() for path in releases[:RELEASE_KEEP])
+    if component != 'backend':
+        keep_containers = {journal['new_state'][component]['container'],
+                           journal['old_state'][component].get('container')}
+        names = run('docker', 'ps', '-a', '--filter', 'label=nexgrid.managed=release-broker-v1',
+                    '--format', '{{.Names}}').splitlines()
+        for name in names:
+            if (name not in keep_containers and
+                    re.fullmatch(fr'nexgrid-cd-{component}-[0-9]+(?:-rollback)?', name) and
+                    run('docker', 'inspect', name, '--format', '{{.State.Running}}') == 'false'):
+                run('docker', 'rm', name)
+    ids = run('docker', 'ps', '-aq').splitlines()
+    mounts = set()
+    if ids:
+        mounts = {Path(value).resolve() for value in
+                  run('docker', 'inspect', '--format', '{{range .Mounts}}{{println .Source}}{{end}}', *ids).splitlines()
+                  if Path(value).is_absolute()}
+    for path in releases[RELEASE_KEEP:]:
+        resolved = path.resolve()
+        require(resolved == path and resolved.parent == root.resolve(), 'RELEASE_PATH_REJECTED')
+        if resolved in protected or any(resolved == mount or resolved in mount.parents
+                                        or mount in resolved.parents for mount in mounts):
+            continue
+        shutil.rmtree(resolved)
+
+
+def maintain_storage(state):
+    marker = ROOT / '.last-storage-maintenance'
+    if marker.exists() and time.time() - marker.stat().st_mtime < MAINTENANCE_INTERVAL:
+        return
+    atomic_write(marker, str(int(time.time())) + '\n')
+    for component in ARTIFACTS:
+        release = state[component].get('release')
+        promotion = Path(release).parent / 'promotion.json' if release else None
+        if not promotion or not promotion.is_file():
+            continue
+        try:
+            journal = json.loads(safe_read(promotion, 8 * 1024 * 1024))
+            require(journal.get('component') == component
+                    and journal.get('new_state', {}).get(component) == state[component],
+                    'RETENTION_STATE_DRIFT')
+            prune_releases(journal)
+        except BaseException as error:
+            print(json.dumps({'event': 'RETENTION_FAILED', 'component': component,
+                              'reason': failure_reason(error)}), flush=True)
+    commands = [
+        ('docker', 'builder', 'prune', '-f', '--filter', 'until=168h', '--keep-storage', '5GB'),
+        ('docker', 'image', 'prune', '-f', '--filter', 'until=336h'),
+        ('journalctl', '--rotate'),
+        ('journalctl', '--vacuum-size=512M'),
+        ('apt-get', 'clean'),
+    ]
+    for command in commands:
+        try:
+            run(*command, timeout=300)
+        except BaseException as error:
+            print(json.dumps({'event': 'STORAGE_MAINTENANCE_FAILED', 'command': command[:2],
+                              'reason': failure_reason(error)}), flush=True)
+
+
 def finish_commit(journal):
     # HEALTHY is durable before state is advanced. Repeating this operation is safe.
     save(ROOT / 'state.json', journal['new_state'])
@@ -287,6 +368,11 @@ def finish_commit(journal):
             run('docker', 'stop', '--time', '20', old_name)
     (ROOT / 'transaction.json').unlink(missing_ok=True)
     sync_directory(ROOT)
+    try:
+        prune_releases(journal)
+    except BaseException as error:
+        print(json.dumps({'event': 'RETENTION_FAILED', 'component': component,
+                          'reason': failure_reason(error)}), flush=True)
 
 
 def recover_transaction(journal):
@@ -407,7 +493,7 @@ def stage_release(component, build, destination, manifest, config, journal, port
             require('BOOT-INF/classes/ffdd/opsconsole/PublicTestDeploymentSafety.class' in jar.namelist(), 'JAR_GUARD_MISSING')
         release.mkdir(mode=0o755)
         release.chmod(0o755)
-        shutil.copyfile(payload, release / 'nexion-backend.jar')
+        os.link(payload, release / 'nexion-backend.jar')
         (release / 'nexion-backend.jar').chmod(0o644)
     else:
         safe_extract(payload, release)
@@ -448,16 +534,16 @@ def apply_with_rollback(journal, apply, port, old_port):
 def promote(component, number, config, state, rollback_check=False):
     require(component in ARTIFACTS and str(number).isdigit(), 'COMPONENT_REJECTED')
     require(not rollback_check or not (ROOT / 'AUTO_ENABLED').exists(), 'ROLLBACK_CHECK_REQUIRES_AUTO_HELD')
-    job = JOBS / f'nexgrid-{component}-main'
+    job = JOBS / f'nexgrid-{component}-test'
     require(digest(job / 'config.xml') == config['job_hashes'][component], 'JOB_CONFIGURATION_DRIFT')
     build = job / 'builds' / str(number)
     metadata = safe_read(build / 'build.xml', 8 * 1024 * 1024)
     sha = build_identity(metadata)
     manifest = validate_manifest(json.loads(safe_read(build / 'archive/artifacts/release.json', 4096)), component, sha)
     url = f'https://github.com/agentabatiuo572-byte/{REPOS[component]}.git'
-    remote = run('git', 'ls-remote', url, 'refs/heads/main', timeout=30).split()
-    require(len(remote) == 2 and remote == [sha, 'refs/heads/main'], 'BUILD_IS_NOT_CURRENT_MAIN')
-    # GitHub main is the user's approved business source. Mapper/startup/source
+    remote = run('git', 'ls-remote', url, 'refs/heads/test', timeout=30).split()
+    require(len(remote) == 2 and remote == [sha, 'refs/heads/test'], 'BUILD_IS_NOT_CURRENT_TEST')
+    # GitHub test is the user's approved business source. Mapper/startup/source
     # changes do not require a second fingerprint approval. Versioned SQL runs
     # through the host-owned backup/once-only migration runner, never a root shell.
     suffix = '-rollback' if rollback_check else ''
@@ -550,7 +636,7 @@ def poll(config, state):
     for component in ARTIFACTS:
         latest = None
         try:
-            builds = JOBS / f'nexgrid-{component}-main/builds'
+            builds = JOBS / f'nexgrid-{component}-test/builds'
             numbers = sorted((int(p.name) for p in builds.iterdir() if p.name.isdigit()), reverse=True)
             if not numbers or numbers[0] <= state[component]['build']:
                 continue
@@ -618,6 +704,7 @@ def main():
             return
         require((ROOT / 'AUTO_ENABLED').is_file(), 'AUTO_DEPLOYMENT_HELD')
         poll(config, state)
+        maintain_storage(json.loads((ROOT / 'state.json').read_text()))
 
 
 if __name__ == '__main__':

@@ -1,13 +1,15 @@
+properties([buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))])
+
 node('nexgrid-ci') {
   timeout(time: 40, unit: 'MINUTES') {
     try {
       stage('Isolation preflight') {
         sh 'bash /opt/nexgrid-ci/ci-network-check.sh'
       }
-      stage('Checkout main') {
+      stage('Checkout test') {
         deleteDir()
-        checkout([$class: 'GitSCM', branches: [[name: '*/main']],
-          userRemoteConfigs: [[url: '@REPO@', refspec: '+refs/heads/main:refs/remotes/origin/main']],
+        checkout([$class: 'GitSCM', branches: [[name: '*/test']],
+          userRemoteConfigs: [[url: '@REPO@', refspec: '+refs/heads/test:refs/remotes/origin/test']],
           extensions: [[$class: 'CloneOption', shallow: true, depth: 1, noTags: true, honorRefspec: true, timeout: 10]]])
       }
       stage('TEST contracts and build') {
@@ -15,8 +17,8 @@ node('nexgrid-ci') {
         archiveArtifacts artifacts: 'artifacts/*', fingerprint: true
       }
       stage('Ready for host health gate') {
-        echo 'RELEASE_ARTIFACT_READY: only the independent host broker can promote this main artifact; CI SUCCESS is not proof of live deployment.'
-        currentBuild.description = 'main artifact ready; live result is recorded by host release broker'
+        echo 'RELEASE_ARTIFACT_READY: only the independent host broker can promote this test artifact; CI SUCCESS is not proof of live deployment.'
+        currentBuild.description = 'test artifact ready; live result is recorded by host release broker'
       }
     } finally {
       deleteDir()

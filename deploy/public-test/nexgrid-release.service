@@ -1,5 +1,5 @@
 [Unit]
-Description=NexGrid guarded main release broker
+Description=NexGrid guarded test release broker
 After=docker.service network-online.target
 Requires=docker.service
 

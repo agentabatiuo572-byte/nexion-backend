@@ -32,7 +32,7 @@ def mkdir(path, mode):
 
 def idle_jobs():
     for kind in b.ARTIFACTS:
-        job = b.JOBS / f'nexgrid-{kind}-main'
+        job = b.JOBS / f'nexgrid-{kind}-test'
         numbers = [int(p.name) for p in (job / 'builds').iterdir() if p.name.isdigit()]
         if numbers:
             root = b.xml_root(b.safe_read(job / 'builds' / str(max(numbers)) / 'build.xml', 8*1024*1024))
@@ -50,7 +50,7 @@ def install_ci():
         shutil.copyfile(LEGACY / name, BACKUP / name)
         (BACKUP / name).chmod(0o600)
     for kind in b.ARTIFACTS:
-        shutil.copyfile(b.JOBS / f'nexgrid-{kind}-main/config.xml', BACKUP / f'{kind}-job.xml')
+        shutil.copyfile(b.JOBS / f'nexgrid-{kind}-test/config.xml', BACKUP / f'{kind}-job.xml')
         (BACKUP / f'{kind}-job.xml').chmod(0o600)
     print('CI_BACKUP_READY; stopping only idle Jenkins controller and agent', flush=True)
     b.run('docker', 'stop', '--time', '30', 'nexgrid-ci-agent', 'nexgrid-jenkins', timeout=100)
@@ -68,7 +68,7 @@ def install_ci():
         for name in old:
             b.atomic_write(LEGACY / name, (BACKUP / name).read_bytes(), 0o644)
         for kind in b.ARTIFACTS:
-            target = b.JOBS / f'nexgrid-{kind}-main/config.xml'
+            target = b.JOBS / f'nexgrid-{kind}-test/config.xml'
             b.atomic_write(target, (BACKUP / f'{kind}-job.xml').read_bytes(), 0o644)
             os.chown(target, 1000, 1000)
         (HOME / 'nexgrid-release-v1-jobs-configured').unlink(missing_ok=True)
@@ -94,7 +94,7 @@ def verify_ci_hook():
         if ((HOME / 'nexgrid-release-v1-jobs-configured').is_file()
                 and (HOME / 'nexgrid-release-v1-initial-builds-queued').is_file()):
             for kind in b.ARTIFACTS:
-                text = (b.JOBS / f'nexgrid-{kind}-main/config.xml').read_text()
+                text = (b.JOBS / f'nexgrid-{kind}-test/config.xml').read_text()
                 b.require('RELEASE_ARTIFACT_READY' in text and 'DEPLOYMENT_HELD' not in text,
                           'PARTIAL_CI_JOB_CONFIGURATION')
             return
@@ -141,7 +141,7 @@ def prepare_host():
         raise
     config = {'pc_image': PC_IMAGE, 'h5_image': H5_IMAGE, 'policy_sha256': POLICY_HASH,
               'schema': {'backend': SCHEMA_HASH},
-              'job_hashes': {kind: b.digest(b.JOBS / f'nexgrid-{kind}-main/config.xml') for kind in b.ARTIFACTS},
+              'job_hashes': {kind: b.digest(b.JOBS / f'nexgrid-{kind}-test/config.xml') for kind in b.ARTIFACTS},
               'trusted_files': {name: b.digest(b.INSTALL / name) for name in
                 ['release_broker.py', 'schema_fingerprint.py', 'public-test-policy.properties', 'test-server.yml', 'h5-nginx.conf']},
               'trusted_external_files': {str(snippet): b.digest(snippet)}}
