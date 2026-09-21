@@ -79,6 +79,91 @@ class I5PublishedDisclosureProvisioningMySqlTest {
         }
     }
 
+    /**
+     * zentao #60 的残留那一半:沙箱夹具行泄漏进共享库后,一直指着规范迁移不提供的
+     * 'v-local-1'。退役迁移必须清掉它,同时**绝不**碰运营内容。
+     */
+    @Test
+    void leakedLocalSandboxFixtureIsRetiredWithoutTouchingOperatorContent() throws Exception {
+        Path retirement = Path.of(
+                "scripts/migrations/20260921_i5_local_sandbox_fixture_retirement.sql");
+        String schema = "nexion_i5_sandbox_it_" + UUID.randomUUID().toString().replace("-", "");
+        String base = System.getenv().getOrDefault("NEXION_TEST_DB_SERVER_URL", "jdbc:mysql://127.0.0.1:3306/");
+        String username = System.getenv().getOrDefault("NEXION_TEST_DB_USERNAME", "root");
+        String password = System.getenv("NEXION_TEST_DB_PASSWORD");
+        try (Connection admin = DriverManager.getConnection(base + OPTIONS, username, password)) {
+            admin.createStatement().execute("CREATE DATABASE " + schema);
+            try (Connection connection = DriverManager.getConnection(base + schema + OPTIONS, username, password)) {
+                createI5Tables(connection);
+                // 规范辖区先就绪(模拟 provisioning 迁移已跑过)。
+                executeScript(connection, Files.readString(MIGRATION, StandardCharsets.UTF_8));
+                seedOperatorOwnedJurisdiction(connection);
+                seedLeakedLocalSandboxFixture(connection);
+
+                String script = Files.readString(retirement, StandardCharsets.UTF_8);
+                executeScript(connection, script);
+                // 可重跑:第二次启动不得再改任何行。
+                executeScript(connection, script);
+
+                // 夹具行退出读路径:矩阵行、目录行、草稿、章节全部不再可见。
+                assertThat(mappingVersion(connection, "LOCAL-SANDBOX"))
+                        .as("fixture matrix row must leave the read path").isNull();
+                assertThat(catalogStatus(connection, "LOCAL-SANDBOX"))
+                        .as("fixture catalog entry must be archived").isEqualTo("ARCHIVED");
+                assertThat(draftCount(connection, "LOCAL-SANDBOX")).as("fixture draft retired").isZero();
+                assertThat(chapterCount(connection, "LOCAL-SANDBOX", "v-local-1")).as("fixture chapters retired").isZero();
+
+                // 运营内容一字未动。
+                assertThat(publishedVersion(connection, "SFC")).isEqualTo("v3");
+                assertThat(chapterCount(connection, "SFC", "v3")).isEqualTo(7);
+                assertThat(draftCount(connection, "SFC")).isEqualTo(1);
+                assertThat(mappingVersion(connection, "SFC")).isEqualTo("v3");
+                assertThat(catalogStatus(connection, "SFC")).isEqualTo("ACTIVE");
+                // 规范辖区仍可读。
+                assertThat(publishedVersion(connection, "CN")).isEqualTo("v1");
+            } finally {
+                admin.createStatement().execute("DROP DATABASE " + schema);
+            }
+        }
+    }
+
+    /** 沙箱夹具泄漏后的库内状态:辖区/目录/草稿/章节四表都有它,版本号是 v-local-1。 */
+    private void seedLeakedLocalSandboxFixture(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO nx_disclosure_jurisdiction_catalog
+                      (jurisdiction_code, jurisdiction_name, status, revision, last_operator, is_deleted)
+                    VALUES ('LOCAL-SANDBOX','本地沙箱风险披露','ACTIVE',1,
+                            'local-sandbox:risk-disclosure-fixture',0)
+                    """);
+            statement.execute("""
+                    INSERT INTO nx_disclosure_jurisdiction
+                      (jurisdiction_code, jurisdiction_name, country_codes, version_label, status,
+                       published_at_label, affected_count, ack_progress_pct, blocked_count, last_operator, is_deleted)
+                    VALUES ('LOCAL-SANDBOX','本地沙箱风险披露','LOCAL-SANDBOX','v-local-1','PUBLISHED',
+                            '07-01',0,0,0,'local-sandbox:risk-disclosure-fixture',0)
+                    """);
+            statement.execute("""
+                    INSERT INTO nx_disclosure_draft
+                      (jurisdiction_code, version_label, language_scope, effective_date, requires_reack,
+                       zh_body, vi_body, en_body, status, revision, content_hash, last_operator, is_deleted)
+                    VALUES ('LOCAL-SANDBOX','v-local-1','zh+vi+en','2026-07-01',1,
+                            '本地沙箱演示风险披露','Công bố rủi ro sandbox','Local sandbox disclosure',
+                            'PUBLISHED',1,'local-sandbox-fixture','local-sandbox:risk-disclosure-fixture',0)
+                    """);
+            for (int chapter = 1; chapter <= 7; chapter++) {
+                String no = String.format("%02d", chapter);
+                statement.execute("""
+                        INSERT INTO nx_disclosure_chapter
+                          (jurisdiction_code, version_label, chapter_no, zh_title, vi_title, en_title,
+                           zh_body, vi_body, en_body, sort_order, last_operator, is_deleted)
+                        VALUES ('LOCAL-SANDBOX','v-local-1','%s','演示性质','Trình diễn','Demo',
+                                '沙箱演示','Sandbox','Sandbox demo',%d,'local-sandbox:risk-disclosure-fixture',0)
+                        """.formatted(no, chapter));
+            }
+        }
+    }
+
     private void createI5Tables(Connection connection) throws Exception {
         String schema = Files.readString(Path.of("scripts/schema.sql"), StandardCharsets.UTF_8);
         for (String table : List.of("nx_disclosure_jurisdiction_catalog", "nx_disclosure_jurisdiction",
@@ -206,6 +291,17 @@ class I5PublishedDisclosureProvisioningMySqlTest {
         try (Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery("""
                      SELECT version_label FROM nx_disclosure_jurisdiction
+                      WHERE jurisdiction_code = '%s' AND is_deleted = 0
+                     """.formatted(jurisdiction))) {
+            return rows.next() ? rows.getString(1) : null;
+        }
+    }
+
+    /** 辖区目录行的状态;夹具退役后应为 ARCHIVED。 */
+    private String catalogStatus(Connection connection, String jurisdiction) throws Exception {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("""
+                     SELECT status FROM nx_disclosure_jurisdiction_catalog
                       WHERE jurisdiction_code = '%s' AND is_deleted = 0
                      """.formatted(jurisdiction))) {
             return rows.next() ? rows.getString(1) : null;
