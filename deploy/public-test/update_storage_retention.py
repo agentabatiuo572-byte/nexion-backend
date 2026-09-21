@@ -15,12 +15,13 @@ import xml.etree.ElementTree as ET
 
 INSTALL = Path('/srv/jenkins/release')
 BOUND_PIPELINE = Path('/srv/jenkins/install/main.pipeline.groovy')
+BOUND_BUILD = Path('/srv/jenkins/install/ci-build.sh')
 JOBS = Path('/var/lib/docker/volumes/nexgrid_jenkins_home/_data/jobs')
 ROOT = Path('/srv/nexgrid/cd')
 BACKUPS = Path('/srv/jenkins/backups')
 STAGE_PARENT = Path('/srv/jenkins/updates')
 OLD_LOCK = 'b1f96dc229031186961944dfdb01026e49b58e3ff246986ced09b75b00dcb5e0'
-CHANGES = {'release_broker.py', 'main.pipeline.groovy'}
+CHANGES = {'release_broker.py', 'main.pipeline.groovy', 'ci-build.sh'}
 
 
 def require(condition, reason):
@@ -83,16 +84,16 @@ def atomic(path, data, mode=0o600, owner=None):
         raise
 
 
-def replace_bound(data):
-    trusted(BOUND_PIPELINE)
-    inode = BOUND_PIPELINE.stat().st_ino
-    with BOUND_PIPELINE.open('r+b') as stream:
+def replace_bound(path, data):
+    trusted(path)
+    inode = path.stat().st_ino
+    with path.open('r+b') as stream:
         stream.write(data)
         stream.truncate()
         stream.flush()
         os.fsync(stream.fileno())
-    require(BOUND_PIPELINE.stat().st_ino == inode and BOUND_PIPELINE.read_bytes() == data,
-            'BOUND_PIPELINE_UPDATE_FAILED')
+    require(path.stat().st_ino == inode and path.read_bytes() == data,
+            'BOUND_FILE_UPDATE_FAILED')
 
 
 def idle_jobs():
@@ -149,6 +150,7 @@ def update(stage, new_lock_hash):
     for name in [*CHANGES, 'runtime-lock.json', 'config.json']:
         shutil.copyfile(INSTALL / name, backup / name)
     shutil.copyfile(BOUND_PIPELINE, backup / 'bound-main.pipeline.groovy')
+    shutil.copyfile(BOUND_BUILD, backup / 'bound-ci-build.sh')
     for kind in ('backend', 'pc', 'uniapp'):
         shutil.copyfile(JOBS / f'nexgrid-{kind}-test/config.xml', backup / f'{kind}-job.xml')
     paused = controller_stopped = timer_stopped = False
@@ -165,7 +167,8 @@ def update(stage, new_lock_hash):
             command('docker', 'stop', '--time', '30', 'nexgrid-jenkins')
             controller_stopped = True
             template = (stage / 'main.pipeline.groovy').read_text()
-            replace_bound(template.encode())
+            replace_bound(BOUND_PIPELINE, template.encode())
+            replace_bound(BOUND_BUILD, (stage / 'ci-build.sh').read_bytes())
             for name in CHANGES:
                 atomic(INSTALL / name, (stage / name).read_bytes(), 0o644)
             config = json.loads((INSTALL / 'config.json').read_text())
@@ -187,7 +190,8 @@ def update(stage, new_lock_hash):
         except BaseException:
             if not controller_stopped:
                 command('docker', 'stop', '--time', '30', 'nexgrid-jenkins')
-            replace_bound((backup / 'bound-main.pipeline.groovy').read_bytes())
+            replace_bound(BOUND_PIPELINE, (backup / 'bound-main.pipeline.groovy').read_bytes())
+            replace_bound(BOUND_BUILD, (backup / 'bound-ci-build.sh').read_bytes())
             for name in [*CHANGES, 'runtime-lock.json', 'config.json']:
                 atomic(INSTALL / name, (backup / name).read_bytes(),
                        0o600 if name == 'config.json' else 0o644)
