@@ -259,7 +259,18 @@ $migrations = @(
   # operator saving such a row got TASK_REQUIREMENT_INVALID -- the row could be shown
   # but not saved. Rewrite the remaining rows onto the current brand and the allowlist
   # wording; new writes are already blocked by RetiredBrandGate.
-  (Join-Path $root "scripts\migrations\20260921_h2_e2_retired_brand_cleanup.sql")
+  (Join-Path $root "scripts\migrations\20260921_h2_e2_retired_brand_cleanup.sql"),
+  # The trial hero quoted "3-day trial credit $116" while the same screen's S1 card
+  # said $1.00/day. The display side already prefers the product's own daily yield,
+  # but no migration ever populated nx_product.estimated_daily_usdt, so it fell back
+  # to the stale policy value (38.52). Seed the catalogue-authoritative yield for the
+  # trial product and align the fallback policy values with it.
+  (Join-Path $root "scripts\migrations\20260921_h2_trial_product_daily_yield.sql"),
+  # The payment-integration SKU "HDPay1U" is still reachable from the App store's
+  # "more models" list. The publish gate would withhold it (no effective earnings),
+  # so the live row must carry a nonzero yield; retire that row explicitly instead of
+  # relying on the gate alone.
+  (Join-Path $root "scripts\migrations\20260921_e1_retire_hdpay_test_sku.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

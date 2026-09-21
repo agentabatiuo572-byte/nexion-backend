@@ -193,6 +193,37 @@ class AppGenesisServiceTest {
     }
 
     @Test
+    void accountKeepsHolderFactsWhenNoActiveSeriesExists() {
+        // BUG 174/#54:没有 ACTIVE 系列时,持仓/订单/发行/钱包仍然必须可读 ——
+        // 此前无条件 requireSeries() 让整个账号投影 503,App 订单页于是把
+        // 「Genesis 未开放」升级成「订单目录同步失败」并把已读到的订单清空。
+        when(mapper.activeSeries()).thenReturn(null);
+        when(mapper.holdings(42L)).thenReturn(List.of(new AppGenesisMapper.HoldingRow(
+                1L,"GEN-HOLD-1",42L,"GEN-OWN-1","genesis-main",new BigDecimal("9999"),
+                "ACTIVE",null,LocalDateTime.parse("2026-07-22T04:00:00"),null)));
+        when(mapper.userTransactions(42L)).thenReturn(List.of(new AppGenesisMapper.TransactionRow(
+                "GEN-OWN-1","PRIMARY",1,new BigDecimal("9999"),new BigDecimal("9999"),
+                BigDecimal.ZERO,LocalDateTime.parse("2026-07-22T04:00:00"))));
+        when(mapper.wallet(42L)).thenReturn(new BigDecimal("10001"));
+
+        Map<String,Object> data = service.account(42L).getData();
+
+        // 账号自己的事实照常下发,且订单可被 App 逐笔渲染。
+        assertThat(data.get("orders").toString()).contains("GEN-OWN-1", "PRIMARY");
+        assertThat(data.get("holdings").toString()).contains("GEN-HOLD-1");
+        assertThat(data).containsEntry("walletBalanceUsdt", new BigDecimal("10001.000000"))
+                .containsEntry("marketEnabled", false)
+                .containsEntry("serverCanonical", true)
+                .containsEntry("sourceEnvironment", "PRODUCTION")
+                .containsEntry("runId", "");
+        // 只有依赖系列的市场/报价字段降级;契约键仍在(形状与有系列时一致)。
+        assertThat(data).containsKeys("series", "sale", "eligibility", "emissionOpen", "emissionTotals");
+        assertThat(data.get("series")).isNull();
+        assertThat(data.get("sale")).isNull();
+        assertThat(data.get("eligibility")).isNull();
+    }
+
+    @Test
     void eligibilityProjectsCanonicalHolderAllocationPriorityAndProvenance() {
         when(mapper.userHoldingCount(42L, "genesis-main")).thenReturn(2L);
         when(mapper.currentPriorityRank(42L, "genesis-main")).thenReturn(2);

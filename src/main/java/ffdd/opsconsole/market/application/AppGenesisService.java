@@ -116,8 +116,13 @@ public class AppGenesisService {
             return sandbox.get().genesisAccount(userId);
         }
         requireGenesisSubject(userId);
-        AppGenesisMapper.SeriesRow series = requireSeries();
-        return ApiResult.ok(accountView(userId, series));
+        // BUG 174/#54: 持仓、订单历史、发行明细与钱包余额**不依赖** ACTIVE 系列存在。
+        // 此前这里无条件 requireSeries(),没有系列时整个账号投影 503,App 订单页
+        // 于是把「Genesis 未开放」升级成「订单目录同步失败」并把已经读到的订单清空
+        // —— 用户无法判断订单历史到底读没读到。系列缺失只该让**市场/报价**相关字段
+        // 降级为不可用,账号自己的事实照常下发。
+        AppGenesisMapper.SeriesRow series = mapper.activeSeries();
+        return ApiResult.ok(series == null ? accountViewWithoutSeries(userId) : accountView(userId, series));
     }
 
     public ApiResult<Map<String, Object>> eligibility(Long userId) {
@@ -358,6 +363,22 @@ public class AppGenesisService {
                 "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", marketEnabled,
                 "emissionOpen", emissionOpen(), "sale", policy.publicView(clock.instant()),
                 "eligibility", eligibilityView(userId, series, policy, marketEnabled), "serverCanonical", true,
+                "sourceEnvironment", "PRODUCTION", "runId", "");
+    }
+
+    /**
+     * 没有 ACTIVE 系列时的账号投影:账号自己的事实(持仓/订单/发行/钱包)照常下发,
+     * 只有依赖系列的市场与报价字段降级为「未开放」。契约形状与 {@link #accountView}
+     * 完全一致(同键、同类型),App 侧无需分支解析。
+     */
+    private Map<String, Object> accountViewWithoutSeries(Long userId) {
+        return linked("series", null,
+                "holdings", mapper.holdings(userId).stream().map(this::holdingView).toList(),
+                "emissions", mapper.emissions(userId).stream().map(this::emissionView).toList(),
+                "emissionTotals", mapper.emissionTotals(userId),
+                "orders", mapper.userTransactions(userId).stream().map(this::transactionView).toList(),
+                "walletBalanceUsdt", money(mapper.wallet(userId)), "marketEnabled", false,
+                "emissionOpen", emissionOpen(), "sale", null, "eligibility", null, "serverCanonical", true,
                 "sourceEnvironment", "PRODUCTION", "runId", "");
     }
 
