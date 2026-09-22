@@ -133,7 +133,7 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
                 AND COALESCE(amount,0)>0 THEN created_at END) latestRewardAt,
               COALESCE(SUM(CASE WHEN created_at >= #{dayStart} AND created_at < #{nextDay}
                 AND UPPER(asset)='NEX' AND UPPER(status) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED','PENDING')
-                AND bill_category='earn' THEN CASE WHEN UPPER(direction)='IN' THEN GREATEST(COALESCE(amount,0),0)
+                THEN CASE WHEN UPPER(direction)='IN' THEN GREATEST(COALESCE(amount,0),0)
                           ELSE -GREATEST(COALESCE(amount,0),0) END ELSE 0 END),0) todayNexEarn,
               COALESCE(SUM(CASE WHEN UPPER(asset)='NEX' AND UPPER(status)='PENDING'
                 THEN GREATEST(COALESCE(amount,0),0) ELSE 0 END),0) pendingNex,

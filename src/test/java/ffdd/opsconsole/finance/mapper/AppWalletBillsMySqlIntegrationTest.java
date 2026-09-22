@@ -136,6 +136,7 @@ class AppWalletBillsMySqlIntegrationTest {
         ledger(OTHER_USER, "OTHER-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 0);
         ledger(USER, "DELETED-REWARD", "DAILY_CHECK_IN", "NEX", "IN", "999", "999", "POSTED", DAY, 1);
         var summary = mapper.summary(USER, DAY, DAY.plusDays(1), DAY.withDayOfMonth(1), DAY.plusMonths(1));
+        assertThat(summary.todayNexEarn()).isEqualByComparingTo("-269");
         assertThat(summary.settledRewardsNex()).isEqualByComparingTo("199");
         assertThat(summary.withdrawalOffsetNexSpent()).isEqualByComparingTo("18");
         // Existing gross reward counters retain their established contract.
@@ -205,8 +206,8 @@ class AppWalletBillsMySqlIntegrationTest {
                 DAY.withDayOfMonth(1).plusMonths(1));
         assertThat(summary.rewardsUsdt()).isEqualByComparingTo("2");
         assertThat(summary.rewardsNex()).isEqualByComparingTo("11");
-        // 1,100 EARN rows + two tied EARN rows + four pending EARN; ORDER_QUEST is a reward.
-        assertThat(summary.todayNexEarn()).isEqualByComparingTo("1106");
+        // All valid daily NEX ledger rows contribute by direction, regardless of presentation category.
+        assertThat(summary.todayNexEarn()).isEqualByComparingTo("1124");
         assertThat(summary.pendingNex()).isEqualByComparingTo("4");
         assertThat(summary.monthBillCount()).isEqualTo(1_111L);
         assertThat(mapper.recentNexRows(USER, 10)).noneSatisfy(row -> assertThat(row.bizNo()).isEqualTo("FAILED"));
