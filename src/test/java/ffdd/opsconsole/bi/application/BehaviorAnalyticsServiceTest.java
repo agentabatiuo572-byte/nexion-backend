@@ -489,11 +489,13 @@ class BehaviorAnalyticsServiceTest {
 
     @Test
     void missingStaleAndOutOfOrderClientTimesFailClosed() {
+        long validClientTs = Instant.now().toEpochMilli();
         when(mapper.findTrackedPage("/pages/store/detail")).thenReturn(
                 new BehaviorAnalyticsMapper.CatalogRow("/pages/store/detail", "商品", 3,
                         "/pages/store/store", "/pages/store/store", true));
         when(mapper.latestSessionEventAt(org.mockito.ArgumentMatchers.anyString()))
-                .thenReturn(java.time.LocalDateTime.now().plusSeconds(1));
+                .thenReturn(java.time.LocalDateTime.ofInstant(Instant.ofEpochMilli(validClientTs),
+                        java.time.ZoneOffset.ofHours(8)).plusMinutes(1));
 
         assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "app.page_viewed",
@@ -508,7 +510,7 @@ class BehaviorAnalyticsServiceTest {
         assertThatThrownBy(() -> service.ingest(42L, new BehaviorEventRequest(
                 "cccccccccccccccccccccccccccccccc", "app.page_viewed",
                 "0123456789abcdef0123456789abcdef", "/pages/store/detail",
-                0L, null, null, null, null, Instant.now().toEpochMilli(), "APP", "en-US")))
+                0L, null, null, null, null, validClientTs, "APP", "en-US")))
                 .isInstanceOf(BizException.class).hasMessageContaining("L6_EVENT_OUT_OF_ORDER");
     }
 }
