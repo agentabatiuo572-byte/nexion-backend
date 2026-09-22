@@ -119,4 +119,26 @@ class UserOpsMapperSqlTest {
                 .contains("JSON_VALID(payload)")
                 .contains("CASE WHEN JSON_VALID(payload) THEN payload ELSE '{}'");
     }
+
+    /**
+     * zentao #230:用户改名后,C1 推荐团队表格仍显示旧昵称。
+     *
+     * `nx_team_member.nickname` 是入队时写下的**反规范化副本**,用户改名它不会跟着变;
+     * 而同一页的账户摘要读的是 `nx_user.nickname`(实时)。结果是同一个人的名字在一屏里对不上。
+     * 修法是把实时值作为首选来源,反规范化列只留作兜底。
+     */
+    @Test
+    void c1TeamMembersReadTheLiveNicknameInsteadOfTheDenormalizedSnapshot() throws Exception {
+        String sql = String.join("\n", UserOpsMapper.class
+                .getMethod("teamMembers", Long.class, int.class)
+                .getAnnotation(Select.class)
+                .value());
+
+        assertThat(sql)
+                .as("必须 JOIN nx_user 取实时昵称")
+                .contains("LEFT JOIN nx_user u ON u.id = tm.member_user_id")
+                .contains("COALESCE(u.nickname, tm.nickname) AS nickname")
+                .as("不能再把反规范化列当作唯一来源")
+                .doesNotContain("                   nickname,");
+    }
 }
