@@ -51,7 +51,7 @@ public class AppCommissionConfigController {
                 "{\"standard\":0,\"verified\":5000,\"premium\":50000,\"diamond\":500000}"));
         projection.put("influenceClampMin", value(config, "F.influence.clampMin", "1"));
         projection.put("influenceClampMax", value(config, "F.influence.clampMax", "5"));
-        projection.put("coolingDays", value(config, "F.cooldown", "30"));
+        projection.put("coolingDays", value(config, "F.cooldown", null));
         projection.put("promoMultiplier", value(config, "F.promo.weekMultiplier", "1"));
         Map<String, Boolean> pausedLayers = new LinkedHashMap<>();
         for (int layer = 1; layer <= 7; layer++) {

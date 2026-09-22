@@ -39,6 +39,20 @@ class AppCommissionConfigControllerTest {
     }
 
     @Test
+    void doesNotInventACoolingPeriodWhenNoCanonicalValueIsPublished() {
+        var service = mock(OpsTeamService.class);
+        when(service.rates()).thenReturn(ApiResult.ok(Map.of(
+                "unilevelRates", List.of(),
+                "configValues", Map.of())));
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+
+        var result = new AppCommissionConfigController(service, environment).rates();
+
+        assertThat(result.getData()).containsEntry("coolingDays", null);
+    }
+
+    @Test
     void developmentUsesProductionAuthorityWhileIsolatedTestRequiresSandboxRunId() {
         var service = mock(OpsTeamService.class);
         when(service.rates()).thenReturn(ApiResult.ok(Map.of("unilevelRates", List.of(), "configValues", Map.of())));
