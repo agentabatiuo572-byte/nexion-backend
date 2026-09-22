@@ -64,7 +64,6 @@ class OpsEventCenterServiceTest {
                         new AuditStatsBucket("nex", 40L)));
         when(governanceMapper.currentRevision()).thenReturn(6);
         when(governanceMapper.lockCurrentRevision()).thenReturn(6);
-        when(governanceMapper.countEventsSince(any())).thenReturn(97L);
         when(governanceMapper.countEventsByFamilySince(any())).thenReturn(List.of(
                 new EventGovernanceMapper.EventFamilyCount("risk", 31L),
                 new EventGovernanceMapper.EventFamilyCount("phase_admin", 66L)));
@@ -112,6 +111,26 @@ class OpsEventCenterServiceTest {
                 .singleElement()
                 .extracting(EventCenterOverview.EventDomainItem::n)
                 .isEqualTo(true);
+    }
+
+    @Test
+    void overviewReconcilesTodayTotalWithSixFamiliesAndExplicitOtherBucket() {
+        when(governanceMapper.countEventsByFamilySince(any())).thenReturn(List.of(
+                new EventGovernanceMapper.EventFamilyCount("acquisition", 11L),
+                new EventGovernanceMapper.EventFamilyCount("risk", 30L),
+                new EventGovernanceMapper.EventFamilyCount("engagement", 20L),
+                new EventGovernanceMapper.EventFamilyCount("__unregistered__", 23L)));
+
+        EventCenterOverview overview = service.overview().getData();
+
+        assertThat(overview.stats().todayEvents()).isEqualTo("84");
+        assertThat(overview.eventFamilies())
+                .extracting(EventCenterOverview.EventFamily::key, EventCenterOverview.EventFamily::todayCount)
+                .contains(org.assertj.core.groups.Tuple.tuple("other_unregistered", "43"));
+        long reconciledTotal = overview.eventFamilies().stream()
+                .mapToLong(family -> Long.parseLong(family.todayCount()))
+                .sum();
+        assertThat(reconciledTotal).isEqualTo(84L);
     }
 
     @Test

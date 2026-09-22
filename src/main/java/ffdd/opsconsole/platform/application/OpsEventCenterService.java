@@ -157,7 +157,9 @@ public class OpsEventCenterService {
         AuditStatsSummaryResponse todaySummary = auditLogService.summary(statsQuery(1, 10));
         long todayAuditEvents = todaySummary.getTotal() == null ? 0L : todaySummary.getTotal();
         LocalDateTime todayStart = LocalDate.now().atStartOfDay();
-        long todayEvents = governanceMapper.countEventsSince(todayStart);
+        List<EventFamilyCount> todayFamilyCounts = governanceMapper.countEventsByFamilySince(todayStart);
+        long todayEvents = todayFamilyCounts.stream().mapToLong(EventFamilyCount::eventCount).sum();
+        List<EventFamily> eventFamilies = eventFamilies(todayFamilyCounts);
         List<DomainExtensionRecord> extensionRecords = governanceMapper.listDomainExtensions(100);
         List<EventDomainExtensionBatch> batches = domainExtensions(extensionRecords);
         List<String> registeredDomains = completedDomainNames(extensionRecords);
@@ -167,14 +169,14 @@ public class OpsEventCenterService {
                 .count();
         return ApiResult.ok(new EventCenterOverview(
                 new EventCenterStats(
-                        formatCount(todayEvents),
+                        exactCount(todayEvents),
                         todayAuditEvents,
                         registeredDomains.size(),
                         pendingDomains.size(),
                         batchDone,
                         batches.size(),
                         schemaVersion()),
-                eventFamilies(),
+                eventFamilies,
                 registeredDomains,
                 pendingDomains,
                 SUNSET_DOMAINS,
@@ -467,20 +469,35 @@ public class OpsEventCenterService {
         return auditLogService.list(request);
     }
 
-    private List<EventFamily> eventFamilies() {
+    private List<EventFamily> eventFamilies(List<EventFamilyCount> buckets) {
         Map<String, Long> counts = new LinkedHashMap<>();
-        governanceMapper.countEventsByFamilySince(LocalDate.now().atStartOfDay())
-                .forEach(bucket -> counts.put(bucket.familyKey(), bucket.eventCount()));
-        return EVENT_FAMILY_DEFINITIONS.stream()
+        buckets.forEach(bucket -> counts.put(bucket.familyKey(), bucket.eventCount()));
+        List<EventFamily> families = new ArrayList<>(EVENT_FAMILY_DEFINITIONS.stream()
                 .map(definition -> family(
                         definition.key(),
                         definition.title(),
                         definition.sub(),
                         definition.sample(),
                         definition.serverAuth(),
-                        formatCount(counts.getOrDefault(definition.key(), 0L)),
+                        exactCount(counts.getOrDefault(definition.key(), 0L)),
                         definition.events().toArray(EventDetailRow[]::new)))
-                .toList();
+                .toList());
+        long catalogedCount = EVENT_FAMILY_DEFINITIONS.stream()
+                .mapToLong(definition -> counts.getOrDefault(definition.key(), 0L))
+                .sum();
+        long otherCount = buckets.stream().mapToLong(EventFamilyCount::eventCount).sum() - catalogedCount;
+        if (otherCount > 0) {
+            families.add(family(
+                    "other_unregistered",
+                    "⑦ OTHER / UNREGISTERED",
+                    "已注册但未归入六类目录，或 schema_registered=0（纳入今日总量）",
+                    "其他已注册 family · 未注册 schema",
+                    "依原事件 schema",
+                    exactCount(otherCount),
+                    row("OTHER", "已注册但 family_key 未归入六类目录"),
+                    row("UNREGISTERED", "schema_registered=0 或 family_key 为空")));
+        }
+        return families;
     }
 
     private AuditStatsQueryRequest statsQuery(int days, int limit) {
@@ -1075,17 +1092,8 @@ public class OpsEventCenterService {
         return "A4 event center mutation: " + reason.trim();
     }
 
-    private String formatCount(long count) {
-        if (count <= 0) {
-            return "0";
-        }
-        if (count >= 1_000_000) {
-            return String.format(Locale.US, "%.1fM", count / 1_000_000d).replace(".0M", "M");
-        }
-        if (count >= 1_000) {
-            return String.format(Locale.US, "%.1fK", count / 1_000d).replace(".0K", "K");
-        }
-        return String.valueOf(count);
+    private String exactCount(long count) {
+        return String.valueOf(Math.max(0L, count));
     }
 
     private boolean containsPiiTerm(String value) {

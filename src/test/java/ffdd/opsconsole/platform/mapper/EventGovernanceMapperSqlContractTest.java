@@ -9,6 +9,20 @@ import org.junit.jupiter.api.Test;
 class EventGovernanceMapperSqlContractTest {
 
     @Test
+    void todayFamilyAggregationKeepsUnregisteredEventsVisible() throws NoSuchMethodException {
+        Select select = EventGovernanceMapper.class
+                .getMethod("countEventsByFamilySince", java.time.LocalDateTime.class)
+                .getAnnotation(Select.class);
+
+        assertThat(select).isNotNull();
+        String sql = String.join(" ", select.value());
+        assertThat(sql)
+                .contains("schema_registered=0")
+                .contains("__unregistered__")
+                .doesNotContain("AND schema_registered=1");
+    }
+
+    @Test
     void schemaExtensionPromotesOnlyActivePriorRevisionPropertiesWithoutChangingTheirMetadata()
             throws NoSuchMethodException {
         Update update = EventGovernanceMapper.class

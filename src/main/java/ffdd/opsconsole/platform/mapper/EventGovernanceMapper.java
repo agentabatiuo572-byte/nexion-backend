@@ -29,19 +29,19 @@ public interface EventGovernanceMapper extends BaseMapper<EventSchemaRegistryEnt
     int deleteTerminalAnalyticsEventsBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
 
     @Select("""
-            SELECT COUNT(*)
+            SELECT CASE
+                     WHEN schema_registered=0 OR family_key IS NULL OR family_key=''
+                       THEN '__unregistered__'
+                     ELSE family_key
+                   END AS familyKey,
+                   COUNT(*) AS eventCount
               FROM nx_event_outbox
-             WHERE is_deleted=0 AND analytics_event=1 AND schema_registered=1
-               AND event_ts >= #{startAt}
-            """)
-    long countEventsSince(@Param("startAt") LocalDateTime startAt);
-
-    @Select("""
-            SELECT family_key AS familyKey, COUNT(*) AS eventCount
-              FROM nx_event_outbox
-             WHERE is_deleted=0 AND analytics_event=1 AND schema_registered=1
-               AND event_ts >= #{startAt}
-             GROUP BY family_key
+             WHERE is_deleted=0 AND analytics_event=1 AND event_ts >= #{startAt}
+             GROUP BY CASE
+                        WHEN schema_registered=0 OR family_key IS NULL OR family_key=''
+                          THEN '__unregistered__'
+                        ELSE family_key
+                      END
             """)
     List<EventFamilyCount> countEventsByFamilySince(@Param("startAt") LocalDateTime startAt);
 
