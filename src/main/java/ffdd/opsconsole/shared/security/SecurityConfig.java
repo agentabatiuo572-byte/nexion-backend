@@ -76,6 +76,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/config/staking/pools").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-ranks").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/v-rank-policy", "/api/developer/docs", "/api/legal/terms/current", "/api/legal/privacy-policy/current").permitAll()
+                        // zentao #226:风险披露是**公开法律文本**,与条款/隐私政策同类 ——
+                        // 未登录用户在服务条款页点「另见:平台风险披露」必须能读到,
+                        // 否则登录守卫把他送回引导页,等于要求先登录才能读一份强制阅读的披露。
+                        // 读取本身不泄露账号信息:`current(null)` 只发布公开版本,
+                        // 有会话时才额外带上该用户的确认状态。
+                        .requestMatchers(HttpMethod.GET, "/api/legal/risk-disclosure/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/commission/rates", "/api/config/commission/guide").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/exchange/caps", "/api/config/market/nex", "/api/config/market/external", "/api/market/nex").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/genesis/state").permitAll()
