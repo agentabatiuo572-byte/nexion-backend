@@ -25,11 +25,18 @@ public final class RetiredBrandGate {
     }
 
     /**
-     * Retired brand tokens. Whole-token, case-insensitive. Kept as a regex rather
-     * than a bare list so {@code Nexion}-prefixed product names are caught while
-     * words that merely contain the letters are not.
+     * Retired brand tokens. Case-insensitive, anchored at a **word start** only.
+     * Kept as a regex rather than a bare list so {@code Nexion}-prefixed product
+     * names are caught while words that merely contain the letters are not.
+     *
+     * <p>🔴 只要求**前边界**,不要求后边界。旧值 {@code (^|[^[:alnum:]])nexion([^[:alnum:]]|$)}
+     * 与本注释承诺的行为正好相反:{@code NexionBox} / {@code NexionRack} 这类
+     * **品牌作前缀**的复合名,'Nexion' 后面紧跟字母 {@code B}/{@code R},后边界不成立,
+     * 于是既不被门拦住、也不被存量迁移清掉 —— 而「NexionBox Pro v2」正是用户实际看到的
+     * 旧品牌商品名(zentao #73)。前边界足以排除 {@code annexion} / {@code connexion}
+     * 这类只是**包含**该字母序列的词,因为那里的 'n' 前面是字母。</p>
      */
-    public static final String RETIRED_BRAND_REGEX = "(^|[^[:alnum:]])nexion([^[:alnum:]]|$)";
+    public static final String RETIRED_BRAND_REGEX = "(^|[^[:alnum:]])nexion";
 
     private static final Pattern RETIRED_BRAND = Pattern.compile(RETIRED_BRAND_REGEX, Pattern.CASE_INSENSITIVE);
 

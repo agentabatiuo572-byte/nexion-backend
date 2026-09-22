@@ -10,23 +10,28 @@
 --
 -- 与 Java 侧 `RetiredBrandGate.RETIRED_BRAND_REGEX` 同一口径:新发布由代码门禁
 -- 拦住,存量由本迁移修好,两边不会再分叉。
-
+--
+-- 🔴 替换必须**大小写不敏感**,否则本迁移会自己把后端启动打挂:谓词用 REGEXP,
+-- 而 MySQL 8 的 REGEXP 跟随列排序规则,默认 *_ci 下 `[Nn]exion` 连 `NEXION` 都命中;
+-- `REPLACE()` 却大小写敏感,只认字面量 'Nexion'。于是「谓词命中 → 改不动 →
+-- 后置断言失败 → SIGNAL 45000 → 启动中止」。用 REGEXP_REPLACE(...,'i') 让
+-- 「改得动的集合」= 「断言要求的集合」。
 UPDATE nx_nova_template
-   SET title_zh = REPLACE(title_zh, 'Nexion', 'NexGrid'),
-       body_zh  = REPLACE(body_zh,  'Nexion', 'NexGrid'),
-       title_vi = REPLACE(title_vi, 'Nexion', 'NexGrid'),
-       body_vi  = REPLACE(body_vi,  'Nexion', 'NexGrid'),
-       title_en = REPLACE(title_en, 'Nexion', 'NexGrid'),
-       body_en  = REPLACE(body_en,  'Nexion', 'NexGrid'),
+   SET title_zh = REGEXP_REPLACE(title_zh, '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
+       body_zh  = REGEXP_REPLACE(body_zh,  '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
+       title_vi = REGEXP_REPLACE(title_vi, '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
+       body_vi  = REGEXP_REPLACE(body_vi,  '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
+       title_en = REGEXP_REPLACE(title_en, '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
+       body_en  = REGEXP_REPLACE(body_en,  '(^|[^[:alnum:]])Nexion', '$1NexGrid', 1, 0, 'i'),
        updated_at = NOW(),
        reason = CONCAT(COALESCE(reason, ''), ' | retire Nexion brand')
  WHERE is_deleted = 0
-   AND (title_zh REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-     OR body_zh  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-     OR title_vi REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-     OR body_vi  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-     OR title_en REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-     OR body_en  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)');
+   AND (title_zh REGEXP '(^|[^[:alnum:]])[Nn]exion'
+     OR body_zh  REGEXP '(^|[^[:alnum:]])[Nn]exion'
+     OR title_vi REGEXP '(^|[^[:alnum:]])[Nn]exion'
+     OR body_vi  REGEXP '(^|[^[:alnum:]])[Nn]exion'
+     OR title_en REGEXP '(^|[^[:alnum:]])[Nn]exion'
+     OR body_en  REGEXP '(^|[^[:alnum:]])[Nn]exion');
 
 -- Postcondition: no live template may still carry the retired brand. A bare
 -- SELECT would only print a verdict the controlled runner does not parse, so the
@@ -36,12 +41,12 @@ SET @nova_brand_retired = (
   SELECT COUNT(*) = 0
     FROM nx_nova_template
    WHERE is_deleted = 0
-     AND (title_zh REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-       OR body_zh  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-       OR title_vi REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-       OR body_vi  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-       OR title_en REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)'
-       OR body_en  REGEXP '(^|[^[:alnum:]])[Nn]exion([^[:alnum:]]|$)')
+     AND (title_zh REGEXP '(^|[^[:alnum:]])[Nn]exion'
+       OR body_zh  REGEXP '(^|[^[:alnum:]])[Nn]exion'
+       OR title_vi REGEXP '(^|[^[:alnum:]])[Nn]exion'
+       OR body_vi  REGEXP '(^|[^[:alnum:]])[Nn]exion'
+       OR title_en REGEXP '(^|[^[:alnum:]])[Nn]exion'
+       OR body_en  REGEXP '(^|[^[:alnum:]])[Nn]exion')
 );
 SET @sql = IF(
   @nova_brand_retired,
