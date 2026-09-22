@@ -822,10 +822,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
      * <p>🔴 昵称必须 JOIN `nx_user` 取**实时**值(zentao #230)。`nx_team_member.nickname`
      * 是入队时写下的反规范化副本,用户改名后它不会跟着变 —— 于是 C1 推荐团队表格
      * 一直显示旧昵称,而同一页的账户摘要显示的是新昵称,同一个人的名字在一屏里对不上。
-     * 反规范化列保留为**兜底**(用户行缺失或被软删时仍有名字可显示),不再是首选来源。</p>
+     * 历史投影的 `member_user_id` 可能与页面展示的 `member_no` 不一致，因此规范 U 编号优先用于
+     * 定位用户；非规范编号仍兼容 `member_user_id`。反规范化昵称只在用户行缺失或被软删时兜底。</p>
      */
     @Select("""
-            SELECT tm.member_user_id AS memberUserId,
+            SELECT COALESCE(u.id, tm.member_user_id) AS memberUserId,
                    tm.member_no AS memberNo,
                    COALESCE(u.nickname, tm.nickname) AS nickname,
                    tm.v_rank AS vRank,
@@ -833,7 +834,13 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    tm.volume,
                    tm.created_at AS createdAt
               FROM nx_team_member tm
-              LEFT JOIN nx_user u ON u.id = tm.member_user_id AND u.is_deleted = 0
+              LEFT JOIN nx_user u
+                ON u.id = CASE
+                              WHEN tm.member_no REGEXP '^U[0-9]{8,}$'
+                                  THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)
+                              ELSE tm.member_user_id
+                          END
+               AND u.is_deleted = 0
              WHERE tm.user_id = #{userId}
                AND tm.is_deleted = 0
              ORDER BY tm.level ASC, tm.volume DESC, tm.id DESC

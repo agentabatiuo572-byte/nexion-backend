@@ -135,8 +135,10 @@ class UserOpsMapperSqlTest {
                 .value());
 
         assertThat(sql)
-                .as("必须 JOIN nx_user 取实时昵称")
-                .contains("LEFT JOIN nx_user u ON u.id = tm.member_user_id")
+                .as("必须按 C1 展示的 memberNo 找到同一个实时用户，不能信任历史投影的 member_user_id")
+                .contains("WHEN tm.member_no REGEXP '^U[0-9]{8,}$'")
+                .contains("THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)")
+                .contains("ELSE tm.member_user_id")
                 .contains("COALESCE(u.nickname, tm.nickname) AS nickname")
                 .as("不能再把反规范化列当作唯一来源")
                 .doesNotContain("                   nickname,");
