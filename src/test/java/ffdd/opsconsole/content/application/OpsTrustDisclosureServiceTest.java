@@ -546,6 +546,75 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void appPublishedSectionsWithholdPrototypeSeedClaimsWithoutChangingHistory() {
+        addRemainingPublishedAppTrustSections();
+        TrustSectionVersionView financial = repository.sectionVersions.get("financials::v5");
+        repository.sectionVersions.put("financials::v5", new TrustSectionVersionView(
+                financial.sectionKey(), financial.version(), financial.description(), financial.structure(),
+                financial.fields(), financial.status(), financial.revision(), "migration", financial.updatedAt()));
+        TrustSectionVersionView audits = repository.sectionVersions.get("auditsReserves::v1");
+        repository.sectionVersions.put("auditsReserves::v1", new TrustSectionVersionView(
+                audits.sectionKey(), audits.version(), audits.description(), audits.structure(),
+                audits.fields(), audits.status(), audits.revision(), "migration:homepage-trust-v2", audits.updatedAt()));
+
+        var result = service.publishedSections();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().sections().stream().filter(s -> "financials".equals(s.sectionKey()))
+                .findFirst().orElseThrow().fields()).allMatch(field -> field.value().isEmpty());
+        assertThat(result.getData().sections().stream().filter(s -> "auditsReserves".equals(s.sectionKey()))
+                .findFirst().orElseThrow().fields()).allMatch(field -> field.value().isEmpty());
+        assertThat(repository.sectionVersions.get("financials::v5").fields().get(0).value()).isEqualTo("128.4%");
+    }
+
+    @Test
+    void appPublishedSectionsWithholdOperatorEditedFinancialAndBadgeClaims() {
+        addRemainingPublishedAppTrustSections();
+        var result = service.publishedSections();
+
+        assertThat(result.getCode()).isZero();
+        for (String key : List.of("financials", "complianceBadges")) {
+            assertThat(result.getData().sections().stream().filter(s -> key.equals(s.sectionKey()))
+                    .findFirst().orElseThrow().fields()).allMatch(field -> field.value().isEmpty());
+        }
+        assertThat(repository.sectionVersions.get("financials::v5").fields().get(0).value()).isEqualTo("128.4%");
+    }
+
+    @Test
+    void appPublishedSectionsWithholdReserveRatioAndAiClientCountEvenWithDocumentUrl() {
+        addRemainingPublishedAppTrustSections();
+        repository.sectionVersions.put("auditsReserves::v1", new TrustSectionVersionView(
+                "auditsReserves", "v1", "Audit documents", "structured fields",
+                List.of(
+                        new TrustSectionVersionView.Field("document1Url", "Document URL", "https://example.com/audit.pdf"),
+                        new TrustSectionVersionView.Field("homepageProof.zh", "Reserve proof", "102.4% backed"),
+                        new TrustSectionVersionView.Field("homepageProof.vi", "Reserve proof", "102.4% backed"),
+                        new TrustSectionVersionView.Field("homepageProof.en", "Reserve proof", "102.4% backed")),
+                "published", 2L, "operator", "2026-09-23"));
+        repository.sectionVersions.put("nexNarrative::v1", new TrustSectionVersionView(
+                "nexNarrative", "v1", "Narrative", "structured fields",
+                List.of(
+                        new TrustSectionVersionView.Field("hero.zh", "Headline", "NEX"),
+                        new TrustSectionVersionView.Field("hero.vi", "Headline", "NEX"),
+                        new TrustSectionVersionView.Field("hero.en", "Headline", "NEX"),
+                        new TrustSectionVersionView.Field("activeAiClients", "Active AI clients", "18,420")),
+                "published", 2L, "operator", "2026-09-23"));
+
+        var sections = service.publishedSections().getData().sections();
+
+        var auditFields = sections.stream().filter(s -> "auditsReserves".equals(s.sectionKey()))
+                .findFirst().orElseThrow().fields();
+        assertThat(auditFields.stream().filter(f -> "document1Url".equals(f.key())).findFirst().orElseThrow().value())
+                .isEqualTo("https://example.com/audit.pdf");
+        assertThat(auditFields.stream().filter(f -> "homepageProof.zh".equals(f.key())).findFirst().orElseThrow().value())
+                .isEmpty();
+        var narrativeFields = sections.stream().filter(s -> "nexNarrative".equals(s.sectionKey()))
+                .findFirst().orElseThrow().fields();
+        assertThat(narrativeFields.stream().filter(f -> "activeAiClients".equals(f.key())).findFirst().orElseThrow().value())
+                .isEmpty();
+    }
+
+    @Test
     void appPublishedSectionsExposeHomepageTrustFieldsFromTheCurrentI4Versions() {
         addRemainingPublishedAppTrustSections();
         repository.sections.put("complianceBadges", new TrustSectionView(

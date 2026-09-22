@@ -168,8 +168,20 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                     || !validPublishedTrustFields(version.fields())) {
                 return invalidPublishedTrustSnapshot();
             }
+            // Editor content cannot supply measured finance, compliance, reserve ratio
+            // or AI-client counts. Legacy migration content is a prototype seed. Keep
+            // published versions for audit/history while withholding unsupported claims.
+            boolean unsupportedClaim = Set.of("financials", "complianceBadges").contains(section.key())
+                    || (trimToEmpty(version.operator()).startsWith("migration")
+                    && Set.of("leadership", "auditsReserves").contains(section.key()));
+            boolean missingAudit = "auditsReserves".equals(section.key()) && version.fields().stream()
+                    .noneMatch(field -> "document1Url".equals(field.key()) && isSafeTrustSectionLink(field.value()));
             List<AppTrustSectionsView.Field> fields = version.fields().stream()
-                    .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(), field.value()))
+                    .map(field -> new AppTrustSectionsView.Field(field.key(), field.label(),
+                            unsupportedClaim || missingAudit
+                                    || ("auditsReserves".equals(section.key()) && field.key().startsWith("homepageProof."))
+                                    || ("nexNarrative".equals(section.key()) && "activeAiClients".equals(field.key()))
+                                    ? "" : field.value()))
                     .toList();
             sections.add(new AppTrustSectionsView.Section(
                     section.key(), version.version(), version.description(), version.structure(), fields));
