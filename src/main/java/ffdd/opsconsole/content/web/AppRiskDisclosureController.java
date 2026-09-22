@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -24,6 +25,11 @@ public class AppRiskDisclosureController {
     @GetMapping("/current")
     public ApiResult<AppRiskDisclosureView> current(Authentication authentication) {
         return service.current(authenticatedUserId(authentication));
+    }
+
+    @GetMapping("/public/current")
+    public ApiResult<AppRiskDisclosureView> publicCurrent(@RequestParam(required = false) String country) {
+        return service.publicCurrent(country);
     }
 
     @PostMapping("/acknowledgment")

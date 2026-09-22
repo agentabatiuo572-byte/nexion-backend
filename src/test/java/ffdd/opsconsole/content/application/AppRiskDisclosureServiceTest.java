@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
@@ -88,6 +89,31 @@ class AppRiskDisclosureServiceTest {
         verify(eventOutboxService).publishUserEvent(
                 eq("DISCLOSURE_VIEW"), eq("42:SBV"), eq("disclosure.viewed"), eq(42L),
                 eq("P3"), eq(4), eq("2026-W10"), any());
+    }
+
+    @Test
+    void publicCurrentReadsPublishedCountryDisclosureWithoutAccountStateTokenOrEvent() {
+        var result = service.publicCurrent("VN");
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().jurisdiction()).isEqualTo("SBV");
+        assertThat(result.getData().version()).isEqualTo("v13");
+        assertThat(result.getData().chapters()).hasSize(1);
+        assertThat(result.getData().acknowledged()).isFalse();
+        assertThat(result.getData().acknowledgedAt()).isNull();
+        assertThat(result.getData().acknowledgmentToken()).isNull();
+        assertThat(result.getData().acknowledgmentTokenExpiresAt()).isNull();
+        verifyNoInteractions(ackMapper, eventOutboxService, auditLogService, tamperDetectionPublisher);
+    }
+
+    @Test
+    void publicCurrentRejectsMissingCountryAndUnpublishedContent() {
+        assertThat(service.publicCurrent(null).getMessage()).isEqualTo("RISK_DISCLOSURE_COUNTRY_REQUIRED");
+        assertThat(service.publicCurrent("??").getCode()).isEqualTo(422);
+        when(repository.findDisclosureVersion("SBV", "v13")).thenReturn(Optional.empty());
+        assertThat(service.publicCurrent("VN").getMessage())
+                .isEqualTo("RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND");
+        verifyNoInteractions(ackMapper, eventOutboxService, auditLogService, tamperDetectionPublisher);
     }
 
     @Test

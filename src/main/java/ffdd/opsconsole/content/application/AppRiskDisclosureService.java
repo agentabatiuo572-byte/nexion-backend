@@ -56,6 +56,15 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
         return currentAndPublish(userId, null);
     }
 
+    @Transactional(readOnly = true)
+    public ApiResult<AppRiskDisclosureView> publicCurrent(String country) {
+        // Caller-selected country is only for reading public text; account gates use the saved country.
+        if (!StringUtils.hasText(CountryCodeNormalizer.normalize(country))) {
+            return ApiResult.fail(422, "RISK_DISCLOSURE_COUNTRY_REQUIRED");
+        }
+        return loadCurrent(null, country, false);
+    }
+
     /**
      * Reserved for a trusted edge integration. Controllers must not pass a client-provided country header here.
      * A trusted edge country may override the user's saved profile country for this request.
@@ -138,7 +147,9 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
     }
 
     private ApiResult<AppRiskDisclosureView> loadCurrent(Long userId, String trustedIpCountry, boolean issueReadToken) {
-        if (userId == null || userId <= 0) return ApiResult.fail(401, "USER_AUTH_REQUIRED");
+        if ((userId == null && !StringUtils.hasText(trustedIpCountry)) || (userId != null && userId <= 0)) {
+            return ApiResult.fail(401, "USER_AUTH_REQUIRED");
+        }
         JurisdictionResolution resolution = resolveJurisdiction(userId, trustedIpCountry);
         if (resolution.error() != null) return ApiResult.fail(resolution.error().code(), resolution.error().message());
         DisclosureJurisdictionView jurisdiction = resolution.jurisdiction();
@@ -147,11 +158,11 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                 || "superseded".equalsIgnoreCase(disclosure.status()))) {
             return ApiResult.fail(404, "RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND");
         }
-        DisclosureAckStatusEntity ack = ackMapper.findUserAck(userId, jurisdiction.code());
+        DisclosureAckStatusEntity ack = userId == null ? null : ackMapper.findUserAck(userId, jurisdiction.code());
         boolean acknowledged = ack != null && "ACKED".equalsIgnoreCase(ack.getAckStatus())
                 && disclosure.version().equals(ack.getAcknowledgedVersion())
                 && disclosure.version().equals(ack.getRequiredVersion());
-        IssuedReadToken token = !acknowledged && issueReadToken
+        IssuedReadToken token = userId != null && !acknowledged && issueReadToken
                 ? issueReadToken(userId, jurisdiction.code(), disclosure.version()) : null;
         boolean localSandbox = isStrictLocalSandbox();
         return ApiResult.ok(new AppRiskDisclosureView(
@@ -194,7 +205,7 @@ public class AppRiskDisclosureService implements RiskDisclosureGateFacade {
                             404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED"));
         }
         String ipCountry = CountryCodeNormalizer.normalize(trustedIpCountry);
-        String profileCountry = CountryCodeNormalizer.normalize(ackMapper.findUserCountryCode(userId));
+        String profileCountry = userId == null ? "" : CountryCodeNormalizer.normalize(ackMapper.findUserCountryCode(userId));
         String country = StringUtils.hasText(ipCountry) ? ipCountry : profileCountry;
         if (!StringUtils.hasText(country)) {
             return JurisdictionResolution.error(404, "RISK_DISCLOSURE_JURISDICTION_NOT_CONFIGURED");
