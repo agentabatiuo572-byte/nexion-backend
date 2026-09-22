@@ -41,6 +41,25 @@ class H3DayOneBusinessFactServiceTest {
         verify(outbox).publishUserEventAt(any(), any(), eq("H3_DAY_ONE_CARD_BOUND"), eq(42L), any(), any(), any(), any(), any());
     }
 
+    @Test void frozenProfileItemWithoutHistoricalBindingStillRecordsTheFixedCanonicalFactOnce() {
+        var rule = H3DayOneBusinessFactContract.PROFILE_SAVED;
+        when(missions.lockActiveUser(42L)).thenReturn(42L);
+        when(instances.listInWindowSnapshotBindings(eq(List.of(42L)), eq(rule.eventType()), any()))
+                .thenReturn(List.of());
+        when(missions.lockDayOneSnapshotMissionByQuestAt(eq(42L), eq(rule.questCode()), any()))
+                .thenReturn(new MissionDefinition(7L, rule.questCode(), "DAY_ONE", KEY));
+        when(missions.attribution(42L)).thenReturn(Map.of(
+                "phase", "2", "accountAgeMonths", 0, "cohort", "2026-W37"));
+        when(receipts.insertIfAbsent(42L, KEY, rule.eventType())).thenReturn(1, 0);
+
+        service.record(42L, rule);
+        service.record(42L, rule);
+
+        verify(outbox).publishUserEventAt(eq("H3_DAY_ONE_BUSINESS"), eq("42:" + KEY + ":PROFILE_SAVED"),
+                eq(rule.eventType()), eq(42L), eq("P2"), eq(0), eq("2026-W37"),
+                eq(LocalDateTime.now(clock)), eq(Map.of("questCode", "setup_profile", "instanceKey", KEY)));
+    }
+
     @Test void missingExpiredAndSandboxUsersDoNotCreateFactsOrReceipts() {
         service.record(42L, H3DayOneBusinessFactContract.PROFILE_SAVED);
         verifyNoInteractions(instances, receipts, outbox);

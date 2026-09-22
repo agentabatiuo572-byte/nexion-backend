@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
 import ffdd.opsconsole.growth.mapper.H3DayOneBusinessFactReceiptMapper;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper;
+import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
@@ -37,9 +38,14 @@ public class H3DayOneBusinessFactService {
         var binding = bindings.stream().filter(b -> b != null && userId.equals(b.userId())
                 && rule.eventType().equals(b.eventType())
                 && rule.matches(b.producer(), b.questCode(), b.userIdField())).findFirst().orElse(null);
-        if (binding == null) return;
-        var mission = missions.lockDayOneSnapshotMissionAt(userId, binding.sourceMissionId(),
-                rule.questCode(), binding.instanceKey(), occurredAt);
+        MissionDefinition mission;
+        if (binding == null) {
+            if (rule != H3DayOneBusinessFactContract.PROFILE_SAVED) return;
+            mission = missions.lockDayOneSnapshotMissionByQuestAt(userId, rule.questCode(), occurredAt);
+        } else {
+            mission = missions.lockDayOneSnapshotMissionAt(userId, binding.sourceMissionId(),
+                    rule.questCode(), binding.instanceKey(), occurredAt);
+        }
         if (mission == null) return;
         String status = missions.lockUserMissionStatus(userId, mission.missionId(), mission.instanceKey());
         if (status != null && Set.of("COMPLETED", "CLAIMABLE", "CLAIMED")

@@ -95,6 +95,27 @@ public interface QuestCompletionFactMapper {
             @Param("instanceKey") String instanceKey,
             @Param("occurredAt") java.time.LocalDateTime occurredAt);
 
+    /**
+     * Repairs only a frozen task item whose historical snapshot predates its
+     * fixed server-owned event binding. Mutable mission definitions are not consulted.
+     */
+    @Select("""
+            SELECT item.source_mission_id missionId,item.quest_code questCode,'DAY_ONE' layer,i.instance_key instanceKey
+              FROM nx_growth_day_one_instance i
+              JOIN nx_growth_day_one_instance_item item
+                ON item.instance_id=i.id AND item.is_deleted=0
+             WHERE i.user_id=#{userId} AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+               AND item.quest_code=#{questCode}
+               AND i.entered_at<=#{occurredAt} AND #{occurredAt}<=NOW(3)
+               AND #{occurredAt}<i.eligible_until
+             ORDER BY i.entered_at DESC,i.id DESC
+             LIMIT 1 FOR UPDATE
+            """)
+    MissionDefinition lockDayOneSnapshotMissionByQuestAt(
+            @Param("userId") Long userId,
+            @Param("questCode") String questCode,
+            @Param("occurredAt") java.time.LocalDateTime occurredAt);
+
     @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND status=1 AND is_deleted=0")
     int activeMissionCount(@Param("questCode") String questCode);
 

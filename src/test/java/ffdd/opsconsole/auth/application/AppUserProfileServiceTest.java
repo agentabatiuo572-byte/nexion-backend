@@ -94,6 +94,31 @@ class AppUserProfileServiceTest {
     }
 
     @Test
+    void failedNicknameWriteNeverCreatesACompletionFact() {
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
+        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(0);
+
+        assertThatThrownBy(() -> service.updateNickname(42L, "failed-write",
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                .hasMessage("USER_PROFILE_VERSION_CONFLICT");
+
+        verify(facts, never()).record(any(), any());
+    }
+
+    @Test
+    void canonicalFactFailureDoesNotReturnAFalseProfileSuccess() {
+        when(mapper.currentNicknameForUpdate(42L)).thenReturn("Nexion 0042");
+        when(mapper.updateNickname(42L, "Swift Pilot 43", "Nexion 0042")).thenReturn(1);
+        org.mockito.Mockito.doThrow(new IllegalStateException("outbox unavailable"))
+                .when(facts).record(42L,
+                        ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract.PROFILE_SAVED);
+
+        assertThatThrownBy(() -> service.updateNickname(42L, "fact-failed",
+                new AppUserProfileService.UpdateNicknameRequest("Nexion 0042", "Swift Pilot 43")))
+                .hasMessage("outbox unavailable");
+    }
+
+    @Test
     void updatesOnlyTheAuthenticatedActiveUsersWhitelistedLanguage() {
         when(mapper.updateLanguage(42L, "zh")).thenReturn(1);
 
