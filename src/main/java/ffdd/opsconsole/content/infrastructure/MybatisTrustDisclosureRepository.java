@@ -28,6 +28,7 @@ import ffdd.opsconsole.content.mapper.DisclosureJurisdictionCatalogMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionFieldMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionMapper;
 import ffdd.opsconsole.content.mapper.TrustSectionVersionMapper;
+import ffdd.opsconsole.content.application.CountryCodeNormalizer;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -778,8 +779,11 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
     }
 
     private DisclosureJurisdictionView toJurisdiction(DisclosureJurisdictionEntity entity) {
-        long affected = disclosureAckStatusMapper.countAffected(entity.getJurisdictionCode());
-        long acknowledged = affected == 0 ? 0 : disclosureAckStatusMapper.countAcknowledged(entity.getJurisdictionCode());
+        List<String> countries = CountryCodeNormalizer.aliasesFor(countryCodes(entity.getCountryCodes()));
+        long affected = !"PUBLISHED".equalsIgnoreCase(entity.getStatus()) || countries.isEmpty()
+                ? 0 : disclosureAckStatusMapper.countMappedUsers(countries);
+        long acknowledged = affected == 0 ? 0 : disclosureAckStatusMapper.countAcknowledgedCurrent(
+                entity.getJurisdictionCode(), entity.getVersionLabel(), countries);
         double ackProgress = affected == 0 ? 0D : Math.round(acknowledged * 10000D / affected) / 100D;
         return new DisclosureJurisdictionView(
                 entity.getJurisdictionCode(),
@@ -790,11 +794,7 @@ public class MybatisTrustDisclosureRepository implements TrustDisclosureReposito
                 entity.getPublishedAtLabel(),
                 affected,
                 ackProgress,
-                // 🔴 拦截数改读事件台账的「近 7 天」窗口(zentao #149)。
-                //   原读 nx_disclosure_jurisdiction.blocked_count —— 一个只增不减的累加列,
-                //   与上面两个来自 ack_status 的实时计数不同表、不同时间基准,于是同一行
-                //   能同时显示「受影响 0 / 待确认 0」和「拦截 17」。台账每条拦截一行且带
-                //   blocked_at,「本周」因此是可核验的时间窗,与覆盖人数同页不再矛盾。
+                // Historical events can remain after an action leaves the gate or a user acknowledges.
                 disclosureAckStatusMapper.countBlocksSince(entity.getJurisdictionCode(),
                         LocalDateTime.now().minusDays(7)));
     }

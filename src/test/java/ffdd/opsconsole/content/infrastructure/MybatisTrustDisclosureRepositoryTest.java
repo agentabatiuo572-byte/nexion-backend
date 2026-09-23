@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
 import ffdd.opsconsole.content.mapper.DisclosureChapterMapper;
@@ -92,6 +93,27 @@ class MybatisTrustDisclosureRepositoryTest {
         org.assertj.core.api.Assertions.assertThat(result).extracting(row -> row.code()).containsExactly("SBV");
         verify(disclosureJurisdictionCatalogMapper, never()).countVersionReferences(any());
         verify(disclosureJurisdictionCatalogMapper, never()).hasActiveMapping(any());
+    }
+
+    @Test
+    void coverageIncludesUnacknowledgedMappedUsersAndOnlyCurrentVersionAcks() {
+        DisclosureJurisdictionEntity entity = new DisclosureJurisdictionEntity();
+        entity.setJurisdictionCode("SBV");
+        entity.setJurisdictionName("越南");
+        entity.setCountryCodes("VN");
+        entity.setVersionLabel("v2");
+        entity.setStatus("PUBLISHED");
+        when(disclosureJurisdictionMapper.selectList(any())).thenReturn(List.of(entity));
+        when(disclosureAckStatusMapper.countMappedUsers(any())).thenReturn(20L);
+        when(disclosureAckStatusMapper.countAcknowledgedCurrent(eq("SBV"), eq("v2"), any())).thenReturn(5L);
+
+        var row = repository.listJurisdictions().get(0);
+
+        org.assertj.core.api.Assertions.assertThat(row.affected()).isEqualTo(20);
+        org.assertj.core.api.Assertions.assertThat(row.ackProgress()).isEqualTo(25);
+        verify(disclosureAckStatusMapper).countMappedUsers(org.mockito.ArgumentMatchers.argThat(
+                countries -> countries.contains("VN") && countries.contains("84")));
+        verify(disclosureAckStatusMapper).countAcknowledgedCurrent(eq("SBV"), eq("v2"), any());
     }
 
     private static TrustSectionVersionEntity version(long id, int deleted) {

@@ -1202,7 +1202,7 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 .filter(DisclosureGateActionView::active)
                 .map(DisclosureGateActionView::name)
                 .collect(Collectors.joining(" + "));
-        return StringUtils.hasText(scope) ? scope : "提现";
+        return StringUtils.hasText(scope) ? scope : "无";
     }
 
     private List<DisclosureCountryOption> availableCountryOptions(List<DisclosureJurisdictionView> jurisdictions) {

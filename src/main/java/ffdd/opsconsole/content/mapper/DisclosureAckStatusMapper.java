@@ -44,16 +44,32 @@ public interface DisclosureAckStatusMapper extends BaseMapper<DisclosureAckStatu
                                         @Param("now") LocalDateTime now);
 
     @Select("""
-            SELECT COUNT(*) FROM nx_disclosure_ack_status
-             WHERE jurisdiction_code = #{jurisdiction} AND is_deleted = 0
+            <script>
+            SELECT COUNT(*) FROM nx_user u
+             WHERE u.is_deleted = 0 AND UPPER(TRIM(u.country_code)) IN
+             <foreach item="code" collection="countryCodes" open="(" separator="," close=")">
+               UPPER(#{code})
+             </foreach>
+            </script>
             """)
-    long countAffected(@Param("jurisdiction") String jurisdiction);
+    long countMappedUsers(@Param("countryCodes") java.util.List<String> countryCodes);
 
     @Select("""
-            SELECT COUNT(*) FROM nx_disclosure_ack_status
-             WHERE jurisdiction_code = #{jurisdiction} AND ack_status = 'ACKED' AND is_deleted = 0
+            <script>
+            SELECT COUNT(*) FROM nx_user u
+              JOIN nx_disclosure_ack_status a ON a.user_id = u.id
+               AND a.jurisdiction_code = #{jurisdiction} AND a.is_deleted = 0
+               AND a.ack_status = 'ACKED' AND a.required_version = #{version}
+               AND a.acknowledged_version = #{version}
+             WHERE u.is_deleted = 0 AND UPPER(TRIM(u.country_code)) IN
+             <foreach item="code" collection="countryCodes" open="(" separator="," close=")">
+               UPPER(#{code})
+             </foreach>
+            </script>
             """)
-    long countAcknowledged(@Param("jurisdiction") String jurisdiction);
+    long countAcknowledgedCurrent(@Param("jurisdiction") String jurisdiction,
+                                  @Param("version") String version,
+                                  @Param("countryCodes") java.util.List<String> countryCodes);
 
     @Select("SELECT UPPER(country_code) FROM nx_user WHERE id = #{userId} AND is_deleted = 0 LIMIT 1")
     String findUserCountryCode(@Param("userId") Long userId);

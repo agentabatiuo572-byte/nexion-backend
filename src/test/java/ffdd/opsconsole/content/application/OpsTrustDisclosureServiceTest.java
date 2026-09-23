@@ -1017,6 +1017,19 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void emptyGateScopeDoesNotClaimWithdrawIsActiveAndCanBeReenabled() {
+        repository.activeGateKeys.clear();
+        assertThat(service.overview().getData().gateScope()).isEqualTo("无");
+
+        A2ReplayContext.enterReplay();
+        var result = service.updateGateScope("idem-i5-gate-reenable", new DisclosureGateUpdateRequest(
+                "提现", "无", "Marina K.", "恢复提现披露确认拦截"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(repository.activeGateKeys).containsExactly("withdraw");
+    }
+
+    @Test
     void updateGateRequiresA2ReplayAndDoesNotMutateWhenCalledDirectly() {
         var result = service.updateGateScope("idem-i5-gate-direct", new DisclosureGateUpdateRequest(
                 "提现 + 质押锁仓",
