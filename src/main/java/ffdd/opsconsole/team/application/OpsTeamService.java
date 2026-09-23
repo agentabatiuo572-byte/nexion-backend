@@ -1348,7 +1348,7 @@ public class OpsTeamService implements AuditReplayable {
      *   F2 unilevel.L{n}(usdtRate 上调)/promo.weekMultiplier 上调/peer.rate 上调
      *   F3 binary.matchRate 上调 / binary.threshold 下调
      *   F4 pool.ratio/top1MaxPct/top5MaxPct/periodPrize 上调
-     * 解析失败返回 false(由 validateUiConfig 上层报错,避免误判放大)。
+     * 新值解析失败由 validateUiConfig 上层报错；F2 旧门槛缺失或非法值修复会恢复结算，按放宽预检。
      */
     private boolean loosensPayoutControlUiKey(String key, String oldValue, String newValue) {
         if (key == null) {
@@ -1372,8 +1372,24 @@ public class OpsTeamService implements AuditReplayable {
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) < 0;
-                case "F.unilevel.depthGate" -> depthGateLayer(newValue) < depthGateLayer(oldValue);
-                case "F.unilevel.depthGateRank" -> depthGateRank(newValue) < depthGateRank(oldValue);
+                case "F.unilevel.depthGate" -> {
+                    int next = depthGateLayer(newValue);
+                    try {
+                        // A later gate exempts more layers from the rank minimum.
+                        yield next > depthGateLayer(oldValue);
+                    } catch (IllegalArgumentException legacyInvalid) {
+                        // Repairing an invalid/missing gate re-enables settlement.
+                        yield true;
+                    }
+                }
+                case "F.unilevel.depthGateRank" -> {
+                    int next = depthGateRank(newValue);
+                    try {
+                        yield next < depthGateRank(oldValue);
+                    } catch (IllegalArgumentException legacyInvalid) {
+                        yield true;
+                    }
+                }
                 default -> false;
             };
         } catch (IllegalArgumentException ex) {

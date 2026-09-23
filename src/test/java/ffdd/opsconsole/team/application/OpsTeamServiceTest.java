@@ -769,6 +769,59 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    void correctingInvalidDepthLayerChecksB1BeforePublishing() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "0.4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-depth-legacy",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L4", "repair invalid depth layer", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "0.4");
+    }
+
+    @Test
+    void configuringMissingDepthRankChecksB1BeforePublishing() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-rank-missing",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGateRank", "V2", "configure missing depth rank", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(result.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(configFacade.values).doesNotContainKey("team.ui.F.unilevel.depthGateRank");
+    }
+
+    @Test
+    void movingDepthGateLaterLoosensPayoutAndChecksB1() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "L4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-depth-later",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L5", "move gate later", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L4");
+    }
+
+    @Test
+    void movingDepthGateEarlierTightensPayoutWithoutB1Block() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "L5");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-depth-earlier",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L4", "move gate earlier", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L4");
+    }
+
+    @Test
     void ratesExposeInvalidLegacyDecimalDepthGateForOperatorCorrection() {
         configFacade.values.put("team.ui.F.unilevel.depthGate", "0.4");
 
