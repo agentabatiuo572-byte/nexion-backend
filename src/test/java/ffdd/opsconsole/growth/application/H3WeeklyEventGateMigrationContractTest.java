@@ -34,9 +34,11 @@ class H3WeeklyEventGateMigrationContractTest {
                 .contains("JOIN h3_weekly_quarantine_ids q ON q.binding_id=b.id")
                 .contains("CONCAT('H3WK_',SUBSTRING(SHA2(e.quest_code,256),1,32))")
                 .doesNotContain("initial_status");
-        String recovery = Files.readString(Path.of("scripts/migrations",
+        String recovery = Files.readString(Path.of("scripts/manual_recovery",
                 "20260923_h3_weekly_event_gate_recovery_audit.sql"));
         assertThat(recovery).contains("m.updated_at=r.paused_at", "r.id=@h3_restore_receipt_id");
+        assertThat(Files.exists(Path.of("scripts/migrations",
+                "20260923_h3_weekly_event_gate_recovery_audit.sql"))).isFalse();
     }
 
     @Test

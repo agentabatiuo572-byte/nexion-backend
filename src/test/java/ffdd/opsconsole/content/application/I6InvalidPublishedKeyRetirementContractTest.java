@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 
 class I6InvalidPublishedKeyRetirementContractTest {
-    private static final Path MIGRATION = Path.of("scripts/migrations/20260923_i6_invalid_published_key_retirement.sql");
+    private static final Path MIGRATION = Path.of("scripts/deferred_migrations/20260923_i6_invalid_published_key_retirement.sql");
 
     @Test
     void invalidPublishedKeyRemovesEveryLocaleFromThePublicBundle() throws Exception {
@@ -30,6 +32,22 @@ class I6InvalidPublishedKeyRetirementContractTest {
                 .contains("I6_INVALID_KEY_STILL_PUBLIC");
         assertThat(repository).contains(".eq(I18nMessageEntity::getLocale, locale)")
                 .contains(".eq(I18nMessageEntity::getStatus, 1)");
-        assertThat(startup).contains("20260923_i6_invalid_published_key_retirement.sql");
+        assertThat(Files.exists(Path.of("scripts/migrations/20260923_i6_invalid_published_key_retirement.sql"))).isFalse();
+        assertThat(Files.exists(Path.of("scripts/migrations/20260924_i6_legacy_course_retirement.sql"))).isFalse();
+        assertThat(Files.exists(Path.of("scripts/deferred_migrations/20260924_i6_legacy_course_retirement.sql"))).isTrue();
+        assertThat(startup).doesNotContain("20260923_i6_invalid_published_key_retirement.sql")
+                .doesNotContain("20260924_i6_legacy_course_retirement.sql");
+    }
+
+    @Test
+    void deferredSqlRetainsTheOriginalGitBytes() throws Exception {
+        assertThat(sha256(MIGRATION))
+                .isEqualTo("69473dd48edf1bea73343f4899e0317fd10de089d1a5fe5997181d88430b6f27");
+        assertThat(sha256(Path.of("scripts/deferred_migrations/20260924_i6_legacy_course_retirement.sql")))
+                .isEqualTo("de928f9ab261666a5b0a0a6e379114bf3e5e8a4f734e15abefc85827260641eb");
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
     }
 }

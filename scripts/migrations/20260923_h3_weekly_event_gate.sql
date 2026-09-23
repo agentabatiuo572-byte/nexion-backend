@@ -45,15 +45,16 @@ INSERT INTO h3_weekly_expected VALUES
 
 CREATE TEMPORARY TABLE h3_weekly_quarantine_ids (binding_id BIGINT NOT NULL PRIMARY KEY);
 INSERT IGNORE INTO h3_weekly_quarantine_ids(binding_id)
-SELECT DISTINCT b.id
+SELECT b.id
   FROM nx_growth_quest_event_binding b
+  JOIN h3_weekly_expected e
+    ON b.event_type=e.event_type OR b.quest_code=e.quest_code
+       OR b.binding_code=e.binding_code
  WHERE b.status=1 AND b.is_deleted=0
-   AND EXISTS (SELECT 1 FROM h3_weekly_expected e
-                WHERE b.event_type=e.event_type OR b.quest_code=e.quest_code
-                   OR b.binding_code=e.binding_code)
-   AND NOT EXISTS (SELECT 1 FROM h3_weekly_expected e
-                    WHERE b.producer='SYSTEM' AND b.user_id_field='user_id'
-                      AND b.event_type=e.event_type AND b.quest_code=e.quest_code);
+ GROUP BY b.id
+HAVING MAX(CASE WHEN b.producer='SYSTEM' AND b.user_id_field='user_id'
+                 AND b.event_type=e.event_type AND b.quest_code=e.quest_code
+                THEN 1 ELSE 0 END)=0;
 
 -- A historical mapping may occupy a verified event or mission slot. Keep its
 -- original row for audit, disable reward projection, then repair the free slot.

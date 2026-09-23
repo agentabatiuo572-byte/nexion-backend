@@ -239,12 +239,8 @@ $migrations = @(
   # unresolved list. Return only rows that still match the scan's own criteria to
   # draft; no replacement copy is invented.
   (Join-Path $root "scripts\migrations\20260921_i6_published_placeholder_text_cleanup.sql"),
-  # I6 is published as a three-locale key. Retire the entire key when any locale
-  # contains placeholder text or the retired brand; the prior cleanup was per row.
-  (Join-Path $root "scripts\migrations\20260923_i6_invalid_published_key_retirement.sql"),
-  # The learning course has its own published row beyond the three-locale bundle.
-  # Retire only the observed legacy course while preserving copy and progress.
-  (Join-Path $root "scripts\migrations\20260924_i6_legacy_course_retirement.sql"),
+  # The two later I6 retirements are deferred for a separate, data-checked release.
+  # H3 recovery must have exactly one pending automatic migration.
   # The retired "Nexion" brand was only rewritten for one product row, so the App
   # catalogue and the E2 task list kept showing "NexionBox Pro v2" / "需 NexionRack".
   # Worse, the E2 requirement vocabulary is now a fixed server-side allowlist, so an
