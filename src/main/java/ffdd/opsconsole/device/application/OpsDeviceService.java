@@ -3724,6 +3724,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             return null;
         }
+        if (!StringUtils.hasText(unlockPhase)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_UNLOCK_PHASE_REQUIRED");
+        }
         if (!Boolean.TRUE.equals(gate.eligibility())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_E5_ELIGIBILITY_REQUIRED");
         }
@@ -3731,16 +3734,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!StringUtils.hasText(configuredGatePhase) || !isE1PhaseReached(configuredGatePhase)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_H1_PHASE_NOT_REACHED");
         }
-        if (StringUtils.hasText(unlockPhase)) {
-            String configuredUnlockPhase = matchConfiguredE1PhaseId(unlockPhase, false);
-            if (!StringUtils.hasText(configuredUnlockPhase)) {
-                return ApiResult.fail(
-                        OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_UNLOCK_PHASE_INVALID");
-            }
-            if (!configuredGatePhase.equals(configuredUnlockPhase)) {
-                return ApiResult.fail(
-                        OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_GATE_PHASE_MISMATCH");
-            }
+        String configuredUnlockPhase = matchConfiguredE1PhaseId(unlockPhase, false);
+        if (!StringUtils.hasText(configuredUnlockPhase)) {
+            return ApiResult.fail(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_UNLOCK_PHASE_INVALID");
+        }
+        if (!configuredGatePhase.equals(configuredUnlockPhase)) {
+            return ApiResult.fail(
+                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_GATE_PHASE_MISMATCH");
         }
         int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
         int phaseOffset = gate.phaseOffset() == null ? 0 : gate.phaseOffset();

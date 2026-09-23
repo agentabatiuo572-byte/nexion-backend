@@ -61,6 +61,16 @@ class StorefrontProductReleasePolicyTest {
     }
 
     @Test
+    void activeGateUsesTheProductUnlockPhaseAndFailsClosedWhenItIsMissing() {
+        when(catalog.findGenerationGate("rack-p2")).thenReturn(Optional.of(new DeviceGenerationGateView(
+                "rack-p2", "Rack P2", 1, "52", BigDecimal.ZERO, true, 0, true, "active", null, null)));
+
+        assertThat(policy.evaluate("rack-p2", null).reason()).isEqualTo("E1_UNLOCK_PHASE_REQUIRED");
+        assertThat(policy.evaluate("rack-p2", "77").reason()).isEqualTo("E1_GENERATION_PHASE_MISMATCH");
+        assertThat(policy.evaluate("rack-p2", "52").available()).isTrue();
+    }
+
+    @Test
     void tradeinEarlyAccessOpensOnlyTheConfiguredWindowBeforeTheReleaseMonth() {
         when(rhythm.snapshot()).thenReturn(snapshotAtMonth(3, 50));
         when(catalog.findGenerationGate("box-gen2")).thenReturn(Optional.of(new DeviceGenerationGateView(

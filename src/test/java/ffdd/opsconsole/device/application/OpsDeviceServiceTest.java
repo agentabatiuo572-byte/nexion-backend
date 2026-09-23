@@ -1577,6 +1577,23 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void activeGateCannotListSkuWithoutAnUnlockPhase() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        configFacade.values.put("H1.rhythm.currentMonth", "1");
+        catalogRepository.sku = sku("missing-phase-box", "Missing Phase Box", "pending", "");
+        catalogRepository.generationGates.put(
+                "missing-phase-box",
+                gate("missing-phase-box", "Missing Phase Box", 1, "1", BigDecimal.ZERO, true, 0, true, "active"));
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "missing-phase-box", "idem-list-missing-phase",
+                new DeviceSkuStatusRequest("on", "商品阶段缺失不可由强制门放行", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_UNLOCK_PHASE_REQUIRED");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+    }
+
+    @Test
     void skuPriceAndUnlistChangesUseExistingOutbox() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.sku = sku("stellarbox-legacy", "NexionBox Legacy", "on", "P1");

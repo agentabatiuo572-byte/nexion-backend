@@ -130,6 +130,9 @@ public class StorefrontProductReleasePolicy {
             String unlockPhaseId, int platformMonth, List<DevicePhaseView> phases,
             int currentIndex, DeviceGenerationGateView gate) {
         if (gate != null && "active".equalsIgnoreCase(gate.status())) {
+            if (!StringUtils.hasText(unlockPhaseId)) {
+                return Decision.closed("E1_UNLOCK_PHASE_REQUIRED", unlockPhaseId);
+            }
             if (!Boolean.TRUE.equals(gate.eligibility())) {
                 return Decision.closed("E1_GENERATION_ELIGIBILITY_REQUIRED", unlockPhaseId);
             }
@@ -137,7 +140,7 @@ public class StorefrontProductReleasePolicy {
             if (gateIndex < 0 || gateIndex > currentIndex) {
                 return Decision.closed("E1_GENERATION_PHASE_NOT_REACHED", unlockPhaseId);
             }
-            if (StringUtils.hasText(unlockPhaseId) && !gate.phase().equals(unlockPhaseId.trim())) {
+            if (!gate.phase().equals(unlockPhaseId.trim())) {
                 return Decision.closed("E1_GENERATION_PHASE_MISMATCH", unlockPhaseId);
             }
             int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
