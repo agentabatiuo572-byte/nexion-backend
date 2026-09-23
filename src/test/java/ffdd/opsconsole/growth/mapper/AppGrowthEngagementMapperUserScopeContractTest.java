@@ -82,12 +82,30 @@ class AppGrowthEngagementMapperUserScopeContractTest {
 
         assertThat(sql)
                 .contains("left join nx_user_mission historical")
-                .contains("order by candidate.updated_at desc,candidate.id desc limit 1")
+                .contains("order by (candidate.instance_key=concat('week:'")
                 .contains("m.status=1 or historical.id is not null")
                 .contains("when q.definition_status<>1 then 0")
                 .contains("when q.definition_status<>1 then case")
                 .contains("when 'claimed' then 'claimed'")
                 .contains("else 'expired'");
+    }
+
+    @Test
+    void pausedWeeklyClaimRequiresSameWeekAuthoritativeCompletionFact() throws Exception {
+        String state = String.join(" ", AppGrowthEngagementMapper.class
+                .getMethod("questState", Long.class, String.class).getAnnotation(Select.class).value())
+                .replaceAll("\\s+", " ").toLowerCase();
+        String lock = String.join(" ", AppGrowthEngagementMapper.class
+                .getMethod("lockClaimableQuest", Long.class, String.class, String.class)
+                .getAnnotation(Select.class).value()).replaceAll("\\s+", " ").toLowerCase();
+        for (String sql : new String[] {state, lock}) {
+            assertThat(sql).contains("nx_growth_quest_completion_fact cf", "nx_event_outbox o",
+                    "o.is_server_authoritative=1", "cf.instance_key=concat('week:'",
+                    "cf.producer='system'", "cf.quest_code=m.mission_code");
+        }
+        assertThat(lock).contains("m.status=0", "um.instance_key=case",
+                "upper(um.mission_status) in ('completed','claimable')").doesNotContain("b.status=1");
+        assertThat(state).contains("q.paused_claim_verified=1", "then 'claimable'");
     }
 
     @Test

@@ -16,15 +16,16 @@ public interface QuestCanonicalEventBindingMapper {
               FROM nx_growth_quest_event_binding b
               JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
              WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
-               AND (b.quest_code NOT IN ('weekly_t2_browse_store','weekly_t2_invite_friend',
-                                         'weekly_t2_nex_swap','weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
+               AND (b.event_type NOT IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED','H3_REFERRAL_REGISTERED',
+                                         'H3_EXCHANGE_COMPLETED','H3_COMPUTE_COMPLETED_50',
+                                         'H3_GENESIS_SECONDARY_MARKET_VIEWED')
                     OR (b.producer='SYSTEM' AND b.user_id_field='user_id'
-                        AND b.event_type=CASE b.quest_code
-                          WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
-                          WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
-                          WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
-                          WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
-                          WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END))
+                        AND b.quest_code=CASE b.event_type
+                          WHEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED' THEN 'weekly_t2_browse_store'
+                          WHEN 'H3_REFERRAL_REGISTERED' THEN 'weekly_t2_invite_friend'
+                          WHEN 'H3_EXCHANGE_COMPLETED' THEN 'weekly_t2_nex_swap'
+                          WHEN 'H3_COMPUTE_COMPLETED_50' THEN 'weekly_t2_ai_jobs_50'
+                          WHEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' THEN 'weekly_t2_genesis_browse' END))
             """)
     int countActiveBindings(@Param("eventType") String eventType);
 
@@ -34,15 +35,16 @@ public interface QuestCanonicalEventBindingMapper {
               FROM nx_growth_quest_event_binding b
               JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
              WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
-               AND (b.quest_code NOT IN ('weekly_t2_browse_store','weekly_t2_invite_friend',
-                                         'weekly_t2_nex_swap','weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
+               AND (b.event_type NOT IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED','H3_REFERRAL_REGISTERED',
+                                         'H3_EXCHANGE_COMPLETED','H3_COMPUTE_COMPLETED_50',
+                                         'H3_GENESIS_SECONDARY_MARKET_VIEWED')
                     OR (b.producer='SYSTEM' AND b.user_id_field='user_id'
-                        AND b.event_type=CASE b.quest_code
-                          WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
-                          WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
-                          WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
-                          WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
-                          WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END))
+                        AND b.quest_code=CASE b.event_type
+                          WHEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED' THEN 'weekly_t2_browse_store'
+                          WHEN 'H3_REFERRAL_REGISTERED' THEN 'weekly_t2_invite_friend'
+                          WHEN 'H3_EXCHANGE_COMPLETED' THEN 'weekly_t2_nex_swap'
+                          WHEN 'H3_COMPUTE_COMPLETED_50' THEN 'weekly_t2_ai_jobs_50'
+                          WHEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' THEN 'weekly_t2_genesis_browse' END))
              ORDER BY b.id
             """)
     List<CanonicalQuestEventBinding> listActiveBindings(@Param("eventType") String eventType);

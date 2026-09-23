@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -14,6 +15,9 @@ import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper.DayOneSnapshotBinding;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
 import ffdd.opsconsole.shared.outbox.EventOutboxMessage;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -105,6 +109,30 @@ class QuestCanonicalEventConsumerTest {
 
         verify(deliveryService).resumePendingBinding(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-late");
         verify(projector, org.mockito.Mockito.times(1)).project(message, "evt-late");
+    }
+
+    @Test
+    void sundayThresholdDeliveredNextWeekIsTerminallySkippedAndNeverRetried() {
+        LocalDateTime sunday = LocalDateTime.of(2026, 9, 20, 23, 59, 59);
+        LocalDateTime monday = LocalDateTime.of(2026, 9, 21, 0, 0);
+        assertThat(QuestCanonicalEventConsumer.sameIsoWeek(sunday, monday)).isFalse();
+
+        EventOutboxMessage message = event("evt-expired-week", "H3_COMPUTE_COMPLETED_50");
+        message.setServerAuthoritative(true);
+        message.setEventTs(LocalDateTime.of(LocalDate.now(ZoneId.of("Asia/Shanghai")).minusWeeks(1),
+                LocalTime.of(23, 59, 59)));
+        when(deliveryService.claim(message, QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                QuestCanonicalEventConsumer.TOPIC, "evt-expired-week", 0))
+                .thenReturn(new EventConsumerDeliveryService.ConsumerClaim(true, "evt-expired-week", "PROCESSING", 1),
+                        new EventConsumerDeliveryService.ConsumerClaim(false, "evt-expired-week", "SKIPPED", 1));
+
+        consumer.onOutboxMessage(message);
+        consumer.onOutboxMessage(message);
+
+        verify(deliveryService).markSkipped(QuestCanonicalEventConsumer.CONSUMER_GROUP,
+                "evt-expired-week", "H3_WEEKLY_FACT_OUTSIDE_CURRENT_WEEK");
+        verify(bindingMapper, never()).countActiveBindings("H3_COMPUTE_COMPLETED_50");
+        verify(projector, never()).project(message, "evt-expired-week");
     }
 
     @Test

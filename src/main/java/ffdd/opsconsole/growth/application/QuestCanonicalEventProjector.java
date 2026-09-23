@@ -28,6 +28,12 @@ public class QuestCanonicalEventProjector {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     /** PC only permits these canonical identity slots.  Never scan every instance. */
     static final List<String> SNAPSHOT_USER_ID_FIELDS = List.of("user_id", "inviter_user_id");
+    private static final Map<String, String> WEEKLY_EVENT_QUESTS = Map.of(
+            "H3_STOREFRONT_THREE_PRODUCTS_VIEWED", "weekly_t2_browse_store",
+            "H3_REFERRAL_REGISTERED", "weekly_t2_invite_friend",
+            "H3_EXCHANGE_COMPLETED", "weekly_t2_nex_swap",
+            "H3_COMPUTE_COMPLETED_50", "weekly_t2_ai_jobs_50",
+            "H3_GENESIS_SECONDARY_MARKET_VIEWED", "weekly_t2_genesis_browse");
 
     private final QuestCanonicalEventBindingMapper bindingMapper;
     private final DayOneInstanceMapper dayOneInstanceMapper;
@@ -75,11 +81,14 @@ public class QuestCanonicalEventProjector {
         List<DayOneSnapshotBinding> snapshotBindings = matchingSnapshotBindings(message, payload);
         boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null
                 || H3DayOneBusinessFactContract.forEventType(message.getEventType()) != null;
-        List<CanonicalQuestEventBinding> effectiveBindings = dayOnePageObservation
-                ? bindings.stream()
-                        .filter(binding -> fixedDayOneRuleMatches(binding.producer(), message.getEventType(), binding.questCode(), binding.userIdField()))
-                        .toList()
-                : bindings;
+        List<CanonicalQuestEventBinding> effectiveBindings = bindings.stream()
+                .filter(binding -> !dayOnePageObservation || fixedDayOneRuleMatches(
+                        binding.producer(), message.getEventType(), binding.questCode(), binding.userIdField()))
+                .filter(binding -> !WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
+                        || ("SYSTEM".equals(binding.producer())
+                        && "user_id".equals(binding.userIdField())
+                        && WEEKLY_EVENT_QUESTS.get(message.getEventType()).equals(binding.questCode())))
+                .toList();
         // A stale wrong-slot/quest binding is not a completion route. Keep the
         // source fact pending so a later exact PC binding can project it.
         if (effectiveBindings.isEmpty() && snapshotBindings.isEmpty()) {

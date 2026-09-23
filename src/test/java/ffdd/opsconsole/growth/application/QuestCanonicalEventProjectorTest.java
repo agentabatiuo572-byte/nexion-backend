@@ -95,6 +95,20 @@ class QuestCanonicalEventProjectorTest {
         verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-store-three", 1);
     }
 
+    @Test
+    void legacyStorefrontEventMappedToAnotherMissionCannotAwardIt() {
+        when(bindingMapper.listActiveBindings("H3_STOREFRONT_THREE_PRODUCTS_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("LEGACY_WRONG", "SYSTEM",
+                        "H3_STOREFRONT_THREE_PRODUCTS_VIEWED", "H3_LEARNING_COMPLETED", "user_id")));
+
+        projector.project(event("evt-legacy-wrong", "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+                "{\"user_id\":990725,\"threshold\":3}"), "evt-legacy-wrong");
+
+        verify(factConsumer, never()).consume(any());
+        verify(deliveryService).markPendingBinding(
+                QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-legacy-wrong");
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"H3_DAY_ONE_EARN_PAGE_VIEWED", "H3_COMPUTE_COMPLETED_50"})
     void unboundDayOneAndWeeklyFactsWaitForLaterBinding(String eventType) {
@@ -154,7 +168,7 @@ class QuestCanonicalEventProjectorTest {
                         "H3_DAY_ONE_EARN_PAGE_VIEWED", "visit_earn", "user_id")));
         when(bindingMapper.listActiveBindings("H3_COMPUTE_COMPLETED_50")).thenReturn(List.of(
                 new CanonicalQuestEventBinding("WEEKLY", "SYSTEM",
-                        "H3_COMPUTE_COMPLETED_50", "weekly_compute", "user_id")));
+                        "H3_COMPUTE_COMPLETED_50", "weekly_t2_ai_jobs_50", "user_id")));
 
         projector.project(event("evt-day-one", "H3_DAY_ONE_EARN_PAGE_VIEWED", "{\"user_id\":990725}"), "evt-day-one");
         projector.project(event("evt-weekly", "H3_COMPUTE_COMPLETED_50", "{\"user_id\":990725}"), "evt-weekly");
@@ -165,7 +179,7 @@ class QuestCanonicalEventProjectorTest {
                 new QuestCompletionCommand("SYSTEM", "evt-day-one:DAY_ONE_EARN", 990725L,
                         "visit_earn", EVENT_TS),
                 new QuestCompletionCommand("SYSTEM", "evt-weekly:WEEKLY", 990725L,
-                        "weekly_compute", EVENT_TS));
+                        "weekly_t2_ai_jobs_50", EVENT_TS));
     }
 
     @Test

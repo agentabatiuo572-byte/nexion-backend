@@ -158,7 +158,22 @@ public interface AppGrowthEngagementMapper {
                       FROM nx_config_item c WHERE c.config_key='growth.quest.day_one.eligibility_hours'
                        AND c.status=1 AND c.is_deleted=0 LIMIT 1),72) eligibilityHours
               FROM nx_user_mission um
-              JOIN nx_mission m ON m.id=um.mission_id AND m.status=1 AND m.is_deleted=0
+              JOIN nx_mission m ON m.id=um.mission_id AND m.is_deleted=0
+                AND (m.status=1 OR (m.status=0 AND m.mission_type IN ('WEEKLY_T1','WEEKLY_T2')
+                     AND EXISTS (SELECT 1 FROM nx_growth_quest_completion_fact cf
+                       JOIN nx_event_outbox o ON o.event_id=SUBSTRING_INDEX(cf.event_id,':',1)
+                         AND o.is_server_authoritative=1 AND o.is_deleted=0
+                         AND o.event_type=CASE m.mission_code
+                           WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                           WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
+                           WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
+                           WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
+                           WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END
+                         AND cf.instance_key=CONCAT('WEEK:',DATE_FORMAT(o.event_ts,'%x-W%v'))
+                       WHERE cf.user_id=um.user_id AND cf.mission_id=um.mission_id
+                         AND cf.instance_key=um.instance_key AND cf.quest_code=m.mission_code
+                         AND cf.event_id LIKE CONCAT(o.event_id,':%')
+                         AND cf.producer='SYSTEM' AND cf.is_deleted=0)))
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
                AND um.instance_key=#{instanceKey}
@@ -250,12 +265,17 @@ public interface AppGrowthEngagementMapper {
                    q.instance_key instanceKey,
                    DATE_FORMAT(q.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
                    DATE_FORMAT(q.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
-                   CASE WHEN q.definition_status<>1 THEN 0
+                   CASE WHEN q.definition_status<>1 AND q.paused_claim_verified=1
+                                  AND q.instance_key=CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                                  AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 1
+                        WHEN q.definition_status<>1 THEN 0
                         WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until THEN 0 ELSE 1 END eligible,
-                   CASE WHEN q.definition_status<>1 THEN CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
-                          WHEN 'CLAIMED' THEN 'CLAIMED'
-                          ELSE 'EXPIRED'
-                        END
+                   CASE WHEN q.definition_status<>1 THEN CASE
+                          WHEN UPPER(COALESCE(um.mission_status,'PENDING'))='CLAIMED' THEN 'CLAIMED'
+                          WHEN q.paused_claim_verified=1
+                               AND q.instance_key=CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))
+                               AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 'CLAIMABLE'
+                          ELSE 'EXPIRED' END
                         WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until
                                   AND UPPER(COALESCE(um.mission_status, 'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
                         ELSE CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
@@ -268,6 +288,24 @@ public interface AppGrowthEngagementMapper {
                    q.updated_at updatedAt
               FROM (
                     SELECT m.*,m.status definition_status,
+                           CASE WHEN m.status<>1 AND historical.id IS NOT NULL
+                                     AND m.mission_type IN ('WEEKLY_T1','WEEKLY_T2')
+                                     AND EXISTS (SELECT 1 FROM nx_growth_quest_completion_fact cf
+                                       JOIN nx_event_outbox o
+                                         ON o.event_id=SUBSTRING_INDEX(cf.event_id,':',1)
+                                        AND o.is_server_authoritative=1 AND o.is_deleted=0
+                                        AND o.event_type=CASE m.mission_code
+                                          WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                                          WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
+                                          WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
+                                          WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
+                                          WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END
+                                        AND cf.instance_key=CONCAT('WEEK:',DATE_FORMAT(o.event_ts,'%x-W%v'))
+                                      WHERE cf.user_id=u.id AND cf.mission_id=m.id
+                                        AND cf.instance_key=historical.instance_key AND cf.quest_code=m.mission_code
+                                        AND cf.event_id LIKE CONCAT(o.event_id,':%')
+                                        AND cf.producer='SYSTEM' AND cf.is_deleted=0)
+                                THEN 1 ELSE 0 END paused_claim_verified,
                            CASE WHEN m.mission_type='DAY_ONE' THEN (SELECT c.config_value FROM nx_config_item c
                              WHERE c.config_key='growth.quest.day_one.tri_reward' AND c.status=1 AND c.is_deleted=0 LIMIT 1) END tri_reward,
                            GREATEST(TIMESTAMPDIFF(HOUR,u.created_at,NOW()),0) account_age_hours,
@@ -304,7 +342,8 @@ public interface AppGrowthEngagementMapper {
                         ON historical.id=(SELECT candidate.id FROM nx_user_mission candidate
                            WHERE candidate.user_id=#{userId} AND candidate.mission_id=m.id
                              AND candidate.is_deleted=0
-                           ORDER BY candidate.updated_at DESC,candidate.id DESC LIMIT 1)
+                           ORDER BY (candidate.instance_key=CONCAT('WEEK:',DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v'))) DESC,
+                                    candidate.updated_at DESC,candidate.id DESC LIMIT 1)
                      WHERE m.is_deleted=0 AND (m.status=1 OR historical.id IS NOT NULL)
                        AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
                        AND (m.status<>1 OR m.mission_code NOT IN
