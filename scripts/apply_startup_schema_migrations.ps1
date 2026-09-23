@@ -185,14 +185,8 @@ $migrations = @(
   # RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND forever. Provision the published
   # v1 snapshots and repair only mappings that reference a missing version.
   (Join-Path $root "scripts\migrations\20260920_i5_published_disclosure_provisioning.sql"),
-  # The provisioning migration above covers only the canonical jurisdictions
-  # (CN/US/EU/SG/SBV). A local-sandbox fixture row can survive in a shared database
-  # and keeps pointing at its own version 'v-local-1', which no canonical migration
-  # provides — PC I5 then reports 「引用异常，未找到矩阵引用的披露版本」 and the App page
-  # fails with RISK_DISCLOSURE_PUBLISHED_VERSION_NOT_FOUND. Retire only the
-  # fixture-authored rows (keyed on jurisdiction_code='LOCAL-SANDBOX' plus the
-  # fixture's own last_operator); operator content is never touched.
-  (Join-Path $root "scripts\migrations\20260921_i5_local_sandbox_fixture_retirement.sql"),
+  # I5 local-sandbox data retirement requires operator review and is excluded
+  # from normal startup. The isolated-rail guard below rejects it here.
   # Two published Help Center answers still describe a product shape the App does
   # not have: a 「我的 - 团队 - 等级进度」 hierarchy that never existed, and an
   # on-chain deposit flow (区块确认/交易哈希) while the only remote top-up rail is
