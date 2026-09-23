@@ -645,7 +645,10 @@ public class OpsI18nLearningService {
         List<I18nHardcodedFindingView> findings = learningRepository.listHardcodedFindings();
         List<LearningCourseView> courses = learningRepository.listCourses();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        int managedKeys = namespaces.stream().mapToInt(I18nNamespaceView::keys).sum();
+        int totalKeys = namespaces.stream().mapToInt(I18nNamespaceView::keys).sum();
+        int managedKeys = (int) messages.stream()
+                .map(row -> learningRepository.findPublishedMessagePair(row.messageKey()).orElse(row))
+                .filter(I18nCopyQuality::isComplete).count();
         int openIssues = issues.stream()
                 .filter(row -> !"fixed".equals(row.status()))
                 .mapToInt(I18nIntegrityIssueView::cnt)
@@ -654,7 +657,7 @@ public class OpsI18nLearningService {
         return new I18nLearningOverview(
                 new I18nLearningStats(
                         managedKeys,
-                        managedKeys,
+                        totalKeys,
                         openIssues,
                         online,
                         weeklyNexPayout(),

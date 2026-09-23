@@ -104,8 +104,9 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         }
         List<I18nNamespaceView> rows = new ArrayList<>();
         grouped.forEach((namespace, messages) -> {
-            long complete = messages.stream().filter(row -> StringUtils.hasText(row.zh())
-                    && StringUtils.hasText(row.en()) && StringUtils.hasText(row.vi())).count();
+            long complete = messages.stream()
+                    .map(row -> findPublishedMessagePair(row.messageKey()).orElse(row))
+                    .filter(I18nCopyQuality::isComplete).count();
             int coverage = messages.isEmpty() ? 0 : (int) Math.round(complete * 100.0D / messages.size());
             I18nNamespaceEntity metadata = configured.get(namespace);
             rows.add(new I18nNamespaceView(namespace, messages.size(), coverage,

@@ -48,6 +48,9 @@ class I6InvalidPublishedKeyRetirementContractTest {
     }
 
     private static String sha256(Path path) throws Exception {
-        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        // Git stores LF bytes; a Windows checkout may materialize the same SQL as CRLF.
+        byte[] gitBytes = Files.readString(path, StandardCharsets.UTF_8)
+                .replace("\r\n", "\n").getBytes(StandardCharsets.UTF_8);
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(gitBytes));
     }
 }

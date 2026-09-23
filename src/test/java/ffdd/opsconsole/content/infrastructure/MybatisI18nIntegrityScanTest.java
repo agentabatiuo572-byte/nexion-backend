@@ -55,6 +55,8 @@ class MybatisI18nIntegrityScanTest {
         assertThat(issues.getAllValues())
                 .filteredOn(issue -> issue.getIssueCount() > 0)
                 .allSatisfy(issue -> assertThat(issue.getSamplesText()).isEqualTo(badKey));
+        assertThat(repository.listNamespaces()).singleElement()
+                .satisfies(namespace -> assertThat(namespace.coverage()).isEqualTo(50));
     }
 
     private static I18nMessagePairView pair(String key, String zh, String en, String vi,

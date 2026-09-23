@@ -103,6 +103,19 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
+    void overviewCountsPublishedCopyQualityInsteadOfAValidNewerDraft() {
+        repository.publishedPair = new I18nMessagePairView("milestones.earnCross", "milestones",
+                "Find your NexionBox", "ccccc", "Tìm NexionBox", "published", "v3", List.of());
+        repository.draftPair = new I18nMessagePairView("milestones.earnCross", "milestones",
+                "Find your NexGridBox", "寻找 NexGridBox", "Tìm NexGridBox", "draft", "v4", List.of());
+
+        var stats = service.overview().getData().stats();
+
+        assertThat(stats.managedKeys()).isZero();
+        assertThat(stats.totalKeys()).isEqualTo(228);
+    }
+
+    @Test
     void saveLocalizedDraftRequiresIdempotency() {
         var result = service.saveLocalizedDraft("milestones.earnCross", null, copyRequest("完成 {amount} 并获得 {nex}", "Earn {nex} after {amount}"));
 

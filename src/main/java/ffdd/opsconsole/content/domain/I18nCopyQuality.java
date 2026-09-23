@@ -1,12 +1,31 @@
 package ffdd.opsconsole.content.domain;
 
 import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import org.springframework.util.StringUtils;
 
 /** Content check shared by I6 publication and integrity scans. */
 public final class I18nCopyQuality {
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{[a-zA-Z0-9_.-]+}");
     private I18nCopyQuality() {}
+
+    public static boolean isComplete(I18nMessagePairView message) {
+        return message != null && "published".equals(message.status())
+                && publishError(message.zh(), message.en(), message.vi()) == null
+                && placeholders(message.zh()).equals(placeholders(message.en()))
+                && placeholders(message.zh()).equals(placeholders(message.vi()));
+    }
+
+    private static Set<String> placeholders(String value) {
+        Matcher matcher = PLACEHOLDER.matcher(value);
+        Set<String> tokens = new TreeSet<>();
+        while (matcher.find()) tokens.add(matcher.group());
+        return tokens;
+    }
 
     public static boolean isPlaceholderText(String value) {
         if (!StringUtils.hasText(value)) return false;
