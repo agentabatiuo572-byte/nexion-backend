@@ -271,7 +271,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
     }
@@ -296,7 +296,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -315,7 +315,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
         verify(mapper, never()).lockTrial(anyLong());
         verify(canonicalStateMapper, never()).activeDeviceCount(anyLong());
         verify(canonicalStateMapper, never()).reservedDeviceOrderCount(anyLong());
@@ -338,7 +338,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
     }
 
     @Test
@@ -729,7 +729,7 @@ class AppTrialLifecycleServiceTest {
         when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), eq("Trial"), any()))
                 .thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"),
-                eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any(), any(), any())).thenReturn(1);
+                eq("Entry"), eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
@@ -744,7 +744,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(outbox, never()).publishUserEvent(eq("TRIAL"), eq("TRIAL-1"), eq("trial.redeemed"),
@@ -769,7 +769,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
@@ -857,7 +857,7 @@ class AppTrialLifecycleServiceTest {
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
         verify(mapper, never()).insertConversionOrderItem(anyString(), anyLong(), anyString(), anyString(), any());
         verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+                anyString(), anyString(), anyString(), any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
         verify(outbox).publishUserEvent(eq("TRIAL"), eq("TRIAL-STALE"), eq("trial.cancelled"),
                 eq(7L), eq("P2"), eq(2), eq("2026-W30"), any());

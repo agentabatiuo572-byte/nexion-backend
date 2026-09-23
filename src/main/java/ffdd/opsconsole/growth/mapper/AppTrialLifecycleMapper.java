@@ -88,7 +88,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
-                   product_type productType,inventory_mode inventoryMode
+                   product_type productType,inventory_mode inventoryMode,
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
@@ -394,7 +395,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
               FROM nx_product p
               JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
-               AND p.estimated_daily_usdt>=0 AND p.daily_nex>=0
+               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
                AND s.power_text REGEXP '^[0-9]+([.][0-9]+)?[[:space:]]*[Ww]?$'
                AND CAST(TRIM(REPLACE(REPLACE(s.power_text,'W',''),'w','')) AS DECIMAL(18,6))>0
@@ -408,9 +409,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("deviceType") String deviceType,
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
-            @Param("priceUsdt") BigDecimal priceUsdt,
-            @Param("dailyUsdt") BigDecimal dailyUsdt,
-            @Param("dailyNex") BigDecimal dailyNex);
+            @Param("priceUsdt") BigDecimal priceUsdt);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long deviceIdByInstanceNo(@Param("instanceNo") String instanceNo);

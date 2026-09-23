@@ -15,6 +15,9 @@ class AppTrialLifecycleMapperContractTest {
         String insert = source.substring(source.indexOf("INSERT INTO nx_user_device"),
                 source.indexOf("int insertPurchasedDevice"));
         assertThat(insert)
+                .contains("p.estimated_daily_usdt,p.daily_nex")
+                .contains("p.estimated_daily_usdt>0 AND p.daily_nex>0")
+                .doesNotContain("#{dailyUsdt}", "#{dailyNex}")
                 .contains("gpu_model,vram_total_gb,dc_location")
                 .contains("p.gpu_model,p.vram_total_gb,s.datacenter")
                 .contains("FROM nx_product p")
@@ -26,6 +29,16 @@ class AppTrialLifecycleMapperContractTest {
                 .contains("TRIM(s.datacenter)<>''")
                 .contains("s.power_text REGEXP")
                 .doesNotContain("#{deviceType},1,0");
+    }
+
+    @Test
+    void lockedConversionProductIncludesThePurchasedDeviceYield() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/growth/mapper/AppTrialLifecycleMapper.java"));
+        String lock = source.substring(source.indexOf("    @Select(\"\"\"", source.indexOf("TrialRow trial")),
+                source.indexOf("ConversionProduct lockConversionProduct"));
+        assertThat(lock).contains("estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex")
+                .contains("LIMIT 1 FOR UPDATE");
     }
 
     @Test

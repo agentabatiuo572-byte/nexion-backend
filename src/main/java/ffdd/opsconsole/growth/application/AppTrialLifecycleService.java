@@ -277,16 +277,13 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
-        // A legacy claim may have locked the old 38.52/65 shadow rate while the
-        // current S1 catalogue yields 1/1. Conversion also copies the claim's
-        // rate into the purchased device, so stop before money or reward writes.
+        // Keep the claim's promised trial accrual, but require a valid current
+        // product yield before any purchase or reward side effect.
         if (positiveOrNull(product.estimatedDailyUsdt()) == null
                 || positiveOrNull(product.dailyNex()) == null
                 || positiveOrNull(row.dailyUsdt()) == null
-                || positiveOrNull(row.dailyNex()) == null
-                || row.dailyUsdt().compareTo(product.estimatedDailyUsdt()) != 0
-                || row.dailyNex().compareTo(product.dailyNex()) != 0) {
-            return ApiResult.fail(409, "TRIAL_DAILY_YIELD_MISMATCH");
+                || positiveOrNull(row.dailyNex()) == null) {
+            return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
         }
         if (!withinPhysicalSlotCapacity(userId, product)) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
@@ -346,13 +343,15 @@ public class AppTrialLifecycleService {
         HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
-                instanceNo, row.deviceName(), subtotal, row.dailyUsdt(), row.dailyNex()) != 1) {
+                instanceNo, row.deviceName(), subtotal) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
         String snapshot = settlement.snapshot("convert", "NEXION_USDT_WALLET", product.productNo())
                 + ",orderNo=" + orderNo + ",promoDiscountUsdt=" + promoDiscount
-                + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount;
+                + ",totalDiscountUsdt=" + discount + ",amountUsdt=" + amount
+                + ",trialDailyUsdt=" + row.dailyUsdt() + ",trialDailyNex=" + row.dailyNex()
+                + ",deviceDailyUsdt=" + product.estimatedDailyUsdt() + ",deviceDailyNex=" + product.dailyNex();
         if (deviceId == null || mapper.markRedeemed(row.id(), row.version(), deviceId,
                 settlement.shadowUsdt(), settlement.shadowNex(), settlement.remainderUsdt(), discount,
                 amount, now, snapshot) != 1) {

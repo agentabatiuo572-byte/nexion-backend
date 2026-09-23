@@ -26,7 +26,12 @@ import java.util.List;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.interceptor.TransactionInterceptor;
+import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 
 class TrialConvertAndDeferredDeactivateTest {
     private static final Clock TEST_CLOCK = Clock.fixed(
@@ -77,9 +82,9 @@ class TrialConvertAndDeferredDeactivateTest {
                         1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));
         when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
         when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
-        when(mapper.lockTrial(7L)).thenReturn(activeTrial());
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial("stellarbox-s1", "1", "1"));
         when(mapper.lockConversionProduct("stellarbox-s1"))
-                .thenReturn(productWithRate("stellarbox-s1", "40", "5"));
+                .thenReturn(productWithRate("stellarbox-s1", "1", "1"));
         when(mapper.decrementProductStock(11L)).thenReturn(1);
         when(mapper.lockWallet(7L)).thenReturn(new AppTrialLifecycleMapper.WalletRow(
                 new BigDecimal("2000"), BigDecimal.ZERO));
@@ -87,14 +92,14 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.insertConversionOrder(eq(7L), anyString(), eq(11L), any(), any(), any())).thenReturn(1);
         when(mapper.insertConversionOrderItem(anyString(), eq(11L), eq("stellarbox-s1"), eq("S1"), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), any(), any()))
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
 
         ApiResult<java.util.Map<String, Object>> result = service.convert(
-                7L, "stellarbox-s1", EXPECTED_AMOUNT, "convert-1");
+                7L, "stellarbox-s1", new BigDecimal("1278.96"), "convert-1");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData())
@@ -114,34 +119,97 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper).recordHardwarePurchase(any(), eq(7L), startsWith("TRC-"),
                 eq(LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneOffset.UTC)));
         verify(mapper).insertConversionOrder(eq(7L), anyString(), eq(11L),
-                eq(new BigDecimal("1299")), eq(new BigDecimal("21.666666")),
-                eq(new BigDecimal("1277.333334")));
+                eq(new BigDecimal("1299")), eq(new BigDecimal("20.041666")),
+                eq(new BigDecimal("1278.958334")));
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")),
-                eq(new BigDecimal("40")), eq(new BigDecimal("5")));
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
     }
 
     @Test
-    void legacyClaimWithStaleDailyRateCannotConvertOrWriteMoneyRewardsOrderOrDevice() {
-        when(mapper.lockTrial(7L)).thenReturn(activeTrial());
-        when(mapper.lockConversionProduct("stellarbox-s1"))
-                .thenReturn(productWithRate("stellarbox-s1", "1", "1"));
+    void legacyClaimKeepsAccruedRewardButPurchasedDeviceUsesCurrentProduct() {
+        stubLegacyConversion();
 
         ApiResult<java.util.Map<String, Object>> result = service.convert(
-                7L, "stellarbox-s1", EXPECTED_AMOUNT, "legacy-stale-rate");
+                7L, "stellarbox-s1", new BigDecimal("1299"), "legacy-stale-rate");
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("TRIAL_DAILY_YIELD_MISMATCH");
-        verify(mapper, never()).lockWallet(anyLong());
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("shadowUsdt", new BigDecimal("115.560000"))
+                .containsEntry("shadowNex", new BigDecimal("195.000000"))
+                .containsEntry("offsetUsdt", new BigDecimal("50.000000"))
+                .containsEntry("remainderUsdt", new BigDecimal("65.560000"));
+        verify(earningsRelease).creditReward(eq(7L), eq("H2_TRIAL_REMAINDER"), eq("TRIAL-1:REMAINDER"),
+                eq("USDT"), eq(new BigDecimal("65.560000")), eq("H2:TRIAL-1:REMAINDER:USDT"));
+        verify(earningsRelease).creditReward(eq(7L), eq("H2_TRIAL_BONUS"), eq("TRIAL-1:NEX"),
+                eq("NEX"), eq(new BigDecimal("195.000000")), eq("H2:TRIAL-1:NEX"));
+        verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
+        verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(),
+                argThat(snapshot -> snapshot.contains("trialDailyUsdt=38.52")
+                        && snapshot.contains("deviceDailyUsdt=1") && snapshot.contains("deviceDailyNex=1")));
+    }
+
+    @Test
+    void conversionRejectsMissingCurrentProductYieldBeforeFinancialWrites() {
+        when(mapper.lockTrial(7L)).thenReturn(legacyTrial());
+        when(mapper.lockConversionProduct("stellarbox-s1"))
+                .thenReturn(productWithRate("stellarbox-s1", "0", "1"));
+
+        ApiResult<java.util.Map<String, Object>> result = service.convert(
+                7L, "stellarbox-s1", new BigDecimal("1299"), "invalid-product-rate");
+
+        assertThat(result.getMessage()).isEqualTo("TRIAL_DAILY_YIELD_INVALID");
         verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
-        verify(mapper, never()).insertLedger(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyString());
         verify(mapper, never()).decrementProductStock(anyLong());
         verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
-        verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
-                anyString(), anyString(), anyString(), any(), any(), any());
+    }
+
+    @Test
+    void deviceInsertFailureRollsBackLegacyConversionTransaction() {
+        stubLegacyConversion();
+        when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
+                .thenReturn(0);
+        PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
+        TransactionStatus status = mock(TransactionStatus.class);
+        when(tx.getTransaction(any())).thenReturn(status);
+        ProxyFactory proxy = new ProxyFactory(service);
+        proxy.setProxyTargetClass(true);
+        proxy.addAdvice(new TransactionInterceptor(tx, new AnnotationTransactionAttributeSource()));
+
+        assertThatThrownBy(() -> ((AppTrialLifecycleService) proxy.getProxy()).convert(
+                7L, "stellarbox-s1", new BigDecimal("1299"), "legacy-device-fails"))
+                .hasMessage("TRIAL_DEVICE_CREATE_CONFLICT");
+        verify(tx).rollback(status);
+        verify(tx, never()).commit(any());
         verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
+    }
+
+    private void stubLegacyConversion() {
+        when(mapper.lockHardwarePurchaseTiers("stellarbox-s1")).thenReturn(List.of(
+                new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
+                        1L, "S1", "stellarbox-s1", 0, BigDecimal.ZERO, 10, "ALL", 1)));
+        when(mapper.lockHardwarePurchaseUsage(eq(1L), any(), any())).thenReturn(List.of(2));
+        when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
+        when(mapper.lockTrial(7L)).thenReturn(legacyTrial());
+        when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
+                new BigDecimal("1000"), new BigDecimal("1000")));
+        when(mapper.lockConversionProduct("stellarbox-s1"))
+                .thenReturn(productWithRate("stellarbox-s1", "1", "1"));
+        when(mapper.lockWallet(7L)).thenReturn(new AppTrialLifecycleMapper.WalletRow(
+                new BigDecimal("2000"), BigDecimal.ZERO));
+        when(mapper.settleWallet(eq(7L), any(), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO))).thenReturn(1);
+        when(mapper.decrementProductStock(11L)).thenReturn(1);
+        when(mapper.insertConversionOrder(eq(7L), anyString(), eq(11L), any(), any(), any())).thenReturn(1);
+        when(mapper.insertConversionOrderItem(anyString(), eq(11L), eq("stellarbox-s1"), eq("S1"), any())).thenReturn(1);
+        when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
+                .thenReturn(1);
+        when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
+        when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString()))
+                .thenReturn(1);
+
     }
 
     @Test
@@ -223,11 +291,19 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper, never()).settleWallet(any(), any(), any(), any());
         verify(mapper, never()).decrementProductStock(any());
         verify(mapper, never()).insertConversionOrder(any(), any(), any(), any(), any(), any());
-        verify(mapper, never()).insertPurchasedDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).insertPurchasedDevice(any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
     }
 
     private TrialRow activeTrial() { return activeTrial("stellarbox-s1"); }
+
+    private TrialRow legacyTrial() {
+        LocalDateTime now = LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneId.of("Asia/Shanghai"));
+        return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "NexGridBox S1", 3,
+                new BigDecimal("38.52"), new BigDecimal("65"), new BigDecimal("50"), new BigDecimal("1299"),
+                "productCode=stellarbox-s1", now.minusDays(3), now, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, null, 0L);
+    }
 
     private AppTrialLifecycleMapper.ConversionProduct productWithRate(String productNo, String usdt, String nex) {
         return new AppTrialLifecycleMapper.ConversionProduct(11L, productNo, "S1", "Entry",
@@ -235,10 +311,12 @@ class TrialConvertAndDeferredDeactivateTest {
                 new BigDecimal(usdt), new BigDecimal(nex));
     }
 
-    private TrialRow activeTrial(String productNo) {
+    private TrialRow activeTrial(String productNo) { return activeTrial(productNo, "40", "5"); }
+
+    private TrialRow activeTrial(String productNo, String dailyUsdt, String dailyNex) {
         LocalDateTime now = LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneId.of("Asia/Shanghai"));
         return new TrialRow(1L, 7L, "TRIAL-1", "ACTIVE", null, null, "NexGridBox S1", 3,
-                new BigDecimal("40"), new BigDecimal("5"), new BigDecimal("50"), new BigDecimal("1299"),
+                new BigDecimal(dailyUsdt), new BigDecimal(dailyNex), new BigDecimal("50"), new BigDecimal("1299"),
                 "productCode=" + productNo, now.minusHours(1), now.plusDays(2), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, null, 0L);
     }
