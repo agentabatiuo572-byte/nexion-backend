@@ -19,6 +19,7 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -1227,6 +1228,22 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void skuEditAcceptsAConfiguredPhaseLabelOnAnExistingGate() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "扩张期", 20));
+        catalogRepository.sku = sku("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "扩张期");
+        catalogRepository.generationGates.put("stellarbox-pro-v2",
+                gate("stellarbox-pro-v2", "NexGridBox Pro v2", 7, "扩张期", BigDecimal.ZERO, true, 0, false, "active"));
+
+        ApiResult<DeviceSkuView> result = service.updateSku("stellarbox-pro-v2",
+                catalogRepository.sku.updatedAt().toString(), "idem-sku-phase-label",
+                skuRequest("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "Pro", "HK-1", 2, "active", "2"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.sku.unlockPhase()).isEqualTo("2");
+    }
+
+    @Test
     void updateSkuRequiresTheRevisionReadByTheEditor() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
@@ -2064,6 +2081,67 @@ class OpsDeviceServiceTest {
                         null, null, "1", null, null, null, null, "修正上架门阶段绑定错误", "superadmin"));
         assertThat(patched.getMessage()).isEqualTo("E1_GATE_SKU_PHASE_MISMATCH");
         assertThat(catalogRepository.generationGates.get("stellarbox-pro-v2").phase()).isEqualTo("2");
+
+        catalogRepository.sku = sku("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "扩张期");
+        ApiResult<Map<String, Object>> labelled = service.patchE1GenerationGate(
+                "stellarbox-pro-v2", "idem-gate-label-alias",
+                new DeviceGenerationGatePatchRequest(
+                        null, null, "2", null, null, null, null, "按权威阶段编号修正", "superadmin"));
+        assertThat(labelled.getCode()).isZero();
+    }
+
+    @Test
+    void phaseIdWinsOverAnotherPhasesMatchingLabel() {
+        catalogRepository.phases.put("1", phase("1", "2", 10));
+        catalogRepository.phases.put("2", phase("2", "扩张期", 20));
+        catalogRepository.sku = sku("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "2");
+
+        ApiResult<Map<String, Object>> result = service.createE1GenerationGate(
+                "idem-phase-id-priority", gateRequest("stellarbox-pro-v2", "2", true, false));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(catalogRepository.generationGates.get("stellarbox-pro-v2").phase()).isEqualTo("2");
+    }
+
+    @Test
+    void forceUnlockProvenanceUsesTheEnablingAuditRatherThanAnUnrelatedLaterEdit() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.generationGates.put("stellarbox-pro-v2",
+                gate("stellarbox-pro-v2", "NexGridBox Pro v2", 3, "1", BigDecimal.ZERO, true, 0, true, "active"));
+        AuditLogRecord unrelated = gateAudit(42L, "E1_GENERATION_GATE_UPDATED", "later-editor",
+                "{\"before\":{\"forceUnlock\":true},\"after\":{\"forceUnlock\":true}}");
+        AuditLogRecord enabling = gateAudit(41L, "E1_GENERATION_GATE_CHANGED", "approver",
+                "{\"field\":\"forceUnlock\",\"oldValue\":\"false\",\"newValue\":\"true\"}");
+        when(auditLogService.list(any())).thenReturn(List.of(unrelated, enabling));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> releases = (List<Map<String, Object>>) service.e1GenerationGates().getData().get("releases");
+        assertThat(releases.get(0)).containsEntry("forceUnlockApprovedBy", "approver")
+                .containsEntry("forceUnlockAuditId", "41");
+
+        when(auditLogService.list(any())).thenReturn(List.of(unrelated));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> noApproval = (List<Map<String, Object>>) service.e1GenerationGates().getData().get("releases");
+        assertThat(noApproval.get(0)).containsEntry("forceUnlockApprovedBy", "")
+                .containsEntry("forceUnlockAuditId", "");
+
+        when(auditLogService.list(any())).thenReturn(List.of(gateAudit(43L,
+                "E1_GENERATION_GATE_UPDATED", "unverified",
+                "{\"after\":{\"forceUnlock\":true}}")));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> missingBefore = (List<Map<String, Object>>) service.e1GenerationGates().getData().get("releases");
+        assertThat(missingBefore.get(0)).containsEntry("forceUnlockApprovedBy", "")
+                .containsEntry("forceUnlockAuditId", "");
+    }
+
+    private static AuditLogRecord gateAudit(Long id, String action, String actor, String detailJson) {
+        AuditLogRecord record = new AuditLogRecord();
+        record.setId(id);
+        record.setAction(action);
+        record.setActorUsername(actor);
+        record.setDetailJson(detailJson);
+        record.setCreatedAt(LocalDateTime.of(2026, 9, 22, 12, 0));
+        return record;
     }
 
     @Test

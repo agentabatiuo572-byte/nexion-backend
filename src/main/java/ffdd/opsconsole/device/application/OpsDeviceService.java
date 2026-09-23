@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.application;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -120,6 +122,7 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+    private static final ObjectMapper E1_AUDIT_JSON = new ObjectMapper();
     private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED", "DEACTIVATED", "INACTIVE", "RETIRED");
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
     private static final Set<String> SKU_TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
@@ -368,7 +371,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!Objects.equals(before.unlockPhase(), orderManagedWriteRequest.unlockPhase())) {
             DeviceGenerationGateView gate = catalogRepository.findGenerationGate(normalized).orElse(null);
             if (gate != null && "active".equals(gate.status())
-                    && !Objects.equals(gate.phase(), orderManagedWriteRequest.unlockPhase())) {
+                    && !Objects.equals(matchConfiguredE1PhaseId(gate.phase(), false),
+                            orderManagedWriteRequest.unlockPhase())) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_GATE_PHASE_MISMATCH");
             }
         }
@@ -2149,7 +2153,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (forceUnlockGuard != null) {
             return forceUnlockGuard;
         }
-        if (!phase.equals(sku.unlockPhase())) {
+        if (!phase.equals(matchConfiguredE1PhaseId(sku.unlockPhase(), false))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
         }
         DeviceGenerationGateView created = catalogRepository.saveGenerationGate(
@@ -2169,6 +2173,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "releaseMonth", created.releaseMonth(),
                 "phase", created.phase(),
                 "eligibility", created.eligibility(),
+                "forceUnlock", created.forceUnlock(),
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return e1GenerationGates();
@@ -2203,7 +2208,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean eligibility = request.eligibility() == null ? Boolean.TRUE.equals(before.eligibility()) : request.eligibility();
         boolean forceUnlock = request.forceUnlock() == null ? Boolean.TRUE.equals(before.forceUnlock()) : request.forceUnlock();
         if ((request.phase() != null || (!Boolean.TRUE.equals(before.forceUnlock()) && forceUnlock))
-                && !phase.equals(catalogRepository.findSku(normalized).map(DeviceSkuView::unlockPhase).orElse(null))) {
+                && !phase.equals(matchConfiguredE1PhaseId(
+                        catalogRepository.findSku(normalized).map(DeviceSkuView::unlockPhase).orElse(null), false))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
         }
         ApiResult<Map<String, Object>> forceUnlockGuard = requireE1ForceUnlockTransition(
@@ -2293,7 +2299,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 ? Boolean.parseBoolean(value)
                 : Boolean.TRUE.equals(before.forceUnlock());
         if (("phase".equals(key[1]) || (!Boolean.TRUE.equals(before.forceUnlock()) && nextForceUnlock))
-                && !nextPhase.equals(catalogRepository.findSku(key[0]).map(DeviceSkuView::unlockPhase).orElse(null))) {
+                && !nextPhase.equals(matchConfiguredE1PhaseId(
+                        catalogRepository.findSku(key[0]).map(DeviceSkuView::unlockPhase).orElse(null), false))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
         }
         ApiResult<Map<String, Object>> forceUnlockGuard = requireE1ForceUnlockTransition(
@@ -3546,23 +3553,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return response;
     }
 
-    /**
-     * 取每个门最近一次发布门变更的审计溯源(操作者 / 审计记录号 / 时间)。
-     *
-     * <p>只查 E1_GENERATION_GATE_UPDATED —— 新建门不构成「强制提前开放」的批准行为。
-     * 每门一次查询而非全表扫描:门数量是个位数,而审计表可能很大。</p>
-     */
+    /** Only the audit that enabled the current force unlock may identify its approver. */
     private Map<String, Map<String, Object>> forceUnlockProvenance(List<DeviceGenerationGateView> gates) {
         Map<String, Map<String, Object>> provenance = new LinkedHashMap<>();
         for (DeviceGenerationGateView gate : gates) {
             if (!Boolean.TRUE.equals(gate.forceUnlock())) continue;
             try {
                 AuditLogQueryRequest query = new AuditLogQueryRequest();
-                query.setAction("E1_GENERATION_GATE_UPDATED");
+                query.setResourceType("DEVICE_GENERATION_GATE");
                 query.setResourceId(gate.id());
+                query.setResult("SUCCESS");
                 List<AuditLogRecord> records = auditLogService.list(query);
                 if (records == null || records.isEmpty()) continue;
-                AuditLogRecord latest = records.get(0);
+                AuditLogRecord latest = records.stream().filter(this::enabledForceUnlock).findFirst().orElse(null);
+                if (latest == null) continue;
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("operator", latest.getActorUsername() == null ? "" : latest.getActorUsername());
                 row.put("auditId", latest.getId() == null ? "" : String.valueOf(latest.getId()));
@@ -3573,6 +3577,28 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         return provenance;
+    }
+
+    private boolean enabledForceUnlock(AuditLogRecord record) {
+        if (record == null || !StringUtils.hasText(record.getAction())
+                || !StringUtils.hasText(record.getDetailJson())) return false;
+        try {
+            JsonNode detail = E1_AUDIT_JSON.readTree(record.getDetailJson());
+            return switch (record.getAction()) {
+                case "E1_GENERATION_GATE_CREATED" -> detail.path("forceUnlock").isBoolean()
+                        && detail.path("forceUnlock").booleanValue();
+                case "E1_GENERATION_GATE_UPDATED" -> detail.path("before").path("forceUnlock").isBoolean()
+                        && detail.path("after").path("forceUnlock").isBoolean()
+                        && !detail.path("before").path("forceUnlock").booleanValue()
+                        && detail.path("after").path("forceUnlock").booleanValue();
+                case "E1_GENERATION_GATE_CHANGED" -> "forceUnlock".equals(detail.path("field").asText())
+                        && "false".equalsIgnoreCase(detail.path("oldValue").asText())
+                        && "true".equalsIgnoreCase(detail.path("newValue").asText());
+                default -> false;
+            };
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+            return false;
+        }
     }
 
     private int currentPlatformMonth() {
@@ -3910,10 +3936,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return "";
         }
         return phases.stream()
-                .filter(candidate -> requested.equals(candidate.p()) || requested.equals(candidate.label()))
+                .filter(candidate -> requested.equals(candidate.p()))
                 .map(DevicePhaseView::p)
                 .findFirst()
-                .orElse("");
+                .orElseGet(() -> phases.stream()
+                .filter(candidate -> requested.equals(candidate.label()))
+                .map(DevicePhaseView::p)
+                .findFirst()
+                .orElse(""));
     }
 
     private boolean isConfiguredE1PhaseId(String phase) {

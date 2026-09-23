@@ -140,7 +140,7 @@ public class StorefrontProductReleasePolicy {
             if (gateIndex < 0 || gateIndex > currentIndex) {
                 return Decision.closed("E1_GENERATION_PHASE_NOT_REACHED", unlockPhaseId);
             }
-            if (!gate.phase().equals(unlockPhaseId.trim())) {
+            if (gateIndex != phaseIndex(phases, unlockPhaseId)) {
                 return Decision.closed("E1_GENERATION_PHASE_MISMATCH", unlockPhaseId);
             }
             int releaseMonth = gate.releaseMonth() == null ? 0 : gate.releaseMonth();
@@ -168,6 +168,9 @@ public class StorefrontProductReleasePolicy {
         String normalized = phaseId.trim();
         for (int i = 0; i < phases.size(); i++) {
             if (normalized.equals(phases.get(i).p())) return i;
+        }
+        for (int i = 0; i < phases.size(); i++) {
+            if (normalized.equals(phases.get(i).label())) return i;
         }
         return -1;
     }

@@ -71,6 +71,28 @@ class StorefrontProductReleasePolicyTest {
     }
 
     @Test
+    void legacyPhaseLabelsResolveToTheSameConfiguredIdentityOnCatalogAndOrderPaths() {
+        when(catalog.findGenerationGate("rack-p2")).thenReturn(Optional.of(new DeviceGenerationGateView(
+                "rack-p2", "Rack P2", 1, "phase-52", BigDecimal.ZERO, true, 0, true, "active", null, null)));
+
+        assertThat(policy.evaluate("rack-p2", "52").available()).isTrue();
+        assertThat(policy.evaluate("rack-p2", "phase-77").reason())
+                .isEqualTo("E1_GENERATION_PHASE_MISMATCH");
+    }
+
+    @Test
+    void phaseIdCannotBeShadowedByAnEarlierPhasesLabel() {
+        when(catalog.listPhases("E1", false)).thenReturn(List.of(
+                new DevicePhaseView("1", "2", "", "", 10, "active", null, null),
+                new DevicePhaseView("2", "扩张期", "", "", 20, "active", null, null)));
+        when(catalog.findGenerationGate("box-future")).thenReturn(Optional.of(new DeviceGenerationGateView(
+                "box-future", "Pro v2", 1, "2", BigDecimal.ZERO, true, 0, true, "active", null, null)));
+
+        assertThat(policy.evaluate("box-future", "2").reason())
+                .isEqualTo("E1_GENERATION_PHASE_NOT_REACHED");
+    }
+
+    @Test
     void tradeinEarlyAccessOpensOnlyTheConfiguredWindowBeforeTheReleaseMonth() {
         when(rhythm.snapshot()).thenReturn(snapshotAtMonth(3, 50));
         when(catalog.findGenerationGate("box-gen2")).thenReturn(Optional.of(new DeviceGenerationGateView(
