@@ -80,6 +80,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.canonical.BundleDiscountPolicy;
 import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
@@ -299,6 +300,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (catalogRepository.findSku(skuId).isPresent()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_ALREADY_EXISTS");
         }
+        if (RetiredBrandGate.carriesRetiredBrand(writeRequest.name())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
+        }
         if ("on".equals(normalizeSkuStatus(writeRequest.status()))) {
             ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(skuId, writeRequest);
             if (publishGuard != null) {
@@ -364,6 +368,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceSkuUpsertRequest effectiveWriteRequest = orderManagedWriteRequest.trialEligible() == null
                 ? withTrialEligible(orderManagedWriteRequest, Boolean.TRUE.equals(before.trialEligible()))
                 : orderManagedWriteRequest;
+        if (!Objects.equals(before.name(), effectiveWriteRequest.name())
+                && RetiredBrandGate.carriesRetiredBrand(effectiveWriteRequest.name())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
+        }
         String nextStatus = normalizeSkuStatus(writeRequest.status());
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, effectiveWriteRequest);
@@ -3683,6 +3691,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!StringUtils.hasText(name)) name = stored.name();
             if (dailyEarn == null) dailyEarn = stored.dailyEarn();
             if (dailyEarnNex == null) dailyEarnNex = stored.dailyEarnNex();
+        }
+        if (RetiredBrandGate.carriesRetiredBrand(name)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
         }
         StorefrontProductPublishGate.Decision decision =
                 StorefrontProductPublishGate.evaluate(productNo, name, dailyEarn, dailyEarnNex);
