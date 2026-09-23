@@ -230,10 +230,8 @@ $migrations = @(
   # It is idempotent (INSERT ... ON DUPLICATE KEY UPDATE) and already documents the
   # canonical six-class vocabulary, so registering it is the whole fix.
   (Join-Path $root "scripts\seed_e2_task_pricing.sql"),
-  # H4 event evt-spring-spin only had its operator-authored English copy, so the
-  # Chinese App fell back to "Daily Lucky Spin". The publish gate blocks new
-  # publishes with missing zh/vi content, but the event is already ongoing, so the
-  # gate cannot reach it. Fill only the fields that are still empty.
+  # Prepare the H4 localization branch without inserting unreviewed translations.
+  # Existing ongoing events still need operator-approved copy configured in H4.
   (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql"),
   # I6 reported published entries whose body is literally "ccccc" but nothing ever
   # cleaned them up: the integrity scan gained the placeholder/retired-brand content
