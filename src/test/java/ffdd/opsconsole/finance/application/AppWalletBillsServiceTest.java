@@ -400,14 +400,17 @@ class AppWalletBillsServiceTest {
     void appProjectionWithholdsCourseReferenceWhenTheLedgerNumberIsNotCourseShaped() {
         AppWalletBillsMapper mapper = mock(AppWalletBillsMapper.class);
         when(mapper.userScope(7L)).thenReturn(new AppWalletBillsMapper.UserScope(0));
-        when(mapper.count(7L)).thenReturn(2L);
+        when(mapper.count(7L)).thenReturn(3L);
         when(mapper.rows(7L, 50, 0)).thenReturn(List.of(
                 new AppWalletBillsMapper.LedgerRow(41L, "LEARN:7", "LEARNING_REWARD",
                         "NEX", "IN", new BigDecimal("10"), new BigDecimal("20"), "SUCCESS",
                         "legacy", LocalDateTime.of(2026, 9, 21, 8, 0)),
                 new AppWalletBillsMapper.LedgerRow(42L, "LEARN:7:UPPER CASE:v1", "LEARNING_REWARD",
                         "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
-                        "legacy", LocalDateTime.of(2026, 9, 21, 9, 0))));
+                        "legacy", LocalDateTime.of(2026, 9, 21, 9, 0)),
+                new AppWalletBillsMapper.LedgerRow(43L, "PRIVATE:7:account-security:v1", "LEARNING_REWARD",
+                        "NEX", "IN", new BigDecimal("10"), new BigDecimal("10"), "SUCCESS",
+                        "legacy", LocalDateTime.of(2026, 9, 21, 10, 0))));
         var service = new AppWalletBillsService(mapper, environment("dev"));
 
         @SuppressWarnings("unchecked")

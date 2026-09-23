@@ -322,13 +322,13 @@ public class AppWalletBillsService {
      * 约束,都不含用户信息;任何对不上形状的旧行一律不放出(宁缺勿错)。
      */
     private String learningCourseReference(String bizNo) {
-        int versionSeparator = bizNo.lastIndexOf(':');
-        if (versionSeparator <= 0 || versionSeparator == bizNo.length() - 1) return null;
-        String version = bizNo.substring(versionSeparator + 1);
-        String head = bizNo.substring(0, versionSeparator);
-        int courseSeparator = head.lastIndexOf(':');
-        if (courseSeparator <= 0) return null;
-        String courseId = head.substring(courseSeparator + 1);
+        String[] parts = bizNo.split(":", -1);
+        if ((parts.length != 4 && parts.length != 5) || !"LEARN".equals(parts[0])) return null;
+        int userIndex = parts.length - 3;
+        if (parts.length == 5 && parts[1].isBlank()) return null;
+        if (!parts[userIndex].matches("[1-9][0-9]*")) return null;
+        String courseId = parts[userIndex + 1];
+        String version = parts[userIndex + 2];
         if (!COURSE_ID.matcher(courseId).matches() || !COURSE_VERSION.matcher(version).matches()) return null;
         return courseId + "@" + version;
     }
