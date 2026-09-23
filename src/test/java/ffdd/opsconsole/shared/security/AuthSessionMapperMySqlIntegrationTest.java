@@ -21,11 +21,11 @@ class AuthSessionMapperMySqlIntegrationTest {
     @Test
     void onlyAllowsOwnedSchemasOnTheIsolatedPort() {
         String schema = PREFIX + "a".repeat(32);
-        assertThat(url("127.0.0.1:13306", schema)).contains(":13306/" + schema);
-        for (String endpoint : new String[]{null, "localhost:13306", "127.0.0.1:3306", "127.0.0.1:13306/other"}) {
+        assertThat(url("127.0.0.1:13307", schema)).contains(":13307/" + schema);
+        for (String endpoint : new String[]{null, "localhost:13307", "127.0.0.1:3306", "127.0.0.1:13307/other"}) {
             assertThatThrownBy(() -> url(endpoint, schema)).isInstanceOf(IllegalArgumentException.class);
         }
-        assertThatThrownBy(() -> url("127.0.0.1:13306", "nexion"))
+        assertThatThrownBy(() -> url("127.0.0.1:13307", "nexion"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -37,7 +37,7 @@ class AuthSessionMapperMySqlIntegrationTest {
         String schema = PREFIX + UUID.randomUUID().toString().replace("-", "");
         String fixtureUrl = url(endpoint, schema);
         JdbcTemplate admin = new JdbcTemplate(new DriverManagerDataSource(url(endpoint, ""), "root", password));
-        assertThat(admin.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+        assertThat(admin.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13307);
         assertThat(admin.queryForObject("SELECT DATABASE()", String.class)).isNull();
         admin.execute("CREATE DATABASE " + schema);
         SingleConnectionDataSource dataSource = null;
@@ -45,7 +45,7 @@ class AuthSessionMapperMySqlIntegrationTest {
             dataSource = new SingleConnectionDataSource(
                     new DriverManagerDataSource(fixtureUrl, "root", password).getConnection(), true);
             JdbcTemplate jdbc = new JdbcTemplate(dataSource);
-            assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
+            assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13307);
             assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(schema);
             jdbc.execute("""
                     CREATE TABLE nx_user_session (
@@ -100,7 +100,7 @@ class AuthSessionMapperMySqlIntegrationTest {
     }
 
     private static String url(String endpoint, String schema) {
-        if (!"127.0.0.1:13306".equals(endpoint)) throw new IllegalArgumentException("isolated endpoint required");
+        if (!"127.0.0.1:13307".equals(endpoint)) throw new IllegalArgumentException("isolated endpoint required");
         if (schema == null || (!schema.isEmpty() && !schema.matches(PREFIX + "[a-f0-9]{32}")))
             throw new IllegalArgumentException("owned UUID schema required");
         return "jdbc:mysql://" + endpoint + "/" + schema
