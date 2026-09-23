@@ -103,6 +103,19 @@ class MigrationTests(unittest.TestCase):
                     m.apply(SHA)
         self.assertEqual(self.calls, [])
 
+    def test_recorded_test_history_keeps_original_hashes(self):
+        # These are the three hashes already recorded in TEST state; forward SQL repairs content.
+        expected = {
+            '20260720_e2_task_pricing_closure.sql': '35e54c420ab6145b8a91d876c8e6b79ddfd231fb3dd8b25d56dbfbdb83109913',
+            '20260722_i2_nova_closure.sql': '85627dddea64cc9fa00404564f59c8b053a4c9f1f251c40e1ac5fc2d691e4e6c',
+            '20260722_i3_notification_campaign_closure.sql': '89686ab72fd9f448c36bd58095ecb99ad904e17fabe1d32386c09f12c81aee59',
+        }
+        directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
+        for name, sha in expected.items():
+            # core.autocrlf may expand LF in a Windows checkout; Git's tar archive uses LF.
+            data = (directory / name).read_bytes().replace(b'\r\n', b'\n')
+            self.assertEqual(m.digest(data), sha, name)
+
     def test_rollback_probe_cannot_execute_pending_sql(self):
         with self.assertRaisesRegex(m.MigrationError, 'FORWARD_DEPLOY'):
             m.apply(SHA, rollback_check=True)

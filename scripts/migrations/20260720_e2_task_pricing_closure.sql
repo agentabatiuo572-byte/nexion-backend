@@ -31,11 +31,11 @@ INSERT INTO nx_admin_device_task (
   task_class, model_name, min_reward, max_reward, min_vram, kill_init,
   created_at, updated_at, is_deleted
 ) VALUES
-  ('TK-1','LLM 推理',       0.8500,'/job','需 NexGridRack',    0.35,'active','LL','Llama 70B,Phi-3-mini',      0.00005,0.8500,'80GB','派发中',NOW(),NOW(),0),
+  ('TK-1','LLM 推理',       0.8500,'/job','需 NexionRack',    0.35,'active','LL','Llama 70B,Phi-3-mini',      0.00005,0.8500,'80GB','派发中',NOW(),NOW(),0),
   ('TK-2','语音识别',       0.0720,'/job','手机+',            0.35,'active','SP','Whisper',                    0.00005,0.0720,'8GB', '派发中',NOW(),NOW(),0),
   ('TK-3','图像生成',       0.0450,'/job','S1+',              0.35,'active','IG','SDXL Turbo,Flux Schnell',    0.00010,0.0450,'12GB','派发中',NOW(),NOW(),0),
-  ('TK-4','视频生成',       1.8000,'/job','需 NexGridBox Pro', 0.35,'active','VG','Sora-class',                 0.45000,1.8000,'48GB','派发中',NOW(),NOW(),0),
-  ('TK-5','模型微调',       0.4200,'/job','需 NexGridBox Pro', 0.35,'active','FT','LoRA',                       0.06000,0.4200,'48GB','派发中',NOW(),NOW(),0),
+  ('TK-4','视频生成',       1.8000,'/job','需 NexionBox Pro', 0.35,'active','VG','Sora-class',                 0.45000,1.8000,'48GB','派发中',NOW(),NOW(),0),
+  ('TK-5','模型微调',       0.4200,'/job','需 NexionBox Pro', 0.35,'active','FT','LoRA',                       0.06000,0.4200,'48GB','派发中',NOW(),NOW(),0),
   ('TK-6','向量嵌入',       0.0900,'/1k', '手机+',            0.35,'active','EM','BGE-M3',                     0.00001,0.0900,'8GB', '派发中',NOW(),NOW(),0)
 ON DUPLICATE KEY UPDATE
   name=VALUES(name), price=VALUES(price), unit_text=VALUES(unit_text), requirement=VALUES(requirement),
