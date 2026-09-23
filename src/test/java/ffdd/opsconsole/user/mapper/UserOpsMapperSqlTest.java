@@ -7,6 +7,25 @@ import org.junit.jupiter.api.Test;
 
 class UserOpsMapperSqlTest {
     @Test
+    void c1LastLoginUsesTheNewestSessionIssuanceOrAuditedLogin() throws Exception {
+        String pageSql = String.join("\n", UserOpsMapper.class
+                .getMethod("pageUsers", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class, int.class, int.class, String.class)
+                .getAnnotation(Select.class).value());
+        String detailSql = String.join("\n", UserOpsMapper.class
+                .getMethod("findById", Long.class)
+                .getAnnotation(Select.class).value());
+
+        for (String sql : new String[]{pageSql, detailSql}) {
+            String normalized = sql.replaceAll("\\s+", " ");
+            assertThat(normalized)
+                    .contains("COALESCE( (SELECT MAX(sess.created_at)")
+                    .contains("s.last_login_at IS NULL OR sess.created_at > s.last_login_at")
+                    .contains("s.last_login_at ) AS lastLoginAt")
+                    .doesNotContain("MAX(COALESCE(sess.last_active_at, sess.created_at))");
+        }
+    }
+
+    @Test
     void c1UserQueriesReadK4EffectiveRiskScore() throws Exception {
         String countSql = String.join("\n", UserOpsMapper.class
                 .getMethod("countUsersByQuery", ffdd.opsconsole.user.dto.UserQueryRequest.class, java.util.List.class, String.class)
