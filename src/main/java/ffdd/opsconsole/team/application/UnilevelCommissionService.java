@@ -59,8 +59,6 @@ public class UnilevelCommissionService {
      */
     private static final String CONFIG_KEY_DEPTH_GATE_LAYER = "team.ui.F.unilevel.depthGate";
     private static final String CONFIG_KEY_DEPTH_GATE_RANK = "team.ui.F.unilevel.depthGateRank";
-    private static final String DEFAULT_DEPTH_GATE_LAYER = "L4";
-    private static final String DEFAULT_DEPTH_GATE_RANK = "V2";
 
     /** F5 coolingDays 配置 key(PRD line231 默认30;读 commission/cooling-days)。 */
     private static final String CONFIG_KEY_COOLING_DAYS = "commission/cooling-days";
@@ -273,9 +271,9 @@ public class UnilevelCommissionService {
                 || "1".equals(value.trim());
     }
 
-    /** F2 depthGate 层(读 F.unilevel.depthGate,缺失时默认 L4；显式非法值必须阻断结算)。 */
+    /** F2 depthGate 层必须来自有效配置，缺失和非法值都阻断结算。 */
     private int resolveDepthGateLayer() {
-        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_LAYER).orElse(DEFAULT_DEPTH_GATE_LAYER);
+        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_LAYER).orElse("");
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
         if (!normalized.matches("L?[1-7]")) {
             throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
@@ -288,9 +286,9 @@ public class UnilevelCommissionService {
         }
     }
 
-    /** F2 depthGate 阶位(读 F.unilevel.depthGateRank,缺失时默认 V2；显式非法值必须阻断结算)。 */
+    /** F2 depthGate 阶位必须来自有效配置，缺失和非法值都阻断结算。 */
     private int resolveDepthGateRankNum() {
-        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_RANK).orElse(DEFAULT_DEPTH_GATE_RANK);
+        String raw = configFacade.activeValue(CONFIG_KEY_DEPTH_GATE_RANK).orElse("");
         String normalized = raw == null ? "" : raw.trim().toUpperCase();
         if (!normalized.matches("V(?:[0-9]|1[0-2])")) {
             throw new BizException(503, "F_TEAM_DEPTH_GATE_CONFIG_INVALID");
