@@ -208,12 +208,6 @@ $migrations = @(
   # back to NexGrid when the key is absent. Rebrand only rows that still carry
   # the old token.
   (Join-Path $root "scripts\migrations\20260920_vrank_prize_brand_rebrand.sql"),
-  # G4 had a tier ladder but no series row, so activeSeriesCount()==0 made
-  # readiness() return GENESIS_SERIES_UNAVAILABLE and the whole primary purchase
-  # flow unavailable. Derive the single ACTIVE series from the ladder operators
-  # already maintain; no-op when the ladder is absent or not in the state the
-  # service itself accepts for initialization.
-  (Join-Path $root "scripts\migrations\20260920_genesis_active_series_provisioning.sql"),
   # I3's cap policy copy said 「超出部分按 LIFO 淘汰」 while the mapper keeps the
   # newest N rows (ROW_NUMBER ... ORDER BY created_at DESC) and drops the oldest.
   # The wording was corrected in a migration that was never registered here, so

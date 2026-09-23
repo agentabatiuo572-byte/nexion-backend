@@ -8,6 +8,17 @@ import org.junit.jupiter.api.Test;
 
 class StartupSchemaMigrationContractTest {
     @Test
+    void startupNeverPublishesAGenesisFinancialSeries() throws Exception {
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        for (Path migration : Files.list(Path.of("scripts/migrations")).toList()) {
+            if (!runner.contains(migration.getFileName().toString())) continue;
+            assertThat(Files.readString(migration))
+                    .as("startup migration %s", migration.getFileName())
+                    .doesNotMatch("(?is).*\\bINSERT\\s+(?:IGNORE\\s+)?INTO\\s+nx_genesis_series\\b.*");
+        }
+    }
+
+    @Test
     void legacyDailyRewardRepairFollowsTheSeedWithoutReplayingOldEventRevisions() throws Exception {
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         assertThat(runner.indexOf("20260909_h5_legacy_milestone_reward.sql"))
