@@ -7,6 +7,8 @@ import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.util.UUID;
 import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,20 @@ import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 class AuthSessionMapperMySqlIntegrationTest {
     private static final String PREFIX = "nx_auth_grace_it_";
+
+    @Test
+    void sessionSqlUsesBusinessTimeIndependentOfConnectionTimeZone() {
+        for (var method : AuthSessionMapper.class.getDeclaredMethods()) {
+            Select select = method.getAnnotation(Select.class);
+            Update update = method.getAnnotation(Update.class);
+            String sql = select != null ? String.join(" ", select.value())
+                    : update != null ? String.join(" ", update.value()) : "";
+            assertThat(sql).doesNotContain("NOW()");
+            if (sql.contains("last_active_at=") || sql.contains("revoked_at=")) {
+                assertThat(sql).contains("UTC_TIMESTAMP()");
+            }
+        }
+    }
 
     @Test
     void onlyAllowsOwnedSchemasOnTheIsolatedPort() {
@@ -47,6 +63,7 @@ class AuthSessionMapperMySqlIntegrationTest {
             JdbcTemplate jdbc = new JdbcTemplate(dataSource);
             assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13307);
             assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(schema);
+            jdbc.execute("SET time_zone = '+08:00'");
             jdbc.execute("""
                     CREATE TABLE nx_user_session (
                       id BIGINT PRIMARY KEY, user_id BIGINT NOT NULL,
@@ -77,6 +94,11 @@ class AuthSessionMapperMySqlIntegrationTest {
                 assertThat(mapper.touchRecentlyRotatedUserSession("old", 7L, 30)).isZero();
                 jdbc.update("UPDATE nx_user_session SET revoked_at=NULL WHERE id=2");
                 assertThat(mapper.touchRecentlyRotatedUserSession("old", 7L, 30)).isEqualTo(1);
+                jdbc.execute("SET time_zone = '+00:00'");
+                assertThat(mapper.touchActiveUserSession("new", 7L, 30)).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT ABS(TIMESTAMPDIFF(SECOND,last_active_at,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR))) FROM nx_user_session WHERE id=2", Integer.class))
+                        .isLessThan(5);
+                jdbc.execute("SET time_zone = '+08:00'");
                 assertThat(mapper.touchRecentlyRotatedUserSession("old", 8L, 30)).isZero();
 
                 jdbc.update("UPDATE nx_user_session SET rotation_redeemed_at=DATE_SUB(NOW(),INTERVAL 11 SECOND) WHERE id=1");

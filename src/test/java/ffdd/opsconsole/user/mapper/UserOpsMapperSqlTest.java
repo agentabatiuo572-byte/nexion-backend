@@ -88,12 +88,15 @@ class UserOpsMapperSqlTest {
                 .contains("AND user_id = #{userId}");
         assertThat(countSql)
                 .contains("COALESCE(last_active_at,updated_at,created_at)")
+                .contains("UTC_TIMESTAMP()")
                 .contains("INTERVAL #{idleDays} DAY");
         assertThat(listSql)
                 .contains("INTERVAL #{idleDays} DAY")
+                .contains("UTC_TIMESTAMP()")
                 .contains("AS lastActiveAt");
         assertThat(pageSql)
                 .contains("INTERVAL #{idleDays} DAY")
+                .contains("UTC_TIMESTAMP()")
                 .contains("AS lastActiveAt");
     }
 
