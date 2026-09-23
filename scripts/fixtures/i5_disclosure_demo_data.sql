@@ -68,10 +68,10 @@ JOIN (
          '提现可能受处理窗口、额度、身份核验及合规审查影响。',
          'Việc rút tiền có thể chịu ảnh hưởng của khung xử lý, hạn mức, xác minh danh tính và kiểm tra tuân thủ.',
          'Withdrawals may be affected by processing windows, limits, identity verification, and compliance review.', 4
-  UNION ALL SELECT '05', '质押不可撤销', 'Staking không thể hủy ngang', 'Staking is irrevocable',
-         '锁定期内的质押通常不能提前撤销，请在提交前确认期限和资金安排。',
-         'Staking trong thời gian khóa thường không thể hủy sớm; hãy xác nhận kỳ hạn và kế hoạch vốn trước khi gửi.',
-         'Staking is generally irreversible during the lock period; confirm the term and liquidity plan before submitting.', 5
+  UNION ALL SELECT '05', '质押锁仓与提前赎回', 'Khóa staking và rút trước hạn', 'Staking lock-up and early withdrawal',
+         '质押本金在锁定期内不能直接消费、转账或提现。持仓处于有效状态且尚未到期时可提前赎回，按该笔持仓记录的罚率扣减本金，累计利息不返还。请在提交前核对方案和持仓条款。',
+         'Vốn gốc staking không thể dùng để chi tiêu, chuyển khoản hoặc rút trực tiếp trong thời gian khóa. Có thể rút trước hạn khi vị thế còn hiệu lực và chưa đáo hạn; tiền phạt được trừ từ vốn gốc theo tỷ lệ ghi trên vị thế và toàn bộ lãi tích lũy không được trả. Hãy kiểm tra điều khoản của gói và vị thế trước khi xác nhận.',
+         'Staked principal cannot be spent, transferred, or withdrawn directly during the lock period. An active position may be withdrawn early before maturity; the penalty is deducted from principal at the rate recorded for that position, and all accrued interest is forfeited. Review the pool and position terms before confirming.', 5
   UNION ALL SELECT '06', '网络经济与推荐激励', 'Kinh tế mạng lưới và phần thưởng giới thiệu', 'Network economy and referral incentives',
          '推荐激励取决于真实有效的活动和当期规则，不保证固定或持续收益。',
          'Phần thưởng giới thiệu phụ thuộc vào hoạt động hợp lệ và quy tắc hiện hành, không bảo đảm thu nhập cố định hoặc liên tục.',
