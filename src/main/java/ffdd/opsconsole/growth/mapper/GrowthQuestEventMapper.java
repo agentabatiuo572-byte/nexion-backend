@@ -430,10 +430,24 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    CASE WHEN EXISTS(
                          SELECT 1 FROM nx_growth_quest_event_binding b
                           WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
+                            AND (m.mission_code NOT IN ('weekly_t2_browse_store','weekly_t2_invite_friend','weekly_t2_nex_swap','weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
+                                 OR (b.producer='SYSTEM' AND b.user_id_field='user_id' AND b.event_type=CASE m.mission_code
+                                   WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                                   WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
+                                   WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
+                                   WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
+                                   WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END))
                        ) THEN 'event' ELSE 'unbound' END AS completionType,
                    COALESCE((SELECT GROUP_CONCAT(b.event_type ORDER BY b.binding_code SEPARATOR ', ')
                                FROM nx_growth_quest_event_binding b
-                              WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0),'') AS completionEvent,
+                              WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
+                                AND (m.mission_code NOT IN ('weekly_t2_browse_store','weekly_t2_invite_friend','weekly_t2_nex_swap','weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
+                                     OR (b.producer='SYSTEM' AND b.user_id_field='user_id' AND b.event_type=CASE m.mission_code
+                                       WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                                       WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
+                                       WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
+                                       WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
+                                       WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END))),'') AS completionEvent,
                    LOWER(mission_category) AS category,
                    action_route AS href
               FROM nx_mission m
@@ -467,6 +481,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND producer='SYSTEM' AND event_type='H3_STOREFRONT_THREE_PRODUCTS_VIEWED' AND user_id_field='user_id' AND status=1 AND is_deleted=0")
     int activeStorefrontThreeProductBindingCount(@Param("questCode") String questCode);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND producer='SYSTEM' AND event_type=#{eventType} AND user_id_field='user_id' AND status=1 AND is_deleted=0")
+    int activeWeeklySystemBindingCount(@Param("questCode") String questCode, @Param("eventType") String eventType);
 
     @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND mission_type='DAY_ONE' AND status=1 AND is_deleted=0")
     int activeDayOneMissionCount(@Param("questCode") String questCode);

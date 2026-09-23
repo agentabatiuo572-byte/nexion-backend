@@ -144,4 +144,13 @@ class StreakPerkBusinessAvailabilityAdapterTest {
         doThrow(new IllegalStateException("unavailable")).when(genesis).publicState();
         assertThat(adapter.genesisPrimaryAvailable()).isNull();
     }
+
+    @Test
+    void missionPublicationFailsClosedWhenTheBusinessCatalogIsUnreadable() {
+        doThrow(new IllegalStateException("db down")).when(staking).pools();
+        doThrow(new IllegalStateException("db down")).when(genesis).publicState();
+
+        assertThat(adapter.stakingAvailableForMissionPublication()).isFalse();
+        assertThat(adapter.genesisAvailableForMissionPublication()).isFalse();
+    }
 }

@@ -264,6 +264,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260923_a6_acceptance_role_retirement.sql")
   # H3's three distinct product detail fact needs its exact weekly task binding.
   (Join-Path $root "scripts\migrations\20260923_h3_storefront_three_product_binding.sql")
+  # Bind the remaining server-verified H3 weekly facts and pause unbound legacy tasks.
+  (Join-Path $root "scripts\migrations\20260923_h3_weekly_event_gate.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

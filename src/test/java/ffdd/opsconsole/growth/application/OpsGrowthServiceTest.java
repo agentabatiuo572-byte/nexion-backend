@@ -70,6 +70,8 @@ class OpsGrowthServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AuditObjectLockMapper lockMapper = mock(AuditObjectLockMapper.class);
     private final GrowthQuestEventMapper questEventMapper = mock(GrowthQuestEventMapper.class);
+    private final StreakPerkBusinessAvailabilityFacade missionAvailability =
+            mock(StreakPerkBusinessAvailabilityFacade.class);
     private final List<Map<String, Object>> trialPolicies = new ArrayList<>();
     private final List<Map<String, Object>> trialSessions = new ArrayList<>();
     private final List<Map<String, Object>> checkInRules = new ArrayList<>();
@@ -243,7 +245,7 @@ class OpsGrowthServiceTest {
                     lockMapper,
                     null,
                     Optional.empty(),
-                mock(StreakPerkBusinessAvailabilityFacade.class));
+                missionAvailability);
 
     @BeforeEach
     void stubLocksNoActive() {
@@ -1164,6 +1166,52 @@ class OpsGrowthServiceTest {
 
         assertThat(blocked.getMessage()).isEqualTo("H3_STOREFRONT_EVENT_BINDING_REQUIRED");
         verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t2_browse_store", 0, 1);
+    }
+
+    @Test
+    void weeklyInviteNeedsItsVerifiedRegistrationFact() {
+        when(questEventMapper.lockMission("weekly_t2_invite_friend")).thenReturn(row(
+                "taskCode", "weekly_t2_invite_friend", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("weekly_t2_invite_friend")).thenReturn(1);
+
+        var blocked = service.transitionMission("weekly-invite-wrong-source", "weekly_t2_invite_friend",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "require registered referral fact", "superadmin"));
+
+        assertThat(blocked.getMessage()).isEqualTo("H3_WEEKLY_EVENT_BINDING_REQUIRED");
+        verify(questEventMapper).activeWeeklySystemBindingCount(
+                "weekly_t2_invite_friend", "H3_REFERRAL_REGISTERED");
+        verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t2_invite_friend", 0, 1);
+    }
+
+    @Test
+    void purchaseTaskCannotPublishWithoutVerifiedCompletionEvenWithGenericBinding() {
+        when(questEventMapper.lockMission("weekly_t1_buy_additional_hw")).thenReturn(row(
+                "taskCode", "weekly_t1_buy_additional_hw", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("weekly_t1_buy_additional_hw")).thenReturn(1);
+
+        var blocked = service.transitionMission("weekly-purchase-unverified", "weekly_t1_buy_additional_hw",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "purchase start is not verified completion", "superadmin"));
+
+        assertThat(blocked.getMessage()).isEqualTo("H3_MISSION_VERIFIED_COMPLETION_UNAVAILABLE");
+        verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t1_buy_additional_hw", 0, 1);
+    }
+
+    @Test
+    void genesisBrowseNeedsTheBusinessOpenAfterItsEventIsBound() {
+        when(questEventMapper.lockMission("weekly_t2_genesis_browse")).thenReturn(row(
+                "taskCode", "weekly_t2_genesis_browse", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("weekly_t2_genesis_browse")).thenReturn(1);
+        when(questEventMapper.activeWeeklySystemBindingCount(
+                "weekly_t2_genesis_browse", "H3_GENESIS_SECONDARY_MARKET_VIEWED")).thenReturn(1);
+
+        var blocked = service.transitionMission("weekly-genesis-closed", "weekly_t2_genesis_browse",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "Genesis market is closed", "superadmin"));
+
+        assertThat(blocked.getMessage()).isEqualTo("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
+        verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t2_genesis_browse", 0, 1);
     }
 
     @Test

@@ -25,4 +25,9 @@ public interface StreakPerkBusinessAvailabilityFacade {
 
     /** Genesis 主售是否可用(存在 ACTIVE 系列且市场开放)。 */
     Boolean genesisPrimaryAvailable();
+
+    /** Publication is stricter than a display hint: an unreadable catalog is closed. */
+    default boolean stakingAvailableForMissionPublication() { return false; }
+
+    default boolean genesisAvailableForMissionPublication() { return false; }
 }

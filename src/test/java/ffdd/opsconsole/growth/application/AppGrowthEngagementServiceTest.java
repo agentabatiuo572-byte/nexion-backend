@@ -164,6 +164,23 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void closedGenesisMarketHidesPendingBrowseButKeepsClaimedHistory() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of(
+                Map.of("questCode", "weekly_t2_genesis_browse", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "PENDING", "instanceKey", "WEEK:2026-W39"),
+                Map.of("questCode", "weekly_t2_genesis_browse", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "CLAIMED", "instanceKey", "WEEK:2026-W38")));
+
+        var result = service.questState(42L);
+
+        assertThat(result.getCode()).isZero();
+        List<Map<String, Object>> quests = (List<Map<String, Object>>) result.getData().get("quests");
+        assertThat(quests).singleElement().satisfies(row ->
+                assertThat(row).containsEntry("status", "CLAIMED"));
+    }
+
+    @Test
     void questStateDoesNotReconstructLegacyDayOneFromLiveDefinitionsOrUserProgress() {
         when(mapper.questState(42L, "en")).thenReturn(List.of(
                 Map.of("questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1", "status", "PENDING"),

@@ -307,10 +307,17 @@ public interface AppGrowthEngagementMapper {
                            ORDER BY candidate.updated_at DESC,candidate.id DESC LIMIT 1)
                      WHERE m.is_deleted=0 AND (m.status=1 OR historical.id IS NOT NULL)
                        AND m.mission_type IN ('DAY_ONE','WEEKLY_T1','WEEKLY_T2')
-                       AND (m.status<>1 OR m.mission_code<>'weekly_t2_browse_store'
+                       AND (m.status<>1 OR m.mission_code NOT IN
+                            ('weekly_t2_browse_store','weekly_t2_invite_friend','weekly_t2_nex_swap',
+                             'weekly_t2_ai_jobs_50','weekly_t2_genesis_browse')
                             OR EXISTS (SELECT 1 FROM nx_growth_quest_event_binding b
                                         WHERE b.quest_code=m.mission_code AND b.producer='SYSTEM'
-                                          AND b.event_type='H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                                          AND b.event_type=CASE m.mission_code
+                                            WHEN 'weekly_t2_browse_store' THEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                                            WHEN 'weekly_t2_invite_friend' THEN 'H3_REFERRAL_REGISTERED'
+                                            WHEN 'weekly_t2_nex_swap' THEN 'H3_EXCHANGE_COMPLETED'
+                                            WHEN 'weekly_t2_ai_jobs_50' THEN 'H3_COMPUTE_COMPLETED_50'
+                                            WHEN 'weekly_t2_genesis_browse' THEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' END
                                           AND b.user_id_field='user_id' AND b.status=1 AND b.is_deleted=0))
                        -- BUG 139: 生效中但没有生效规范事件绑定的任务必须从 App 隐藏。
                        -- H3 的启用门(H3_MISSION_ACTIVE_BINDING_REQUIRED)只拦「新启用」,

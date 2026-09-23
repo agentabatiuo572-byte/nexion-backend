@@ -80,4 +80,32 @@ public class StreakPerkBusinessAvailabilityAdapter implements StreakPerkBusiness
             return null;
         }
     }
+
+    @Override
+    public boolean stakingAvailableForMissionPublication() {
+        try {
+            ApiResult<Map<String, Object>> result = appStakingService.pools();
+            if (result == null || result.getCode() != 0 || result.getData() == null) return false;
+            if (!(result.getData().get("pools") instanceof List<?> pools)) return false;
+            return pools.stream().anyMatch(pool -> pool instanceof Map<?, ?> row
+                    && Boolean.TRUE.equals(row.get("enabled"))
+                    && !Boolean.TRUE.equals(row.get("killed"))
+                    && "ACTIVE".equals(row.get("status")));
+        } catch (RuntimeException ex) {
+            log.warn("H3 staking publication availability read failed", ex);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean genesisAvailableForMissionPublication() {
+        try {
+            Map<String, Object> state = genesisCatalogService.publicState();
+            return state != null && Boolean.TRUE.equals(state.get("catalogAvailable"))
+                    && Boolean.TRUE.equals(state.get("tradeAvailable"));
+        } catch (RuntimeException ex) {
+            log.warn("H3 Genesis publication availability read failed", ex);
+            return false;
+        }
+    }
 }

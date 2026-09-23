@@ -2,6 +2,7 @@ package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import java.util.Map;
@@ -20,6 +21,7 @@ import org.springframework.util.StringUtils;
 public class H3WeeklyParticipationObservationService {
     private final CanonicalStateMapper storefrontMapper;
     private final AppGenesisMapper genesisMapper;
+    private final GenesisCatalogService genesisCatalogService;
     private final H3WeeklyParticipationEvaluator evaluator;
     private final FundsSandboxProfileGuard fundsSandboxProfileGuard;
     private final Environment environment;
@@ -41,6 +43,9 @@ public class H3WeeklyParticipationObservationService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> observeGenesisSecondaryMarket(Long userId) {
         requireProductionGenesisUser(userId);
+        if (!genesisCatalogService.marketOpen()) {
+            return ApiResult.fail(409, "H3_GENESIS_MARKET_UNAVAILABLE");
+        }
         evaluator.recordGenesisSecondaryMarketView(userId);
         return ApiResult.ok(Map.of("accepted", true));
     }

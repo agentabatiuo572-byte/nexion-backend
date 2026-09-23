@@ -182,6 +182,18 @@ public class OpsGrowthService implements AuditReplayable {
     private static final Set<String> H3_BINDING_USER_FIELDS = Set.of("user_id", "inviter_user_id");
     private static final Set<String> SANDBOX_DAY_ONE_MISSION_CODES = Set.of(
             "bind_bank_card", "visit_earn", "visit_store", "view_product_roi", "setup_profile", "invite_friend");
+    private static final Map<String, String> WEEKLY_SYSTEM_EVENTS = Map.of(
+            "weekly_t2_browse_store", "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+            "weekly_t2_invite_friend", "H3_REFERRAL_REGISTERED",
+            "weekly_t2_nex_swap", "H3_EXCHANGE_COMPLETED",
+            "weekly_t2_ai_jobs_50", "H3_COMPUTE_COMPLETED_50",
+            "weekly_t2_genesis_browse", "H3_GENESIS_SECONDARY_MARKET_VIEWED");
+    private static final Set<String> WEEKLY_WITHOUT_VERIFIED_COMPLETION = Set.of(
+            "weekly_t1_nex_v2_lock", "weekly_t1_buy_genesis", "weekly_t1_buy_additional_hw",
+            "weekly_t1_tradein_upgrade", "weekly_t1_upgrade_s1_to_pro_v2",
+            "weekly_t1_subscribe_premium", "weekly_t1_buy_first_box",
+            "weekly_t1_topup_balance", "weekly_t1_stake_fallback",
+            "weekly_t2_reinvest", "weekly_t2_stake_small", "weekly_t2_top_up_small");
 
     private final PlatformConfigFacade configFacade;
     private final EmergencyControlRepository emergencyRepository;
@@ -815,6 +827,12 @@ public class OpsGrowthService implements AuditReplayable {
                         && "user_id".equals(userIdField))) {
                     throw new IllegalArgumentException("H3_STOREFRONT_BINDING_INVALID");
                 }
+                if (status == 1 && (WEEKLY_SYSTEM_EVENTS.containsKey(questCode)
+                        || WEEKLY_SYSTEM_EVENTS.containsValue(eventType))
+                        && !("SYSTEM".equals(producer) && "user_id".equals(userIdField)
+                        && eventType.equals(WEEKLY_SYSTEM_EVENTS.get(questCode)))) {
+                    throw new IllegalArgumentException("H3_WEEKLY_BINDING_INVALID");
+                }
                 if (status == 1 && H3DayOnePageObservationContract.forEventType(eventType) != null
                         && !H3DayOnePageObservationContract.matches(
                                 producer, eventType, questCode, userIdField)) {
@@ -1205,6 +1223,9 @@ public class OpsGrowthService implements AuditReplayable {
             Map<String, Object> current = lockMission(kind, code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) != expected) return ApiResult.fail(409, "H3_MISSION_STALE");
+            if ("MISSION".equals(kind) && target == 1 && WEEKLY_WITHOUT_VERIFIED_COMPLETION.contains(code)) {
+                return validation("H3_MISSION_VERIFIED_COMPLETION_UNAVAILABLE");
+            }
             if ("MISSION".equals(kind) && target == 1
                     && questEventMapper.get().activeBindingCountByQuestCode(code) < 1) {
                 return validation("H3_MISSION_ACTIVE_BINDING_REQUIRED");
@@ -1212,6 +1233,20 @@ public class OpsGrowthService implements AuditReplayable {
             if ("MISSION".equals(kind) && target == 1 && "weekly_t2_browse_store".equals(code)
                     && questEventMapper.get().activeStorefrontThreeProductBindingCount(code) < 1) {
                 return validation("H3_STOREFRONT_EVENT_BINDING_REQUIRED");
+            }
+            if ("MISSION".equals(kind) && target == 1 && WEEKLY_SYSTEM_EVENTS.containsKey(code)
+                    && !"weekly_t2_browse_store".equals(code)
+                    && questEventMapper.get().activeWeeklySystemBindingCount(code, WEEKLY_SYSTEM_EVENTS.get(code)) < 1) {
+                return validation("H3_WEEKLY_EVENT_BINDING_REQUIRED");
+            }
+            if ("MISSION".equals(kind) && target == 1
+                    && (code.contains("stake") || code.contains("lock"))
+                    && !streakPerkAvailability.stakingAvailableForMissionPublication()) {
+                return validation("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
+            }
+            if ("MISSION".equals(kind) && target == 1 && code.contains("genesis")
+                    && !streakPerkAvailability.genesisAvailableForMissionPublication()) {
+                return validation("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
             }
             if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
             audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(

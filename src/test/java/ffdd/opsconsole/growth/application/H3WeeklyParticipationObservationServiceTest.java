@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -15,6 +16,7 @@ import org.springframework.mock.env.MockEnvironment;
 class H3WeeklyParticipationObservationServiceTest {
     private final CanonicalStateMapper storefront = org.mockito.Mockito.mock(CanonicalStateMapper.class);
     private final AppGenesisMapper genesis = org.mockito.Mockito.mock(AppGenesisMapper.class);
+    private final GenesisCatalogService genesisCatalog = org.mockito.Mockito.mock(GenesisCatalogService.class);
     private final H3WeeklyParticipationEvaluator evaluator = org.mockito.Mockito.mock(H3WeeklyParticipationEvaluator.class);
     private final FundsSandboxProfileGuard sandbox = org.mockito.Mockito.mock(FundsSandboxProfileGuard.class);
 
@@ -64,7 +66,20 @@ class H3WeeklyParticipationObservationServiceTest {
         verify(evaluator, never()).recordGenesisSecondaryMarketView(42L);
     }
 
+    @Test
+    void closedGenesisMarketCannotEmitAWeeklyViewFact() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("prod");
+        when(genesis.userSandbox(42L)).thenReturn(0);
+
+        var result = service(environment).observeGenesisSecondaryMarket(42L);
+
+        assertThat(result.getCode()).isEqualTo(409);
+        verify(evaluator, never()).recordGenesisSecondaryMarketView(42L);
+    }
+
     private H3WeeklyParticipationObservationService service(MockEnvironment environment) {
-        return new H3WeeklyParticipationObservationService(storefront, genesis, evaluator, sandbox, environment);
+        return new H3WeeklyParticipationObservationService(
+                storefront, genesis, genesisCatalog, evaluator, sandbox, environment);
     }
 }
