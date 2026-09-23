@@ -3,6 +3,7 @@ package ffdd.opsconsole.media.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.media.dto.UploadedAsset;
+import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -107,7 +108,8 @@ public class OpsMediaUploadService {
 
     public UploadedAsset refreshPreviewUrl(String assetId) {
         String objectKey = decodeAssetId(assetId);
-        if (objectKey.length() > 256 || !MANAGED_OBJECT_KEY.matcher(objectKey).matches()) {
+        if (objectKey.length() > 256 || !MANAGED_OBJECT_KEY.matcher(objectKey).matches()
+                || !ManagedSkuMediaIdentity.isApprovedObjectKey(objectKey)) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ASSET_ID_INVALID");
         }
         String previewUrl = storageService.presignGet(objectKey, PREVIEW_EXPIRY);

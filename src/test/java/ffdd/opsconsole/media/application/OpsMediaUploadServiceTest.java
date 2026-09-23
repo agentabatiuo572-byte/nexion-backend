@@ -175,6 +175,18 @@ class OpsMediaUploadServiceTest {
     }
 
     @Test
+    void rejectsManagedAssetOutsideTheE1SkuMediaNamespace() {
+        String objectKey = "admin/f/receipt/20260617/8bbef0bd-8f4e-4c89-a7be-57238a041a36.png";
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.refreshPreviewUrl(assetId))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("ASSET_ID_INVALID");
+        verifyNoInteractions(storageService);
+    }
+
+    @Test
     void rejectsTraversalAndNonCanonicalManagedObjectKeys() {
         String assetId = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString("admin/e/sku-image/20260617/../../secret.png".getBytes(StandardCharsets.UTF_8));
