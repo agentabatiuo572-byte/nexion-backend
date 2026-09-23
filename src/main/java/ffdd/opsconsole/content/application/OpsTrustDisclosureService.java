@@ -169,9 +169,9 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                 return invalidPublishedTrustSnapshot();
             }
             // Editor content cannot supply measured finance, compliance, reserve ratio
-            // or AI-client counts. Legacy migration content is a prototype seed. Keep
-            // published versions for audit/history while withholding unsupported claims.
-            boolean unsupportedClaim = Set.of("financials", "complianceBadges").contains(section.key())
+            // AI-client counts or exchange-listing proof. Keep published versions
+            // for audit/history while withholding unsupported public claims.
+            boolean unsupportedClaim = Set.of("financials", "complianceBadges", "listings").contains(section.key())
                     || (trimToEmpty(version.operator()).startsWith("migration")
                     && Set.of("leadership", "auditsReserves").contains(section.key()));
             boolean missingAudit = "auditsReserves".equals(section.key()) && version.fields().stream()

@@ -568,6 +568,37 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
+    void appPublishedSectionsWithholdMigrationListingsEvenIfGivenAnHttpsUrl() {
+        addRemainingPublishedAppTrustSections();
+        var migrationFields = listingFields(1, "NEX Market", "https://exchange.example/nex");
+        repository.sectionVersions.put("listings::v1", new TrustSectionVersionView(
+                "listings", "v1", "Listings", "structured fields", migrationFields,
+                "published", 1L, "migration:20260712", "2026-07-12"));
+
+        var publicFields = service.publishedSections().getData().sections().stream()
+                .filter(section -> "listings".equals(section.sectionKey())).findFirst().orElseThrow().fields();
+        assertThat(publicFields).hasSameSizeAs(migrationFields).allMatch(field -> field.value().isEmpty());
+        assertThat(repository.sectionVersions.get("listings::v1").fields()).isEqualTo(migrationFields);
+    }
+
+    @Test
+    void appPublishedSectionsWithholdOperatorListingClaimsEvenWithHttpsLinks() {
+        addRemainingPublishedAppTrustSections();
+        var fields = new ArrayList<TrustSectionVersionView.Field>();
+        fields.addAll(listingFields(1, "NEX Market", "/pages/market/market"));
+        fields.addAll(listingFields(2, "Example Exchange", "https://exchange.example/markets/nex"));
+        fields.addAll(listingFields(3, "No Evidence Exchange", ""));
+        repository.sectionVersions.put("listings::v1", new TrustSectionVersionView(
+                "listings", "v1", "Listings", "structured fields", fields,
+                "published", 2L, "operator", "2026-09-23"));
+
+        var publicFields = service.publishedSections().getData().sections().stream()
+                .filter(section -> "listings".equals(section.sectionKey())).findFirst().orElseThrow().fields();
+        assertThat(publicFields).hasSameSizeAs(fields).allMatch(field -> field.value().isEmpty());
+        assertThat(repository.sectionVersions.get("listings::v1").fields()).isEqualTo(fields);
+    }
+
+    @Test
     void appPublishedSectionsWithholdOperatorEditedFinancialAndBadgeClaims() {
         addRemainingPublishedAppTrustSections();
         var result = service.publishedSections();
@@ -739,6 +770,16 @@ class OpsTrustDisclosureServiceTest {
                             new TrustSectionVersionView.Field("summary.en", "Summary", "Verified")),
                     "published", 1L, "system", "2026-06-18"));
         }
+    }
+
+    private List<TrustSectionVersionView.Field> listingFields(int row, String exchange, String url) {
+        String prefix = "listing" + row;
+        return List.of(
+                new TrustSectionVersionView.Field(prefix + "Exchange", "Exchange", exchange),
+                new TrustSectionVersionView.Field(prefix + "State.zh", "状态", "已上架"),
+                new TrustSectionVersionView.Field(prefix + "State.vi", "Trạng thái", "Đang niêm yết"),
+                new TrustSectionVersionView.Field(prefix + "State.en", "State", "Listed"),
+                new TrustSectionVersionView.Field(prefix + "Url", "Listing URL", url));
     }
 
     private void authenticate(String... authorities) {
