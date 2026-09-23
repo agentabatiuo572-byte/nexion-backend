@@ -24,6 +24,7 @@ import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.auth.infrastructure.UserLoginGuardRecord;
 import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.security.JwtProperties;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
@@ -351,13 +352,15 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), eq(Duration.ofHours(4)), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("configured-token");
 
-        LocalDateTime before = LocalDateTime.now();
+        LocalDateTime before = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         var result = service.login(new UserLoginRequest("+84", "901234567", "secret"));
 
         assertThat(result.getCode()).isZero();
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
-        assertThat(saved.getValue().getExpiresAt()).isBetween(before.plusDays(30), LocalDateTime.now().plusDays(30));
+        LocalDateTime after = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
+        assertThat(saved.getValue().getLastActiveAt()).isBetween(before, after);
+        assertThat(saved.getValue().getExpiresAt()).isBetween(before.plusDays(30), after.plusDays(30));
     }
 
     @Test
@@ -671,6 +674,9 @@ class AppUserAuthServiceTest {
         UserSessionEntity rotated = allSessions.getAllValues().get(1);
         assertThat(rotated.getRefreshTokenId()).hasSize(64)
                 .isNotEqualTo(refreshed.getData().refreshToken());
+        assertThat(rotated.getLastActiveAt()).isBetween(
+                LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusMinutes(1),
+                LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusMinutes(1));
         assertThat(rotated.getSessionChainId()).isEqualTo(initial.getSessionChainId());
         verify(sessions).markRefreshRotated(eq(101L), eq(rotated.getRefreshTokenId()));
     }

@@ -322,6 +322,12 @@ public class AppUserSecurityService {
 
     private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, boolean current) {
         LocalDateTime lastActiveAt = row.getLastActiveAt() == null ? row.getCreatedAt() : row.getLastActiveAt();
+        if (row.getCreatedAt() != null && (lastActiveAt == null || lastActiveAt.isBefore(row.getCreatedAt()))) {
+            // A session cannot be active before it was created. Older hosts wrote
+            // last_active_at with the JVM's local zone while created_at used the
+            // business zone, making a fresh login appear an hour old.
+            lastActiveAt = row.getCreatedAt();
+        }
         return new AppSecurityStateResponse.Session(
                 row.getRefreshTokenId(),
                 StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "NexGrid App / H5",

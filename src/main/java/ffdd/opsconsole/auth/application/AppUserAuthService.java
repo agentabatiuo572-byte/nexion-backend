@@ -15,6 +15,7 @@ import ffdd.opsconsole.auth.infrastructure.UserLoginGuardRecord;
 import ffdd.opsconsole.auth.infrastructure.UserOtpSendGuardRecord;
 import ffdd.opsconsole.auth.mapper.UserLoginGuardMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.JwtProperties;
@@ -391,8 +392,9 @@ public class AppUserAuthService {
         session.setDeviceName("NexGrid App / H5");
         session.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
         session.setSessionChainId(UUID.randomUUID().toString());
-        session.setLastActiveAt(LocalDateTime.now());
-        session.setExpiresAt(LocalDateTime.now().plusDays(configInt("auth.session.refresh_ttl_days", 30, 7, 90)));
+        LocalDateTime issuedAt = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
+        session.setLastActiveAt(issuedAt);
+        session.setExpiresAt(issuedAt.plusDays(configInt("auth.session.refresh_ttl_days", 30, 7, 90)));
         session.setIsDeleted(0);
         sessionMapper.insert(session);
 
@@ -447,7 +449,7 @@ public class AppUserAuthService {
                             "detectedAt", LocalDateTime.now().toString()));
             return ApiResult.fail(401, "USER_REFRESH_TOKEN_REUSE_DETECTED");
         }
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
         LocalDateTime lastActive = current.getLastActiveAt() == null ? current.getCreatedAt() : current.getLastActiveAt();
         if (current.getExpiresAt() == null || !current.getExpiresAt().isAfter(now)

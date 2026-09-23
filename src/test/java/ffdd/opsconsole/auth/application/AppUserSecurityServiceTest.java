@@ -105,6 +105,23 @@ class AppUserSecurityServiceTest {
     }
 
     @Test
+    void overviewNeverShowsASessionActiveBeforeItWasCreated() {
+        LocalDateTime created = LocalDateTime.of(2026, 9, 22, 15, 42, 14);
+        UserSessionEntity current = session("current", "NexGrid App / H5", "203.0.113.8", created.minusHours(1));
+        current.setCreatedAt(created);
+        UserSessionEntity older = session("older", "NexGrid App / H5", "198.51.100.9", created.minusHours(2));
+        older.setCreatedAt(created.minusHours(1));
+        when(sessions.currentUserSession(42L, "current", 30)).thenReturn(current);
+        when(sessions.pageOtherUserSessions(42L, "current", 30, null)).thenReturn(List.of(older));
+
+        var state = service.overview(42L, "current");
+
+        assertThat(state.sessions().get(0).lastActiveAt()).isEqualTo(created);
+        assertThat(state.sessions().get(1).lastActiveAt()).isEqualTo(created.minusHours(1));
+        assertThat(current.getLastActiveAt()).isEqualTo(created.minusHours(1));
+    }
+
+    @Test
     void overviewFollowsConfiguredIdleTtlAndRejectsInvalidConfiguration() {
         when(security.sessionIdleDaysConfig()).thenReturn(" 14 ", null, "oops", "6", "91");
         service.overview(42L, "current");
