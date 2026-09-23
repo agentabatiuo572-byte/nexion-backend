@@ -66,6 +66,7 @@ class AppUserAuthServiceTest {
         environment.setActiveProfiles("dev");
         properties.setTtlMinutes(120);
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
+        when(tokens.sessionSyncKey(any())).thenReturn("a".repeat(64));
         when(otpDelivery.available(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(otpDelivery.verificationCode(org.mockito.ArgumentMatchers.anyString())).thenReturn("123456");
         when(users.createLoginOtpChallenge(any(), any(), any(), any(Integer.class))).thenReturn(1);
@@ -657,6 +658,9 @@ class AppUserAuthServiceTest {
 
         assertThat(refreshed.getCode()).isZero();
         assertThat(refreshed.getData().accessToken()).isEqualTo("refreshed-token");
+        assertThat(login.getData().sessionSyncKey()).isEqualTo("a".repeat(64));
+        assertThat(refreshed.getData().sessionSyncKey()).isEqualTo(login.getData().sessionSyncKey());
+        verify(tokens, times(2)).sessionSyncKey(initial.getSessionChainId());
         assertThat(refreshed.getData().refreshToken()).isNotBlank()
                 .isNotEqualTo(login.getData().refreshToken());
         assertThat(initial.getRefreshTokenId()).hasSize(64)

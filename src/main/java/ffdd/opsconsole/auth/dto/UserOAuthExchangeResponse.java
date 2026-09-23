@@ -6,5 +6,10 @@ public record UserOAuthExchangeResponse(
         UserLoginResponse.UserSession user,
         String refreshToken,
         String source,
-        boolean sandbox) {
+        boolean sandbox,
+        String sessionSyncKey) {
+    public UserOAuthExchangeResponse(String accessToken, String tokenType, UserLoginResponse.UserSession user,
+                                     String refreshToken, String source, boolean sandbox) {
+        this(accessToken, tokenType, user, refreshToken, source, sandbox, null);
+    }
 }

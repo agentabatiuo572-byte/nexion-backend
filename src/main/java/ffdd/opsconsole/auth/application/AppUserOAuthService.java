@@ -147,7 +147,7 @@ public class AppUserOAuthService {
                 Map.of("userId", user.getId(), "provider", provider, "source", source, "sandbox", sandbox,
                         "subjectHash", hashSubject(provider + ":" + subject)));
         return ApiResult.ok(new UserOAuthExchangeResponse(login.accessToken(), login.tokenType(), login.user(),
-                login.refreshToken(), source, sandbox));
+                login.refreshToken(), source, sandbox, login.sessionSyncKey()));
     }
 
     private UserEntity developmentPasskeyAccount(UserAuthEnvironment authEnvironment) {

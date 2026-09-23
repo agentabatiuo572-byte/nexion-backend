@@ -7,7 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HexFormat;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -93,6 +96,19 @@ public class JwtTokenProvider {
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+    }
+
+    /** Stable only within one refresh chain; never expose the database chain id to H5. */
+    public String sessionSyncKey(String chainId) {
+        if (chainId == null || chainId.isBlank()) return null;
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secretKey().getEncoded(), "HmacSHA256"));
+            return HexFormat.of().formatHex(mac.doFinal(
+                    ("NEXGRID_H5_SESSION_SYNC_V1:" + chainId).getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.GeneralSecurityException exception) {
+            throw new IllegalStateException("H5 session sync key unavailable", exception);
+        }
     }
 
     private SecretKey secretKey() {

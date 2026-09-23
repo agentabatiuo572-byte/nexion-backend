@@ -92,6 +92,19 @@ class AppUserSecurityServiceTest {
     }
 
     @Test
+    void rotatedBearerStillIdentifiesItsLiveSuccessorAsCurrent() {
+        var successor = session("successor", "NexGrid H5", "203.0.113.8", LocalDateTime.now());
+        when(sessions.currentUserSession(42L, "rotated", 30)).thenReturn(successor);
+        when(sessions.pageOtherUserSessions(42L, "rotated", 30, null)).thenReturn(List.of());
+
+        var state = service.overview(42L, "rotated");
+
+        assertThat(state.sessions()).hasSize(1);
+        assertThat(state.sessions().get(0).current()).isTrue();
+        assertThat(state.sessions().get(0).id()).isEqualTo("successor");
+    }
+
+    @Test
     void overviewFollowsConfiguredIdleTtlAndRejectsInvalidConfiguration() {
         when(security.sessionIdleDaysConfig()).thenReturn(" 14 ", null, "oops", "6", "91");
         service.overview(42L, "current");
@@ -185,6 +198,15 @@ class AppUserSecurityServiceTest {
         assertThat(result.revokedSessionCount()).isEqualTo(1);
         verify(sessions).revokeOwnedUserSession(42L, "other");
         verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void rotatedBearerCannotRevokeItsOwnLiveSuccessor() {
+        when(sessions.countSameUserSessionChain(42L, "rotated", "successor")).thenReturn(1);
+
+        assertThatThrownBy(() -> service.revokeSession(42L, "rotated", "successor"))
+                .hasMessage("CURRENT_SESSION_REVOKE_FORBIDDEN");
+        verify(sessions, never()).revokeOwnedUserSession(any(), any());
     }
 
     @Test

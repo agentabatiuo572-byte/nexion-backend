@@ -69,9 +69,9 @@ public class AppUserSecurityService {
         List<AppSecurityStateResponse.Session> sessions = new java.util.ArrayList<>();
         if (beforeId == null) {
             var current = sessionMapper.currentUserSession(userId, currentSessionId, idleDays);
-            if (current != null) sessions.add(toResponse(current, currentSessionId));
+            if (current != null) sessions.add(toResponse(current, true));
         }
-        rows.stream().limit(20).map(row -> toResponse(row, currentSessionId)).forEach(sessions::add);
+        rows.stream().limit(20).map(row -> toResponse(row, false)).forEach(sessions::add);
         String nextCursor = rows.size() > 20 ? String.valueOf(rows.get(19).getId()) : null;
         return new AppSecurityStateResponse(
                 securityMapper.twoFactorEnabled(userId),
@@ -128,7 +128,8 @@ public class AppUserSecurityService {
         if (!normalizedTarget.matches(SESSION_ID_PATTERN)) {
             throw new BizException(422, "SESSION_ID_INVALID");
         }
-        if (currentSessionId.equals(normalizedTarget)) {
+        if (currentSessionId.equals(normalizedTarget)
+                || sessionMapper.countSameUserSessionChain(userId, currentSessionId, normalizedTarget) > 0) {
             throw new BizException(409, "CURRENT_SESSION_REVOKE_FORBIDDEN");
         }
         int revoked = sessionMapper.revokeOwnedUserSession(userId, normalizedTarget);
@@ -319,14 +320,14 @@ public class AppUserSecurityService {
         return Collections.unmodifiableMap(new LinkedHashMap<>(value));
     }
 
-    private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, String currentSessionId) {
+    private AppSecurityStateResponse.Session toResponse(UserSessionEntity row, boolean current) {
         LocalDateTime lastActiveAt = row.getLastActiveAt() == null ? row.getCreatedAt() : row.getLastActiveAt();
         return new AppSecurityStateResponse.Session(
                 row.getRefreshTokenId(),
                 StringUtils.hasText(row.getDeviceName()) ? row.getDeviceName().trim() : "NexGrid App / H5",
                 maskIp(row.getClientIp()),
                 lastActiveAt,
-                currentSessionId.equals(row.getRefreshTokenId()));
+                current);
     }
 
     private String maskIp(String value) {

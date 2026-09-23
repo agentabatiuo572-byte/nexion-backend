@@ -220,6 +220,34 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void recentlyRotatedBearerCanFinishInFlightRequestWhenChainHasLiveSuccessor() throws Exception {
+        when(authSessionMapper.touchActiveUserSession("rotated-session", 42L, 30)).thenReturn(0);
+        when(authSessionMapper.touchRecentlyRotatedUserSession("rotated-session", 42L, 30)).thenReturn(1);
+        when(userMapper.selectById(42L)).thenReturn(user(0));
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
+                42L, "user-42", List.of(), "rotated-session", java.time.Duration.ofHours(1),
+                UserAuthEnvironment.PRODUCTION));
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        org.mockito.Mockito.verify(authSessionMapper).touchRecentlyRotatedUserSession("rotated-session", 42L, 30);
+    }
+
+    @Test
+    void rotatedBearerIsRejectedWhenItsChainHasNoLiveSuccessor() throws Exception {
+        when(userMapper.selectById(42L)).thenReturn(user(0));
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
+                42L, "user-42", List.of(), "rotated-session", java.time.Duration.ofHours(1),
+                UserAuthEnvironment.PRODUCTION));
+
+        filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        org.mockito.Mockito.verify(authSessionMapper).touchRecentlyRotatedUserSession("rotated-session", 42L, 30);
+    }
+
+    @Test
     void trustedGatewayHeaderCannotInjectSandboxUserIntoProduction() throws Exception {
         gatewayProperties.setHeaderAuthenticationEnabled(true);
         gatewayProperties.setInternalSecret("test-gateway-secret-with-32-characters");

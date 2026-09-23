@@ -403,7 +403,7 @@ public class AppUserAuthService {
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
                         userMapper.isOnboardingComplete(user.getId())),
-                rawRefreshToken));
+                null, null, rawRefreshToken, null, tokenProvider.sessionSyncKey(session.getSessionChainId())));
     }
 
     /**
@@ -499,7 +499,8 @@ public class AppUserAuthService {
                 Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)), audience);
         return ApiResult.ok(new UserLoginResponse(access, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
-                        userMapper.isOnboardingComplete(user.getId())), rawNext));
+                        userMapper.isOnboardingComplete(user.getId())),
+                null, null, rawNext, null, tokenProvider.sessionSyncKey(current.getSessionChainId())));
     }
 
     @Transactional

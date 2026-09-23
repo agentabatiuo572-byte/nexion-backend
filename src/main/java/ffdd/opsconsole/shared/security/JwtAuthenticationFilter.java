@@ -207,6 +207,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
             int activeCount = authSessionMapper.touchActiveUserSession(
                     sessionId, userId, idleDays);
+            if (activeCount == 0) {
+                activeCount = authSessionMapper.touchRecentlyRotatedUserSession(
+                        sessionId, userId, idleDays);
+            }
             return activeCount > 0;
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex, "USER");

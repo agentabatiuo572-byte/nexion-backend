@@ -47,7 +47,7 @@ public class AppUserRefreshCookieService {
         write(response, data.refreshToken(), COOKIE_TTL);
         UserLoginResponse redacted = new UserLoginResponse(
                 data.accessToken(), data.tokenType(), data.user(), data.challengeNo(),
-                data.deliveryHint(), null, data.registrationReceipt());
+                data.deliveryHint(), null, data.registrationReceipt(), data.sessionSyncKey());
         return new ApiResult<>(result.getCode(), result.getMessage(), redacted);
     }
 
@@ -63,7 +63,8 @@ public class AppUserRefreshCookieService {
         if (!StringUtils.hasText(data.refreshToken())) return result;
         write(response, data.refreshToken(), COOKIE_TTL);
         UserOAuthExchangeResponse redacted = new UserOAuthExchangeResponse(
-                data.accessToken(), data.tokenType(), data.user(), null, data.source(), data.sandbox());
+                data.accessToken(), data.tokenType(), data.user(), null, data.source(), data.sandbox(),
+                data.sessionSyncKey());
         return new ApiResult<>(result.getCode(), result.getMessage(), redacted);
     }
 

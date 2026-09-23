@@ -9,7 +9,13 @@ public record UserLoginResponse(
         String challengeNo,
         String deliveryHint,
         String refreshToken,
-        RegistrationReceipt registrationReceipt) {
+        RegistrationReceipt registrationReceipt,
+        String sessionSyncKey) {
+    public UserLoginResponse(String accessToken, String tokenType, UserSession user,
+                             String challengeNo, String deliveryHint, String refreshToken,
+                             RegistrationReceipt registrationReceipt) {
+        this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt, null);
+    }
     public UserLoginResponse(String accessToken, String tokenType, UserSession user) {
         this(accessToken, tokenType, user, null, null, null, null);
     }
@@ -28,7 +34,8 @@ public record UserLoginResponse(
     }
 
     public UserLoginResponse withRegistrationReceipt(RegistrationReceipt receipt) {
-        return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, receipt);
+        return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, receipt,
+                sessionSyncKey);
     }
 
     public record UserSession(Long userId, String countryCode, String phone, String nickname,

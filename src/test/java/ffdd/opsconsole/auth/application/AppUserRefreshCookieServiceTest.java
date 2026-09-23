@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ffdd.opsconsole.auth.dto.UserLoginResponse;
+import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.dto.UserRefreshRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -27,6 +28,7 @@ class AppUserRefreshCookieServiceTest {
         ApiResult<UserLoginResponse> result = service.issue(loginResult(), request, response);
 
         assertThat(result.getData().refreshToken()).isNull();
+        assertThat(result.getData().sessionSyncKey()).isEqualTo("a".repeat(64));
         assertThat(response.getHeader("Set-Cookie"))
                 .contains("NEXION_APP_REFRESH=")
                 .contains("Path=/auth/users")
@@ -35,6 +37,19 @@ class AppUserRefreshCookieServiceTest {
                 .contains("SameSite=Strict")
                 .doesNotContain("Secure");
         assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+    }
+
+    @Test
+    void oauthCookieResponseRetainsOnlyTheChainSyncKeyAndRedactsRefreshSecret() {
+        AppUserRefreshCookieService service = new AppUserRefreshCookieService(new MockEnvironment());
+        UserOAuthExchangeResponse oauth = new UserOAuthExchangeResponse("access", "Bearer",
+                new UserLoginResponse.UserSession(3775L, "+86", "18708173775", "Nexion 3775"),
+                RAW_REFRESH, "development", false, "a".repeat(64));
+
+        var result = service.issueOAuth(ApiResult.ok(oauth), cookieModeRequest(), new MockHttpServletResponse());
+
+        assertThat(result.getData().refreshToken()).isNull();
+        assertThat(result.getData().sessionSyncKey()).isEqualTo("a".repeat(64));
     }
 
     @Test
@@ -104,6 +119,6 @@ class AppUserRefreshCookieServiceTest {
     private ApiResult<UserLoginResponse> loginResult() {
         return ApiResult.ok(new UserLoginResponse("access", "Bearer",
                 new UserLoginResponse.UserSession(3775L, "+86", "18708173775", "Nexion 3775"),
-                RAW_REFRESH));
+                null, null, RAW_REFRESH, null, "a".repeat(64)));
     }
 }
