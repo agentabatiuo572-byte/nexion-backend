@@ -49,8 +49,8 @@ PC：`GET /api/admin/finance/withdrawals/{withdrawalNo}/bank`；人工查原单�
 - 提交 IP 从已认证 HTTP 请求获取；只有受信代理可提供原始 IP 请求头，非法头回退为连接方 IP。首次提交校验并持久化 `nx_hdpay_payout.client_ip`，异步审核/重启继续使用原 IP，幂等重放不能覆盖。
 - 不再读取数据库 `finance.payout_vnd.provider_ready` 或聚合中的 `channelEnabled`；旧值保留回退，新参数保存不再写入开关。返回中的 `channelEnabled` 仅是共享配置状态的兼容投影；旧 `/channel` 接口返回 410。D7 页面只显示配置状态，未向供应商发起探测，不声称已到账。
 - 代付创建当前使用 `payType="BANK"`，并明确发送 `bnkCode=""`（不是省略或 null）；代收使用 `BANKQR`。`/config.banks` 返回空列表；新绑定拒绝非空银行编码，历史成功请求仍按旧摘要回放，旧账户/报价保留历史标签而派发时统一传空编码。
-- `/config` 返回 `bankSelection="ACCOUNT_ROUTED"`、`bankSelectionNotice="BANK_ACCOUNT_ROUTED_BY_NUMBER"`、`bankNameSource="PAYOUT_PROVIDER"` 和 `bankRoutingVerified=false`。当前尚无供应商认证的银行名称/编码回传契约；空编码账户的 `BANKQR` 仅为历史显示标签。服务端以 `BANK_ROUTING_IDENTITY_UNVERIFIED` 拒绝新报价及未提交报价的新提交；既有 READY 单在派发前退回审核，不创建新的供应商代付。旧客户端直接调用也不能冻结或派发新资金。已派发订单查询、恢复、对账及成功幂等回放继续可用。取得供应商书面契约及真实校验数据后，另行实现银行身份核验并解除此闸门。
-- 绑定不采集银行卡有效期、CVV。首次绑定不需要 OTP；换卡必须提供专属 `PAYOUT-BANK-` challengeNo 和六位短信验证码，服务端校验用户、用途、过期、失败次数及单次消费。复用现有短信服务与 OTP 表，与提现地址共享 60 秒/每日 10 次发送限制；短信发送结果未知也保留计数。错误尝试和验证码消费在独立事务中持久化，成功绑定的幂等重放不二次消费。共享配置不可用时仍允许预绑定。
+- `/config` 返回 `bankSelection="ACCOUNT_ROUTED"`、`bankSelectionNotice="BANK_ACCOUNT_ROUTED_BY_NUMBER"`、`bankNameSource="PAYOUT_PROVIDER"` 和 `bankRoutingVerified=false`。当前尚无供应商认证的银行名称/编码回传契约；空编码账户的 `BANKQR` 仅为历史显示标签。服务端以 `BANK_ROUTING_IDENTITY_UNVERIFIED` 拒绝新绑定、换绑短信、新报价及未提交报价的新提交；既有 READY 单在派发前退回审核，不创建新的供应商代付。旧客户端直接调用也不能保存新的无银行身份账户、冻结或派发新资金。已派发订单查询、恢复、对账及成功幂等回放继续可用。取得供应商书面契约及真实校验数据后，另行实现银行身份核验并解除此闸门。
+- 绑定不采集银行卡有效期、CVV。银行身份核验能力就绪后，首次绑定不需要 OTP；换卡必须提供专属 `PAYOUT-BANK-` challengeNo 和六位短信验证码，服务端校验用户、用途、过期、失败次数及单次消费。复用现有短信服务与 OTP 表，与提现地址共享 60 秒/每日 10 次发送限制；短信发送结果未知也保留计数。错误尝试和验证码消费在独立事务中持久化，成功绑定的幂等重放不二次消费。当前银行身份不可验证时不允许预绑定。
 - 复用受管 `nexion.finance.hdpay` 传输凭据、基础地址及回调域名，以及既有金融敏感字段加密配置。不在仓库、日志或文档保存真实密钥或完整银行卡号。
 - 需执行下列全部银行提现迁移、有效加密配置及严格非沙箱运行配置。经 2026-09-16 授权，`public-test` 的银行卡代付使用已启用的 HDPay 共用配置，不再因测试环境标记而禁用；其余测试环境策略保持不变。部署还须开放精确 POST `/openapi/v1/payments/hdpay/payout/callback` 并验证通道接口，不能只凭构建成功认定已开放；此改动不代表已完成真实出款验收。
 - 调度默认 30 秒；关闭新代付不抹除在途状态，已派发单仍可查单收敛。

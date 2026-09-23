@@ -21,7 +21,7 @@ class HdPayPayoutTransactionsTest {
     final HdPayProperties transport = mock(HdPayProperties.class);
     final HdPayPayoutProperties properties = mock(HdPayPayoutProperties.class);
     final PayoutVndConfigService config = mock(PayoutVndConfigService.class);
-    final HdPayPayoutTransactions service = new HdPayPayoutTransactions(bank, users, canonical, finalizer, cipher,
+    final HdPayPayoutTransactions service = new HdPayPayoutTransactions(bank, mock(BankBindingIdentityGate.class), users, canonical, finalizer, cipher,
             transport, properties, config,
             mock(OpsFinanceService.class), mock(AuditLogService.class), outbox, clock);
     final String no = "WD-TEST", qn = "BQ-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

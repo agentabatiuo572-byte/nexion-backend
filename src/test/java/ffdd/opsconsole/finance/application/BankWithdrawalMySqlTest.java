@@ -73,6 +73,7 @@ class BankWithdrawalMySqlTest {
         final FinanceSensitiveDataCipher cipher = new FinanceSensitiveDataCipher("isolated-fixture-key-not-a-real-credential");
         final HdPayPayoutTransactions transactions;
         final BankWithdrawalService service;
+        final BankBindingIdentityGate bindingIdentity = mock(BankBindingIdentityGate.class);
         final ffdd.opsconsole.auth.application.UserOtpDeliveryService delivery = mock(ffdd.opsconsole.auth.application.UserOtpDeliveryService.class);
         Fixture(String schema) throws Exception {
             source = ds(schema); jdbc = new JdbcTemplate(source);
@@ -137,7 +138,7 @@ class BankWithdrawalMySqlTest {
             doAnswer(i -> { treasury.reverseLegacyBankWithdrawalReserve(i.getArgument(0),i.getArgument(1),i.getArgument(2)); return null; })
                     .when(ledger).reverseLegacyBankWithdrawalReserve(anyString(),any(),any());
             var finalizer = proxy(new WithdrawalPayoutFinalizer(payouts, audit, ledger, CLOCK));
-            transactions = proxy(new HdPayPayoutTransactions(bank, users, payouts, finalizer, cipher, transport, properties, config,
+            transactions = proxy(new HdPayPayoutTransactions(bank, mock(BankBindingIdentityGate.class), users, payouts, finalizer, cipher, transport, properties, config,
                     mock(OpsFinanceService.class), audit, outbox, CLOCK));
             var withdrawals = mock(AppWithdrawalService.class);
             when(withdrawals.policy(71L)).thenReturn(ApiResult.ok(Map.of("withdrawalEnabled",true,"policyVersion","d5-v1")));
@@ -146,7 +147,8 @@ class BankWithdrawalMySqlTest {
                     new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source))
                             .execute(status -> ((java.util.function.Supplier<?>)i.getArgument(4)).get()));
             var env = new org.springframework.mock.env.MockEnvironment(); env.setActiveProfiles("dev");
-            service = proxy(new BankWithdrawalService(bank, users, addresses,
+            when(bindingIdentity.verified()).thenReturn(true);
+            service = proxy(new BankWithdrawalService(bank, bindingIdentity, users, addresses,
                     delivery,proxy(new PayoutAddressOtpAttemptService(addresses)),
                     cipher,withdrawals,config,transport,properties,idempotency,audit,env,CLOCK));
         }
@@ -388,6 +390,7 @@ class BankWithdrawalMySqlTest {
     void legacyFirstAndReplacementBindingsAreImmediateWithoutVerificationRows() throws Exception {
         isolated(f -> {
             f.seedBeneficiary();
+            when(f.bindingIdentity.verified()).thenReturn(false);
             f.jdbc.update("UPDATE nx_user_wallet SET usdt_available=1000,pending_withdraw=0 WHERE user_id=71");
             for (long version : new long[]{0,1}) {
                 f.jdbc.update("UPDATE nx_bank_payout_beneficiary SET effective_at=?,version=? WHERE user_id=71",NOW.plusHours(24),version);

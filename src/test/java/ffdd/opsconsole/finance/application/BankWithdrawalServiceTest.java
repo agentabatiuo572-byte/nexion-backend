@@ -19,6 +19,7 @@ import static org.mockito.Mockito.*;
 
 class BankWithdrawalServiceTest {
     final BankWithdrawalMapper bank=mock(BankWithdrawalMapper.class);
+    final BankBindingIdentityGate bindingIdentity=mock(BankBindingIdentityGate.class);
     final AppWithdrawalMapper wallet=mock(AppWithdrawalMapper.class);
     final AppWithdrawalService withdrawals=mock(AppWithdrawalService.class);
     final AppPayoutAddressMapper addresses=mock(AppPayoutAddressMapper.class);
@@ -31,7 +32,7 @@ class BankWithdrawalServiceTest {
     final PayoutAddressOtpAttemptService otp = mock(PayoutAddressOtpAttemptService.class);
     final UserOtpDeliveryService delivery = mock(UserOtpDeliveryService.class);
     final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
-    final BankWithdrawalService service=new BankWithdrawalService(bank,wallet,addresses,delivery,
+    final BankWithdrawalService service=new BankWithdrawalService(bank,bindingIdentity,wallet,addresses,delivery,
             otp,cipher,withdrawals,
             d7,mock(HdPayProperties.class),payout,idem,
             mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
@@ -43,6 +44,7 @@ class BankWithdrawalServiceTest {
         env.setActiveProfiles("dev"); when(wallet.findActiveUser(71L)).thenReturn(71L); when(wallet.lockActiveUser(71L)).thenReturn(71L);
         when(idem.executeRetained(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i->((Supplier<?>)i.getArgument(4)).get());
     }
+    private void enableBindingForLegacyContractTests() { when(bindingIdentity.verified()).thenReturn(true); }
     @Test void quoteRecoveryCannotExposeAnotherUsersRecipientOrAmounts() {
         when(bank.quote(qn)).thenReturn(quote(72));
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn));
@@ -88,6 +90,14 @@ class BankWithdrawalServiceTest {
         assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest(null,"0123456789","NGUYEN VAN A",null,null),"fixture-bind"));
         verifyNoInteractions(addresses,bank);
     }
+    @Test void unverifiedBankIdentityBlocksNewBindingAndChangeSmsBeforeAnyWrite() {
+        assertFalse(new BankBindingIdentityGate().verified());
+        assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED",
+                assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "new-binding")).getMessage());
+        assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED",
+                assertThrows(RuntimeException.class, () -> service.sendOtp(71)).getMessage());
+        verifyNoInteractions(bank, addresses, cipher, otp, delivery, withdrawals);
+    }
     @Test void sandboxAccountsAreRejectedBeforeQuoteReads() {
         when(wallet.isSandboxUser(71L)).thenReturn(1);
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn)); verifyNoInteractions(bank);
@@ -129,7 +139,7 @@ class BankWithdrawalServiceTest {
         var capacityProxy = new org.springframework.aop.framework.ProxyFactory(capacityTarget);
         capacityProxy.setProxyTargetClass(true);
         capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
-        var target = new BankWithdrawalService(bank,wallet,addresses,delivery,otp,cipher,
+        var target = new BankWithdrawalService(bank,bindingIdentity,wallet,addresses,delivery,otp,cipher,
                 (AppWithdrawalService)capacityProxy.getProxy(),d7,mock(HdPayProperties.class),payout,idem,
                 mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
         var configProxy = new org.springframework.aop.framework.ProxyFactory(target);
@@ -146,6 +156,7 @@ class BankWithdrawalServiceTest {
         verify(connection).rollback(); verify(connection,never()).commit();
     }
     @Test void newNonemptyBankCodeIsRejectedWithoutWritingOrConsumingOtp() {
+        enableBindingForLegacyContractTests();
         when(d7.overview()).thenReturn(ApiResult.ok(Map.of()));
         service.config(71); clearInvocations(bank, withdrawals);
 
@@ -161,6 +172,7 @@ class BankWithdrawalServiceTest {
         verifyNoInteractions(bank, addresses, otp, withdrawals);
     }
     @Test void firstBindingIsImmediateWithoutOtpOrExternalVerificationAndKeepsLeadingZeros() {
+        enableBindingForLegacyContractTests();
         when(cipher.encrypt(anyString(), anyString())).thenReturn("encrypted-fixture");
         when(bank.saveBeneficiary(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyLong(), any())).thenReturn(1);
         when(bank.beneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","encrypted-fixture",now,now.plusDays(7),0L));
@@ -172,6 +184,7 @@ class BankWithdrawalServiceTest {
         verifyNoInteractions(otp, delivery, withdrawals);
     }
     @Test void firstBindingDoesNotSendSms() {
+        enableBindingForLegacyContractTests();
         var error = assertThrows(RuntimeException.class, () -> service.sendOtp(71));
         assertEquals("BANK_CHANGE_OTP_NOT_REQUIRED", error.getMessage());
         verifyNoInteractions(otp, delivery, addresses);
@@ -184,6 +197,7 @@ class BankWithdrawalServiceTest {
         verifyNoInteractions(bank, cipher, otp, delivery);
     }
     @Test void replacementNeedsOtpAndUnsettledWithdrawalsStillBlockIt() {
+        enableBindingForLegacyContractTests();
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","VCB","****6789","encrypted-fixture",now.minusHours(1),now.plusDays(6),0L));
         assertEquals("BANK_CHANGE_OTP_INVALID", assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "fixture-cooldown")).getMessage());
         when(addresses.unsettledWithdrawalCount(71L)).thenReturn(1);
@@ -216,6 +230,7 @@ class BankWithdrawalServiceTest {
         verify(bank, never()).verification(anyString());
     }
     @Test void replacementWithinSevenDaysTakesEffectImmediatelyWithOtp() {
+        enableBindingForLegacyContractTests();
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now.minusHours(1),now.plusDays(7),0L));
         when(cipher.encrypt(anyString(),anyString())).thenReturn("encrypted-fixture");
         when(bank.saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any())).thenReturn(1);
@@ -255,6 +270,7 @@ class BankWithdrawalServiceTest {
     }
 
     @Test void changeOtpIsRequiredAndCannotUseAnotherPurpose() {
+        enableBindingForLegacyContractTests();
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now,now,0L));
         for (String challenge : new String[]{null,"PAYOUT-"+"a".repeat(32),"REGISTER-"+"a".repeat(32),"PAYOUT-BANK-short"}) {
             var request = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456");
@@ -266,6 +282,7 @@ class BankWithdrawalServiceTest {
         verify(bank,never()).saveBeneficiary(anyLong(),anyString(),anyString(),anyString(),anyString(),any(),any(),anyLong(),any());
     }
     @Test void changeSmsUsesOnlyRegisteredPhoneAndSharedRateLimits() {
+        enableBindingForLegacyContractTests();
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now,now,0L));
         when(addresses.userContact(71L)).thenReturn(new AppPayoutAddressMapper.UserContact("+84","912345678"));
         when(delivery.available("+84")).thenReturn(true); when(delivery.verificationCode("+84")).thenReturn("123456");

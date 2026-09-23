@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Isolation;
 @Service @RequiredArgsConstructor
 public class HdPayPayoutTransactions {
     private final BankWithdrawalMapper bank;
+    private final BankBindingIdentityGate bindingIdentity;
     private final AppWithdrawalMapper users;
     private final WithdrawalPayoutMapper canonical;
     private final WithdrawalPayoutFinalizer finalizer;
@@ -35,7 +36,7 @@ public class HdPayPayoutTransactions {
         if (read == null || users.lockActiveUser(read.userId()) == null || Integer.valueOf(1).equals(users.isSandboxUser(read.userId()))) return null;
         var order = bank.lockOrder(orderNo);
         if (order == null || !"READY".equals(order.state())) return null;
-        if (!BankWithdrawalService.BANK_ROUTING_VERIFIED) {
+        if (!bindingIdentity.verified()) {
             String reason = "BANK_ROUTING_IDENTITY_UNVERIFIED";
             if (bank.returnForReview(orderNo, LocalDateTime.now(clock), reason) == 1)
                 record(order, "BANK_PAYOUT_ROUTING_IDENTITY_UNVERIFIED", Map.of("reason", reason));
