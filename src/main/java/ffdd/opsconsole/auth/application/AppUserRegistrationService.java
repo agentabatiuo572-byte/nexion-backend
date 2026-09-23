@@ -230,6 +230,8 @@ public class AppUserRegistrationService {
                 || !StringUtils.hasText(request.challengeNo())
                 || !StringUtils.hasText(request.code())
                 || !request.code().trim().matches("\\d{6}")
+                || (StringUtils.hasText(request.language())
+                    && !java.util.Set.of("en", "vi", "zh").contains(request.language().trim().toLowerCase(java.util.Locale.ROOT)))
                 || !validPassword(request.password(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_REQUEST_INVALID");
         }
@@ -313,7 +315,8 @@ public class AppUserRegistrationService {
         user.setVRank("V0");
         user.setStatus("ACTIVE");
         user.setSandbox(sandbox);
-        user.setLanguage("en-US");
+        user.setLanguage(StringUtils.hasText(request.language())
+                ? request.language().trim().toLowerCase(java.util.Locale.ROOT) : "en-US");
         user.setIsDeleted(0);
         try {
             if (userMapper.insert(user) != 1 || user.getId() == null) {

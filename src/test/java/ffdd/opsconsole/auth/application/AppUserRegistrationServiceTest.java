@@ -303,7 +303,7 @@ class AppUserRegistrationServiceTest {
         prepareSuccessfulRegistration(sandboxSponsor);
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
-                "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF"),
+                "+84", "987654321", "REG-H003", "123456", "NexPass9a", "NXAB12CD34EF", "zh"),
                 "127.0.0.3");
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
@@ -312,6 +312,7 @@ class AppUserRegistrationServiceTest {
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         assertThat(result.getCode()).isZero();
         assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
+        assertThat(inserted.getValue().getLanguage()).isEqualTo("zh");
     }
 
     @Test
@@ -343,6 +344,7 @@ class AppUserRegistrationServiceTest {
         assertThat(result.getCode()).isZero();
         assertThat(inserted.getValue().getSandbox()).isEqualTo(1);
         assertThat(inserted.getValue().getSponsorUserId()).isNull();
+        assertThat(inserted.getValue().getLanguage()).isEqualTo("en-US");
         assertThat(inserted.getValue().getSponsorCode()).isNull();
     }
 
