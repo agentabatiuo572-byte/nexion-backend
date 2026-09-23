@@ -277,6 +277,17 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        // A legacy claim may have locked the old 38.52/65 shadow rate while the
+        // current S1 catalogue yields 1/1. Conversion also copies the claim's
+        // rate into the purchased device, so stop before money or reward writes.
+        if (positiveOrNull(product.estimatedDailyUsdt()) == null
+                || positiveOrNull(product.dailyNex()) == null
+                || positiveOrNull(row.dailyUsdt()) == null
+                || positiveOrNull(row.dailyNex()) == null
+                || row.dailyUsdt().compareTo(product.estimatedDailyUsdt()) != 0
+                || row.dailyNex().compareTo(product.dailyNex()) != 0) {
+            return ApiResult.fail(409, "TRIAL_DAILY_YIELD_MISMATCH");
+        }
         if (!withinPhysicalSlotCapacity(userId, product)) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }

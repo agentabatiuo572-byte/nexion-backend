@@ -74,7 +74,8 @@ class AppTrialLifecycleServiceTest {
         when(mapper.trialQuotaRemaining(any(LocalDate.class))).thenReturn(47, 46);
         when(mapper.lockConversionProduct("stellarbox-s1")).thenReturn(
                 new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
-                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));
+                        new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE",
+                        new BigDecimal("40"), new BigDecimal("5")));
         when(mapper.lockTrialStartProduct("stellarbox-s1")).thenReturn(
                 new AppTrialLifecycleMapper.ConversionProduct(9L, "stellarbox-s1", "NexGridBox S1", "Entry",
                         new BigDecimal("1299"), 5, "P1", "DEVICE", "FINITE"));

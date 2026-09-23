@@ -79,7 +79,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.recordHardwarePurchase(any(), eq(7L), anyString(), any())).thenReturn(1);
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
         when(mapper.lockConversionProduct("stellarbox-s1"))
-                .thenReturn(new AppTrialLifecycleMapper.ConversionProduct(11L, "stellarbox-s1", "S1", new BigDecimal("1299"), 2, "P1"));
+                .thenReturn(productWithRate("stellarbox-s1", "40", "5"));
         when(mapper.decrementProductStock(11L)).thenReturn(1);
         when(mapper.lockWallet(7L)).thenReturn(new AppTrialLifecycleMapper.WalletRow(
                 new BigDecimal("2000"), BigDecimal.ZERO));
@@ -117,6 +117,31 @@ class TrialConvertAndDeferredDeactivateTest {
                 eq(new BigDecimal("1299")), eq(new BigDecimal("21.666666")),
                 eq(new BigDecimal("1277.333334")));
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), anyString());
+        verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")),
+                eq(new BigDecimal("40")), eq(new BigDecimal("5")));
+    }
+
+    @Test
+    void legacyClaimWithStaleDailyRateCannotConvertOrWriteMoneyRewardsOrderOrDevice() {
+        when(mapper.lockTrial(7L)).thenReturn(activeTrial());
+        when(mapper.lockConversionProduct("stellarbox-s1"))
+                .thenReturn(productWithRate("stellarbox-s1", "1", "1"));
+
+        ApiResult<java.util.Map<String, Object>> result = service.convert(
+                7L, "stellarbox-s1", EXPECTED_AMOUNT, "legacy-stale-rate");
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_DAILY_YIELD_MISMATCH");
+        verify(mapper, never()).lockWallet(anyLong());
+        verify(mapper, never()).settleWallet(anyLong(), any(), any(), any());
+        verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
+        verify(mapper, never()).insertLedger(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyString());
+        verify(mapper, never()).decrementProductStock(anyLong());
+        verify(mapper, never()).insertConversionOrder(anyLong(), anyString(), anyLong(), any(), any(), any());
+        verify(mapper, never()).insertPurchasedDevice(anyLong(), anyString(), anyLong(), anyString(), anyString(),
+                anyString(), anyString(), anyString(), any(), any(), any());
+        verify(mapper, never()).markRedeemed(anyLong(), anyLong(), anyLong(), any(), any(), any(), any(), any(), any(), anyString());
     }
 
     @Test
@@ -154,8 +179,7 @@ class TrialConvertAndDeferredDeactivateTest {
     void convertRejectsAmountAboveTheConfirmedQuoteBeforeAnyMutation() {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial());
         when(mapper.lockConversionProduct("stellarbox-s1"))
-                .thenReturn(new AppTrialLifecycleMapper.ConversionProduct(
-                        11L, "stellarbox-s1", "S1", new BigDecimal("1299"), 2, "P1"));
+                .thenReturn(productWithRate("stellarbox-s1", "40", "5"));
 
         ApiResult<java.util.Map<String, Object>> result = service.convert(
                 7L, "stellarbox-s1", new BigDecimal("1277.32"), "convert-price-changed");
@@ -185,7 +209,7 @@ class TrialConvertAndDeferredDeactivateTest {
     void proConversionRejectsUnmetRequirementsOrExhaustedCapacityBeforeWrites(boolean exhausted) {
         when(mapper.lockTrial(7L)).thenReturn(activeTrial("stellarbox-pro"));
         when(mapper.lockConversionProduct("stellarbox-pro")).thenReturn(
-                new AppTrialLifecycleMapper.ConversionProduct(11L, "stellarbox-pro", "Pro", new BigDecimal("1299"), 2, "P1"));
+                productWithRate("stellarbox-pro", "40", "5"));
         when(mapper.lockHardwarePurchaseTiers("stellarbox-pro")).thenReturn(List.of(
                 new ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper.Tier(
                         1L, "PRO", "stellarbox-pro", 2, new BigDecimal("1000"), 10, "ALL", 1)));
@@ -204,6 +228,12 @@ class TrialConvertAndDeferredDeactivateTest {
     }
 
     private TrialRow activeTrial() { return activeTrial("stellarbox-s1"); }
+
+    private AppTrialLifecycleMapper.ConversionProduct productWithRate(String productNo, String usdt, String nex) {
+        return new AppTrialLifecycleMapper.ConversionProduct(11L, productNo, "S1", "Entry",
+                new BigDecimal("1299"), 2, "P1", "DEVICE", "FINITE",
+                new BigDecimal(usdt), new BigDecimal(nex));
+    }
 
     private TrialRow activeTrial(String productNo) {
         LocalDateTime now = LocalDateTime.ofInstant(TEST_CLOCK.instant(), ZoneId.of("Asia/Shanghai"));
