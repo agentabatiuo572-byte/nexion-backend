@@ -284,8 +284,8 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
 
     /**
      * Revives only a published H3 event whose one H3 consumer is explicitly
-     * waiting for an active binding. The active-mission join avoids a replay
-     * after a binding has been disabled or its target mission retired.
+     * waiting for an active binding. Expired weekly waits also get one more
+     * dispatch so their consumer can terminally skip them without a reward.
      */
     @Update("""
             UPDATE nx_event_outbox o
@@ -294,11 +294,22 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                AND d.consumer_group = #{consumerGroup}
                AND d.status = #{pendingBindingStatus}
                AND d.is_deleted = 0
-              JOIN nx_growth_quest_event_binding b
+              LEFT JOIN nx_growth_quest_event_binding b
                 ON b.event_type = o.event_type
                AND b.status = 1
                AND b.is_deleted = 0
-              JOIN nx_mission m
+               AND (o.event_type NOT IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                                        'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                                        'H3_COMPUTE_COMPLETED_50',
+                                        'H3_REFERRAL_REGISTERED','H3_EXCHANGE_COMPLETED')
+                    OR (b.producer='SYSTEM' AND b.user_id_field='user_id'
+                        AND b.quest_code=CASE o.event_type
+                          WHEN 'H3_STOREFRONT_THREE_PRODUCTS_VIEWED' THEN 'weekly_t2_browse_store'
+                          WHEN 'H3_GENESIS_SECONDARY_MARKET_VIEWED' THEN 'weekly_t2_genesis_browse'
+                          WHEN 'H3_COMPUTE_COMPLETED_50' THEN 'weekly_t2_ai_jobs_50'
+                          WHEN 'H3_REFERRAL_REGISTERED' THEN 'weekly_t2_invite_friend'
+                          WHEN 'H3_EXCHANGE_COMPLETED' THEN 'weekly_t2_nex_swap' END))
+              LEFT JOIN nx_mission m
                 ON m.mission_code = b.quest_code
                AND m.status = 1
                AND m.is_deleted = 0
@@ -310,6 +321,14 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
              WHERE o.event_type = #{eventType}
                AND o.status = #{publishedStatus}
                AND o.is_deleted = 0
+               AND (m.id IS NOT NULL OR (o.is_server_authoritative=1
+                    AND o.event_type IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                                         'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                                         'H3_COMPUTE_COMPLETED_50',
+                                         'H3_REFERRAL_REGISTERED','H3_EXCHANGE_COMPLETED')
+                    AND o.event_ts IS NOT NULL
+                    AND DATE_FORMAT(o.event_ts,'%x-W%v')<>
+                        DATE_FORMAT(CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00'),'%x-W%v')))
             """)
     int requeuePublishedPendingBinding(@Param("eventType") String eventType,
                                        @Param("consumerGroup") String consumerGroup,
