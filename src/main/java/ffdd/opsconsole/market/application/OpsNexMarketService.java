@@ -184,9 +184,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("caps", exchangeCaps(todayUsd, platformCap));
         response.put("queue", marketRepository.exchangeOrdersByStatuses(EXCHANGE_QUEUE_STATUSES, 50));
         response.put("gateDetails", map(
-                "user", gate("user", "单用户超限(user-cap)", "超过单用户日额度的拦截。进次日队列或拒绝。", List.of("USER_CAP")),
-                "platform", gate("platform", "平台超限(platform-cap)", "全平台日总池见底的拦截。全部转次日队列。", List.of("PLATFORM_CAP")),
-                "geo", gate("geo", "地域封锁(geo-blocked)", "命中 J2 地域封锁的兑换单会取消或拒绝。", List.of("GEO_BLOCKED"))));
+                "user", gate("user", "单用户日额度拦截", "超过单用户日额度的拦截。进次日队列或拒绝。", List.of("USER_CAP")),
+                "platform", gate("platform", "平台日额度拦截", "全平台日总池见底的拦截。全部转次日队列。", List.of("PLATFORM_CAP")),
+                "geo", gate("geo", "地域封锁拦截", "命中 J2 地域封锁的兑换单会取消或拒绝。", List.of("GEO_BLOCKED"))));
         response.put("swap", map(
                 "enabled", swapEnabled,
                 "status", swapEnabled ? "enabled" : "disabled",
