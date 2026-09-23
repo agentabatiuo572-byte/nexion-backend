@@ -265,6 +265,9 @@ $migrations = @(
   # so the live row must carry a nonzero yield; retire that row explicitly instead of
   # relying on the gate alone.
   (Join-Path $root "scripts\migrations\20260921_e1_retire_hdpay_test_sku.sql")
+  # A6 acceptance-created roles leaked into the live role catalog. Retire only
+  # the exact observed role codes if no account has ever been bound to them.
+  (Join-Path $root "scripts\migrations\20260923_a6_acceptance_role_retirement.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
