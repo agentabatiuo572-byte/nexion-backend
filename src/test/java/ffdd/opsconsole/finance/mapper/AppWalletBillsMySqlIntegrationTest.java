@@ -62,7 +62,8 @@ class AppWalletBillsMySqlIntegrationTest {
     void createOwnedFixtureDatabase() throws Exception {
         fixtureDatabase = "nx_wallet_bills_test_" + UUID.randomUUID().toString().replace("-", "");
         assertOwnedFixtureDatabase();
-        connection = DriverManager.getConnection(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), ""), "root", "");
+        connection = DriverManager.getConnection(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), ""),
+                "root", System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD", ""));
         jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
         assertThat(jdbc.queryForObject("SELECT @@port", Integer.class)).isEqualTo(13306);
         assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isNull();
@@ -299,7 +300,8 @@ class AppWalletBillsMySqlIntegrationTest {
     }
 
     private DataSource fixtureDataSource() {
-        return new DriverManagerDataSource(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), fixtureDatabase), "root", "");
+        return new DriverManagerDataSource(isolatedUrl(System.getenv("NEXION_ISOLATED_MYSQL_ENDPOINT"), fixtureDatabase),
+                "root", System.getenv().getOrDefault("NEXION_ISOLATED_MYSQL_PASSWORD", ""));
     }
 
     static String isolatedUrl(String endpoint, String database) {
