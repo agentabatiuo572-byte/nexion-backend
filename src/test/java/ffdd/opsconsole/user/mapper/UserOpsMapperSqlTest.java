@@ -3,9 +3,32 @@ package ffdd.opsconsole.user.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.junit.jupiter.api.Test;
 
 class UserOpsMapperSqlTest {
+    @Test
+    void c5SessionRevocationKeepsExpiryAndAuditTimeInUtcPlusEight() throws Exception {
+        String activeCount = String.join(" ", UserOpsMapper.class.getMethod("countActiveSessions")
+                .getAnnotation(Select.class).value());
+        assertThat(activeCount).contains("expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)");
+        String detail = String.join(" ", UserOpsMapper.class.getMethod("findSession", String.class)
+                .getAnnotation(Select.class).value());
+        assertThat(detail).contains("expires_at &lt;= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)");
+        for (var method : new java.lang.reflect.Method[]{
+                UserOpsMapper.class.getMethod("revokeSession", String.class),
+                UserOpsMapper.class.getMethod("revokeUserSessions", Long.class),
+                UserOpsMapper.class.getMethod("revokeActiveUserSessions", Long.class, int.class)}) {
+            String sql = String.join(" ", method.getAnnotation(Update.class).value());
+            assertThat(sql).contains("revoked_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)")
+                    .doesNotContain("NOW()");
+        }
+        String activeSql = String.join(" ", UserOpsMapper.class
+                .getMethod("revokeActiveUserSessions", Long.class, int.class)
+                .getAnnotation(Update.class).value());
+        assertThat(activeSql).contains("DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR), INTERVAL #{idleDays} DAY)");
+    }
+
     @Test
     void c1LastLoginUsesTheNewestSessionIssuanceOrAuditedLogin() throws Exception {
         String pageSql = String.join("\n", UserOpsMapper.class

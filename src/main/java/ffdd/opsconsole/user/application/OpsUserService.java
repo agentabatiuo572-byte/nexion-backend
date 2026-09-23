@@ -1659,7 +1659,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         UserSessionView updated = userRepository.findSession(refreshTokenId)
                 .orElse(new UserSessionView(
                         session.userId(), session.refreshTokenId(), session.deviceName(), session.clientIpMasked(), "REVOKED",
-                        session.issuedAt(), session.expiresAt(), LocalDateTime.now()));
+                        session.issuedAt(), session.expiresAt(), LocalDateTime.now(clock)));
         String actor = operator(request.operator());
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("status", "REVOKED");

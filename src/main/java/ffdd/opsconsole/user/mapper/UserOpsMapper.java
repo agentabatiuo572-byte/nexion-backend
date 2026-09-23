@@ -291,7 +291,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(*) FROM nx_user_session
              WHERE is_deleted = 0
                AND revoked_at IS NULL
-               AND expires_at > NOW()
+               AND expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
             """)
     long countActiveSessions();
 
@@ -1245,7 +1245,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    END AS clientIpMasked,
                    CASE
                      WHEN revoked_at IS NOT NULL THEN 'REVOKED'
-                    WHEN expires_at &lt;= NOW() THEN 'EXPIRED'
+                    WHEN expires_at &lt;= DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) THEN 'EXPIRED'
                      ELSE 'ACTIVE'
                    END AS status,
                    created_at AS issuedAt,
@@ -1261,17 +1261,17 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET revoked_at = NOW(), updated_at = NOW()
+               SET revoked_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR), updated_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
              WHERE refresh_token_id = #{refreshTokenId}
                AND revoked_at IS NULL
-               AND expires_at > NOW()
+               AND expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
                AND is_deleted = 0
             """)
     int revokeSession(@Param("refreshTokenId") String refreshTokenId);
 
     @Update("""
             UPDATE nx_user_session
-               SET revoked_at = NOW(), updated_at = NOW()
+               SET revoked_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR), updated_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
              WHERE user_id = #{userId}
                AND revoked_at IS NULL
                AND is_deleted = 0
@@ -1280,11 +1280,11 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET revoked_at = NOW(), updated_at = NOW()
+               SET revoked_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR), updated_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
              WHERE user_id = #{userId}
                AND revoked_at IS NULL
-               AND expires_at > NOW()
-               AND COALESCE(last_active_at,updated_at,created_at) > DATE_SUB(NOW(), INTERVAL #{idleDays} DAY)
+               AND expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               AND COALESCE(last_active_at,updated_at,created_at) > DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR), INTERVAL #{idleDays} DAY)
                AND is_deleted = 0
             """)
     int revokeActiveUserSessions(@Param("userId") Long userId, @Param("idleDays") int idleDays);
