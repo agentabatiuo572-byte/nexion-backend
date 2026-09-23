@@ -810,6 +810,11 @@ public class OpsGrowthService implements AuditReplayable {
                         || !H3_BINDING_USER_FIELDS.contains(userIdField)) {
                     throw new IllegalArgumentException("H3_BINDING_EVENT_INVALID");
                 }
+                if (status == 1 && "H3_STOREFRONT_THREE_PRODUCTS_VIEWED".equals(eventType)
+                        && !("SYSTEM".equals(producer) && "weekly_t2_browse_store".equals(questCode)
+                        && "user_id".equals(userIdField))) {
+                    throw new IllegalArgumentException("H3_STOREFRONT_BINDING_INVALID");
+                }
                 if (status == 1 && H3DayOnePageObservationContract.forEventType(eventType) != null
                         && !H3DayOnePageObservationContract.matches(
                                 producer, eventType, questCode, userIdField)) {
@@ -1203,6 +1208,10 @@ public class OpsGrowthService implements AuditReplayable {
             if ("MISSION".equals(kind) && target == 1
                     && questEventMapper.get().activeBindingCountByQuestCode(code) < 1) {
                 return validation("H3_MISSION_ACTIVE_BINDING_REQUIRED");
+            }
+            if ("MISSION".equals(kind) && target == 1 && "weekly_t2_browse_store".equals(code)
+                    && questEventMapper.get().activeStorefrontThreeProductBindingCount(code) < 1) {
+                return validation("H3_STOREFRONT_EVENT_BINDING_REQUIRED");
             }
             if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
             audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(

@@ -465,6 +465,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND status=1 AND is_deleted=0")
     int activeBindingCountByQuestCode(@Param("questCode") String questCode);
 
+    @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND producer='SYSTEM' AND event_type='H3_STOREFRONT_THREE_PRODUCTS_VIEWED' AND user_id_field='user_id' AND status=1 AND is_deleted=0")
+    int activeStorefrontThreeProductBindingCount(@Param("questCode") String questCode);
+
     @Select("SELECT COUNT(*) FROM nx_mission WHERE mission_code=#{questCode} AND mission_type='DAY_ONE' AND status=1 AND is_deleted=0")
     int activeDayOneMissionCount(@Param("questCode") String questCode);
 

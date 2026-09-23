@@ -80,6 +80,21 @@ class QuestCanonicalEventProjectorTest {
         verify(deliveryService, never()).markSuccess(any(), any(), any(Integer.class));
     }
 
+    @Test
+    void thirdDistinctProductThresholdCompletesTheShopperWeeklyMission() {
+        when(bindingMapper.listActiveBindings("H3_STOREFRONT_THREE_PRODUCTS_VIEWED")).thenReturn(List.of(
+                new CanonicalQuestEventBinding("WEEKLY_STORE_THREE_PRODUCTS", "SYSTEM",
+                        "H3_STOREFRONT_THREE_PRODUCTS_VIEWED", "weekly_t2_browse_store", "user_id")));
+
+        projector.project(event("evt-store-three", "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+                "{\"user_id\":990725,\"threshold\":3,\"achieved\":3}"), "evt-store-three");
+
+        verify(factConsumer).consume(new QuestCompletionCommand("SYSTEM",
+                "evt-store-three:WEEKLY_STORE_THREE_PRODUCTS", 990725L,
+                "weekly_t2_browse_store", EVENT_TS));
+        verify(deliveryService).markSuccess(QuestCanonicalEventConsumer.CONSUMER_GROUP, "evt-store-three", 1);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"H3_DAY_ONE_EARN_PAGE_VIEWED", "H3_COMPUTE_COMPLETED_50"})
     void unboundDayOneAndWeeklyFactsWaitForLaterBinding(String eventType) {

@@ -1153,6 +1153,31 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void storefrontMissionNeedsItsExactThresholdBindingBeforePublication() {
+        when(questEventMapper.lockMission("weekly_t2_browse_store")).thenReturn(row(
+                "taskCode", "weekly_t2_browse_store", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("weekly_t2_browse_store")).thenReturn(1);
+
+        var blocked = service.transitionMission("storefront-wrong-binding", "weekly_t2_browse_store",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "a generic binding cannot complete this task", "superadmin"));
+
+        assertThat(blocked.getMessage()).isEqualTo("H3_STOREFRONT_EVENT_BINDING_REQUIRED");
+        verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t2_browse_store", 0, 1);
+    }
+
+    @Test
+    void storefrontThresholdCannotBeMappedToAnotherTaskOrInviter() {
+        when(questEventMapper.lockQuestEventBinding("STORE_WRONG_SLOT")).thenReturn(null);
+        var rejected = service.createQuestEventBinding("storefront-wrong-slot", "STORE_WRONG_SLOT",
+                new GrowthQuestEventBindingRequest("SYSTEM", "H3_STOREFRONT_THREE_PRODUCTS_VIEWED",
+                        "weekly_t2_browse_store", "inviter_user_id", true,
+                        null, null, null, null, null, "the shopper must own the observation", "superadmin"));
+        assertThat(rejected.getMessage()).isEqualTo("H3_STOREFRONT_BINDING_INVALID");
+        verify(questEventMapper, never()).insertQuestEventBinding(any(), any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
     void systemThresholdBindingRejectsRawCompletionEvents() {
         when(questEventMapper.lockQuestEventBinding("SYSTEM_THRESHOLD_EVENT")).thenReturn(
                 null,

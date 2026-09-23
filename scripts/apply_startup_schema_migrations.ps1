@@ -262,6 +262,8 @@ $migrations = @(
   # A6 acceptance-created roles leaked into the live role catalog. Retire only
   # the exact observed role codes if no account has ever been bound to them.
   (Join-Path $root "scripts\migrations\20260923_a6_acceptance_role_retirement.sql")
+  # H3's three distinct product detail fact needs its exact weekly task binding.
+  (Join-Path $root "scripts\migrations\20260923_h3_storefront_three_product_binding.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

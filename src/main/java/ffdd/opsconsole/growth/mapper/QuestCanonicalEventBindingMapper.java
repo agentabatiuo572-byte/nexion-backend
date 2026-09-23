@@ -16,6 +16,9 @@ public interface QuestCanonicalEventBindingMapper {
               FROM nx_growth_quest_event_binding b
               JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
              WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
+               AND (#{eventType}<>'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                    OR (b.producer='SYSTEM' AND b.quest_code='weekly_t2_browse_store'
+                        AND b.user_id_field='user_id'))
             """)
     int countActiveBindings(@Param("eventType") String eventType);
 
@@ -25,6 +28,9 @@ public interface QuestCanonicalEventBindingMapper {
               FROM nx_growth_quest_event_binding b
               JOIN nx_mission m ON m.mission_code=b.quest_code AND m.status=1 AND m.is_deleted=0
              WHERE b.event_type=#{eventType} AND b.status=1 AND b.is_deleted=0
+               AND (#{eventType}<>'H3_STOREFRONT_THREE_PRODUCTS_VIEWED'
+                    OR (b.producer='SYSTEM' AND b.quest_code='weekly_t2_browse_store'
+                        AND b.user_id_field='user_id'))
              ORDER BY b.id
             """)
     List<CanonicalQuestEventBinding> listActiveBindings(@Param("eventType") String eventType);
