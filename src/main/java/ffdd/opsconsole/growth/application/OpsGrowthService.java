@@ -944,6 +944,14 @@ public class OpsGrowthService implements AuditReplayable {
             if (startsAt != null && endsAt != null && !endsAt.isAfter(startsAt)) {
                 return validation("EVENT_TIME_WINDOW_INVALID");
             }
+            // Direct creation as ongoing is publication too; use the same gate as a status transition.
+            if ("ongoing".equals(state)) {
+                List<Map<String, Object>> missing = eventLocalizedContentGaps(id);
+                if (!missing.isEmpty()) {
+                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
+                            "EVENT_LOCALIZED_CONTENT_INCOMPLETE", Map.of("missing", missing));
+                }
+            }
             int sortOrder = Math.toIntExact(Math.min(Integer.MAX_VALUE, questEventRows().size() * 10L + 10L));
             questEventMapper.get().insertEvent(
                     id,
@@ -5129,7 +5137,8 @@ public class OpsGrowthService implements AuditReplayable {
         for (String locale : REQUIRED_EVENT_LOCALES) {
             Map<String, Object> languages = localizedBranch(item, locale);
             for (String field : REQUIRED_EVENT_FIELDS) {
-                if (!StringUtils.hasText(String.valueOf(languages.getOrDefault(field, "")))) {
+                Object translated = languages.get(field);
+                if (!(translated instanceof String value) || !StringUtils.hasText(value)) {
                     missing.add(row("eventCode", eventCode, "field", field, "locale", locale));
                 }
             }

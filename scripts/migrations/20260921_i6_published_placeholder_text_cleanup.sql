@@ -6,7 +6,7 @@
 -- 而页面按当前语言取到的仍是占位正文。这一半此前完全缺失 —— 本次补上。
 --
 -- 判据与扫描侧严格同口径(`isPlaceholderText`),只处理**确定是占位**的行:
---   · 去掉空白后整串由同一种字符重复构成(ccccc / xxxxx / -----);
+--   · 去掉空白后整串由同一种字符重复至少五次(ccccc / xxxxx / -----);
 --   · 去掉标点后整串只由 test|todo|tbd|placeholder|dummy|样例|测试|占位 组成。
 -- 命中即把该行退回草稿(status=0),**不发明替代文案**:占位文本没有权威来源,
 -- 由运营在 I6 按语言重写后重新发布。status 语义见 I18nMessageEntity(1=已发布)。
@@ -20,7 +20,7 @@ UPDATE nx_i18n_message
    AND is_deleted = 0
    AND message_value IS NOT NULL
    AND (
-     REGEXP_REPLACE(message_value, '[[:space:]]+', '') REGEXP '^(.)\\1{2,}$'
+     REGEXP_REPLACE(message_value, '[[:space:]]+', '') REGEXP '^(.)\\1{4,}$'
      OR LOWER(REGEXP_REPLACE(REGEXP_REPLACE(message_value, '[[:space:]]+', ''), '[[:punct:]]+', ''))
         REGEXP '^(test|todo|tbd|placeholder|dummy|样例|测试|占位)+$'
    );
@@ -36,7 +36,7 @@ SET @i6_placeholder_clean = (
      AND is_deleted = 0
      AND message_value IS NOT NULL
      AND (
-       REGEXP_REPLACE(message_value, '[[:space:]]+', '') REGEXP '^(.)\\1{2,}$'
+       REGEXP_REPLACE(message_value, '[[:space:]]+', '') REGEXP '^(.)\\1{4,}$'
        OR LOWER(REGEXP_REPLACE(REGEXP_REPLACE(message_value, '[[:space:]]+', ''), '[[:punct:]]+', ''))
           REGEXP '^(test|todo|tbd|placeholder|dummy|样例|测试|占位)+$'
      )

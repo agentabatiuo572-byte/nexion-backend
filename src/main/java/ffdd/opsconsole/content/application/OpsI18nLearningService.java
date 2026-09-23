@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
+import ffdd.opsconsole.content.domain.I18nCopyQuality;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
@@ -154,6 +155,8 @@ public class OpsI18nLearningService {
         if (!draft.zh().equals(request.zh().trim()) || !draft.en().equals(request.en().trim()) || !draft.vi().equals(request.vi().trim())) {
             return ApiResult.fail(409, "I18N_DRAFT_CHANGED_SAVE_BEFORE_PUBLISH");
         }
+        ApiResult<Void> quality = requirePublishableCopy(draft.zh(), draft.en(), draft.vi());
+        if (quality != null) return fail(quality);
         I18nMessagePairView published = learningRepository.saveMessagePair(messageKey.trim(), request.zh().trim(), request.en().trim(), request.vi().trim(), "published", now());
         audit("I6_I18N_MESSAGE_PUBLISHED", "I18N_MESSAGE", messageKey.trim(), request.operator(), idempotencyKey, request.reason(), Map.of(
                 "languages", "zh+en+vi",
@@ -320,6 +323,8 @@ public class OpsI18nLearningService {
         if (target == null || !"archived".equals(target.status())) {
             return ApiResult.fail(422, "I18N_ROLLBACK_TARGET_INVALID");
         }
+        ApiResult<Void> quality = requirePublishableCopy(target.zh(), target.en(), target.vi());
+        if (quality != null) return fail(quality);
         I18nMessagePairView restored;
         try {
             restored = learningRepository.restoreMessageVersion(
@@ -392,6 +397,11 @@ public class OpsI18nLearningService {
         LearningCourseVersionView draft = learningRepository.listCourseVersions(current.id()).stream()
                 .filter(version -> "DRAFT".equals(version.status()))
                 .findFirst().orElse(null);
+        ApiResult<Void> copyQuality = draft == null
+                ? requireCoursePublishable(current.titleZh(), current.titleEn(), current.titleVi(),
+                        current.bodyZh(), current.bodyEn(), current.bodyVi())
+                : requireCoursePublishable(draft.payload());
+        if (copyQuality != null) return fail(copyQuality);
         if (draft == null) {
             updated = learningRepository.updateCourseStatus(current.id(), "published", now());
         } else {
@@ -498,6 +508,8 @@ public class OpsI18nLearningService {
         LearningCourseView current = findCourse(courseId);
         if (current == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         if (!hasCompleteQuizPayload(target.payload())) return ApiResult.fail(422, "LEARNING_COURSE_QUIZ_INCOMPLETE");
+        ApiResult<Void> copyQuality = requireCoursePublishable(target.payload());
+        if (copyQuality != null) return fail(copyQuality);
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (target.payload().rewardNex().signum() > 0 && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
@@ -525,6 +537,8 @@ public class OpsI18nLearningService {
         if (!"SUPERSEDED".equals(target.status()) || version.equals(current.version())) {
             return ApiResult.fail(409, "LEARNING_COURSE_ROLLBACK_TARGET_INVALID");
         }
+        ApiResult<Void> copyQuality = requireCoursePublishable(target.payload());
+        if (copyQuality != null) return fail(copyQuality);
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (target.payload().rewardNex().compareTo(current.rewardNex()) > 0
                 && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
@@ -793,6 +807,26 @@ public class OpsI18nLearningService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "I18N_PLACEHOLDERS_MISMATCH");
         }
         return null;
+    }
+
+    private ApiResult<Void> requirePublishableCopy(String zh, String en, String vi) {
+        String error = I18nCopyQuality.publishError(zh, en, vi);
+        return error == null ? null : ApiResult.fail(422, error);
+    }
+
+    private ApiResult<Void> requireCoursePublishable(LearningCourseUpsertRequest request) {
+        return requireCoursePublishable(request.titleZh(), request.titleEn(), request.titleVi(),
+                request.bodyZh(), request.bodyEn(), request.bodyVi());
+    }
+
+    private ApiResult<Void> requireCoursePublishable(String titleZh, String titleEn, String titleVi,
+            String bodyZh, String bodyEn, String bodyVi) {
+        if (java.util.stream.Stream.of(titleZh, titleEn, titleVi, bodyZh, bodyEn, bodyVi)
+                .anyMatch(value -> !StringUtils.hasText(value))) {
+            return ApiResult.fail(422, "LEARNING_COURSE_COPY_REQUIRED");
+        }
+        ApiResult<Void> titleQuality = requirePublishableCopy(titleZh, titleEn, titleVi);
+        return titleQuality != null ? titleQuality : requirePublishableCopy(bodyZh, bodyEn, bodyVi);
     }
 
     private ApiResult<Void> requireIntegrityFix(String issueCode, String idempotencyKey, I18nIntegrityFixRequest request) {

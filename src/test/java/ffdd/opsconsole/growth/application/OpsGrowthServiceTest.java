@@ -713,10 +713,10 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void positiveTrackedAndDecorativeAndWheelCreationRemainSupported() {
+    void positiveTrackedAndDecorativeAndWheelDraftCreationRemainSupported() {
         for (String kind : new String[]{"seasonal", "discount", "wheel"}) {
             boolean trackable = "seasonal".equals(kind);
-            var request = new GrowthQuestEventRequest("create-" + kind, "Test campaign", kind, "ongoing",
+            var request = new GrowthQuestEventRequest("create-" + kind, "Test campaign", kind, "upcoming",
                     "10 NEX", false, trackable, "Campaign condition", "", trackable ? 1 : 0, "", null, null,
                     "Validate supported campaign creation", "test-admin");
             assertThat(service.createQuestEvent("create-key-" + kind, request).getCode()).isZero();
@@ -726,6 +726,25 @@ class OpsGrowthServiceTest {
         assertThat(inserts).hasSize(3);
         assertThat(inserts.stream().map(invocation -> invocation.getArgument(8, Integer.class)).toList())
                 .containsExactly(1, 0, 0);
+    }
+
+    @Test
+    void directOngoingCreationCannotBypassTheLocalizedPublicationGate() {
+        var request = new GrowthQuestEventRequest("new-campaign", "Campaign", "seasonal", "ongoing",
+                "10 NEX", false, false, "Campaign condition", "", 0, "", null, null,
+                "Check direct publication", "test-admin");
+
+        var result = service.createQuestEvent("create-untranslated", request);
+
+        assertThat(result.getMessage()).isEqualTo("EVENT_LOCALIZED_CONTENT_INCOMPLETE");
+        assertThat(gapKeys(result)).containsExactlyInAnyOrder(
+                "new-campaign/name/zh", "new-campaign/description/zh", "new-campaign/rewardName/zh",
+                "new-campaign/name/vi", "new-campaign/description/vi", "new-campaign/rewardName/vi");
+        assertThat(mockingDetails(questEventMapper).getInvocations())
+                .noneMatch(invocation -> invocation.getMethod().getName().equals("insertEvent"));
+
+        seedEventLocalizedContent("new-campaign");
+        assertThat(service.createQuestEvent("create-translated", request).getCode()).isZero();
     }
 
     @Test
@@ -1503,6 +1522,21 @@ class OpsGrowthServiceTest {
         assertThat(gapKeys(result)).containsExactly(
                 "regional-pk/name/zh", "regional-pk/description/zh", "regional-pk/rewardName/zh",
                 "regional-pk/name/vi", "regional-pk/description/vi", "regional-pk/rewardName/vi");
+    }
+
+    @Test
+    void nullLocalizedLeafCannotPassThePublicationGate() {
+        seedQuestEvents(
+                "{\"id\":\"regional-pk\",\"name\":\"Regional PK\",\"state\":\"upcoming\",\"reward\":\"10 NEX\",\"featured\":false}");
+        seedEventLocalizedContent("regional-pk");
+        configFacade.values.put("growth.content.localized",
+                configFacade.values.get("growth.content.localized").replace("\"中文说明\"", "null"));
+
+        var result = service.updateQuestEventStatus("status-null-leaf", "regional-pk",
+                new GrowthConfigUpdateRequest("status", "ongoing", "Check incomplete locale", "superadmin", "upcoming"));
+
+        assertThat(result.getMessage()).isEqualTo("EVENT_LOCALIZED_CONTENT_INCOMPLETE");
+        assertThat(gapKeys(result)).containsExactly("regional-pk/description/zh");
     }
 
     /** 下架(→ended)不受发布门约束:门只拦"对用户发布"。 */

@@ -23,7 +23,7 @@ class I6PlaceholderTextCleanupMigrationContractTest {
 
         // 与 MybatisI18nLearningRepository.isPlaceholderText 的两条判据同形:
         // 整串同字符重复、整串只由测试词组成。
-        assertThat(sql).contains("REGEXP '^(.)\\\\1{2,}$'");
+        assertThat(sql).contains("REGEXP '^(.)\\\\1{4,}$'");
         assertThat(sql).contains("REGEXP '^(test|todo|tbd|placeholder|dummy|样例|测试|占位)+$'");
         // 只退回草稿,不发明替代文案(status=1 是已发布)。
         assertThat(sql).contains("SET status = 0");

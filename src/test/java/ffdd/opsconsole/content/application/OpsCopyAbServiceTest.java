@@ -1,9 +1,11 @@
 package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +35,7 @@ import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -281,6 +284,19 @@ class OpsCopyAbServiceTest {
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("I1_COPY_VERSION_PUBLISHED");
         assertThat(captor.getValue().getResourceType()).isEqualTo("CONTENT_COPY");
+    }
+
+    @Test
+    void i1PublicationCannotBypassI6ContentQualityGate() {
+        var request = new CopyVersionPublishRequest(
+                "v8", "Home", "全量", "50", "新品牌文案",
+                "ccccc", "Find the NexionBox that fits you now", "Tìm NexionBox phù hợp",
+                "home.hero", "Marina K.", "发布新版三语文案");
+
+        assertThatThrownBy(() -> service.publishVersion("home.conversionBanner", "idem-i1-bad-copy", request))
+                .isInstanceOf(BizException.class)
+                .hasMessage("I18N_PLACEHOLDER_TEXT_FORBIDDEN");
+        verify(i18nLearningRepository, never()).saveMessagePair(anyString(), anyString(), anyString(), anyString(), anyString(), any(LocalDateTime.class));
     }
 
     @Test

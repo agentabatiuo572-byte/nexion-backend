@@ -5,7 +5,9 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
+import ffdd.opsconsole.content.domain.I18nCopyQuality;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
@@ -504,7 +506,9 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 "placeholder-text", "retired-brand")) {
             samples.put(code, new ArrayList<>());
         }
-        for (I18nMessagePairView message : listMessagePairs()) {
+        for (I18nMessagePairView current : listMessagePairs()) {
+            // A newer draft must not hide invalid copy that is still published to App users.
+            I18nMessagePairView message = findPublishedMessagePair(current.messageKey()).orElse(current);
             if (!StringUtils.hasText(message.zh())) samples.get("missing-zh").add(message.messageKey());
             if (!StringUtils.hasText(message.en())) samples.get("missing-en").add(message.messageKey());
             if (!StringUtils.hasText(message.vi())) samples.get("missing-vi").add(message.messageKey());
@@ -516,7 +520,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             //   · placeholder-text:整段是重复字符的占位文本(ccccc / xxxx / 测试);
             //   · retired-brand:正文仍带退役品牌(与 RetiredBrandGate 同一口径,
             //     旧品牌已经在 Nova 模板和 V-Rank 奖品名上出过两次同样的问题)。
-            if (isPlaceholderText(message.zh()) || isPlaceholderText(message.en()) || isPlaceholderText(message.vi())) {
+            if (I18nCopyQuality.isPlaceholderText(message.zh()) || I18nCopyQuality.isPlaceholderText(message.en()) || I18nCopyQuality.isPlaceholderText(message.vi())) {
                 samples.get("placeholder-text").add(message.messageKey());
             }
             if (RetiredBrandGate.anyCarriesRetiredBrand(message.zh(), message.en(), message.vi())) {
@@ -700,6 +704,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             throw new IllegalStateException("LEARNING_COURSE_VERSION_STATE_CONFLICT");
         }
         LearningCourseUpsertRequest request = readCourseVersionPayload(selected.getPayloadJson());
+        String titleError = I18nCopyQuality.publishError(request.titleZh(), request.titleEn(), request.titleVi());
+        String bodyError = I18nCopyQuality.publishError(request.bodyZh(), request.bodyEn(), request.bodyVi());
+        if (titleError != null || bodyError != null) {
+            throw new BizException(422, titleError != null ? titleError : bodyError);
+        }
         String category = request.category().trim().toLowerCase(Locale.ROOT);
         entity.setArticleCode("learn." + category + "." + courseId);
         entity.setTitle(request.titleZh().trim());
@@ -962,24 +971,6 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     private String versionLabel(Integer versionNo) {
         return "v" + Math.max(1, value(versionNo));
-    }
-
-    /**
-     * 整段文案是否为未替换的占位文本。
-     *
-     * <p>判据:去掉空白与标点后,整串只由同一种字符重复构成(ccccc / xxxxx / ----),
-     * 或命中明确的测试词。这是「已发布内容其实是占位」的检测 —— 与占位符 token 校验
-     * 互补,后者只看结构、看不到内容(zentao #67)。
-     */
-    static boolean isPlaceholderText(String value) {
-        if (!StringUtils.hasText(value)) return false;
-        // 重复字符判据先做,且只去空白、保留标点:整串 "-----" 同样是占位文本,
-        // 先剥标点会把它变成空串从而漏判。
-        String bare = value.replaceAll("\\s+", "");
-        if (bare.matches("(.)\\1{2,}")) return true;
-        // 测试词判据去掉标点后再比对(to do / place-holder 这类写法也能命中)。
-        String compact = bare.replaceAll("\\p{Punct}+", "").toLowerCase(Locale.ROOT);
-        return !compact.isEmpty() && compact.matches("(test|todo|tbd|placeholder|dummy|样例|测试|占位)+");
     }
 
     private void upsertIntegrity(String code, String kind, List<String> samples, int sortOrder, LocalDateTime now) {

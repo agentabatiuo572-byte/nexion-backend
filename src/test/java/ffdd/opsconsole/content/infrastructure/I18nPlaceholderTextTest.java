@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import ffdd.opsconsole.content.domain.I18nCopyQuality;
 
 import org.junit.jupiter.api.Test;
 
@@ -18,26 +19,33 @@ class I18nPlaceholderTextTest {
 
     @Test
     void detectsUnreplacedPlaceholderText() {
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("ccccc")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("CCCCCC")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("xxxxx")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("ccccc")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("CCCCCC")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("xxxxx")).isTrue();
         // 纯标点重复同样是未替换的占位,不能因为「剥掉标点就空了」而漏判。
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("-----")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("测试")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("placeholder")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("to do")).isTrue();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("place-holder")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("-----")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("测试")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("placeholder")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("to do")).isTrue();
+        assertThat(I18nCopyQuality.isPlaceholderText("place-holder")).isTrue();
     }
 
     @Test
     void leavesRealCopyAlone() {
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("今日收益")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("幸运轮盘")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("2.9%")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("今日 ccccc 收益")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("a")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("cc")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("")).isFalse();
-        assertThat(MybatisI18nLearningRepository.isPlaceholderText("   ")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("今日收益")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("幸运轮盘")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("2.9%")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("今日 ccccc 收益")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("a")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("cc")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("AAA")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("NEX")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("")).isFalse();
+        assertThat(I18nCopyQuality.isPlaceholderText("   ")).isFalse();
+    }
+
+    @Test
+    void publicationStillRejectsMissingLocales() {
+        assertThat(I18nCopyQuality.publishError("中文", "English", " ")).isEqualTo("I18N_COPY_REQUIRED");
     }
 }

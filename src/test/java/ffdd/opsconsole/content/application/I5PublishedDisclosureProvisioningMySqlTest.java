@@ -121,6 +121,23 @@ class I5PublishedDisclosureProvisioningMySqlTest {
                 assertThat(catalogStatus(connection, "SFC")).isEqualTo("ACTIVE");
                 // 规范辖区仍可读。
                 assertThat(publishedVersion(connection, "CN")).isEqualTo("v1");
+
+                // Any single operator takeover must preserve the whole group,
+                // including a catalog row whose own operator marker stayed stale.
+                for (String table : List.of("nx_disclosure_jurisdiction", "nx_disclosure_jurisdiction_catalog",
+                        "nx_disclosure_draft", "nx_disclosure_chapter")) {
+                    restoreLocalSandboxFixture(connection);
+                    try (Statement statement = connection.createStatement()) {
+                        statement.execute("UPDATE " + table + " SET last_operator = 'operator' "
+                                + "WHERE jurisdiction_code = 'LOCAL-SANDBOX'"
+                                + (table.equals("nx_disclosure_chapter") ? " AND chapter_no = '01'" : ""));
+                    }
+                    executeScript(connection, script);
+                    assertThat(mappingVersion(connection, "LOCAL-SANDBOX")).as(table).isEqualTo("v-local-1");
+                    assertThat(catalogStatus(connection, "LOCAL-SANDBOX")).as(table).isEqualTo("ACTIVE");
+                    assertThat(draftCount(connection, "LOCAL-SANDBOX")).as(table).isEqualTo(1);
+                    assertThat(chapterCount(connection, "LOCAL-SANDBOX", "v-local-1")).as(table).isEqualTo(7);
+                }
             } finally {
                 admin.createStatement().execute("DROP DATABASE " + schema);
             }
@@ -161,6 +178,22 @@ class I5PublishedDisclosureProvisioningMySqlTest {
                                 '沙箱演示','Sandbox','Sandbox demo',%d,'local-sandbox:risk-disclosure-fixture',0)
                         """.formatted(no, chapter));
             }
+        }
+    }
+
+    private void restoreLocalSandboxFixture(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement()) {
+            for (String table : List.of("nx_disclosure_jurisdiction", "nx_disclosure_draft",
+                    "nx_disclosure_chapter")) {
+                statement.execute("UPDATE " + table + " SET is_deleted = 0, "
+                        + "last_operator = 'local-sandbox:risk-disclosure-fixture' "
+                        + "WHERE jurisdiction_code = 'LOCAL-SANDBOX'");
+            }
+            statement.execute("""
+                    UPDATE nx_disclosure_jurisdiction_catalog
+                       SET status = 'ACTIVE', last_operator = 'local-sandbox:risk-disclosure-fixture'
+                     WHERE jurisdiction_code = 'LOCAL-SANDBOX'
+                    """);
         }
     }
 

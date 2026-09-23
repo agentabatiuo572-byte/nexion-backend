@@ -218,6 +218,67 @@ class OpsI18nLearningServiceTest {
     }
 
     @Test
+    void publishRejectsPlaceholderCopyWithoutReplacingPublishedVersion() {
+        var saved = service.saveLocalizedDraft("milestones.earnCross", "idem-i6-placeholder-draft",
+                copyRequest("ccccc", "Find the NexGridBox that fits you now"));
+
+        var result = service.publishLocalizedMessage("milestones.earnCross", "idem-i6-placeholder-publish",
+                publishRequest("ccccc", "Find the NexGridBox that fits you now", saved.getData().version()));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("I18N_PLACEHOLDER_TEXT_FORBIDDEN");
+        assertThat(repository.findPublishedMessagePair("milestones.earnCross")).get()
+                .extracting(I18nMessagePairView::version).isEqualTo("v4");
+        verify(eventOutboxService, never()).publish(anyString(), anyString(), anyString(), any(Map.class));
+    }
+
+    @Test
+    void publishRejectsRetiredBrandInAnyLocale() {
+        var saved = service.saveLocalizedDraft("milestones.earnCross", "idem-i6-brand-draft",
+                copyRequest("选择 NexGrid 设备", "Find the NexionBox that fits you now"));
+
+        var result = service.publishLocalizedMessage("milestones.earnCross", "idem-i6-brand-publish",
+                publishRequest("选择 NexGrid 设备", "Find the NexionBox that fits you now", saved.getData().version()));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
+        assertThat(repository.findPublishedMessagePair("milestones.earnCross")).get()
+                .extracting(I18nMessagePairView::version).isEqualTo("v4");
+        verify(eventOutboxService, never()).publish(anyString(), anyString(), anyString(), any(Map.class));
+    }
+
+    @Test
+    void i7VersionPublishRejectsBadTitleBeforeActivation() {
+        I18nLearningRepository versionRepository = mock(I18nLearningRepository.class);
+        LearningCourseUpsertRequest base = completeCourseRequest("draft");
+        LearningCourseUpsertRequest bad = new LearningCourseUpsertRequest(
+                "ccccc", base.titleEn(), base.bodyZh(), base.bodyEn(), base.category(), base.format(),
+                base.difficulty(), base.rewardNex(), base.duration(), base.publishState(), base.operator(),
+                base.reason(), base.quizQuestions(), base.passScore(), base.retryLimit(),
+                base.completionCondition(), base.rewardEvent(), base.expectedRevision(),
+                base.titleVi(), base.bodyVi(), base.version());
+        when(versionRepository.findCourseVersion("course-bad", "v2")).thenReturn(Optional.of(
+                new LearningCourseVersionView("course-bad", "v2", "DRAFT", bad, 1L,
+                        LocalDateTime.of(2026, 6, 1, 0, 0), LocalDateTime.of(2026, 6, 2, 0, 0))));
+        when(versionRepository.findCourse("course-bad")).thenReturn(Optional.of(new LearningCourseView(
+                "course-bad", "旧课程", "Basics", "Article", "Beginner", BigDecimal.ZERO,
+                false, "6 min", "v1", "draft", "旧正文")));
+        OpsI18nLearningService versionService = new OpsI18nLearningService(
+                versionRepository, auditLogService, coverageFacade,
+                Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneId.of("UTC")),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
+                lockMapper, eventOutboxService);
+
+        var result = versionService.publishCourseVersion("course-bad", "v2", "idem-i7-bad-copy",
+                new I18nActionRequest("Marina K.", "发布课程并校验标题内容"));
+
+        assertThat(result.getCode()).isEqualTo(422);
+        assertThat(result.getMessage()).isEqualTo("I18N_PLACEHOLDER_TEXT_FORBIDDEN");
+        verify(versionRepository, never()).activateCourseVersion(
+                anyString(), anyString(), anyString(), anyString(), anyLong(), any(LocalDateTime.class));
+    }
+
+    @Test
     void publishRejectsMissingOrChangedDraftWithoutMutation() {
         var missing = service.publishLocalizedMessage("new.message", "idem-i6-missing",
                 publishRequest("中文", "English", "v1"));

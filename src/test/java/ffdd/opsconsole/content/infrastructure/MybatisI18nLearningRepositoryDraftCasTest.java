@@ -11,7 +11,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
+import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.content.mapper.HelpArticleMapper;
 import ffdd.opsconsole.content.mapper.I18nHardcodedFindingMapper;
@@ -20,6 +22,7 @@ import ffdd.opsconsole.content.mapper.I18nMessageMapper;
 import ffdd.opsconsole.content.mapper.I18nMessageVersionMapper;
 import ffdd.opsconsole.content.mapper.I18nNamespaceMapper;
 import ffdd.opsconsole.content.mapper.LearningCourseVersionMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -27,6 +30,40 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 
 class MybatisI18nLearningRepositoryDraftCasTest {
+
+    @Test
+    void directI7ActivationCannotPublishBadI6CourseCopy() throws Exception {
+        HelpArticleMapper courseMapper = mock(HelpArticleMapper.class);
+        LearningCourseVersionMapper versionMapper = mock(LearningCourseVersionMapper.class);
+        HelpArticleEntity course = new HelpArticleEntity();
+        course.setId(1L);
+        course.setVersionNo(1);
+        course.setRevision(0L);
+        when(courseMapper.lockLearningCourse("bad-course")).thenReturn(course);
+        LearningCourseUpsertRequest copy = new LearningCourseUpsertRequest(
+                "ccccc", "English title", "正常课程正文", "Normal course body",
+                "Basics", "Article", "Beginner", java.math.BigDecimal.ZERO, "6 min", "draft",
+                "editor", "测试课程发布质量门");
+        LearningCourseVersionEntity draft = new LearningCourseVersionEntity();
+        draft.setId(2L);
+        draft.setCourseId("bad-course");
+        draft.setVersionLabel("v2");
+        draft.setStatus("DRAFT");
+        draft.setPayloadJson(new ObjectMapper().writeValueAsString(copy));
+        when(versionMapper.lockCourseVersions("bad-course")).thenReturn(List.of(draft));
+        MybatisI18nLearningRepository repository = new MybatisI18nLearningRepository(
+                mock(I18nNamespaceMapper.class), mock(I18nMessageMapper.class),
+                mock(I18nMessageVersionMapper.class), mock(I18nIntegrityIssueMapper.class),
+                mock(I18nHardcodedFindingMapper.class), courseMapper, versionMapper,
+                mock(AppLearningMapper.class));
+
+        assertThatThrownBy(() -> repository.activateCourseVersion(
+                "bad-course", "v2", "DRAFT", "v1", 0L, LocalDateTime.now()))
+                .isInstanceOf(BizException.class)
+                .hasMessage("I18N_PLACEHOLDER_TEXT_FORBIDDEN");
+        verify(courseMapper, never()).updateById(any(HelpArticleEntity.class));
+        verify(versionMapper, never()).updateById(any(LearningCourseVersionEntity.class));
+    }
 
     @Test
     void pcCourseMutationsReadTheLockedEntityInsteadOfAnOlderSnapshot() {

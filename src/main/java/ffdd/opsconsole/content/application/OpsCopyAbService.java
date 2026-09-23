@@ -23,6 +23,7 @@ import ffdd.opsconsole.content.domain.CopyVersionOptionView;
 import ffdd.opsconsole.content.domain.CopyVersionOptionMutationResult;
 import ffdd.opsconsole.content.domain.CopyVoidMutationResult;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
+import ffdd.opsconsole.content.domain.I18nCopyQuality;
 import ffdd.opsconsole.content.dto.CopyActionRequest;
 import ffdd.opsconsole.content.dto.CopyCreateRequest;
 import ffdd.opsconsole.content.dto.CopyDraftSaveRequest;
@@ -1550,6 +1551,8 @@ public class OpsCopyAbService {
         }
         CopyVersionRow version = copyAbRepository.findVersion(copy.key(), copy.version())
                 .orElseThrow(() -> new IllegalStateException("I1_I6_PUBLISHED_VERSION_NOT_FOUND"));
+        String qualityError = I18nCopyQuality.publishError(version.zh(), version.en(), version.vi());
+        if (qualityError != null) throw new BizException(422, qualityError);
         i18nLearningRepository.saveMessagePair(
                 copy.i18nKey(), version.zh(), version.en(), version.vi(), "published", now());
     }
