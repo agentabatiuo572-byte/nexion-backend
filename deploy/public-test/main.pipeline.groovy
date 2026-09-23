@@ -1,5 +1,3 @@
-properties([buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))])
-
 node('nexgrid-ci') {
   timeout(time: 40, unit: 'MINUTES') {
     try {

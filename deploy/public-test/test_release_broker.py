@@ -47,15 +47,34 @@ class ReleaseBrokerTests(unittest.TestCase):
     def test_ci_partial_job_configuration_is_detected_even_with_marker(self):
         import install_release as installer
         (self.root / 'nexgrid-release-v1-jobs-configured').write_text('fixture')
-        (self.root / 'nexgrid-release-v1-initial-builds-queued').write_text('fixture')
         jobs = self.root / 'jobs'
         for kind in b.ARTIFACTS:
             job = jobs / f'nexgrid-{kind}-test'
             job.mkdir(parents=True)
-            (job / 'config.xml').write_text('DEPLOYMENT_HELD' if kind == 'pc' else 'RELEASE_ARTIFACT_READY')
+            script = 'DEPLOYMENT_HELD' if kind == 'pc' else 'RELEASE_ARTIFACT_READY'
+            (job / 'config.xml').write_text(f'<flow-definition><definition><script>{script}</script></definition><triggers/></flow-definition>')
         with patch.object(installer, 'HOME', self.root), patch.object(b, 'JOBS', jobs):
             with self.assertRaisesRegex(b.Rejected, 'PARTIAL_CI_JOB_CONFIGURATION'):
                 installer.verify_ci_hook()
+
+    def test_ci_rejects_automatic_trigger_or_pipeline_properties(self):
+        import install_release as installer
+        (self.root / 'nexgrid-release-v1-jobs-configured').write_text('fixture')
+        jobs = self.root / 'jobs'
+        for kind in b.ARTIFACTS:
+            job = jobs / f'nexgrid-{kind}-test'
+            job.mkdir(parents=True)
+            (job / 'config.xml').write_text('<flow-definition><definition><script>RELEASE_ARTIFACT_READY</script></definition><triggers/></flow-definition>')
+        with patch.object(installer, 'HOME', self.root), patch.object(b, 'JOBS', jobs):
+            for forbidden in ('<triggers><hudson.triggers.SCMTrigger/></triggers>',
+                              '<properties><org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty><triggers><hudson.triggers.TimerTrigger/></triggers></org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty></properties>',
+                              '<definition><script>RELEASE_ARTIFACT_READY properties([</script></definition>'):
+                with self.subTest(forbidden=forbidden):
+                    (jobs / 'nexgrid-pc-test/config.xml').write_text('<flow-definition><definition><script>RELEASE_ARTIFACT_READY</script></definition>' + forbidden + '</flow-definition>')
+                    with self.assertRaisesRegex(b.Rejected, 'MANUAL_BUILD_ONLY_REQUIRED'):
+                        installer.verify_ci_hook()
+            (jobs / 'nexgrid-pc-test/config.xml').write_text('<flow-definition><definition><script>RELEASE_ARTIFACT_READY</script></definition><triggers/></flow-definition>')
+            installer.verify_ci_hook()
 
     def test_rollback_check_refuses_auto_enabled_before_any_staging(self):
         (self.root / 'AUTO_ENABLED').write_text('enabled')

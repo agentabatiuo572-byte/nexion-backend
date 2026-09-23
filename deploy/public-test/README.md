@@ -29,7 +29,9 @@ failure. New versioned SQL uses the automatic backup/migration flow below instea
 code rollback cannot undo committed MySQL DDL. Test may contain its own startup
 effects, which are not equivalent to tracked incremental SQL migrations.
 
-Each repository polls test every five minutes. The host checks completed artifacts
+Only the main Agent starts each test Jenkins build manually at the appropriate
+time; a push to test does not queue a build. Keep build retention and concurrency
+in each Jenkins job's General settings. The host checks completed artifacts
 about once per minute. Component failures are recorded in `component-failures.json`
 and do not block the other repositories after staging cleanup or a verified rollback.
 A failed staged artifact is not repeatedly restarted: push a fix or rebuild it with
@@ -42,8 +44,9 @@ source approvals. Publishing UniApp replaces H5 assets; it does not reboot EC2.
 
 All commands below require `/usr/bin/python3 -I /srv/jenkins/release/trusted_entry.py`.
 
-1. `install ci`: update only idle CI containers, preserving volumes/auth, queue builds.
-2. Verify all three Linux builds, artifacts, exact SHAs and predeployment backups.
+1. `install ci`: update only idle CI containers, preserving volumes/auth; leave builds manual.
+2. Have the main Agent start the three Jenkins builds when appropriate, then verify
+   their Linux builds, artifacts, exact SHAs and predeployment backups.
 3. `install host`: establish protected deployment state, auto remains OFF.
 4. For each component/build, `broker rollback-check KIND NUMBER`, then
    `broker deploy KIND NUMBER`. The check makes a real cutover and restores the old

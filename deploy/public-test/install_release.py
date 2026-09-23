@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import time
+import xml.etree.ElementTree as ET
 import release_broker as b
 
 LEGACY = Path('/srv/jenkins/install')
@@ -72,7 +73,6 @@ def install_ci():
             b.atomic_write(target, (BACKUP / f'{kind}-job.xml').read_bytes(), 0o644)
             os.chown(target, 1000, 1000)
         (HOME / 'nexgrid-release-v1-jobs-configured').unlink(missing_ok=True)
-        (HOME / 'nexgrid-release-v1-initial-builds-queued').unlink(missing_ok=True)
         if hook.exists():
             hook.rename(hook.with_suffix('.groovy.failed'))
         recreate_ci()
@@ -91,12 +91,15 @@ def recreate_ci():
 
 def verify_ci_hook():
     for attempt in range(60):
-        if ((HOME / 'nexgrid-release-v1-jobs-configured').is_file()
-                and (HOME / 'nexgrid-release-v1-initial-builds-queued').is_file()):
+        if (HOME / 'nexgrid-release-v1-jobs-configured').is_file():
             for kind in b.ARTIFACTS:
                 text = (b.JOBS / f'nexgrid-{kind}-test/config.xml').read_text()
                 b.require('RELEASE_ARTIFACT_READY' in text and 'DEPLOYMENT_HELD' not in text,
                           'PARTIAL_CI_JOB_CONFIGURATION')
+                root = ET.fromstring(text)
+                b.require(all(not list(node) for node in root.iter()
+                              if node.tag.rsplit('}', 1)[-1] == 'triggers')
+                          and 'properties([' not in text, 'MANUAL_BUILD_ONLY_REQUIRED')
             return
         time.sleep(2)
     raise b.Rejected('CI_CONFIGURATION_TIMEOUT')
