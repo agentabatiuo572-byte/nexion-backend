@@ -1438,6 +1438,7 @@ class OpsUserServiceTest {
     @Test
     void registrationRiskOverviewComesFromBackendConfigAndK1Guards() {
         configFacade.values.put("auth.risk.otp_send_day_limit", "10");
+        configFacade.values.put("auth.risk.captcha_after_sends", "2");
         configFacade.values.put("auth.risk.c6.version", "7");
         userRepository.registrationOtpToday = 12L;
         userRepository.registrationCaptchaToday = 3L;
@@ -1449,6 +1450,7 @@ class OpsUserServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().configVersion()).isEqualTo(7L);
+        assertThat(result.getData().captchaAfterSends()).isEqualTo(2);
         assertThat(result.getData().stats().otpToday()).isEqualTo(12L);
         assertThat(result.getData().stats().captchaTriggeredToday()).isEqualTo(3L);
         assertThat(result.getData().stats().lockedShort()).isEqualTo(2L);
@@ -1474,12 +1476,23 @@ class OpsUserServiceTest {
         ApiResult<UserRegistrationRiskOverview> result = service.registrationRiskOverview();
 
         assertThat(result.getCode()).isZero();
+        assertThat(result.getData().captchaAfterSends()).isEqualTo(2);
         assertThat(configFacade.values).isEmpty();
         assertThat(configFacade.values).doesNotContainKey("auth.risk.captcha_off_window");
         assertThat(result.getData().params()).filteredOn(param -> "lockShort".equals(param.key()))
                 .singleElement()
                 .extracting(UserRegistrationRiskParamView::value)
                 .isEqualTo("5 次 / 15 分钟");
+    }
+
+    @Test
+    void registrationRiskOverviewFailsClosedForInvalidCaptchaThreshold() {
+        for (String value : java.util.List.of("invalid", "51")) {
+            configFacade.values.put("auth.risk.captcha_after_sends", value);
+            assertThatThrownBy(service::registrationRiskOverview)
+                    .isInstanceOf(BizException.class)
+                    .hasMessage("C6_CAPTCHA_THRESHOLD_INVALID");
+        }
     }
 
     @Test

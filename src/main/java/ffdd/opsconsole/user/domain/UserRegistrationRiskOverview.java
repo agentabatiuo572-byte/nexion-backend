@@ -5,6 +5,7 @@ import java.util.List;
 public record UserRegistrationRiskOverview(
         UserRegistrationRiskStats stats,
         List<UserRegistrationRiskParamView> params,
+        int captchaAfterSends,
         List<UserRegistrationRiskK1GuardView> k1Guards,
         long configVersion,
         String k1RejectCode,

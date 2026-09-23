@@ -200,7 +200,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "otp",
                     "otpMax24h",
                     "同号 24h 上限",
-                    "超过就要先过人机验证才发",
+                    "达到上限后拒绝继续发送",
                     "auth.risk.otp_send_day_limit",
                     "次",
                     5,
@@ -1301,6 +1301,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 REGISTRATION_RISK_PARAM_DEFINITIONS.stream()
                         .map(definition -> registrationRiskParamView(definition, configVersion))
                         .toList(),
+                captchaAfterSends(),
                 registrationRiskK1Guards(),
                 configVersion,
                 K1_REJECT_CODE,
@@ -3331,6 +3332,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private int boundedConfigInt(String configKey, int fallback, int min, int max) {
         int value = configInt(configKey, fallback);
         return value < min || value > max ? fallback : value;
+    }
+
+    private int captchaAfterSends() {
+        String raw = configFacade.activeValue("auth.risk.captcha_after_sends").orElse("2");
+        try {
+            int value = Integer.parseInt(raw.trim());
+            if (value >= 0 && value <= 50) return value;
+        } catch (NumberFormatException ignored) { }
+        throw new BizException(503, "C6_CAPTCHA_THRESHOLD_INVALID");
     }
 
     private int sessionIdleDays() {
