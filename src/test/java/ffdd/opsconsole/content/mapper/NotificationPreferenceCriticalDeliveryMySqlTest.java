@@ -7,6 +7,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,44 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                 assertThat(campaign.countUnreadForUser(1L)).isZero();
                 assertThat(campaign.selectUserNotifications(1L, null, null, 20)).singleElement()
                         .satisfies(view -> assertThat(view.readAt()).isNotNull());
+            }
+        });
+    }
+
+    @Test
+    void welcomeNotificationUsesRegisteredLanguageForDeliveredTitleAndBody() throws Exception {
+        inSchema(connection -> {
+            seedUsersAndPreferences(connection);
+            try (var sql = connection.createStatement()) {
+                sql.execute("INSERT INTO nx_user VALUES (3,'zh','CN','ACTIVE','2026-09-01',0)");
+                sql.execute("UPDATE nx_user_preference SET notify_system=1");
+                sql.execute("INSERT INTO nx_nova_channel VALUES ('welcome',1,0)");
+                sql.execute("INSERT INTO nx_nova_template VALUES ('welcome',0,'PUBLISHED')");
+            }
+            LocalDateTime now = LocalDateTime.of(2026, 9, 23, 12, 0);
+            Map<Long, List<String>> expected = Map.of(
+                    1L, List.of("Chào mừng đến NexGrid", "Bắt đầu với nhiệm vụ đầu tiên."),
+                    2L, List.of("Welcome to NexGrid", "Start with your first earning task."),
+                    3L, List.of("欢迎来到 NexGrid", "从第一项收益任务开始。"));
+            try (var session = session(connection)) {
+                var nova = session.getMapper(NovaSocialRuntimeMapper.class);
+                var campaign = session.getMapper(NotificationCampaignMapper.class);
+                for (var entry : expected.entrySet()) {
+                    String bizNo = "NOVA-WELCOME-IT-" + entry.getKey();
+                    assertThat(nova.enqueueBusinessNotifications(
+                            "welcome", "NOVA_WELCOME", "registration-" + entry.getKey(),
+                            entry.getKey(), bizNo,
+                            "欢迎来到 NexGrid", "从第一项收益任务开始。",
+                            "Chào mừng đến NexGrid", "Bắt đầu với nhiệm vụ đầu tiên.",
+                            "Welcome to NexGrid", "Start with your first earning task.",
+                            "/earn", now.minusHours(1), now)).isEqualTo(1);
+                    assertThat(nova.markNotificationsDelivered(bizNo, now)).isEqualTo(1);
+                    assertThat(campaign.selectUserNotifications(entry.getKey(), null, null, 20))
+                            .singleElement().satisfies(notification -> {
+                                assertThat(notification.title()).isEqualTo(entry.getValue().get(0));
+                                assertThat(notification.body()).isEqualTo(entry.getValue().get(1));
+                            });
+                }
             }
         });
     }
