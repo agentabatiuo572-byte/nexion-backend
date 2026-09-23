@@ -62,8 +62,14 @@ class StorefrontProductPublishGateContractTest {
         assertThat(gate("demo-box", "Nexion Demo", "12.3", "24"))
                 .isEqualTo(new StorefrontProductPublishGate.Decision(
                         false, StorefrontProductPublishGate.TEST_IDENTIFIER_REASON));
-        // The reported HDPay1U row: on sale and priced, but no configured yield.
-        assertThat(gate("hd1-0902", "HDPay1U", "0", "0"))
+        // Payment-integration SKU stays private even if an operator configures yield again.
+        assertThat(gate("hd1-0902", "HDPay1U", "1", "1"))
+                .isEqualTo(new StorefrontProductPublishGate.Decision(
+                        false, StorefrontProductPublishGate.TEST_IDENTIFIER_REASON));
+        assertThat(gate("HD1-0902", "Renamed", "1", "1").publishable()).isFalse();
+        assertThat(StorefrontProductPublishGate.TEST_IDENTIFIER_SQL)
+                .contains("LOWER(p.product_no) = 'hd1-0902'");
+        assertThat(gate("ordinary-box", "Ordinary Box", "0", "0"))
                 .isEqualTo(new StorefrontProductPublishGate.Decision(
                         false, StorefrontProductPublishGate.NO_EFFECTIVE_EARNINGS_REASON));
     }

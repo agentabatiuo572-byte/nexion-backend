@@ -56,7 +56,8 @@ public final class StorefrontProductPublishGate {
 
     /** True when the product identity carries a test/mock marker. */
     public static final String TEST_IDENTIFIER_SQL =
-            "REGEXP_LIKE(" + IDENTITY_SQL + ", '" + TEST_IDENTIFIER_REGEX + "', 'i')";
+            "(LOWER(p.product_no) = 'hd1-0902' OR REGEXP_LIKE(" + IDENTITY_SQL
+                    + ", '" + TEST_IDENTIFIER_REGEX + "', 'i'))";
 
     /**
      * True when the product carries no configured yield in either currency.
@@ -92,7 +93,8 @@ public final class StorefrontProductPublishGate {
      */
     public static Decision evaluate(String productNo, String name, BigDecimal dailyUsdt, BigDecimal dailyNex) {
         String identity = (productNo == null ? "" : productNo) + " " + (name == null ? "" : name);
-        if (TEST_IDENTIFIER.matcher(identity.toLowerCase(Locale.ROOT)).find()) {
+        if ("hd1-0902".equalsIgnoreCase(productNo)
+                || TEST_IDENTIFIER.matcher(identity.toLowerCase(Locale.ROOT)).find()) {
             return new Decision(false, TEST_IDENTIFIER_REASON);
         }
         boolean earns = positive(dailyUsdt) || positive(dailyNex);

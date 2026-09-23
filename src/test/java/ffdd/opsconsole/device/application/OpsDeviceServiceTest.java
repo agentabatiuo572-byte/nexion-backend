@@ -1429,11 +1429,11 @@ class OpsDeviceServiceTest {
 
     @Test
     void listingRefusesSkuWithoutEffectiveEarnings() {
-        catalogRepository.sku = skuWithEarnings("hd1-0902", "HDPay1U", "pending", "", null,
+        catalogRepository.sku = skuWithEarnings("zero-yield-box", "Zero Yield Box", "pending", "", null,
                 new BigDecimal("1"), BigDecimal.ZERO, BigDecimal.ZERO);
 
         ApiResult<DeviceSkuView> result = service.updateSkuStatus(
-                "hd1-0902", "idem-list-no-earnings",
+                "zero-yield-box", "idem-list-no-earnings",
                 new DeviceSkuStatusRequest("on", "零收益商品不可上架", "superadmin"));
 
         assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_NO_EFFECTIVE_EARNINGS");
@@ -1456,12 +1456,26 @@ class OpsDeviceServiceTest {
     void creatingAnOnSaleSkuWithoutEffectiveEarningsIsRefused() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         DeviceSkuUpsertRequest request = withEarnings(
-                skuRequest("hd1-0902", "HDPay1U", "on"), BigDecimal.ZERO, BigDecimal.ZERO);
+                skuRequest("zero-yield-box", "Zero Yield Box", "on"), BigDecimal.ZERO, BigDecimal.ZERO);
 
         ApiResult<DeviceSkuView> result = service.createSku("idem-create-no-earnings", request);
 
         assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_NO_EFFECTIVE_EARNINGS");
         assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
+    void listingRefusesHdpayTestSkuEvenWithEffectiveEarnings() {
+        catalogRepository.sku = skuWithEarnings("hd1-0902", "HDPay1U", "pending", "", null,
+                new BigDecimal("1"), BigDecimal.ONE, BigDecimal.ONE);
+
+        ApiResult<DeviceSkuView> result = service.updateSkuStatus(
+                "hd1-0902", "idem-list-hdpay-test",
+                new DeviceSkuStatusRequest("on", "支付联调商品不可上架", "superadmin"));
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_PRODUCT_TEST_IDENTIFIER");
+        assertThat(catalogRepository.sku.status()).isEqualTo("pending");
+        verify(outboxService, never()).publish(anyString(), anyString(), anyString(), any());
     }
 
     @Test
