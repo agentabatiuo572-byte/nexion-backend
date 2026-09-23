@@ -283,7 +283,16 @@ public class OnboardingCalibrationService {
             if (calibrationAvailable) {
                 output.putAll(derived);
                 output.put("signals", JSON.readValue(row.signalJson(), new TypeReference<Map<String, Object>>() { }));
-                output.put("comparisonConfig", JSON.readValue(row.comparisonJson(), new TypeReference<List<Map<String, Object>>>() { }));
+                // The stored JSON is the calibration audit snapshot. Product comparisons are
+                // live E1 facts, so an existing calibration must not replay retired yields.
+                List<ComparisonRow> currentComparisons = mapper.activeComparisons();
+                if (!validComparisons(currentComparisons)) {
+                    throw new BizException(503, "ONBOARDING_COMPARISON_UNAVAILABLE");
+                }
+                output.put("comparisonConfig", comparisonMaps(currentComparisons));
+                output.put("configRevision", Math.max(row.configRevision() == null ? 0L : row.configRevision(),
+                        currentComparisons.stream().mapToLong(c -> c.revision() == null ? 0L : c.revision())
+                                .max().orElse(0L)));
             } else {
                 if (!"DEFERRED".equals(activationStatus) || row.configRevision() == null
                         || row.configRevision() != 0L) {
@@ -363,7 +372,7 @@ public class OnboardingCalibrationService {
     }
 
     private boolean validConfig(List<TierRow> tiers, List<ComparisonRow> comparisons) {
-        if (tiers == null || tiers.size() != 5 || comparisons == null || comparisons.isEmpty()) return false;
+        if (tiers == null || tiers.size() != 5 || !validComparisons(comparisons)) return false;
         for (int i = 0; i < tiers.size(); i++) {
             TierRow row = tiers.get(i);
             if (row == null || row.tier() == null || row.tier() != i + 1 || row.topsMin() == null || row.topsMax() == null
@@ -372,9 +381,16 @@ public class OnboardingCalibrationService {
             if (i > 0 && (row.baseRateUsdt().compareTo(tiers.get(i - 1).baseRateUsdt()) < 0
                     || row.baseRateNex().compareTo(tiers.get(i - 1).baseRateNex()) < 0)) return false;
         }
-        return comparisons.stream().allMatch(row -> row != null && row.configKey() != null && row.label() != null
-                && row.dailyUsdt() != null && row.dailyNex() != null && row.dailyUsdt().signum() > 0
-                && row.dailyNex().signum() > 0);
+        return true;
+    }
+
+    private boolean validComparisons(List<ComparisonRow> comparisons) {
+        return comparisons != null && !comparisons.isEmpty()
+                && comparisons.stream().allMatch(row -> row != null && row.configKey() != null && row.label() != null
+                        && row.dailyUsdt() != null && row.dailyNex() != null && row.dailyUsdt().signum() > 0
+                        && row.dailyNex().signum() > 0)
+                && comparisons.stream().map(ComparisonRow::configKey).toList()
+                        .contains("phone");
     }
 
     private boolean validRequest(Request request) {

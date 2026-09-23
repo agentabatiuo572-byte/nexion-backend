@@ -12,18 +12,17 @@ package ffdd.opsconsole.growth.facade;
  * 重算。本接口只把那些结论汇成连签面需要的三个布尔量,避免 growth 侧与 market 侧
  * 各写一份开关判断。</p>
  *
- * <p>🔴 <b>未知不算停用</b>:读不到状态时一律返回 {@code true}(可用),与 App 侧
- * 「不知道就别说」同源。把一次读取失败说成业务关闭,会让用户以为权益被下掉了。</p>
+ * <p>读不到状态返回 {@code null}(未知):保留历史权益,暂不开放新的激活。</p>
  */
 public interface StreakPerkBusinessAvailabilityFacade {
 
     /**
      * 质押是否仍对客可售(整池闸开 且 至少一档可售)。
      *
-     * <p>返回 {@code true} 也包括「读不到」的情形,见类型注释。</p>
+     * <p>读不到返回 {@code null}:不能宣称已开放,也不能宣称已停用。</p>
      */
-    boolean stakingAvailable();
+    Boolean stakingAvailable();
 
     /** Genesis 主售是否可用(存在 ACTIVE 系列且市场开放)。 */
-    boolean genesisPrimaryAvailable();
+    Boolean genesisPrimaryAvailable();
 }

@@ -46,4 +46,11 @@ class I2NovaClosureMigrationContractTest {
                 .contains("body_vi")
                 .contains("nx_nova_social_runtime_slot");
     }
+
+    @Test
+    void canonicalTemplateSeedCannotReintroduceTheRetiredBrand() throws IOException {
+        String sql = Files.readString(MIGRATION, StandardCharsets.UTF_8);
+
+        assertThat(sql).doesNotContain("Nexion");
+    }
 }

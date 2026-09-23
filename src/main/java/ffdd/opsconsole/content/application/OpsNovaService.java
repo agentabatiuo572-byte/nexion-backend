@@ -358,6 +358,9 @@ public class OpsNovaService {
         if (template == null || !"PUBLISHED".equalsIgnoreCase(template.status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_TEMPLATE_NOT_PUBLISHED");
         }
+        if (template.carriesRetiredBrand()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
+        }
         Map<String, Integer> weights = novaRepository.socialDistribution().stream()
                 .collect(Collectors.toMap(NovaSocialDistributionItem::key, NovaSocialDistributionItem::pct,
                         (left, right) -> right, LinkedHashMap::new));
@@ -648,7 +651,7 @@ public class OpsNovaService {
         // 退役品牌门禁:模板一旦发布就会真实推送给用户,三语正文里的旧品牌必须在这里拦住。
         // 与「三语齐全」是两件事 —— social/welcome/wrapped 三条存量模板三语都在,正文却仍是
         // 旧品牌,所以只查完整性的门放它们过去了(#147)。
-        if ("PUBLISHED".equals(status) && carriesRetiredBrand(current.get())) {
+        if ("PUBLISHED".equals(status) && current.get().carriesRetiredBrand()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
         }
         if (!novaRepository.updateTemplateStatusIfCurrent(
@@ -964,14 +967,6 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         return null;
-    }
-
-    /** 三语标题与正文中任一仍带退役品牌,即不允许发布。 */
-    private boolean carriesRetiredBrand(NovaTemplateView template) {
-        return RetiredBrandGate.anyCarriesRetiredBrand(
-                template.titleZh(), template.bodyZh(),
-                template.titleVi(), template.bodyVi(),
-                template.titleEn(), template.bodyEn());
     }
 
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {

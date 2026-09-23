@@ -43,7 +43,10 @@ class OnboardingCalibrationSandboxServiceTest {
                 new TierRow(4, "T4", 36, 48, new BigDecimal("0.08"), new BigDecimal("13"), 7L),
                 new TierRow(5, "T5", 49, 58, new BigDecimal("0.095"), new BigDecimal("16"), 7L)));
         when(mapper.activeComparisons()).thenReturn(List.of(
-                new ComparisonRow("phone", "Phone", new BigDecimal("0.06"), new BigDecimal("10"), 1, 7L)));
+                new ComparisonRow("phone", "Phone", new BigDecimal("0.06"), new BigDecimal("10"), 1, 7L),
+                new ComparisonRow("s1", "Test S1", new BigDecimal("1"), new BigDecimal("1"), 2, 7L),
+                new ComparisonRow("pro", "Test Pro", new BigDecimal("2"), new BigDecimal("2"), 3, 7L),
+                new ComparisonRow("rack", "Test Rack", new BigDecimal("3"), new BigDecimal("3"), 4, 7L)));
     }
 
     @Test

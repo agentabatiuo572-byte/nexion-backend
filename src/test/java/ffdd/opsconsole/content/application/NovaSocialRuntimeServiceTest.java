@@ -94,7 +94,7 @@ class NovaSocialRuntimeServiceTest {
                 "social", "全网真实事件", "真实事件触发", "30s", "10min", "", BigDecimal.ZERO, true)));
         when(novaRepository.template("social")).thenReturn(Optional.of(new NovaTemplateView(
                 "social", "真实动态", "NONE", "v1",
-                "Nexion 真实动态", "已验证的新动态",
+                "NexGrid 真实动态", "已验证的新动态",
                 "Hoạt động thực", "Hoạt động mới đã xác minh",
                 "Verified activity", "New verified activity", "PUBLISHED")));
         when(novaRepository.socialDistribution()).thenReturn(List.of(
@@ -114,6 +114,21 @@ class NovaSocialRuntimeServiceTest {
         assertThat(result.dispatched()).isFalse();
         assertThat(result.reason()).isEqualTo("SOCIAL_CHANNEL_DISABLED");
         verify(runtimeRepository, never()).enqueueNotifications(anyLong(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void publishedLegacyBrandTemplateIsNeverQueued() {
+        when(novaRepository.template("social")).thenReturn(Optional.of(new NovaTemplateView(
+                "social", "真实动态", "NONE", "v1",
+                "NexGrid 真实动态", "已验证的新动态",
+                "Hoạt động thực trên Nexion", "Hoạt động mới đã xác minh",
+                "Verified activity", "New verified activity", "PUBLISHED")));
+
+        var result = service.dispatchAt(now);
+
+        assertThat(result.dispatched()).isFalse();
+        assertThat(result.reason()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
+        verify(runtimeRepository, never()).claimSlot(anyString(), anyString(), any(), any());
     }
 
     @Test

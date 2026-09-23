@@ -2007,7 +2007,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .map(DevicePhoneTierRewardView::revision).filter(java.util.Objects::nonNull)
                 .mapToLong(Long::longValue).max().orElse(0L));
         return ApiResult.ok(detail("tiers", rows, "comparisons", comparisons, "configRevision", configRevision,
-                "sources", List.of("nx_onboarding_phone_tier_config", "nx_onboarding_yield_comparison_config")));
+                "sources", List.of("nx_onboarding_phone_tier_config", "nx_product")));
     }
 
     public ApiResult<Map<String, Object>> updateE2PhoneTier(
@@ -2027,44 +2027,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     public ApiResult<Map<String, Object>> updateE2YieldComparison(
             String idempotencyKey, E2YieldComparisonUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (request == null || !StringUtils.hasText(request.configKey()) || !StringUtils.hasText(request.label())
-                || request.dailyUsdt() == null || request.dailyUsdt().signum() <= 0
-                || request.dailyNex() == null || request.dailyNex().signum() <= 0
-                || request.expectedRevision() == null || request.expectedRevision() < 1
-                || !validPositiveDecimal18x6(request.dailyUsdt())
-                || !validPositiveDecimal18x6(request.dailyNex())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "ONBOARDING_YIELD_COMPARISON_INVALID");
-        }
-        String configKey = request.configKey().trim();
-        E2YieldComparisonUpdateRequest trusted = new E2YieldComparisonUpdateRequest(
-                configKey, request.label().trim(), request.dailyUsdt(), request.dailyNex(),
-                request.expectedRevision(), request.reason().trim(), operator(request.operator()));
-        return deviceIdempotent("E2_ONBOARDING_YIELD_COMPARISON_UPDATE", idempotencyKey, configKey, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "onboarding_yield_comparison", configKey) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            OnboardingYieldComparisonView before = catalogRepository.findOnboardingYieldComparison(configKey).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "ONBOARDING_YIELD_COMPARISON_NOT_FOUND");
-            }
-            if ((trusted.dailyUsdt().compareTo(before.dailyUsdt()) > 0
-                    || trusted.dailyNex().compareTo(before.dailyNex()) > 0) && coverageBelowRedline()) {
-                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-            }
-            OnboardingYieldComparisonView updated = catalogRepository.updateOnboardingYieldComparison(
-                    configKey, trusted.label(), trusted.dailyUsdt(), trusted.dailyNex(),
-                    trusted.expectedRevision(), LocalDateTime.now(clock)).orElse(null);
-            if (updated == null) return ApiResult.fail(409, "ONBOARDING_YIELD_COMPARISON_VERSION_CONFLICT");
-            auditRequired("E2_ONBOARDING_YIELD_COMPARISON_CHANGED", "ONBOARDING_YIELD_COMPARISON", configKey,
-                    trusted.operator(), detail("configKey", configKey, "before", before, "after", updated,
-                            "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim()));
-            return ApiResult.ok(detail("effectiveAt", updated.updatedAt(), "phoneTiers", e2PhoneTiers().getData()));
-        });
+        if (guard != null) return guard;
+        // Comparison values now come from E1 products and the phone T3 configuration.
+        // Keep the legacy route explicit for older clients rather than accepting no-op writes.
+        return ApiResult.fail(409, "ONBOARDING_COMPARISON_DERIVED_FROM_SOURCE");
     }
 
     @Transactional

@@ -1,5 +1,7 @@
 package ffdd.opsconsole.content.domain;
 
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
+
 public record NovaTemplateView(
         String channel,
         String name,
@@ -12,4 +14,8 @@ public record NovaTemplateView(
         String titleEn,
         String bodyEn,
         String status) {
+    public boolean carriesRetiredBrand() {
+        return RetiredBrandGate.anyCarriesRetiredBrand(
+                titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn);
+    }
 }

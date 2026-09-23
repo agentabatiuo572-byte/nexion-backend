@@ -112,6 +112,20 @@ class MybatisNotificationCampaignRepositoryTest {
         verify(campaignMapper).expireLowPriorityNotifications(now.minusHours(48), null);
     }
 
+    @Test
+    void capPolicyReflectsActualOldestFirstRetentionAndCurrentCap() {
+        NotificationCapRuleEntity high = cap("high", "40 条", false);
+        high.setPolicy("保留最新，超出部分按 LIFO 淘汰");
+        NotificationCapRuleEntity low = cap("low", "25 条", false);
+        low.setPolicy("保留最新，超出部分按 LIFO 淘汰");
+        when(capRuleMapper.selectList(any())).thenReturn(List.of(high, low));
+
+        var rules = repository.listCapRules();
+
+        assertThat(rules.get(0).policy()).contains("最新 40 条", "淘汰最旧记录").doesNotContain("LIFO");
+        assertThat(rules.get(1).policy()).contains("最新 25 条", "淘汰最旧记录", "48 小时").doesNotContain("LIFO");
+    }
+
     private NotificationCapRuleEntity cap(String tier, String label, boolean locked) {
         NotificationCapRuleEntity entity = new NotificationCapRuleEntity();
         entity.setTier(tier);

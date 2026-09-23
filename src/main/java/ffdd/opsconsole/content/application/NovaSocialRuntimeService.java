@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.NovaSocialDistributionItem;
 import ffdd.opsconsole.content.domain.NovaSocialEventView;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
@@ -76,6 +77,9 @@ public class NovaSocialRuntimeService {
         NovaTemplateView template = novaRepository.template(SOCIAL_CHANNEL).orElse(null);
         if (template == null || !"PUBLISHED".equalsIgnoreCase(template.status())) {
             return NovaSocialDispatchResult.skipped("SOCIAL_TEMPLATE_NOT_PUBLISHED");
+        }
+        if (template.carriesRetiredBrand()) {
+            return NovaSocialDispatchResult.skipped(RetiredBrandGate.REASON);
         }
 
         Duration tick = parseDuration(channel.tick());

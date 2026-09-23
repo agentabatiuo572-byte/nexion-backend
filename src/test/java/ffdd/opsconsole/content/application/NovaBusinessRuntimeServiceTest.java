@@ -95,6 +95,19 @@ class NovaBusinessRuntimeServiceTest {
     }
 
     @Test
+    void publishedLegacyBrandWelcomeTemplateIsNeverQueued() {
+        when(novaRepository.template("welcome")).thenReturn(Optional.of(new NovaTemplateView(
+                "welcome", "welcome", "/earn", "v1",
+                "欢迎来到 NexGrid", "正文", "Chào mừng đến NexGrid", "Nội dung",
+                "Welcome to Nexion", "Body", "PUBLISHED")));
+
+        var result = service.dispatchChannelAt("welcome", now);
+
+        assertThat(result.reason()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
+        verify(runtimeRepository, never()).pendingBusinessFacts(anyString(), any(), anyInt());
+    }
+
+    @Test
     void adapterTableCoversEveryNonSocialCanonicalChannelWithoutAdjacentFactSubstitution() {
         var contracts = NovaBusinessRuntimeService.adapterContracts();
 

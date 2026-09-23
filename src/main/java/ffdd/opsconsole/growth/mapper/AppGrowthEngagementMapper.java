@@ -714,7 +714,8 @@ public interface AppGrowthEngagementMapper {
 
     @Select("""
             SELECT p.id powerUpId,p.power_up_code powerUpCode,
-                   p.badge_achievement_code badgeCode,p.duration_days durationDays
+                   p.badge_achievement_code badgeCode,p.duration_days durationDays,
+                   p.target_path targetPath
               FROM nx_streak_power_up p
               JOIN nx_user_streak s
                 ON s.user_id=#{userId} AND s.is_deleted=0
@@ -985,6 +986,6 @@ public interface AppGrowthEngagementMapper {
     }
 
     record StreakPowerUp(
-            Long powerUpId, String powerUpCode, String badgeCode, Integer durationDays) {
+            Long powerUpId, String powerUpCode, String badgeCode, Integer durationDays, String targetPath) {
     }
 }

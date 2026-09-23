@@ -758,6 +758,13 @@ public class AppGrowthEngagementService {
         return executeOnce("DAILY_POWER_UP_ACTIVATE", userId, idempotencyKey, powerUpId, () -> {
             StreakPowerUp row = mapper.lockActivatablePowerUp(userId, powerUpId);
             if (row == null) return ApiResult.fail(409, "DAILY_POWER_UP_NOT_ACTIVATABLE");
+            if ((STAKING_PERK_PATHS.contains(row.targetPath())
+                    && !Boolean.TRUE.equals(streakPerkAvailability.stakingAvailable()))
+                    || (GENESIS_PERK_PATHS.contains(row.targetPath())
+                    && !Boolean.TRUE.equals(streakPerkAvailability.genesisPrimaryAvailable()))) {
+                // A temporary closure must remain retryable with the same idempotency key.
+                throw conflict("DAILY_POWER_UP_BUSINESS_UNAVAILABLE");
+            }
             if (mapper.activatePowerUp(userId, row) != 1) {
                 throw conflict("DAILY_POWER_UP_ACTIVATION_CONFLICT");
             }

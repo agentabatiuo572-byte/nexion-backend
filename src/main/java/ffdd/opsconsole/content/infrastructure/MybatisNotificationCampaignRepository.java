@@ -352,10 +352,19 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     private NotificationCapRuleView toCapView(NotificationCapRuleEntity entity) {
+        String tier = entity.getTier().toLowerCase(Locale.ROOT);
+        String cap = String.valueOf(numericCap(entity.getCapLabel(), defaultCap(tier)));
+        // The retention query keeps the newest rows; legacy database policy text may still say LIFO.
+        String policy = switch (tier) {
+            case "high" -> "每用户保留最新 " + cap + " 条高优通知，超出部分淘汰最旧记录（按创建时间从早到晚）";
+            case "normal" -> "每用户保留最新 " + cap + " 条常规通知，超出部分淘汰最旧记录（按创建时间从早到晚）";
+            case "low" -> "每用户保留最新 " + cap + " 条低优通知，超出部分淘汰最旧记录；且超过 48 小时自动淘汰";
+            default -> entity.getPolicy();
+        };
         return new NotificationCapRuleView(
                 entity.getTier(),
                 entity.getCapLabel(),
-                entity.getPolicy(),
+                policy,
                 entity.getLocked() != null && entity.getLocked() == 1);
     }
 

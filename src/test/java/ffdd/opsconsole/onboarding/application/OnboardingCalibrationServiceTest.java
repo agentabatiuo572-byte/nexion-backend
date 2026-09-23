@@ -42,7 +42,37 @@ class OnboardingCalibrationServiceTest {
                 tier(5, 49, 58, "0.095000", "16.000000")));
         when(mapper.activeComparisons()).thenReturn(List.of(
                 new ComparisonRow("phone", "手机", new BigDecimal("0.060000"), new BigDecimal("10.000000"), 1, 7L),
-                new ComparisonRow("s1", "S1", new BigDecimal("1.200000"), new BigDecimal("65.000000"), 2, 7L)));
+                new ComparisonRow("s1", "Test S1", new BigDecimal("1.000000"), new BigDecimal("1.000000"), 2, 9L),
+                new ComparisonRow("pro", "Test Pro", new BigDecimal("2.000000"), new BigDecimal("2.000000"), 3, 9L),
+                new ComparisonRow("rack", "Test Rack", new BigDecimal("3.000000"), new BigDecimal("3.000000"), 4, 9L)));
+    }
+
+    @Test
+    void existingCalibrationProjectsCurrentComparisonInsteadOfStoredOldSnapshot() {
+        when(mapper.find(9L, "old-device")).thenReturn(row(9L, "old-device", 1L, "key-old", "hash", 7L));
+
+        ApiResult<Map<String, Object>> result = service.result(9L, "old-device");
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> comparisons = (List<Map<String, Object>>) result.getData().get("comparisonConfig");
+        assertThat(comparisons).extracting(row -> row.get("label"))
+                .containsExactly("手机", "Test S1", "Test Pro", "Test Rack");
+        assertThat(result.getData()).containsEntry("configRevision", 9L);
+    }
+
+    @Test
+    void delistedProductIsOmittedWithoutBlockingPhoneCalibrationResult() {
+        when(mapper.activeComparisons()).thenReturn(List.of(
+                new ComparisonRow("phone", "手机", new BigDecimal("0.06"), new BigDecimal("10"), 1, 9L)));
+        when(mapper.find(9L, "old-device")).thenReturn(row(9L, "old-device", 1L, "key-old", "hash", 7L));
+
+        ApiResult<Map<String, Object>> result = service.result(9L, "old-device");
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> comparisons = (List<Map<String, Object>>) result.getData().get("comparisonConfig");
+        assertThat(comparisons).extracting(row -> row.get("key")).containsExactly("phone");
     }
 
     @Test

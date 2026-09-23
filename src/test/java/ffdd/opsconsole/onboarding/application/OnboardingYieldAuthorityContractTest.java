@@ -28,20 +28,24 @@ class OnboardingYieldAuthorityContractTest {
         String service = Files.readString(Path.of("src/main/java/ffdd/opsconsole/device/application/OpsDeviceService.java"));
         String calibration = Files.readString(Path.of("src/main/java/ffdd/opsconsole/onboarding/application/OnboardingCalibrationService.java"));
 
-        assertThat(service).contains("nx_onboarding_yield_comparison_config");
+        assertThat(service).contains("nx_product");
         assertThat(calibration).contains("activeComparisons");
         assertThat(service).contains("dailyUsdt").contains("dailyNex");
     }
 
     @Test
-    void adminWritesUseActiveRowsAndRevisionCompareAndSwap() throws Exception {
+    void comparisonIsDerivedFromProductAndPhoneSources() throws Exception {
         String mapper = Files.readString(Path.of("src/main/java/ffdd/opsconsole/device/mapper/DeviceCatalogMapper.java"));
+        String calibrationMapper = Files.readString(Path.of("src/main/java/ffdd/opsconsole/onboarding/mapper/OnboardingCalibrationMapper.java"));
         String service = Files.readString(Path.of("src/main/java/ffdd/opsconsole/device/application/OpsDeviceService.java"));
 
-        assertThat(mapper).contains("active=1 AND is_deleted=0")
-                .contains("revision=#{expectedRevision}")
-                .contains("revision=revision+1");
-        assertThat(service).contains("PHONE_TIER_VERSION_CONFLICT")
-                .contains("YIELD_COMPARISON_VERSION_CONFLICT");
+        assertThat(mapper).contains("p.estimated_daily_usdt", "p.daily_nex", "t.base_rate_usdt", "t.base_rate_nex");
+        assertThat(calibrationMapper).contains("p.estimated_daily_usdt", "p.daily_nex", "t.base_rate_usdt", "t.base_rate_nex");
+        for (String mapping : new String[] {"WHEN 's1' THEN 'stellarbox-s1'",
+                "WHEN 'pro' THEN 'stellarbox-pro'", "WHEN 'rack' THEN 'stellarrack-p1'"}) {
+            assertThat(mapper).contains(mapping);
+            assertThat(calibrationMapper).contains(mapping);
+        }
+        assertThat(service).contains("ONBOARDING_COMPARISON_DERIVED_FROM_SOURCE");
     }
 }

@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.NovaChannelView;
 import ffdd.opsconsole.content.domain.NovaRepository;
 import ffdd.opsconsole.content.domain.NovaSocialRuntimeRepository;
 import ffdd.opsconsole.content.domain.NovaTemplateView;
+import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.Duration;
@@ -92,6 +93,9 @@ public class NovaBusinessRuntimeService {
         NovaTemplateView template = novaRepository.template(adapter.channel()).orElse(null);
         if (template == null || !"PUBLISHED".equalsIgnoreCase(template.status())) {
             return NovaChannelDispatchResult.skipped(adapter.channel(), "TEMPLATE_NOT_PUBLISHED");
+        }
+        if (template.carriesRetiredBrand()) {
+            return NovaChannelDispatchResult.skipped(adapter.channel(), RetiredBrandGate.REASON);
         }
 
         String currentPhase = safe(phaseProvider.currentPhase()).toUpperCase(Locale.ROOT);

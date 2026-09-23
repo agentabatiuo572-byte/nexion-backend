@@ -108,21 +108,21 @@ class StreakPerkBusinessAvailabilityAdapterTest {
         // 读失败是「不知道」,不能说成业务关闭 —— 那会让用户以为已获得的权益被下掉了。
         doThrow(new IllegalStateException("db down")).when(staking).pools();
 
-        assertThat(adapter.stakingAvailable()).isTrue();
+        assertThat(adapter.stakingAvailable()).isNull();
     }
 
     @Test
     void aNullResponseFailsOpen() {
         doReturn(null).when(staking).pools();
 
-        assertThat(adapter.stakingAvailable()).isTrue();
+        assertThat(adapter.stakingAvailable()).isNull();
     }
 
     @Test
     void aNonZeroCodeFailsOpen() {
         doReturn(ApiResult.fail(503, "STAKING_CATALOG_UNAVAILABLE")).when(staking).pools();
 
-        assertThat(adapter.stakingAvailable()).isTrue();
+        assertThat(adapter.stakingAvailable()).isNull();
     }
 
     @Test
@@ -132,6 +132,16 @@ class StreakPerkBusinessAvailabilityAdapterTest {
         data.put("serverCanonical", true);
         doReturn(ApiResult.ok(data)).when(staking).pools();
 
-        assertThat(adapter.stakingAvailable()).isTrue();
+        assertThat(adapter.stakingAvailable()).isNull();
+    }
+
+    @Test
+    void genesisRequiresPublishedOpenStateAndDoesNotGuessOnReadFailure() {
+        when(genesis.publicState()).thenReturn(Map.of("catalogAvailable", false, "tradeAvailable", true));
+        assertThat(adapter.genesisPrimaryAvailable()).isFalse();
+        when(genesis.publicState()).thenReturn(Map.of("catalogAvailable", true, "tradeAvailable", true));
+        assertThat(adapter.genesisPrimaryAvailable()).isTrue();
+        doThrow(new IllegalStateException("unavailable")).when(genesis).publicState();
+        assertThat(adapter.genesisPrimaryAvailable()).isNull();
     }
 }

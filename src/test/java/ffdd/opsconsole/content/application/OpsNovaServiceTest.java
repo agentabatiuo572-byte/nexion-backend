@@ -596,7 +596,7 @@ class OpsNovaServiceTest {
                 "social", "全网真实动态", "真实事件触发", "20 min", "30 min", "", BigDecimal.ZERO, true));
         novaRepository.templates.put("social", new NovaTemplateView(
                 "social", "真实动态模板", "NONE", "v1",
-                "Nexion 真实动态", "{actor} 在 {city} 完成 {amount}",
+                "NexGrid 真实动态", "{actor} 在 {city} 完成 {amount}",
                 "Hoạt động thực", "{actor} tại {city} hoàn tất {amount}",
                 "Verified activity", "{actor} in {city} completed {amount}", "PUBLISHED"));
         novaRepository.distribution.add(new NovaSocialDistributionItem("withdrawal", "提现到账", 100, "red"));
@@ -613,6 +613,21 @@ class OpsNovaServiceTest {
         assertThat(sample.getData().sourceEventId()).startsWith("evt_").doesNotContain("withdrawal-sample");
         assertThat(sample.getData().language()).isEqualTo("VI");
         assertThat(sample.getData().body()).contains("N***", "10K–50K NEX");
+    }
+
+    @Test
+    void sampleRejectsAlreadyPublishedTemplateWithRetiredBrand() {
+        novaRepository.channels.put("social", new NovaChannelView(
+                "social", "全网真实动态", "真实事件触发", "20 min", "30 min", "", BigDecimal.ZERO, true));
+        novaRepository.templates.put("social", new NovaTemplateView(
+                "social", "真实动态模板", "NONE", "v1",
+                "NexGrid 真实动态", "正文",
+                "Hoạt động thực", "Nội dung",
+                "Verified Nexion activity", "Body", "PUBLISHED"));
+
+        var result = service.sampleSocialEvent("EN");
+
+        assertThat(result.getMessage()).isEqualTo("RETIRED_BRAND_IN_PUBLISHED_COPY");
     }
 
     @Test

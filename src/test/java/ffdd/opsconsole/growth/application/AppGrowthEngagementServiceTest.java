@@ -698,7 +698,7 @@ class AppGrowthEngagementServiceTest {
     @Test
     void powerUpActivationUsesServerEligibilityBadgeAuditAndOutbox() {
         StreakPowerUp powerUp = new StreakPowerUp(
-                8L, "STREAK_BADGE", "STREAK_14_BADGE", 0);
+                8L, "STREAK_BADGE", "STREAK_14_BADGE", 0, "/team");
         when(mapper.lockActivatablePowerUp(42L, 8L)).thenReturn(powerUp);
         when(mapper.activatePowerUp(42L, powerUp)).thenReturn(1);
         when(mapper.unlockAchievement(42L, "STREAK_14_BADGE")).thenReturn(1);
@@ -712,6 +712,28 @@ class AppGrowthEngagementServiceTest {
                 eq("USER_STREAK_POWER_UP"), eq("42:STREAK_BADGE"),
                 eq("daily.power_up_activated"), eq(42L),
                 eq("P3"), eq(5), eq("2026-W30"), any());
+    }
+
+    @Test
+    void suspendedOrUnreadableBusinessCannotActivateStreakPerk() {
+        for (String path : List.of("/wallet/staking", "/market/genesis")) {
+            StreakPowerUp powerUp = new StreakPowerUp(8L, "STREAK_BADGE", "", 0, path);
+            when(mapper.lockActivatablePowerUp(42L, 8L)).thenReturn(powerUp);
+            assertThatThrownBy(() -> service.activateStreakPowerUp(42L, 8L, "power-key"))
+                    .hasMessageContaining("DAILY_POWER_UP_BUSINESS_UNAVAILABLE");
+            verify(mapper, never()).activatePowerUp(42L, powerUp);
+        }
+    }
+
+    @Test
+    void openBusinessCanActivateStreakPerk() {
+        StreakPowerUp powerUp = new StreakPowerUp(8L, "STAKING_APY", "", 0, "/wallet/staking");
+        when(mapper.lockActivatablePowerUp(42L, 8L)).thenReturn(powerUp);
+        when(availability.stakingAvailable()).thenReturn(true);
+        when(mapper.activatePowerUp(42L, powerUp)).thenReturn(1);
+
+        assertThat(service.activateStreakPowerUp(42L, 8L, "power-key").getCode()).isZero();
+        verify(mapper).activatePowerUp(42L, powerUp);
     }
 
     @Test

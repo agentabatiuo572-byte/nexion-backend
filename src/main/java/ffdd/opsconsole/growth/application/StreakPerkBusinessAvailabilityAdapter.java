@@ -24,8 +24,7 @@ import org.springframework.stereotype.Service;
  *       {@code catalogAvailable} 与 {@code tradeAvailable}。</li>
  * </ul>
  *
- * <p>🔴 <b>读不到就返回 true(可用)</b>:与 App 侧「不知道就别说」同一原则。把一次读取
- * 失败说成业务关闭,会让用户以为已获得的权益被下掉了 —— 而这个方向的错误代价更大。
+ * <p>读不到就返回 null(未知):不能向用户承诺可激活,也不能宣称历史权益已关闭。
  * 注意「读不到」指**抛异常或响应不可用**;成功读到一份「没有任何一档在售」的目录是
  * 知识而不是未知,那种情况必须返回 false。</p>
  *
@@ -48,12 +47,12 @@ public class StreakPerkBusinessAvailabilityAdapter implements StreakPerkBusiness
     private final GenesisCatalogService genesisCatalogService;
 
     @Override
-    public boolean stakingAvailable() {
+    public Boolean stakingAvailable() {
         try {
             ApiResult<Map<String, Object>> result = appStakingService.pools();
-            if (result == null || result.getCode() != 0 || result.getData() == null) return true;
+            if (result == null || result.getCode() != 0 || result.getData() == null) return null;
             Object poolsValue = result.getData().get("pools");
-            if (!(poolsValue instanceof List<?> pools)) return true;
+            if (!(poolsValue instanceof List<?> pools)) return null;
             // 目录读到了:至少一档「可售」才算对客可用。空目录 = 没有可买的东西 = 关闭,
             // 与 App 侧对空目录的判定一致(那边 !pools.some(canOpen) 也为 closed)。
             // 判据与 canOpenStakingPool 同源:enabled 已含 !killed && 全局闸,
@@ -63,22 +62,22 @@ public class StreakPerkBusinessAvailabilityAdapter implements StreakPerkBusiness
                     && !Boolean.TRUE.equals(row.get("killed"))
                     && "ACTIVE".equals(row.get("status")));
         } catch (RuntimeException ex) {
-            log.warn("Streak perk staking availability read failed; treating as available", ex);
-            return true;
+            log.warn("Streak perk staking availability read failed", ex);
+            return null;
         }
     }
 
     @Override
-    public boolean genesisPrimaryAvailable() {
+    public Boolean genesisPrimaryAvailable() {
         try {
             Map<String, Object> state = genesisCatalogService.publicState();
-            if (state == null) return true;
+            if (state == null) return null;
             // 两个都要:有 ACTIVE 系列(可认购) 且 市场开放(可下单)。
             return Boolean.TRUE.equals(state.get("catalogAvailable"))
                     && Boolean.TRUE.equals(state.get("tradeAvailable"));
         } catch (RuntimeException ex) {
-            log.warn("Streak perk genesis availability read failed; treating as available", ex);
-            return true;
+            log.warn("Streak perk genesis availability read failed", ex);
+            return null;
         }
     }
 }

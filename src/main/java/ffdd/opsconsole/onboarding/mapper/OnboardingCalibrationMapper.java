@@ -295,9 +295,29 @@ public interface OnboardingCalibrationMapper {
     List<TierRow> activeTiers();
 
     @Select("""
-            SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,sort_order sortOrder,revision
-              FROM nx_onboarding_yield_comparison_config
-             WHERE active=1 AND is_deleted=0 ORDER BY sort_order,config_key
+            SELECT c.config_key configKey,
+                   CASE WHEN c.config_key='phone' THEN c.label ELSE p.name END label,
+                   CASE WHEN c.config_key='phone' THEN t.base_rate_usdt ELSE p.estimated_daily_usdt END dailyUsdt,
+                   CASE WHEN c.config_key='phone' THEN t.base_rate_nex ELSE p.daily_nex END dailyNex,
+                   c.sort_order sortOrder,
+                   GREATEST(c.revision,COALESCE(t.revision,0),
+                     COALESCE(CAST(UNIX_TIMESTAMP(p.updated_at)*1000000 AS SIGNED),0)) revision
+              FROM nx_onboarding_yield_comparison_config c
+              LEFT JOIN nx_onboarding_phone_tier_config t
+                ON c.config_key='phone' AND t.tier=3 AND t.active=1 AND t.is_deleted=0
+              LEFT JOIN nx_product p
+                ON p.product_no=CASE c.config_key
+                     WHEN 's1' THEN 'stellarbox-s1'
+                     WHEN 'pro' THEN 'stellarbox-pro'
+                     WHEN 'rack' THEN 'stellarrack-p1' END
+               AND p.is_deleted=0 AND p.store_visible=1
+               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
+               AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
+                    OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+             WHERE c.active=1 AND c.is_deleted=0
+               AND ((c.config_key='phone' AND t.tier IS NOT NULL)
+                    OR (c.config_key IN ('s1','pro','rack') AND p.id IS NOT NULL))
+             ORDER BY c.sort_order,c.config_key
             """)
     List<ComparisonRow> activeComparisons();
 
