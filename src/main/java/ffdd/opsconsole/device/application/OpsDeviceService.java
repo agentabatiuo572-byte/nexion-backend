@@ -365,6 +365,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
+        if (!Objects.equals(before.unlockPhase(), orderManagedWriteRequest.unlockPhase())) {
+            DeviceGenerationGateView gate = catalogRepository.findGenerationGate(normalized).orElse(null);
+            if (gate != null && "active".equals(gate.status())
+                    && !Objects.equals(gate.phase(), orderManagedWriteRequest.unlockPhase())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_SKU_GATE_PHASE_MISMATCH");
+            }
+        }
         DeviceSkuUpsertRequest effectiveWriteRequest = orderManagedWriteRequest.trialEligible() == null
                 ? withTrialEligible(orderManagedWriteRequest, Boolean.TRUE.equals(before.trialEligible()))
                 : orderManagedWriteRequest;
@@ -2176,6 +2183,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (forceUnlockGuard != null) {
             return forceUnlockGuard;
         }
+        if (!phase.equals(sku.unlockPhase())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
+        }
         DeviceGenerationGateView created = catalogRepository.saveGenerationGate(
                 skuId,
                 name,
@@ -2226,6 +2236,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String phase = normalizeE1Phase(requestedPhase);
         boolean eligibility = request.eligibility() == null ? Boolean.TRUE.equals(before.eligibility()) : request.eligibility();
         boolean forceUnlock = request.forceUnlock() == null ? Boolean.TRUE.equals(before.forceUnlock()) : request.forceUnlock();
+        if ((request.phase() != null || (!Boolean.TRUE.equals(before.forceUnlock()) && forceUnlock))
+                && !phase.equals(catalogRepository.findSku(normalized).map(DeviceSkuView::unlockPhase).orElse(null))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
+        }
         ApiResult<Map<String, Object>> forceUnlockGuard = requireE1ForceUnlockTransition(
                 Boolean.TRUE.equals(before.forceUnlock()), forceUnlock, eligibility, phase);
         if (forceUnlockGuard != null) {
@@ -2312,6 +2326,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean nextForceUnlock = "forceUnlock".equals(key[1])
                 ? Boolean.parseBoolean(value)
                 : Boolean.TRUE.equals(before.forceUnlock());
+        if (("phase".equals(key[1]) || (!Boolean.TRUE.equals(before.forceUnlock()) && nextForceUnlock))
+                && !nextPhase.equals(catalogRepository.findSku(key[0]).map(DeviceSkuView::unlockPhase).orElse(null))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_SKU_PHASE_MISMATCH");
+        }
         ApiResult<Map<String, Object>> forceUnlockGuard = requireE1ForceUnlockTransition(
                 Boolean.TRUE.equals(before.forceUnlock()), nextForceUnlock, nextEligibility, nextPhase);
         if (forceUnlockGuard != null) {

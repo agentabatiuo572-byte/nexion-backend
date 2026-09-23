@@ -1210,6 +1210,23 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void skuEditCannotMoveItsUnlockPhaseAwayFromAnActiveGate() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "扩张期", 20));
+        catalogRepository.sku = sku("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "2");
+        catalogRepository.generationGates.put("stellarbox-pro-v2",
+                gate("stellarbox-pro-v2", "NexGridBox Pro v2", 7, "2", BigDecimal.ZERO, true, 0, false, "active"));
+
+        DeviceSkuUpsertRequest request = skuRequest(
+                "stellarbox-pro-v2", "NexGridBox Pro v2", "off", "Pro", "HK-1", 2, "active", "1");
+        ApiResult<DeviceSkuView> result = service.updateSku(
+                "stellarbox-pro-v2", catalogRepository.sku.updatedAt().toString(), "idem-sku-gate-phase-mismatch", request);
+
+        assertThat(result.getMessage()).isEqualTo("E1_SKU_GATE_PHASE_MISMATCH");
+        assertThat(catalogRepository.sku.unlockPhase()).isEqualTo("2");
+    }
+
+    @Test
     void updateSkuRequiresTheRevisionReadByTheEditor() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
@@ -2024,6 +2041,29 @@ class OpsDeviceServiceTest {
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(result.getMessage()).isEqualTo("E1_PHASE_IN_USE");
         assertThat(catalogRepository.phases.get("2").status()).isEqualTo("active");
+    }
+
+    @Test
+    void generationGateCannotBindASeedPhaseToALaterSku() {
+        catalogRepository.phases.put("1", phase("1", "种子期", 10));
+        catalogRepository.phases.put("2", phase("2", "扩张期", 20));
+        catalogRepository.sku = sku("stellarbox-pro-v2", "NexGridBox Pro v2", "off", "2");
+
+        ApiResult<Map<String, Object>> created = service.createE1GenerationGate(
+                "idem-gate-phase-mismatch",
+                gateRequest("stellarbox-pro-v2", "1", true, false));
+
+        assertThat(created.getMessage()).isEqualTo("E1_GATE_SKU_PHASE_MISMATCH");
+        assertThat(catalogRepository.generationGates).isEmpty();
+
+        catalogRepository.generationGates.put("stellarbox-pro-v2",
+                gate("stellarbox-pro-v2", "NexGridBox Pro v2", 3, "2", BigDecimal.ZERO, true, 0, false, "active"));
+        ApiResult<Map<String, Object>> patched = service.patchE1GenerationGate(
+                "stellarbox-pro-v2", "idem-gate-patch-mismatch",
+                new DeviceGenerationGatePatchRequest(
+                        null, null, "1", null, null, null, null, "修正上架门阶段绑定错误", "superadmin"));
+        assertThat(patched.getMessage()).isEqualTo("E1_GATE_SKU_PHASE_MISMATCH");
+        assertThat(catalogRepository.generationGates.get("stellarbox-pro-v2").phase()).isEqualTo("2");
     }
 
     @Test
