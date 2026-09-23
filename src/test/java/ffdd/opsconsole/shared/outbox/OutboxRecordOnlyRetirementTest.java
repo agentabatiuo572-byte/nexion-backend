@@ -96,6 +96,13 @@ class OutboxRecordOnlyRetirementTest {
     }
 
     @Test
+    void disclosureAndTrialFactsWithoutBusConsumersDoNotAgeInTheA3Backlog() {
+        assertThat(EventOutboxService.RECORD_ONLY_EVENT_TYPES)
+                .contains("disclosure.viewed", "disclosure.acked", "trial.started");
+        assertThat(EventOutboxService.RECORD_ONLY_GRACE_MINUTES).isEqualTo(15);
+    }
+
+    @Test
     void aRetiredFactIsNotLeftWaitingForARetry() {
         when(service.retireRecordOnlyPending(anyInt())).thenReturn(1);
 

@@ -403,7 +403,9 @@ public class EventOutboxService {
             "device.activated",
             "device.deactivated",
             "device.purchase_completed",
+            "disclosure.acked",
             "disclosure.reack_triggered",
+            "disclosure.viewed",
             "event.claimed",
             "event.joined",
             "event.spin_awarded",
@@ -432,6 +434,7 @@ public class EventOutboxService {
             "staking.early_withdrawn",
             "staking.opened",
             "tradein.completed",
+            "trial.started",
             "voucher.claimed",
             "wallet.reinvest");
 
