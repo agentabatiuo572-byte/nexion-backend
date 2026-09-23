@@ -3113,6 +3113,41 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void e2TaskPricingFindsEachClassBeyondAnUnfilteredCatalogPage() {
+        for (String taskClass : List.of("IG", "VG", "LL", "FT", "EM", "SP")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+        for (int index = 0; index < 101; index++) {
+            DeviceTaskView row = taskWithClass("ZZ-" + index, "IG", 8);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+        catalogRepository.limitTaskPagesTo100 = true;
+
+        ApiResult<Map<String, Object>> result = service.e2TaskPricing();
+
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) result.getData().get("taskClasses");
+        assertThat(rows).extracting(row -> row.get("taskClass"))
+                .containsExactly("IG", "VG", "LL", "FT", "EM", "SP");
+    }
+
+    @Test
+    void e2TaskPricingReportsMissingAuthoritativeClassInsteadOfReturningAnIncompleteSnapshot() {
+        for (String taskClass : List.of("IG", "VG", "LL", "FT", "EM")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+
+        ApiResult<Map<String, Object>> result = service.e2TaskPricing();
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("E2_TASK_PRICING_CLASS_MISSING");
+        assertThat(result.getData()).containsEntry("taskClass", "SP");
+    }
+
+    @Test
     void e2RuntimeRouterUsesPersistedEnablementRewardAndVramConstraints() {
         for (String taskClass : List.of("IG", "VG", "LL")) {
             DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
@@ -3765,6 +3800,7 @@ class OpsDeviceServiceTest {
         private final Map<String, DeviceSkuView> skus = new LinkedHashMap<>();
         private final Map<String, DeviceReviewView> reviews = new LinkedHashMap<>();
         private final Map<String, DeviceTaskView> tasks = new LinkedHashMap<>();
+        private boolean limitTaskPagesTo100;
         private final Map<Integer, DevicePhoneTierRewardView> phoneTierRewards = new LinkedHashMap<>();
         private DeviceOrderView order;
         private DeviceOrderFacts orderFacts;
@@ -4188,8 +4224,12 @@ class OpsDeviceServiceTest {
         public PageResult<DeviceTaskView> pageTasks(DeviceTaskQueryRequest request) {
             if (!tasks.isEmpty()) {
                 List<DeviceTaskView> records = tasks.values().stream()
+                        .filter(row -> request.taskClass() == null || request.taskClass().equals(row.taskClass()))
                         .sorted((left, right) -> right.taskId().compareTo(left.taskId()))
                         .toList();
+                if (limitTaskPagesTo100) {
+                    return new PageResult<>(records.size(), 1, 100, records.stream().limit(100).toList());
+                }
                 return new PageResult<>(records.size(), 1, 20, records);
             }
             return new PageResult<>(task == null ? 0 : 1, 1, 20, task == null ? List.of() : List.of(task));

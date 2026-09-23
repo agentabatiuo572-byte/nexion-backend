@@ -1785,24 +1785,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e2TaskPricing() {
-        List<DeviceTaskView> all = catalogRepository
-                .pageTasks(new DeviceTaskQueryRequest(null, null, null, 1L, 500L))
-                .getRecords();
         BigDecimal queueSaturation = configFacade.activeValue(E2_QUEUE_SATURATION_KEY)
                 .map(this::parseDecimalOrNull)
                 .filter(value -> value.compareTo(BigDecimal.ZERO) >= 0 && value.compareTo(BigDecimal.ONE) <= 0)
                 .orElse(new BigDecimal("0.35"));
         List<Map<String, Object>> rows = new ArrayList<>();
         for (String taskClass : E2_TASK_CLASS_ORDER) {
-            DeviceTaskView task = all.stream()
-                    .filter(item -> E2_CANONICAL_TASK_ID.get(taskClass).equals(item.taskId()))
-                    .findFirst()
-                    .orElseGet(() -> all.stream()
-                    .filter(item -> taskClass.equals(item.taskClass()))
-                    .findFirst()
-                    .orElse(null));
+            DeviceTaskView task = findE2TaskByClass(taskClass);
             if (task == null) {
-                continue;
+                return ApiResult.fail(503, "E2_TASK_PRICING_CLASS_MISSING", Map.of("taskClass", taskClass));
             }
             BigDecimal averageReward = task.minReward().add(task.maxReward())
                     .divide(BigDecimal.valueOf(2), 8, RoundingMode.HALF_UP);
@@ -4451,7 +4442,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private DeviceTaskView findE2TaskByClass(String taskClass) {
         DeviceTaskView canonical = catalogRepository.findTask(E2_CANONICAL_TASK_ID.get(taskClass)).orElse(null);
-        if (canonical != null) {
+        if (canonical != null && taskClass.equals(canonical.taskClass())) {
             return canonical;
         }
         return catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, taskClass, 1L, 500L))
