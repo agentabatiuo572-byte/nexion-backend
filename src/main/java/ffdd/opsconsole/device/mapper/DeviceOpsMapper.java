@@ -12,7 +12,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
-    String E5_ACTIVATED_OWNED = """
+    // @Select text blocks concatenate these fragments directly after SQL keywords.
+    // Keep the leading spaces so MyBatis does not emit tokens such as ANDd.
+    String E5_ACTIVATED_OWNED = " " + """
             d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')
             AND d.activated_at IS NOT NULL
             AND d.deactivated_at IS NULL
@@ -23,10 +25,10 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String E5_PHYSICAL_SLOT = E5_ACTIVATED_OWNED + """
             AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
             """;
-    String E5_RUNTIME_ONLINE = "UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'";
-    String E5_RUNTIME_OFFLINE = "UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE'";
-    String E5_RUNTIME_UNKNOWN = "UPPER(TRIM(COALESCE(r.online_status, ''))) NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')";
-    String E5_RUNTIME_ABNORMAL = "UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST')";
+    String E5_RUNTIME_ONLINE = " UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'";
+    String E5_RUNTIME_OFFLINE = " UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE'";
+    String E5_RUNTIME_UNKNOWN = " UPPER(TRIM(COALESCE(r.online_status, ''))) NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')";
+    String E5_RUNTIME_ABNORMAL = " UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST')";
     // Match the PC state precedence. Pending, inventory and unbound rows have their own tabs;
     // UNKNOWN contains all remaining rows with non-active lifecycle facts or unavailable runtime telemetry.
     String E5_VISIBLE_UNKNOWN = """
