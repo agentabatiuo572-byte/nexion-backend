@@ -822,6 +822,57 @@ class OpsTeamServiceTest {
     }
 
     @Test
+    void formattingLegacyNumericDepthGateDoesNotTriggerB1() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-legacy-depth-equal",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L4", "format legacy depth gate", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L4");
+    }
+
+    @Test
+    void tighteningLegacyNumericDepthGateDoesNotTriggerB1() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-legacy-depth-earlier",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L3", "tighten legacy depth gate", "superadmin"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L3");
+    }
+
+    @Test
+    void looseningLegacyNumericDepthGateTriggersB1() {
+        coverageFacade.setSnapshot(new TreasuryCoverageSnapshot(new BigDecimal("80"), new BigDecimal("85")));
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "4");
+
+        ApiResult<Map<String, Object>> result = service.updateConfig("idem-f2-legacy-depth-later",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "L5", "loosen legacy depth gate", "superadmin"));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus());
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "4");
+    }
+
+    @Test
+    void newNumericDepthGateStillRequiresLayerPrefix() {
+        configFacade.values.put("team.ui.F.unilevel.depthGate", "L4");
+
+        assertThatThrownBy(() -> service.updateConfig("idem-f2-new-numeric-depth",
+                new TeamCommissionConfigUpdateRequest(
+                        "F.unilevel.depthGate", "5", "new depth must use layer prefix", "superadmin")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("F_TEAM_DEPTH_GATE_LAYER_INVALID");
+        assertThat(configFacade.values).containsEntry("team.ui.F.unilevel.depthGate", "L4");
+    }
+
+    @Test
     void ratesExposeInvalidLegacyDecimalDepthGateForOperatorCorrection() {
         configFacade.values.put("team.ui.F.unilevel.depthGate", "0.4");
 

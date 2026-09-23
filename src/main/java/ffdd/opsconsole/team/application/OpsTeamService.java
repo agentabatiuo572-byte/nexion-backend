@@ -1376,7 +1376,7 @@ public class OpsTeamService implements AuditReplayable {
                     int next = depthGateLayer(newValue);
                     try {
                         // A later gate exempts more layers from the rank minimum.
-                        yield next > depthGateLayer(oldValue);
+                        yield next > existingDepthGateLayer(oldValue);
                     } catch (IllegalArgumentException legacyInvalid) {
                         // Repairing an invalid/missing gate re-enables settlement.
                         yield true;
@@ -1401,6 +1401,12 @@ public class OpsTeamService implements AuditReplayable {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!normalized.matches("L[1-7]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_LAYER_INVALID");
         return Integer.parseInt(normalized.substring(1));
+    }
+
+    private int existingDepthGateLayer(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        // The settlement engine also accepts existing bare 1..7 values.
+        return normalized.matches("[1-7]") ? Integer.parseInt(normalized) : depthGateLayer(normalized);
     }
 
     private int depthGateRank(String value) {
