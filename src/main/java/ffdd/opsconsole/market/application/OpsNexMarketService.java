@@ -1042,9 +1042,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     public ApiResult<Map<String, Object>> curveHistory() {
         ensureNexMarketSeedData();
         LocalDateTime windowStart = LocalDateTime.now(clock).minusHours(24);
-        List<NexPricePointView> points = latestPricePointsChronological(200).stream()
-                .filter(point -> point.sampledAt() != null && !point.sampledAt().isBefore(windowStart))
-                .toList();
+        List<NexPricePointView> points = marketRepository.nexPricePointsSince(windowStart);
         int intervalMinutes = intervalMinutes(points);
         List<Map<String, Object>> samples = new ArrayList<>();
         for (int i = 0; i < points.size(); i++) {

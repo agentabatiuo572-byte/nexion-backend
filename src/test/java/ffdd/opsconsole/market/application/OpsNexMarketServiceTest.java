@@ -192,6 +192,24 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void curveHistoryReturnsAllRealSamplesInThe24HourWindow() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        List<NexPricePointView> rows = new ArrayList<>();
+        rows.add(new NexPricePointView(new BigDecimal("0.10"), BigDecimal.ZERO, now.minusHours(25)));
+        for (int i = 288; i >= 0; i--) {
+            rows.add(new NexPricePointView(new BigDecimal("0.12"), BigDecimal.ZERO, now.minusMinutes(i * 5L)));
+        }
+        marketRepository.pricePoints = rows;
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> points = (List<Map<String, Object>>) service.curveHistory().getData().get("points");
+
+        assertThat(points).hasSize(289);
+        assertThat(points.get(0).get("sampledAt")).isEqualTo(now.minusHours(24));
+        assertThat(points.get(points.size() - 1).get("sampledAt")).isEqualTo(now);
+    }
+
+    @Test
     void exchangeOverviewUsesServerOrdersConfigAndJ1Switch() {
         marketRepository.orders = List.of(exchange("EX-Q-1", "QUEUED"), exchange("EX-DONE-1", "COMPLETED"));
         configFacade.values.put("wallet.exchange.platform_daily_cap_usdt", "20000");
@@ -1748,6 +1766,14 @@ class OpsNexMarketServiceTest {
             return pricePoints.stream()
                     .sorted(Comparator.comparing(NexPricePointView::sampledAt, Comparator.nullsLast(Comparator.naturalOrder())).reversed())
                     .limit(limit)
+                    .toList();
+        }
+
+        @Override
+        public List<NexPricePointView> nexPricePointsSince(LocalDateTime since) {
+            return pricePoints.stream()
+                    .filter(point -> point.sampledAt() != null && !point.sampledAt().isBefore(since))
+                    .sorted(Comparator.comparing(NexPricePointView::sampledAt))
                     .toList();
         }
 

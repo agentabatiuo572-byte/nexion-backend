@@ -55,6 +55,19 @@ public interface NexMarketMapper extends BaseMapper<PriceIndexEntity> {
             """)
     List<NexPricePointView> latestNexPricePoints(@Param("limit") int limit);
 
+    @Select("""
+            SELECT price_usdt AS priceUsdt,
+                   delta_percent AS deltaPercent,
+                   sampled_at AS sampledAt
+              FROM nx_price_index
+             WHERE is_deleted = 0
+               AND status = 'ACTIVE'
+               AND metric_code IN ('NEX','NEX_USDT')
+               AND sampled_at >= #{since}
+             ORDER BY sampled_at ASC, id ASC
+            """)
+    List<NexPricePointView> nexPricePointsSince(@Param("since") LocalDateTime since);
+
     @Insert("""
             INSERT INTO nx_price_index(
               metric_code, metric_label, unit_label, price_usdt, delta_percent,

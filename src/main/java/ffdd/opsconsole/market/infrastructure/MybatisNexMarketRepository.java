@@ -56,6 +56,11 @@ public class MybatisNexMarketRepository implements NexMarketRepository {
     }
 
     @Override
+    public List<NexPricePointView> nexPricePointsSince(LocalDateTime since) {
+        return mapper.nexPricePointsSince(since);
+    }
+
+    @Override
     public void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt) {
         mapper.insertNexUsdtPrice(
                 priceUsdt.setScale(8, RoundingMode.HALF_UP),

@@ -12,6 +12,8 @@ public interface NexMarketRepository {
 
     List<NexPricePointView> latestNexPricePoints(int limit);
 
+    List<NexPricePointView> nexPricePointsSince(LocalDateTime since);
+
     void publishNexUsdtPrice(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
 
     void ensureNexMarketSeedData(BigDecimal priceUsdt, BigDecimal deltaPercent, String sparklineJson, LocalDateTime sampledAt);
