@@ -35,26 +35,21 @@ class HdPayPayoutTransactionsTest {
         return new WithdrawalPayoutMapper.PayoutRow(no, user, "BANK-VND", "BANK-VND:BNK-fixture", bd(amount), bd(net),
                 BigDecimal.ZERO, status, now, 123L, no, "hdpay", 1);
     }
-    @Test void prepareNormalizesHistoricalBankCodeToEmptyButRetainsAllDispatchGates() {
+    @Test void readyOrderReturnsToReviewBeforeAnyNewProviderDispatch() {
         when(users.lockActiveUser(71L)).thenReturn(71L);
         when(bank.lockOrder(no)).thenReturn(order("READY"));
         assertNull(service.prepare(no));
-        verify(bank, never()).dispatch(anyString(), any());
         when(properties.ready(transport)).thenReturn(true);
-        when(properties.serverIp(transport)).thenReturn("1.1.1.1");
         when(config.overview()).thenReturn(ffdd.opsconsole.shared.api.ApiResult.ok(java.util.Map.of("channelEnabled", true, "providerReady", true)));
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now.plusHours(24),now.plusDays(7),1L));
         when(canonical.payout(no)).thenReturn(row("REVIEW_PASSED",71L,"100","99"));
-        when(bank.processing(eq(no), any())).thenReturn(1); when(bank.dispatch(eq(no), any())).thenReturn(1);
-        var request = service.prepare(no);
-        assertNotNull(request); assertEquals("", request.bankCode());
+        when(bank.returnForReview(eq(no), eq(now), eq("BANK_ROUTING_IDENTITY_UNVERIFIED"))).thenReturn(1);
+        assertNull(service.prepare(no));
+        verify(bank, times(2)).returnForReview(no, now, "BANK_ROUTING_IDENTITY_UNVERIFIED");
         verify(bank, never()).clientIp(anyString()); // Client IP is audit data, not provider routing.
-        assertEquals("0123456789", request.account()); assertEquals("NGUYEN VAN A", request.holder());
-        assertEquals(quote.amountVnd(), request.amount());
-        verify(bank).dispatch(eq(no), any()); verifyNoInteractions(finalizer, outbox);
-        clearInvocations(bank);
-        when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-changed","","****6789","cipher",now,now.plusDays(7),2L));
-        assertNull(service.prepare(no)); verify(bank,never()).dispatch(anyString(),any());
+        verify(bank,never()).processing(anyString(),any());
+        verify(bank,never()).dispatch(anyString(),any());
+        verifyNoInteractions(finalizer, outbox);
     }
     HdPayPayoutGateway.Order response(int status) {
         return new HdPayPayoutGateway.Order(no, 123L, status, quote.amountVnd(), "0123456789", "NGUYEN VAN A", "2");

@@ -34,7 +34,14 @@ public class HdPayPayoutTransactions {
         var read = bank.order(orderNo);
         if (read == null || users.lockActiveUser(read.userId()) == null || Integer.valueOf(1).equals(users.isSandboxUser(read.userId()))) return null;
         var order = bank.lockOrder(orderNo);
-        if (order == null || !"READY".equals(order.state()) || !properties.ready(transport)) return null;
+        if (order == null || !"READY".equals(order.state())) return null;
+        if (!BankWithdrawalService.BANK_ROUTING_VERIFIED) {
+            String reason = "BANK_ROUTING_IDENTITY_UNVERIFIED";
+            if (bank.returnForReview(orderNo, LocalDateTime.now(clock), reason) == 1)
+                record(order, "BANK_PAYOUT_ROUTING_IDENTITY_UNVERIFIED", Map.of("reason", reason));
+            return null;
+        }
+        if (!properties.ready(transport)) return null;
         var gate = config.overview();
         if (gate.getCode() != 0
                 || !Boolean.TRUE.equals(gate.getData().get("providerReady"))) return null;

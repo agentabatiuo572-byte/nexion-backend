@@ -35,7 +35,7 @@ class HdPayPayoutEventMySqlTest {
     @Test void callbackAndQuerySettleOnceAfterTheRealSchemaMigration() throws Exception {
         isolated(f -> {
             EventOutboxService events = realEvents(f);
-            f.seed(); f.transactions.prepare(NO); f.transactions.reconcile(NO, f.response(2));
+            f.seed(); f.historicalDispatch(); f.transactions.reconcile(NO, f.response(2));
             var callback = new HdPayPayoutCallbackVerifier.Callback(NO,123L,3,bd("2475000"),"a".repeat(64));
             assertEquals("success", f.transactions.accept(callback));
             assertEquals(java.util.List.of(NO), f.bank.queryDue(NOW));
@@ -76,7 +76,7 @@ class HdPayPayoutEventMySqlTest {
         for (Integer score : new Integer[]{null,37}) isolated(f -> {
             realEvents(f); migrate(f); f.seed();
             f.jdbc.update("UPDATE nx_withdrawal_order SET d2_k4_risk_score=?",score);
-            f.transactions.prepare(NO);
+            f.historicalDispatch();
             f.transactions.reconcile(NO,f.response(score == null ? 4 : 5));
             f.transactions.reconcile(NO,f.response(score == null ? 4 : 5));
             assertEquals("FAILED",f.payouts.payout(NO).status());
@@ -102,7 +102,7 @@ class HdPayPayoutEventMySqlTest {
 
     @Test void outboxWriteFailureRollsBackMoneyAndRetryUsesOriginalOrder() throws Exception {
         for (int terminalStatus : new int[]{3,5}) isolated(f -> {
-            realEvents(f); migrate(f); f.seed(); f.transactions.prepare(NO); f.transactions.reconcile(NO,f.response(2));
+            realEvents(f); migrate(f); f.seed(); f.historicalDispatch(); f.transactions.reconcile(NO,f.response(2));
             f.jdbc.execute("""
                     CREATE TRIGGER reject_outbox BEFORE INSERT ON nx_event_outbox FOR EACH ROW
                     BEGIN IF NEW.aggregate_type='WITHDRAWAL' THEN

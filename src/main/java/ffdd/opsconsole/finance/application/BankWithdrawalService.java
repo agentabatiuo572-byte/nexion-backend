@@ -24,6 +24,8 @@ import org.springframework.transaction.annotation.Isolation;
 
 @Service @RequiredArgsConstructor
 public class BankWithdrawalService {
+    // No provider-authenticated bank identity is available for account-routed bindings yet.
+    static final boolean BANK_ROUTING_VERIFIED = false;
     private final BankWithdrawalMapper bank;
     private final AppWithdrawalMapper wallet;
     private final AppPayoutAddressMapper addresses;
@@ -57,7 +59,7 @@ public class BankWithdrawalService {
         Beneficiary current = bank.beneficiary(userId);
         ApiResult<Map<String, Object>> response = d7.overview();
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
-        boolean enabled = payout.ready(transport) && Boolean.TRUE.equals(data.get("providerReady"));
+        boolean enabled = BANK_ROUTING_VERIFIED && payout.ready(transport) && Boolean.TRUE.equals(data.get("providerReady"));
         Map<String, Object> capacity = null;
         try { capacity = withdrawals.bankCapacity(userId); }
         catch (BizException unavailable) { /* New quotes fail closed; original intents remain recoverable. */ }
@@ -68,8 +70,9 @@ public class BankWithdrawalService {
                 // number at payout time. Expose that contract so the App states the truth instead of
                 // rendering a bank picker whose selection the server would have to reject.
                 "bankSelection", "ACCOUNT_ROUTED", "bankSelectionNotice", "BANK_ACCOUNT_ROUTED_BY_NUMBER",
+                "bankRoutingVerified", BANK_ROUTING_VERIFIED,
                 "bankNameSource", "PAYOUT_PROVIDER",
-                "reason", enabled ? "" : "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", "beneficiary", beneficiaryView(current),
+                "reason", enabled ? "" : BANK_ROUTING_VERIFIED ? "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE" : "BANK_ROUTING_IDENTITY_UNVERIFIED", "beneficiary", beneficiaryView(current),
                 "policy", data, "capacity", capacity, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
                 "unresolvedIntent", intent));
     }
@@ -250,6 +253,7 @@ public class BankWithdrawalService {
     }
 
     private Map<String, Object> requireChannel() {
+        if (!BANK_ROUTING_VERIFIED) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
         var result = d7.overview();
         if (!payout.ready(transport) || result.getCode() != 0
                 || !Boolean.TRUE.equals(result.getData().get("providerReady")))
