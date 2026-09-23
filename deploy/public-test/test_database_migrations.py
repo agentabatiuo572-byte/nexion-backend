@@ -104,11 +104,12 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_recorded_test_history_keeps_original_hashes(self):
-        # These are the three hashes already recorded in TEST state; forward SQL repairs content.
+        # These hashes are already recorded in TEST state; forward SQL repairs content.
         expected = {
             '20260720_e2_task_pricing_closure.sql': '35e54c420ab6145b8a91d876c8e6b79ddfd231fb3dd8b25d56dbfbdb83109913',
             '20260722_i2_nova_closure.sql': '85627dddea64cc9fa00404564f59c8b053a4c9f1f251c40e1ac5fc2d691e4e6c',
             '20260722_i3_notification_campaign_closure.sql': '89686ab72fd9f448c36bd58095ecb99ad904e17fabe1d32386c09f12c81aee59',
+            '20260920_i5_published_disclosure_provisioning.sql': 'daf68564fabfeb02d3db3bfef25db4546936f13c68e96b11e067dd76d1a94114',
         }
         directory = Path(__file__).resolve().parents[2] / 'scripts' / 'migrations'
         for name, sha in expected.items():
