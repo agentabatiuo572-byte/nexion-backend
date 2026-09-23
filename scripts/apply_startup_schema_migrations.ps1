@@ -239,6 +239,9 @@ $migrations = @(
   # unresolved list. Return only rows that still match the scan's own criteria to
   # draft; no replacement copy is invented.
   (Join-Path $root "scripts\migrations\20260921_i6_published_placeholder_text_cleanup.sql"),
+  # I6 is published as a three-locale key. Retire the entire key when any locale
+  # contains placeholder text or the retired brand; the prior cleanup was per row.
+  (Join-Path $root "scripts\migrations\20260923_i6_invalid_published_key_retirement.sql"),
   # The retired "Nexion" brand was only rewritten for one product row, so the App
   # catalogue and the E2 task list kept showing "NexionBox Pro v2" / "需 NexionRack".
   # Worse, the E2 requirement vocabulary is now a fixed server-side allowlist, so an
