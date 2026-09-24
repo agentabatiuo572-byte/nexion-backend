@@ -135,8 +135,13 @@ public class AppUserAuthController {
             HttpServletResponse servletResponse) {
         try {
             ApiResult<UserLoginResponse> result = authService.refresh(
-                    refreshCookieService.resolve(request, servletRequest));
+                    refreshCookieService.resolve(request, servletRequest),
+                    servletRequest.getHeader(AppUserRefreshCookieService.ROTATION_KEY_HEADER),
+                    refreshCookieService.cookieMode(servletRequest));
             if (result.getCode() != 0 && refreshCookieService.cookieMode(servletRequest)) {
+                if ("USER_REFRESH_ROTATION_SUPERSEDED".equals(result.getMessage())) {
+                    return result;
+                }
                 refreshCookieService.clear(servletResponse);
                 return result;
             }

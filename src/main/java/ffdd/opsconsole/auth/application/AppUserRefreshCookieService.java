@@ -27,6 +27,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppUserRefreshCookieService {
     public static final String MODE_HEADER = "X-Nexion-Refresh-Mode";
+    public static final String ROTATION_KEY_HEADER = "X-NexGrid-Rotation-Key";
     public static final String COOKIE_MODE = "cookie";
     public static final String COOKIE_NAME = "NEXION_APP_REFRESH";
     private static final String COOKIE_PATH = "/auth/users";

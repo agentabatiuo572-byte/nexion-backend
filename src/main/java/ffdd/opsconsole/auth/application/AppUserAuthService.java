@@ -431,14 +431,42 @@ public class AppUserAuthService {
 
     @Transactional
     public ApiResult<UserLoginResponse> refresh(UserRefreshRequest request) {
+        return refresh(request, null, false);
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> refresh(UserRefreshRequest request, String rotationNonce, boolean cookieMode) {
         if (request == null || !StringUtils.hasText(request.refreshToken())
                 || request.refreshToken().trim().length() > 512) {
             return ApiResult.fail(401, "USER_REFRESH_TOKEN_INVALID");
         }
-        String tokenId = hashToken(request.refreshToken().trim());
+        String rawCurrent = request.refreshToken().trim();
+        String tokenId = hashToken(rawCurrent);
         UserSessionEntity current = sessionMapper.findRefreshForUpdate(tokenId);
         if (current == null) return ApiResult.fail(401, "USER_REFRESH_TOKEN_INVALID");
+        String recoveredRaw = null;
+        boolean nonceRotation = cookieMode && validRotationNonce(rotationNonce);
         if (current.getRotationRedeemedAt() != null || current.getRevokedAt() != null) {
+            if (nonceRotation && current.getRotationRedeemedAt() != null
+                    && StringUtils.hasText(current.getRotatedToId())) {
+                String candidate = tokenProvider.refreshSuccessor(rawCurrent, rotationNonce);
+                if (hashToken(candidate).equals(current.getRotatedToId())) {
+                    UserSessionEntity successor = sessionMapper.findRefreshForUpdate(current.getRotatedToId());
+                    if (successor != null && successor.getRevokedAt() == null
+                            && successor.getRotationRedeemedAt() == null
+                            && java.util.Objects.equals(successor.getUserId(), current.getUserId())
+                            && StringUtils.hasText(current.getSessionChainId())
+                            && current.getSessionChainId().equals(successor.getSessionChainId())) {
+                        current = successor;
+                        recoveredRaw = candidate;
+                    } else {
+                        // The same logical rotation already advanced. Never revoke a later live descendant.
+                        return ApiResult.fail(409, "USER_REFRESH_ROTATION_SUPERSEDED");
+                    }
+                }
+            }
+        }
+        if (recoveredRaw == null && (current.getRotationRedeemedAt() != null || current.getRevokedAt() != null)) {
             String chainId = StringUtils.hasText(current.getSessionChainId())
                     ? current.getSessionChainId() : tokenId;
             sessionMapper.revokeRefreshChain(chainId);
@@ -448,6 +476,9 @@ public class AppUserAuthService {
                             "sessionChainId", chainId,
                             "detectedAt", LocalDateTime.now().toString()));
             return ApiResult.fail(401, "USER_REFRESH_TOKEN_REUSE_DETECTED");
+        }
+        if (cookieMode && StringUtils.hasText(rotationNonce) && !nonceRotation) {
+            return ApiResult.fail(400, "USER_REFRESH_ROTATION_KEY_INVALID");
         }
         LocalDateTime now = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         int idleDays = configInt("auth.session.idle_ttl_days", 30, 7, 90);
@@ -476,7 +507,18 @@ public class AppUserAuthService {
             sessionMapper.revokeAllUserSessions(user.getId());
             return ApiResult.fail(403, "USER_REFRESH_PHONE_INVALID");
         }
-        String rawNext = randomRefreshToken();
+        if (recoveredRaw != null) {
+            String access = tokenProvider.createUserToken(user.getId(), user.getPhone(), List.of(),
+                    current.getRefreshTokenId(),
+                    Duration.ofHours(configInt("auth.session.access_ttl_hours", 4, 1, 24)),
+                    UserAuthEnvironment.resolve(environment)
+                            .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN")));
+            return ApiResult.ok(new UserLoginResponse(access, "Bearer",
+                    new UserLoginResponse.UserSession(user.getId(), normalizeCountryCode(user.getCountryCode()),
+                            user.getPhone(), user.getNickname(), userMapper.isOnboardingComplete(user.getId())),
+                    null, null, recoveredRaw, null, tokenProvider.sessionSyncKey(current.getSessionChainId())));
+        }
+        String rawNext = nonceRotation ? tokenProvider.refreshSuccessor(rawCurrent, rotationNonce) : randomRefreshToken();
         String nextId = hashToken(rawNext);
         if (sessionMapper.markRefreshRotated(current.getId(), nextId) != 1) {
             sessionMapper.revokeRefreshChain(current.getSessionChainId());
@@ -520,6 +562,10 @@ public class AppUserAuthService {
                 ? current.getSessionChainId() : tokenId;
         sessionMapper.revokeRefreshChain(chainId);
         return ApiResult.ok(Map.of("revoked", true));
+    }
+
+    private boolean validRotationNonce(String nonce) {
+        return nonce != null && nonce.matches("[0-9a-f]{64}");
     }
 
     private String randomRefreshToken() {

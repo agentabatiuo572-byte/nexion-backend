@@ -111,6 +111,19 @@ public class JwtTokenProvider {
         }
     }
 
+    /** Reconstruct a lost cookie rotation only with the original browser nonce. */
+    public String refreshSuccessor(String predecessor, String nonce) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secretKey().getEncoded(), "HmacSHA256"));
+            byte[] digest = mac.doFinal(("NEXGRID_REFRESH_ROTATION_V1:" + predecessor + ":" + nonce)
+                    .getBytes(StandardCharsets.UTF_8));
+            return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+        } catch (java.security.GeneralSecurityException exception) {
+            throw new IllegalStateException("Refresh rotation unavailable", exception);
+        }
+    }
+
     private SecretKey secretKey() {
         return Keys.hmacShaKeyFor(padSecret(properties.getSecret()).getBytes(StandardCharsets.UTF_8));
     }

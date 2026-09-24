@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
@@ -274,5 +275,26 @@ class AppUserAuthControllerSecurityTest {
                 .content("{\"refreshToken\":\"conflicting-body-token\"}")));
 
         verify(refreshCookieService).clear(any());
+    }
+
+    @Test
+    void supersededRotationDoesNotClearANewerCookie() throws Exception {
+        when(refreshCookieService.cookieMode(any())).thenReturn(true);
+        when(refreshCookieService.resolve(any(), any()))
+                .thenReturn(new ffdd.opsconsole.auth.dto.UserRefreshRequest("older-cookie"));
+        when(authService.refresh(any(), eq("a".repeat(64)), eq(true)))
+                .thenReturn(ApiResult.fail(409, "USER_REFRESH_ROTATION_SUPERSEDED"));
+
+        mockMvc.perform(post("/auth/users/refresh")
+                        .header(AppUserRefreshCookieService.MODE_HEADER, AppUserRefreshCookieService.COOKIE_MODE)
+                        .header(AppUserRefreshCookieService.ROTATION_KEY_HEADER, "a".repeat(64))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.message").value("USER_REFRESH_ROTATION_SUPERSEDED"))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+
+        verify(refreshCookieService, org.mockito.Mockito.never()).clear(any());
     }
 }

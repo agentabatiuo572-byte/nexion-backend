@@ -682,6 +682,173 @@ class AppUserAuthServiceTest {
     }
 
     @Test
+    void interruptedCookieRotationRecoversOnlyItsImmediateLiveSuccessorWithTheSameNonce() {
+        String nonce = "a".repeat(64);
+        UserEntity user = activeUser();
+        UserSessionEntity original = new UserSessionEntity();
+        original.setId(101L);
+        original.setUserId(42L);
+        original.setSessionChainId("chain-42");
+        original.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        original.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
+        when(users.selectById(42L)).thenReturn(user);
+        when(tokens.refreshSuccessor("original-cookie", nonce)).thenReturn("successor-cookie");
+        when(tokens.createUserToken(eq(42L), eq(user.getPhone()), eq(List.of()), any(),
+                any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
+        when(sessions.findRefreshForUpdate(any())).thenReturn(original);
+        when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
+
+        var first = service.refresh(new UserRefreshRequest("original-cookie"), nonce, true);
+        assertThat(first.getCode()).isZero();
+        assertThat(first.getData().refreshToken()).isEqualTo("successor-cookie");
+        ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(inserted.capture());
+        UserSessionEntity successor = inserted.getValue();
+        successor.setId(102L);
+        original.setRotatedToId(successor.getRefreshTokenId());
+        original.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        original.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(original.getRotatedToId())).thenReturn(successor);
+
+        var recovered = service.refresh(new UserRefreshRequest("original-cookie"), nonce, true);
+
+        assertThat(recovered.getCode()).isZero();
+        assertThat(recovered.getData().refreshToken()).isEqualTo("successor-cookie");
+        verify(sessions, times(1)).markRefreshRotated(eq(101L), any());
+        verify(sessions, times(1)).insert(any(UserSessionEntity.class));
+        verify(sessions, never()).revokeRefreshChain(any());
+    }
+
+    @Test
+    void copiedOldCookieWithoutTheOriginalNonceStillRevokesTheChain() {
+        UserSessionEntity old = new UserSessionEntity();
+        old.setUserId(42L);
+        old.setSessionChainId("chain-42");
+        old.setRotatedToId("successor-hash");
+        old.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(old);
+
+        var result = service.refresh(new UserRefreshRequest("old-cookie"), null, true);
+
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
+        verify(sessions).revokeRefreshChain("chain-42");
+        verify(tokens, never()).refreshSuccessor(any(), any());
+    }
+
+    @Test
+    void wrongNonceForRotatedCookieStillTriggersReuseDetection() {
+        UserSessionEntity old = new UserSessionEntity();
+        old.setUserId(42L);
+        old.setSessionChainId("chain-42");
+        old.setRotatedToId("different-successor-hash");
+        old.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(old);
+        when(tokens.refreshSuccessor("old-cookie", "b".repeat(64))).thenReturn("wrong-successor");
+
+        var result = service.refresh(new UserRefreshRequest("old-cookie"), "b".repeat(64), true);
+
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
+        verify(sessions).revokeRefreshChain("chain-42");
+    }
+
+    @Test
+    void expiredActiveCookieRevokesItsChain() {
+        UserSessionEntity expired = new UserSessionEntity();
+        expired.setUserId(42L);
+        expired.setSessionChainId("chain-42");
+        expired.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusDays(2));
+        expired.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusSeconds(1));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(expired);
+
+        var result = service.refresh(new UserRefreshRequest("expired-cookie"), "a".repeat(64), true);
+
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_EXPIRED");
+        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void revokedUnrotatedCookieCannotRecoverWithANonce() {
+        UserSessionEntity revoked = new UserSessionEntity();
+        revoked.setUserId(42L);
+        revoked.setSessionChainId("chain-42");
+        revoked.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(revoked);
+
+        var result = service.refresh(new UserRefreshRequest("logged-out-cookie"), "a".repeat(64), true);
+
+        assertThat(result.getMessage()).isEqualTo("USER_REFRESH_TOKEN_REUSE_DETECTED");
+        verify(sessions).revokeRefreshChain("chain-42");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
+    void retryOfSupersededRotationDoesNotRevokeItsLiveDescendant() {
+        String firstNonce = "a".repeat(64);
+        String secondNonce = "b".repeat(64);
+        UserEntity user = activeUser();
+        UserSessionEntity first = new UserSessionEntity();
+        first.setId(101L);
+        first.setUserId(42L);
+        first.setSessionChainId("chain-42");
+        first.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        first.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
+        when(users.selectById(42L)).thenReturn(user);
+        when(tokens.refreshSuccessor("first-cookie", firstNonce)).thenReturn("second-cookie");
+        when(tokens.refreshSuccessor("second-cookie", secondNonce)).thenReturn("third-cookie");
+        when(tokens.createUserToken(eq(42L), eq(user.getPhone()), eq(List.of()), any(),
+                any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
+        when(sessions.markRefreshRotated(any(), any())).thenReturn(1);
+        when(sessions.findRefreshForUpdate(any())).thenReturn(first);
+
+        var firstRotation = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, true);
+        assertThat(firstRotation.getCode()).isZero();
+        ArgumentCaptor<UserSessionEntity> inserted = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(inserted.capture());
+        UserSessionEntity second = inserted.getValue();
+        second.setId(102L);
+        first.setRotatedToId(second.getRefreshTokenId());
+        first.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        first.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(second, first, second);
+
+        var secondRotation = service.refresh(new UserRefreshRequest("second-cookie"), secondNonce, true);
+        assertThat(secondRotation.getCode()).isZero();
+        second.setRotatedToId("third-hash");
+        second.setRotationRedeemedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        second.setRevokedAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+
+        var staleRetry = service.refresh(new UserRefreshRequest("first-cookie"), firstNonce, true);
+        assertThat(staleRetry.getCode()).isEqualTo(409);
+        assertThat(staleRetry.getMessage()).isEqualTo("USER_REFRESH_ROTATION_SUPERSEDED");
+        verify(sessions, never()).revokeRefreshChain(any());
+        verify(sessions, times(2)).insert(any(UserSessionEntity.class));
+        verify(outbox, never()).publish(any(), any(), any(), any());
+    }
+
+    @Test
+    void legacyCookieClientWithoutNonceCanRotateAnActiveCookie() {
+        UserSessionEntity current = new UserSessionEntity();
+        current.setId(101L);
+        current.setUserId(42L);
+        current.setSessionChainId("chain-42");
+        current.setLastActiveAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE));
+        current.setExpiresAt(LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusDays(1));
+        when(sessions.findRefreshForUpdate(any())).thenReturn(current);
+        when(sessions.markRefreshRotated(eq(101L), any())).thenReturn(1);
+        when(users.selectById(42L)).thenReturn(activeUser());
+        when(tokens.createUserToken(eq(42L), any(), eq(List.of()), any(),
+                any(Duration.class), eq(UserAuthEnvironment.PRODUCTION))).thenReturn("access");
+
+        var result = service.refresh(new UserRefreshRequest("legacy-cookie"), null, true);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().refreshToken()).isNotBlank();
+        verify(tokens, never()).refreshSuccessor(any(), any());
+        verify(sessions).insert(any(UserSessionEntity.class));
+    }
+
+    @Test
     void refreshRejectsAnAccountWhosePersistedCountryCodeIsOutsideThePhoneAllowlist() {
         UserEntity user = activeUser();
         user.setCountryCode("+1");
