@@ -61,7 +61,7 @@ class RagNovaAiGatewayTest {
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
-            "en,How can I check my device earnings?,Where can I check my device and computing earnings?,Open Me → My Devices to check device status. Open the Earn tab for computing earnings. Home → Earnings → See all opens Bills for credited entries.",
+            "en,How can I check my device earnings?,Where can I check my device and computing earnings?,Open Me → My Devices to check device status. Open the Earn tab for computing earnings. Home → Earnings → See all opens Bill history for credited entries.",
             "vi,Tôi xem thu nhập từ thiết bị ở đâu?,Tôi xem thu nhập từ thiết bị và năng lực điện toán ở đâu?,Mở Tôi → Thiết bị của tôi để xem trạng thái. Mở thẻ Sinh lời để xem thu nhập. Trang chủ → Thu nhập → Xem tất cả mở Sao kê cho các khoản đã ghi có."
     })
     void answersEnglishAndVietnameseNavigationOnlyFromPublishedSameLanguageFaq(

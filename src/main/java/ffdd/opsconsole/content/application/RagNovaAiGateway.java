@@ -208,7 +208,7 @@ public class RagNovaAiGateway implements NovaAiGateway {
             case "zh" -> answer.contains("我的→我的设备") && answer.contains("赚取")
                     && answer.contains("首页→收益→查看全部") && answer.contains("账单流水") && answer.contains("服务端");
             case "en" -> answer.contains("Me → My Devices") && answer.contains("Earn tab")
-                    && answer.contains("Home → Earnings → See all") && answer.contains("Bills");
+                    && answer.contains("Home → Earnings → See all") && answer.contains("credited");
             case "vi" -> answer.contains("Tôi → Thiết bị của tôi") && answer.contains("thẻ Sinh lời")
                     && answer.contains("Trang chủ → Thu nhập → Xem tất cả") && answer.contains("Sao kê");
             default -> false;
