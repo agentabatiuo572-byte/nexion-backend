@@ -121,6 +121,10 @@ public class OpsTrustDisclosureService implements AuditReplayable {
             "financials", "nexnarrative", "nexstory");
     private static final Set<String> SENSITIVE_TRUST_SECTIONS = Set.of(
             "financials", "nexnarrative", "nexstory", "auditsreserves", "compliancebadges");
+    private static final Set<String> UNSUPPORTED_NEX_SUBHERO_CLAIMS = Set.of(
+            "透明、可验证，并服务于真实使用场景。",
+            "Transparent, verifiable and built for real utility.",
+            "Minh bạch, có thể kiểm chứng và hướng đến tiện ích thực tế.");
 
     private final TrustDisclosureRepository trustDisclosureRepository;
     private final PlatformConfigFacade configFacade;
@@ -181,6 +185,8 @@ public class OpsTrustDisclosureService implements AuditReplayable {
                             unsupportedClaim || missingAudit
                                     || ("auditsReserves".equals(section.key()) && field.key().startsWith("homepageProof."))
                                     || ("nexNarrative".equals(section.key()) && "activeAiClients".equals(field.key()))
+                                    || ("nexNarrative".equals(section.key()) && field.key().startsWith("subhero.")
+                                        && UNSUPPORTED_NEX_SUBHERO_CLAIMS.contains(field.value()))
                                     ? "" : field.value()))
                     .toList();
             sections.add(new AppTrustSectionsView.Section(

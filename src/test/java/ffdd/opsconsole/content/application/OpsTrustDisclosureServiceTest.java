@@ -612,7 +612,7 @@ class OpsTrustDisclosureServiceTest {
     }
 
     @Test
-    void appPublishedSectionsWithholdReserveRatioAndAiClientCountEvenWithDocumentUrl() {
+    void appPublishedSectionsWithholdUnsupportedNexClaimsEvenWithDocumentUrl() {
         addRemainingPublishedAppTrustSections();
         repository.sectionVersions.put("auditsReserves::v1", new TrustSectionVersionView(
                 "auditsReserves", "v1", "Audit documents", "structured fields",
@@ -628,6 +628,9 @@ class OpsTrustDisclosureServiceTest {
                         new TrustSectionVersionView.Field("hero.zh", "Headline", "NEX"),
                         new TrustSectionVersionView.Field("hero.vi", "Headline", "NEX"),
                         new TrustSectionVersionView.Field("hero.en", "Headline", "NEX"),
+                        new TrustSectionVersionView.Field("subhero.zh", "Subhead", "透明、可验证，并服务于真实使用场景。"),
+                        new TrustSectionVersionView.Field("subhero.vi", "Subhead", "Minh bạch, có thể kiểm chứng và hướng đến tiện ích thực tế."),
+                        new TrustSectionVersionView.Field("subhero.en", "Subhead", "Transparent, verifiable and built for real utility."),
                         new TrustSectionVersionView.Field("activeAiClients", "Active AI clients", "18,420")),
                 "published", 2L, "operator", "2026-09-23"));
 
@@ -643,6 +646,10 @@ class OpsTrustDisclosureServiceTest {
                 .findFirst().orElseThrow().fields();
         assertThat(narrativeFields.stream().filter(f -> "activeAiClients".equals(f.key())).findFirst().orElseThrow().value())
                 .isEmpty();
+        assertThat(narrativeFields.stream().filter(f -> f.key().startsWith("subhero.")))
+                .allSatisfy(field -> assertThat(field.value()).isEmpty());
+        assertThat(narrativeFields.stream().filter(f -> f.key().startsWith("hero.")))
+                .allSatisfy(field -> assertThat(field.value()).isEqualTo("NEX"));
     }
 
     @Test
