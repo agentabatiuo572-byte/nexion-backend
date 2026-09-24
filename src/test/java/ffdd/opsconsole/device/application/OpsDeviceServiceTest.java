@@ -1192,6 +1192,48 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void createSkuRejectsManagedIdentityWhenTheUploadedObjectDoesNotExist() {
+        catalogRepository.phases.put("P1", phase("P1", "P1", 10));
+        String objectKey = "admin/e/sku-image/20260903/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        when(storageService.exists(objectKey)).thenReturn(false);
+
+        ApiResult<DeviceSkuView> result = service.createSku("idem-create-media-missing",
+                skuRequest("new-sku-media-missing", "New SKU", "pending", "Entry", "HK-1", 1,
+                        "active", "P1", assetId, objectKey, null));
+
+        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
+        assertThat(result.getMessage()).isEqualTo("SKU_MEDIA_OBJECT_NOT_FOUND");
+        assertThat(catalogRepository.lastSkuRequest).isNull();
+    }
+
+    @Test
+    void updateSkuAllowsPhaseChangeWhenExistingMediaObjectIsMissing() {
+        catalogRepository.phases.put("P1", phase("P1", "种子期", 10));
+        catalogRepository.phases.put("P2", phase("P2", "扩张期", 20));
+        String objectKey = "admin/e/sku-image/20260903/01234567-89ab-cdef-0123-456789abcdef.webp";
+        String assetId = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(objectKey.getBytes(StandardCharsets.UTF_8));
+        catalogRepository.sku = withMedia(sku("legacy-phase-only-sku", "Legacy media SKU", "off", "P1"),
+                assetId, objectKey);
+        catalogRepository.skus.put("legacy-phase-only-sku", catalogRepository.sku);
+        when(storageService.exists(objectKey)).thenReturn(false);
+
+        DeviceSkuUpsertRequest request = skuRequest("legacy-phase-only-sku", "Legacy media SKU", "off",
+                "Entry", "HK-1", 1, "active", "P2", assetId, objectKey, null);
+        assertThat(catalogRepository.sku.imageAssetId()).isEqualTo(request.imageAssetId());
+        assertThat(catalogRepository.sku.imageObjectKey()).isEqualTo(request.imageObjectKey());
+        ApiResult<DeviceSkuView> result = service(OpsReadTimeSeedPolicy.disabledForDirectConstruction()).updateSku(
+                "legacy-phase-only-sku", catalogRepository.sku.updatedAt().toString(), "idem-phase-legacy-media", request);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        assertThat(catalogRepository.lastSkuRequest.unlockPhase()).isEqualTo("P2");
+        assertThat(catalogRepository.lastSkuRequest.imageObjectKey()).isEqualTo(objectKey);
+        verify(storageService, never()).exists(objectKey);
+    }
+
+    @Test
     void updateSkuRejectsMediaOutsideTheManagedSkuNamespaces() {
         catalogRepository.phases.put("P1", phase("P1", "P1", 10));
         catalogRepository.sku = sku("stellarrack-p1", "StellarRack P1", "on", "P1");
@@ -3583,6 +3625,21 @@ class OpsDeviceServiceTest {
                 source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
                 source.createdAt(), source.updatedAt(), source.productType(),
                 source.inventoryMode(), trialEligible);
+    }
+
+    private static DeviceSkuView withMedia(DeviceSkuView source, String assetId, String objectKey) {
+        return new DeviceSkuView(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(),
+                source.vram(), source.hashRate(), source.power(), source.datacenter(), source.uptime(),
+                source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(),
+                source.dailyEarn(), source.dailyEarnNex(), source.shareYieldMin(), source.shareYieldMax(),
+                source.baseRate(), source.sold(), source.stock(), source.rating(), source.reviews(),
+                source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(),
+                source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
+                source.purchaseGate(), assetId, objectKey, source.imagePreviewUrl(), source.tag(),
+                source.status(), source.publishBlocked(), source.publishBlockReason(), source.createdAt(),
+                source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible());
     }
 
     private static DeviceGenerationGateView gate(

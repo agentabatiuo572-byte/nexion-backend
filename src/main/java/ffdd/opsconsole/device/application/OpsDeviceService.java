@@ -293,6 +293,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
+        ApiResult<DeviceSkuView> mediaObjectGuard = requireSkuMediaObject(request);
+        if (mediaObjectGuard != null) {
+            return mediaObjectGuard;
+        }
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
         return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", writeRequest, () -> {
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
@@ -367,6 +371,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceSkuUpsertRequest orderManagedWriteRequest = normalizeSkuPhaseRequest(writeRequest, currentSold);
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
+        }
+        if (!Objects.equals(before.imageAssetId(), writeRequest.imageAssetId())
+                || !Objects.equals(before.imageObjectKey(), writeRequest.imageObjectKey())) {
+            ApiResult<DeviceSkuView> mediaObjectGuard = requireSkuMediaObject(writeRequest);
+            if (mediaObjectGuard != null) {
+                return mediaObjectGuard;
+            }
         }
         if (!Objects.equals(before.unlockPhase(), orderManagedWriteRequest.unlockPhase())) {
             DeviceGenerationGateView gate = catalogRepository.findGenerationGate(normalized).orElse(null);
@@ -3164,6 +3175,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!ManagedSkuMediaIdentity.isCanonicalPair(request.imageAssetId(), request.imageObjectKey())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_MEDIA_IDENTITY_MISMATCH");
         }
+        return null;
+    }
+
+    private ApiResult<DeviceSkuView> requireSkuMediaObject(DeviceSkuUpsertRequest request) {
         if (StringUtils.hasText(request.imageObjectKey())
                 && !storageService.exists(request.imageObjectKey().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_MEDIA_OBJECT_NOT_FOUND");
