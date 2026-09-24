@@ -177,6 +177,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COUNT(*)
               FROM nx_user_device d
+              JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               JOIN nx_user u ON u.id = d.user_id
                             AND u.sandbox = #{sandbox}
                             AND u.status = 'ACTIVE'
@@ -187,6 +188,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
+               AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
             """)
     Long globalActiveDevices(@Param("sandbox") boolean sandbox);
 
@@ -218,6 +220,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                    COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city,
                    COUNT(*) AS gpus
               FROM nx_user_device d
+              JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               JOIN nx_user u ON u.id = d.user_id
                             AND u.sandbox = #{sandbox}
                             AND u.status = 'ACTIVE'
@@ -238,6 +241,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.activated_at IS NOT NULL
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
+               AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
              GROUP BY d.device_type, d.dc_location, d.gpu_model,
                       current_client.client_name, dc.display_name, dc.location
              ORDER BY COUNT(*) DESC, id ASC

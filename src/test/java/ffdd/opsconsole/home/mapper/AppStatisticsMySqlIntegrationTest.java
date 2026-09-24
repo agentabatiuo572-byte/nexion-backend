@@ -90,7 +90,7 @@ class AppStatisticsMySqlIntegrationTest {
         assertOwnedFixtureDatabase();
         assertThat(jdbc.queryForObject("SELECT DATABASE()", String.class)).isEqualTo(fixtureDatabase);
         for (String table : List.of("nx_order", "nx_product", "nx_compute_datacenter", "nx_compute_receipt",
-                "nx_compute_task", "nx_user_device", "nx_user")) {
+                "nx_compute_task", "nx_user_device_runtime", "nx_user_device", "nx_user")) {
             jdbc.execute("TRUNCATE TABLE " + table);
         }
         nextReceiptId = 1;
@@ -254,6 +254,8 @@ class AppStatisticsMySqlIntegrationTest {
         device(105, USER, "ACTIVE", "LEASED", 0, "T4", "DC-B");
         device(106, USER, "ACTIVE", "OWNED", 1, "T4", "DC-B");
         device(107, USER + 1, "ACTIVE", "OWNED", 0, "T4", "DC-B");
+        for (long id : List.of(100L, 101L, 102L, 103L)) runtime(id, "ONLINE");
+        runtime(104, "OFFLINE");
 
         task(100, USER, PRODUCTION, "COMPLETED", "0", 1, "old", END.minusDays(1), 0);
         long updatedAtFallback = task(100, USER, PRODUCTION, "COMPLETED", "0", 1, "newest", END.minusHours(1), 0);
@@ -276,6 +278,23 @@ class AppStatisticsMySqlIntegrationTest {
                         org.assertj.core.groups.Tuple.tuple("newest", "A100", "Metro", 2L),
                         org.assertj.core.groups.Tuple.tuple("tie winner", "L40", "Coast", 1L),
                         org.assertj.core.groups.Tuple.tuple(null, "T4", "DC-DELETED", 1L));
+    }
+
+    @Test
+    void onGridDropsActivatedDevicesAndClientsWhenRuntimeGoesOffline() {
+        user(USER, false, "ACTIVE", 0);
+        device(100, USER, "ACTIVE", "OWNED", 0, "GPU", "DC-A");
+        device(101, USER, "OFFLINE", "OWNED", 0, "GPU", "DC-A");
+        device(102, USER, "ACTIVE", "OWNED", 0, "GPU", "DC-A");
+        runtime(100, "OFFLINE");
+        runtime(101, "ONLINE");
+
+        assertThat(home.globalActiveDevices(false)).isEqualTo(1L);
+        assertThat(home.onGridClients(false)).singleElement().satisfies(row -> assertThat(row.gpus()).isEqualTo(1L));
+
+        jdbc.update("UPDATE nx_user_device_runtime SET online_status='OFFLINE' WHERE user_device_id=101");
+        assertThat(home.globalActiveDevices(false)).isZero();
+        assertThat(home.onGridClients(false)).isEmpty();
     }
 
     @Test
@@ -359,6 +378,10 @@ class AppStatisticsMySqlIntegrationTest {
                     ownership_status,status,purchased_at,activated_at,is_deleted)
                 VALUES(?,?,?,'fixture device','PC_GPU',?,?,?, ?,?,?,?)
                 """, id, userId, "DEVICE-" + id, gpu, dc, ownership, status, DAY.minusDays(1), DAY.minusDays(1), deleted);
+    }
+
+    private void runtime(long deviceId, String status) {
+        jdbc.update("INSERT INTO nx_user_device_runtime(user_device_id, online_status) VALUES(?, ?)", deviceId, status);
     }
 
     private void datacenter(String location, String city, String displayName, int deleted) {
@@ -523,6 +546,12 @@ class AppStatisticsMySqlIntegrationTest {
                     daily_nex DECIMAL(18,6) NOT NULL DEFAULT 0, pending_deactivate TINYINT NOT NULL DEFAULT 0,
                     row_version BIGINT NOT NULL DEFAULT 0, purchased_at DATETIME, activated_at DATETIME,
                     deactivated_at DATETIME, is_deleted TINYINT NOT NULL DEFAULT 0
+                )
+                """);
+        jdbc.execute("""
+                CREATE TABLE nx_user_device_runtime (
+                    user_device_id BIGINT PRIMARY KEY, online_status VARCHAR(32),
+                    is_deleted TINYINT NOT NULL DEFAULT 0
                 )
                 """);
         jdbc.execute("""

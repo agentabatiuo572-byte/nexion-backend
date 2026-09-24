@@ -30,6 +30,11 @@ class AppHomeOverviewMapperSqlContractTest {
         assertTrue(devices.contains("ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC"));
         assertTrue(devices.contains("COALESCE(current_client.client_name, dc.display_name) AS name"));
         assertTrue(devices.contains("COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city"));
+        for (String method : java.util.List.of("globalActiveDevices", "onGridClients")) {
+            String online = select(method);
+            assertTrue(online.contains("JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0"));
+            assertTrue(online.contains("UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'"));
+        }
         assertTrue(!devices.contains("u.email"));
         assertTrue(!devices.contains("u.phone"));
         assertTrue(!devices.contains("Pocket Studios"));
