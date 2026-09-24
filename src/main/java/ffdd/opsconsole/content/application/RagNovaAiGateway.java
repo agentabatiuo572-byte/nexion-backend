@@ -16,12 +16,16 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Local Nova adapter backed by the authoritative Qdrant + Gemma RAG service. */
 @Component
 public class RagNovaAiGateway implements NovaAiGateway {
+    private static final Pattern DEVICE_EARNINGS_NAVIGATION = Pattern.compile(
+            "^(?:请问)?(?:如何|怎么|怎样|在哪(?:里)?|从哪(?:里)?)?(?:查看|查询|看|查)(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:呢|啊|呀)?$"
+                    + "|^(?:请问)?(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:在(?:哪里|哪)|怎么|如何)?(?:查看|查询|看|查)(?:呢|啊|呀)?$");
     private final NovaAiProperties properties;
     private final ObjectMapper objectMapper;
     private final SupportKnowledgeRepository knowledgeRepository;
@@ -47,6 +51,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
                 throw invalidResponse();
             }
             Message current = request.messages().get(currentIndex);
+            String publishedFaqAnswer = publishedDeviceEarningsAnswer(current.content(), request.language());
+            if (publishedFaqAnswer != null) return publishedFaqAnswer;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("question", novaQuestion(current.content(), request.language()));
             body.put("response_language", request.language());
@@ -158,6 +164,34 @@ public class RagNovaAiGateway implements NovaAiGateway {
 
     private BizException invalidResponse() {
         return new BizException(502, "NOVA_AI_RESPONSE_INVALID");
+    }
+
+    private String publishedDeviceEarningsAnswer(String question, String language) {
+        if (knowledgeRepository == null || !"zh".equalsIgnoreCase(language)
+                || !isDeviceEarningsNavigationQuestion(question)) return null;
+        java.util.List<SupportFaqView> matches = knowledgeRepository.listFaqs().stream()
+                .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
+                .filter(faq -> "Help Center".equalsIgnoreCase(faq.surface()))
+                .filter(faq -> "zh-CN".equalsIgnoreCase(faq.language()))
+                .filter(faq -> "FAQ-20260829015717730-084d2c0b".equals(faq.id()))
+                .filter(faq -> "hardware".equalsIgnoreCase(faq.category()))
+                .filter(faq -> "设备和算力收益在哪里查看".equals(compactQuestion(faq.question())))
+                .limit(2).toList();
+        if (matches.size() != 1) return null;
+        String answer = matches.get(0).answer();
+        int maxChars = bounded(properties.getMaxOutputChars(), 256, 16_000);
+        return answer == null || answer.isBlank() || answer.length() > maxChars
+                || !answer.contains("我的设备") || !answer.contains("结算记录") || !answer.contains("服务端")
+                ? null : answer.trim();
+    }
+
+    private boolean isDeviceEarningsNavigationQuestion(String question) {
+        String text = compactQuestion(question);
+        return text.length() <= 32 && DEVICE_EARNINGS_NAVIGATION.matcher(text).matches();
+    }
+
+    private String compactQuestion(String question) {
+        return question == null ? "" : question.replaceAll("[\\s?？。！!，,]", "");
     }
 
     private String novaQuestion(String question, String language) {

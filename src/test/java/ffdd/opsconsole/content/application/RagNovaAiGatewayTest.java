@@ -2,12 +2,16 @@ package ffdd.opsconsole.content.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.content.domain.SupportFaqView;
+import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -35,6 +39,81 @@ class RagNovaAiGatewayTest {
     @Test
     void defaultOutputBudgetLeavesRoomForGemmaReasoningAndAnswer() {
         assertThat(new NovaAiProperties().getMaxOutputTokens()).isEqualTo(1_024);
+    }
+
+    @Test
+    void answersDeviceEarningsNavigationFromTheCurrentPublishedHelpCenterFaq() {
+        SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
+        String answer = "进入「我的 - 我的设备」查看设备、槽位和运行状态；进入收益相关页面查看算力收益与结算记录。设备状态和收益数据均以服务端返回为准。";
+        when(knowledge.listFaqs()).thenReturn(List.of(deviceEarningsFaq("PUBLISHED", "Help Center", "zh-CN", answer)));
+
+        String actual = new RagNovaAiGateway(properties(), objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "zh", RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", "如何查看我的设备收益？")), 1_024));
+
+        assertThat(actual).isEqualTo(answer);
+
+        assertThat(new RagNovaAiGateway(properties(), objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "zh", RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", "设备和算力收益在哪里查看？")), 1_024)))
+                .isEqualTo(answer);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "我的设备收益为什么没有到账？", "如何计算设备收益？", "查看我的设备收益是多少？",
+            "如何查看设备收益提现手续费？", "查看设备收益的税费在哪里？", "我的设备收益如何查看但不显示？"
+    })
+    void doesNotTurnPersonalOrCalculationQuestionsIntoNavigationAnswers(String question) throws Exception {
+        assertUsesRagInsteadOfFaq(question, deviceEarningsFaq("PUBLISHED", "Help Center", "zh-CN", "FAQ answer"));
+    }
+
+    @Test
+    void ignoresDraftOrWrongSurfaceFaqs() throws Exception {
+        assertUsesRagInsteadOfFaq("如何查看我的设备收益？",
+                deviceEarningsFaq("DRAFT", "Help Center", "zh-CN", "Draft answer"));
+        stop();
+        assertUsesRagInsteadOfFaq("如何查看我的设备收益？",
+                deviceEarningsFaq("PUBLISHED", "Nova", "zh-CN", "Wrong surface answer"));
+    }
+
+    @Test
+    void ignoresPublishedFaqWithoutTheApprovedRouteAndRecordGuidance() throws Exception {
+        assertUsesRagInsteadOfFaq("如何查看我的设备收益？",
+                deviceEarningsFaq("PUBLISHED", "Help Center", "zh-CN", "请等待收益到账。"));
+    }
+
+    @Test
+    void ignoresOtherLanguageFaq() throws Exception {
+        assertUsesRagInsteadOfFaq("如何查看我的设备收益？",
+                deviceEarningsFaq("PUBLISHED", "Help Center", "en-US", "See my devices and settlement records on server."));
+    }
+
+    private void assertUsesRagInsteadOfFaq(String question, SupportFaqView faq) throws Exception {
+        SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
+        when(knowledge.listFaqs()).thenReturn(List.of(faq));
+        AtomicReference<Map<String, Object>> captured = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> {
+            captured.set(objectMapper.readValue(exchange.getRequestBody(), new TypeReference<>() { }));
+            respond(exchange, 200, """
+                    {"answer":"RAG answer","sources":[{"source_name":"current"}],"need_human":false,
+                     "model":"generated-answer"}
+                    """);
+        });
+        server.start();
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+
+        assertThat(new RagNovaAiGateway(properties, objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "zh", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", question)), 128)))
+                .isEqualTo("RAG answer");
+        assertThat(captured.get()).containsEntry("question", question);
+    }
+
+    private SupportFaqView deviceEarningsFaq(String status, String surface, String language, String answer) {
+        return new SupportFaqView("FAQ-20260829015717730-084d2c0b", "hardware", "设备和算力收益在哪里查看？", answer,
+                status, surface, language, 1, 1, null);
     }
 
     @Test
