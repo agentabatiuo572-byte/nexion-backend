@@ -1058,20 +1058,17 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         long ready = playbooks.stream().filter(row -> "active".equals(row.get("state"))).count();
         long emergency = playbooks.stream().filter(row -> Boolean.TRUE.equals(row.get("emergency"))).count();
         LocalDateTime since90d = LocalDateTime.now().minusDays(90);
-        // 「近 90d 演练」必须与「演练就绪」同源,否则同页自相矛盾(#151):
-        // 就绪度读剧本的 last_drill_at,而执行台账只保留最近 20 行且会被迁移/清理,
-        // 于是剧本显示「最近演练 2026-07-15」(未超 90 天、判为就绪)而台账计数为 0。
-        // 这里改为按同一权威事实(剧本 last_drill_at 在 90 天内)计数。
+        // 就绪和近 90 天剧本数均要求对应的成功演练台账；单独的 last_drill_at 不能证明演练可追溯。
         long drilledPlaybooks90d = playbooks.stream()
-                .filter(row -> isJ4DrillFresh(stringValue(row.get("lastDrill"), "")))
+                .filter(row -> "active".equals(row.get("state")))
                 .count();
-        // 台账计数仅作对照,单独暴露,不再冒充「近 90d 演练」总数。
+        // 台账行数允许大于就绪剧本数（同一剧本可多次演练）。
         long drillExecutions90d = emergencyRepository.countExecutionsSinceByMode("drill", since90d);
         long liveExec90d = emergencyRepository.countExecutionsSinceByMode("regular", since90d)
                 + emergencyRepository.countExecutionsSinceByMode("emergency", since90d);
         Map<String, Object> response = map(
                 "domain", "J4",
-                "contractVersion", "J4_REAL_EXECUTION_V4",
+                "contractVersion", "J4_REAL_EXECUTION_V5",
                 "stats", map(
                         "playbookCount", playbooks.size(),
                         "readyCount", ready,
@@ -1283,7 +1280,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         row.put("rollbackStatus", J4_DRILL_ROLLBACK_NOT_REQUIRED);
         row.put("rollbackReason", J4_DRILL_VALIDATION_ONLY_REASON);
         emergencyRepository.createExecution(row);
-        emergencyRepository.markPlaybookDrilled(seed.code(), drillAt, operator);
+        emergencyRepository.markPlaybookDrilled(seed.code(), drillAt, operator, executionId);
         auditRequired("J4_SOP_PLAYBOOK_DRILL_COMPLETED", "SOP_PLAYBOOK_EXECUTION", executionId, operator, "MEDIUM", map(
                 "code", seed.code(),
                 "validationOnly", true,
@@ -2593,7 +2590,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return definitionError;
         }
         if (production && (seed.draft() || !"active".equals(seed.state())
-                || !isJ4DrillFresh(seed.lastDrill()))) {
+                || !isJ4DrillFresh(seed.lastDrill())
+                || !emergencyRepository.hasCurrentDrillEvidence(seed.code()))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_PLAYBOOK_NOT_READY");
         }
         if (requiresI3Dispatch(seed)
@@ -3286,13 +3284,15 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     private Map<String, Object> playbookView(PlaybookSeed seed) {
         boolean drillFresh = isJ4DrillFresh(seed.lastDrill());
+        boolean drillEvidence = drillFresh && emergencyRepository.hasCurrentDrillEvidence(seed.code());
         boolean campaignReady = !requiresI3Dispatch(seed)
                 || notificationDispatchFacade.inspectEmergencyCampaign(seed.notifyCampaignNo()).isPresent();
-        boolean executionReady = !seed.draft() && "active".equals(seed.state()) && drillFresh && campaignReady;
+        boolean executionReady = !seed.draft() && "active".equals(seed.state()) && drillEvidence && campaignReady;
         String readinessReason = seed.draft() || !"active".equals(seed.state())
                 ? "待演练"
                 : !drillFresh
                         ? "演练已超过90天，请重新演练"
+                        : !drillEvidence ? "最近演练缺少对应成功台账，请重新演练并核对历史记录"
                         : !campaignReady ? "绑定通知活动不可下发，请更换活动后重新演练" : "";
         return map(
                 "code", seed.code(),
@@ -3303,6 +3303,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "state", executionReady ? "active" : "todo",
                 "executionReady", executionReady,
                 "drillFresh", drillFresh,
+                "drillEvidence", drillEvidence,
                 "campaignReady", campaignReady,
                 "readinessReason", readinessReason,
                 "owner", seed.owner(),

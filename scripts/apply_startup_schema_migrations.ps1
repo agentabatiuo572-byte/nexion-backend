@@ -266,6 +266,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260923_h3_storefront_three_product_binding.sql")
   # Bind the remaining server-verified H3 weekly facts and pause unbound legacy tasks.
   (Join-Path $root "scripts\migrations\20260923_h3_weekly_event_gate.sql")
+  # J4 readiness must point to its exact successful drill row. Historical rows stay unlinked.
+  (Join-Path $root "scripts\migrations\20260924_j4_drill_execution_link.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

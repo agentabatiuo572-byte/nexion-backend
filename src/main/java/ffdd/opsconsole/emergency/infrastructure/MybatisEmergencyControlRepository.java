@@ -410,7 +410,13 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     @Override
     public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator) {
         ensureTables();
-        mapper.markPlaybookDrilled(code, drillAt, operator);
+        throw new UnsupportedOperationException("J4 drill execution id is required");
+    }
+
+    @Override
+    public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator, String executionId) {
+        ensureTables();
+        mapper.markPlaybookDrilled(code, drillAt, operator, executionId);
     }
 
     @Override
@@ -447,6 +453,12 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     public long countExecutionsSinceByMode(String mode, LocalDateTime since) {
         ensureTables();
         return mapper.countExecutionsSinceByMode(mode, since);
+    }
+
+    @Override
+    public boolean hasCurrentDrillEvidence(String code) {
+        ensureTables();
+        return mapper.hasCurrentDrillEvidence(code);
     }
 
     @Override

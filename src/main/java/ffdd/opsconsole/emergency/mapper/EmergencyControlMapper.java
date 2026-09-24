@@ -160,6 +160,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
               state VARCHAR(32) NOT NULL DEFAULT 'todo',
               owner VARCHAR(64) NOT NULL,
               last_drill_at DATETIME NULL,
+              last_drill_execution_id VARCHAR(96) NULL,
               notify_campaign_no VARCHAR(96) NULL,
               notify_template VARCHAR(255) NULL,
               rollback_plan VARCHAR(500) NULL,
@@ -1140,6 +1141,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
              , state = #{state}
              , draft = #{draft}
              , last_drill_at = CASE WHEN #{draft} = 1 THEN NULL ELSE last_drill_at END
+             , last_drill_execution_id = CASE WHEN #{draft} = 1 THEN NULL ELSE last_drill_execution_id END
               WHERE code = #{code}
                 AND is_deleted = 0
                 AND DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') = #{expectedVersion}
@@ -1190,6 +1192,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_emergency_sop_playbook
                SET last_drill_at = #{drillAt},
+                   last_drill_execution_id = #{executionId},
                    state = 'active',
                    draft = 0,
                    updated_by = #{operator},
@@ -1199,7 +1202,8 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     int markPlaybookDrilled(@Param("code") String code,
                             @Param("drillAt") LocalDateTime drillAt,
-                            @Param("operator") String operator);
+                            @Param("operator") String operator,
+                            @Param("executionId") String executionId);
 
     @Select("""
             SELECT execution_id AS executionId,
@@ -1287,6 +1291,20 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     long countExecutionsSinceByMode(@Param("mode") String mode,
                                     @Param("since") LocalDateTime since);
+
+    @Select("""
+            SELECT COUNT(*) > 0
+              FROM nx_emergency_sop_playbook p
+              JOIN nx_emergency_sop_execution e ON e.execution_id = p.last_drill_execution_id
+             WHERE p.code = #{code}
+               AND p.is_deleted = 0
+               AND e.is_deleted = 0
+               AND e.playbook_code = p.code
+               AND e.execution_mode = 'drill'
+               AND e.rollback_status = 'NOT_REQUIRED'
+               AND e.rollback_reason = 'VALIDATION_ONLY_NO_PRODUCTION_ACTIONS'
+            """)
+    boolean hasCurrentDrillEvidence(@Param("code") String code);
 
     @Insert("""
             INSERT INTO nx_emergency_sop_execution (

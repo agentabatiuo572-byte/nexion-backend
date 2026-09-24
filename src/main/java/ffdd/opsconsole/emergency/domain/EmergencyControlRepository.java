@@ -212,6 +212,10 @@ public interface EmergencyControlRepository {
 
     void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator);
 
+    default void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator, String executionId) {
+        markPlaybookDrilled(code, drillAt, operator);
+    }
+
     Optional<Map<String, Object>> executionByIdempotencyKey(String code, String idempotencyKey);
 
     /** Fresh committed read used after the playbook lock, outside the caller's RR snapshot. */
@@ -228,6 +232,11 @@ public interface EmergencyControlRepository {
     }
 
     List<Map<String, Object>> executions(int limit);
+
+    /** A retained successful drill row corresponding to the playbook's current last_drill_at. */
+    default boolean hasCurrentDrillEvidence(String code) {
+        return false;
+    }
 
     default long countExecutionsSinceByMode(String mode, LocalDateTime since) {
         return executions(Integer.MAX_VALUE).stream()

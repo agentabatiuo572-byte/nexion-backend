@@ -1972,6 +1972,11 @@ class OpsEmergencyControlServiceTest {
                 .filter(row -> code.equals(row.get("code")))
                 .findFirst()
                 .orElseThrow()
+                .put("testDrillEvidence", true);
+        emergencyRepository.playbooks.stream()
+                .filter(row -> code.equals(row.get("code")))
+                .findFirst()
+                .orElseThrow()
                 .put("draft", false);
         emergencyRepository.playbooks.stream()
                 .filter(row -> code.equals(row.get("code")))
@@ -2124,10 +2129,7 @@ class OpsEmergencyControlServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void drill90dCountsPlaybookReadinessNotPrunedExecutionLedgerRows() {
-        // #151: SOP-CUSTOM-2 显示「最近演练 2026-07-15」(未超 90 天)且被判为「演练就绪」,
-        // 同页「近 90d 演练」却是 0 —— 因为就绪度读剧本 last_drill_at,而执行台账只保留最近 20 行。
-        // 演练统计必须与就绪度同源:剧本 lastDrill 在 90 天内即计入。
+    void missingDrillLedgerBlocksReadinessAndRemainsVisible() {
         service.createPlaybook(
                 "idem-j4-drill-count-create",
                 new SopPlaybookCreateRequest(
@@ -2141,10 +2143,42 @@ class OpsEmergencyControlServiceTest {
                 .orElseThrow()
                 .put("lastDrill", LocalDateTime.now().minusDays(45).format(
                         java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+        emergencyRepository.playbooks.get(0).put("testDrillEvidence", false);
 
-        Map<String, Object> stats = (Map<String, Object>) service.sopOverview().getData().get("stats");
+        Map<String, Object> overview = service.sopOverview().getData();
+        Map<String, Object> stats = (Map<String, Object>) overview.get("stats");
+        Map<String, Object> playbook = ((List<Map<String, Object>>) overview.get("playbooks")).get(0);
 
-        assertThat(stats).containsEntry("readyCount", 1L).containsEntry("drill90d", 1L);
+        assertThat(stats).containsEntry("readyCount", 0L).containsEntry("drill90d", 0L)
+                .containsEntry("drillExecutionRows90d", 0L);
+        assertThat(playbook).containsEntry("executionReady", false).containsEntry("drillEvidence", false)
+                .containsEntry("readinessReason", "最近演练缺少对应成功台账，请重新演练并核对历史记录");
+        var execution = service.executePlaybook("SOP-CUSTOM-1", "idem-j4-no-ledger",
+                confirmedJ4RunRequest("SOP-CUSTOM-1", true, "missing drill ledger", "superadmin"));
+        assertThat(execution.getMessage()).isEqualTo("J4_PLAYBOOK_NOT_READY");
+        assertThat(emergencyRepository.executions).isEmpty();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void missingLatestDrillCannotBorrowEarlierSuccessfulLedger() {
+        service.createPlaybook("idem-j4-link-create", new SopPlaybookCreateRequest(
+                "连续演练", "监管点名", "合规审计", "15 分钟", true,
+                "J1·熔断提现通道", "", "", "根因消除后逐步恢复", true,
+                "create drill link candidate", "superadmin"));
+        var request = new SopPlaybookRunRequest(false, "validate sandbox steps", "superadmin");
+        service.drillPlaybook("SOP-CUSTOM-1", "idem-j4-first-drill", request);
+        service.drillPlaybook("SOP-CUSTOM-1", "idem-j4-second-drill", request);
+        String latest = String.valueOf(emergencyRepository.playbook("SOP-CUSTOM-1")
+                .orElseThrow().get("lastDrillExecutionId"));
+        emergencyRepository.executions.removeIf(row -> latest.equals(row.get("executionId")));
+
+        Map<String, Object> overview = service.sopOverview().getData();
+        Map<String, Object> stats = (Map<String, Object>) overview.get("stats");
+        assertThat(stats).containsEntry("readyCount", 0L).containsEntry("drill90d", 0L);
+        assertThat(((List<Map<String, Object>>) overview.get("playbooks")).get(0))
+                .containsEntry("drillEvidence", false);
+        assertThat(emergencyRepository.executions).hasSize(1);
     }
 
     @Test
@@ -2733,6 +2767,23 @@ class OpsEmergencyControlServiceTest {
                 row.put("lastDrill", drillAt.toString());
                 row.put("draft", false);
             });
+        }
+
+        @Override
+        public void markPlaybookDrilled(String code, LocalDateTime drillAt, String operator, String executionId) {
+            markPlaybookDrilled(code, drillAt, operator);
+            playbook(code).ifPresent(row -> row.put("lastDrillExecutionId", executionId));
+        }
+
+        @Override
+        public boolean hasCurrentDrillEvidence(String code) {
+            return playbook(code).map(row -> {
+                if (row.containsKey("testDrillEvidence")) return Boolean.TRUE.equals(row.get("testDrillEvidence"));
+                String executionId = String.valueOf(row.get("lastDrillExecutionId"));
+                return executions.stream().anyMatch(execution -> executionId.equals(execution.get("executionId"))
+                        && "drill".equals(execution.get("mode"))
+                        && "NOT_REQUIRED".equals(execution.get("rollbackStatus")));
+            }).orElse(false);
         }
 
         @Override

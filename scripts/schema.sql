@@ -5637,6 +5637,7 @@ CREATE TABLE IF NOT EXISTS nx_emergency_sop_playbook (
   state VARCHAR(32) NOT NULL DEFAULT 'todo',
   owner VARCHAR(64) NOT NULL,
   last_drill_at DATETIME NULL,
+  last_drill_execution_id VARCHAR(96) NULL,
   notify_campaign_no VARCHAR(96) NULL,
   notify_template VARCHAR(255) NULL,
   rollback_plan VARCHAR(500) NULL,
