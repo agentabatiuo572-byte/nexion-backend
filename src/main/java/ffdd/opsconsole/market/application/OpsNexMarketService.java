@@ -1109,11 +1109,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         if (curveRaisesLiability(before, frames)) {
-            TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-            if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-                return ApiResult.fail(
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+            ApiResult<Map<String, Object>> redline = coverageRedlineFailure();
+            if (redline != null) {
+                return redline;
             }
         }
         String curveJson = writeCurve(frames);
@@ -1918,6 +1916,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
 
     private ApiResult<Map<String, Object>> coverageRedlineFailure() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.redlinePct().signum() <= 0) {
+            return ApiResult.fail(503, "B1_COVERAGE_UNRELIABLE");
+        }
         if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             return ApiResult.fail(
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),

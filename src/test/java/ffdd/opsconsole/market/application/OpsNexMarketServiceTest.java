@@ -503,6 +503,20 @@ class OpsNexMarketServiceTest {
     }
 
     @Test
+    void raisingCurveWithUnreliableCoverageDoesNotWrite() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110"), new BigDecimal("85"), false);
+
+        ApiResult<Map<String, Object>> result = service.updateWeeklyCurve(
+                "idem-g3-unreliable",
+                new NexMarketCurveUpdateRequest(frames("0.200"), "raise price", "superadmin", frames("0.171")));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("B1_COVERAGE_UNRELIABLE");
+        assertThat(configFacade.values).containsEntry("wallet.nex_market.weekly_curve", curveJson("0.171"));
+    }
+
+    @Test
     void validCurveWritesConfigWithoutOverwritingCurrentPriceAndAudits() {
         configFacade.values.put("wallet.nex_market.weekly_curve", curveJson("0.171"));
         configFacade.values.put("wallet.exchange.nex_usdt_price", "0.155");
@@ -581,6 +595,24 @@ class OpsNexMarketServiceTest {
                 .isEqualByComparingTo("0.12");
         assertThat((BigDecimal) service.exchangeOverview().getData().get("currentPrice"))
                 .isEqualByComparingTo("0.12");
+    }
+
+    @Test
+    void pinningHigherPriceWithUnreliableCoverageDoesNotPublish() {
+        configFacade.values.put("wallet.nex_market.weekly_curve", steppedCurveJson());
+        configFacade.values.put("wallet.exchange.nex_usdt_price", "0.119");
+        marketRepository.latestPrice = Optional.of(new BigDecimal("0.119"));
+        coverageFacade.snapshot = new TreasuryCoverageSnapshot(new BigDecimal("110"), new BigDecimal("85"), false);
+
+        ApiResult<Map<String, Object>> result = service.updateControl(
+                "idem-pin-unreliable", "pin",
+                new NexMarketValueUpdateRequest("D3", "pin demo day", "superadmin", "未钉住"));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("B1_COVERAGE_UNRELIABLE");
+        assertThat(configFacade.values).doesNotContainKey("wallet.nex_market.control.pin");
+        assertThat(configFacade.values).containsEntry("wallet.exchange.nex_usdt_price", "0.119");
+        assertThat(marketRepository.lastPrice).isNull();
     }
 
     @Test
