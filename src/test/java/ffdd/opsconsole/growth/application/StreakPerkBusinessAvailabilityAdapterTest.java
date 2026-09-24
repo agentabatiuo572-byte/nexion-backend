@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.application.AppStakingService;
+import ffdd.opsconsole.market.application.AppExchangeService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.ArrayList;
@@ -33,8 +34,9 @@ class StreakPerkBusinessAvailabilityAdapterTest {
 
     private final AppStakingService staking = mock(AppStakingService.class);
     private final GenesisCatalogService genesis = mock(GenesisCatalogService.class);
+    private final AppExchangeService exchange = mock(AppExchangeService.class);
     private final StreakPerkBusinessAvailabilityAdapter adapter =
-            new StreakPerkBusinessAvailabilityAdapter(staking, genesis);
+            new StreakPerkBusinessAvailabilityAdapter(staking, genesis, exchange);
 
     /** 造一档 {@code GET /api/config/staking/pools} 形状的目录行。 */
     private static Map<String, Object> pool(String tier, boolean enabled, boolean killed, String status) {
@@ -152,5 +154,21 @@ class StreakPerkBusinessAvailabilityAdapterTest {
 
         assertThat(adapter.stakingAvailableForMissionPublication()).isFalse();
         assertThat(adapter.genesisAvailableForMissionPublication()).isFalse();
+    }
+
+    @Test
+    void exchangeMissionUsesThePublicCapsAndFailsClosedOnUnreadableOrSandboxState() {
+        when(exchange.caps()).thenReturn(ApiResult.ok(Map.of(
+                "swapEnabled", false, "sourceEnvironment", "PRODUCTION")));
+        assertThat(adapter.exchangeAvailableForMissionPublication()).isFalse();
+        when(exchange.caps()).thenReturn(ApiResult.ok(Map.of(
+                "swapEnabled", true, "sourceEnvironment", "PRODUCTION")));
+        assertThat(adapter.exchangeAvailableForMissionPublication()).isTrue();
+        when(exchange.caps()).thenReturn(ApiResult.ok(Map.of(
+                "swapEnabled", true, "sourceEnvironment", "SANDBOX")));
+        assertThat(adapter.exchangeAvailableForMissionPublication()).isFalse();
+        doThrow(new IllegalStateException("unavailable")).when(exchange).caps();
+        assertThat(adapter.exchangeAvailableForMissionPublication()).isFalse();
+        verify(exchange, org.mockito.Mockito.times(4)).caps();
     }
 }

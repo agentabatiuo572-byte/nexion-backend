@@ -268,6 +268,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260923_h3_weekly_event_gate.sql")
   # J4 readiness must point to its exact successful drill row. Historical rows stay unlinked.
   (Join-Path $root "scripts\migrations\20260924_j4_drill_execution_link.sql")
+  # Exchange was omitted from H3's one-time business pause; preserve completed user rows.
+  (Join-Path $root "scripts\migrations\20260925_h3_exchange_mission_gate.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

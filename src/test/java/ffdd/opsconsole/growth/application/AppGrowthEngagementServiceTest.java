@@ -181,6 +181,27 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void closedExchangeHidesOnlyPendingWeeklyWorkAndPreservesEarnedHistory() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of(
+                Map.of("questCode", "weekly_t2_nex_swap", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "PENDING", "instanceKey", "WEEK:2026-W39"),
+                Map.of("questCode", "weekly_t2_nex_swap", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "EXPIRED", "instanceKey", "WEEK:2026-W38"),
+                Map.of("questCode", "weekly_t2_nex_swap", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "CLAIMABLE", "instanceKey", "WEEK:2026-W39"),
+                Map.of("questCode", "weekly_t2_nex_swap", "layer", "WEEKLY_T2",
+                        "rewardNex", 10, "status", "CLAIMED", "instanceKey", "WEEK:2026-W38")));
+
+        List<Map<String, Object>> closed = (List<Map<String, Object>>) service.questState(42L).getData().get("quests");
+        assertThat(closed).extracting(row -> row.get("status")).containsExactly("CLAIMABLE", "CLAIMED");
+        when(availability.exchangeAvailableForMissionPublication()).thenReturn(true);
+        List<Map<String, Object>> open = (List<Map<String, Object>>) service.questState(42L).getData().get("quests");
+        assertThat(open).extracting(row -> row.get("status"))
+                .containsExactly("PENDING", "EXPIRED", "CLAIMABLE", "CLAIMED");
+    }
+
+    @Test
     void questStateDoesNotReconstructLegacyDayOneFromLiveDefinitionsOrUserProgress() {
         when(mapper.questState(42L, "en")).thenReturn(List.of(
                 Map.of("questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1", "status", "PENDING"),

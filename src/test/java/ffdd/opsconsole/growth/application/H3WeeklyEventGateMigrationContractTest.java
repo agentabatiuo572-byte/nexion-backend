@@ -10,6 +10,23 @@ import org.junit.jupiter.api.Test;
 
 class H3WeeklyEventGateMigrationContractTest {
     @Test
+    void exchangeFollowupPausesOnlyClosedDefinitionWithoutChangingUserHistory() throws Exception {
+        String name = "20260925_h3_exchange_mission_gate.sql";
+        String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String sql = Files.readString(Path.of("scripts/migrations", name));
+
+        assertThat(runner).contains(name);
+        assertThat(sql).contains("weekly_t2_nex_swap", "killswitch.exchange",
+                "emergency.killswitch.exchange", "nx_growth_mission_gate_pause_receipt",
+                "m.status=1", "SET m.status=0", "exchange.swapped",
+                "H3_EXCHANGE_COMPLETED", "h3-weekly-exchange-referral-evaluator",
+                "h3-quest-completion", "d.status NOT IN ('SUCCESS','SKIPPED')",
+                "lock_key='G2_EXCHANGE_EXECUTION' FOR UPDATE");
+        assertThat(sql).doesNotContain("UPDATE nx_user_mission", "DELETE FROM nx_user_mission",
+                "UPDATE nx_growth_quest_completion_fact");
+    }
+
+    @Test
     void startupBindsVerifiedFactsAndPausesUnverifiableWeeklyDefinitions() throws Exception {
         String name = "20260923_h3_weekly_event_gate.sql";
         String runner = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));

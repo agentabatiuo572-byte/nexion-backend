@@ -2,6 +2,7 @@ package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.market.application.AppStakingService;
+import ffdd.opsconsole.market.application.AppExchangeService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.List;
@@ -45,6 +46,7 @@ public class StreakPerkBusinessAvailabilityAdapter implements StreakPerkBusiness
 
     private final AppStakingService appStakingService;
     private final GenesisCatalogService genesisCatalogService;
+    private final AppExchangeService appExchangeService;
 
     @Override
     public Boolean stakingAvailable() {
@@ -105,6 +107,19 @@ public class StreakPerkBusinessAvailabilityAdapter implements StreakPerkBusiness
                     && Boolean.TRUE.equals(state.get("tradeAvailable"));
         } catch (RuntimeException ex) {
             log.warn("H3 Genesis publication availability read failed", ex);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean exchangeAvailableForMissionPublication() {
+        try {
+            ApiResult<Map<String, Object>> result = appExchangeService.caps();
+            return result != null && result.getCode() == 0 && result.getData() != null
+                    && "PRODUCTION".equals(result.getData().get("sourceEnvironment"))
+                    && Boolean.TRUE.equals(result.getData().get("swapEnabled"));
+        } catch (RuntimeException ex) {
+            log.warn("H3 exchange publication availability read failed", ex);
             return false;
         }
     }

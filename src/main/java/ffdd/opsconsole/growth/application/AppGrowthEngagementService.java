@@ -187,6 +187,15 @@ public class AppGrowthEngagementService {
             rawQuests.removeIf(row -> "weekly_t2_genesis_browse".equals(row.get("questCode"))
                     && "PENDING".equals(row.get("status")));
         }
+        // The exchange page and execution gate use the same canonical caps.
+        // A paused definition projects unresolved instances as EXPIRED.
+        // Withhold both unresolved states; earned and claimable history stays visible.
+        if (rawQuests.stream().anyMatch(row -> "weekly_t2_nex_swap".equals(row.get("questCode"))
+                && Set.of("PENDING", "EXPIRED").contains(String.valueOf(row.get("status"))))
+                && !streakPerkAvailability.exchangeAvailableForMissionPublication()) {
+            rawQuests.removeIf(row -> "weekly_t2_nex_swap".equals(row.get("questCode"))
+                    && Set.of("PENDING", "EXPIRED").contains(String.valueOf(row.get("status"))));
+        }
         if (!liveRhythmAvailable) {
             rawQuests.removeIf(row -> !"DAY_ONE".equalsIgnoreCase(String.valueOf(row.get("layer"))));
         }

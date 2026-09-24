@@ -1248,6 +1248,10 @@ public class OpsGrowthService implements AuditReplayable {
                     && !streakPerkAvailability.genesisAvailableForMissionPublication()) {
                 return validation("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
             }
+            if ("MISSION".equals(kind) && target == 1 && "weekly_t2_nex_swap".equals(code)
+                    && !streakPerkAvailability.exchangeAvailableForMissionPublication()) {
+                return validation("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
+            }
             if (transitionMissionStatus(kind, code, expected, target) != 1) return ApiResult.fail(409, "H3_MISSION_STALE");
             audit("H3_MISSION_STATUS_CHANGED", "GROWTH_MISSION", code, request.operator(), row(
                     "taskCode", code, "taskKind", kind, "before", missionStatusName(expected),

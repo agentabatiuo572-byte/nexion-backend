@@ -1215,6 +1215,22 @@ class OpsGrowthServiceTest {
     }
 
     @Test
+    void exchangeMissionCannotBeEnabledWhileTheSwapCapabilityIsClosed() {
+        when(questEventMapper.lockMission("weekly_t2_nex_swap")).thenReturn(row(
+                "taskCode", "weekly_t2_nex_swap", "taskKind", "MISSION", "status", 0));
+        when(questEventMapper.activeBindingCountByQuestCode("weekly_t2_nex_swap")).thenReturn(1);
+        when(questEventMapper.activeWeeklySystemBindingCount(
+                "weekly_t2_nex_swap", "H3_EXCHANGE_COMPLETED")).thenReturn(1);
+
+        var blocked = service.transitionMission("weekly-exchange-closed", "weekly_t2_nex_swap",
+                new GrowthMissionStatusRequest("MISSION", "active", "paused",
+                        "exchange capability is closed", "superadmin"));
+
+        assertThat(blocked.getMessage()).isEqualTo("H3_MISSION_TARGET_BUSINESS_UNAVAILABLE");
+        verify(questEventMapper, never()).transitionMissionStatusCas("weekly_t2_nex_swap", 0, 1);
+    }
+
+    @Test
     void storefrontThresholdCannotBeMappedToAnotherTaskOrInviter() {
         when(questEventMapper.lockQuestEventBinding("STORE_WRONG_SLOT")).thenReturn(null);
         var rejected = service.createQuestEventBinding("storefront-wrong-slot", "STORE_WRONG_SLOT",

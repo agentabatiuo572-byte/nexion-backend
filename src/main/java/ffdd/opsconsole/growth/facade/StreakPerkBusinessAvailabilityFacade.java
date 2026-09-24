@@ -30,4 +30,7 @@ public interface StreakPerkBusinessAvailabilityFacade {
     default boolean stakingAvailableForMissionPublication() { return false; }
 
     default boolean genesisAvailableForMissionPublication() { return false; }
+
+    /** Exchange mission publication follows the App exchange capability. */
+    default boolean exchangeAvailableForMissionPublication() { return false; }
 }
