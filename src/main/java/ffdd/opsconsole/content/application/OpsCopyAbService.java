@@ -370,16 +370,17 @@ public class OpsCopyAbService {
         if (!matchesRevision(current, request.expectedRevision())) {
             return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
         }
-        String version = resolveRequestedVersion(current, request.version());
+        String activeDraftVersion = activeDraftVersion(current);
+        String version = resolveRequestedVersion(activeDraftVersion, request.version());
         if (version == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_REQUIRED");
         }
-        if (StringUtils.hasText(current.draftVersion())
+        if (activeDraftVersion != null
                 && StringUtils.hasText(request.version())
-                && !current.draftVersion().trim().equalsIgnoreCase(request.version().trim())) {
+                && !activeDraftVersion.equalsIgnoreCase(request.version().trim())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_DRAFT_VERSION_IMMUTABLE");
         }
-        if (!StringUtils.hasText(current.draftVersion())) {
+        if (activeDraftVersion == null) {
             ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(current.key(), version);
             if (versionGuard != null) {
                 return versionGuard;
@@ -428,16 +429,17 @@ public class OpsCopyAbService {
         if (!matchesRevision(current, request.expectedRevision())) {
             return ApiResult.fail(409, "COPY_REVISION_CONFLICT");
         }
-        String version = resolveRequestedVersion(current, request.version());
+        String activeDraftVersion = activeDraftVersion(current);
+        String version = resolveRequestedVersion(activeDraftVersion, request.version());
         if (version == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COPY_VERSION_REQUIRED");
         }
-        if (StringUtils.hasText(current.draftVersion())
+        if (activeDraftVersion != null
                 && StringUtils.hasText(request.version())
-                && !current.draftVersion().trim().equalsIgnoreCase(request.version().trim())) {
+                && !activeDraftVersion.equalsIgnoreCase(request.version().trim())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "COPY_DRAFT_VERSION_IMMUTABLE");
         }
-        if (!StringUtils.hasText(current.draftVersion())) {
+        if (activeDraftVersion == null) {
             ApiResult<CopyContentRow> versionGuard = validateNewVersionSelection(current.key(), version);
             if (versionGuard != null) {
                 return versionGuard;
@@ -1413,11 +1415,17 @@ public class OpsCopyAbService {
                 && current.revision().equals(expectedRevision);
     }
 
-    private String resolveRequestedVersion(CopyContentRow current, String requestedVersion) {
-        if (StringUtils.hasText(current.draftVersion())) {
-            return current.draftVersion().trim();
-        }
+    private String resolveRequestedVersion(String activeDraftVersion, String requestedVersion) {
+        if (activeDraftVersion != null) return activeDraftVersion;
         return StringUtils.hasText(requestedVersion) ? requestedVersion.trim() : null;
+    }
+
+    private String activeDraftVersion(CopyContentRow current) {
+        if (!StringUtils.hasText(current.draftVersion())) return null;
+        return copyAbRepository.findVersion(current.key(), current.draftVersion().trim())
+                .filter(version -> isCurrentDraft(current, version))
+                .map(CopyVersionRow::version)
+                .orElse(null);
     }
 
     private ApiResult<CopyContentRow> validateNewVersionSelection(String copyKey, String requestedVersion) {

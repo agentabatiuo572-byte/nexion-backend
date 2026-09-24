@@ -402,6 +402,20 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setLastOperator(operator(request.operator()));
         copy.setUpdatedAt(now);
         copyMapper.updateById(copy);
+        // updateById skips null fields; clear the published draft pointer in SQL as well.
+        copyMapper.update(null, new UpdateWrapper<CopyContentEntity>()
+                .eq("id", copy.getId())
+                .eq("is_deleted", 0)
+                .set("draft_version", null)
+                .set("draft_zh", null)
+                .set("draft_en", null)
+                .set("draft_vi", null)
+                .set("draft_copy_position", null)
+                .set("draft_surface", null)
+                .set("draft_audience", null)
+                .set("draft_audience_json", null)
+                .set("draft_traffic_split", null)
+                .set("draft_note", null));
         return findCopy(copyKey).orElse(toCopyRow(copy));
     }
 

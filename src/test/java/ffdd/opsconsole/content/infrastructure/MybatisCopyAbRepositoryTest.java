@@ -20,6 +20,7 @@ import ffdd.opsconsole.content.mapper.ContentAudienceEstimateMapper;
 import ffdd.opsconsole.content.domain.CopyAudiencePhaseProvider;
 import ffdd.opsconsole.content.domain.CopyExperimentVariantMetric;
 import ffdd.opsconsole.content.dto.CopyVersionOptionUpdateRequest;
+import ffdd.opsconsole.content.dto.CopyVersionPublishRequest;
 import ffdd.opsconsole.content.dto.CopyExperimentCreateRequest;
 import ffdd.opsconsole.content.dto.CopyExperimentVariantRequest;
 import java.time.LocalDateTime;
@@ -225,6 +226,34 @@ class MybatisCopyAbRepositoryTest {
                 .contains("draft_traffic_split=")
                 .contains("draft_note=")
                 .contains("revision=");
+    }
+
+    @Test
+    void publishingDraftExplicitlyClearsDraftColumnsInDatabaseUpdate() {
+        CopyContentEntity copy = copy("DRAFT_SAVED");
+        when(copyMapper.selectOne(any())).thenReturn(copy);
+        when(versionMapper.selectList(any())).thenReturn(List.of());
+        LocalDateTime now = LocalDateTime.of(2026, 7, 11, 13, 0);
+        var request = new CopyVersionPublishRequest(
+                "v8", "home", "全量", "50", "有效文案", "有效中文", "Valid English", "Tiếng Việt hợp lệ",
+                "home.hero", "Marina K.", "发布有效三语文案");
+
+        repository.publishVersion("home.conversionBanner", request, now);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<UpdateWrapper<CopyContentEntity>> updateCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(copyMapper).update(isNull(), updateCaptor.capture());
+        assertThat(updateCaptor.getValue().getSqlSet())
+                .contains("draft_version=")
+                .contains("draft_zh=")
+                .contains("draft_en=")
+                .contains("draft_vi=")
+                .contains("draft_copy_position=")
+                .contains("draft_surface=")
+                .contains("draft_audience=")
+                .contains("draft_audience_json=")
+                .contains("draft_traffic_split=")
+                .contains("draft_note=");
     }
 
     @Test

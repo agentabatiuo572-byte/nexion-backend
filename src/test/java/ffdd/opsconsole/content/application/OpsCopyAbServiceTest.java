@@ -451,6 +451,29 @@ class OpsCopyAbServiceTest {
     }
 
     @Test
+    void publishIgnoresStaleDraftPointerToAlreadyPublishedVersion() {
+        repository.copies.put("home.conversionBanner",
+                FakeCopyAbRepository.copy("home.conversionBanner", "v7", "published", "v7", "old draft", "old draft"));
+
+        var result = service.publishVersion("home.conversionBanner", "idem-i1-stale-publish", publishRequest("v8"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().version()).isEqualTo("v8");
+        assertThat(result.getData().draftVersion()).isNull();
+    }
+
+    @Test
+    void saveDraftIgnoresStaleDraftPointerToAlreadyPublishedVersion() {
+        repository.copies.put("home.conversionBanner",
+                FakeCopyAbRepository.copy("home.conversionBanner", "v7", "published", "v7", "old draft", "old draft"));
+
+        var result = service.saveDraft("home.conversionBanner", "idem-i1-stale-save", draftRequest("v8"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().draftVersion()).isEqualTo("v8");
+    }
+
+    @Test
     void catalogVersionNeedNotBeSequential() {
         repository.versions.put(
                 FakeCopyAbRepository.key("home.conversionBanner", "v9223372036854775807"),
