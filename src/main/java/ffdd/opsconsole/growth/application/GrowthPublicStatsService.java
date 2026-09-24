@@ -81,8 +81,8 @@ public class GrowthPublicStatsService {
      * {@code verified} 里的每个数都来自真实表聚合,并自带口径与统计时刻;消费方必须优先读它,
      * 不得再拿配置值派生「已付 / 收入 / 在线」这类事实表述。
      *
-     * <p>{@code values} 仍然保留 —— 它是运营面(H9)自己的编辑视图,也是沙箱验收所需的
-     * 可控输入,但它的 {@code provenance} 明确标为人工配置,消费方据此决定是否展示。
+     * <p>运营手填的 {@code values} 只留在鉴权管理接口 {@code overview}。
+     * 公网接口不能把这些数值交给旧客户端当作实测规模、支付额或增长率使用。
      */
     public ApiResult<Map<String, Object>> publicProjection() {
         String runtimeError = runtimeError();
@@ -100,15 +100,12 @@ public class GrowthPublicStatsService {
         projection.put("sourceEnvironment", scope.sandbox() ? "SANDBOX" : "PRODUCTION");
         projection.put("runId", scope.runId());
         projection.put("version", result.getData().get("version"));
-        projection.put("values", result.getData().get("values"));
         projection.put("provenance", Map.of(
-                "values", "OPERATOR_CONFIGURED",
                 "verified", scope.sandbox() ? "SANDBOX_UNAVAILABLE" : "SERVER_AGGREGATE"));
         // 复用 overview 已经算好的真实账号数:同一请求里重复聚合没有意义,
         // 也让「本次投影的所有数字来自同一次读取」这个不变量成立。
         projection.put("verified", verifiedAggregates(scope, result.getData().get("realUserCount")));
         projection.put("realUserCount", result.getData().get("realUserCount"));
-        projection.put("effectiveAt", result.getData().get("effectiveAt"));
         return ApiResult.ok(projection);
     }
 

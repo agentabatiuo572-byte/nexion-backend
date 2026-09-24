@@ -75,7 +75,11 @@ class GrowthPublicStatsServiceTest {
                 .containsEntry("serverCanonical", true)
                 .containsEntry("source", "server:nx_config_item,nx_user")
                 .containsEntry("sourceEnvironment", "PRODUCTION")
-                .containsEntry("runId", "");
+                .containsEntry("runId", "")
+                .doesNotContainKeys("values", "effectiveAt");
+        assertThat((Map<String, Object>) result.getData().get("provenance"))
+                .containsEntry("verified", "SERVER_AGGREGATE")
+                .doesNotContainKey("values");
     }
 
     @Test
@@ -127,8 +131,12 @@ class GrowthPublicStatsServiceTest {
         ApiResult<Map<String, Object>> runA = sandboxService("home-public-stats-run-a").publicProjection();
         ApiResult<Map<String, Object>> runB = sandboxService("home-public-stats-run-b").publicProjection();
 
-        assertThat((Map<String, Object>) runA.getData().get("values")).containsEntry("fleetDevices", 12000);
-        assertThat((Map<String, Object>) runB.getData().get("values")).containsEntry("fleetDevices", 31000);
+        assertThat(runA.getData()).doesNotContainKeys("values", "effectiveAt");
+        assertThat(runB.getData()).doesNotContainKeys("values", "effectiveAt");
+        assertThat((Map<String, Object>) sandboxService("home-public-stats-run-a").overview().getData().get("values"))
+                .containsEntry("fleetDevices", 12000);
+        assertThat((Map<String, Object>) sandboxService("home-public-stats-run-b").overview().getData().get("values"))
+                .containsEntry("fleetDevices", 31000);
         verify(config, never()).activeValue("growth.public_stats.values");
         verify(config, never()).activeValue("growth.public_stats.version");
         verify(users, never()).countUsers();
