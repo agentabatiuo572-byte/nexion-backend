@@ -1847,7 +1847,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .map(row -> row.get("effectiveAt"))
                 .filter(java.util.Objects::nonNull)
                 .findFirst().orElse(LocalDateTime.now(clock)));
-        response.put("sources", List.of("nx_admin_device_task", "nx_config_item:" + E2_QUEUE_SATURATION_KEY));
+        response.put("sources", List.of("nx_admin_device_task", "nx_admin_device_sku", "nx_config_item:" + E2_QUEUE_SATURATION_KEY));
         return ApiResult.ok(response);
     }
 
@@ -4496,9 +4496,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Integer> deviceVram = new LinkedHashMap<>();
         deviceVram.put("cloud-share", 8);
         deviceVram.put("phone", 8);
-        deviceVram.put("S1", 96);
-        deviceVram.put("Pro", 192);
-        deviceVram.put("Rack", 640);
+        Map.of("S1", "stellarbox-s1", "Pro", "stellarbox-pro", "Rack", "stellarrack-p1")
+                .forEach((deviceClass, skuId) -> catalogRepository.findSku(skuId).ifPresent(sku -> {
+                    String raw = sku.vram();
+                    if (raw != null && raw.trim().matches("(?i)\\d+\\s*GB(?:\\s+VRAM)?")) {
+                        int vram = parseVram(raw.trim().replaceAll("(?i)\\s*VRAM$", "").replaceAll("(?i)\\s+GB", "GB"));
+                        if (vram > 0) deviceVram.put(deviceClass, vram);
+                    }
+                }));
         List<Map<String, Object>> teaser = new ArrayList<>();
         deviceVram.forEach((deviceClass, vram) -> {
             List<String> locked = new ArrayList<>();

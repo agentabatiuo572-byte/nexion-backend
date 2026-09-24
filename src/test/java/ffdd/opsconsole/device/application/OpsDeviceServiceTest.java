@@ -3255,9 +3255,12 @@ class OpsDeviceServiceTest {
     @Test
     void e2TaskPricingReturnsCanonicalSixClassesAndFiveTeaserTiers() {
         for (String taskClass : List.of("IG", "VG", "LL", "FT", "EM", "SP")) {
-            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 8);
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, "FT".equals(taskClass) ? 48 : 8);
             catalogRepository.tasks.put(row.taskId(), row);
         }
+        catalogRepository.skus.put("stellarbox-s1", sku("stellarbox-s1", "S1", "on"));
+        catalogRepository.skus.put("stellarbox-pro", skuWithVram("stellarbox-pro", "12GB"));
+        catalogRepository.skus.put("stellarrack-p1", sku("stellarrack-p1", "Rack", "on"));
         configFacade.values.put("E.task.queueSaturation", "0.35");
 
         ApiResult<Map<String, Object>> result = service.e2TaskPricing();
@@ -3269,6 +3272,9 @@ class OpsDeviceServiceTest {
         List<Map<String, Object>> teaser = (List<Map<String, Object>>) result.getData().get("teaser");
         assertThat(teaser).filteredOn(row -> "cloud-share".equals(row.get("deviceClass")))
                 .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 8));
+        assertThat(teaser).filteredOn(row -> "Pro".equals(row.get("deviceClass")))
+                .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 12)
+                        .containsEntry("lockedTasks", List.of("FT")));
         assertThat((BigDecimal) result.getData().get("queueSaturation")).isEqualByComparingTo("0.35");
     }
 
@@ -3625,6 +3631,34 @@ class OpsDeviceServiceTest {
                 source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
                 source.createdAt(), source.updatedAt(), source.productType(),
                 source.inventoryMode(), trialEligible);
+    }
+
+    @Test
+    void e2TaskPricingOmitsUnverifiedSkuTeasers() {
+        for (String taskClass : List.of("IG", "VG", "LL", "FT", "EM", "SP")) {
+            DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 48);
+            catalogRepository.tasks.put(row.taskId(), row);
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> teaser = (List<Map<String, Object>>) service.e2TaskPricing().getData().get("teaser");
+        assertThat(teaser).extracting(row -> row.get("deviceClass")).containsExactly("cloud-share", "phone");
+    }
+
+    private static DeviceSkuView skuWithVram(String skuId, String vram) {
+        DeviceSkuView source = sku(skuId, skuId, "on");
+        return new DeviceSkuView(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(),
+                vram, source.hashRate(), source.power(), source.datacenter(), source.uptime(),
+                source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(),
+                source.dailyEarn(), source.dailyEarnNex(), source.shareYieldMin(), source.shareYieldMax(),
+                source.baseRate(), source.sold(), source.stock(), source.rating(), source.reviews(),
+                source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(),
+                source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
+                source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
+                source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
+                source.createdAt(), source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible());
     }
 
     private static DeviceSkuView withMedia(DeviceSkuView source, String assetId, String objectKey) {
