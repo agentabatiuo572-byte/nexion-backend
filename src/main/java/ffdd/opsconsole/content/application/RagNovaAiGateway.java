@@ -26,6 +26,11 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private static final Pattern DEVICE_EARNINGS_NAVIGATION = Pattern.compile(
             "^(?:请问)?(?:如何|怎么|怎样|在哪(?:里)?|从哪(?:里)?)?(?:查看|查询|看|查)(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:呢|啊|呀)?$"
                     + "|^(?:请问)?(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:在(?:哪里|哪)|怎么|如何)?(?:查看|查询|看|查)(?:呢|啊|呀)?$");
+    private static final Pattern EN_DEVICE_EARNINGS_NAVIGATION = Pattern.compile(
+            "^(?:how (?:can|do) i (?:check|view|see) my device earnings"
+                    + "|where can i (?:check|view|see) my device(?: and computing)? earnings)$");
+    private static final Pattern VI_DEVICE_EARNINGS_NAVIGATION = Pattern.compile(
+            "^tôi xem thu nhập từ thiết bị(?: và năng lực điện toán)? ở đâu$");
     private static final Pattern GENERAL_EARNINGS_NAVIGATION = Pattern.compile(
             "^(?:请问)?(?:我(?:的)?)?(?:如何|怎么|怎样|在哪(?:里)?|从哪(?:里)?)?(?:查看|查询|看|查)(?:我(?:的)?)?收益(?:记录|明细)?(?:呢|啊|呀)?$"
                     + "|^(?:请问)?(?:我(?:的)?)?收益(?:记录|明细)?(?:在(?:哪里|哪)|从(?:哪里|哪)|怎么|如何)?(?:查看|查询|看|查)(?:呢|啊|呀)?$");
@@ -172,22 +177,42 @@ public class RagNovaAiGateway implements NovaAiGateway {
     }
 
     private String publishedDeviceEarningsAnswer(String question, String language) {
-        if (knowledgeRepository == null || !"zh".equalsIgnoreCase(language)
-                || !isDeviceEarningsNavigationQuestion(question)) return null;
+        String faqLanguage = switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
+            case "zh" -> "zh-CN";
+            case "en" -> "en-US";
+            case "vi" -> "vi-VN";
+            default -> null;
+        };
+        if (knowledgeRepository == null || faqLanguage == null
+                || !isDeviceEarningsNavigationQuestion(question, language)) return null;
         java.util.List<SupportFaqView> matches = knowledgeRepository.listFaqs().stream()
                 .filter(faq -> "PUBLISHED".equalsIgnoreCase(faq.status()))
                 .filter(faq -> "Help Center".equalsIgnoreCase(faq.surface()))
-                .filter(faq -> "zh-CN".equalsIgnoreCase(faq.language()))
-                .filter(faq -> "FAQ-20260829015717730-084d2c0b".equals(faq.id()))
+                .filter(faq -> faqLanguage.equalsIgnoreCase(faq.language()))
                 .filter(faq -> "hardware".equalsIgnoreCase(faq.category()))
-                .filter(faq -> "设备和算力收益在哪里查看".equals(compactQuestion(faq.question())))
+                .filter(faq -> "zh-CN".equals(faqLanguage)
+                        ? "FAQ-20260829015717730-084d2c0b".equals(faq.id())
+                            && "设备和算力收益在哪里查看".equals(compactQuestion(faq.question()))
+                        : isDeviceEarningsNavigationQuestion(faq.question(), language))
                 .limit(2).toList();
         if (matches.size() != 1) return null;
         String answer = matches.get(0).answer();
         int maxChars = bounded(properties.getMaxOutputChars(), 256, 16_000);
         return answer == null || answer.isBlank() || answer.length() > maxChars
-                || !answer.contains("我的设备") || !answer.contains("结算记录") || !answer.contains("服务端")
+                || !hasDeviceEarningsRoutes(answer, language)
                 ? null : answer.trim();
+    }
+
+    private boolean hasDeviceEarningsRoutes(String answer, String language) {
+        return switch (language.toLowerCase(Locale.ROOT)) {
+            case "zh" -> answer.contains("我的→我的设备") && answer.contains("赚取")
+                    && answer.contains("首页→收益→查看全部") && answer.contains("账单流水") && answer.contains("服务端");
+            case "en" -> answer.contains("Me → My Devices") && answer.contains("Earn tab")
+                    && answer.contains("Home → Earnings → See all") && answer.contains("Bills");
+            case "vi" -> answer.contains("Tôi → Thiết bị của tôi") && answer.contains("thẻ Sinh lời")
+                    && answer.contains("Trang chủ → Thu nhập → Xem tất cả") && answer.contains("Sao kê");
+            default -> false;
+        };
     }
 
     private String generalEarningsNavigationAnswer(String question, String language) {
@@ -199,9 +224,19 @@ public class RagNovaAiGateway implements NovaAiGateway {
                 + "如果您问的是任务、团队或其他类型的收益，请告诉我具体类型。";
     }
 
-    private boolean isDeviceEarningsNavigationQuestion(String question) {
-        String text = compactQuestion(question);
-        return text.length() <= 32 && DEVICE_EARNINGS_NAVIGATION.matcher(text).matches();
+    private boolean isDeviceEarningsNavigationQuestion(String question, String language) {
+        if ("zh".equalsIgnoreCase(language)) {
+            String text = compactQuestion(question);
+            return text.length() <= 32 && DEVICE_EARNINGS_NAVIGATION.matcher(text).matches();
+        }
+        String text = question == null ? "" : question.toLowerCase(Locale.ROOT)
+                .replaceAll("[?!.。！？]", "").trim().replaceAll("\\s+", " ");
+        if (text.length() > 100) return false;
+        return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
+            case "en" -> EN_DEVICE_EARNINGS_NAVIGATION.matcher(text).matches();
+            case "vi" -> VI_DEVICE_EARNINGS_NAVIGATION.matcher(text).matches();
+            default -> false;
+        };
     }
 
     private String compactQuestion(String question) {

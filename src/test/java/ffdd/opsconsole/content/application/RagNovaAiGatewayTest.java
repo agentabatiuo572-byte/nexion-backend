@@ -44,7 +44,7 @@ class RagNovaAiGatewayTest {
     @Test
     void answersDeviceEarningsNavigationFromTheCurrentPublishedHelpCenterFaq() {
         SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
-        String answer = "进入「我的 - 我的设备」查看设备、槽位和运行状态；进入收益相关页面查看算力收益与结算记录。设备状态和收益数据均以服务端返回为准。";
+        String answer = "进入「我的→我的设备」查看设备、槽位和运行状态；打开底部「赚取」查看算力收益和设备任务历史。已入账记录可从「首页→收益→查看全部」进入账单流水。设备状态和收益数据均以服务端返回为准。";
         when(knowledge.listFaqs()).thenReturn(List.of(deviceEarningsFaq("PUBLISHED", "Help Center", "zh-CN", answer)));
 
         String actual = new RagNovaAiGateway(properties(), objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
@@ -57,6 +57,46 @@ class RagNovaAiGatewayTest {
                 MODEL, "zh", RAG_SESSION_ID,
                 List.of(new NovaAiGateway.Message("user", "设备和算力收益在哪里查看？")), 1_024)))
                 .isEqualTo(answer);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "en,How can I check my device earnings?,Where can I check my device and computing earnings?,Open Me → My Devices to check device status. Open the Earn tab for computing earnings. Home → Earnings → See all opens Bills for credited entries.",
+            "vi,Tôi xem thu nhập từ thiết bị ở đâu?,Tôi xem thu nhập từ thiết bị và năng lực điện toán ở đâu?,Mở Tôi → Thiết bị của tôi để xem trạng thái. Mở thẻ Sinh lời để xem thu nhập. Trang chủ → Thu nhập → Xem tất cả mở Sao kê cho các khoản đã ghi có."
+    })
+    void answersEnglishAndVietnameseNavigationOnlyFromPublishedSameLanguageFaq(
+            String language, String question, String faqQuestion, String answer) {
+        SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
+        String faqLanguage = "en".equals(language) ? "en-US" : "vi-VN";
+        when(knowledge.listFaqs()).thenReturn(List.of(localizedDeviceEarningsFaq(
+                "PUBLISHED", "Help Center", faqLanguage, faqQuestion, answer)));
+
+        assertThat(new RagNovaAiGateway(properties(), objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
+                MODEL, language, RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", question)), 1_024)))
+                .isEqualTo(answer);
+    }
+
+    @Test
+    void englishDeviceNavigationFallsBackWhenFaqIsDraftOrMissingARealRoute() throws Exception {
+        String question = "How can I check my device earnings?";
+        String faqQuestion = "Where can I check my device and computing earnings?";
+        String answer = "Open Me → My Devices and Earn. Home → Earnings → See all opens Bills.";
+        assertUsesRagInsteadOfFaq("en", question, localizedDeviceEarningsFaq(
+                "DRAFT", "Help Center", "en-US", faqQuestion, answer));
+        stop();
+        assertUsesRagInsteadOfFaq("en", question, localizedDeviceEarningsFaq(
+                "PUBLISHED", "Help Center", "en-US", faqQuestion, "Open the App to see your earnings."));
+    }
+
+    @Test
+    void vietnameseDeviceNavigationFallsBackForOtherLanguageOrOtherQuestion() throws Exception {
+        String question = "Tôi xem thu nhập từ thiết bị ở đâu?";
+        String answer = "Mở Tôi → Thiết bị của tôi và Sinh lời. Trang chủ → Thu nhập → Xem tất cả mở Sao kê.";
+        assertUsesRagInsteadOfFaq("vi", question, localizedDeviceEarningsFaq(
+                "PUBLISHED", "Help Center", "en-US", "Where can I check my device and computing earnings?", answer));
+        stop();
+        assertUsesRagInsteadOfFaq("vi", "Thu nhập từ thiết bị của tôi là bao nhiêu?", localizedDeviceEarningsFaq(
+                "PUBLISHED", "Help Center", "vi-VN", "Tôi xem thu nhập từ thiết bị ở đâu?", answer));
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -112,6 +152,10 @@ class RagNovaAiGatewayTest {
     }
 
     private void assertUsesRagInsteadOfFaq(String question, SupportFaqView faq) throws Exception {
+        assertUsesRagInsteadOfFaq("zh", question, faq);
+    }
+
+    private void assertUsesRagInsteadOfFaq(String language, String question, SupportFaqView faq) throws Exception {
         SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
         when(knowledge.listFaqs()).thenReturn(List.of(faq));
         AtomicReference<Map<String, Object>> captured = new AtomicReference<>();
@@ -128,13 +172,19 @@ class RagNovaAiGatewayTest {
         properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
 
         assertThat(new RagNovaAiGateway(properties, objectMapper, knowledge).chat(new NovaAiGateway.ChatRequest(
-                MODEL, "zh", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", question)), 128)))
+                MODEL, language, RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", question)), 128)))
                 .isEqualTo("RAG answer");
         assertThat(captured.get()).containsEntry("question", question);
     }
 
     private SupportFaqView deviceEarningsFaq(String status, String surface, String language, String answer) {
         return new SupportFaqView("FAQ-20260829015717730-084d2c0b", "hardware", "设备和算力收益在哪里查看？", answer,
+                status, surface, language, 1, 1, null);
+    }
+
+    private SupportFaqView localizedDeviceEarningsFaq(
+            String status, String surface, String language, String question, String answer) {
+        return new SupportFaqView("FAQ-268-" + language, "hardware", question, answer,
                 status, surface, language, 1, 1, null);
     }
 
