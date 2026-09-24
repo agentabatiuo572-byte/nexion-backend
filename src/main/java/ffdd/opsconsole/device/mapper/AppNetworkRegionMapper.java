@@ -26,11 +26,11 @@ public interface AppNetworkRegionMapper extends BaseMapper<Object> {
                       FROM nx_user viewer
                       JOIN nx_user_device d ON d.is_deleted = 0
                       JOIN nx_user owner ON owner.id = d.user_id AND owner.is_deleted = 0
+                      LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
                      WHERE viewer.id = #{userId} AND viewer.is_deleted = 0
                        AND viewer.sandbox = 0 AND owner.sandbox = 0
-                       AND UPPER(d.ownership_status) = 'OWNED'
-                       AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
-                       AND d.deactivated_at IS NULL AND d.pending_deactivate = 0
+                       AND """ + DeviceOpsMapper.E5_ACTIVATED_OWNED + """
+                       AND """ + DeviceOpsMapper.E5_RUNTIME_ONLINE + """
                      GROUP BY d.dc_location
               ) dev ON dev.dc_location = dc.dc_location
               LEFT JOIN (

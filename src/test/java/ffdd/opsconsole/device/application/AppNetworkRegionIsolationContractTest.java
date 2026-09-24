@@ -3,6 +3,7 @@ package ffdd.opsconsole.device.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ffdd.opsconsole.device.mapper.AppNetworkRegionMapper;
+import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,6 +11,18 @@ import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class AppNetworkRegionIsolationContractTest {
+    @Test
+    void globeOnlineNodesUseTheSameDeviceRuntimeEligibilityAsVerifiedPublicStats() throws Exception {
+        Select select = AppNetworkRegionMapper.class.getMethod("regions", Long.class).getAnnotation(Select.class);
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ");
+        String deviceCount = sql.substring(sql.indexOf("SELECT d.dc_location"), sql.indexOf(") dev ON"));
+
+        assertThat(deviceCount)
+                .contains("nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0")
+                .contains(DeviceOpsMapper.E5_ACTIVATED_OWNED.replaceAll("\\s+", " ").trim())
+                .contains(DeviceOpsMapper.E5_RUNTIME_ONLINE.trim());
+    }
+
     @Test
     void everyGlobalProjectionIsProductionOnlyUntilRunScopedDeviceProjectionExists() throws Exception {
         Select select = AppNetworkRegionMapper.class.getMethod("regions", Long.class).getAnnotation(Select.class);
