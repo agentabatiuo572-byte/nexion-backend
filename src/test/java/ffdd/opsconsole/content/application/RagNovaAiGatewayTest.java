@@ -61,6 +61,28 @@ class RagNovaAiGatewayTest {
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "如何查看收益？", "我在哪里查看收益？", "我的收益在哪看？", "怎么查询收益记录？"
+    })
+    void answersGeneralEarningsNavigationWithTheCurrentAppRoutes(String question) {
+        String answer = new RagNovaAiGateway(properties(), objectMapper).chat(new NovaAiGateway.ChatRequest(
+                MODEL, "zh", RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", question)), 1_024));
+
+        assertThat(answer).contains("「赚取」", "算力收益", "首页「收益流水」", "「查看全部」", "账单", "服务端");
+        assertThat(answer).doesNotContain("推理收据", "保证收益", "您的收益为", "已为您查到");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "如何查看收益提现手续费？", "我的收益为什么没到账？", "如何计算收益？", "查看收益是多少？", "查看团队收益税费"
+    })
+    void doesNotTurnOtherEarningsQuestionsIntoGenericNavigation(String question) throws Exception {
+        assertUsesRagInsteadOfFaq(question,
+                deviceEarningsFaq("PUBLISHED", "Help Center", "zh-CN", "FAQ answer"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
             "我的设备收益为什么没有到账？", "如何计算设备收益？", "查看我的设备收益是多少？",
             "如何查看设备收益提现手续费？", "查看设备收益的税费在哪里？", "我的设备收益如何查看但不显示？"
     })

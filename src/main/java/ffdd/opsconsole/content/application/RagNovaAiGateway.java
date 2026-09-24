@@ -26,6 +26,9 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private static final Pattern DEVICE_EARNINGS_NAVIGATION = Pattern.compile(
             "^(?:请问)?(?:如何|怎么|怎样|在哪(?:里)?|从哪(?:里)?)?(?:查看|查询|看|查)(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:呢|啊|呀)?$"
                     + "|^(?:请问)?(?:我(?:的)?)?(?:设备|算力|设备和算力)收益(?:记录|明细)?(?:在(?:哪里|哪)|怎么|如何)?(?:查看|查询|看|查)(?:呢|啊|呀)?$");
+    private static final Pattern GENERAL_EARNINGS_NAVIGATION = Pattern.compile(
+            "^(?:请问)?(?:我(?:的)?)?(?:如何|怎么|怎样|在哪(?:里)?|从哪(?:里)?)?(?:查看|查询|看|查)(?:我(?:的)?)?收益(?:记录|明细)?(?:呢|啊|呀)?$"
+                    + "|^(?:请问)?(?:我(?:的)?)?收益(?:记录|明细)?(?:在(?:哪里|哪)|从(?:哪里|哪)|怎么|如何)?(?:查看|查询|看|查)(?:呢|啊|呀)?$");
     private final NovaAiProperties properties;
     private final ObjectMapper objectMapper;
     private final SupportKnowledgeRepository knowledgeRepository;
@@ -53,6 +56,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
             Message current = request.messages().get(currentIndex);
             String publishedFaqAnswer = publishedDeviceEarningsAnswer(current.content(), request.language());
             if (publishedFaqAnswer != null) return publishedFaqAnswer;
+            String earningsNavigationAnswer = generalEarningsNavigationAnswer(current.content(), request.language());
+            if (earningsNavigationAnswer != null) return earningsNavigationAnswer;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("question", novaQuestion(current.content(), request.language()));
             body.put("response_language", request.language());
@@ -183,6 +188,15 @@ public class RagNovaAiGateway implements NovaAiGateway {
         return answer == null || answer.isBlank() || answer.length() > maxChars
                 || !answer.contains("我的设备") || !answer.contains("结算记录") || !answer.contains("服务端")
                 ? null : answer.trim();
+    }
+
+    private String generalEarningsNavigationAnswer(String question, String language) {
+        if (!"zh".equalsIgnoreCase(language)) return null;
+        String text = compactQuestion(question);
+        if (text.length() > 24 || !GENERAL_EARNINGS_NAVIGATION.matcher(text).matches()) return null;
+        return "您可以在 App 底部「赚取」页查看算力收益；要核对已入账记录，可在首页「收益流水」点「查看全部」进入账单。"
+                + "金额和记录以服务端返回为准。"
+                + "如果您问的是任务、团队或其他类型的收益，请告诉我具体类型。";
     }
 
     private boolean isDeviceEarningsNavigationQuestion(String question) {
