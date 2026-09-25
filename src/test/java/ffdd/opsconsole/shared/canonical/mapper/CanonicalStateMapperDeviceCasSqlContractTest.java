@@ -143,14 +143,17 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                 "d.row_version AS rowVersion,",
                 "d.activated_at AS activatedAt,",
                 "d.deactivated_at AS deactivatedAt,",
-                "d.purchased_at AS purchasedAt,");
+                "d.purchased_at AS purchasedAt,",
+                "AS cumulativeOutputUsdt,",
+                "d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier");
         assertThat(Arrays.stream(CanonicalStateMapper.OwnedDevice.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList())
                 .containsExactly(
                         "id", "instanceNo", "name", "deviceType", "productCode", "status", "runtimeStatus", "rowVersion",
                         "pendingDeactivate", "activatedAt", "deactivatedAt", "purchasedAt", "dailyUsdt", "dailyNex", "gpuModel", "vramTotalGb",
-                        "basePowerW", "location", "actualPaidUsdt", "cumulativeOutputUsdt");
+                        "basePowerW", "location", "actualPaidUsdt", "cumulativeOutputUsdt",
+                        "hashrate", "sourceChannel", "productTier");
     }
 
     @Test
@@ -160,6 +163,7 @@ class CanonicalStateMapperDeviceCasSqlContractTest {
                     ? CanonicalStateMapper.class.getMethod(methodName, Long.class, String.class)
                     : CanonicalStateMapper.class.getMethod(methodName, Long.class);
             String sql = String.join(" ", method.getAnnotation(Select.class).value()).replaceAll("\\s+", " ");
+            assertThat(sql).contains("d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier");
             assertThat(sql).containsSubsequence(
                     "d.status,", "runtimeStatus", "d.row_version AS rowVersion,",
                     "d.activated_at AS activatedAt,", "d.deactivated_at AS deactivatedAt,",

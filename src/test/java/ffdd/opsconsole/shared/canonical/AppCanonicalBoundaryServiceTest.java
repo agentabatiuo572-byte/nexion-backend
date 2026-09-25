@@ -1202,6 +1202,39 @@ class AppCanonicalBoundaryServiceTest {
     }
 
     @Test
+    void fleetProjectsCalibratedPhoneTopsAndTierWithoutRelabelingOtherHashrates() {
+        LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
+        when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.ownedDevices(42L)).thenReturn(List.of(
+                new CanonicalStateMapper.OwnedDevice(
+                        1149L, "PHONE-1149", "Your phone", "MOBILE", "phone", "ACTIVE", "UNKNOWN", 1L,
+                        false, activatedAt, null, activatedAt, new BigDecimal("0.06"), BigDecimal.TEN,
+                        "Mobile NPU", 8, BigDecimal.ZERO, "User device", BigDecimal.ZERO, BigDecimal.ZERO,
+                        new BigDecimal("32.3"), "ONBOARDING", "TIER-3"),
+                new CanonicalStateMapper.OwnedDevice(
+                        1150L, "DEV-1150", "Server", "SERVER", "stellarbox-pro", "ACTIVE", "UNKNOWN", 1L,
+                        false, activatedAt, null, activatedAt, new BigDecimal("1"), BigDecimal.TEN,
+                        "RTX 4090", 24, new BigDecimal("1200"), "Singapore", BigDecimal.ZERO, BigDecimal.ZERO,
+                        new BigDecimal("100"), "ORDER", "TIER-5"),
+                new CanonicalStateMapper.OwnedDevice(
+                        1151L, "PHONE-1151", "Your phone", "MOBILE", "phone", "ACTIVE", "UNKNOWN", 1L,
+                        false, activatedAt, null, activatedAt, new BigDecimal("0.06"), BigDecimal.TEN,
+                        "Mobile NPU", 8, BigDecimal.ZERO, "User device", BigDecimal.ZERO, BigDecimal.ZERO,
+                        null, "ONBOARDING", "TIER-X")));
+
+        var result = service.deviceEarnings(42L, false, false, null);
+        assertThat(result.getCode()).isZero();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> devices = (List<Map<String, Object>>) result.getData().get("devices");
+        assertThat(devices.get(0)).containsEntry("capabilityTops", new BigDecimal("32.3"))
+                .containsEntry("capabilityTier", 3);
+        assertThat(devices.get(1)).containsEntry("capabilityTops", null)
+                .containsEntry("capabilityTier", null);
+        assertThat(devices.get(2)).containsEntry("capabilityTops", null)
+                .containsEntry("capabilityTier", null);
+    }
+
+    @Test
     void fleetCarriesDeactivationTimeEvenWhenItIsAbsent() {
         LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());

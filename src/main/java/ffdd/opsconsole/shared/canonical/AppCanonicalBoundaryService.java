@@ -505,6 +505,19 @@ public class AppCanonicalBoundaryService {
         }
         BigDecimal dailyUsdt = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
         BigDecimal dailyNex = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyNex()), capacity);
+        boolean calibratedPhone = "MOBILE".equalsIgnoreCase(device.deviceType())
+                && "phone".equalsIgnoreCase(device.productCode())
+                && "ONBOARDING".equalsIgnoreCase(device.sourceChannel());
+        BigDecimal capabilityTops = calibratedPhone && device.hashrate() != null
+                && device.hashrate().signum() > 0 ? device.hashrate() : null;
+        Integer capabilityTier = calibratedPhone ? switch (String.valueOf(device.productTier())) {
+            case "TIER-1" -> 1;
+            case "TIER-2" -> 2;
+            case "TIER-3" -> 3;
+            case "TIER-4" -> 4;
+            case "TIER-5" -> 5;
+            default -> null;
+        } : null;
         return linked(
                 "id", device.id(), "rowVersion", device.rowVersion(),
                 "pendingDeactivate", device.pendingDeactivate(),
@@ -514,6 +527,7 @@ public class AppCanonicalBoundaryService {
                 "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
                 "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
+                "capabilityTops", capabilityTops, "capabilityTier", capabilityTier,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),
                 "actualPaidUsdt", zero(device.actualPaidUsdt()).setScale(6, RoundingMode.HALF_UP),
