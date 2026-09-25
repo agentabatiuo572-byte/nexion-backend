@@ -60,6 +60,11 @@ class BehaviorAnalyticsServiceTest {
                 """, BehaviorEventRequest.class))
                 .hasRootCauseInstanceOf(IllegalArgumentException.class)
                 .hasRootCauseMessage("L6_UNKNOWN_FIELD:rawText");
+        assertThatThrownBy(() -> objectMapper.readValue("""
+                {"eventName":"store.viewed","user_id":999}
+                """, BehaviorEventRequest.class))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                .hasRootCauseMessage("L6_UNKNOWN_FIELD:user_id");
     }
 
     @Test
@@ -93,6 +98,64 @@ class BehaviorAnalyticsServiceTest {
         assertThat(claim.actorHash()).isNotEqualTo("42").hasSize(64);
         assertThat(claim.pageLevel()).isEqualTo(3);
         verify(mapper).replaceClaimEventId("evt-1", claim.eventId(), "a".repeat(32));
+    }
+
+    @Test
+    void storeViewUsesAuthenticatedActorAndCanonicalDimensionsAndDeduplicates() {
+        when(mapper.findTrackedPage("/pages/store/store")).thenReturn(
+                new BehaviorAnalyticsMapper.CatalogRow("/pages/store/store", "商城", 1,
+                        "/pages/store/store", "/pages/store/store", true));
+        when(mapper.userAttribution(42L)).thenReturn(
+                new BehaviorAnalyticsMapper.UserAttribution("P2", 3, "2026-W38"));
+        when(outbox.publishTrustedStoreView(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq("P2"), org.mockito.ArgumentMatchers.eq(3),
+                org.mockito.ArgumentMatchers.eq("2026-W38"), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new EventOutboxService.ClientAnalyticsPublishResult("store-event-1", true));
+        when(mapper.insertFact(org.mockito.ArgumentMatchers.any())).thenReturn(1);
+        when(mapper.replaceClaimEventId(org.mockito.ArgumentMatchers.eq("store-event-1"),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq("b".repeat(32)))).thenReturn(1);
+        BehaviorEventRequest request = new BehaviorEventRequest("b".repeat(32), "store.viewed",
+                "c".repeat(32), "/pages/store/store", null, null, null, null, null,
+                Instant.now().toEpochMilli(), "H5", "zh-CN");
+
+        assertThat(service.ingest(42L, request).getData()).containsEntry("accepted", true);
+        ArgumentCaptor<java.util.Map<String, Object>> payload = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(outbox).publishTrustedStoreView(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq("P2"), org.mockito.ArgumentMatchers.eq(3),
+                org.mockito.ArgumentMatchers.eq("2026-W38"), payload.capture());
+        assertThat(payload.getValue()).containsKeys("anon_id", "session_id", "platform", "locale")
+                .doesNotContainKeys("user_id", "route", "source_environment", "page_level");
+        ArgumentCaptor<BehaviorAnalyticsMapper.BehaviorFactRow> fact = ArgumentCaptor.forClass(BehaviorAnalyticsMapper.BehaviorFactRow.class);
+        verify(mapper).insertFact(fact.capture());
+        when(mapper.findByClientEventId("b".repeat(32))).thenReturn(
+                new BehaviorAnalyticsMapper.ExistingEventRow("store.viewed", "ignored", "/pages/store/store", fact.getValue().fingerprint()));
+        assertThat(service.ingest(42L, request).getData()).containsEntry("accepted", false).containsEntry("duplicate", true);
+        verify(outbox, org.mockito.Mockito.times(1)).publishTrustedStoreView(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void storeViewRejectsOtherRoutesClickFieldsAndMissingAuthentication() {
+        BehaviorEventRequest wrongRoute = new BehaviorEventRequest("b".repeat(32), "store.viewed",
+                "c".repeat(32), "/pages/store/detail", null, null, null, null, null,
+                Instant.now().toEpochMilli(), "H5", "zh-CN");
+        assertThatThrownBy(() -> service.ingest(42L, wrongRoute))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_STORE_ROUTE_INVALID");
+        assertThatThrownBy(() -> service.ingest(null, wrongRoute))
+                .isInstanceOf(BizException.class).hasMessageContaining("USER_AUTH_REQUIRED");
+        when(mapper.findTrackedPage("/pages/store/store")).thenReturn(
+                new BehaviorAnalyticsMapper.CatalogRow("/pages/store/store", "商城", 1,
+                        "/pages/store/store", "/pages/store/store", true));
+        BehaviorEventRequest clickFields = new BehaviorEventRequest("b".repeat(32), "store.viewed",
+                "c".repeat(32), "/pages/store/store", null, 0.5, null, null, null,
+                Instant.now().toEpochMilli(), "H5", "zh-CN");
+        assertThatThrownBy(() -> service.ingest(42L, clickFields))
+                .isInstanceOf(BizException.class).hasMessageContaining("L6_STORE_FIELDS_INVALID");
     }
 
     @Test

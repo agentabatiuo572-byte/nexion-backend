@@ -115,6 +115,31 @@ class EventOutboxServiceTest {
     }
 
     @Test
+    void storeViewPublishesCanonicalUserAndDimensionsUnderConversionSampling() throws Exception {
+        when(mapper.findActiveSchema("store.viewed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("conversion", 285, false));
+        when(mapper.findLifecycleState("store.viewed")).thenReturn("full");
+        when(mapper.listActiveProperties("store.viewed")).thenReturn(List.of());
+        when(a4Policy.samplingPercent("conversion", false)).thenReturn(100);
+
+        var published = service.publishTrustedStoreView("session-hash", "actor-hash", 42L,
+                "P2", 3, "2026-W38", Map.of("anon_id", "actor-hash", "session_id", "session-hash",
+                        "platform", "h5", "locale", "zh-CN"));
+
+        assertThat(published.sampledIn()).isTrue();
+        ArgumentCaptor<String> envelope = ArgumentCaptor.forClass(String.class);
+        verify(mapper).insertEvent(eq(published.eventId()), eq("APP_BEHAVIOR"), eq("session-hash"),
+                eq("store.viewed"), eq("store.viewed"), eq("conversion"), eq("P2"), eq(3),
+                eq("2026-W38"), eq(false), eq(285), eq(true), eq(true), envelope.capture());
+        JsonNode payload = objectMapper.readTree(envelope.getValue());
+        assertThat(payload.path("user_id").asLong()).isEqualTo(42L);
+        assertThat(payload.path("phase").asText()).isEqualTo("P2");
+        assertThat(payload.path("cohort").asText()).isEqualTo("2026-W38");
+        assertThat(payload.path("anon_id").asText()).isEqualTo("actor-hash");
+        assertThat(payload.has("route")).isFalse();
+    }
+
+    @Test
     void trustedClientIngestHonorsAuthoritativeAdminSamplingAtZeroAndOneHundred() {
         when(mapper.findActiveSchema("app.page_viewed"))
                 .thenReturn(new EventOutboxMapper.SchemaGateRow("acquisition", 9, false));

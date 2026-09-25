@@ -70,6 +70,23 @@ public class EventOutboxService {
                 trustedSamplingKey);
     }
 
+    /** The actor and dimensions come from authenticated server state, never a client analytics body. */
+    public ClientAnalyticsPublishResult publishTrustedStoreView(
+            String aggregateId, String trustedSamplingKey, Long userId,
+            String phase, Integer accountAgeMonths, String cohort, Object payload) {
+        String normalizedPhase = phase == null ? "" : phase.trim().toUpperCase(Locale.ROOT);
+        String normalizedCohort = cohort == null ? "" : cohort.trim();
+        int cohortWeek = normalizedCohort.matches("^\\d{4}-W\\d{2}$")
+                ? Integer.parseInt(normalizedCohort.substring(6)) : 0;
+        if (userId == null || userId <= 0 || !normalizedPhase.matches("^P[1-6]$")
+                || accountAgeMonths == null || accountAgeMonths < 0
+                || cohortWeek < 1 || cohortWeek > 53) {
+            throw validation("A4_USER_ATTRIBUTION_INVALID");
+        }
+        return publishInternal("APP_BEHAVIOR", aggregateId, "store.viewed", userId,
+                normalizedPhase, accountAgeMonths, normalizedCohort, payload, trustedSamplingKey);
+    }
+
     public String publishUserEvent(
             String aggregateType,
             String aggregateId,

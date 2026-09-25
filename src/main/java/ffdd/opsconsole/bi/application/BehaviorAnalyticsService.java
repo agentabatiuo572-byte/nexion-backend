@@ -44,7 +44,8 @@ public class BehaviorAnalyticsService {
     private static final Pattern CLIENT_EVENT_ID = Pattern.compile("^[a-f0-9]{32}$");
     private static final Pattern ELEMENT = Pattern.compile("^[a-z][a-z0-9_-]{0,63}$");
     private static final Pattern LOCALE = Pattern.compile("^[a-z]{2}(?:-[A-Z]{2})?$");
-    private static final Set<String> EVENTS = Set.of("app.page_viewed", "app.element_clicked");
+    private static final Set<String> EVENTS = Set.of("app.page_viewed", "app.element_clicked", "store.viewed");
+    private static final String STORE_ROUTE = "/pages/store/store";
     private static final Set<String> DEVICES = Set.of("APP", "H5", "MP");
     private static final Set<String> ZONES = Set.of("TOP", "MAIN_CTA", "CONTENT", "BOTTOM");
     private static final long MAX_DWELL_MS = 86_400_000L;
@@ -88,6 +89,8 @@ public class BehaviorAnalyticsService {
         require(request != null && EVENTS.contains(request.eventName()), "L6_EVENT_NOT_ALLOWED");
         require(CLIENT_EVENT_ID.matcher(text(request.clientEventId())).matches(), "L6_CLIENT_EVENT_ID_INVALID");
         String route = normalizeRoute(request.route());
+        boolean storeView = "store.viewed".equals(request.eventName());
+        if (storeView) require(STORE_ROUTE.equals(route), "L6_STORE_ROUTE_INVALID");
         BehaviorAnalyticsMapper.CatalogRow page = mapper.findTrackedPage(route);
         require(page != null, "L6_ROUTE_NOT_TRACKED");
         require(SESSION.matcher(text(request.sessionId())).matches(), "L6_SESSION_INVALID");
@@ -105,19 +108,24 @@ public class BehaviorAnalyticsService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("anon_id", actorHash);
         payload.put("session_id", sessionHash);
-        payload.put("route", route);
-        payload.put("page_level", page.pageLevel());
-        payload.put("parent_l1", page.parentL1());
-        payload.put("parent_l2", page.parentL2());
         payload.put("platform", device.toLowerCase(Locale.ROOT));
         payload.put("locale", locale);
-        payload.put("source_environment",sourceEnvironment);
+        if (!storeView) {
+            payload.put("route", route);
+            payload.put("page_level", page.pageLevel());
+            payload.put("parent_l1", page.parentL1());
+            payload.put("parent_l2", page.parentL2());
+            payload.put("source_environment",sourceEnvironment);
+        }
 
         if ("app.page_viewed".equals(request.eventName())) {
             require(request.dwellMs() != null && request.dwellMs() >= 0 && request.dwellMs() <= MAX_DWELL_MS,
                     "L6_DWELL_INVALID");
             dwellMs = request.dwellMs();
             payload.put("dwell_ms", dwellMs);
+        } else if (storeView) {
+            require(request.dwellMs() == null && request.xNorm() == null && request.yNorm() == null
+                    && request.zone() == null && request.elementId() == null, "L6_STORE_FIELDS_INVALID");
         } else {
             require(finiteUnit(request.xNorm()) && finiteUnit(request.yNorm()), "L6_COORDINATE_INVALID");
             xNorm = round4(request.xNorm());
@@ -155,13 +163,13 @@ public class BehaviorAnalyticsService {
                     validatedDwellMs, validatedXNorm, validatedYNorm, validatedZone, validatedElementId,
                     device, locale, occurredAt, fingerprint));
         }
-        return withProductionSessionAuthority(sessionHash, () -> ingestProduction(request, sessionHash, actorHash, route,
+        return withProductionSessionAuthority(sessionHash, () -> ingestProduction(userId, request, sessionHash, actorHash, route,
                 page, validatedDwellMs, validatedXNorm, validatedYNorm, validatedZone, validatedElementId,
                 device, locale, occurredAt, fingerprint, sourceEnvironment, payload));
     }
 
     /** All decisions that depend on mutable session state execute after its authority lock. */
-    private ApiResult<Map<String, Object>> ingestProduction(BehaviorEventRequest request, String sessionHash,
+    private ApiResult<Map<String, Object>> ingestProduction(Long userId, BehaviorEventRequest request, String sessionHash,
             String actorHash, String route, BehaviorAnalyticsMapper.CatalogRow page, Long dwellMs, Double xNorm,
             Double yNorm, String zone, String elementId, String device, String locale, LocalDateTime occurredAt,
             String fingerprint, String sourceEnvironment, Map<String, Object> payload) {
@@ -207,8 +215,15 @@ public class BehaviorAnalyticsService {
             requireClientEventFingerprint(fingerprint, winner.fingerprint());
             return ApiResult.ok(linked("accepted", false, "duplicate", true, "backfilled", false));
         }
-        EventOutboxService.ClientAnalyticsPublishResult published =
-                outbox.publishTrustedClientAnalyticsEvent(sessionHash, actorHash, request.eventName(), payload);
+        EventOutboxService.ClientAnalyticsPublishResult published;
+        if ("store.viewed".equals(request.eventName())) {
+            BehaviorAnalyticsMapper.UserAttribution attribution = mapper.userAttribution(userId);
+            require(attribution != null, "A4_USER_ATTRIBUTION_INVALID");
+            published = outbox.publishTrustedStoreView(sessionHash, actorHash, userId,
+                    attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), payload);
+        } else {
+            published = outbox.publishTrustedClientAnalyticsEvent(sessionHash, actorHash, request.eventName(), payload);
+        }
         if (!published.sampledIn()) {
             if (mapper.deleteClaim(claimEventId, request.clientEventId()) != 1) {
                 throw new BizException(409, "L6_FACT_CLAIM_LOST");

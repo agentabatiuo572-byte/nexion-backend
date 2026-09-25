@@ -33,6 +33,15 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
     Boolean isSandboxUser(@Param("userId") Long userId);
 
     @Select("""
+            SELECT COALESCE((SELECT config_value FROM nx_config_item
+                              WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
+                   GREATEST(TIMESTAMPDIFF(MONTH,u.created_at,NOW()),0) accountAgeMonths,
+                   DATE_FORMAT(u.created_at,'%x-W%v') cohort
+              FROM nx_user u WHERE u.id=#{userId} AND u.is_deleted=0 LIMIT 1
+            """)
+    UserAttribution userAttribution(@Param("userId") Long userId);
+
+    @Select("""
             SELECT route, title_zh AS titleZh, page_level AS pageLevel,
                    parent_l1 AS parentL1, parent_l2 AS parentL2, tracked
               FROM nx_behavior_page_catalog
@@ -227,6 +236,7 @@ public interface BehaviorAnalyticsMapper extends BaseMapper<Object> {
                         @Param("deviceType") String deviceType, @Param("locale") String locale);
 
     record CatalogRow(String route, String titleZh, int pageLevel, String parentL1, String parentL2, boolean tracked) {}
+    record UserAttribution(String phase, Integer accountAgeMonths, String cohort) {}
     record BehaviorFactRow(String eventId, String clientEventId, String dedupeKey, String fingerprint, String eventName, String sessionHash, String actorHash, String route,
                            int pageLevel, String parentL1, String parentL2, Long dwellMs, Double xNorm, Double yNorm,
                            String zone, String elementId, String deviceType, String locale,String sourceEnvironment, LocalDateTime occurredAt) {}
