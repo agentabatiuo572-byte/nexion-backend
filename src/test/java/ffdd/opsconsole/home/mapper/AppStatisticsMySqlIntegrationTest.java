@@ -240,6 +240,34 @@ class AppStatisticsMySqlIntegrationTest {
     }
 
     @Test
+    void staleLowBatteryAndPausedPhonesDoNotAppearOnlineOrEarnRunningRate() throws Exception {
+        user(USER, false, "ACTIVE", 0);
+        for (long id : List.of(200L, 201L, 202L, 203L, 204L)) {
+            device(id, USER, "ACTIVE", "OWNED", 0, "GPU", "DC-A");
+            jdbc.update("UPDATE nx_user_device SET device_type='PHONE' WHERE id=?", id);
+            task(id, USER, PRODUCTION, "RUNNING", "60.000000", 60, "phone", END, 0);
+        }
+        device(205, USER, "ACTIVE", "OWNED", 0, "GPU", "DC-A");
+        task(205, USER, PRODUCTION, "RUNNING", "60.000000", 60, "pc", END, 0);
+        runtime(205, "ONLINE");
+        for (long id : List.of(200L, 201L, 202L, 203L, 204L)) runtime(id, "ONLINE");
+        jdbc.update("UPDATE nx_user_device_runtime SET battery_level=80, network_reachable=1, heartbeat_at=NOW() "
+                + "WHERE user_device_id IN (200,201,202,203,204)");
+        jdbc.update("UPDATE nx_user_device_runtime SET heartbeat_at=DATE_SUB(NOW(), INTERVAL 121 SECOND) "
+                + "WHERE user_device_id=201");
+        jdbc.update("UPDATE nx_user_device_runtime SET battery_level=19 WHERE user_device_id=202");
+        jdbc.update("UPDATE nx_user_device_runtime SET network_reachable=0 WHERE user_device_id=203");
+        jdbc.update("UPDATE nx_compute_task SET paused_at=NOW() WHERE user_device_id=204");
+        executeIndexMigration();
+
+        assertThat(home.globalActiveDevices(false)).isEqualTo(3L); // healthy phones 200/204 and PC 205
+        assertThat(home.onGridClients(false)).extracting(AppHomeOverviewMapper.OnGridClientRow::gpus)
+                .containsExactlyInAnyOrder(2L, 1L);
+        assertThat(home.onGrid(PRODUCTION, false).activeJobs()).isEqualTo(2L); // phone 200 and PC 205
+        assertThat(home.onGrid(PRODUCTION, false).perSecUsdt()).isEqualByComparingTo("2.000000");
+    }
+
+    @Test
     void onGridClientsKeepsLatestNonblankClientAndDatacenterFallbacks() throws Exception {
         user(USER, false, "ACTIVE", 0);
         user(USER + 1, false, "DISABLED", 0);
@@ -551,6 +579,7 @@ class AppStatisticsMySqlIntegrationTest {
         jdbc.execute("""
                 CREATE TABLE nx_user_device_runtime (
                     user_device_id BIGINT PRIMARY KEY, online_status VARCHAR(32),
+                    battery_level INT, network_reachable TINYINT, heartbeat_at DATETIME,
                     is_deleted TINYINT NOT NULL DEFAULT 0
                 )
                 """);
@@ -561,6 +590,7 @@ class AppStatisticsMySqlIntegrationTest {
                     status VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     reward_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
                     required_seconds INT NOT NULL DEFAULT 60,
+                    paused_at DATETIME,
                     source_environment VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
                     completed_at DATETIME, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
                     is_deleted TINYINT NOT NULL DEFAULT 0

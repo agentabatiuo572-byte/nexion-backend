@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.web;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -7,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.device.application.AppTaskAssignmentService;
+import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,20 @@ class AppTaskAssignmentControllerTest {
         controller.receipts("0", "20", cursor, authentication);
 
         verify(service).receipts(7L, 0, 20, cursor);
+    }
+
+    @Test
+    void phoneRuntimeUsesTheAuthenticatedUserSubject() {
+        var request = new AppPhoneRuntimeRequest(11L, 20, true, false);
+        controller.phoneRuntime(request, userAuthentication());
+        verify(service).phoneRuntime(7L, request);
+
+        Authentication admin = mock(Authentication.class);
+        when(admin.isAuthenticated()).thenReturn(true);
+        when(admin.getPrincipal()).thenReturn("7");
+        when(admin.getDetails()).thenReturn(Map.of("subjectType", "ADMIN"));
+        assertThat(controller.phoneRuntime(request, admin).getCode()).isEqualTo(403);
+        verify(service, never()).phoneRuntime(null, request);
     }
 
     private Authentication userAuthentication() {

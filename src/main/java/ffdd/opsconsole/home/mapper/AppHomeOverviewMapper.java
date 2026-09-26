@@ -189,6 +189,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
                AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                    OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
+                        AND r.battery_level >= 20 AND r.network_reachable = 1))
             """)
     Long globalActiveDevices(@Param("sandbox") boolean sandbox);
 
@@ -198,6 +201,7 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                             THEN t.reward_usdt / t.required_seconds ELSE NULL END) AS perSecUsdt
               FROM nx_compute_task t
               JOIN nx_user_device d ON d.id = t.user_device_id AND d.is_deleted = 0
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
               JOIN nx_user u ON u.id = d.user_id
                             AND u.sandbox = #{sandbox}
                             AND u.status = 'ACTIVE'
@@ -205,6 +209,11 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
              WHERE t.source_environment = #{sourceEnvironment}
                AND t.is_deleted = 0
                AND t.status IN ('ASSIGNED','CLAIMED','RUNNING','PROCESSING')
+               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                    OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
+                        AND r.battery_level >= 20 AND r.network_reachable = 1
+                        AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+                        AND t.paused_at IS NULL))
             """)
     OnGridSummary onGrid(@Param("sourceEnvironment") String sourceEnvironment,
                          @Param("sandbox") boolean sandbox);
@@ -242,6 +251,9 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
                AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+               AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
+                    OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
+                        AND r.battery_level >= 20 AND r.network_reachable = 1))
              GROUP BY d.device_type, d.dc_location, d.gpu_model,
                       current_client.client_name, dc.display_name, dc.location
              ORDER BY COUNT(*) DESC, id ASC

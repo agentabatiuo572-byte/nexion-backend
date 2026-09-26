@@ -7,12 +7,14 @@ import ffdd.opsconsole.device.dto.AppTaskAssignmentView;
 import ffdd.opsconsole.device.dto.AppTaskAssignmentsResponse;
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.device.dto.AppTaskDeviceState;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.AssignmentRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ConfigRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceLockRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceRow;
+import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.PhoneRuntimeRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ReceiptRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
@@ -30,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
@@ -54,6 +57,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppTaskAssignmentService {
     private static final int LEASE_HOURS = 24;
+    private static final int PHONE_HEARTBEAT_SECONDS = 120;
     private static final String PROVENANCE_SOURCE = "server";
     private static final String PROVENANCE_ENVIRONMENT = "PRODUCTION";
     private static final String PROVENANCE_RUN_ID = "";
@@ -95,7 +99,7 @@ public class AppTaskAssignmentService {
             AppTaskAssignmentView current = rows.stream()
                     .filter(row -> device.id().equals(row.deviceId()) && active(row.status())
                             && (row.leaseExpiresAt() == null || !row.leaseExpiresAt().isBefore(now)))
-                    .findFirst().map(this::view).orElse(null);
+                    .findFirst().map(row -> view(row, phonePaused(userId, device, now))).orElse(null);
             List<AppTaskAssignmentView> recent = rows.stream()
                     .filter(row -> device.id().equals(row.deviceId()) && completed(row.status()))
                     .limit(10).map(this::view).toList();
@@ -238,6 +242,58 @@ public class AppTaskAssignmentService {
         return claimInternal(userId, deviceId, runtime.sourceEnvironment());
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<AppTaskAssignmentView> phoneRuntime(Long userId, AppPhoneRuntimeRequest request) {
+        requireUser(userId);
+        requireProductionRuntime(userId);
+        if (request == null || request.deviceId() == null || request.deviceId() <= 0
+                || request.batteryLevel() == null || request.batteryLevel() < 0 || request.batteryLevel() > 100
+                || request.networkReachable() == null) {
+            throw new BizException(422, "TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
+        }
+        LocalDateTime now = now();
+        lockProductionUser(userId);
+        DeviceRow device = mapper.lockOwnedDevice(userId, request.deviceId());
+        if (device == null || !phone(device)) throw new BizException(404, "TASK_ASSIGNMENT_PHONE_NOT_FOUND");
+        if (device.activatedAt() == null || !activeDevice(device.status())) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_NOT_ACTIVE");
+        }
+        PhoneRuntimeRow previous = mapper.phoneRuntime(userId, device.id());
+        AssignmentRow task = mapper.lockActiveAssignment(userId, device.id(), "PRODUCTION");
+        if (task != null && task.leaseExpiresAt() != null && !task.leaseExpiresAt().isAfter(now)) task = null;
+        LocalDateTime pausedAt = task == null ? null : task.pausedAt();
+        long pausedSeconds = task == null || task.pausedSeconds() == null ? 0 : task.pausedSeconds();
+        if (task != null && active(task.status())) {
+            if (pausedAt == null && !phoneReady(previous, now)) {
+                LocalDateTime startedAt = task.startedAt() == null ? now : task.startedAt();
+                LocalDateTime boundary = previous == null || previous.heartbeatAt() == null
+                        || !phoneSignalsReady(previous) ? startedAt
+                        : previous.heartbeatAt().plusSeconds(PHONE_HEARTBEAT_SECONDS);
+                pausedAt = boundary.isBefore(startedAt) ? startedAt : boundary;
+                if (pausedAt.isAfter(now)) pausedAt = now;
+            }
+            if (request.networkReachable() && request.batteryLevel() >= 20) {
+                if (pausedAt != null) {
+                    pausedSeconds += Math.max(0, Duration.between(pausedAt, now).getSeconds());
+                    pausedAt = null;
+                }
+            } else if (pausedAt == null) {
+                pausedAt = now;
+            }
+            if ((task.pausedAt() != null || pausedAt != null || pausedSeconds != (task.pausedSeconds() == null ? 0 : task.pausedSeconds()))
+                    && mapper.updatePhoneTaskPause(userId, device.id(), task.taskNo(), pausedAt, pausedSeconds, now) != 1) {
+                throw new BizException(409, "TASK_ASSIGNMENT_PHONE_PAUSE_CONFLICT");
+            }
+        }
+        String pauseReason = !request.networkReachable() ? "PHONE_OFFLINE"
+                : request.batteryLevel() < 20 ? "PHONE_LOW_BATTERY" : null;
+        mapper.upsertPhoneRuntime(userId, device.id(), request.batteryLevel(), request.isCharging(),
+                request.networkReachable(), request.networkReachable() ? "ONLINE" : "OFFLINE",
+                pauseReason, now);
+        if (task == null || !active(task.status())) return ApiResult.ok(null);
+        return ApiResult.ok(view(task, pausedAt != null || pauseReason != null, pausedSeconds));
+    }
+
     /**
      * Makes an elapsed App-task lease terminal without ever entering the reward settlement path.  A pending
      * device is stopped only after the expired task is no longer active and no other production task remains.
@@ -351,7 +407,8 @@ public class AppTaskAssignmentService {
             if ("PRODUCTION".equals(sourceEnvironment)) mapper.clearRuntimeTask(userId, deviceId, existing.taskNo(), now);
             existing = null;
         }
-        if (existing != null) return ApiResult.ok(view(existing));
+        if (existing != null) return ApiResult.ok(view(existing, phonePaused(userId, device, now)));
+        if (phone(device)) requirePhoneReady(mapper.phoneRuntime(userId, deviceId), now);
 
         int routingVram = effectiveRoutingVram(device);
         TaskConfigRow task = chooseTask(mapper.eligibleTasks(routingVram), routingVram);
@@ -418,7 +475,12 @@ public class AppTaskAssignmentService {
         if (completed(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         if (!active(task.status())) throw new BizException(409, "TASK_ASSIGNMENT_STATE_INVALID");
         validateDevice(activeBinding);
-        LocalDateTime completableAt = task.startedAt().plusSeconds(task.requiredSeconds());
+        if (phone(activeBinding)) {
+            requirePhoneReady(mapper.phoneRuntime(userId, deviceId), now);
+            if (task.pausedAt() != null) throw new BizException(409, "TASK_ASSIGNMENT_PHONE_PAUSED");
+        }
+        LocalDateTime completableAt = task.startedAt().plusSeconds(task.requiredSeconds()
+                + (task.pausedSeconds() == null ? 0 : task.pausedSeconds()));
         if (now.isBefore(completableAt)) throw new BizException(409, "TASK_ASSIGNMENT_NOT_COMPLETEABLE_UNTIL:" + completableAt);
         if (task.leaseExpiresAt() != null && now.isAfter(task.leaseExpiresAt())) {
             throw new BizException(409, "TASK_ASSIGNMENT_LEASE_EXPIRED");
@@ -526,8 +588,12 @@ public class AppTaskAssignmentService {
             throw new BizException(409, "TASK_ASSIGNMENT_VRAM_UNAVAILABLE");
         }
         if (Boolean.TRUE.equals(device.dispatchPaused())) throw new BizException(409, "TASK_ASSIGNMENT_DC_PAUSED");
-        if (StringUtils.hasText(device.pausedReason())) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
-        if (StringUtils.hasText(device.onlineStatus()) && !"ONLINE".equalsIgnoreCase(device.onlineStatus())) {
+        if (StringUtils.hasText(device.pausedReason())
+                && !(phone(device) && Set.of("PHONE_LOW_BATTERY", "PHONE_OFFLINE").contains(device.pausedReason()))) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
+        }
+        if (!phone(device) && StringUtils.hasText(device.onlineStatus())
+                && !"ONLINE".equalsIgnoreCase(device.onlineStatus())) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_OFFLINE");
         }
     }
@@ -591,11 +657,22 @@ public class AppTaskAssignmentService {
     }
 
     private AppTaskAssignmentView view(AssignmentRow row) {
-        LocalDateTime completableAt = row.startedAt() == null || row.requiredSeconds() == null
-                ? null : row.startedAt().plusSeconds(row.requiredSeconds());
+        return view(row, false);
+    }
+
+    private AppTaskAssignmentView view(AssignmentRow row, boolean phonePaused) {
+        return view(row, phonePaused || row.pausedAt() != null,
+                row.pausedSeconds() == null ? 0 : row.pausedSeconds());
+    }
+
+    private AppTaskAssignmentView view(AssignmentRow row, boolean phonePaused, long pausedSeconds) {
+        boolean paused = active(row.status()) && phonePaused;
+        LocalDateTime completableAt = paused || row.startedAt() == null || row.requiredSeconds() == null
+                ? null : row.startedAt().plusSeconds(row.requiredSeconds() + pausedSeconds);
         return new AppTaskAssignmentView(row.taskNo(), row.deviceId(),
                 StringUtils.hasText(row.taskId()) ? row.taskId() : row.taskNo(), row.taskName(),
-                canonicalTaskClass(row.taskClass()), row.modelName(), row.clientName(), row.status(), row.rewardUsdt(),
+                canonicalTaskClass(row.taskClass()), row.modelName(), row.clientName(),
+                paused ? "PAUSED" : row.status(), row.rewardUsdt(),
                 row.requiredSeconds(), row.startedAt(), completableAt, row.completedAt(), row.receiptNo(),
                 active(row.status()) ? row.completionNonce() : null,
                 active(row.status()) ? row.proofExpiresAt() : null,
@@ -661,6 +738,33 @@ public class AppTaskAssignmentService {
     }
 
     private boolean active(String status) { return "CLAIMED".equalsIgnoreCase(status) || "RUNNING".equalsIgnoreCase(status); }
+    private boolean phone(DeviceRow device) {
+        return device != null && Set.of("MOBILE", "PHONE").contains(value(device.deviceType()).toUpperCase(Locale.ROOT));
+    }
+    private boolean phoneSignalsReady(PhoneRuntimeRow runtime) {
+        return runtime != null && runtime.batteryLevel() != null && runtime.batteryLevel() >= 20
+                && Boolean.TRUE.equals(runtime.networkReachable());
+    }
+    private boolean phoneReady(PhoneRuntimeRow runtime, LocalDateTime now) {
+        return phoneSignalsReady(runtime) && runtime.heartbeatAt() != null
+                && !runtime.heartbeatAt().isAfter(now)
+                && !runtime.heartbeatAt().isBefore(now.minusSeconds(PHONE_HEARTBEAT_SECONDS));
+    }
+    private boolean phonePaused(Long userId, DeviceRow device, LocalDateTime now) {
+        return phone(device) && !phoneReady(mapper.phoneRuntime(userId, device.id()), now);
+    }
+    private void requirePhoneReady(PhoneRuntimeRow runtime, LocalDateTime now) {
+        if (runtime == null || runtime.heartbeatAt() == null || runtime.heartbeatAt().isAfter(now)
+                || runtime.heartbeatAt().isBefore(now.minusSeconds(PHONE_HEARTBEAT_SECONDS))) {
+            throw new BizException(409, "TASK_ASSIGNMENT_PHONE_TELEMETRY_STALE");
+        }
+        if (!Boolean.TRUE.equals(runtime.networkReachable())) {
+            throw new BizException(409, "TASK_ASSIGNMENT_PHONE_OFFLINE");
+        }
+        if (runtime.batteryLevel() == null || runtime.batteryLevel() < 20) {
+            throw new BizException(409, "TASK_ASSIGNMENT_PHONE_LOW_BATTERY");
+        }
+    }
     private boolean completed(String status) { return "COMPLETED".equalsIgnoreCase(status); }
     private boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
     private LocalDateTime now() { return LocalDateTime.now(clock).withNano(0); }

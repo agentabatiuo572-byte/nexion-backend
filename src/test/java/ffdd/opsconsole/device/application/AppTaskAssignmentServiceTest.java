@@ -15,6 +15,7 @@ import static org.mockito.ArgumentMatchers.eq;
 
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -98,6 +99,103 @@ class AppTaskAssignmentServiceTest {
                 anyString(), any(), anyString(), any(), any());
         verify(mapper).bindRuntimeTask(any(), anyString(), any(), any());
         org.mockito.Mockito.verifyNoInteractions(idempotency);
+    }
+
+    @Test
+    void phoneClaimNeedsFreshNetworkAndAtLeastTwentyPercentButNeverCharging() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+        when(mapper.eligibleTasks(8)).thenReturn(List.of(task("TASK-IG", "IG", 8, "pending")));
+
+        assertThatThrownBy(() -> service.assignAutomatically(7L, 11L))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_TELEMETRY_STALE");
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(19, true, NOW));
+        assertThatThrownBy(() -> service.assignAutomatically(7L, 11L))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_LOW_BATTERY");
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(20, false, NOW));
+        assertThatThrownBy(() -> service.assignAutomatically(7L, 11L))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_OFFLINE");
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(20, true, NOW));
+
+        assertThat(service.assignAutomatically(7L, 11L).getData().status()).isEqualTo("RUNNING");
+        verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
+    }
+
+    @Test
+    void phoneResumeExcludesStaleHeartbeatGapFromCompletionClock() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.minusSeconds(150)));
+        var task = new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                "model", "NexGrid App", "RUNNING", new BigDecimal("0.30"), 180, 0,
+                NOW.minusSeconds(200), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1), null, 0L);
+        when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(task);
+        when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", null, 30L, NOW)).thenReturn(1);
+
+        var resumed = service.phoneRuntime(7L, new AppPhoneRuntimeRequest(11L, 80, true, false));
+
+        assertThat(resumed.getData().status()).isEqualTo("RUNNING");
+        assertThat(resumed.getData().completableAt()).isEqualTo(NOW.plusSeconds(10));
+        verify(mapper).updatePhoneTaskPause(7L, 11L, "CTA-PHONE", null, 30L, NOW);
+        verify(mapper).upsertPhoneRuntime(7L, 11L, 80, false, true, "ONLINE", null, NOW);
+    }
+
+    @Test
+    void lowBatteryPhoneReportPausesSameTaskWithoutCrediting() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("MOBILE", "PHONE", "Your phone", 8));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.minusSeconds(10)));
+        var task = new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                "model", "NexGrid App", "RUNNING", new BigDecimal("0.30"), 18, 0,
+                NOW.minusSeconds(30), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1), null, 0L);
+        when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(task);
+        when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", NOW, 0L, NOW)).thenReturn(1);
+
+        var paused = service.phoneRuntime(7L, new AppPhoneRuntimeRequest(11L, 19, true, null));
+
+        assertThat(paused.getData().taskNo()).isEqualTo("CTA-PHONE");
+        assertThat(paused.getData().status()).isEqualTo("PAUSED");
+        assertThat(paused.getData().completableAt()).isNull();
+        verify(mapper).upsertPhoneRuntime(7L, 11L, 19, null, true, "ONLINE", "PHONE_LOW_BATTERY", NOW);
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void phoneCompletionCannotCreditWhileTelemetryIsOffline() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+        when(mapper.lockAssignment(7L, "CTA-PHONE", "PRODUCTION")).thenReturn(
+                new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                        "model", "NexGrid App", "RUNNING", new BigDecimal("0.30"), 18, 0,
+                        NOW.minusSeconds(30), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1)));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, false, NOW));
+
+        assertThatThrownBy(() -> service.complete(7L, "CTA-PHONE", "complete-phone", null))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_OFFLINE");
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
+                anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void resumedPhoneCannotSettleUntilPausedSecondsHaveElapsed() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+        when(mapper.lockAssignment(7L, "CTA-PHONE", "PRODUCTION")).thenReturn(
+                new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                        "model", "NexGrid App", "RUNNING", new BigDecimal("0.30"), 180, 0,
+                        NOW.minusSeconds(200), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1),
+                        null, 30L));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW));
+
+        assertThatThrownBy(() -> service.complete(7L, "CTA-PHONE", "complete-resumed-phone", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_NOT_COMPLETEABLE_UNTIL:" + NOW.plusSeconds(10));
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
+                anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
     }
 
     @Test
@@ -496,6 +594,21 @@ class AppTaskAssignmentServiceTest {
         assertThat(result.getData().devices().get(1).recentTasks()).extracting(task -> task.taskNo())
                 .containsExactly("CTA-12-DONE");
         verify(mapper).assignmentsForDevices(7L, "PRODUCTION", List.of(11L, 12L));
+    }
+
+    @Test
+    void stalePhoneHeartbeatKeepsCurrentTaskVisibleAsPausedWithoutCountdown() {
+        when(mapper.ownedDevices(7L)).thenReturn(List.of(device("PHONE", "PHONE", "Your phone", 8)));
+        var current = assignmentRow("CTA-PHONE", 11L, "RUNNING", NOW.minusSeconds(30), null);
+        when(mapper.assignmentsForDevices(7L, "PRODUCTION", List.of(11L))).thenReturn(List.of(current));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.minusSeconds(121)));
+
+        var task = service.assignments(7L).getData().devices().get(0).currentTask();
+
+        assertThat(task.taskNo()).isEqualTo("CTA-PHONE");
+        assertThat(task.status()).isEqualTo("PAUSED");
+        assertThat(task.completableAt()).isNull();
     }
 
     @Test

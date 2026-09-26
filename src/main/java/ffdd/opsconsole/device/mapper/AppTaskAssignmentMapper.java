@@ -76,11 +76,13 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND COALESCE(TRIM(r.paused_reason), '') = ''
                AND (r.online_status IS NULL OR UPPER(r.online_status) = 'ONLINE')
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
-                    OR EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
+                    OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
+                        AND r.battery_level >= 20 AND r.network_reachable = 1
+                        AND EXISTS (SELECT 1 FROM nx_onboarding_calibration oc
                                 WHERE oc.user_device_id = d.id AND oc.user_id = d.user_id
                                   AND oc.activation_status = 'ACTIVE'
                                   AND oc.source_environment = 'PRODUCTION' AND oc.run_id = ''
-                                  AND oc.is_deleted = 0))
+                                  AND oc.is_deleted = 0)))
                AND NOT EXISTS (SELECT 1 FROM nx_compute_task t FORCE INDEX (idx_task_assignment_active)
                                 WHERE t.user_id = d.user_id AND t.user_device_id = d.id
                                   AND t.source_environment = 'PRODUCTION' AND t.is_deleted = 0
@@ -203,7 +205,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.required_seconds AS requiredSeconds, t.task_lock_minutes AS taskLockMinutes,
                    t.started_at AS startedAt, t.lease_expires_at AS leaseExpiresAt,
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
-                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
+                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt,
+                   t.paused_at AS pausedAt, t.paused_seconds AS pausedSeconds
               FROM nx_compute_task t
               JOIN nx_user u ON u.id = t.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
@@ -229,14 +232,16 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.required_seconds AS requiredSeconds, t.task_lock_minutes AS taskLockMinutes,
                    t.started_at AS startedAt, t.lease_expires_at AS leaseExpiresAt,
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
-                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
+                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt,
+                   t.paused_at AS pausedAt, t.paused_seconds AS pausedSeconds
               FROM (
                 <foreach collection='deviceIds' item='deviceId' separator=' UNION ALL '>
                   (
                     SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
                            t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
                            t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
-                           t.source_environment, t.completion_nonce, t.proof_expires_at, t.created_at, t.id
+                           t.source_environment, t.completion_nonce, t.proof_expires_at,
+                           t.paused_at, t.paused_seconds, t.created_at, t.id
                       FROM nx_compute_task t
                       JOIN nx_user u ON u.id = t.user_id
                         AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -249,7 +254,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                       SELECT t.task_no, t.user_device_id, t.task_config_id, t.task_name, t.task_type,
                              t.model_name, t.client_name, t.status, t.reward_usdt, t.required_seconds,
                              t.task_lock_minutes, t.started_at, t.lease_expires_at, t.completed_at,
-                             t.source_environment, t.completion_nonce, t.proof_expires_at, t.created_at, t.id
+                           t.source_environment, t.completion_nonce, t.proof_expires_at,
+                           t.paused_at, t.paused_seconds, t.created_at, t.id
                         FROM nx_compute_task t
                         JOIN nx_user u ON u.id = t.user_id
                           AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -296,7 +302,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.required_seconds AS requiredSeconds, t.task_lock_minutes AS taskLockMinutes,
                    t.started_at AS startedAt, t.lease_expires_at AS leaseExpiresAt,
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
-                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
+                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt,
+                   t.paused_at AS pausedAt, t.paused_seconds AS pausedSeconds
               FROM ranked_tasks t
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
                 AND r.source_environment = t.source_environment AND r.is_deleted = 0
@@ -509,7 +516,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                    t.required_seconds AS requiredSeconds, t.task_lock_minutes AS taskLockMinutes,
                    t.started_at AS startedAt, t.lease_expires_at AS leaseExpiresAt,
                    t.completed_at AS completedAt, r.receipt_no AS receiptNo,
-                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt
+                   t.completion_nonce AS completionNonce, t.proof_expires_at AS proofExpiresAt,
+                   t.paused_at AS pausedAt, t.paused_seconds AS pausedSeconds
               FROM nx_compute_task t
               JOIN nx_user u ON u.id = t.user_id AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
               LEFT JOIN nx_compute_receipt r ON r.task_no = t.task_no
@@ -589,11 +597,61 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
              WHERE d.id = #{deviceId} AND d.user_id = #{userId} AND d.is_deleted = 0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
             ON DUPLICATE KEY UPDATE active_task_no = VALUES(active_task_no), client_name = VALUES(client_name),
-              heartbeat_at = VALUES(heartbeat_at), updated_at = VALUES(updated_at), is_deleted = 0
+              updated_at = VALUES(updated_at), is_deleted = 0
             """)
     int bindRuntimeTask(@Param("deviceId") Long deviceId, @Param("taskNo") String taskNo,
                         @Param("userId") Long userId,
                         @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT r.battery_level AS batteryLevel, r.network_reachable AS networkReachable,
+                   r.heartbeat_at AS heartbeatAt
+              FROM nx_user_device_runtime r
+              JOIN nx_user_device d ON d.id = r.user_device_id AND d.user_id = #{userId}
+                AND d.source_environment = 'PRODUCTION' AND d.run_id = '' AND d.is_deleted = 0
+             WHERE r.user_device_id = #{deviceId} AND r.is_deleted = 0
+             LIMIT 1
+            """)
+    PhoneRuntimeRow phoneRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Insert("""
+            INSERT INTO nx_user_device_runtime(user_device_id, online_status, battery_level, is_charging,
+              network_reachable, paused_reason, heartbeat_at, created_at, updated_at, is_deleted)
+            SELECT d.id, #{onlineStatus}, #{batteryLevel}, #{isCharging}, #{networkReachable},
+              #{pausedReason}, #{now}, #{now}, #{now}, 0
+              FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id
+                AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
+             WHERE d.id = #{deviceId} AND d.user_id = #{userId} AND d.is_deleted = 0
+               AND d.source_environment = 'PRODUCTION' AND d.run_id = ''
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+            ON DUPLICATE KEY UPDATE online_status = VALUES(online_status),
+              battery_level = VALUES(battery_level), is_charging = COALESCE(VALUES(is_charging), is_charging),
+              network_reachable = VALUES(network_reachable),
+              paused_reason = CASE WHEN paused_reason IS NOT NULL
+                                    AND paused_reason NOT IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')
+                                   THEN paused_reason ELSE VALUES(paused_reason) END,
+              heartbeat_at = VALUES(heartbeat_at), updated_at = VALUES(updated_at), is_deleted = 0
+            """)
+    int upsertPhoneRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                           @Param("batteryLevel") Integer batteryLevel,
+                           @Param("isCharging") Boolean isCharging,
+                           @Param("networkReachable") Boolean networkReachable,
+                           @Param("onlineStatus") String onlineStatus,
+                           @Param("pausedReason") String pausedReason,
+                           @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_compute_task SET paused_at = #{pausedAt}, paused_seconds = #{pausedSeconds},
+                   updated_at = #{now}
+             WHERE task_no = #{taskNo} AND user_id = #{userId} AND user_device_id = #{deviceId}
+               AND source_environment = 'PRODUCTION' AND is_deleted = 0
+               AND status IN ('CLAIMED','RUNNING')
+            """)
+    int updatePhoneTaskPause(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                             @Param("taskNo") String taskNo,
+                             @Param("pausedAt") LocalDateTime pausedAt,
+                             @Param("pausedSeconds") Long pausedSeconds,
+                             @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE nx_compute_task SET status = 'COMPLETED', completed_at = #{now},
@@ -888,12 +946,23 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     record ConfigRow(String configKey, String configValue) {}
     record DeviceLockRow(LocalDateTime lockUntil, String lastTaskNo) {}
     record UserScope(Integer sandbox) {}
+    record PhoneRuntimeRow(Integer batteryLevel, Boolean networkReachable, LocalDateTime heartbeatAt) {}
     record AssignmentRow(String taskNo, Long deviceId, String taskId, String taskName, String taskClass,
                          String modelName, String clientName, String status, BigDecimal rewardUsdt,
                          Integer requiredSeconds, Integer taskLockMinutes, LocalDateTime startedAt,
                          LocalDateTime leaseExpiresAt,
                          LocalDateTime completedAt, String receiptNo, String completionNonce,
-                         LocalDateTime proofExpiresAt) {}
+                         LocalDateTime proofExpiresAt, LocalDateTime pausedAt, Long pausedSeconds) {
+        public AssignmentRow(String taskNo, Long deviceId, String taskId, String taskName, String taskClass,
+                             String modelName, String clientName, String status, BigDecimal rewardUsdt,
+                             Integer requiredSeconds, Integer taskLockMinutes, LocalDateTime startedAt,
+                             LocalDateTime leaseExpiresAt, LocalDateTime completedAt, String receiptNo,
+                             String completionNonce, LocalDateTime proofExpiresAt) {
+            this(taskNo, deviceId, taskId, taskName, taskClass, modelName, clientName, status, rewardUsdt,
+                    requiredSeconds, taskLockMinutes, startedAt, leaseExpiresAt, completedAt, receiptNo,
+                    completionNonce, proofExpiresAt, null, 0L);
+        }
+    }
     record ReceiptRow(Long receiptId, String receiptNo, String taskNo, Long deviceId, String deviceInstanceNo,
                       String deviceName, String deviceType, String deviceGpu, Integer vramTotalGb,
                       String taskId, String taskName, String taskClass, String modelName,

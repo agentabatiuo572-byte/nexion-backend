@@ -65,6 +65,17 @@ class AppHomeOverviewMapperSqlContractTest {
             assertTrue(sql.contains("d.pending_deactivate = 0"));
         }
     }
+
+    @Test
+    void phoneOnlineAndRunningProjectionsRequireFreshHealthyTelemetry() throws Exception {
+        for (String method : java.util.List.of("globalActiveDevices", "onGrid", "onGridClients")) {
+            String sql = select(method);
+            assertTrue(sql.contains("UPPER(d.device_type) NOT IN ('MOBILE','PHONE')"));
+            assertTrue(sql.contains("r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)"));
+            assertTrue(sql.contains("r.battery_level >= 20 AND r.network_reachable = 1"));
+        }
+        assertTrue(select("onGrid").contains("t.paused_at IS NULL"));
+    }
     private String select(String name) throws Exception {
         Method method = java.util.Arrays.stream(AppHomeOverviewMapper.class.getDeclaredMethods())
                 .filter(candidate -> candidate.getName().equals(name)).findFirst().orElseThrow();

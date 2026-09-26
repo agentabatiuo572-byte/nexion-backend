@@ -2963,6 +2963,8 @@ CREATE TABLE IF NOT EXISTS nx_compute_task (
   completion_nonce CHAR(64) NULL,
   proof_expires_at DATETIME NULL,
   proof_consumed_at DATETIME NULL,
+  paused_at DATETIME NULL,
+  paused_seconds BIGINT NOT NULL DEFAULT 0,
   source_environment VARCHAR(16) NOT NULL DEFAULT 'PRODUCTION',
   client_name VARCHAR(128) NOT NULL,
   status VARCHAR(32) NOT NULL,

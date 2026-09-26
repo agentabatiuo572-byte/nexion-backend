@@ -7,6 +7,7 @@ import ffdd.opsconsole.device.dto.AppTaskAssignmentView;
 import ffdd.opsconsole.device.dto.AppTaskAssignmentsResponse;
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
@@ -39,6 +40,15 @@ public class AppTaskAssignmentController {
         Long userId = userId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.claim(userId, idempotencyKey, request);
+    }
+
+    @PostMapping("/api/tasks/phone/runtime")
+    public ApiResult<AppTaskAssignmentView> phoneRuntime(
+            @RequestBody(required = false) AppPhoneRuntimeRequest request,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
+                : service.phoneRuntime(userId, request);
     }
 
     @GetMapping("/api/tasks/receipts/{receiptNo}")

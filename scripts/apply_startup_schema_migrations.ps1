@@ -270,6 +270,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260924_j4_drill_execution_link.sql")
   # Exchange was omitted from H3's one-time business pause; preserve completed user rows.
   (Join-Path $root "scripts\migrations\20260925_h3_exchange_mission_gate.sql")
+  # Pause-aware phone task timing must exist before assignment reads or settlement.
+  (Join-Path $root "scripts\migrations\20260926_phone_task_pause_timing.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
