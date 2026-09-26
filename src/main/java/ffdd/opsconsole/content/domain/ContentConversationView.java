@@ -22,7 +22,17 @@ public record ContentConversationView(
         LocalDateTime transferredAt,
         LocalDateTime updatedAt,
         Long version,
-        Long lastPublicMessageId) {
+        Long lastPublicMessageId,
+        String lastMessageKind) {
+    public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
+            String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
+            LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,
+            String transferToType, String transferToId, String transferToName, String transferReason,
+            LocalDateTime transferredAt, LocalDateTime updatedAt, Long version, Long lastPublicMessageId) {
+        this(id, conversationNo, userId, conversationType, status, ownerAgentId, ownerAgentName, unreadCount,
+                lastMessage, lastMessageAt, transferFromAgentId, transferFromAgentName, transferToType,
+                transferToId, transferToName, transferReason, transferredAt, updatedAt, version, lastPublicMessageId, null);
+    }
     public ContentConversationView(Long id, String conversationNo, Long userId, String conversationType,
             String status, String ownerAgentId, String ownerAgentName, Integer unreadCount, String lastMessage,
             LocalDateTime lastMessageAt, String transferFromAgentId, String transferFromAgentName,

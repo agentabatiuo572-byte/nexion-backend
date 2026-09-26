@@ -248,6 +248,35 @@ class AppSupportServiceTest {
     }
 
     @Test
+    void appListAndDetailKeepTypedIdleCloseProvenance() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        ContentConversationView timeout = new ContentConversationView(1L, "CV-1", 42L, "support", "CLOSED",
+                null, "Unassigned", 0, "会话已因用户闲置 5 分钟自动结束,可重新发起会话。", now,
+                null, null, null, null, null, null, null, now, 9L, 1L, "IDLE_TIMEOUT_CLOSE");
+        when(conversations.pageConversations(any())).thenReturn(new PageResult<>(1, 1, 50, List.of(timeout)));
+        when(conversations.findByConversationNo("CV-1")).thenReturn(Optional.of(timeout));
+
+        assertThat(service.conversations(42L, null, 1L, 50L).getData().getRecords())
+                .singleElement().extracting(ContentConversationView::lastMessageKind).isEqualTo("IDLE_TIMEOUT_CLOSE");
+        assertThat(service.conversation(42L, "CV-1").getData().conversation().lastMessageKind())
+                .isEqualTo("IDLE_TIMEOUT_CLOSE");
+    }
+
+    @Test
+    void manuallyClosedExactCopyHasNoSystemProvenance() {
+        LocalDateTime now = LocalDateTime.now(clock);
+        ContentConversationView manual = new ContentConversationView(1L, "CV-1", 42L, "support", "CLOSED",
+                null, "Unassigned", 0, "会话已因用户闲置 5 分钟自动结束,可重新发起会话。", now,
+                null, null, null, null, null, null, null, now, 9L, 1L);
+        when(conversations.pageConversations(any())).thenReturn(new PageResult<>(1, 1, 50, List.of(manual)));
+        when(conversations.findByConversationNo("CV-1")).thenReturn(Optional.of(manual));
+
+        assertThat(service.conversations(42L, null, 1L, 50L).getData().getRecords())
+                .singleElement().extracting(ContentConversationView::lastMessageKind).isNull();
+        assertThat(service.conversation(42L, "CV-1").getData().conversation().lastMessageKind()).isNull();
+    }
+
+    @Test
     void olderConversationPageUsesOnlyTheOwnedCursorWindowAndSuppliesTheNextCursor() {
         ContentConversationView conversation = conversation(42L, "CV-1");
         when(conversations.findByConversationNo("CV-1")).thenReturn(Optional.of(conversation));

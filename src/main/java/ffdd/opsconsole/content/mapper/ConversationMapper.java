@@ -80,7 +80,21 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.version,
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
-                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
+              CASE WHEN c.status='CLOSED' AND EXISTS (
+                SELECT 1 FROM nx_conversation_timeout_event e
+                WHERE e.conversation_no=c.conversation_no AND e.event_type='CLOSE'
+                  AND e.created_at=c.last_message_at
+                  AND EXISTS (
+                    SELECT 1 FROM nx_conversation_message sm
+                    WHERE sm.conversation_no=c.conversation_no AND sm.is_deleted=0
+                      AND sm.sender_type='system' AND sm.created_at=e.created_at
+                      AND sm.content=c.last_message
+                      AND NOT EXISTS (SELECT 1 FROM nx_conversation_message m
+                        WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
+                          AND m.id>sm.id)
+                  )
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -133,7 +147,21 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.version,
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
-                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
+              CASE WHEN c.status='CLOSED' AND EXISTS (
+                SELECT 1 FROM nx_conversation_timeout_event e
+                WHERE e.conversation_no=c.conversation_no AND e.event_type='CLOSE'
+                  AND e.created_at=c.last_message_at
+                  AND EXISTS (
+                    SELECT 1 FROM nx_conversation_message sm
+                    WHERE sm.conversation_no=c.conversation_no AND sm.is_deleted=0
+                      AND sm.sender_type='system' AND sm.created_at=e.created_at
+                      AND sm.content=c.last_message
+                      AND NOT EXISTS (SELECT 1 FROM nx_conversation_message m
+                        WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
+                          AND m.id>sm.id)
+                  )
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -182,7 +210,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.version,
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
-                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId
+                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
+              NULL AS lastMessageKind
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0

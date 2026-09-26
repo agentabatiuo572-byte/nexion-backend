@@ -32,11 +32,12 @@ class AppConversationInboxMySqlTest {
                     var mapper = session.getMapper(AppConversationInboxMapper.class);
                     var sql = session.getConnection().createStatement();
                     sql.execute("CREATE TABLE nx_conversation (conversation_no VARCHAR(40) PRIMARY KEY, user_id BIGINT, conversation_type VARCHAR(16), status VARCHAR(16), unread_count INT, is_deleted INT)");
-                    sql.execute("CREATE TABLE nx_conversation_message (id BIGINT PRIMARY KEY, conversation_no VARCHAR(40), sender_type VARCHAR(16), content VARCHAR(100), is_deleted INT)");
+                    sql.execute("CREATE TABLE nx_conversation_message (id BIGINT PRIMARY KEY, conversation_no VARCHAR(40), sender_type VARCHAR(16), content VARCHAR(100), is_deleted INT, created_at DATETIME DEFAULT '2026-09-01 00:00:00')");
                     sql.execute("ALTER TABLE nx_conversation ADD id BIGINT AUTO_INCREMENT UNIQUE, ADD owner_agent_id VARCHAR(40), ADD owner_agent_name VARCHAR(100), ADD last_message VARCHAR(100), ADD last_message_at DATETIME, ADD updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, ADD created_at DATETIME DEFAULT CURRENT_TIMESTAMP, ADD version BIGINT DEFAULT 1");
                     sql.execute("CREATE TABLE nx_conversation_transfer (conversation_no VARCHAR(40), status VARCHAR(20), is_deleted INT, from_agent_id VARCHAR(40), from_agent_name VARCHAR(100), to_type VARCHAR(20), to_id VARCHAR(40), to_name VARCHAR(100), reason VARCHAR(100), transferred_at DATETIME)");
+                    sql.execute("CREATE TABLE nx_conversation_timeout_event (conversation_no VARCHAR(40), event_type VARCHAR(16), activity_at DATETIME, created_at DATETIME)");
                     sql.execute("INSERT INTO nx_conversation (conversation_no,user_id,conversation_type,status,unread_count,is_deleted) VALUES ('CV-A',7,'advisor','OPEN',3,0),('CV-S',8,'support','CLOSED',2,0),('CV-D',7,'support','OPEN',1,1)");
-                    sql.execute("INSERT INTO nx_conversation_message VALUES (11,'CV-A','user','question',0),(12,'CV-A','agent','answer',0),(13,'CV-A','system','private note',0),(14,'CV-A','agent','deleted',1),(21,'CV-S','agent','answer',0),(31,'CV-D','agent','answer',0)");
+                    sql.execute("INSERT INTO nx_conversation_message (id,conversation_no,sender_type,content,is_deleted) VALUES (11,'CV-A','user','question',0),(12,'CV-A','agent','answer',0),(13,'CV-A','system','private note',0),(14,'CV-A','agent','deleted',1),(21,'CV-S','agent','answer',0),(31,'CV-D','agent','answer',0)");
                     String migration = java.nio.file.Files.readString(java.nio.file.Path.of("scripts/migrations/20260909_app_conversation_dismissal.sql"));
                     sql.execute(migration); sql.execute(migration);
                     assertThat(mapper.publicMessageExists(7L,"CV-A",12L)).isTrue();
@@ -53,10 +54,25 @@ class AppConversationInboxMySqlTest {
                     assertThat(mapper.list(9L)).isEmpty();
                     var conversations = session.getMapper(ConversationMapper.class);
                     assertThat(conversations.findByConversationNo("CV-A").lastPublicMessageId()).isEqualTo(12L);
+                    assertThat(conversations.findByConversationNo("CV-S").lastMessageKind()).isNull();
+                    sql.execute("UPDATE nx_conversation SET last_message='会话已因用户闲置 5 分钟自动结束,可重新发起会话。', last_message_at='2026-09-01 00:05:00' WHERE conversation_no='CV-S'");
+                    assertThat(conversations.findByConversationNo("CV-S").lastMessageKind()).isNull();
+                    sql.execute("INSERT INTO nx_conversation_timeout_event VALUES ('CV-S','CLOSE','2026-09-01 00:00:00','2026-09-01 00:05:00')");
+                    sql.execute("INSERT INTO nx_conversation_message (id,conversation_no,sender_type,content,is_deleted,created_at) VALUES (22,'CV-S','system','会话已因用户闲置 5 分钟自动结束,可重新发起会话。',0,'2026-09-01 00:05:00')");
+                    assertThat(conversations.findByConversationNo("CV-S").lastMessageKind()).isEqualTo("IDLE_TIMEOUT_CLOSE");
+                    assertThat(conversations.pageConversations(null,null,null,null,8L,false,null,true,100,0))
+                            .singleElement().satisfies(row -> assertThat(row.lastMessageKind()).isEqualTo("IDLE_TIMEOUT_CLOSE"));
+                    sql.execute("INSERT INTO nx_conversation_message (id,conversation_no,sender_type,content,is_deleted,created_at) VALUES (23,'CV-S','system','已归档会话',0,'2026-09-01 00:05:00')");
+                    assertThat(conversations.findByConversationNo("CV-S").lastMessageKind()).isEqualTo("IDLE_TIMEOUT_CLOSE");
+                    sql.execute("INSERT INTO nx_conversation_message (id,conversation_no,sender_type,content,is_deleted,created_at) VALUES (24,'CV-S','user','会话已因用户闲置 5 分钟自动结束,可重新发起会话。',0,'2026-09-01 00:05:00')");
+                    assertThat(conversations.findByConversationNo("CV-S").lastMessageKind()).isNull();
+                    assertThat(conversations.pageConversations(null,null,null,null,8L,false,null,true,100,0))
+                            .singleElement().satisfies(row -> assertThat(row.lastMessageKind()).isNull());
+                    sql.execute("DELETE FROM nx_conversation_message WHERE id IN (22,23,24)");
                     assertThat(conversations.pageConversations(null,null,null,null,7L,false,null,true,100,0))
                             .singleElement().satisfies(row -> assertThat(row.lastPublicMessageId()).isEqualTo(12L));
                     // New public message commits before a delayed dismissal using the previously displayed cursor.
-                    sql.execute("INSERT INTO nx_conversation_message VALUES (15,'CV-A','agent','new reply',0)");
+                    sql.execute("INSERT INTO nx_conversation_message (id,conversation_no,sender_type,content,is_deleted) VALUES (15,'CV-A','agent','new reply',0)");
                     mapper.dismiss(7L,"CV-A",12L);
                     assertThat(mapper.find(7L,"CV-A").throughMessageId()).isLessThan(15L);
                     assertThat(conversations.pageConversations(null,null,null,null,7L,false,null,true,100,0))

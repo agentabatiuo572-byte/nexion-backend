@@ -1014,6 +1014,15 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                         """);
                 sql.execute("""
+                        CREATE TABLE nx_conversation_timeout_event (
+                          conversation_no VARCHAR(40) NOT NULL,
+                          event_type VARCHAR(16) NOT NULL,
+                          activity_at DATETIME NOT NULL,
+                          created_at DATETIME NOT NULL,
+                          UNIQUE KEY uk_conversation_timeout_event (conversation_no,event_type,activity_at)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                        """);
+                sql.execute("""
                         CREATE TABLE nx_conversation_message_receipt (
                           message_id BIGINT PRIMARY KEY,
                           conversation_no VARCHAR(40) NOT NULL,
