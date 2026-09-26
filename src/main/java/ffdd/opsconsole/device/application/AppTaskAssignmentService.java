@@ -248,8 +248,10 @@ public class AppTaskAssignmentService {
         requireProductionRuntime(userId);
         if (request == null || request.calibrationDeviceId() == null
                 || !request.calibrationDeviceId().trim().matches("[A-Za-z0-9._:-]{1,128}")
-                || request.batteryLevel() == null || request.batteryLevel() < 0 || request.batteryLevel() > 100
-                || request.networkReachable() == null) {
+                || request.networkReachable() == null
+                || (request.batteryLevel() == null && request.networkReachable())
+                || (request.batteryLevel() != null
+                    && (request.batteryLevel() < 0 || request.batteryLevel() > 100))) {
             throw new BizException(422, "TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
         }
         LocalDateTime now = now();

@@ -5,10 +5,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class AppTaskAssignmentMapperContractTest {
+    @Test
+    void offlineTelemetryKeepsPriorBatteryAndChargingWithSafeFirstReportDefaults() throws Exception {
+        String query = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("upsertPhoneRuntime", Long.class, Long.class, Integer.class, Boolean.class,
+                        Boolean.class, String.class, String.class, java.time.LocalDateTime.class)
+                .getAnnotation(Insert.class).value());
+
+        assertThat(query).contains(
+                "COALESCE(#{batteryLevel}, 0)", "COALESCE(#{isCharging}, 0)",
+                "battery_level = COALESCE(#{batteryLevel}, battery_level, 0)",
+                "is_charging = COALESCE(#{isCharging}, is_charging, 0)",
+                "network_reachable = VALUES(network_reachable)",
+                "online_status = VALUES(online_status)");
+    }
+
     @Test
     void phoneTelemetryResolvesOnlyTheActiveProductionCalibrationBinding() throws Exception {
         String query = String.join(" ", AppTaskAssignmentMapper.class

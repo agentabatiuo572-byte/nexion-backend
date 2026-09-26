@@ -186,6 +186,56 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void offlinePhoneReportWithoutBatteryImmediatelyPausesBoundTask() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW.minusSeconds(10)));
+        var task = new AppTaskAssignmentMapper.AssignmentRow("CTA-PHONE", 11L, "TASK-IG", "Phone task", "IG",
+                "model", "NexGrid App", "RUNNING", new BigDecimal("0.30"), 18, 0,
+                NOW.minusSeconds(30), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1), null, 0L);
+        when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(task);
+        when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", NOW, 0L, NOW)).thenReturn(1);
+
+        var paused = service.phoneRuntime(7L, new AppPhoneRuntimeRequest("phone-a", null, false, null));
+
+        assertThat(paused.getData().status()).isEqualTo("PAUSED");
+        assertThat(paused.getData().completableAt()).isNull();
+        verify(mapper).updatePhoneTaskPause(7L, 11L, "CTA-PHONE", NOW, 0L, NOW);
+        verify(mapper).upsertPhoneRuntime(7L, 11L, null, null, false, "OFFLINE", "PHONE_OFFLINE", NOW);
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
+                anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void offlinePhoneReportWithoutPriorRuntimeStillRequiresActiveCalibrationBinding() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
+
+        assertThat(service.phoneRuntime(7L,
+                new AppPhoneRuntimeRequest("phone-a", null, false, null)).getData()).isNull();
+        verify(mapper).activePhoneDeviceId(7L, "phone-a");
+        verify(mapper).upsertPhoneRuntime(7L, 11L, null, null, false, "OFFLINE", "PHONE_OFFLINE", NOW);
+
+        assertThatThrownBy(() -> service.phoneRuntime(7L,
+                new AppPhoneRuntimeRequest("phone-b", null, false, null)))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
+        verify(mapper, times(1)).upsertPhoneRuntime(anyLong(), anyLong(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void onlinePhoneReportStillRequiresMeasuredBatteryWithinRange() {
+        for (Integer battery : new Integer[] {null, -1, 101}) {
+            assertThatThrownBy(() -> service.phoneRuntime(7L,
+                    new AppPhoneRuntimeRequest("phone-a", battery, true, null)))
+                    .hasMessage("TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
+        }
+        assertThatThrownBy(() -> service.phoneRuntime(7L,
+                new AppPhoneRuntimeRequest("phone-a", -1, false, null)))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
+        verify(mapper, never()).activePhoneDeviceId(anyLong(), anyString());
+    }
+
+    @Test
     void anotherPhoneCannotRefreshTheActivePhonesRuntime() {
         assertThatThrownBy(() -> service.phoneRuntime(7L,
                 new AppPhoneRuntimeRequest("phone-b", 80, true, false)))

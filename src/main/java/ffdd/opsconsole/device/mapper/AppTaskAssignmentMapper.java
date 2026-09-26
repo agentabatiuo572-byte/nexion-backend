@@ -636,7 +636,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, battery_level, is_charging,
               network_reachable, paused_reason, heartbeat_at, created_at, updated_at, is_deleted)
-            SELECT d.id, #{onlineStatus}, #{batteryLevel}, #{isCharging}, #{networkReachable},
+            SELECT d.id, #{onlineStatus}, COALESCE(#{batteryLevel}, 0), COALESCE(#{isCharging}, 0), #{networkReachable},
               #{pausedReason}, #{now}, #{now}, #{now}, 0
               FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id
                 AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -644,7 +644,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND d.source_environment = 'PRODUCTION' AND d.run_id = ''
                AND UPPER(d.device_type) IN ('MOBILE','PHONE')
             ON DUPLICATE KEY UPDATE online_status = VALUES(online_status),
-              battery_level = VALUES(battery_level), is_charging = COALESCE(VALUES(is_charging), is_charging),
+              battery_level = COALESCE(#{batteryLevel}, battery_level, 0),
+              is_charging = COALESCE(#{isCharging}, is_charging, 0),
               network_reachable = VALUES(network_reachable),
               paused_reason = CASE WHEN paused_reason IS NOT NULL
                                     AND paused_reason NOT IN ('PHONE_LOW_BATTERY','PHONE_OFFLINE')
