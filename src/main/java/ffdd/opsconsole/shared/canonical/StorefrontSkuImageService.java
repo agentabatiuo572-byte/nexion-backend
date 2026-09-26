@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.Base64;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -28,6 +29,7 @@ public class StorefrontSkuImageService {
     private final StorageProperties properties;
     private final Clock clock;
 
+    @Autowired
     public StorefrontSkuImageService(AppTradeinMapper mapper, ObjectStorageService storage,
                                     StorageProperties properties) {
         this(mapper, storage, properties, Clock.systemUTC());
