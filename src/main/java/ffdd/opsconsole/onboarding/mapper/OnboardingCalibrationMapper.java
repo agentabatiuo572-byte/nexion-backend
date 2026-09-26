@@ -274,6 +274,45 @@ public interface OnboardingCalibrationMapper {
                                     @Param("sourceEnvironment") String sourceEnvironment,
                                     @Param("runId") String runId);
 
+    @Select("""
+            SELECT t.task_no AS taskNo, t.user_device_id AS userDeviceId
+              FROM nx_compute_task t
+              JOIN nx_user_device d ON d.id=t.user_device_id AND d.user_id=t.user_id
+             WHERE t.user_id=#{userId} AND t.user_device_id<>#{keepUserDeviceId}
+               AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+               AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+               AND d.source_channel='ONBOARDING' AND d.source_environment='PRODUCTION'
+               AND d.run_id='' AND UPPER(d.device_type) IN ('MOBILE','PHONE') AND d.is_deleted=0
+             ORDER BY t.id FOR UPDATE
+            """)
+    List<ReplacedPhoneTask> lockOtherPhoneTasks(@Param("userId") Long userId,
+                                                @Param("keepUserDeviceId") Long keepUserDeviceId);
+
+    @Update("""
+            UPDATE nx_compute_task
+               SET status='CANCELLED',last_error='PHONE_REPLACED',updated_at=NOW(6)
+             WHERE user_id=#{userId} AND user_device_id=#{userDeviceId} AND task_no=#{taskNo}
+               AND source_environment='PRODUCTION' AND is_deleted=0
+               AND UPPER(status) IN ('CLAIMED','RUNNING') AND proof_consumed_at IS NULL
+            """)
+    int cancelReplacedPhoneTask(@Param("userId") Long userId,
+                                @Param("userDeviceId") Long userDeviceId,
+                                @Param("taskNo") String taskNo);
+
+    @Update("""
+            UPDATE nx_user_device_runtime r
+              JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=#{userId}
+               SET r.active_task_no=NULL,r.online_status='OFFLINE',r.paused_reason='PHONE_REPLACED',
+                   r.updated_at=NOW(6)
+             WHERE d.id<>#{keepUserDeviceId} AND d.source_channel='ONBOARDING'
+               AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE') AND d.is_deleted=0 AND r.is_deleted=0
+            """)
+    int clearReplacedPhoneRuntime(@Param("userId") Long userId,
+                                  @Param("keepUserDeviceId") Long keepUserDeviceId);
+
+    record ReplacedPhoneTask(String taskNo, Long userDeviceId) { }
+
     @Update("""
             UPDATE nx_onboarding_calibration
                SET activation_status='DEFERRED',row_version=row_version+1,updated_at=NOW(6)

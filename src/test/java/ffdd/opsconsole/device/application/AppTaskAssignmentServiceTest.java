@@ -126,6 +126,27 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void replacementPhoneStartsItsOwnAssignmentUsingItsCalibratedCapacity() {
+        when(mapper.lockOwnedDevice(7L, 44L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(
+                44L, "PHONE-B", "PHONE", "PHONE", "New phone", "ACTIVE", "PHONE",
+                NOW.minusDays(1), NOW.minusDays(1), 32, "SG", "ONLINE", null, false));
+        when(mapper.phoneRuntime(7L, 44L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW));
+        when(mapper.eligibleTasks(32)).thenReturn(List.of(task("TASK-B", "IG", 32, "pending")));
+        when(mapper.taskRuntimeGate(7L, 44L, "TASK-B")).thenReturn(
+                new AppTaskAssignmentMapper.TaskRuntimeGateRow("active", "pending", 32, 32));
+
+        var result = service.assignAutomatically(7L, 44L);
+
+        assertThat(result.getData().deviceId()).isEqualTo(44L);
+        assertThat(result.getData().taskId()).isEqualTo("TASK-B");
+        assertThat(result.getData().taskNo()).startsWith("CTA-");
+        verify(mapper).eligibleTasks(32);
+        verify(mapper).insertAssignment(anyString(), eq(7L), eq(44L), any(), any(), any(), any(),
+                anyString(), any(), anyString(), any(), any());
+    }
+
+    @Test
     void phoneResumeExcludesStaleHeartbeatGapFromCompletionClock() {
         when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Your phone", 8));
         when(mapper.phoneRuntime(7L, 11L)).thenReturn(
@@ -194,6 +215,23 @@ class AppTaskAssignmentServiceTest {
 
         assertThatThrownBy(() -> service.complete(7L, "CTA-PHONE", "complete-phone", null))
                 .hasMessage("TASK_ASSIGNMENT_PHONE_OFFLINE");
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
+                anyString(), anyString(), any());
+        verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void replacedPhoneTaskCannotBeCompletedOrCredited() {
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(device("PHONE", "PHONE", "Old phone", 8));
+        when(mapper.lockAssignment(7L, "CTA-OLD", "PRODUCTION")).thenReturn(
+                new AppTaskAssignmentMapper.AssignmentRow("CTA-OLD", 11L, "TASK-IG", "Old task", "IG",
+                        "model", "NexGrid App", "CANCELLED", new BigDecimal("0.30"), 18, 0,
+                        NOW.minusSeconds(30), NOW.plusHours(1), null, null, "nonce", NOW.plusHours(1)));
+        when(mapper.phoneRuntime(7L, 11L)).thenReturn(
+                new AppTaskAssignmentMapper.PhoneRuntimeRow(80, true, NOW));
+
+        assertThatThrownBy(() -> service.complete(7L, "CTA-OLD", "complete-old-phone", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_STATE_INVALID");
         verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
                 anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());

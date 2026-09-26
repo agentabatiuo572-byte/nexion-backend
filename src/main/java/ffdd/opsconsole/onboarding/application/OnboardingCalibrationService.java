@@ -10,8 +10,12 @@ import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.Calibration
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ComparisonRow;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.DeferredWrite;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.TierRow;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ReplacedPhoneTask;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -44,6 +48,8 @@ public class OnboardingCalibrationService {
     private final OnboardingCalibrationMapper mapper;
     private final WheelSandboxProfile wheelSandboxProfile;
     private final Environment environment;
+    private final AuditLogService auditLogService;
+    private final EventOutboxService outboxService;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> calibrate(Long userId, Request request) {
@@ -235,9 +241,30 @@ public class OnboardingCalibrationService {
         if (userDeviceId == null || userDeviceId <= 0) {
             throw new BizException(503, "ONBOARDING_PHONE_BIND_READBACK_FAILED");
         }
+        if (!scope.sandbox()) cancelReplacedPhoneTasks(userId, userDeviceId);
         mapper.deactivateOtherPhoneDevices(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         mapper.deferOtherPhoneCalibrations(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         return userDeviceId;
+    }
+
+    private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId) {
+        List<ReplacedPhoneTask> tasks = mapper.lockOtherPhoneTasks(userId, keepUserDeviceId);
+        if (tasks == null) throw new BizException(503, "ONBOARDING_PHONE_TASK_READ_FAILED");
+        for (ReplacedPhoneTask task : tasks) {
+            if (mapper.cancelReplacedPhoneTask(userId, task.userDeviceId(), task.taskNo()) != 1) {
+                throw new BizException(409, "ONBOARDING_PHONE_TASK_CANCEL_CONFLICT");
+            }
+            Map<String, Object> fact = Map.of("userId", userId, "oldDeviceId", task.userDeviceId(),
+                    "newDeviceId", keepUserDeviceId, "taskNo", task.taskNo(), "status", "CANCELLED",
+                    "reason", "PHONE_REPLACED");
+            auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                    .action("TASK_ASSIGNMENT_PHONE_REPLACED").resourceType("COMPUTE_TASK")
+                    .resourceId(task.taskNo()).bizNo(task.taskNo()).userId(userId)
+                    .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM")
+                    .detail(fact).build());
+            outboxService.publish("COMPUTE_TASK", task.taskNo(), "TASK_ASSIGNMENT_PHONE_REPLACED", fact);
+        }
+        mapper.clearReplacedPhoneRuntime(userId, keepUserDeviceId);
     }
 
     private int signalMemoryGb(Object value) {

@@ -15,6 +15,8 @@ import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.Calibration
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ComparisonRow;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.TierRow;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.util.List;
@@ -27,7 +29,8 @@ class OnboardingCalibrationSandboxServiceTest {
     private final OnboardingCalibrationMapper mapper = mock(OnboardingCalibrationMapper.class);
     private final WheelSandboxProfile profile = mock(WheelSandboxProfile.class);
     private final Environment environment = mock(Environment.class);
-    private final OnboardingCalibrationService service = new OnboardingCalibrationService(mapper, profile, environment);
+    private final OnboardingCalibrationService service = new OnboardingCalibrationService(
+            mapper, profile, environment, mock(AuditLogService.class), mock(EventOutboxService.class));
 
     @BeforeEach
     void sandboxScope() {

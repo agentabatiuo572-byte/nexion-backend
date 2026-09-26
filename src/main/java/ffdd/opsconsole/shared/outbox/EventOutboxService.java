@@ -347,6 +347,7 @@ public class EventOutboxService {
             "RISK_MULTI_ACCOUNT_INCIDENT_CREATED",
             "TASK_ASSIGNMENT_CLAIMED",
             "TASK_ASSIGNMENT_LEASE_EXPIRED",
+            "TASK_ASSIGNMENT_PHONE_REPLACED",
             "VRANK_REWARD_PAYOUT_REISSUED",
             "VRANK_REWARD_PAYOUT_REVERSED",
             JanusOutboxEventTypes.DEVICE_COMMAND_ACKED,

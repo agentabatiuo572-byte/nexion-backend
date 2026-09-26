@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -14,7 +15,10 @@ import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.CalibrationRow;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ComparisonRow;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.TierRow;
+import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.ReplacedPhoneTask;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +29,10 @@ import org.springframework.core.env.Environment;
 class OnboardingCalibrationServiceTest {
     private final OnboardingCalibrationMapper mapper = mock(OnboardingCalibrationMapper.class);
     private final Environment environment = mock(Environment.class);
-    private final OnboardingCalibrationService service = new OnboardingCalibrationService(mapper, null, environment);
+    private final AuditLogService audit = mock(AuditLogService.class);
+    private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final OnboardingCalibrationService service = new OnboardingCalibrationService(
+            mapper, null, environment, audit, outbox);
 
     @BeforeEach
     void config() {
@@ -205,12 +212,14 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
-    void activationBindsCanonicalPhoneBeforePublishingActiveState() {
+    void activatingPhoneBVoidsPausedPhoneATaskAndBindsOnlyBCapacity() {
         CalibrationRow calibrated = actionRow(9L, "dev-phone", null, 3L, "CALIBRATED", null, null);
         CalibrationRow active = actionRow(9L, "dev-phone", 44L, 4L, "ACTIVE", "phone-active-001", "hash");
         when(mapper.findForUpdate(9L, "dev-phone")).thenReturn(calibrated);
         when(mapper.upsertPhoneDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
         when(mapper.phoneDeviceId(eq(9L), any(), eq("PRODUCTION"), eq(""))).thenReturn(44L);
+        when(mapper.lockOtherPhoneTasks(9L, 44L)).thenReturn(List.of(new ReplacedPhoneTask("CTA-A", 33L)));
+        when(mapper.cancelReplacedPhoneTask(9L, 33L, "CTA-A")).thenReturn(1);
         when(mapper.updateActivation(eq(9L), eq("dev-phone"), eq(3L), eq(44L), eq("ACTIVE"),
                 eq("phone-active-001"), any())).thenReturn(1);
         when(mapper.find(9L, "dev-phone")).thenReturn(active);
@@ -226,6 +235,57 @@ class OnboardingCalibrationServiceTest {
                 eq(new BigDecimal("10")), eq("PRODUCTION"), eq(""));
         verify(mapper).deactivateOtherPhoneDevices(9L, 44L, "PRODUCTION", "");
         verify(mapper).deferOtherPhoneCalibrations(9L, 44L, "PRODUCTION", "");
+        verify(mapper).cancelReplacedPhoneTask(9L, 33L, "CTA-A");
+        verify(mapper).clearReplacedPhoneRuntime(9L, 44L);
+        verify(outbox).publish(eq("COMPUTE_TASK"), eq("CTA-A"),
+                eq("TASK_ASSIGNMENT_PHONE_REPLACED"), any());
+        verify(audit).recordRequired(any());
+    }
+
+    @Test
+    void idempotentPhoneBActivationNeverRepeatsPhoneATaskCancellation() {
+        CalibrationRow calibrated = actionRow(9L, "dev-phone-b", null, 3L, "CALIBRATED", null, null);
+        var savedHash = new java.util.concurrent.atomic.AtomicReference<String>();
+        when(mapper.findForUpdate(9L, "dev-phone-b")).thenReturn(calibrated)
+                .thenAnswer(invocation -> actionRow(9L, "dev-phone-b", 44L, 4L,
+                        "ACTIVE", "phone-active-b", savedHash.get()));
+        when(mapper.upsertPhoneDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(mapper.phoneDeviceId(eq(9L), any(), eq("PRODUCTION"), eq(""))).thenReturn(44L);
+        when(mapper.lockOtherPhoneTasks(9L, 44L)).thenReturn(List.of(new ReplacedPhoneTask("CTA-A", 33L)));
+        when(mapper.cancelReplacedPhoneTask(9L, 33L, "CTA-A")).thenReturn(1);
+        when(mapper.updateActivation(eq(9L), eq("dev-phone-b"), eq(3L), eq(44L), eq("ACTIVE"),
+                eq("phone-active-b"), any())).thenAnswer(invocation -> {
+                    savedHash.set(invocation.getArgument(6));
+                    return 1;
+                });
+        when(mapper.find(9L, "dev-phone-b")).thenAnswer(invocation ->
+                actionRow(9L, "dev-phone-b", 44L, 4L, "ACTIVE", "phone-active-b", savedHash.get()));
+        var command = new OnboardingCalibrationService.ActionRequest("dev-phone-b", 3L, "phone-active-b");
+
+        assertThat(service.activate(9L, command).getCode()).isZero();
+        assertThat(service.activate(9L, command).getCode()).isZero();
+
+        verify(mapper, times(1)).cancelReplacedPhoneTask(9L, 33L, "CTA-A");
+        verify(outbox, times(1)).publish(eq("COMPUTE_TASK"), eq("CTA-A"),
+                eq("TASK_ASSIGNMENT_PHONE_REPLACED"), any());
+    }
+
+    @Test
+    void failedOldTaskCancellationBlocksNewPhoneActivation() {
+        when(mapper.findForUpdate(9L, "dev-phone-b")).thenReturn(
+                actionRow(9L, "dev-phone-b", null, 3L, "CALIBRATED", null, null));
+        when(mapper.upsertPhoneDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(mapper.phoneDeviceId(eq(9L), any(), eq("PRODUCTION"), eq(""))).thenReturn(44L);
+        when(mapper.lockOtherPhoneTasks(9L, 44L)).thenReturn(List.of(new ReplacedPhoneTask("CTA-A", 33L)));
+
+        assertThatThrownBy(() -> service.activate(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-phone-b", 3L, "phone-active-b")))
+                .hasMessage("ONBOARDING_PHONE_TASK_CANCEL_CONFLICT");
+        verify(mapper, never()).deactivateOtherPhoneDevices(9L, 44L, "PRODUCTION", "");
+        verify(mapper, never()).updateActivation(eq(9L), eq("dev-phone-b"), any(), any(), any(), any(), any());
+        verify(outbox, never()).publish(any(), any(), any(), any());
     }
 
     @Test
