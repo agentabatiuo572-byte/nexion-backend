@@ -156,6 +156,7 @@ nexion:
     access-key: ${NEXION_MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${NEXION_MINIO_SECRET_KEY:}
     bucket: ${NEXION_MINIO_BUCKET:nexion}
+    public-media-origin: ${NEXION_STORE_MEDIA_PUBLIC_ORIGIN:}
 
 nexgrid:
   sms:

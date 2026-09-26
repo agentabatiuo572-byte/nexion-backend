@@ -26,9 +26,10 @@ class AppProductCatalogServiceTest {
     private final FundsSandboxProfileGuard sandboxGuard = mock(FundsSandboxProfileGuard.class);
     private final StorefrontProductReleasePolicy releasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final ObjectStorageService storageService = mock(ObjectStorageService.class);
+    private final StorefrontSkuImageService skuImageService = mock(StorefrontSkuImageService.class);
     private final AppProductCatalogService service = new AppProductCatalogService(
             mapper, sandboxMapper, sandboxGuard, new CommerceAcceptanceRun("test-run-0001"),
-            new ObjectMapper(), releasePolicy, storageService);
+            new ObjectMapper(), releasePolicy, storageService, skuImageService);
 
     AppProductCatalogServiceTest() {
         when(releasePolicy.evaluate(any(), any()))
@@ -272,13 +273,15 @@ class AppProductCatalogServiceTest {
                 "GPU", 32, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "", null, 0,
                 null, null, "700W", "Tokyo DC", null, null, null, null, "[]", null,
                 null, null, null, null, null, assetId, objectKey, "FINITE")));
-        when(storageService.presignGet(objectKey, Duration.ofMinutes(15)))
-                .thenReturn("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+        when(skuImageService.issueUrl("sku-image", assetId, objectKey, Duration.ofMinutes(15)))
+                .thenReturn("https://storage.example.test/api/store/media/images/sku-image/" + assetId
+                        + "?expires=123&signature=short-lived");
 
         @SuppressWarnings("unchecked")
         Map<String, Object> product = (Map<String, Object>) ((List<?>) service.catalog(42L).getData().get("products")).get(0);
 
-        assertThat(product.get("imageUrl")).isEqualTo("https://storage.example.test/nexion/" + objectKey + "?signature=short-lived");
+        assertThat(product.get("imageUrl")).isEqualTo("https://storage.example.test/api/store/media/images/sku-image/"
+                + assetId + "?expires=123&signature=short-lived");
     }
 
     @Test
@@ -325,6 +328,7 @@ class AppProductCatalogServiceTest {
 
         assertThat(product.get("imageUrl")).isNull();
         org.mockito.Mockito.verifyNoInteractions(storageService);
+        org.mockito.Mockito.verifyNoInteractions(skuImageService);
     }
 
     @Test
@@ -342,6 +346,7 @@ class AppProductCatalogServiceTest {
 
         assertThat(product.get("imageUrl")).isNull();
         org.mockito.Mockito.verifyNoInteractions(storageService);
+        org.mockito.Mockito.verifyNoInteractions(skuImageService);
     }
 
     @Test

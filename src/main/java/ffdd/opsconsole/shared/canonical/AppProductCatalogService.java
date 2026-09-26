@@ -43,6 +43,7 @@ public class AppProductCatalogService {
     private final ObjectMapper objectMapper;
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final ObjectStorageService storageService;
+    private final StorefrontSkuImageService skuImageService;
 
     public ApiResult<Map<String, Object>> catalog() {
         return catalog(null);
@@ -261,7 +262,9 @@ public class AppProductCatalogService {
                 || (video ? !ManagedSkuMediaIdentity.isApprovedVideoObjectKey(objectKey)
                 : !ManagedSkuMediaIdentity.isApprovedImageObjectKey(objectKey))) return null;
         try {
-            String url = storageService.presignGet(objectKey, PRODUCT_IMAGE_EXPIRY);
+            String url = video ? storageService.presignGet(objectKey, PRODUCT_IMAGE_EXPIRY)
+                    : skuImageService.issueUrl(target.productNo(), target.imageAssetId(), objectKey,
+                            PRODUCT_IMAGE_EXPIRY);
             URI parsed = URI.create(url);
             if ((!"http".equalsIgnoreCase(parsed.getScheme()) && !"https".equalsIgnoreCase(parsed.getScheme()))
                     || !StringUtils.hasText(parsed.getHost()) || parsed.getUserInfo() != null || parsed.getFragment() != null) {

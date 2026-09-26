@@ -289,6 +289,22 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
 
+    @Select("""
+            SELECT 1 FROM nx_product p
+              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.product_no=#{productNo} AND p.is_deleted=0 AND p.store_visible=1
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND p.price_usdt>0 AND (p.inventory_mode='UNLIMITED' OR p.stock>=0)
+               AND BINARY s.image_asset_id = BINARY #{assetId}
+               AND BINARY s.image_object_key = BINARY #{objectKey}
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+             LIMIT 1
+            """)
+    Integer currentStorefrontImage(@Param("productNo") String productNo,
+                                   @Param("assetId") String assetId,
+                                   @Param("objectKey") String objectKey);
+
     /**
      * Rows the store predicates admit but the publish gate withholds, with the
      * reason. The catalogue projection reports these instead of dropping them

@@ -70,6 +70,7 @@ public class SecurityConfig {
                         // re-authorizing it after the response is committed produces a false 403/error dispatch.
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/store/media/images/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/referral-rewards").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/public/referrals/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/task-pricing", "/api/config/phone-tiers").permitAll()
