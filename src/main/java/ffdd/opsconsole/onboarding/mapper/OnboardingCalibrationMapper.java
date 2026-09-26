@@ -253,13 +253,14 @@ public interface OnboardingCalibrationMapper {
             UPDATE nx_user_device
                SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(6),pending_deactivate=0,
                    row_version=row_version+1,updated_at=NOW(6)
-             WHERE user_id=#{userId} AND source_channel='ONBOARDING'
+             WHERE user_id=#{userId} AND instance_no=#{instanceNo} AND source_channel='ONBOARDING'
                AND source_environment=#{sourceEnvironment} AND run_id=#{runId}
-               AND UPPER(device_type) IN ('MOBILE','PHONE') AND is_deleted=0
+               AND UPPER(device_type) IN ('MOBILE','PHONE') AND activated_at IS NOT NULL AND is_deleted=0
             """)
-    int deactivateScopedPhoneDevices(@Param("userId") Long userId,
-                                     @Param("sourceEnvironment") String sourceEnvironment,
-                                     @Param("runId") String runId);
+    int deactivatePhoneDevice(@Param("userId") Long userId,
+                              @Param("instanceNo") String instanceNo,
+                              @Param("sourceEnvironment") String sourceEnvironment,
+                              @Param("runId") String runId);
 
     @Update("""
             UPDATE nx_user_device

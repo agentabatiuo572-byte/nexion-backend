@@ -57,6 +57,10 @@ public class OnboardingCalibrationService {
         if (!validRequest(request)) return ApiResult.fail(422, "ONBOARDING_SIGNAL_INVALID");
 
         Scope scope = scope(userId);
+        Integer lockedSandbox = mapper.lockUserSandbox(userId);
+        if (lockedSandbox == null || !accountEnvironment().acceptsSandbox(lockedSandbox)) {
+            throw new BizException(403, "ONBOARDING_USER_ENVIRONMENT_MISMATCH");
+        }
         String deviceId = request.deviceId().trim();
         String hash = requestHash(userId, request, scope);
         CalibrationRow current = scope.sandbox()
@@ -114,7 +118,8 @@ public class OnboardingCalibrationService {
         // activation command succeeds. Keeping the inventory row active here
         // would let task settlement race ahead of the new binding decision.
         if (current != null) {
-            mapper.deactivateScopedPhoneDevices(userId, scope.sourceEnvironment(), scope.runId());
+            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
+                    scope.sourceEnvironment(), scope.runId());
         }
         CalibrationRow saved = scope.sandbox()
                 ? mapper.findScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
@@ -171,7 +176,8 @@ public class OnboardingCalibrationService {
             // instead of treating it as a local-only preference. The empty
             // JSON payloads deliberately contain no invented capability data;
             // a later retry replaces them through the normal revision-0 CAS.
-            mapper.deactivateScopedPhoneDevices(userId, scope.sourceEnvironment(), scope.runId());
+            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
+                    scope.sourceEnvironment(), scope.runId());
             String placeholderHash = sha256(userId + "|" + scope.sourceEnvironment() + "|" + scope.runId()
                     + "|" + deviceId + "|DEFERRED_WITHOUT_CALIBRATION");
             DeferredWrite deferred = new DeferredWrite(userId, deviceId,
@@ -206,10 +212,10 @@ public class OnboardingCalibrationService {
         if ("ACTIVE".equals(target)) {
             userDeviceId = bindPhoneDevice(userId, current, scope);
         } else {
-            // A deferred calibration is never reward-eligible. Deactivate every
-            // onboarding phone in this physical scope, including legacy dirty
-            // rows whose calibration lost its user_device_id link.
-            mapper.deactivateScopedPhoneDevices(userId, scope.sourceEnvironment(), scope.runId());
+            // The deterministic instance identity also finds this phone when a
+            // legacy calibration has lost its user_device_id link.
+            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
+                    scope.sourceEnvironment(), scope.runId());
         }
         int changed = scope.sandbox()
                 ? mapper.updateActivationScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId(),
@@ -231,8 +237,7 @@ public class OnboardingCalibrationService {
         BigDecimal dailyUsdt = decimal(canonical.get("baseRateUsdt"));
         BigDecimal dailyNex = decimal(canonical.get("baseRateNex"));
         int memoryGb = signalMemoryGb(canonical.get("signals"));
-        String instanceNo = "PHONE-" + sha256(userId + "|" + scope.sourceEnvironment() + "|"
-                + scope.runId() + "|" + row.deviceId()).substring(0, 48);
+        String instanceNo = phoneInstanceNo(userId, scope, row.deviceId());
         int changed = mapper.upsertPhoneDevice(userId, instanceNo, "TIER-" + tier,
                 "Mobile NPU · ~" + tops.stripTrailingZeros().toPlainString() + " TOPS",
                 memoryGb, tops, dailyUsdt, dailyNex, scope.sourceEnvironment(), scope.runId());
@@ -245,6 +250,11 @@ public class OnboardingCalibrationService {
         mapper.deactivateOtherPhoneDevices(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         mapper.deferOtherPhoneCalibrations(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         return userDeviceId;
+    }
+
+    private String phoneInstanceNo(Long userId, Scope scope, String deviceId) {
+        return "PHONE-" + sha256(userId + "|" + scope.sourceEnvironment() + "|"
+                + scope.runId() + "|" + deviceId).substring(0, 48);
     }
 
     private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId) {

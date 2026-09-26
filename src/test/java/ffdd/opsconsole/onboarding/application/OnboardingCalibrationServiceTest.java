@@ -302,7 +302,7 @@ class OnboardingCalibrationServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData()).containsEntry("activationStatus", "DEFERRED");
-        verify(mapper).deactivateScopedPhoneDevices(9L, "PRODUCTION", "");
+        verify(mapper).deactivatePhoneDevice(9L, instanceNo("dev-phone"), "PRODUCTION", "");
         verify(mapper, never()).upsertPhoneDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 
@@ -326,7 +326,7 @@ class OnboardingCalibrationServiceTest {
                 .containsEntry("score", null)
                 .containsEntry("signals", null)
                 .containsEntry("comparisonConfig", List.of());
-        verify(mapper).deactivateScopedPhoneDevices(9L, "PRODUCTION", "");
+        verify(mapper).deactivatePhoneDevice(9L, instanceNo("dev-new"), "PRODUCTION", "");
         verify(mapper).insertDeferred(argThat(row -> row.userId().equals(9L)
                 && row.deviceId().equals("dev-new")
                 && row.activationIdempotencyKey().equals("phone-defer-new")
@@ -336,7 +336,7 @@ class OnboardingCalibrationServiceTest {
     }
 
     @Test
-    void deferDeactivatesScopedPhoneEvenWhenLegacyCalibrationLostItsDeviceLink() {
+    void deferDeactivatesOnlyItsPhoneEvenWhenLegacyCalibrationLostItsDeviceLink() {
         CalibrationRow activeWithoutLink = actionRow(9L, "dev-phone", null, 4L, "ACTIVE", null, null);
         CalibrationRow deferred = actionRow(9L, "dev-phone", null, 5L, "DEFERRED", "phone-defer-legacy", "hash");
         when(mapper.findForUpdate(9L, "dev-phone")).thenReturn(activeWithoutLink);
@@ -348,7 +348,34 @@ class OnboardingCalibrationServiceTest {
                 new OnboardingCalibrationService.ActionRequest("dev-phone", 4L, "phone-defer-legacy"));
 
         assertThat(result.getCode()).isZero();
-        verify(mapper).deactivateScopedPhoneDevices(9L, "PRODUCTION", "");
+        verify(mapper).deactivatePhoneDevice(9L, instanceNo("dev-phone"), "PRODUCTION", "");
+    }
+
+    @Test
+    void oldPhoneRecalibrationAfterBActivationCannotDeactivateB() {
+        CalibrationRow oldPhone = actionRow(9L, "dev-phone-a", 33L, 5L, "DEFERRED", null, null);
+        CalibrationRow recalibrated = actionRow(9L, "dev-phone-a", 33L, 6L, "CALIBRATED", null, null);
+        when(mapper.findForUpdate(9L, "dev-phone-a")).thenReturn(oldPhone);
+        when(mapper.update(eq(9L), eq("dev-phone-a"), eq(5L), any(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(mapper.find(9L, "dev-phone-a")).thenReturn(recalibrated);
+        var command = request("dev-phone-a", 5L, "recalibrate-a-after-b", 8, 8,
+                "Pixel", "Google", "GPU", 900, 80, false);
+
+        assertThat(service.calibrate(9L, command).getCode()).isZero();
+        verify(mapper).lockUserSandbox(9L);
+        verify(mapper).deactivatePhoneDevice(9L, instanceNo("dev-phone-a"), "PRODUCTION", "");
+    }
+
+    private String instanceNo(String deviceId) {
+        try {
+            String canonical = "9|PRODUCTION||" + deviceId;
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "PHONE-" + java.util.HexFormat.of().formatHex(digest).substring(0, 48);
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
+        }
     }
 
     private OnboardingCalibrationMapper.TierRow tier(int tier, int min, int max, String usdt, String nex) {
