@@ -272,6 +272,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260925_h3_exchange_mission_gate.sql")
   # Pause-aware phone task timing must exist before assignment reads or settlement.
   (Join-Path $root "scripts\migrations\20260926_phone_task_pause_timing.sql")
+  # The H3 quest claim outbox must accept its instance fields before wallet settlement.
+  (Join-Path $root "scripts\migrations\20260927_h3_quest_claim_event_schema.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

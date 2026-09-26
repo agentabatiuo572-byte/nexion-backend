@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,44 @@ class EventOutboxServiceTest {
 
     EventOutboxServiceTest() {
         when(a4Policy.samplingPercent(anyString(), anyBoolean())).thenReturn(100);
+    }
+
+    @Test
+    void questClaimRequiresInstanceSchemaFieldAndAcceptsWeeklyAndDayOnePayloads() throws Exception {
+        Map<String, Object> weekly = Map.of("layer", "WEEKLY", "rewardNex", new BigDecimal("50"),
+                "multiplier", BigDecimal.ONE, "rhythmMonth", 3, "instanceKey", "WEEK:2026-W39");
+        List<EventOutboxMapper.SchemaPropertyGateRow> legacy = List.of(
+                new EventOutboxMapper.SchemaPropertyGateRow("layer", "enum", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("reward_nex", "number", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("multiplier", "number", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("rhythm_month", "number", true));
+        when(mapper.findActiveSchema("quest.claimed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("engagement", 92, true));
+        when(mapper.listActiveProperties("quest.claimed")).thenReturn(legacy);
+
+        assertThatThrownBy(() -> service.publishUserEvent("MISSION", "weekly_t2_browse_store",
+                "quest.claimed", 42L, "P2", 1, "2026-W39", weekly))
+                .isInstanceOf(BizException.class).hasMessage("A4_SCHEMA_PROPERTY_NOT_REGISTERED");
+
+        when(mapper.findActiveSchema("quest.claimed"))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("engagement", 20260927, true));
+        when(mapper.listActiveProperties("quest.claimed")).thenReturn(List.of(
+                legacy.get(0), legacy.get(1), legacy.get(2), legacy.get(3),
+                new EventOutboxMapper.SchemaPropertyGateRow("instance_key", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("required_task_count", "number", false)));
+
+        String weeklyId = service.publishUserEvent("MISSION", "weekly_t2_browse_store",
+                "quest.claimed", 42L, "P2", 1, "2026-W39", weekly);
+        String dayOneId = service.publishUserEvent("MISSION", "day_one_browse_store",
+                "quest.claimed", 42L, "P2", 1, "2026-W39", Map.of(
+                        "layer", "DAY_ONE", "rewardNex", new BigDecimal("50"),
+                        "multiplier", BigDecimal.ONE, "rhythmMonth", 3,
+                        "instanceKey", "DAY_ONE:42", "requiredTaskCount", 3));
+        assertThat(weeklyId).isNotBlank();
+        assertThat(dayOneId).isNotBlank().isNotEqualTo(weeklyId);
+        verify(mapper, Mockito.times(2)).insertEvent(anyString(), eq("MISSION"), anyString(),
+                eq("quest.claimed"), eq("quest.claimed"), eq("engagement"), eq("P2"), eq(1),
+                eq("2026-W39"), eq(true), eq(20260927), eq(true), eq(true), anyString());
     }
 
     @Test
