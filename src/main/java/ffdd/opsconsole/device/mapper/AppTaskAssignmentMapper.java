@@ -614,6 +614,25 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             """)
     PhoneRuntimeRow phoneRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
+    @Select("""
+            SELECT d.id
+              FROM nx_onboarding_calibration oc
+              JOIN nx_user_device d ON d.id = oc.user_device_id AND d.user_id = oc.user_id
+             WHERE oc.user_id = #{userId} AND oc.device_id = #{calibrationDeviceId}
+               AND oc.activation_status = 'ACTIVE' AND oc.source_environment = 'PRODUCTION'
+               AND oc.run_id = '' AND oc.is_deleted = 0
+               AND oc.source = 'server' AND oc.server_canonical = 1
+               AND d.source_channel = 'ONBOARDING' AND d.source_environment = 'PRODUCTION'
+               AND d.run_id = '' AND d.is_deleted = 0
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+               AND UPPER(d.ownership_status) = 'OWNED'
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND d.pending_deactivate = 0 AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+             LIMIT 1 FOR UPDATE
+            """)
+    Long activePhoneDeviceId(@Param("userId") Long userId,
+                             @Param("calibrationDeviceId") String calibrationDeviceId);
+
     @Insert("""
             INSERT INTO nx_user_device_runtime(user_device_id, online_status, battery_level, is_charging,
               network_reachable, paused_reason, heartbeat_at, created_at, updated_at, is_deleted)

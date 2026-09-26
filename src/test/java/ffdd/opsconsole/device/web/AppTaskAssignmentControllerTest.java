@@ -43,7 +43,7 @@ class AppTaskAssignmentControllerTest {
 
     @Test
     void phoneRuntimeUsesTheAuthenticatedUserSubject() {
-        var request = new AppPhoneRuntimeRequest(11L, 20, true, false);
+        var request = new AppPhoneRuntimeRequest("phone-a", 20, true, false);
         controller.phoneRuntime(request, userAuthentication());
         verify(service).phoneRuntime(7L, request);
 

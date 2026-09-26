@@ -56,6 +56,7 @@ class AppTaskAssignmentServiceTest {
         when(environment.getActiveProfiles()).thenReturn(new String[0]);
         when(mapper.userScope(7L)).thenReturn(new AppTaskAssignmentMapper.UserScope(0));
         when(mapper.lockProductionUser(7L)).thenReturn(7L);
+        when(mapper.activePhoneDeviceId(7L, "phone-a")).thenReturn(11L);
         when(mapper.assignmentDeviceId(eq(7L), anyString(), eq("PRODUCTION"))).thenReturn(11L);
         when(idempotency.execute(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -135,7 +136,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(task);
         when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", null, 30L, NOW)).thenReturn(1);
 
-        var resumed = service.phoneRuntime(7L, new AppPhoneRuntimeRequest(11L, 80, true, false));
+        var resumed = service.phoneRuntime(7L, new AppPhoneRuntimeRequest("phone-a", 80, true, false));
 
         assertThat(resumed.getData().status()).isEqualTo("RUNNING");
         assertThat(resumed.getData().completableAt()).isEqualTo(NOW.plusSeconds(10));
@@ -154,13 +155,31 @@ class AppTaskAssignmentServiceTest {
         when(mapper.lockActiveAssignment(7L, 11L, "PRODUCTION")).thenReturn(task);
         when(mapper.updatePhoneTaskPause(7L, 11L, "CTA-PHONE", NOW, 0L, NOW)).thenReturn(1);
 
-        var paused = service.phoneRuntime(7L, new AppPhoneRuntimeRequest(11L, 19, true, null));
+        var paused = service.phoneRuntime(7L, new AppPhoneRuntimeRequest("phone-a", 19, true, null));
 
         assertThat(paused.getData().taskNo()).isEqualTo("CTA-PHONE");
         assertThat(paused.getData().status()).isEqualTo("PAUSED");
         assertThat(paused.getData().completableAt()).isNull();
         verify(mapper).upsertPhoneRuntime(7L, 11L, 19, null, true, "ONLINE", "PHONE_LOW_BATTERY", NOW);
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void anotherPhoneCannotRefreshTheActivePhonesRuntime() {
+        assertThatThrownBy(() -> service.phoneRuntime(7L,
+                new AppPhoneRuntimeRequest("phone-b", 80, true, false)))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
+        verify(mapper).activePhoneDeviceId(7L, "phone-b");
+        verify(mapper, never()).lockOwnedDevice(eq(7L), anyLong());
+        verify(mapper, never()).upsertPhoneRuntime(anyLong(), anyLong(), anyInt(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void phoneRuntimeRejectsMissingCalibrationIdentity() {
+        assertThatThrownBy(() -> service.phoneRuntime(7L,
+                new AppPhoneRuntimeRequest(" ", 80, true, false)))
+                .hasMessage("TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
+        verify(mapper, never()).activePhoneDeviceId(anyLong(), anyString());
     }
 
     @Test

@@ -1,5 +1,5 @@
 package ffdd.opsconsole.device.dto;
 
-public record AppPhoneRuntimeRequest(Long deviceId, Integer batteryLevel,
+public record AppPhoneRuntimeRequest(String calibrationDeviceId, Integer batteryLevel,
                                      Boolean networkReachable, Boolean isCharging) {
 }

@@ -246,15 +246,18 @@ public class AppTaskAssignmentService {
     public ApiResult<AppTaskAssignmentView> phoneRuntime(Long userId, AppPhoneRuntimeRequest request) {
         requireUser(userId);
         requireProductionRuntime(userId);
-        if (request == null || request.deviceId() == null || request.deviceId() <= 0
+        if (request == null || request.calibrationDeviceId() == null
+                || !request.calibrationDeviceId().trim().matches("[A-Za-z0-9._:-]{1,128}")
                 || request.batteryLevel() == null || request.batteryLevel() < 0 || request.batteryLevel() > 100
                 || request.networkReachable() == null) {
             throw new BizException(422, "TASK_ASSIGNMENT_PHONE_RUNTIME_INVALID");
         }
         LocalDateTime now = now();
         lockProductionUser(userId);
-        DeviceRow device = mapper.lockOwnedDevice(userId, request.deviceId());
-        if (device == null || !phone(device)) throw new BizException(404, "TASK_ASSIGNMENT_PHONE_NOT_FOUND");
+        Long deviceId = mapper.activePhoneDeviceId(userId, request.calibrationDeviceId().trim());
+        if (deviceId == null || deviceId <= 0) throw new BizException(409, "TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
+        DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
+        if (device == null || !phone(device)) throw new BizException(409, "TASK_ASSIGNMENT_PHONE_BINDING_INVALID");
         if (device.activatedAt() == null || !activeDevice(device.status())) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_NOT_ACTIVE");
         }

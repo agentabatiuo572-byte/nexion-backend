@@ -10,6 +10,23 @@ import org.junit.jupiter.api.Test;
 
 class AppTaskAssignmentMapperContractTest {
     @Test
+    void phoneTelemetryResolvesOnlyTheActiveProductionCalibrationBinding() throws Exception {
+        String query = String.join(" ", AppTaskAssignmentMapper.class
+                .getMethod("activePhoneDeviceId", Long.class, String.class)
+                .getAnnotation(Select.class).value());
+
+        assertThat(query).contains(
+                "oc.user_id = #{userId}", "oc.device_id = #{calibrationDeviceId}",
+                "d.id = oc.user_device_id AND d.user_id = oc.user_id",
+                "oc.activation_status = 'ACTIVE'", "oc.source_environment = 'PRODUCTION'",
+                "oc.run_id = '' AND oc.is_deleted = 0", "oc.source = 'server'",
+                "oc.server_canonical = 1", "d.source_channel = 'ONBOARDING'",
+                "d.source_environment = 'PRODUCTION'", "d.run_id = '' AND d.is_deleted = 0",
+                "d.activated_at IS NOT NULL AND d.deactivated_at IS NULL",
+                "d.pending_deactivate = 0", "FOR UPDATE");
+    }
+
+    @Test
     void taskRuntimeUsesDurableAssignmentReceiptWalletAndServerLockTables() throws Exception {
         String source = Files.readString(Path.of(
                 "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));
