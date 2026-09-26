@@ -363,6 +363,30 @@ class AppGrowthEngagementServiceTest {
         verify(mapper, never()).creditWalletNex(anyLong(), any());
     }
     @Test
+    void questStateKeepsExpiredFrozenDayOneHistoryWithZeroReward() {
+        LocalDateTime enteredAt = LocalDateTime.of(2026, 9, 9, 0, 0);
+        DayOneSnapshot snapshot = dayOneSnapshot("SNAPSHOT", 1, enteredAt,
+                enteredAt.plusHours(72), "500 / 200 / 0 NEX", new BigDecimal("2"));
+        when(mapper.findLatestDayOneSnapshot(42L)).thenReturn(snapshot);
+        when(mapper.questState(42L, "en")).thenReturn(List.of(Map.of(
+                "questCode", "CURRENT_WEEK", "layer", "WEEKLY_T1", "status", "PENDING")));
+        when(mapper.dayOneSnapshotState(42L, 71L)).thenReturn(List.of(Map.of(
+                "questCode", "FROZEN_DAY_ONE", "layer", "DAY_ONE", "instanceKey", snapshot.instanceKey(),
+                "status", "EXPIRED", "rewardNex", 0)));
+
+        var result = serviceAt(Clock.fixed(Instant.parse("2026-09-11T17:00:00Z"), ZoneOffset.UTC))
+                .questState(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("dayOneSnapshotStatus", "SNAPSHOT")
+                .containsEntry("dayOneRequiredTaskCount", 1)
+                .containsEntry("dayOneRewardNex", new BigDecimal("0.000000"));
+        List<String> statuses = ((List<?>) result.getData().get("quests")).stream()
+                .map(row -> (String) ((Map<?, ?>) row).get("status")).toList();
+        assertThat(statuses).containsExactly("PENDING", "EXPIRED");
+        verify(mapper, never()).creditWalletNex(anyLong(), any());
+    }
+    @Test
     void questStateDoesNotInventCurrentH1FieldsForAnEmptyHeader() {
         when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
                 24, 3, "P2", 50, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,

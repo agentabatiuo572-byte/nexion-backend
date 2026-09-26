@@ -212,7 +212,7 @@ public class AppGrowthEngagementService {
                 dayOneSnapshotStatus = "SNAPSHOT";
                 dayOneRequiredTaskCount = dayOneSnapshot.requiredTaskCount();
                 rawQuests.addAll(snapshotRows);
-                dayOneReward = positive(dayOneBaseReward(dayOneSnapshot, businessNow()))
+                dayOneReward = dayOneBaseReward(dayOneSnapshot, businessNow())
                         .multiply(positive(dayOneSnapshot.questBonusMultiplier()))
                         .setScale(6, RoundingMode.DOWN);
             } else if (!liveRhythmAvailable) {
