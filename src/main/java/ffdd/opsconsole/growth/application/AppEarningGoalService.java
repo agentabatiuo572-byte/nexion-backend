@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.mapper.AppEarningGoalMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.canonical.AppProductCatalogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
@@ -31,6 +32,7 @@ public class AppEarningGoalService {
 
     private final AppEarningGoalMapper mapper;
     private final AppProductCatalogService productCatalogService;
+    private final AppCanonicalBoundaryService canonicalBoundaryService;
     private final AdminIdempotencyService idempotency;
     private final Clock clock;
 
@@ -99,12 +101,31 @@ public class AppEarningGoalService {
         Map<String, Object> data = catalog.getData();
         List<Map<String, Object>> products = productRows(data.get("products"));
         BigDecimal requiredDaily = remaining.divide(BigDecimal.valueOf(days), 6, RoundingMode.CEILING);
-        Map<String, Object> selected = products.stream()
+        List<Map<String, Object>> candidates = products.stream()
                 .filter(item -> truthy(item.get("available")))
                 .filter(item -> positive(item.get("dailyEarn")).signum() > 0)
                 .filter(item -> positive(item.get("dailyEarn")).compareTo(requiredDaily) >= 0)
-                .min(Comparator.comparing(item -> positive(item.get("dailyEarn"))))
-                .orElse(null);
+                .sorted(Comparator.comparing(item -> positive(item.get("dailyEarn"))))
+                .toList();
+        Map<String, Object> selected = null;
+        for (int start = 0; start < candidates.size() && selected == null; start += 20) {
+            List<Map<String, Object>> batch = candidates.subList(start, Math.min(start + 20, candidates.size()));
+            ApiResult<Map<String, AppCanonicalBoundaryService.PurchaseEligibilityDecision>> eligibility =
+                    canonicalBoundaryService.purchaseEligibilityBatch(userId,
+                            batch.stream().map(item -> text(item.get("id"), "")).toList());
+            if (eligibility == null || eligibility.getCode() != 0 || eligibility.getData() == null) {
+                return ApiResult.fail(503, "GOAL_ELIGIBILITY_UNAVAILABLE");
+            }
+            for (Map<String, Object> candidate : batch) {
+                String productNo = text(candidate.get("id"), "");
+                AppCanonicalBoundaryService.PurchaseEligibilityDecision decision =
+                        eligibility.getData().get(productNo);
+                if (decision != null && decision.eligible() && productNo.equals(decision.productNo())) {
+                    selected = candidate;
+                    break;
+                }
+            }
+        }
         if (selected == null) return ApiResult.fail(409, "GOAL_NO_ELIGIBLE_PRODUCT");
         String sourceEnvironment = text(data.get("sourceEnvironment"), "PRODUCTION");
         String runId = text(data.get("runId"), "");

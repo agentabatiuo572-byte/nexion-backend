@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.growth.mapper.AppEarningGoalMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.canonical.AppProductCatalogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
@@ -20,14 +21,28 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class AppEarningGoalServiceTest {
     private final AppEarningGoalMapper mapper = mock(AppEarningGoalMapper.class);
     private final AppProductCatalogService catalog = mock(AppProductCatalogService.class);
+    private final AppCanonicalBoundaryService eligibility = mock(AppCanonicalBoundaryService.class);
     private final AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-31T00:00:00Z"), ZoneOffset.UTC);
-    private final AppEarningGoalService service = new AppEarningGoalService(mapper, catalog, idempotency, clock);
+    private final AppEarningGoalService service = new AppEarningGoalService(mapper, catalog, eligibility, idempotency, clock);
+
+    @BeforeEach
+    void eligibleCatalogCandidates() {
+        when(eligibility.purchaseEligibilityBatch(eq(42L), any())).thenAnswer(invocation -> {
+            List<String> productNos = invocation.getArgument(1);
+            return ApiResult.ok(productNos.stream().collect(Collectors.toMap(Function.identity(),
+                    productNo -> new AppCanonicalBoundaryService.PurchaseEligibilityDecision(
+                            productNo, true, "ELIGIBLE"))));
+        });
+    }
 
     @Test
     void listIsAccountScopedAndReturnsServerProgress() {
@@ -96,6 +111,65 @@ class AppEarningGoalServiceTest {
         assertThat(result.getData().productNo()).isEqualTo("fast");
         assertThat(result.getData().source()).isEqualTo("nx_product");
         assertThat(result.getData().serverCanonical()).isTrue();
+    }
+
+    @Test
+    void recommendationSkipsLockedProductAndUsesTheNextPurchasableYield() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(BigDecimal.ZERO);
+        when(catalog.catalog(42L)).thenReturn(ApiResult.ok(Map.of("source", "nx_product", "products", List.of(
+                Map.of("id", "stellarbox-pro", "name", "StellarBox Pro", "available", true,
+                        "dailyEarn", new BigDecimal("13"), "price", new BigDecimal("1199")),
+                Map.of("id", "stellarbox-pro-v2", "name", "StellarBox Pro v2", "available", true,
+                        "dailyEarn", new BigDecimal("18"), "price", new BigDecimal("1999"))))));
+        when(eligibility.purchaseEligibilityBatch(42L, List.of("stellarbox-pro", "stellarbox-pro-v2")))
+                .thenReturn(ApiResult.ok(Map.of(
+                        "stellarbox-pro", new AppCanonicalBoundaryService.PurchaseEligibilityDecision(
+                                "stellarbox-pro", false, "F4B_REQUIREMENTS_NOT_MET"),
+                        "stellarbox-pro-v2", new AppCanonicalBoundaryService.PurchaseEligibilityDecision(
+                                "stellarbox-pro-v2", true, "ELIGIBLE"))));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("1000"), LocalDateTime.of(2026, 12, 9, 0, 0));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().productNo()).isEqualTo("stellarbox-pro-v2");
+    }
+
+    @Test
+    void recommendationDoesNotOfferALockedProductAsPurchasable() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(BigDecimal.ZERO);
+        when(catalog.catalog(42L)).thenReturn(ApiResult.ok(Map.of("source", "nx_product", "products", List.of(
+                Map.of("id", "stellarbox-pro", "name", "StellarBox Pro", "available", true,
+                        "dailyEarn", new BigDecimal("13"), "price", new BigDecimal("1199"))))));
+        when(eligibility.purchaseEligibilityBatch(42L, List.of("stellarbox-pro")))
+                .thenReturn(ApiResult.ok(Map.of("stellarbox-pro",
+                        new AppCanonicalBoundaryService.PurchaseEligibilityDecision(
+                                "stellarbox-pro", false, "F4B_REQUIREMENTS_NOT_MET"))));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("1000"), LocalDateTime.of(2026, 12, 9, 0, 0));
+
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("GOAL_NO_ELIGIBLE_PRODUCT");
+        assertThat(result.getData()).isNull();
+    }
+
+    @Test
+    void recommendationFailsClosedWhenPurchaseEligibilityCannotBeRead() {
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(catalog.catalog(42L)).thenReturn(ApiResult.ok(Map.of("source", "nx_product", "products", List.of(
+                Map.of("id", "stellarbox-pro", "name", "StellarBox Pro", "available", true,
+                        "dailyEarn", new BigDecimal("13"), "price", new BigDecimal("1199"))))));
+        when(eligibility.purchaseEligibilityBatch(42L, List.of("stellarbox-pro")))
+                .thenReturn(ApiResult.fail(503, "PURCHASE_ELIGIBILITY_INVALID"));
+
+        ApiResult<AppEarningGoalService.RecommendationView> result = service.recommendation(
+                42L, new BigDecimal("1000"), LocalDateTime.of(2026, 12, 9, 0, 0));
+
+        assertThat(result.getCode()).isEqualTo(503);
+        assertThat(result.getMessage()).isEqualTo("GOAL_ELIGIBILITY_UNAVAILABLE");
     }
 
     @Test
