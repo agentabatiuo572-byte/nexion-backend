@@ -86,6 +86,12 @@ public class AppUserAuthService {
 
     @Transactional
     public ApiResult<UserLoginResponse> login(UserLoginRequest request, String clientAddress) {
+        return login(request, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> login(
+            UserLoginRequest request, String clientAddress, AppSessionSurface surface) {
         if (request == null || !validCountryCode(request.countryCode())
                 || !validPhone(request.countryCode(), request.phone())) {
             return ApiResult.fail(422, "USER_LOGIN_PHONE_INVALID");
@@ -134,7 +140,7 @@ public class AppUserAuthService {
             return issueTwoFactorChallenge(user, countryCode, phone, request.captchaTicket(), clientAddress);
         }
 
-        return issueSession(user, countryCode, phone, clientAddress);
+        return issueSession(user, countryCode, phone, clientAddress, surface);
     }
 
     /**
@@ -208,6 +214,12 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeOtpLogin(
             UserOtpLoginVerifyRequest request, String clientAddress) {
+        return completeOtpLogin(request, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeOtpLogin(
+            UserOtpLoginVerifyRequest request, String clientAddress, AppSessionSurface surface) {
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.challengeNo()) || !request.challengeNo().trim().matches("LOGIN-[a-f0-9]{32}")
                 || !StringUtils.hasText(request.code()) || !request.code().trim().matches("\\d{6}")) {
@@ -243,7 +255,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        return issueSession(user, countryCode, phone, clientAddress);
+        return issueSession(user, countryCode, phone, clientAddress, surface);
     }
 
     @Transactional
@@ -302,6 +314,12 @@ public class AppUserAuthService {
     @Transactional
     public ApiResult<UserLoginResponse> completeTwoFactorLogin(
             UserTwoFactorLoginRequest request, String clientAddress) {
+        return completeTwoFactorLogin(request, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    @Transactional
+    public ApiResult<UserLoginResponse> completeTwoFactorLogin(
+            UserTwoFactorLoginRequest request, String clientAddress, AppSessionSurface surface) {
         if (request == null || !validCountryCode(request.countryCode()) || !validPhone(request.countryCode(), request.phone())
                 || !StringUtils.hasText(request.password()) || !StringUtils.hasText(request.challengeNo())
                 || !request.challengeNo().trim().matches("OTP-[a-f0-9]{32}")
@@ -342,7 +360,7 @@ public class AppUserAuthService {
         }
         loginGuardMapper.clear(loginKey);
         userMapper.clearLoginFailure(user.getId());
-        return issueSession(user, countryCode, phone, clientAddress);
+        return issueSession(user, countryCode, phone, clientAddress, surface);
     }
 
     private ApiResult<UserLoginResponse> issueTwoFactorChallenge(
@@ -382,6 +400,11 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> issueSession(
             UserEntity user, String countryCode, String phone, String clientAddress) {
+        return issueSession(user, countryCode, phone, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    private ApiResult<UserLoginResponse> issueSession(
+            UserEntity user, String countryCode, String phone, String clientAddress, AppSessionSurface surface) {
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
         String rawRefreshToken = randomRefreshToken();
@@ -389,7 +412,7 @@ public class AppUserAuthService {
         UserSessionEntity session = new UserSessionEntity();
         session.setUserId(user.getId());
         session.setRefreshTokenId(sessionId);
-        session.setDeviceName("NexGrid App / H5");
+        session.setDeviceName(surface.deviceName());
         session.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
         session.setSessionChainId(UUID.randomUUID().toString());
         LocalDateTime issuedAt = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
@@ -416,6 +439,11 @@ public class AppUserAuthService {
     ApiResult<UserLoginResponse> issueRegisteredSession(
             UserEntity user,
             String clientAddress) {
+        return issueRegisteredSession(user, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    ApiResult<UserLoginResponse> issueRegisteredSession(
+            UserEntity user, String clientAddress, AppSessionSurface surface) {
         if (user == null || user.getId() == null || !StringUtils.hasText(user.getPhone())) {
             throw new BizException(422, "USER_REGISTRATION_SESSION_INVALID");
         }
@@ -426,7 +454,7 @@ public class AppUserAuthService {
             throw new BizException(422, "USER_REGISTRATION_PHONE_INVALID");
         }
         String countryCode = normalizeCountryCode(user.getCountryCode());
-        return issueSession(user, countryCode, user.getPhone(), clientAddress);
+        return issueSession(user, countryCode, user.getPhone(), clientAddress, surface);
     }
 
     @Transactional

@@ -325,19 +325,21 @@ class AppUserRegistrationServiceTest {
             user.setId(99L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.3"),
+                eq(AppSessionSurface.APP)))
                 .thenReturn(ApiResult.ok(new UserLoginResponse(
                         "access", "Bearer", new UserLoginResponse.UserSession(
                                 99L, "+84", "987654321", "Nexion 4321"))));
 
         ApiResult<UserLoginResponse> result = service.register(new UserRegistrationRequest(
-                "+84", "987654321", "REG-H003", "123456", "NexPass9a", null), "127.0.0.3");
+                "+84", "987654321", "REG-H003", "123456", "NexPass9a", null),
+                "127.0.0.3", AppSessionSurface.APP);
 
         ArgumentCaptor<UserEntity> inserted = ArgumentCaptor.forClass(UserEntity.class);
         verify(userMapper).insert(inserted.capture());
         verify(userMapper).ensureRegisteredUserWallet(99L, 1);
         verify(mapper).insertTeamMemberProjection(99L, 99L, 0, 1);
-        verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3");
+        verify(authService).issueRegisteredSession(inserted.getValue(), "127.0.0.3", AppSessionSurface.APP);
         verify(outboxService).publish(
                 "USER_REGISTRATION", "99", "auth.register_completed", java.util.Map.of("userId", 99L));
         verify(outboxService, org.mockito.Mockito.times(1)).publish(any(), any(), any(), any());

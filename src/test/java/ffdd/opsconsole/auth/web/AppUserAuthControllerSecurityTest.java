@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
+import ffdd.opsconsole.auth.application.AppSessionSurface;
 import ffdd.opsconsole.auth.application.AppUserOAuthService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
@@ -33,6 +34,8 @@ import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import ffdd.opsconsole.shared.security.SecurityConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -92,6 +95,48 @@ class AppUserAuthControllerSecurityTest {
         }).when(adminRbacAuthorizationFilter).doFilter(any(), any(), any());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = { "/login", "/login/otp/verify", "/login/2fa", "/register", "/oauth/exchange" })
+    void nativeMarkerReachesEverySessionIssuancePath(String path) throws Exception {
+        mockMvc.perform(post("/auth/users" + path)
+                        .header(AppSessionSurface.APP_HEADER, "APP")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
+
+        switch (path) {
+            case "/login" -> verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+            case "/login/otp/verify" -> verify(authService).completeOtpLogin(
+                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+            case "/login/2fa" -> verify(authService).completeTwoFactorLogin(
+                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+            case "/register" -> verify(registrationService).register(
+                    any(), eq("127.0.0.1"), eq(AppSessionSurface.APP));
+            case "/oauth/exchange" -> verify(oauthService).exchange(
+                    any(), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.APP));
+            default -> throw new AssertionError(path);
+        }
+    }
+
+    @Test
+    void cookieModeTakesPrecedenceAndMissingMarkerRemainsUnknown() throws Exception {
+        when(refreshCookieService.cookieMode(any())).thenAnswer(invocation ->
+                "cookie".equals(invocation.getArgument(0, jakarta.servlet.http.HttpServletRequest.class)
+                        .getHeader(AppUserRefreshCookieService.MODE_HEADER)));
+
+        mockMvc.perform(post("/auth/users/login")
+                        .header(AppSessionSurface.APP_HEADER, "APP")
+                        .header(AppUserRefreshCookieService.MODE_HEADER, "cookie")
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+        verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.H5));
+
+        mockMvc.perform(post("/auth/users/login")
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+        verify(authService).login(any(), eq("127.0.0.1"), eq(AppSessionSurface.UNKNOWN));
+    }
+
     @Test
     void anonymousRegistrationOtpVerificationReachesServiceWithoutIssuingASession() throws Exception {
         var request = new UserOtpLoginVerifyRequest(
@@ -142,7 +187,7 @@ class AppUserAuthControllerSecurityTest {
                 "PASSKEY", "SANDBOX_MOCK", null, "Passkey User",
                 "OAUTH-11111111111111111111111111111111");
         when(oauthService.exchange(eq(request), eq("127.0.0.1"),
-                eq("http://127.0.0.1:5173"))).thenReturn(ApiResult.ok(
+                eq("http://127.0.0.1:5173"), eq(AppSessionSurface.UNKNOWN))).thenReturn(ApiResult.ok(
                 new UserOAuthExchangeResponse(
                         "access", "Bearer",
                         new UserLoginResponse.UserSession(301L, "+86", "900123456789", "Passkey User"),
@@ -163,12 +208,12 @@ class AppUserAuthControllerSecurityTest {
                 .andExpect(jsonPath("$.data.accessToken").value("access"));
 
         verify(oauthService).exchange(eq(request), eq("127.0.0.1"),
-                eq("http://127.0.0.1:5173"));
+                eq("http://127.0.0.1:5173"), eq(AppSessionSurface.UNKNOWN));
     }
 
     @Test
     void emptyOAuthExchangeBodyReturnsValidationFailure() throws Exception {
-        when(oauthService.exchange(eq(null), eq("127.0.0.1"), eq(null)))
+        when(oauthService.exchange(eq(null), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.UNKNOWN)))
                 .thenReturn(ApiResult.fail(422, "OAUTH_REQUEST_INVALID"));
 
         mockMvc.perform(post("/auth/users/oauth/exchange")
@@ -181,7 +226,7 @@ class AppUserAuthControllerSecurityTest {
                 .andExpect(jsonPath("$.code").value(422))
                 .andExpect(jsonPath("$.message").value("OAUTH_REQUEST_INVALID"));
 
-        verify(oauthService).exchange(eq(null), eq("127.0.0.1"), eq(null));
+        verify(oauthService).exchange(eq(null), eq("127.0.0.1"), eq(null), eq(AppSessionSurface.UNKNOWN));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.web;
 
 import ffdd.opsconsole.auth.application.AppUserAuthService;
+import ffdd.opsconsole.auth.application.AppSessionSurface;
 import ffdd.opsconsole.auth.application.AppUserRegistrationService;
 import ffdd.opsconsole.auth.application.AppUserRefreshCookieService;
 import ffdd.opsconsole.auth.application.AppUserPasswordResetService;
@@ -57,7 +58,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                registrationService.register(request, servletRequest.getRemoteAddr()),
+                registrationService.register(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
                 servletRequest, servletResponse);
     }
 
@@ -66,7 +67,7 @@ public class AppUserAuthController {
             @RequestBody(required = false) UserLoginRequest request,
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
-        return refreshCookieService.issue(authService.login(request, servletRequest.getRemoteAddr()),
+        return refreshCookieService.issue(authService.login(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
                 servletRequest, servletResponse);
     }
 
@@ -77,7 +78,7 @@ public class AppUserAuthController {
             HttpServletResponse servletResponse) {
         return refreshCookieService.issueOAuth(
                 oauthService.exchange(request, servletRequest.getRemoteAddr(),
-                        servletRequest.getHeader("Origin")),
+                        servletRequest.getHeader("Origin"), surface(servletRequest)),
                 servletRequest, servletResponse);
     }
 
@@ -94,7 +95,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                authService.completeOtpLogin(request, servletRequest.getRemoteAddr()),
+                authService.completeOtpLogin(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
                 servletRequest, servletResponse);
     }
 
@@ -124,7 +125,7 @@ public class AppUserAuthController {
             HttpServletRequest servletRequest,
             HttpServletResponse servletResponse) {
         return refreshCookieService.issue(
-                authService.completeTwoFactorLogin(request, servletRequest.getRemoteAddr()),
+                authService.completeTwoFactorLogin(request, servletRequest.getRemoteAddr(), surface(servletRequest)),
                 servletRequest, servletResponse);
     }
 
@@ -164,5 +165,10 @@ public class AppUserAuthController {
         } finally {
             refreshCookieService.clear(servletResponse);
         }
+    }
+
+    private AppSessionSurface surface(HttpServletRequest request) {
+        return AppSessionSurface.from(refreshCookieService.cookieMode(request),
+                request.getHeader(AppSessionSurface.APP_HEADER));
     }
 }

@@ -98,7 +98,8 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("signed-token");
 
-        var result = service.login(new UserLoginRequest("84", "901234567", "secret"));
+        var result = service.login(new UserLoginRequest("84", "901234567", "secret"),
+                "127.0.0.1", AppSessionSurface.APP);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("signed-token");
@@ -106,8 +107,22 @@ class AppUserAuthServiceTest {
         ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(saved.capture());
         assertThat(saved.getValue().getUserId()).isEqualTo(42L);
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
         assertThat(saved.getValue().getRefreshTokenId()).isNotBlank();
         assertThat(saved.getValue().getExpiresAt()).isNotNull();
+    }
+
+    @Test
+    void h5SessionKeepsItsWebLabel() {
+        when(users.selectOne(any())).thenReturn(activeUser());
+
+        var result = service.login(new UserLoginRequest("+84", "901234567", "secret"),
+                "127.0.0.1", AppSessionSurface.H5);
+
+        assertThat(result.getCode()).isZero();
+        ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(saved.capture());
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid H5");
     }
 
     @Test
@@ -121,10 +136,12 @@ class AppUserAuthServiceTest {
         user.setPasswordHash(passwords.encode("secret"));
         when(users.selectOne(any())).thenReturn(user);
 
-        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"));
+        var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"),
+                "127.0.0.1", AppSessionSurface.APP);
 
         assertThat(result.getCode()).isEqualTo(401);
         assertThat(result.getMessage()).isEqualTo("USER_CREDENTIAL_INVALID");
+        verify(sessions, never()).insert(any(UserSessionEntity.class));
     }
 
     @Test
@@ -396,12 +413,15 @@ class AppUserAuthServiceTest {
                 .thenReturn("mfa-token");
 
         var result = service.completeTwoFactorLogin(new UserTwoFactorLoginRequest(
-                "+84", "901234567", "secret", challengeNo, "123456"));
+                "+84", "901234567", "secret", challengeNo, "123456"),
+                "127.0.0.1", AppSessionSurface.APP);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isEqualTo("mfa-token");
         verify(users).consumeValidLoginOtp(42L, challengeNo, "123456");
-        verify(sessions).insert(any(UserSessionEntity.class));
+        ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(saved.capture());
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
     }
 
     @Test
@@ -427,13 +447,17 @@ class AppUserAuthServiceTest {
 
         var sent = service.beginOtpLogin(new UserOtpLoginRequest("+84", "901234567"));
         var verified = service.completeOtpLogin(new UserOtpLoginVerifyRequest(
-                "+84", "901234567", sent.getData().challengeNo(), "123456"));
+                "+84", "901234567", sent.getData().challengeNo(), "123456"),
+                "127.0.0.1", AppSessionSurface.APP);
 
         assertThat(sent.getCode()).isZero();
         assertThat(sent.getData().challengeNo()).startsWith("LOGIN-");
         assertThat(verified.getCode()).isZero();
         assertThat(verified.getData().accessToken()).isEqualTo("otp-login-token");
         verify(users).consumeValidLoginOtp(eq(42L), eq(sent.getData().challengeNo()), eq("123456"));
+        ArgumentCaptor<UserSessionEntity> saved = ArgumentCaptor.forClass(UserSessionEntity.class);
+        verify(sessions).insert(saved.capture());
+        assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
     }
 
     @Test
@@ -647,7 +671,8 @@ class AppUserAuthServiceTest {
         when(tokens.createUserToken(eq(42L), eq("901234567"), eq(List.of()), any(), any(Duration.class), eq(UserAuthEnvironment.PRODUCTION)))
                 .thenReturn("initial-token", "refreshed-token");
 
-        var login = service.login(new UserLoginRequest("+84", "901234567", "secret"));
+        var login = service.login(new UserLoginRequest("+84", "901234567", "secret"),
+                "127.0.0.1", AppSessionSurface.APP);
         ArgumentCaptor<UserSessionEntity> initialCaptor = ArgumentCaptor.forClass(UserSessionEntity.class);
         verify(sessions).insert(initialCaptor.capture());
         UserSessionEntity initial = initialCaptor.getValue();
@@ -678,6 +703,7 @@ class AppUserAuthServiceTest {
                 LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).minusMinutes(1),
                 LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE).plusMinutes(1));
         assertThat(rotated.getSessionChainId()).isEqualTo(initial.getSessionChainId());
+        assertThat(rotated.getDeviceName()).isEqualTo("NexGrid Phone App");
         verify(sessions).markRefreshRotated(eq(101L), eq(rotated.getRefreshTokenId()));
     }
 

@@ -59,19 +59,22 @@ class AppUserOAuthServiceTest {
             user.setId(301L);
             return 1;
         }).when(userMapper).insert(any(UserEntity.class));
-        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1")))
+        when(authService.issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"),
+                eq(AppSessionSurface.APP)))
                 .thenReturn(ApiResult.ok(new ffdd.opsconsole.auth.dto.UserLoginResponse(
                         "access", "Bearer", new ffdd.opsconsole.auth.dto.UserLoginResponse.UserSession(
                                 301L, "+86", "13900123001", "Sandbox Alice"), "refresh")));
 
         ApiResult<UserOAuthExchangeResponse> result = service.exchange(
                 sandboxRequest("GOOGLE", "browser-a", "Sandbox Alice"),
-                "127.0.0.1", LOCAL_ORIGIN);
+                "127.0.0.1", LOCAL_ORIGIN, AppSessionSurface.APP);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().source()).isEqualTo("mock");
         assertThat(result.getData().sandbox()).isTrue();
         assertThat(result.getData().user().userId()).isEqualTo(301L);
+        verify(authService).issueRegisteredSession(any(UserEntity.class), eq("127.0.0.1"),
+                eq(AppSessionSurface.APP));
         ArgumentCaptorSupport.assertSandboxUser(userMapper);
         verify(userMapper).ensureRegisteredUserWallet(301L, 1);
         verify(outboxService).publish(eq("USER_SECURITY"), eq("301"),

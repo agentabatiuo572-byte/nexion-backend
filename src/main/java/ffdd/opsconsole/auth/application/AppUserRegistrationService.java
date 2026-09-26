@@ -206,13 +206,18 @@ public class AppUserRegistrationService {
     public ApiResult<UserLoginResponse> register(
             UserRegistrationRequest request,
             String clientAddress) {
+        return register(request, clientAddress, AppSessionSurface.UNKNOWN);
+    }
+
+    public ApiResult<UserLoginResponse> register(
+            UserRegistrationRequest request, String clientAddress, AppSessionSurface surface) {
         Integer sandbox = sandboxForNewRegistration();
         if (sandbox == null) {
             return ApiResult.fail(503, "USER_REGISTRATION_PROFILE_FORBIDDEN");
         }
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
-                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress, sandbox));
+                return transactionExecutor.execute(() -> registerInTransaction(request, clientAddress, sandbox, surface));
             } catch (PessimisticLockingFailureException exception) {
                 log.warn("Registration lock conflict; rolled back attempt {}/3 before retry", attempt);
             }
@@ -223,7 +228,8 @@ public class AppUserRegistrationService {
     private ApiResult<UserLoginResponse> registerInTransaction(
             UserRegistrationRequest request,
             String clientAddress,
-            int sandbox) {
+            int sandbox,
+            AppSessionSurface surface) {
         if (request == null
                 || !validCountryCode(request.countryCode())
                 || !validPhone(request.countryCode(), request.phone())
@@ -344,7 +350,9 @@ public class AppUserRegistrationService {
                             "sponsorUserId", sponsor.getId(),
                             "source", "nx_user.sponsor_user_id"));
         }
-        ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress);
+        ApiResult<UserLoginResponse> session = surface == AppSessionSurface.UNKNOWN
+                ? authService.issueRegisteredSession(user, clientAddress)
+                : authService.issueRegisteredSession(user, clientAddress, surface);
         if (session.getData() == null || sponsor == null) return session;
         return new ApiResult<>(session.getCode(), session.getMessage(),
                 session.getData().withRegistrationReceipt(registrationReceipt(sponsor, sandbox)));

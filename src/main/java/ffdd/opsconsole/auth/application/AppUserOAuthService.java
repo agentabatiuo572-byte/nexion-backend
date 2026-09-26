@@ -53,6 +53,13 @@ public class AppUserOAuthService {
     @Transactional
     public ApiResult<UserOAuthExchangeResponse> exchange(
             UserOAuthExchangeRequest request, String clientAddress, String requestOrigin) {
+        return exchange(request, clientAddress, requestOrigin, AppSessionSurface.UNKNOWN);
+    }
+
+    @Transactional
+    public ApiResult<UserOAuthExchangeResponse> exchange(
+            UserOAuthExchangeRequest request, String clientAddress, String requestOrigin,
+            AppSessionSurface surface) {
         var resolved = UserAuthEnvironment.resolve(environment);
         if (resolved.isEmpty()) return ApiResult.fail(503, "OAUTH_PROFILE_FORBIDDEN");
         UserAuthEnvironment authEnvironment = resolved.get();
@@ -89,7 +96,7 @@ public class AppUserOAuthService {
             if (!isActiveInEnvironment(developmentUser, authEnvironment)) {
                 return ApiResult.fail(503, "OAUTH_DEVELOPMENT_ACCOUNT_NOT_FOUND");
             }
-            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress,
+            return issueDevelopmentSession(developmentUser, provider, subject, clientAddress, surface,
                     false, authEnvironment == UserAuthEnvironment.SANDBOX);
         }
         UserOAuthIdentityEntity identity = identityMapper.findForUpdate(provider, subject, sourceEnvironment);
@@ -130,12 +137,15 @@ public class AppUserOAuthService {
                 if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
             }
         }
-        return issueDevelopmentSession(user, provider, subject, clientAddress, created, true);
+        return issueDevelopmentSession(user, provider, subject, clientAddress, surface, created, true);
     }
 
     private ApiResult<UserOAuthExchangeResponse> issueDevelopmentSession(
-            UserEntity user, String provider, String subject, String clientAddress, boolean created, boolean sandbox) {
-        ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress);
+            UserEntity user, String provider, String subject, String clientAddress,
+            AppSessionSurface surface, boolean created, boolean sandbox) {
+        ApiResult<UserLoginResponse> session = surface == AppSessionSurface.UNKNOWN
+                ? authService.issueRegisteredSession(user, clientAddress)
+                : authService.issueRegisteredSession(user, clientAddress, surface);
         if (session.getCode() != 0 || session.getData() == null) {
             return ApiResult.fail(session.getCode(), session.getMessage());
         }
