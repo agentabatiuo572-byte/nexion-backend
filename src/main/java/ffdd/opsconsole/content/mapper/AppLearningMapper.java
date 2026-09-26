@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
+import ffdd.opsconsole.content.domain.LearningRewardCourseRef;
 import ffdd.opsconsole.content.domain.LearningSandboxIdempotencyRow;
 import ffdd.opsconsole.content.domain.LearningQuizReceipt;
 import ffdd.opsconsole.content.domain.LearningSandboxObservationWindow;
@@ -16,6 +17,12 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AppLearningMapper extends BaseMapper<HelpArticleEntity> {
+    @Select("SELECT DISTINCT course_id AS courseId, course_version AS version FROM nx_learning_reward_ledger WHERE user_id=#{userId} AND status='GRANTED' AND is_deleted=0")
+    List<LearningRewardCourseRef> listGrantedRewardCourses(@Param("userId") Long userId);
+
+    @Select("SELECT DISTINCT course_id AS courseId, course_version AS version FROM nx_learning_sandbox_reward_ledger WHERE run_id=#{runId} AND user_id=#{userId} AND status='GRANTED' AND is_deleted=0")
+    List<LearningRewardCourseRef> listSandboxGrantedRewardCourses(@Param("runId") String runId, @Param("userId") Long userId);
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_user

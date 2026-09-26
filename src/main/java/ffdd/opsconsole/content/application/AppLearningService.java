@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
+import ffdd.opsconsole.content.domain.LearningRewardCourseRef;
 import ffdd.opsconsole.content.domain.LearningQuizReceipt;
 import ffdd.opsconsole.content.domain.LearningSandboxIdempotencyRow;
 import ffdd.opsconsole.content.domain.LearningSandboxCourseRow;
@@ -60,7 +61,42 @@ public class AppLearningService {
         int completed = (int) courses.stream().filter(AppLearningCourseView::completed).count();
         BigDecimal earned = sandbox(sourceEnvironment) ? learningMapper.sumSandboxGrantedReward(sandboxRunId(), userId) : learningMapper.sumGrantedReward(userId);
         return ApiResult.ok(new AppLearningOverview(courses, completed, courses.size(), nz(earned), true,
-                sourceEnvironment, sandbox(sourceEnvironment) ? sandboxRunId() : ""));
+                sourceEnvironment, sandbox(sourceEnvironment) ? sandboxRunId() : "",
+                rewardTitles(userId, language, sourceEnvironment)));
+    }
+
+    private Map<String, String> rewardTitles(Long userId, String language, String sourceEnvironment) {
+        boolean sandbox = sandbox(sourceEnvironment);
+        List<LearningRewardCourseRef> rewards = sandbox
+                ? learningMapper.listSandboxGrantedRewardCourses(sandboxRunId(), userId)
+                : learningMapper.listGrantedRewardCourses(userId);
+        Map<String, String> titles = new LinkedHashMap<>();
+        List<LearningSandboxCourseRow> sandboxCourses = sandbox ? learningMapper.listSandboxCourses(sandboxRunId()) : List.of();
+        String locale = normalizeLanguage(language);
+        for (LearningRewardCourseRef reward : rewards) {
+            String title = null;
+            if (sandbox) {
+                title = sandboxCourses.stream()
+                        .filter(row -> reward.courseId().equals(row.courseId()) && reward.version().equals(row.version()))
+                        .filter(row -> !"DRAFT".equals(row.status()))
+                        .findFirst()
+                        .map(row -> localized(locale, row.titleZh(), row.titleVi(), row.titleEn()))
+                        .orElse(null);
+            } else {
+                var snapshot = learningRepository.findCourseVersion(reward.courseId(), reward.version()).orElse(null);
+                if (snapshot != null && ("PUBLISHED".equals(snapshot.status()) || "SUPERSEDED".equals(snapshot.status()))) {
+                    var payload = snapshot.payload();
+                    title = localized(locale, payload.titleZh(), payload.titleVi(), payload.titleEn());
+                } else {
+                    var current = learningRepository.findPublishedCourse(reward.courseId()).orElse(null);
+                    if (current != null && reward.version().equals(current.version())) {
+                        title = localized(locale, current.titleZh(), current.titleVi(), current.titleEn());
+                    }
+                }
+            }
+            if (StringUtils.hasText(title)) titles.put(reward.courseId() + "@" + reward.version(), title);
+        }
+        return titles;
     }
 
     public ApiResult<AppLearningCourseView> course(Long userId, String courseId, String language) {

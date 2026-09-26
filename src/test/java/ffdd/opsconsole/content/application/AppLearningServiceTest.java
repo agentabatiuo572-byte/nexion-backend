@@ -18,11 +18,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.AppLearningQuizResult;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
 import ffdd.opsconsole.content.domain.LearningCourseView;
+import ffdd.opsconsole.content.domain.LearningCourseVersionView;
 import ffdd.opsconsole.content.domain.LearningProgressRow;
+import ffdd.opsconsole.content.domain.LearningRewardCourseRef;
 import ffdd.opsconsole.content.domain.LearningQuizQuestionView;
 import ffdd.opsconsole.content.domain.LearningSandboxCourseRow;
 import ffdd.opsconsole.content.domain.LearningSandboxIdempotencyRow;
 import ffdd.opsconsole.content.dto.AppLearningQuizSubmitRequest;
+import ffdd.opsconsole.content.dto.LearningCourseUpsertRequest;
 import ffdd.opsconsole.content.mapper.AppLearningMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -103,6 +106,30 @@ class AppLearningServiceTest {
         assertThat(result.getData().courses().get(0).serverCanonical()).isTrue();
         assertThat(result.getData().courses().get(0).sourceEnvironment()).isEqualTo("PRODUCTION");
         assertThat(result.getData().courses().get(0).runId()).isEmpty();
+    }
+
+    @Test
+    void overviewUsesOnlyGrantedExactVersionTitlesAndNeverDraftCopy() {
+        when(repository.listPublishedCourses()).thenReturn(List.of(course("published")));
+        when(mapper.listProgress(42L)).thenReturn(List.of());
+        when(mapper.listGrantedRewardCourses(42L)).thenReturn(List.of(
+                new LearningRewardCourseRef("test-course", "v1"),
+                new LearningRewardCourseRef("test-course", "v2"),
+                new LearningRewardCourseRef("draft-course", "v1")));
+        var oldCopy = new LearningCourseUpsertRequest("旧课程", "Old course", "正文", "Body", "Basics",
+                "Article", "Beginner", BigDecimal.TEN, "5 min", "published", "operator", "reason");
+        when(repository.findCourseVersion("test-course", "v1")).thenReturn(Optional.of(
+                new LearningCourseVersionView("test-course", "v1", "SUPERSEDED", oldCopy, 1L, null, null)));
+        when(repository.findCourseVersion("draft-course", "v1")).thenReturn(Optional.of(
+                new LearningCourseVersionView("draft-course", "v1", "DRAFT", oldCopy, 1L, null, null)));
+        when(repository.findPublishedCourse("test-course")).thenReturn(Optional.of(course("published")));
+
+        var titles = service.overview(42L, "en").getData().rewardTitles();
+
+        assertThat(titles).containsEntry("test-course@v1", "Old course")
+                .containsEntry("test-course@v2", "Test course")
+                .doesNotContainKey("draft-course@v1");
+        assertThat(service.overview(43L, "en").getData().rewardTitles()).isEmpty();
     }
 
     @Test
