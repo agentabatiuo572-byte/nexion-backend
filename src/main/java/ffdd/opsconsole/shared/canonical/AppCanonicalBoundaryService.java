@@ -503,7 +503,10 @@ public class AppCanonicalBoundaryService {
         } catch (IllegalArgumentException invalid) {
             throw new BizException(409, invalid.getMessage());
         }
-        BigDecimal dailyUsdt = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
+        // Share's E1 annual range is a reference, not an USD/day estimate.
+        BigDecimal dailyUsdt = "SHARE".equalsIgnoreCase(device.deviceType())
+                ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                : E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
         BigDecimal dailyNex = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyNex()), capacity);
         boolean calibratedPhone = "MOBILE".equalsIgnoreCase(device.deviceType())
                 && "phone".equalsIgnoreCase(device.productCode())

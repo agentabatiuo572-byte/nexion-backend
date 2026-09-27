@@ -299,6 +299,23 @@ class AppHomeOverviewServiceTest {
     }
 
     @Test
+    void sharePromoKeepsRewardButDoesNotProjectLegacyUsdPerDay() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.promo()).thenReturn(new AppHomeOverviewMapper.PromoRow(
+                "3", "1.5", 1, 0, "share-sku-01", "0.19", "active",
+                LocalDateTime.of(2026, 8, 14, 0, 0), "SHARE", new BigDecimal("19.90")));
+
+        var home = service.overview(42L).getData();
+        var promo = (Map<?, ?>) home.get("weeklyPromo");
+        var product = (Map<?, ?>) promo.get("product");
+        assertEquals(new BigDecimal("3"), promo.get("rewardNex"));
+        assertEquals("cloud-share", product.get("kind"));
+        assertNull(product.get("dailyUsdt"));
+        assertEquals(new BigDecimal("19.90"), product.get("priceUsdt"));
+    }
+
+    @Test
     void productionHomeSkipsUnreleasedUpgradeAndUsesNextImmediatelyPurchasableProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));

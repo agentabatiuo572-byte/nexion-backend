@@ -324,6 +324,12 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                    b.target_daily AS targetDaily,
                    LOWER(b.status) AS status,
                    b.updated_at AS updatedAt,
+                   (SELECT p.product_type
+                      FROM nx_product p
+                     WHERE p.is_deleted = 0
+                       AND (p.product_no = b.target_device OR p.name = b.target_device)
+                     ORDER BY p.id
+                     LIMIT 1) AS productType,
                    (SELECT p.price_usdt
                       FROM nx_product p
                      WHERE p.is_deleted = 0
@@ -369,5 +375,5 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     }
     record PromoRow(String baseReward, String multiplier, Integer countdownDays, Integer countdownHours,
                     String targetDevice, String targetDaily, String status, LocalDateTime updatedAt,
-                    BigDecimal productPriceUsdt) { }
+                    String productType, BigDecimal productPriceUsdt) { }
 }

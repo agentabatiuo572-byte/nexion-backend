@@ -1175,6 +1175,9 @@ class AppCanonicalBoundaryServiceTest {
     void fleetSeparatesActivationLifecycleFromRuntimeAvailability() {
         LocalDateTime activatedAt = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(2);
         when(mapper.e3CapacityConfig()).thenReturn(capacityConfig());
+        when(mapper.realizedToday(anyLong(), any(LocalDateTime.class), any(LocalDateTime.class)))
+                .thenReturn(List.of(new CanonicalStateMapper.DeviceRealizedToday(
+                        8L, new BigDecimal("1.25"), new BigDecimal("3"))));
         when(mapper.ownedDevices(42L)).thenReturn(List.of(
                 new CanonicalStateMapper.OwnedDevice(
                         8L, "DEV-ONLINE", "Cloud Share", "SHARE", "CLOUD-SHARE", "ACTIVE", "ONLINE", 6L,
@@ -1198,7 +1201,11 @@ class AppCanonicalBoundaryServiceTest {
                 .containsExactly("ONLINE", "OFFLINE", "UNKNOWN");
         assertThat(devices).allSatisfy(device -> assertThat(device)
                 .containsEntry("status", "ACTIVE")
+                .containsEntry("dailyUsdt", new BigDecimal("0.000000"))
                 .containsEntry("activatedAt", activatedAt.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()));
+        assertThat(result.getData()).containsEntry("dailyUsdt", new BigDecimal("0.000000"))
+                .containsEntry("realizedTodayUsdt", new BigDecimal("1.250000"));
+        assertThat(devices.get(0)).containsEntry("todayEarningsUsdt", new BigDecimal("1.250000"));
     }
 
     @Test

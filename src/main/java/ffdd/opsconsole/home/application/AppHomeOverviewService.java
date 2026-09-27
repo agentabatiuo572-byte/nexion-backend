@@ -436,10 +436,12 @@ public class AppHomeOverviewService {
                 && (row.countdownDays() > 0 || row.countdownHours() > 0)) {
             endAt = row.updatedAt().plusDays(row.countdownDays()).plusHours(row.countdownHours());
         }
+        boolean share = "SHARE".equalsIgnoreCase(row.productType())
+                || "cloud-share".equals(productKind(row.targetDevice()));
         return linked("status", status, "rewardNex", nonNegative(decimal(row.baseReward())),
                 "multiplier", nonNegative(decimal(row.multiplier())), "endAt", endAt == null ? null : endAt.atZone(SERVER_ZONE).toInstant().toString(),
-                "product", linked("kind", productKind(row.targetDevice()), "name", text(row.targetDevice()),
-                        "dailyUsdt", nonNegative(decimal(row.targetDaily())), "priceUsdt", nonNegative(row.productPriceUsdt())));
+                "product", linked("kind", share ? "cloud-share" : productKind(row.targetDevice()), "name", text(row.targetDevice()),
+                        "dailyUsdt", share ? null : nonNegative(decimal(row.targetDaily())), "priceUsdt", nonNegative(row.productPriceUsdt())));
     }
 
     private List<Map<String, Object>> clients(List<OnGridClientRow> rows) {
