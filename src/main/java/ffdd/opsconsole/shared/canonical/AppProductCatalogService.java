@@ -189,6 +189,12 @@ public class AppProductCatalogService {
         item.put("tagline", text(target.tagline()));
         item.put("badge", nullableText(target.badge()));
         boolean share = "Share".equals(target.tier());
+        AppTradeinMapper.ShareYieldRange shareYield = share
+                ? tradeinMapper.findShareYieldRange(target.productNo()) : null;
+        boolean shareYieldAvailable = shareYield != null
+                && shareYield.minPct() != null && shareYield.minPct().signum() > 0
+                && shareYield.maxPct() != null
+                && shareYield.maxPct().compareTo(shareYield.minPct()) >= 0;
         boolean specsComplete = share || (StringUtils.hasText(target.gpuModel())
                 && target.vramTotalGb() != null && target.vramTotalGb() > 0
                 && StringUtils.hasText(target.power())
@@ -203,8 +209,12 @@ public class AppProductCatalogService {
         item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
         item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
         item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "NEX/day"));
-        item.put("dailyEarn", target.dailyUsdt());
+        // Share has an E1 annual range, not a guaranteed USD/day amount.
+        // Keep the legacy numeric field protocol-compatible without leaking it to clients.
+        item.put("dailyEarn", share ? BigDecimal.ZERO : target.dailyUsdt());
         item.put("dailyEarnNEX", target.dailyNex());
+        item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
+        item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);
         item.put("price", target.priceUsdt());
         item.put("sold", target.sold());
         item.put("imageUrl", approvedProductImageUrl(target));

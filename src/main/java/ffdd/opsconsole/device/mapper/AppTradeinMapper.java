@@ -290,6 +290,14 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
 
     @Select("""
+            SELECT share_yield_min AS minPct, share_yield_max AS maxPct
+              FROM nx_product
+             WHERE product_no=#{productNo} AND product_type='SHARE' AND is_deleted=0
+             LIMIT 1
+            """)
+    ShareYieldRange findShareYieldRange(@Param("productNo") String productNo);
+
+    @Select("""
             SELECT 1 FROM nx_product p
               JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.product_no=#{productNo} AND p.is_deleted=0 AND p.store_visible=1
@@ -570,6 +578,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     }
 
     record CatalogPublishBlock(String productNo, String name, String reason) {
+    }
+
+    record ShareYieldRange(BigDecimal minPct, BigDecimal maxPct) {
     }
 
     record CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,

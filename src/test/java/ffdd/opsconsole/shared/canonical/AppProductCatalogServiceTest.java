@@ -128,6 +128,8 @@ class AppProductCatalogServiceTest {
 
     @Test
     void catalogPublishesCloudShareAsUnlimitedWithoutInventingPhysicalStock() {
+        when(mapper.findShareYieldRange("cloud-share"))
+                .thenReturn(new AppTradeinMapper.ShareYieldRange(new BigDecimal("8"), new BigDecimal("12")));
         when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(new AppTradeinMapper.CatalogTargetProduct(
                 "cloud-share", "Cloud Share", "Share", new BigDecimal("199"), 0,
                 "SHARE", 1, null, null, null, BigDecimal.ZERO, new BigDecimal("10"),
@@ -142,6 +144,9 @@ class AppProductCatalogServiceTest {
                 .containsEntry("productType", "SHARE")
                 .containsEntry("inventoryMode", "UNLIMITED")
                 .containsEntry("stock", null)
+                .containsEntry("dailyEarn", BigDecimal.ZERO)
+                .containsEntry("shareYieldMin", new BigDecimal("8"))
+                .containsEntry("shareYieldMax", new BigDecimal("12"))
                 .containsEntry("available", true)
                 .containsEntry("purchaseBlocked", false);
     }
