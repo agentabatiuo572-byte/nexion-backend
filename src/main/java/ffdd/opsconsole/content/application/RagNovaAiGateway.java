@@ -189,18 +189,18 @@ public class RagNovaAiGateway implements NovaAiGateway {
         boolean legacyIdentity = compact.matches("(whois|whatis)(nexgrid|nexion)")
                 || compact.matches("(nexgrid|nexion)(是谁|是什么|làai|làgì)")
                 || compact.matches("什么是(nexgrid|nexion)");
+        boolean currentIdentity = List.of("whatisuvel", "whoisuvel", "uvel是什么", "什么是uvel",
+                "uvellàgì", "uvellàai").contains(compact);
         String legacyName = legacyIdentity ? (compact.contains("nexgrid") ? "NexGrid" : "Nexion") : null;
         boolean namesBrand = text.contains("uvel") || text.contains("nexgrid") || text.contains("nexion");
-        boolean asksBrand = legacyIdentity || "whoisuvel".equals(compact)
+        boolean asksBrand = legacyIdentity || currentIdentity
                 || List.of("uvel", "nexgrid", "nexion").contains(compact)
                 || text.contains("品牌") || text.contains("名字") || text.contains("叫什么")
                 || text.contains("改名") || text.contains("更名") || text.contains("什么关系")
                 || text.contains("是什么平台") || text.contains("是什么app") || text.contains("是同一个")
                 || text.contains("显示nexgrid") || text.contains("看到nexgrid")
-                || compact.contains("uvel是什么") || compact.contains("什么是uvel")
                 || text.contains("brand") || text.contains("name") || text.contains("called")
                 || text.contains("renam") || text.contains("same app") || text.contains("relationship")
-                || text.contains("what is uvel")
                 || text.contains("see nexgrid") || text.contains("shows nexgrid")
                 || text.contains("thương hiệu") || text.contains("đổi tên")
                 || text.contains("quan hệ") || text.contains("thấy nexgrid");
