@@ -436,11 +436,14 @@ public class AppHomeOverviewService {
                 && (row.countdownDays() > 0 || row.countdownHours() > 0)) {
             endAt = row.updatedAt().plusDays(row.countdownDays()).plusHours(row.countdownHours());
         }
+        String targetKind = productKind(row.targetDevice());
+        boolean hasProductType = row.productType() != null && !row.productType().isBlank();
         boolean share = "SHARE".equalsIgnoreCase(row.productType())
-                || "cloud-share".equals(productKind(row.targetDevice()));
+                || (!hasProductType && "cloud-share".equals(targetKind));
+        if (!share && "cloud-share".equals(targetKind)) targetKind = null;
         return linked("status", status, "rewardNex", nonNegative(decimal(row.baseReward())),
                 "multiplier", nonNegative(decimal(row.multiplier())), "endAt", endAt == null ? null : endAt.atZone(SERVER_ZONE).toInstant().toString(),
-                "product", linked("kind", share ? "cloud-share" : productKind(row.targetDevice()), "name", text(row.targetDevice()),
+                "product", linked("kind", share ? "cloud-share" : targetKind, "name", text(row.targetDevice()),
                         "dailyUsdt", share ? null : nonNegative(decimal(row.targetDaily())), "priceUsdt", nonNegative(row.productPriceUsdt())));
     }
 

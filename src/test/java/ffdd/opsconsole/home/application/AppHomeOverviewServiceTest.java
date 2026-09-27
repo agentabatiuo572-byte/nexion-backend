@@ -316,6 +316,20 @@ class AppHomeOverviewServiceTest {
     }
 
     @Test
+    void explicitDevicePromoKeepsDailyUsdEvenWhenNameContainsShare() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.promo()).thenReturn(new AppHomeOverviewMapper.PromoRow(
+                "3", "1.5", 1, 0, "Cloud Share research device", "1.50", "active",
+                LocalDateTime.of(2026, 8, 14, 0, 0), "DEVICE", new BigDecimal("100.00")));
+
+        var home = service.overview(42L).getData();
+        var product = (Map<?, ?>) ((Map<?, ?>) home.get("weeklyPromo")).get("product");
+        assertNull(product.get("kind"));
+        assertEquals(new BigDecimal("1.50"), product.get("dailyUsdt"));
+    }
+
+    @Test
     void productionHomeSkipsUnreleasedUpgradeAndUsesNextImmediatelyPurchasableProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
