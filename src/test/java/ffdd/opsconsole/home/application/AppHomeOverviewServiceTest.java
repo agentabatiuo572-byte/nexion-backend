@@ -276,6 +276,29 @@ class AppHomeOverviewServiceTest {
     }
 
     @Test
+    void shareAnnualRangeIsNotComparedAsDailyUsdInHomeRecommendations() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.highestActiveDevice(42L, false)).thenReturn(
+                new AppHomeOverviewMapper.OwnedDeviceRow(
+                        "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000")));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("cloud-share", "Cloud Share", "SHARE", "Share",
+                        new BigDecimal("19.90"), new BigDecimal("0.190000"), 0, "UNLIMITED"),
+                new AppHomeOverviewMapper.MarketProductRow("stellarbox-s1", "NexGridBox S1", "DEVICE", "Entry",
+                        new BigDecimal("649.00"), new BigDecimal("7.000000"), 5)));
+        when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarbox-s1")))
+                .thenReturn(eligibilityBatch(decision("stellarbox-s1", true)));
+
+        var home = service.overview(42L).getData();
+        var ranking = (List<?>) ((Map<?, ?>) home.get("marketBoard")).get("deviceRankings");
+        assertEquals(1, ranking.size());
+        assertEquals("stellarbox-s1", ((Map<?, ?>) ranking.get(0)).get("kind"));
+        var target = (Map<?, ?>) ((Map<?, ?>) home.get("doTheMath")).get("target");
+        assertEquals("stellarbox-s1", target.get("productNo"));
+    }
+
+    @Test
     void productionHomeSkipsUnreleasedUpgradeAndUsesNextImmediatelyPurchasableProduct() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));

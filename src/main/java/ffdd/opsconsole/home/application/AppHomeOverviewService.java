@@ -247,6 +247,7 @@ public class AppHomeOverviewService {
         if (products != null) {
             int rank = 1;
             for (MarketProductRow row : products) {
+                if (row == null || "cloud-share".equals(deviceKind(row))) continue;
                 rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row),
                         "bestFor", null, "dailyUsdt", nonNegative(row.dailyUsdt())));
             }
@@ -258,10 +259,12 @@ public class AppHomeOverviewService {
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
         String baseKind = productKind(String.join(" ",
                 text(base.productCode()), text(base.productTier()), text(base.deviceType()), text(base.name())));
+        if ("cloud-share".equals(baseKind)) return null;
         int baseIndex = DEVICE_UPGRADE_LADDER.indexOf(baseKind);
         if (baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
         List<MarketProductRow> candidates = products.stream()
                 .filter(row -> row != null && row.dailyUsdt() != null && row.dailyUsdt().compareTo(base.dailyUsdt()) > 0)
+                .filter(row -> !"cloud-share".equals(deviceKind(row)))
                 .filter(row -> row.priceUsdt() != null && row.priceUsdt().signum() > 0)
                 // A stop-loss CTA must be actionable now, so finite inventory must be positive.
                 .filter(row -> ProductInventoryMode.isUnlimited(row.inventoryMode())
