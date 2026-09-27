@@ -239,11 +239,24 @@ public class AppGrowthEngagementService {
                 "dayOneRewardNex", dayOneReward,
                 "dayOneRequiredTaskCount", dayOneRequiredTaskCount,
                 "dayOneSnapshotStatus", dayOneSnapshotStatus,
-                "promoBanner", promo == null ? Map.of() : new LinkedHashMap<>(promo),
+                "promoBanner", projectPromoBanner(promo),
                 "questBonusMultiplier", responseMultiplier,
                 "rhythmMonth", responseRhythmMonth,
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", "",
                 "source", stateSource)));
+    }
+
+    private Map<String, Object> projectPromoBanner(Map<String, Object> promo) {
+        if (promo == null || promo.isEmpty()) return Map.of();
+        Map<String, Object> projected = new LinkedHashMap<>(promo);
+        String productType = String.valueOf(promo.getOrDefault("productType", ""));
+        String targetDevice = String.valueOf(promo.getOrDefault("targetDevice", ""));
+        if ("SHARE".equalsIgnoreCase(productType)
+                || targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD SHARE")
+                || targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD-SHARE")) {
+            projected.put("targetDaily", null);
+        }
+        return projected;
     }
 
     public ApiResult<Map<String, Object>> eventState(Long userId) {

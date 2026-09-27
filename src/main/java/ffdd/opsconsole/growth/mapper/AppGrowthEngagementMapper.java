@@ -417,18 +417,21 @@ public interface AppGrowthEngagementMapper {
     List<Map<String, Object>> eventState(@Param("userId") Long userId, @Param("locale") String locale);
 
     @Select("""
-            SELECT banner_code bannerCode,
-                   base_reward baseReward,
-                   multiplier,
-                   countdown_days countdownDays,
-                   countdown_hours countdownHours,
-                   target_device targetDevice,
-                   target_daily targetDaily,
-                   LOWER(status) status,
-                   updated_at updatedAt
-              FROM nx_growth_promo_banner
-             WHERE is_deleted=0
-             ORDER BY sort_order,id
+            SELECT b.banner_code bannerCode,
+                   b.base_reward baseReward,
+                   b.multiplier,
+                   b.countdown_days countdownDays,
+                   b.countdown_hours countdownHours,
+                   b.target_device targetDevice,
+                   b.target_daily targetDaily,
+                   (SELECT p.product_type FROM nx_product p
+                     WHERE p.is_deleted=0 AND (p.product_no=b.target_device OR p.name=b.target_device)
+                     ORDER BY p.id LIMIT 1) productType,
+                   LOWER(b.status) status,
+                   b.updated_at updatedAt
+              FROM nx_growth_promo_banner b
+             WHERE b.is_deleted=0
+             ORDER BY b.sort_order,b.id
              LIMIT 1
             """)
     Map<String, Object> questPromoBanner();

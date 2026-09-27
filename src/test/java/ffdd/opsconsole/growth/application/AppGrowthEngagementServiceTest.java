@@ -160,7 +160,23 @@ class AppGrowthEngagementServiceTest {
         List<Object> questCodes = questRows.stream().map(row -> (Object) ((Map<?, ?>) row).get("questCode")).toList();
         assertThat(rewardValues).containsExactly(50, BigDecimal.ZERO, BigDecimal.ZERO);
         assertThat(questCodes).contains("SNAPSHOT_ONLY", "SNAPSHOT_SECOND");
+        assertThat(((Map<?, ?>) result.getData().get("promoBanner")).get("targetDaily")).isEqualTo("1.5");
         assertThat(result.getData().get("source").toString()).contains("nx_mission", "nx_user_mission");
+    }
+
+    @Test
+    void questPromoDoesNotProjectLegacyDailyUsdForShare() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of());
+        when(mapper.questPromoBanner()).thenReturn(Map.of(
+                "bannerCode", "HOME_WEEKLY_UPSELL", "baseReward", "800", "multiplier", "1.5",
+                "countdownDays", 4, "countdownHours", 12, "targetDevice", "opaque-share-sku",
+                "targetDaily", "0.19", "productType", "SHARE", "status", "active"));
+
+        Map<?, ?> promo = (Map<?, ?>) service.questState(42L).getData().get("promoBanner");
+        assertThat(promo.get("productType")).isEqualTo("SHARE");
+        assertThat(promo.containsKey("targetDaily")).isTrue();
+        assertThat(promo.get("targetDaily")).isNull();
+        assertThat(promo.get("baseReward")).isEqualTo("800");
     }
 
     @Test
