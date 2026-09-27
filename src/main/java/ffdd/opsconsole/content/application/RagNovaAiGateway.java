@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceSkuView;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -38,17 +41,25 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private final NovaAiProperties properties;
     private final ObjectMapper objectMapper;
     private final SupportKnowledgeRepository knowledgeRepository;
+    private final DeviceCatalogRepository catalogRepository;
 
     @Autowired
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
-                            SupportKnowledgeRepository knowledgeRepository) {
+                            SupportKnowledgeRepository knowledgeRepository,
+                            DeviceCatalogRepository catalogRepository) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.knowledgeRepository = knowledgeRepository;
+        this.catalogRepository = catalogRepository;
+    }
+
+    public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
+                            SupportKnowledgeRepository knowledgeRepository) {
+        this(properties, objectMapper, knowledgeRepository, null);
     }
 
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper) {
-        this(properties, objectMapper, null);
+        this(properties, objectMapper, null, null);
     }
 
     @Override
@@ -62,6 +73,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
             Message current = request.messages().get(currentIndex);
             String brandAnswer = currentBrandAnswer(current.content(), request.language());
             if (brandAnswer != null) return brandAnswer;
+            String cloudShareAnswer = currentCloudShareAnnualAnswer(current.content(), request.language());
+            if (cloudShareAnswer != null) return cloudShareAnswer;
             String publishedFaqAnswer = publishedDeviceEarningsAnswer(current.content(), request.language());
             if (publishedFaqAnswer != null) return publishedFaqAnswer;
             String earningsNavigationAnswer = generalEarningsNavigationAnswer(current.content(), request.language());
@@ -231,6 +244,58 @@ public class RagNovaAiGateway implements NovaAiGateway {
             case "vi" -> "Thương hiệu App hiện tại là UVEL. Nếu bạn thấy NexGrid trong App, vui lòng gửi ảnh chụp màn hình trang đó để chúng tôi kiểm tra vị trí hiển thị. Hãy che thông tin cá nhân trước khi gửi.";
             default -> null;
         };
+    }
+
+    private String currentCloudShareAnnualAnswer(String question, String language) {
+        String text = question == null ? "" : question.toLowerCase(Locale.ROOT);
+        if (text.length() > 240 || !text.matches("(?s).*\\bcloud[\\s-]*share\\b.*")
+                && !text.contains("云分享") && !text.contains("云算力份额")) return null;
+        if (text.matches("(?s).*\\b(invite|invitation|referral|refer|friends?)\\b.*")
+                || text.contains("邀请") || text.contains("推荐") || text.contains("朋友") || text.contains("好友")
+                || text.contains("mời") || text.contains("giới thiệu") || text.contains("bạn bè")) return null;
+        if (text.matches("(?s).*\\b(fee|fees|price|pricing|subscription|renew|renewal|cost|charge)\\b.*")
+                || text.contains("手续费") || text.contains("管理费") || text.contains("订阅费")
+                || text.contains("续费") || text.contains("价格") || text.contains("phí")
+                || text.contains("giá") || text.contains("gia hạn")) return null;
+        if (!(text.matches("(?s).*\\bannual(?:ized)?\\s+(return|yield|rate|profit|income|percentage)\\b.*")
+                || text.contains("apy") || text.contains("年化")
+                || text.contains("年收益率") || text.contains("lợi nhuận năm")
+                || text.contains("lợi suất năm") || text.contains("lãi suất năm"))) return null;
+
+        String range = null;
+        if (catalogRepository != null) {
+            try {
+                DeviceSkuView sku = catalogRepository.findSku("cloud-share").orElse(null);
+                if (sku != null && "SHARE".equalsIgnoreCase(sku.productType())
+                        && "on".equalsIgnoreCase(sku.status()) && !Boolean.TRUE.equals(sku.publishBlocked())
+                        && validAnnualRange(sku.shareYieldMin(), sku.shareYieldMax())) {
+                    range = sku.shareYieldMin().stripTrailingZeros().toPlainString() + "%–"
+                            + sku.shareYieldMax().stripTrailingZeros().toPlainString() + "%";
+                }
+            } catch (RuntimeException ignored) {
+                // Missing or unavailable live catalog data must not become a stale numerical claim.
+            }
+        }
+        String current = range;
+        return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
+            case "zh" -> current == null
+                    ? "我暂时无法核实 Cloud Share 当前参考年化区间，请以 App“商城 → Cloud Share”商品页为准；参考区间不是固定或保证收益。"
+                    : "Cloud Share 当前商品配置的参考年化区间为 " + current
+                    + "。请以 App“商城 → Cloud Share”商品页为准；这不是固定或保证收益。";
+            case "en" -> current == null
+                    ? "I cannot confirm Cloud Share's current reference annual range right now. Please check Store → Cloud Share in the App; the reference range is not a fixed or guaranteed return."
+                    : "The current Cloud Share product configuration shows a reference annual range of " + current
+                    + ". Please check Store → Cloud Share in the App; this is not a fixed or guaranteed return.";
+            case "vi" -> current == null
+                    ? "Tôi chưa thể xác nhận khoảng lợi nhuận năm tham khảo hiện tại của Cloud Share. Hãy kiểm tra Cửa hàng → Cloud Share trong App; khoảng tham khảo không phải lợi nhuận cố định hoặc được bảo đảm."
+                    : "Cấu hình sản phẩm Cloud Share hiện cho thấy khoảng lợi nhuận năm tham khảo " + current
+                    + ". Hãy kiểm tra Cửa hàng → Cloud Share trong App; đây không phải lợi nhuận cố định hoặc được bảo đảm.";
+            default -> null;
+        };
+    }
+
+    private boolean validAnnualRange(BigDecimal min, BigDecimal max) {
+        return min != null && max != null && min.signum() > 0 && max.compareTo(min) >= 0;
     }
 
     private String publishedDeviceEarningsAnswer(String question, String language) {

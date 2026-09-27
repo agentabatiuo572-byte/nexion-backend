@@ -12,7 +12,10 @@ import com.sun.net.httpserver.HttpServer;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DeviceSkuView;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -75,6 +79,62 @@ class RagNovaAiGatewayTest {
                 .doesNotContain("legally", "法律主体");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "en,What is the current UVEL Cloud Share annual return?,Store → Cloud Share",
+            "zh,Cloud Share 当前参考年化是多少？,商城 → Cloud Share",
+            "vi,Cloud Share có lợi nhuận năm bao nhiêu?,Cửa hàng → Cloud Share",
+            "vi,Cloud Share có lợi suất năm bao nhiêu?,Cửa hàng → Cloud Share"
+    })
+    void answersCloudShareAnnualRangeFromCurrentCatalog(
+            String language, String question, String page) {
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView sku = mock(DeviceSkuView.class);
+        when(catalog.findSku("cloud-share")).thenReturn(Optional.of(sku));
+        when(sku.productType()).thenReturn("SHARE");
+        when(sku.status()).thenReturn("on");
+        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog);
+        when(sku.shareYieldMin()).thenReturn(new BigDecimal("8"));
+        when(sku.shareYieldMax()).thenReturn(new BigDecimal("12"));
+        String first = gateway.chat(new NovaAiGateway.ChatRequest(MODEL, language, RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", question)), 1_024));
+        assertThat(first).contains("8%–12%", page).doesNotContain("invitation", "liên kết mời", "邀请链接");
+        when(sku.shareYieldMin()).thenReturn(new BigDecimal("9.5"));
+        when(sku.shareYieldMax()).thenReturn(new BigDecimal("13.5"));
+        String changed = gateway.chat(new NovaAiGateway.ChatRequest(MODEL, language, RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", question)), 1_024));
+        assertThat(changed).contains("9.5%–13.5%", page).doesNotContain("8%–12%");
+    }
+
+    @Test
+    void cloudShareAnnualQuestionDoesNotQuoteMissingOrUnpublishedCatalogRange() {
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        DeviceSkuView sku = mock(DeviceSkuView.class);
+        when(catalog.findSku("cloud-share")).thenReturn(Optional.of(sku));
+        when(sku.productType()).thenReturn("SHARE");
+        when(sku.status()).thenReturn("off");
+        when(sku.shareYieldMin()).thenReturn(new BigDecimal("8"));
+        when(sku.shareYieldMax()).thenReturn(new BigDecimal("12"));
+        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog);
+        assertCloudShareRangeUnavailable(gateway);
+        when(sku.status()).thenReturn("on");
+        when(sku.publishBlocked()).thenReturn(true);
+        assertCloudShareRangeUnavailable(gateway);
+        when(sku.publishBlocked()).thenReturn(false);
+        when(sku.shareYieldMax()).thenReturn(new BigDecimal("7"));
+        assertCloudShareRangeUnavailable(gateway);
+        when(catalog.findSku("cloud-share")).thenReturn(Optional.empty());
+        assertCloudShareRangeUnavailable(gateway);
+        when(catalog.findSku("cloud-share")).thenThrow(new IllegalStateException("catalog unavailable"));
+        assertCloudShareRangeUnavailable(gateway);
+    }
+
+    private void assertCloudShareRangeUnavailable(RagNovaAiGateway gateway) {
+        String answer = gateway.chat(new NovaAiGateway.ChatRequest(MODEL, "en", RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", "What is Cloud Share APY?")), 1_024));
+        assertThat(answer).contains("cannot confirm", "Store → Cloud Share").doesNotContain("8%", "12%");
+    }
+
     @Test
     void productAndTechnicalOldNameQuestionsStillReachRag() throws Exception {
         AtomicReference<Map<String, Object>> captured = new AtomicReference<>();
@@ -98,7 +158,16 @@ class RagNovaAiGatewayTest {
                 "What is NexGrid referral program name?", "What is NexGrid brand ambassador reward?",
                 "NexGrid 邀请奖励叫什么名字？", "UVEL 用户名字怎么改？",
                 "NexGrid phần thưởng tên gì?", "Nexion phần thưởng gọi là gì?",
-                "UVEL 是什么邀请奖励？", "What is /srv/nexgrid/server.py?")) {
+                "UVEL 是什么邀请奖励？", "What is /srv/nexgrid/server.py?",
+                "What is UVELBox S1 annual return?", "How can I share Cloud Share with friends?",
+                "What is the Cloud Share purchase price?",
+                "If I share a Cloud Share link, do I get an annual referral reward?",
+                "Cloud Share 邀请朋友有年化奖励吗？",
+                "Chia sẻ Cloud Share cho bạn bè có lợi nhuận năm không?",
+                "Does Cloud Share have an annual fee?",
+                "What is the Cloud Share annual subscription price?",
+                "Can I renew Cloud Share annually?",
+                "Cloud Share 年化手续费是多少？")) {
             assertThat(gateway.chat(new NovaAiGateway.ChatRequest(MODEL, "en", RAG_SESSION_ID,
                     List.of(new NovaAiGateway.Message("user", question)), 1_024))).isEqualTo("RAG route");
             assertThat(captured.get()).containsEntry("question", question);
