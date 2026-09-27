@@ -183,21 +183,39 @@ public class RagNovaAiGateway implements NovaAiGateway {
         String text = question == null ? "" : question.toLowerCase(Locale.ROOT);
         if (text.length() > 160) return null;
         String compact = compactQuestion(text);
+        if (compact.contains("nexgridbox") || compact.contains("uvelbox")
+                || text.matches(".*\\b(legal|company|corporate|entity)\\b.*")
+                || List.of("法律主体", "法定名称", "pháp nhân", "pháp lý").stream().anyMatch(text::contains)) return null;
+        boolean legacyIdentity = compact.matches("(whois|whatis)(nexgrid|nexion)")
+                || compact.matches("(nexgrid|nexion)(是谁|是什么|làai|làgì)")
+                || compact.matches("什么是(nexgrid|nexion)");
+        String legacyName = legacyIdentity ? (compact.contains("nexgrid") ? "NexGrid" : "Nexion") : null;
         boolean namesBrand = text.contains("uvel") || text.contains("nexgrid") || text.contains("nexion");
-        boolean asksBrand = List.of("uvel", "nexgrid", "nexion").contains(compact)
+        boolean asksBrand = legacyIdentity || "whoisuvel".equals(compact)
+                || List.of("uvel", "nexgrid", "nexion").contains(compact)
                 || text.contains("品牌") || text.contains("名字") || text.contains("叫什么")
                 || text.contains("改名") || text.contains("更名") || text.contains("什么关系")
                 || text.contains("是什么平台") || text.contains("是什么app") || text.contains("是同一个")
                 || text.contains("显示nexgrid") || text.contains("看到nexgrid")
-                || compact.contains("nexgrid是什么") || compact.contains("什么是nexgrid")
                 || compact.contains("uvel是什么") || compact.contains("什么是uvel")
                 || text.contains("brand") || text.contains("name") || text.contains("called")
                 || text.contains("renam") || text.contains("same app") || text.contains("relationship")
-                || text.contains("what is uvel") || text.contains("what is nexgrid")
+                || text.contains("what is uvel")
                 || text.contains("see nexgrid") || text.contains("shows nexgrid")
                 || text.contains("thương hiệu") || text.contains("đổi tên")
                 || text.contains("quan hệ") || text.contains("thấy nexgrid");
         if (!asksBrand || (!namesBrand && !text.contains("app"))) return null;
+        if (legacyName != null) return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
+            case "zh" -> "当前 App 品牌是 UVEL。" + legacyName + " 是旧资料中的历史检索名称，不是当前品牌。如果您在 App 中看到 "
+                    + legacyName + "，请发送该页面已遮住个人信息的截图，我们会核查具体位置。";
+            case "en" -> "The current App brand is UVEL. " + legacyName
+                    + " is a historical search name in older materials, not the current App brand. If you see "
+                    + legacyName + " in the App, please send a screenshot of that page with personal information hidden so we can check where it appears.";
+            case "vi" -> "Thương hiệu App hiện tại là UVEL. " + legacyName
+                    + " là tên tra cứu lịch sử trong tài liệu cũ, không phải thương hiệu App hiện tại. Nếu bạn thấy "
+                    + legacyName + " trong App, vui lòng gửi ảnh chụp màn hình trang đó đã che thông tin cá nhân để chúng tôi kiểm tra vị trí hiển thị.";
+            default -> null;
+        };
         return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
             case "zh" -> "当前 App 品牌是 UVEL。如果您在 App 中看到 NexGrid，请提供该页面的截图，我们会核查具体位置。发送前请遮住个人信息。";
             case "en" -> "The current App brand is UVEL. If you see NexGrid in the App, please send a screenshot of that page so we can check where it appears. Please hide personal information before sending it.";

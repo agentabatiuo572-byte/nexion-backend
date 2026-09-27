@@ -58,6 +58,22 @@ class AppNovaAiPublishedFaqPathTest {
         verify(articles, org.mockito.Mockito.times(3)).listFaqs();
     }
 
+    @Test
+    void appChatAnswersLegacyBrandIdentityInVietnamese() {
+        NovaAiProperties properties = new NovaAiProperties();
+        properties.setMode(NovaAiProperties.Mode.OLLAMA_LOCAL);
+        properties.setRagBaseUrl("http://127.0.0.1:1");
+        AppNovaConversationMapper conversations = mock(AppNovaConversationMapper.class);
+        when(conversations.insertTurn(any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        AppNovaAiService service = new AppNovaAiService(
+                new RagNovaAiGateway(properties, new ObjectMapper()), properties,
+                conversations, mock(PlatformConfigFacade.class));
+
+        assertThat(chat(service, "vi", "Who is NexGrid?", "6402edfb-8b57-41e8-a897-d8809312515d"))
+                .startsWith("Thương hiệu App hiện tại là UVEL.")
+                .contains("tên tra cứu lịch sử", "ảnh chụp màn hình", "che thông tin cá nhân");
+    }
+
     private String chat(AppNovaAiService service, String language, String question, String turnId) {
         return service.chat(42L, AUTH_SESSION_ID,
                 new NovaAiChatRequest(question, language, CONVERSATION_ID, turnId, List.of())).reply();

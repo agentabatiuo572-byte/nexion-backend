@@ -44,7 +44,7 @@ class RagNovaAiGatewayTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({
             "zh,NexGrid 和 UVEL 是什么关系？,当前 App 品牌是 UVEL,请提供该页面的截图",
-            "zh,NexGrid 是什么？,当前 App 品牌是 UVEL,请提供该页面的截图",
+            "zh,NexGrid 是什么？,当前 App 品牌是 UVEL,已遮住个人信息的截图",
             "zh,NexGrid?,当前 App 品牌是 UVEL,请提供该页面的截图",
             "en,What is the current App brand?,The current App brand is UVEL,please send a screenshot",
             "vi,NexGrid có phải thương hiệu App hiện tại không?,Thương hiệu App hiện tại là UVEL,vui lòng gửi ảnh chụp màn hình"
@@ -55,6 +55,48 @@ class RagNovaAiGatewayTest {
                 MODEL, language, RAG_SESSION_ID,
                 List.of(new NovaAiGateway.Message("user", question)), 1_024));
         assertThat(answer).contains(brand, screenshot).doesNotContain("Nexion 已更名为 NexGrid");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "en,Who is NexGrid?,The current App brand is UVEL.,historical search name,screenshot",
+            "en,What is NexGrid?,The current App brand is UVEL.,historical search name,screenshot",
+            "zh,NexGrid 是谁？,当前 App 品牌是 UVEL。,历史检索名称,截图",
+            "zh,NexGrid 是什么？,当前 App 品牌是 UVEL。,历史检索名称,截图",
+            "vi,NexGrid là ai?,Thương hiệu App hiện tại là UVEL.,tên tra cứu lịch sử,ảnh chụp",
+            "vi,NexGrid là gì?,Thương hiệu App hiện tại là UVEL.,tên tra cứu lịch sử,ảnh chụp"
+    })
+    void answersOldBrandIdentityBeforeScreenshotGuidance(
+            String language, String question, String prefix, String history, String screenshot) {
+        String answer = new RagNovaAiGateway(properties(), objectMapper).chat(new NovaAiGateway.ChatRequest(
+                MODEL, language, RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", question)), 1_024));
+        assertThat(answer).startsWith(prefix).contains("NexGrid", history, screenshot)
+                .doesNotContain("legally", "法律主体");
+    }
+
+    @Test
+    void productAndTechnicalOldNameQuestionsStillReachRag() throws Exception {
+        AtomicReference<Map<String, Object>> captured = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> {
+            captured.set(objectMapper.readValue(exchange.getRequestBody(), new TypeReference<>() { }));
+            respond(exchange, 200, """
+                    {"answer":"RAG route","sources":[],"need_human":false,
+                     "model":"generated-answer"}
+                    """);
+        });
+        server.start();
+        NovaAiProperties properties = properties();
+        properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        RagNovaAiGateway gateway = new RagNovaAiGateway(properties, objectMapper);
+        for (String question : List.of("What is NexGridBox S1?", "Who is UVELBox S1?",
+                "What brand is NexGrid Box S1?", "What is NexGrid's legal name?",
+                "What is NexGrid referral reward?", "What is /srv/nexgrid/server.py?")) {
+            assertThat(gateway.chat(new NovaAiGateway.ChatRequest(MODEL, "en", RAG_SESSION_ID,
+                    List.of(new NovaAiGateway.Message("user", question)), 1_024))).isEqualTo("RAG route");
+            assertThat(captured.get()).containsEntry("question", question);
+        }
     }
 
     @Test
