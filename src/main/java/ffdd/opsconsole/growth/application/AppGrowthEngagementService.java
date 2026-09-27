@@ -249,11 +249,11 @@ public class AppGrowthEngagementService {
     private Map<String, Object> projectPromoBanner(Map<String, Object> promo) {
         if (promo == null || promo.isEmpty()) return Map.of();
         Map<String, Object> projected = new LinkedHashMap<>(promo);
-        String productType = String.valueOf(promo.getOrDefault("productType", ""));
-        String targetDevice = String.valueOf(promo.getOrDefault("targetDevice", ""));
+        String productType = promo.get("productType") == null ? "" : String.valueOf(promo.get("productType"));
+        String targetDevice = promo.get("targetDevice") == null ? "" : String.valueOf(promo.get("targetDevice"));
         if ("SHARE".equalsIgnoreCase(productType)
-                || targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD SHARE")
-                || targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD-SHARE")) {
+                || (productType.isBlank() && (targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD SHARE")
+                || targetDevice.toUpperCase(Locale.ROOT).contains("CLOUD-SHARE")))) {
             projected.put("targetDaily", null);
         }
         return projected;

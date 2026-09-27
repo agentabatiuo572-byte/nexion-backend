@@ -180,6 +180,18 @@ class AppGrowthEngagementServiceTest {
     }
 
     @Test
+    void questPromoKeepsDailyUsdForExplicitDeviceEvenWithShareInName() {
+        when(mapper.questState(42L, "en")).thenReturn(List.of());
+        when(mapper.questPromoBanner()).thenReturn(Map.of(
+                "bannerCode", "HOME_WEEKLY_UPSELL", "baseReward", "800", "multiplier", "1.5",
+                "countdownDays", 4, "countdownHours", 12, "targetDevice", "Cloud Share research device",
+                "targetDaily", "1.5", "productType", "DEVICE", "status", "active"));
+
+        Map<?, ?> promo = (Map<?, ?>) service.questState(42L).getData().get("promoBanner");
+        assertThat(promo.get("targetDaily")).isEqualTo("1.5");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void closedGenesisMarketHidesPendingBrowseButKeepsClaimedHistory() {
         when(mapper.questState(42L, "en")).thenReturn(List.of(
