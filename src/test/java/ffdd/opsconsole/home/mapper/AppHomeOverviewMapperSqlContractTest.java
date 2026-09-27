@@ -28,7 +28,9 @@ class AppHomeOverviewMapperSqlContractTest {
         assertTrue(devices.contains("current_client.id = ("));
         assertTrue(devices.contains("t.user_device_id = d.id"));
         assertTrue(devices.contains("ORDER BY t.user_device_id, t.is_deleted, t.client_observed_at DESC, t.id DESC"));
-        assertTrue(devices.contains("COALESCE(current_client.client_name, dc.display_name) AS name"));
+        assertTrue(devices.contains("BINARY current_client.client_name = BINARY 'NexGrid App'"));
+        assertTrue(devices.contains("ANY_VALUE(COALESCE(CASE"));
+        assertTrue(devices.contains("THEN 'UVEL App' ELSE current_client.client_name END, dc.display_name)) AS name"));
         assertTrue(devices.contains("COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city"));
         for (String method : java.util.List.of("globalActiveDevices", "onGridClients")) {
             String online = select(method);

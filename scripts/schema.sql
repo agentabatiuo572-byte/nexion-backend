@@ -3250,7 +3250,7 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
 INSERT INTO nx_compute_datacenter(
   dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted
 ) VALUES(
-  'User device', 'Global Mobile Compute', 'Global', 'NexGrid Mobile Network',
+  'User device', 'Global Mobile Compute', 'Global', 'UVEL Mobile Network',
   'active', 10, 'system:home-grid-metadata', 0
 )
 ON DUPLICATE KEY UPDATE

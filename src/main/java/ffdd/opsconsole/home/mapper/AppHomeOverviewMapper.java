@@ -221,10 +221,17 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
     // The virtual column preserves COALESCE(completed_at, updated_at, created_at).
     // Equality-bound prefix fields keep MySQL's dependent lookup in index order.
     @Select("""
-            SELECT CONCAT('client_', LEFT(SHA2(CONCAT(
+            SELECT ANY_VALUE(CONCAT('client_', LEFT(SHA2(CONCAT(
                          COALESCE(d.device_type,''), '|', COALESCE(d.dc_location,''), '|',
-                         COALESCE(d.gpu_model,''), '|', COALESCE(current_client.client_name,'')), 256), 16)) AS id,
-                   COALESCE(current_client.client_name, dc.display_name) AS name,
+                         COALESCE(d.gpu_model,''), '|', COALESCE(
+                           CASE WHEN current_client.task_no LIKE 'CTA-%'
+                                     AND current_client.source_environment = 'PRODUCTION'
+                                     AND BINARY current_client.client_name = BINARY 'NexGrid App'
+                                THEN 'UVEL App' ELSE current_client.client_name END, '')), 256), 16))) AS id,
+                   ANY_VALUE(COALESCE(CASE WHEN current_client.task_no LIKE 'CTA-%'
+                                      AND current_client.source_environment = 'PRODUCTION'
+                                      AND BINARY current_client.client_name = BINARY 'NexGrid App'
+                                 THEN 'UVEL App' ELSE current_client.client_name END, dc.display_name)) AS name,
                    d.gpu_model AS model,
                    COALESCE(dc.location, NULLIF(d.dc_location, '')) AS city,
                    COUNT(*) AS gpus
@@ -255,7 +262,11 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                     OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
                         AND r.battery_level >= 20 AND r.network_reachable = 1))
              GROUP BY d.device_type, d.dc_location, d.gpu_model,
-                      current_client.client_name, dc.display_name, dc.location
+                      CASE WHEN current_client.task_no LIKE 'CTA-%'
+                                AND current_client.source_environment = 'PRODUCTION'
+                                AND BINARY current_client.client_name = BINARY 'NexGrid App'
+                           THEN 'UVEL App' ELSE current_client.client_name END,
+                      dc.display_name, dc.location
              ORDER BY COUNT(*) DESC, id ASC
              LIMIT 20
             """)

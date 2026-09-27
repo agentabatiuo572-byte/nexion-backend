@@ -193,14 +193,14 @@ class AppHomeOverviewServiceTest {
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
         when(mapper.onGridClients(false)).thenReturn(List.of(
                 new AppHomeOverviewMapper.OnGridClientRow(
-                        "client_abc123", "NexGrid Mobile Network", "Mobile NPU", "Global", 7L)));
+                        "client_abc123", "UVEL Mobile Network", "Mobile NPU", "Global", 7L)));
 
         var result = service.overview(42L);
 
         assertEquals(0, result.getCode());
         var clients = (List<?>) ((Map<?, ?>) result.getData().get("onGrid")).get("clients");
         var client = (Map<?, ?>) clients.get(0);
-        assertEquals("NexGrid Mobile Network", client.get("name"));
+        assertEquals("UVEL Mobile Network", client.get("name"));
         assertEquals("Global", client.get("city"));
         assertEquals(
                 "server:nx_compute_receipt,nx_compute_task,nx_user_device,nx_compute_datacenter,nx_product,nx_growth_promo_banner",

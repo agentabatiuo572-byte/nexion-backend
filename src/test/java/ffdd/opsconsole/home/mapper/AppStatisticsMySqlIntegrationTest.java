@@ -309,6 +309,22 @@ class AppStatisticsMySqlIntegrationTest {
     }
 
     @Test
+    void onGridShowsCurrentBrandForLegacyGeneratedTaskWithoutRewritingHistory() {
+        user(USER, false, "ACTIVE", 0);
+        datacenter("User device", "Global", "UVEL Mobile Network", 0);
+        device(100, USER, "ACTIVE", "OWNED", 0, "Mobile NPU", "User device");
+        runtime(100, "ONLINE");
+        long taskId = task(100, USER, PRODUCTION, "COMPLETED", "0", 1,
+                "NexGrid App", END.minusDays(1), 0);
+        jdbc.update("UPDATE nx_compute_task SET task_no=? WHERE id=?", "CTA-" + taskId, taskId);
+
+        assertThat(home.onGridClients(false)).singleElement()
+                .satisfies(row -> assertThat(row.name()).isEqualTo("UVEL App"));
+        assertThat(jdbc.queryForObject("SELECT client_name FROM nx_compute_task WHERE id=?",
+                String.class, taskId)).isEqualTo("NexGrid App");
+    }
+
+    @Test
     void onGridDropsActivatedDevicesAndClientsWhenRuntimeGoesOffline() {
         user(USER, false, "ACTIVE", 0);
         device(100, USER, "ACTIVE", "OWNED", 0, "GPU", "DC-A");

@@ -274,6 +274,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260926_phone_task_pause_timing.sql")
   # The H3 quest claim outbox must accept its instance fields before wallet settlement.
   (Join-Path $root "scripts\migrations\20260927_h3_quest_claim_event_schema.sql")
+  # Home's canonical E5 display row still carries the retired network brand.
+  (Join-Path $root "scripts\migrations\20260928_home_mobile_network_brand.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

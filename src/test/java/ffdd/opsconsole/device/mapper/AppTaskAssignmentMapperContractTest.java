@@ -11,6 +11,14 @@ import org.junit.jupiter.api.Test;
 
 class AppTaskAssignmentMapperContractTest {
     @Test
+    void newAssignmentsWriteTheCurrentPlatformClientName() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java"));
+        assertThat(source).contains("'PRODUCTION', 'UVEL App'", "#{taskNo}, 'UVEL App'")
+                .doesNotContain("'NexGrid App'");
+    }
+
+    @Test
     void offlineTelemetryKeepsPriorBatteryAndChargingWithSafeFirstReportDefaults() throws Exception {
         String query = String.join(" ", AppTaskAssignmentMapper.class
                 .getMethod("upsertPhoneRuntime", Long.class, Long.class, Integer.class, Boolean.class,

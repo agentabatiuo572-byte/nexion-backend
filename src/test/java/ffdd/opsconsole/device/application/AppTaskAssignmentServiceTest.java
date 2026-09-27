@@ -76,6 +76,7 @@ class AppTaskAssignmentServiceTest {
         var result = service.claim(7L, "claim-11", new AppTaskClaimRequest(11L));
 
         assertThat(result.getData().taskId()).isEqualTo("TASK-IG");
+        assertThat(result.getData().client()).isEqualTo("UVEL App");
         assertThat(result.getData().requiredSeconds()).isEqualTo(18);
         assertThat(result.getData().rewardUsdt()).isEqualByComparingTo("0.300000");
         assertThat(result.getData().source()).isEqualTo("server");
@@ -94,6 +95,7 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().taskId()).isEqualTo("TASK-IG");
+        assertThat(result.getData().client()).isEqualTo("UVEL App");
         verify(mapper).lockProductionUser(7L);
         verify(mapper).lockOwnedDevice(7L, 11L);
         verify(mapper).insertAssignment(anyString(), any(), any(), any(), any(), any(), any(),

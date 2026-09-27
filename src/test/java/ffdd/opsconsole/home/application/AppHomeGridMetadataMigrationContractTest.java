@@ -8,6 +8,20 @@ import org.junit.jupiter.api.Test;
 
 class AppHomeGridMetadataMigrationContractTest {
     @Test
+    void currentBrandReplacesOnlyTheOriginalHomeGridSeed() throws Exception {
+        String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
+        String baseline = Files.readString(Path.of("scripts/schema.sql"));
+        String repair = Files.readString(Path.of("scripts/migrations/20260928_home_mobile_network_brand.sql"));
+
+        assertThat(startup).contains("20260928_home_mobile_network_brand.sql");
+        assertThat(baseline).contains("'UVEL Mobile Network'");
+        assertThat(repair).contains("dc_location = 'User device'", "is_deleted = 0",
+                "updated_by = 'system:home-grid-metadata'",
+                "BINARY display_name = BINARY 'NexGrid Mobile Network'", "display_name = 'UVEL Mobile Network'")
+                .doesNotContain("nx_compute_task", "nx_product");
+    }
+
+    @Test
     void startupBackfillsGridDisplayMetadataInTheE5DatacenterAuthority() throws Exception {
         String startup = Files.readString(Path.of("scripts/apply_startup_schema_migrations.ps1"));
         String migration = Files.readString(
