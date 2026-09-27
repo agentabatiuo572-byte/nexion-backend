@@ -93,6 +93,11 @@ class RagNovaAiGatewayTest {
         for (String question : List.of("What is NexGridBox S1?", "Who is UVELBox S1?",
                 "What brand is NexGrid Box S1?", "What is NexGrid's legal name?",
                 "What is NexGrid referral reward?", "What is UVEL referral reward?",
+                "How do I change my NexGrid username?", "What is the NexGrid account name?",
+                "What is the UVEL account display name?", "What is NexGrid referral reward name?",
+                "What is NexGrid referral program name?", "What is NexGrid brand ambassador reward?",
+                "NexGrid 邀请奖励叫什么名字？", "UVEL 用户名字怎么改？",
+                "NexGrid phần thưởng tên gì?", "Nexion phần thưởng gọi là gì?",
                 "UVEL 是什么邀请奖励？", "What is /srv/nexgrid/server.py?")) {
             assertThat(gateway.chat(new NovaAiGateway.ChatRequest(MODEL, "en", RAG_SESSION_ID,
                     List.of(new NovaAiGateway.Message("user", question)), 1_024))).isEqualTo("RAG route");

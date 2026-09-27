@@ -191,18 +191,27 @@ public class RagNovaAiGateway implements NovaAiGateway {
                 || compact.matches("什么是(nexgrid|nexion)");
         boolean currentIdentity = List.of("whatisuvel", "whoisuvel", "uvel是什么", "什么是uvel",
                 "uvellàgì", "uvellàai").contains(compact);
+        boolean englishBrandIntent = compact.matches(
+                "(?:is|whatis|whatisthe)?(?:uvel|nexgrid|nexion)(?:the)?(?:current|new)?(?:app)?brand(?:name)?"
+                + "|whatbrandis(?:uvel|nexgrid|nexion)|whatis(?:uvel|nexgrid|nexion)callednow")
+                || List.of("whatisthecurrentbrand", "whatiscurrentbrand", "whatisthecurrentappbrand",
+                        "whatistheappcallednow", "whatistheappname").contains(compact);
+        boolean chineseBrandIntent = compact.matches(
+                "(?:uvel|nexgrid|nexion)(?:现在|当前|目前)?(?:叫什么|叫什么名字|是什么名字|是什么品牌|是什么平台|是什么app)"
+                + "|(?:uvel|nexgrid|nexion)(?:还是|是)(?:当前|现在|目前)(?:app)?品牌吗?");
+        boolean vietnameseBrandIntent = compact.matches(
+                "(?:uvel|nexgrid|nexion)(?:bâygiờ|giờ|hiệntại)?(?:gọilàgì|têngì|tênhiệntạilàgì)"
+                + "|(?:uvel|nexgrid|nexion)cóphảitênmớicủa(?:uvel|nexgrid|nexion)không"
+                + "|(?:uvel|nexgrid|nexion)cóphảithươnghiệu(?:app)?(?:hiệntại)?không");
         String legacyName = legacyIdentity ? (compact.contains("nexgrid") ? "NexGrid" : "Nexion") : null;
         boolean namesBrand = text.contains("uvel") || text.contains("nexgrid") || text.contains("nexion");
-        boolean asksBrand = legacyIdentity || currentIdentity
+        boolean asksBrand = legacyIdentity || currentIdentity || englishBrandIntent
+                || chineseBrandIntent || vietnameseBrandIntent
                 || List.of("uvel", "nexgrid", "nexion").contains(compact)
-                || text.contains("品牌") || text.contains("名字") || text.contains("叫什么")
-                || text.contains("改名") || text.contains("更名") || text.contains("什么关系")
-                || text.contains("是什么平台") || text.contains("是什么app") || text.contains("是同一个")
+                || text.contains("什么关系") || text.contains("是同一个")
                 || text.contains("显示nexgrid") || text.contains("看到nexgrid")
-                || text.contains("brand") || text.contains("name") || text.contains("called")
-                || text.contains("renam") || text.contains("same app") || text.contains("relationship")
+                || text.contains("same app") || text.contains("relationship")
                 || text.contains("see nexgrid") || text.contains("shows nexgrid")
-                || text.contains("thương hiệu") || text.contains("đổi tên")
                 || text.contains("quan hệ") || text.contains("thấy nexgrid");
         if (!asksBrand || (!namesBrand && !text.contains("app"))) return null;
         if (legacyName != null) return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
