@@ -182,7 +182,7 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private String currentBrandAnswer(String question, String language) {
         String text = question == null ? "" : question.toLowerCase(Locale.ROOT);
         if (text.length() > 160) return null;
-        String compact = text.replaceAll("\\s+", "");
+        String compact = compactQuestion(text);
         boolean namesBrand = text.contains("uvel") || text.contains("nexgrid") || text.contains("nexion");
         boolean asksBrand = List.of("uvel", "nexgrid", "nexion").contains(compact)
                 || text.contains("品牌") || text.contains("名字") || text.contains("叫什么")

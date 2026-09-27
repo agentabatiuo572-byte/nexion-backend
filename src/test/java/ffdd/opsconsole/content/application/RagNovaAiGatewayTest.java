@@ -45,6 +45,7 @@ class RagNovaAiGatewayTest {
     @org.junit.jupiter.params.provider.CsvSource({
             "zh,NexGrid 和 UVEL 是什么关系？,当前 App 品牌是 UVEL,请提供该页面的截图",
             "zh,NexGrid 是什么？,当前 App 品牌是 UVEL,请提供该页面的截图",
+            "zh,NexGrid?,当前 App 品牌是 UVEL,请提供该页面的截图",
             "en,What is the current App brand?,The current App brand is UVEL,please send a screenshot",
             "vi,NexGrid có phải thương hiệu App hiện tại không?,Thương hiệu App hiện tại là UVEL,vui lòng gửi ảnh chụp màn hình"
     })
@@ -380,7 +381,7 @@ class RagNovaAiGatewayTest {
 
         RagNovaAiGateway gateway = new RagNovaAiGateway(properties, objectMapper);
         NovaAiGateway.ChatRequest request = new NovaAiGateway.ChatRequest(
-                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "NexGrid?")), 64);
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "How do I view account details?")), 64);
 
         assertThatThrownBy(() -> gateway.chat(request))
                 .isInstanceOf(BizException.class)
