@@ -10,6 +10,7 @@ public record PlatformComputeConfigView(
         Map<String, Object> publicStats,
         OnlineBonus onlineBonus,
         ComputeConfigView computerCompute,
+        ComputeConfigView.PhoneBindingView phoneBinding,
         ShareConfig share,
         String updatedAt) {
     public record FeatureFlags(

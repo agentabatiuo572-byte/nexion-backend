@@ -1025,6 +1025,25 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void phonePolicyRequiresExactPermissionsIncludingBatchFlags() {
+        var flag = new AuditReplayCommand("E", "e6_compute_config", Map.of(
+                "paramKey", "E.compute.phoneBinding.allowReplacement", "value", "on"));
+        var days = new AuditReplayCommand("E", "e6_compute_config", Map.of(
+                "paramKey", "E.compute.phoneBinding.minReplacementIntervalDays", "value", "30"));
+        var batch = new AuditReplayCommand("E", "e6_compute_config_batch", Map.of(
+                "values", Map.of("E.compute.phoneBinding.allowReplacement", "on")));
+        authenticate("device_e6_write");
+        assertThat(guard.validateProposal(flag).getCode()).isEqualTo(403);
+        assertThat(guard.validateProposal(days).getCode()).isZero();
+        assertThat(guard.validateProposal(batch).getCode()).isEqualTo(403);
+        authenticate("device_e6_flag_toggle");
+        assertThat(guard.validateProposal(flag).getCode()).isZero();
+        assertThat(guard.validateProposal(days).getCode()).isEqualTo(403);
+        authenticate("device_e6_write", "device_e6_flag_toggle");
+        assertThat(guard.validateProposal(batch).getCode()).isZero();
+    }
+
+    @Test
     void e6UsesExactWritePermissionAndGrowthMayOnlyProposeTheFlag() {
         AuditReplayCommand coefficient = new AuditReplayCommand(
                 "E", "e6_compute_config", Map.of(

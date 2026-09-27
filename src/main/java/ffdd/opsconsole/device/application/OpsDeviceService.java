@@ -711,7 +711,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 readComputeVal(ComputeConfigRegistry.downloadKey("zhGuide"), "下载桌面客户端,使用同一账号登录,连接后电脑会出现在设备仓库中。"),
                 readComputeVal(ComputeConfigRegistry.downloadKey("enTitle"), "Computer GPU share"),
                 readComputeVal(ComputeConfigRegistry.downloadKey("enGuide"), "Download the desktop client, sign in with the same account, and the computer appears in device inventory after connection."));
-        return ApiResult.ok(new ComputeConfigView("E6", flags, coeffs, yields, tiers, dl, List.of("nx_config_item:E.compute.*")));
+        return ApiResult.ok(new ComputeConfigView("E6", flags, coeffs, yields, tiers, dl, readPhoneBinding(), List.of("nx_config_item:E.compute.*")));
     }
 
     /** App/H5 登录前可读的唯一 E6 服务端配置投影。 */
@@ -731,14 +731,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 .toList();
         ComputeConfigView publicCompute = new ComputeConfigView(
                 compute.domain(), publicFlags, compute.coefficients(), compute.yieldEstimate(),
-                compute.gpuTiers(), compute.download(), compute.sources());
+                compute.gpuTiers(), compute.download(), compute.phoneBinding(), compute.sources());
         return ApiResult.ok(new PlatformComputeConfigView(
                 new PlatformComputeConfigView.FeatureFlags(enabled, false, false),
                 null,
                 new PlatformComputeConfigView.OnlineBonus(
-                        coefficientValue(compute, "h5BaseFactor", "0.6"),
+                        BigDecimal.ZERO,
                         coefficientValue(compute, "continuityFullHours", "2")),
                 publicCompute,
+                compute.phoneBinding(),
                 null,
                 LocalDateTime.now(clock).toString()));
     }
@@ -772,12 +773,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return deviceIdempotent("E6_COMPUTE_CONFIG_UPDATE", idempotencyKey, paramKey, trusted, () -> {
             LockedComputeSnapshot locked = lockComputeSnapshot();
             String before = locked.effective().get(paramKey);
-            if (before.equals(value)) {
+            boolean initializeInterval = phoneIntervalNeedsInitialization(Map.of(paramKey, value));
+            if (!initializeInterval && before.equals(value) && !(paramKey.startsWith("E.compute.phoneBinding.")
+                    && !value.equals(locked.raw().get(paramKey)))) {
                 return ApiResult.fail(409, "E6_VALUE_UNCHANGED");
             }
             Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
             candidate.put(paramKey, value);
             String invariantError = validateComputeInvariants(candidate);
+            if (invariantError == null) invariantError = validatePhonePolicyChange(candidate, Set.of(paramKey));
             if (invariantError != null) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
             }
@@ -786,13 +790,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
+            String intervalKey = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+            Map<String, String> initializedBefore = initializeInterval ? Map.of(intervalKey, "") : Map.of();
+            Map<String, String> initializedAfter = initializeInterval ? Map.of(intervalKey, "0") : Map.of();
+            initializedAfter.forEach((key, initialValue) -> configFacade.upsertAdminValue(
+                    key, initialValue, "STRING", ComputeConfigRegistry.CONFIG_GROUP, "E6 phone interval default"));
             configFacade.upsertAdminValue(paramKey, value, "STRING", ComputeConfigRegistry.CONFIG_GROUP, "E6 compute config");
             String eventType = computeEventType(paramKey);
             outboxService.publish("E6_COMPUTE_CONFIG", paramKey, eventType, detail(
                     "param_key", paramKey, "before", before, "after", value,
+                    "initializedBefore", initializedBefore, "initializedAfter", initializedAfter,
                     "operator", trustedOperator, "reason", trusted.reason(), "ts", clock.millis()));
             auditRequired(eventType, "E6_COMPUTE_CONFIG", paramKey, trustedOperator, detail(
                     "paramKey", paramKey, "before", before, "after", value,
+                    "initializedBefore", initializedBefore, "initializedAfter", initializedAfter,
                     "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim()));
             return ApiResult.ok(new ComputeConfigParamResponse(paramKey, value, LocalDateTime.now(clock).toString()));
         });
@@ -841,16 +852,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             normalized.forEach((key, value) -> {
                 String current = locked.effective().get(key);
                 before.put(key, current);
-                if (!current.equals(value)) {
+                if (!current.equals(value) || (key.startsWith("E.compute.phoneBinding.")
+                        && !value.equals(locked.raw().get(key)))) {
                     changed.put(key, value);
                 }
             });
+            if (phoneIntervalNeedsInitialization(normalized)) {
+                String intervalKey = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+                before.put(intervalKey, "");
+                changed.put(intervalKey, "0");
+            }
             if (changed.isEmpty()) {
                 return ApiResult.fail(409, "E6_VALUE_UNCHANGED");
             }
             Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
             candidate.putAll(changed);
             String invariantError = validateComputeInvariants(candidate);
+            if (invariantError == null) invariantError = validatePhonePolicyChange(candidate, changed.keySet());
             if (invariantError != null) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
             }
@@ -873,12 +891,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String validateComputeValue(String paramKey, String value) {
-        if (paramKey.equals(ComputeConfigRegistry.flagKey("computeShareEnabled"))) {
+        if (paramKey.equals(ComputeConfigRegistry.flagKey("computeShareEnabled"))
+                || paramKey.equals(ComputeConfigRegistry.phoneBindingKey("allowReplacement"))) {
             return Set.of("on", "off").contains(value) ? null : "COMPUTE_FLAG_INVALID";
         }
         if (paramKey.equals(ComputeConfigRegistry.coeffKey("h5BaseFactor"))) {
-            BigDecimal v = parseComputeNumber(value);
-            return (v != null && v.signum() > 0 && v.compareTo(BigDecimal.ONE) <= 0) ? null : "COMPUTE_COEFF_INVALID";
+            return "COMPUTE_PARAM_RETIRED";
+        }
+        if (paramKey.equals(ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays"))) {
+            return validReplacementDays(value) ? null : "COMPUTE_PHONE_INTERVAL_INVALID";
         }
         if (paramKey.equals(ComputeConfigRegistry.coeffKey("continuityFullHours"))) {
             BigDecimal v = parseComputeNumber(value);
@@ -1041,6 +1062,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     .map(String::trim)
                     .filter(value -> validateComputeValue(key, value) == null)
                     .orElseGet(() -> ComputeConfigRegistry.defaultValue(key));
+            if (key.equals(ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays")) && stored.isPresent()) {
+                effectiveValue = rawValue.trim();
+            }
             raw.put(key, rawValue);
             effective.put(key, effectiveValue);
         }
@@ -1084,10 +1108,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (changedKeys.contains(shareKey)
                 && "off".equals(before.get(shareKey))
                 && "on".equals(candidate.get(shareKey))) {
-            return true;
-        }
-        String h5Key = ComputeConfigRegistry.coeffKey("h5BaseFactor");
-        if (changedKeys.contains(h5Key) && computeIncreases(before, candidate, h5Key)) {
             return true;
         }
         String continuityKey = ComputeConfigRegistry.coeffKey("continuityFullHours");
@@ -3806,6 +3826,35 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 && authentication.isAuthenticated()
                 && authentication.getAuthorities().stream()
                         .anyMatch(granted -> authority.equals(granted.getAuthority()));
+    }
+
+    private String validatePhonePolicyChange(Map<String, String> values, Set<String> keys) {
+        boolean phoneChanged = keys.stream().anyMatch(key -> key.startsWith("E.compute.phoneBinding."));
+        if (phoneChanged && "on".equals(values.get(ComputeConfigRegistry.phoneBindingKey("allowReplacement")))
+                && !validReplacementDays(values.getOrDefault(ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays"), ""))) {
+            return "COMPUTE_PHONE_INTERVAL_INVALID";
+        }
+        return null;
+    }
+
+    private boolean phoneIntervalNeedsInitialization(Map<String, String> values) {
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        return "on".equals(values.get(ComputeConfigRegistry.phoneBindingKey("allowReplacement")))
+                && !values.containsKey(days) && configFacade.activeValueForUpdate(days).isEmpty();
+    }
+
+    private boolean validReplacementDays(String value) {
+        if (!value.matches("[0-9]{1,16}")) return false;
+        return new BigDecimal(value).compareTo(new BigDecimal("9007199254740991")) <= 0;
+    }
+
+    private ComputeConfigView.PhoneBindingView readPhoneBinding() {
+        String days = configFacade.activeValue(ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays"))
+                .map(String::trim).orElse("");
+        boolean valid = validReplacementDays(days);
+        boolean enabled = configFacade.activeValue(ComputeConfigRegistry.phoneBindingKey("allowReplacement"))
+                .map(String::trim).filter("on"::equals).isPresent();
+        return new ComputeConfigView.PhoneBindingView(enabled && valid, valid ? Long.parseLong(days) : 0);
     }
 
     private boolean readFlag(ComputeConfigRegistry.FlagDef f) {

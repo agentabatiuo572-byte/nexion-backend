@@ -2766,6 +2766,109 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void phoneBindingFailsClosedAndH5RemainsZeroForStoredLegacyValues() {
+        configFacade.values.clear();
+        String allow = ComputeConfigRegistry.phoneBindingKey("allowReplacement");
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        assertThat(service.computeConfig().getData().phoneBinding().allowReplacement()).isFalse();
+        assertThat(service.computeConfig().getData().phoneBinding().minReplacementIntervalDays()).isZero();
+        configFacade.values.put(allow, "on");
+        configFacade.values.put(ComputeConfigRegistry.coeffKey("h5BaseFactor"), "0.9");
+        for (String invalid : List.of("", "-1", "1.5", "NaN", "9007199254740992", "1e3")) {
+            configFacade.values.put(days, invalid);
+            assertThat(service.platformComputeConfig().getData().phoneBinding().allowReplacement()).isFalse();
+        }
+        configFacade.values.put(days, "30");
+        PlatformComputeConfigView result = service.platformComputeConfig().getData();
+        assertThat(result.phoneBinding()).isEqualTo(new ComputeConfigView.PhoneBindingView(true, 30));
+        assertThat(result.computerCompute().phoneBinding()).isEqualTo(result.phoneBinding());
+        assertThat(result.onlineBonus().h5BaseFactor()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(result.computerCompute().coefficients()).filteredOn(c -> c.key().equals("h5BaseFactor"))
+                .singleElement().satisfies(c -> assertThat(c.value()).isEqualTo("0"));
+    }
+
+    @Test
+    void singlePhoneEnableRepairsExistingOnAndAuditsInitializationOnce() {
+        assertPhoneIntervalRepairIsAuditedOnce(false);
+    }
+
+    @Test
+    void batchPhoneEnableRepairsExistingOnAndAuditsInitializationOnce() {
+        assertPhoneIntervalRepairIsAuditedOnce(true);
+    }
+
+    private void assertPhoneIntervalRepairIsAuditedOnce(boolean batch) {
+        configFacade.values.clear();
+        String allow = ComputeConfigRegistry.phoneBindingKey("allowReplacement");
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        configFacade.values.put(allow, "on");
+        assertThat(service.computeConfig().getData().phoneBinding().allowReplacement()).isFalse();
+        A2ReplayContext.enterReplay();
+        ComputeConfigParamUpdateRequest singleRequest = new ComputeConfigParamUpdateRequest("on", "repair missing interval", "superadmin");
+        ComputeConfigBatchUpdateRequest batchRequest = new ComputeConfigBatchUpdateRequest(Map.of(allow, "on"), "repair missing interval", "superadmin");
+        ApiResult<?> result = batch ? service.updateComputeConfigBatch("repair", batchRequest)
+                : service.updateComputeConfigParam(allow, "repair", singleRequest);
+        assertThat(result.getCode()).isZero();
+        assertThat(configFacade.values).containsEntry(days, "0");
+        assertThat(service.platformComputeConfig().getData().phoneBinding()).isEqualTo(new ComputeConfigView.PhoneBindingView(true, 0));
+        ApiResult<?> duplicate = batch ? service.updateComputeConfigBatch("repair-again", batchRequest)
+                : service.updateComputeConfigParam(allow, "repair-again", singleRequest);
+        assertThat(duplicate.getMessage()).isEqualTo("E6_VALUE_UNCHANGED");
+        ArgumentCaptor<AuditLogWriteRequest> audit = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService, times(1)).recordRequired(audit.capture());
+        ArgumentCaptor<Object> event = ArgumentCaptor.forClass(Object.class);
+        verify(outboxService, times(1)).publish(eq("E6_COMPUTE_CONFIG"), eq(batch ? "batch" : allow),
+                eq(batch ? "compute.config_changed" : "compute.flag_toggled"), event.capture());
+        for (Map<String, Object> detail : List.of(detailMap(audit.getValue().getDetail()), detailMap(event.getValue()))) {
+            assertThat(detail.get(batch ? "before" : "initializedBefore")).isEqualTo(batch ? Map.of(allow, "on", days, "") : Map.of(days, ""));
+            assertThat(detail.get(batch ? "after" : "initializedAfter")).isEqualTo(Map.of(days, "0"));
+        }
+    }
+
+    @Test
+    void firstPhoneEnableInitializesMissingIntervalButDoesNotRepairInvalidStoredInterval() {
+        configFacade.values.clear();
+        A2ReplayContext.enterReplay();
+        String allow = ComputeConfigRegistry.phoneBindingKey("allowReplacement");
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        assertThat(service.updateComputeConfigParam(allow, "first-enable", new ComputeConfigParamUpdateRequest(
+                "on", "enable replacement", "superadmin")).getCode()).isZero();
+        assertThat(configFacade.values).containsEntry(days, "0");
+        assertThat(service.computeConfig().getData().phoneBinding()).isEqualTo(new ComputeConfigView.PhoneBindingView(true, 0));
+        configFacade.values.put(allow, "off");
+        configFacade.values.put(days, "invalid");
+        assertThat(service.updateComputeConfigParam(allow, "invalid-enable", new ComputeConfigParamUpdateRequest(
+                "on", "enable replacement", "superadmin")).getMessage()).isEqualTo("COMPUTE_PHONE_INTERVAL_INVALID");
+        assertThat(configFacade.values).containsEntry(allow, "off").containsEntry(days, "invalid");
+        assertThat(service.computeConfig().getData().phoneBinding().allowReplacement()).isFalse();
+    }
+
+    @Test
+    void phoneBindingWritesRequireA2AndPersistIntervalWhileDisabled() {
+        String allow = ComputeConfigRegistry.phoneBindingKey("allowReplacement");
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        configFacade.values.clear();
+        ComputeConfigBatchUpdateRequest request = new ComputeConfigBatchUpdateRequest(
+                Map.of(allow, "off", days, "30"), "configure phone replacement", "superadmin");
+        assertThat(service.updateComputeConfigBatch("phone-direct", request).getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
+        A2ReplayContext.enterReplay();
+        assertThat(service.updateComputeConfigBatch("phone-save", request).getCode()).isZero();
+        assertThat(configFacade.values).containsEntry(days, "30");
+        assertThat(service.computeConfig().getData().phoneBinding()).isEqualTo(new ComputeConfigView.PhoneBindingView(false, 30));
+        assertThat(service.updateComputeConfigParam(allow, "phone-enable", new ComputeConfigParamUpdateRequest(
+                "on", "allow phone replacement", "superadmin")).getCode()).isZero();
+        assertThat(service.computeConfig().getData().phoneBinding()).isEqualTo(new ComputeConfigView.PhoneBindingView(true, 30));
+        assertThat(service.updateComputeConfigBatch("phone-invalid", new ComputeConfigBatchUpdateRequest(
+                Map.of(allow, "off", days, "9007199254740992"), "reject invalid interval", "superadmin")).getMessage())
+                .isEqualTo("COMPUTE_PHONE_INTERVAL_INVALID");
+        assertThat(configFacade.values).containsEntry(allow, "on").containsEntry(days, "30");
+        assertThat(service.updateComputeConfigBatch("phone-retired", new ComputeConfigBatchUpdateRequest(
+                Map.of(ComputeConfigRegistry.coeffKey("h5BaseFactor"), "0.9"), "reject retired value", "superadmin")).getMessage())
+                .isEqualTo("COMPUTE_PARAM_KEY_INVALID");
+        verify(outboxService).publish(eq("E6_COMPUTE_CONFIG"), eq("batch"), eq("compute.config_changed"), any());
+    }
+
+    @Test
     void computeConfigReturnsDefaultsWhenConfigEmpty() {
         ApiResult<ComputeConfigView> r = newServiceWithEmptyConfig().computeConfig();
 
@@ -2853,7 +2956,7 @@ class OpsDeviceServiceTest {
         assertThat(unknown.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat(unknown.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
         assertThat(zero.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(zero.getMessage()).isEqualTo("COMPUTE_COEFF_INVALID");
+        assertThat(zero.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
     }
 
     @Test
@@ -2990,10 +3093,10 @@ class OpsDeviceServiceTest {
                 h5Factor, "idem-e6-h5-restrictive",
                 new ComputeConfigParamUpdateRequest("0.5", "B1 allows lower H5 yield", "superadmin"));
 
-        assertThat(higherH5.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        assertThat(higherH5.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
         assertThat(fasterFullBonus.getMessage()).isEqualTo(OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        assertThat(restrictive.getCode()).isZero();
-        assertThat(configFacade.values).containsEntry(h5Factor, "0.5");
+        assertThat(restrictive.getMessage()).isEqualTo("COMPUTE_PARAM_KEY_INVALID");
+        assertThat(configFacade.values).containsEntry(h5Factor, "0.6");
         assertThat(configFacade.values).containsEntry(continuityHours, "4");
     }
 

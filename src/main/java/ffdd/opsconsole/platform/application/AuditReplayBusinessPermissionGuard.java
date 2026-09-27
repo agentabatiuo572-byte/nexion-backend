@@ -130,6 +130,14 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
+        if ("E".equalsIgnoreCase(command.domain()) && "e6_compute_config_batch".equals(operation)) {
+            TreeMap<String, Object> values = canonicalComputeBatchValues(command.params());
+            if (values == null) return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+            if (values.keySet().stream().anyMatch(ComputeConfigRegistry::isFlagParamKey)
+                    && !hasAuthority("device_e6_flag_toggle")) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e6_flag_toggle");
+            }
+        }
         if (isJ4Execution(command, operation)) {
             return validateJ4MakerAuthority(command);
         }
@@ -326,7 +334,7 @@ public class AuditReplayBusinessPermissionGuard {
                 && "E".equals(domain)
                 && (Set.of("e5_device_force_activate", "e5_device_unbind").contains(operation)
                     || ("e6_compute_config".equals(operation)
-                        && "E.compute.computeShareEnabled".equals(value(command.params(), "paramKey"))));
+                        && ComputeConfigRegistry.isFlagParamKey(value(command.params(), "paramKey"))));
     }
 
     /**
@@ -621,12 +629,13 @@ public class AuditReplayBusinessPermissionGuard {
     private DelegatedProposalDescriptor computeConfigDescriptor(Map<String, Object> params) {
         String paramKey = value(params, "paramKey");
         String nextValue = value(params, "value");
-        if (!"E.compute.computeShareEnabled".equals(paramKey)
+        if (!ComputeConfigRegistry.isFlagParamKey(paramKey)
                 || !Set.of("on", "off").contains(nextValue)) {
             return null;
         }
         return new DelegatedProposalDescriptor(
-                ("on".equals(nextValue) ? "开启" : "关闭") + "电脑共享算力入口",
+                ("on".equals(nextValue) ? "开启" : "关闭")
+                        + (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(paramKey) ? "手机换绑" : "电脑共享算力入口"),
                 paramKey,
                 "以服务器执行时状态为准",
                 nextValue,
@@ -1119,7 +1128,7 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     private String e6ComputeAuthority(Map<String, Object> params) {
-        return "E.compute.computeShareEnabled".equals(value(params, "paramKey"))
+        return ComputeConfigRegistry.isFlagParamKey(value(params, "paramKey"))
                 ? "device_e6_flag_toggle"
                 : "device_e6_write";
     }

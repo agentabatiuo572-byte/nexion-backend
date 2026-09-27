@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformParamRegistrySource;
 import ffdd.opsconsole.platform.dto.PlatformParamRegistryOverview;
@@ -71,6 +72,13 @@ public class OpsPlatformParamRegistryService {
             }
             merge(rows, row);
         }
+        for (String field : List.of("allowReplacement", "minReplacementIntervalDays")) {
+            String key = ComputeConfigRegistry.phoneBindingKey(field);
+            if (!rows.containsKey(key)) {
+                merge(rows, fromConfig(new PlatformConfigItem(null, key, ComputeConfigRegistry.defaultValue(key),
+                        "STRING", ComputeConfigRegistry.CONFIG_GROUP, "ADMIN", "默认值", 1, null, null)));
+            }
+        }
         int configCount = rows.size();
 
         List<Map<String, Object>> emergency = emergencyStateProvider.currentKillSwitches();
@@ -99,7 +107,7 @@ public class OpsPlatformParamRegistryService {
                         unmappedConfigCount > 0 ? "PARTIAL" : configCount == 0 ? "EMPTY" : "READY", configCount,
                         unmappedConfigCount > 0
                                 ? "有 " + unmappedConfigCount + " 项参数归属尚未登记，已隔离且未展示参数值；请联系平台运维补齐归属。"
-                                : "仅统计数据库中启用且未删除的配置"),
+                                : "数据库中启用且未删除的配置；未配置的手机换绑项展示服务端默认值"),
                 new PlatformParamRegistrySourceState(
                         "emergency", "应急控制实时态", emergencyPartial ? "PARTIAL" : "READY", emergencyCount,
                         emergencyPartial ? "部分 J1/J2 状态读取失败，未将未知值伪装为正常" : "J1/J2 服务端权威状态"));
@@ -122,7 +130,8 @@ public class OpsPlatformParamRegistryService {
         if ("admin_system_health".equalsIgnoreCase(item.configGroup())) {
             return liveHealthRow(canonicalKey, displayName, owner);
         }
-        String description = secret
+        boolean retired = ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(canonicalKey);
+        String description = retired ? "已退役，只读兼容值固定为零；历史存量不再生效。" : secret
                 ? "该敏感参数由" + owner.label() + "在服务端维护；A5 只确认已配置，不返回原始值。"
                 : "该参数由" + owner.label() + "在服务端维护；A5 仅展示当前值和归属入口。";
         String valueType = secret
@@ -137,13 +146,13 @@ public class OpsPlatformParamRegistryService {
                 owner.code(),
                 owner.label(),
                 owner.route(),
-                secret ? "已配置（敏感值已隐藏）" : Objects.toString(item.configValue(), ""),
+                retired ? "0" : secret ? "已配置（敏感值已隐藏）" : Objects.toString(item.configValue(), ""),
                 valueType,
                 secret ? "" : unitFor(canonicalKey),
                 "nx_config_item",
                 "READY",
-                item.updatedAt() == null ? "未知" : item.updatedAt().format(ISO),
-                true,
+                item.updatedAt() == null ? "默认值" : item.updatedAt().format(ISO),
+                !retired,
                 true,
                 false,
                 "",
@@ -379,6 +388,9 @@ public class OpsPlatformParamRegistryService {
         if ("feature.ops.maintenanceBanner".equals(key)) {
             return "维护公告横幅";
         }
+        if (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(key)) return "允许更换绑定手机";
+        if (ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays").equals(key)) return "手机换绑最短间隔天数";
+        if (ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(key)) return "H5 基础托管系数（已退役）";
         String normalized = lower(key);
         if (normalized.startsWith("finance.topup.channel.")) {
             String[] parts = key.split("\\.");

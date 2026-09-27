@@ -42,6 +42,6 @@ public class PlatformComputeConfigController {
                 compute.featureFlags().computeShareEnabled(), flags.homeNewcomerTasksEnabled(), flags.homeWeeklyPromoEnabled());
         return ApiResult.ok(new PlatformComputeConfigView(
                 featureFlags, publicStats.getData(), compute.onlineBonus(),
-                compute.computerCompute(), experience.getData(), compute.updatedAt()));
+                compute.computerCompute(), compute.phoneBinding(), experience.getData(), compute.updatedAt()));
     }
 }

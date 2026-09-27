@@ -12,6 +12,8 @@ public final class ComputeConfigRegistry {
     public static final String PARAM_PREFIX = "E.compute.";
     public static final String CONFIG_GROUP = "e6_compute";
 
+    public static String phoneBindingKey(String field) { return PARAM_PREFIX + "phoneBinding." + field; }
+
     public static String flagKey(String flag) { return PARAM_PREFIX + flag; }
     public static String coeffKey(String key) { return PARAM_PREFIX + key; }
     public static String yieldKey(String key) { return PARAM_PREFIX + "yieldEstimate." + key; }
@@ -26,8 +28,8 @@ public final class ComputeConfigRegistry {
 
     public record CoeffDef(String key, String label, String defaultVal, String unit, String desc, String frontendEffect) {}
     public static final List<CoeffDef> COEFFICIENTS = List.of(
-        new CoeffDef("h5BaseFactor", "H5 基础托管系数", "0.6", "× 基线 · 取值 >0 且 ≤1",
-            "H5(网页非常驻载体)按基准产出 × 此系数计算基础托管产出。", "调高=H5 基础托管产出更高;调低=放大 App 在线加成优势。"),
+        new CoeffDef("h5BaseFactor", "H5 基础托管系数（已退役）", "0", "只读兼容值",
+            "手机任务不在 H5 执行，此字段固定为零。", "不可修改。"),
         new CoeffDef("continuityFullHours", "连续在线满额时长", "2", "小时",
             "App 连续在线达此时长后稳定性加成升至满额 1.0。", "调短=更快满额;调长=需更久连续在线。"));
 
@@ -65,7 +67,7 @@ public final class ComputeConfigRegistry {
     }
 
     public static boolean isFlagParamKey(String key) {
-        return flagKey("computeShareEnabled").equals(key);
+        return flagKey("computeShareEnabled").equals(key) || phoneBindingKey("allowReplacement").equals(key);
     }
 
     public static boolean isCoefficientParamKey(String key) {
@@ -79,6 +81,8 @@ public final class ComputeConfigRegistry {
 
     /** 缺失或非法存量值的唯一默认来源，写前全局不变量校验也必须使用同一组默认值。 */
     public static String defaultValue(String key) {
+        if (phoneBindingKey("allowReplacement").equals(key)) return "off";
+        if (phoneBindingKey("minReplacementIntervalDays").equals(key)) return "0";
         for (FlagDef flag : FLAGS) {
             if (flagKey(flag.key()).equals(key)) {
                 return flag.defaultOn() ? "on" : "off";
@@ -118,7 +122,10 @@ public final class ComputeConfigRegistry {
     private static Set<String> exactParamKeys() {
         Set<String> keys = new LinkedHashSet<>();
         FLAGS.forEach(flag -> keys.add(flagKey(flag.key())));
-        COEFFICIENTS.forEach(coeff -> keys.add(coeffKey(coeff.key())));
+        COEFFICIENTS.stream().filter(coeff -> !"h5BaseFactor".equals(coeff.key()))
+                .forEach(coeff -> keys.add(coeffKey(coeff.key())));
+        keys.add(phoneBindingKey("allowReplacement"));
+        keys.add(phoneBindingKey("minReplacementIntervalDays"));
         YIELD_ESTIMATE.forEach(item -> keys.add(yieldKey(item.key())));
         for (String tierId : GPU_TIER_IDS) {
             keys.add(gpuTierKey(tierId, "label"));

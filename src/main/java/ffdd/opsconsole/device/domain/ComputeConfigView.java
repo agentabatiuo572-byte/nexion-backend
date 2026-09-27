@@ -7,7 +7,9 @@ public record ComputeConfigView(
         List<YieldView> yieldEstimate,
         List<GpuTierView> gpuTiers,
         DownloadView download,
+        PhoneBindingView phoneBinding,
         List<String> sources) {
+    public record PhoneBindingView(boolean allowReplacement, long minReplacementIntervalDays) {}
     public record FlagView(String key, String label, String desc, boolean enabled, String frontendEffect) {}
     public record CoeffView(String key, String label, String value, String unit, String desc, String frontendEffect) {}
     public record YieldView(String key, String label, String value, String unit) {}
