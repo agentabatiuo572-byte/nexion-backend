@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -59,6 +60,8 @@ public class RagNovaAiGateway implements NovaAiGateway {
                 throw invalidResponse();
             }
             Message current = request.messages().get(currentIndex);
+            String brandAnswer = currentBrandAnswer(current.content(), request.language());
+            if (brandAnswer != null) return brandAnswer;
             String publishedFaqAnswer = publishedDeviceEarningsAnswer(current.content(), request.language());
             if (publishedFaqAnswer != null) return publishedFaqAnswer;
             String earningsNavigationAnswer = generalEarningsNavigationAnswer(current.content(), request.language());
@@ -174,6 +177,33 @@ public class RagNovaAiGateway implements NovaAiGateway {
 
     private BizException invalidResponse() {
         return new BizException(502, "NOVA_AI_RESPONSE_INVALID");
+    }
+
+    private String currentBrandAnswer(String question, String language) {
+        String text = question == null ? "" : question.toLowerCase(Locale.ROOT);
+        if (text.length() > 160) return null;
+        String compact = text.replaceAll("\\s+", "");
+        boolean namesBrand = text.contains("uvel") || text.contains("nexgrid") || text.contains("nexion");
+        boolean asksBrand = List.of("uvel", "nexgrid", "nexion").contains(compact)
+                || text.contains("品牌") || text.contains("名字") || text.contains("叫什么")
+                || text.contains("改名") || text.contains("更名") || text.contains("什么关系")
+                || text.contains("是什么平台") || text.contains("是什么app") || text.contains("是同一个")
+                || text.contains("显示nexgrid") || text.contains("看到nexgrid")
+                || compact.contains("nexgrid是什么") || compact.contains("什么是nexgrid")
+                || compact.contains("uvel是什么") || compact.contains("什么是uvel")
+                || text.contains("brand") || text.contains("name") || text.contains("called")
+                || text.contains("renam") || text.contains("same app") || text.contains("relationship")
+                || text.contains("what is uvel") || text.contains("what is nexgrid")
+                || text.contains("see nexgrid") || text.contains("shows nexgrid")
+                || text.contains("thương hiệu") || text.contains("đổi tên")
+                || text.contains("quan hệ") || text.contains("thấy nexgrid");
+        if (!asksBrand || (!namesBrand && !text.contains("app"))) return null;
+        return switch (language == null ? "" : language.toLowerCase(Locale.ROOT)) {
+            case "zh" -> "当前 App 品牌是 UVEL。如果您在 App 中看到 NexGrid，请提供该页面的截图，我们会核查具体位置。发送前请遮住个人信息。";
+            case "en" -> "The current App brand is UVEL. If you see NexGrid in the App, please send a screenshot of that page so we can check where it appears. Please hide personal information before sending it.";
+            case "vi" -> "Thương hiệu App hiện tại là UVEL. Nếu bạn thấy NexGrid trong App, vui lòng gửi ảnh chụp màn hình trang đó để chúng tôi kiểm tra vị trí hiển thị. Hãy che thông tin cá nhân trước khi gửi.";
+            default -> null;
+        };
     }
 
     private String publishedDeviceEarningsAnswer(String question, String language) {

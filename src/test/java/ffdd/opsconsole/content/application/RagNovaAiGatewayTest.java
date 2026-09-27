@@ -41,6 +41,21 @@ class RagNovaAiGatewayTest {
         assertThat(new NovaAiProperties().getMaxOutputTokens()).isEqualTo(1_024);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "zh,NexGrid 和 UVEL 是什么关系？,当前 App 品牌是 UVEL,请提供该页面的截图",
+            "zh,NexGrid 是什么？,当前 App 品牌是 UVEL,请提供该页面的截图",
+            "en,What is the current App brand?,The current App brand is UVEL,please send a screenshot",
+            "vi,NexGrid có phải thương hiệu App hiện tại không?,Thương hiệu App hiện tại là UVEL,vui lòng gửi ảnh chụp màn hình"
+    })
+    void answersCurrentAppBrandWithoutOldRagBrandClaims(
+            String language, String question, String brand, String screenshot) {
+        String answer = new RagNovaAiGateway(properties(), objectMapper).chat(new NovaAiGateway.ChatRequest(
+                MODEL, language, RAG_SESSION_ID,
+                List.of(new NovaAiGateway.Message("user", question)), 1_024));
+        assertThat(answer).contains(brand, screenshot).doesNotContain("Nexion 已更名为 NexGrid");
+    }
+
     @Test
     void answersDeviceEarningsNavigationFromTheCurrentPublishedHelpCenterFaq() {
         SupportKnowledgeRepository knowledge = mock(SupportKnowledgeRepository.class);
@@ -195,7 +210,7 @@ class RagNovaAiGatewayTest {
         server.createContext("/chat", exchange -> {
             captured.set(objectMapper.readValue(exchange.getRequestBody(), new TypeReference<>() { }));
             respond(exchange, 200, """
-                    {"answer":"Nexion 已更名为 NexGrid。","sources":[],"need_human":false,
+                    {"answer":"请查看账户页面。","sources":[],"need_human":false,
                      "model":"generated-answer"}
                     """);
         });
@@ -210,12 +225,12 @@ class RagNovaAiGatewayTest {
                 List.of(
                         new NovaAiGateway.Message("user", "旧问题"),
                         new NovaAiGateway.Message("assistant", "旧回答"),
-                        new NovaAiGateway.Message("user", "NexGrid 和 Nexion 是什么关系？")),
+                        new NovaAiGateway.Message("user", "怎么查看我的账户资料？")),
                 128));
 
-        assertThat(answer).isEqualTo("Nexion 已更名为 NexGrid。");
+        assertThat(answer).isEqualTo("请查看账户页面。");
         assertThat(captured.get())
-                .containsEntry("question", "NexGrid 和 Nexion 是什么关系？")
+                .containsEntry("question", "怎么查看我的账户资料？")
                 .containsEntry("response_language", "zh")
                 .containsEntry("session_id", RAG_SESSION_ID);
         assertThat(captured.get()).doesNotContainKeys(
@@ -236,7 +251,7 @@ class RagNovaAiGatewayTest {
                 return;
             }
             respond(exchange, 200, """
-                    {"answer":"Nexion was renamed to NexGrid.","sources":[],"need_human":false,
+                    {"answer":"Open the account page.","sources":[],"need_human":false,
                      "model":"guardrail-current-fact"}
                     """);
         });
@@ -248,10 +263,10 @@ class RagNovaAiGatewayTest {
                 MODEL,
                 "en",
                 RAG_SESSION_ID,
-                List.of(new NovaAiGateway.Message("user", "What is NexGrid?")),
+                List.of(new NovaAiGateway.Message("user", "How do I view my account details?")),
                 1_024));
 
-        assertThat(answer).isEqualTo("Nexion was renamed to NexGrid.");
+        assertThat(answer).isEqualTo("Open the account page.");
         assertThat(upgradeHeader.get()).isNull();
     }
 
@@ -273,7 +288,7 @@ class RagNovaAiGatewayTest {
         properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
 
         assertThatThrownBy(() -> new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
-                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "What is NexGrid?")), 128)))
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "How do I view my account details?")), 128)))
                 .isInstanceOf(BizException.class)
                 .hasMessage("NOVA_AI_UNANSWERABLE");
         assertThat(method.get()).isEqualTo("POST");
@@ -284,7 +299,7 @@ class RagNovaAiGatewayTest {
     void retrievalRoutesWithEvidenceSourcesRemainAnswerableAtTheHttpGateway(String model) throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat", exchange -> respond(exchange, 200, """
-                {"answer":"NexGrid is the current product name.","sources":[{"id":"KB-23"}],"need_human":false,
+                {"answer":"Open the account page.","sources":[{"id":"KB-23"}],"need_human":false,
                  "model":"%s"}
                 """.formatted(model)));
         server.start();
@@ -293,8 +308,8 @@ class RagNovaAiGatewayTest {
         properties.setRagBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
 
         assertThat(new RagNovaAiGateway(properties, objectMapper).chat(new NovaAiGateway.ChatRequest(
-                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "What is NexGrid?")), 128)))
-                .isEqualTo("NexGrid is the current product name.");
+                MODEL, "en", RAG_SESSION_ID, List.of(new NovaAiGateway.Message("user", "How do I view my account details?")), 128)))
+                .isEqualTo("Open the account page.");
     }
 
     @Test
