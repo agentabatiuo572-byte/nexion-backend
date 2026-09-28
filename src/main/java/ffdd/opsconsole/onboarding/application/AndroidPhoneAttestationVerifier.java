@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.bouncycastle.asn1.ASN1Boolean;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1Enumerated;
@@ -43,7 +44,7 @@ public class AndroidPhoneAttestationVerifier {
     private static final String OID = "1.3.6.1.4.1.11129.2.1.17";
     private final Environment environment;
     private final Clock clock;
-    private volatile Trust trust;
+    private final AtomicReference<Trust> trust = new AtomicReference<>();
     record Trust(List<X509Certificate> roots, Set<String> revoked, long fetchedAt) { }
 
     public String verify(List<String> encodedChain, String nonce, String payload, String encodedSignature, String knownKey) {
@@ -131,7 +132,8 @@ public class AndroidPhoneAttestationVerifier {
         return found;
     }
     private synchronized Trust trust() {
-        if (trust != null && clock.millis() - trust.fetchedAt() < 3600000) return trust;
+        Trust cached = trust.get();
+        if (cached != null && clock.millis() - cached.fetchedAt() < 3600000) return cached;
         try {
             ObjectMapper json = new ObjectMapper();
             var rootJson = json.readTree(fetch("https://android.googleapis.com/attestation/root"));
@@ -143,8 +145,9 @@ public class AndroidPhoneAttestationVerifier {
                     new ByteArrayInputStream(pem.asText().getBytes(StandardCharsets.US_ASCII))));
             Set<String> revoked = new HashSet<>();
             revocationJson.get("entries").fieldNames().forEachRemaining(value -> revoked.add(value.toLowerCase()));
-            trust = new Trust(List.copyOf(roots), Set.copyOf(revoked), clock.millis());
-            return trust;
+            Trust refreshed = new Trust(List.copyOf(roots), Set.copyOf(revoked), clock.millis());
+            trust.set(refreshed);
+            return refreshed;
         } catch (Exception unavailable) { throw new BizException(503, "PHONE_NATIVE_TRUST_UNAVAILABLE"); }
     }
     private String fetch(String url) throws Exception {

@@ -316,7 +316,7 @@ class OpsVietnamPaymentServiceTest {
 
     @Test
     void manualMatchRejectsAmountBeyondToleranceAndWrongBankAccount() {
-        when(mapper.findVietQrReconciliationForUpdate(14L)).thenReturn(Map.ofEntries(
+        when(mapper.findVietQrReconciliationForUpdate(14L)).thenReturn(Map.<String, Object>ofEntries(
                 Map.entry("reconciliationNo", "REC-14"),
                 Map.entry("intentNo", ""),
                 Map.entry("bankAccountId", 8L),
