@@ -70,6 +70,10 @@ public class CregisDepositService {
                     "minDepositUsdt", 10);
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
         }
+        Map<String, Object> visibleGate = db.provisionGate();
+        if (visibleGate == null || !"IDLE".equals(visibleGate.get("state"))
+                || !on(visibleGate, "assignEnabled"))
+            return Map.of("enabled", false, "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
         if (db.allocatedAddressCount(config.getProjectId(), CHAIN) == 0)
             throw new BizException(503, "CREGIS_ADDRESS_POOL_EMPTY");
         long finalized = chain.head().number() - config.getDepositConfirmations() + 1;

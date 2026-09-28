@@ -229,6 +229,27 @@ class CregisDepositServiceTest {
     }
 
     @Test
+    void pausedAssignmentReturnsUnavailableWithoutTryingToCreateAnAddress() {
+        CregisProperties props = properties();
+        props.setDepositEnabled(true);
+        props.setDepositPilotUserIds("42");
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 0));
+        BscDepositProof chain = mock(BscDepositProof.class);
+        CregisGatewayRouter router = mock(CregisGatewayRouter.class);
+        CregisDepositService service = new CregisDepositService(props, router, chain,
+                new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+
+        assertThat(service.address(42)).containsEntry("enabled", false)
+                .containsEntry("reason", "CREGIS_DEPOSIT_PAUSED");
+        verify(chain, never()).head();
+        verify(router, never()).provider();
+        verify(db, never()).allocatedAddressCount(anyLong(), any());
+    }
+
+    @Test
     void poolAssignmentAnchorsAtCurrentHeadBeyondUnfinalizedPreAllocationTransfers() {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
@@ -338,6 +359,7 @@ class CregisDepositServiceTest {
 
     private static void riskReady(CregisDepositMapper db) {
         when(db.unresolvedExposure(88)).thenReturn(BigDecimal.ZERO);
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
         when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE",
                 "assignEnabled", 1, "creditEnabled", 1));
     }
