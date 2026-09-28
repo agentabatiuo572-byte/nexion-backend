@@ -15,6 +15,9 @@ Main and controller administrators are trusted; this is not a reproducible-build
 The operator bootstrap must independently pin every runtime file and runtime-lock.json
 by SHA256 and download from one reviewed immutable GitHub commit into a fresh
 root-owned directory. Never execute a downloaded installer before that verification.
+`runtime-lock-20260928-host-cregis.json` pins the TEST host's existing verified
+runtime closure with only the Cregis broker update. It is an operator upgrade
+artifact for that exact host baseline, not a replacement for the normal lock.
 The `python3 -I trusted_entry.py` entry checks the complete fixed closure and all
 root-owned, non-symlink, non-writable ancestors before compiling verified bytes.
 Never regenerate a trust lock from unverified host files. Infra updates need review.
