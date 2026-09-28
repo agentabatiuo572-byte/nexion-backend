@@ -12,6 +12,12 @@ public interface CregisGateway {
 
     boolean addressLegal(String chainId, String address);
 
+    /** Provider-side zero balance check before a sub-address may enter the pool. */
+    default boolean zeroAddressBalance(String currency, String address) {
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,
+                "CREGIS_ADDRESS_BALANCE_UNSUPPORTED");
+    }
+
     /** A read-only second provider observation for a single incoming transaction. */
     List<DepositTrade> depositsByTxid(String txid);
 

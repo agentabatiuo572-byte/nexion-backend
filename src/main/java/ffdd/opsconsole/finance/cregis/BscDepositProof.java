@@ -52,7 +52,7 @@ public final class BscDepositProof {
     /** Narrow finalized Transfer scan of already allocated addresses. */
     public List<Observation> scan(long from, long to, List<String> addresses) {
         if (from < 0 || to < from || to - from >= 500 || addresses == null
-                || addresses.isEmpty() || addresses.size() > 50) throw invalid();
+                || addresses.isEmpty() || addresses.size() > 60) throw invalid();
         StringBuilder recipients = new StringBuilder();
         for (String address : addresses) {
             if (address == null || !address.matches("(?i)0x[0-9a-f]{40}")) throw invalid();
@@ -93,6 +93,13 @@ public final class BscDepositProof {
         JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(height) + "\",false]");
         if (!block.isObject()) throw invalid();
         return new Head(height, hash(block.path("hash").asText()));
+    }
+
+    public String blockHash(long number) {
+        if (number < 0) throw invalid();
+        JsonNode block = call("eth_getBlockByNumber", "[\"" + hex(number) + "\",false]");
+        if (!block.isObject() || hexLong(block.path("number").asText()) != number) throw invalid();
+        return hash(block.path("hash").asText());
     }
 
     public boolean zeroUsdtBalance(String address) {
@@ -162,6 +169,7 @@ public final class BscDepositProof {
                     + "\",\"params\":" + params + "}";
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
                     .header("Content-Type", "application/json")
+                    .header("User-Agent", "NexGrid-Cregis-ReadOnly/1.0")
                     .POST(HttpRequest.BodyPublishers.ofString(body)).build();
             HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream stream = response.body()) {

@@ -17,12 +17,13 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_cregis_deposit_address (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
+  user_id BIGINT NULL,
   project_id BIGINT NOT NULL,
   chain_id VARCHAR(16) NOT NULL,
   address VARCHAR(64) NULL,
   request_id VARCHAR(64) NOT NULL,
   state VARCHAR(24) NOT NULL,
+  creation_block BIGINT NULL,
   allocation_block BIGINT NULL,
   allocation_hash VARCHAR(66) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -31,6 +32,15 @@ CREATE TABLE IF NOT EXISTS nx_cregis_deposit_address (
   UNIQUE KEY uk_cregis_address_value (project_id, chain_id, address),
   UNIQUE KEY uk_cregis_address_request (request_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_cregis_deposit_address' AND COLUMN_NAME='user_id' AND IS_NULLABLE='NO') > 0,
+  'ALTER TABLE nx_cregis_deposit_address MODIFY user_id BIGINT NULL', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_cregis_deposit_address' AND COLUMN_NAME='creation_block') = 0,
+  'ALTER TABLE nx_cregis_deposit_address ADD COLUMN creation_block BIGINT NULL AFTER state', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_cregis_deposit_delivery (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -64,6 +74,9 @@ CREATE TABLE IF NOT EXISTS nx_cregis_deposit_event (
   block_number BIGINT NOT NULL,
   block_hash VARCHAR(66) NOT NULL,
   confirmations INT NOT NULL,
+  canonical_until BIGINT NULL,
+  last_canonical_checked_block BIGINT NULL,
+  last_canonical_checked_hash VARCHAR(66) NULL,
   status VARCHAR(24) NOT NULL,
   ledger_id BIGINT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -71,6 +84,37 @@ CREATE TABLE IF NOT EXISTS nx_cregis_deposit_event (
   UNIQUE KEY uk_cregis_event_log (project_id, txid, log_index),
   UNIQUE KEY uk_cregis_event_cid (project_id, cid),
   KEY idx_cregis_event_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_user_wallet' AND COLUMN_NAME='cregis_risk_held') = 0,
+  'ALTER TABLE nx_user_wallet ADD COLUMN cregis_risk_held DECIMAL(18,6) NOT NULL DEFAULT 0 AFTER usdt_available',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_cregis_deposit_event' AND COLUMN_NAME='canonical_until') = 0,
+  'ALTER TABLE nx_cregis_deposit_event ADD COLUMN canonical_until BIGINT NULL AFTER confirmations', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_cregis_deposit_event' AND COLUMN_NAME='last_canonical_checked_block') = 0,
+  'ALTER TABLE nx_cregis_deposit_event ADD COLUMN last_canonical_checked_block BIGINT NULL AFTER canonical_until', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+  AND TABLE_NAME='nx_cregis_deposit_event' AND COLUMN_NAME='last_canonical_checked_hash') = 0,
+  'ALTER TABLE nx_cregis_deposit_event ADD COLUMN last_canonical_checked_hash VARCHAR(66) NULL AFTER last_canonical_checked_block', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+CREATE TABLE IF NOT EXISTS nx_cregis_deposit_incident (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  event_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  cid BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  held_amount DECIMAL(18,6) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_cregis_incident_kind (event_id,kind),
+  KEY idx_cregis_incident_user (user_id,created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_cregis_chain_observation (

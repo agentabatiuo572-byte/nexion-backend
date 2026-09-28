@@ -44,7 +44,8 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
         // reconciliation; a provider's hosting country must not strand a payment.
         if ("POST".equals(request.getMethod())
                 && ("/openapi/v1/payments/hdpay/pay-in/callback".equals(path)
-                    || "/openapi/v1/payments/hdpay/payout/callback".equals(path))) {
+                    || "/openapi/v1/payments/hdpay/payout/callback".equals(path)
+                    || "/api/cregis/callbacks/deposit".equals(path))) {
             return true;
         }
         if (!properties.isEnabled() || path == null

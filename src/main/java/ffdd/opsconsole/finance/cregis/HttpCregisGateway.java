@@ -123,6 +123,33 @@ public final class HttpCregisGateway implements CregisGateway {
     }
 
     @Override
+    public boolean zeroAddressBalance(String currency, String address) {
+        if (!CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(currency)
+                || address == null || !EVM_ADDRESS.matcher(address).matches()) throw requestInvalid();
+        JsonNode data = postRead("/api/v1/sub_address_balance", Map.of(
+                "currency", CregisConstants.USDT_BEP20_CURRENCY,
+                "address", address, "page_num", 1, "page_size", 10));
+        JsonNode rows = data.get("rows"), total = data.get("total");
+        if (rows == null || !rows.isArray() || total == null || !total.canConvertToLong()
+                || total.longValue() != rows.size() || rows.size() > 1)
+            throw invalidResponse();
+        // Cregis omits a newly created address until it has a balance row.
+        // Callers must verify project ownership before treating this as zero.
+        if (rows.isEmpty()) return true;
+        JsonNode row = rows.get(0), pid = row.get("pid");
+        if (pid == null || !pid.canConvertToLong() || pid.longValue() != properties.getProjectId()
+                || !address.equalsIgnoreCase(requiredText(row, "address"))
+                || !currency.equalsIgnoreCase(requiredText(row, "currency"))) throw invalidResponse();
+        for (String field : List.of("total", "available", "processing")) {
+            JsonNode value = row.get(field);
+            if (value == null || !value.isTextual() || !value.textValue().matches("[0-9]+(\\.[0-9]+)?"))
+                throw invalidResponse();
+            if (new BigDecimal(value.textValue()).signum() != 0) return false;
+        }
+        return true;
+    }
+
+    @Override
     public List<DepositTrade> depositsByTxid(String txid) {
         if (txid == null || !BSC_TXID.matcher(txid).matches()) throw requestInvalid();
         JsonNode data = postRead("/api/v1/trade/page", Map.of(
