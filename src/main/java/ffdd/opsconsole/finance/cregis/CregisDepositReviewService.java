@@ -23,7 +23,21 @@ public class CregisDepositReviewService {
 
     public List<Map<String, Object>> cases() {
         return config.getMode() == CregisProperties.Mode.PROVIDER
-                ? db.reviewCases(config.getProjectId()) : List.of();
+                ? db.reviewCases(config.getProjectId(), 0) : List.of();
+    }
+
+    public List<Map<String, Object>> casesBefore(long beforeId) {
+        if (beforeId <= 0) throw new BizException(400, "CREGIS_REVIEW_CURSOR_INVALID");
+        return config.getMode() == CregisProperties.Mode.PROVIDER
+                ? db.reviewCases(config.getProjectId(), beforeId) : List.of();
+    }
+
+    public Map<String, Object> preview(long cid) {
+        if (cid <= 0 || config.getMode() != CregisProperties.Mode.PROVIDER)
+            throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
+        Long eventId = db.eventId(config.getProjectId(), cid);
+        if (eventId == null) throw new BizException(404, "CREGIS_REVIEW_EVENT_MISSING");
+        return preflight(eventId).summary();
     }
 
     public Map<String, Object> propose(long adminId, long cid, String reason, String evidenceHash) {
@@ -33,6 +47,10 @@ public class CregisDepositReviewService {
             throw new BizException(400, "CREGIS_REVIEW_EVIDENCE_INVALID");
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(503, "CREGIS_PROVIDER_DISABLED");
+        Long preflightEventId = db.eventId(config.getProjectId(), cid);
+        if (preflightEventId == null || !evidenceHash.equalsIgnoreCase(
+                preflight(preflightEventId).evidenceHash()))
+            throw new BizException(409, "CREGIS_REVIEW_EVIDENCE_CHANGED");
         return new TransactionTemplate(txManager).execute(ignored -> {
                 List<Map<String, Object>> events = db.lockEvent(config.getProjectId(), cid);
                 if (events.size() != 1 || !"REVIEW_HOLD".equals(events.get(0).get("status")))
@@ -59,6 +77,20 @@ public class CregisDepositReviewService {
                 || !("APPROVE".equals(decision) || "REJECT".equals(decision)))
             throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
         deposits.tripIfNeeded();
+        CregisDepositService.ReviewProof proof = null;
+        if ("APPROVE".equals(decision)) {
+            Map<String, Object> snapshot = db.reviewCaseSnapshot(caseId);
+            if (snapshot == null || ((Number) snapshot.get("projectId")).longValue() != config.getProjectId()
+                    || !"MAKER_DONE".equals(snapshot.get("status"))
+                    || ((Number) snapshot.get("version")).longValue() != expectedVersion)
+                throw new BizException(409, "CREGIS_REVIEW_VERSION_CHANGED");
+            if (((Number) snapshot.get("makerId")).longValue() == adminId)
+                throw new BizException(403, "CREGIS_REVIEW_DIFFERENT_CHECKER_REQUIRED");
+            proof = preflight(((Number) snapshot.get("eventId")).longValue());
+            if (!proof.evidenceHash().equalsIgnoreCase(String.valueOf(snapshot.get("evidenceHash"))))
+                throw new BizException(409, "CREGIS_REVIEW_EVIDENCE_CHANGED");
+        }
+        CregisDepositService.ReviewProof checkedProof = proof;
         try {
             return new TransactionTemplate(txManager).execute(ignored -> {
             Map<String, Object> row = db.lockReviewCase(caseId);
@@ -68,12 +100,19 @@ public class CregisDepositReviewService {
                 throw new BizException(409, "CREGIS_REVIEW_VERSION_CHANGED");
             if (((Number) row.get("makerId")).longValue() == adminId)
                 throw new BizException(403, "CREGIS_REVIEW_DIFFERENT_CHECKER_REQUIRED");
+            if ("APPROVE".equals(decision)
+                    && !checkedProof.evidenceHash().equalsIgnoreCase(String.valueOf(row.get("evidenceHash"))))
+                throw new BizException(409, "CREGIS_REVIEW_EVIDENCE_CHANGED");
             long eventId = ((Number) row.get("eventId")).longValue();
             if ("APPROVE".equals(decision)) {
+                if (db.lockProvisionGate() == null)
+                    throw new BizException(503, "CREGIS_DEPOSIT_RISK_GATE_MISSING");
                 List<Map<String, Object>> events = db.lockReviewEvent(eventId);
                 if (events.size() != 1 || !"REVIEW_HOLD".equals(events.get(0).get("status")))
                     throw new BizException(409, "CREGIS_REVIEW_EVENT_CHANGED");
-                deposits.creditReviewedHold(((Number) events.get(0).get("cid")).longValue());
+                if (checkedProof == null || checkedProof.eventId() != eventId)
+                    throw new BizException(409, "CREGIS_REVIEW_EVENT_CHANGED");
+                deposits.creditReviewedHold(((Number) events.get(0).get("cid")).longValue(), checkedProof);
             }
             String status = "APPROVE".equals(decision) ? "RESOLVED" : "REJECTED";
             if (db.checkReviewCase(caseId, adminId, status, expectedVersion) != 1)
@@ -81,6 +120,7 @@ public class CregisDepositReviewService {
             audit.recordRequired(entry("CREGIS_REVIEW_" + decision, caseId, adminId,
                     Map.of("eventId", eventId, "reason", reason.trim(),
                             "evidenceHash", String.valueOf(row.get("evidenceHash"))), "SUCCESS"));
+            if ("APPROVE".equals(decision)) deposits.requireReviewProofFresh(checkedProof);
             return Map.of("caseId", caseId, "status", status, "version", expectedVersion + 1);
             });
         } catch (IllegalStateException failure) {
@@ -94,6 +134,20 @@ public class CregisDepositReviewService {
     public void auditRejected(long adminId, String action, String reason) {
         audit.recordRequiredInNewTransaction(entry("CREGIS_REVIEW_REJECTED", 0, adminId,
                 Map.of("action", action, "reason", reason), "REJECTED"));
+    }
+
+    private CregisDepositService.ReviewProof preflight(long eventId) {
+        try {
+            return deposits.preflightReviewedHold(eventId);
+        } catch (BizException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            String reason = failure.getMessage();
+            if (reason != null && reason.startsWith("CREGIS_REVIEW_")
+                    && (reason.endsWith("_MISMATCH") || reason.endsWith("_CHANGED")))
+                throw new BizException(409, reason);
+            throw new BizException(503, "CREGIS_REVIEW_PREFLIGHT_UNAVAILABLE");
+        }
     }
 
     private static AuditLogWriteRequest entry(String action, long caseId, long adminId,

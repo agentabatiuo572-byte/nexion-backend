@@ -245,9 +245,23 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("""
             SELECT id,alert_key AS alertKey,severity,kind,evidence,created_at AS createdAt
               FROM nx_cregis_risk_alert WHERE project_id=#{projectId}
+               AND severity IN ('P0','P1') AND resolved_at IS NULL
              ORDER BY id DESC LIMIT 50
             """)
     List<Map<String, Object>> riskAlerts(@Param("projectId") long projectId);
+    @Select("""
+            SELECT id,alert_key AS alertKey,severity,kind,evidence,created_at AS createdAt
+              FROM nx_cregis_risk_alert WHERE project_id=#{projectId}
+               AND severity IN ('P0','P1') AND resolved_at IS NULL AND id<#{beforeId}
+             ORDER BY id DESC LIMIT 50
+            """)
+    List<Map<String, Object>> riskAlertsBefore(@Param("projectId") long projectId,
+                                                @Param("beforeId") long beforeId);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_risk_alert WHERE project_id=#{projectId}
+              AND severity IN ('P0','P1') AND resolved_at IS NULL
+            """)
+    int openRiskAlertCount(@Param("projectId") long projectId);
     @Select("""
             SELECT TIMESTAMPDIFF(SECOND,created_at,NOW()) FROM nx_cregis_risk_alert
              WHERE project_id=#{projectId} AND alert_key=#{key}
@@ -329,6 +343,15 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
              ORDER BY d.id DESC LIMIT 50
             """)
     List<Map<String, Object>> failedDeliveries(@Param("projectId") long projectId);
+    @Select("""
+            SELECT id,cid,txid,address,gross_amount AS grossAmount,reason,
+                   last_error AS lastError,created_at AS createdAt,
+                   TIMESTAMPDIFF(SECOND,created_at,NOW()) AS ageSeconds
+              FROM nx_cregis_deposit_delivery
+             WHERE accepted=1 AND processed_at IS NULL
+             ORDER BY id LIMIT 50
+            """)
+    List<Map<String, Object>> pendingAcceptedDeliveries();
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_delivery WHERE accepted=1 AND processed_at IS NULL AND id<>#{exceptId}")
     int pendingAcceptedDeliveryCount(@Param("exceptId") long exceptId);
     @Select("""
@@ -759,16 +782,36 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> lockReviewCase(@Param("id") long id);
     @Select("""
-            SELECT c.id,c.event_id AS eventId,e.cid,c.action,c.reason,
+            SELECT id,project_id AS projectId,event_id AS eventId,maker_id AS makerId,
+                   evidence_hash AS evidenceHash,status,version
+              FROM nx_cregis_review_case WHERE id=#{id}
+            """)
+    Map<String, Object> reviewCaseSnapshot(@Param("id") long id);
+    @Select("""
+            SELECT id,user_id AS userId,cid,txid,address,gross_amount AS grossAmount,
+                   status,block_number AS blockNumber,block_hash AS blockHash,
+                   log_index AS logIndex FROM nx_cregis_deposit_event WHERE id=#{id}
+            """)
+    Map<String, Object> reviewEventSnapshot(@Param("id") long id);
+    @Select("""
+            SELECT c.id,c.event_id AS eventId,e.cid,e.user_id AS userId,
+              e.gross_amount AS grossAmount,e.gross_amount - 1 AS proposedNetAmount,
+              e.address,e.txid,
+              e.block_number AS blockNumber,e.block_hash AS blockHash,
+              e.log_index AS logIndex,e.confirmations,c.action,c.reason,
               c.evidence_hash AS evidenceHash,c.maker_id AS makerId,
               c.checker_id AS checkerId,c.status,c.version,
               c.created_at AS createdAt,c.checked_at AS checkedAt
             FROM nx_cregis_review_case c
               JOIN nx_cregis_deposit_event e ON e.id=c.event_id
-            WHERE c.project_id=#{projectId}
+            WHERE c.project_id=#{projectId} AND c.status='MAKER_DONE'
+              AND (#{beforeId}=0 OR c.id<#{beforeId})
             ORDER BY c.id DESC LIMIT 50
             """)
-    List<Map<String, Object>> reviewCases(@Param("projectId") long projectId);
+    List<Map<String, Object>> reviewCases(@Param("projectId") long projectId,
+                                          @Param("beforeId") long beforeId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_review_case WHERE project_id=#{projectId} AND status='MAKER_DONE'")
+    int openReviewCaseCount(@Param("projectId") long projectId);
     @Update("""
             UPDATE nx_cregis_review_case SET checker_id=#{checkerId},status=#{status},
               version=version+1,checked_at=NOW()

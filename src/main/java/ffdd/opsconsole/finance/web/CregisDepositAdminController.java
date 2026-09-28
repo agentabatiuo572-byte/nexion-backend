@@ -34,6 +34,12 @@ public class CregisDepositAdminController {
         return ApiResult.ok(deposits.exceptions());
     }
 
+    @GetMapping("/risk-alerts/{beforeId}")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<List<Map<String, Object>>> riskAlertsBefore(@PathVariable long beforeId) {
+        return ApiResult.ok(deposits.riskAlertsBefore(beforeId));
+    }
+
     @PostMapping("/addresses/provision")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
     public ApiResult<Map<String, Object>> provisionAddress() {
@@ -56,6 +62,18 @@ public class CregisDepositAdminController {
     @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<List<Map<String, Object>>> reviewCases() {
         return ApiResult.ok(reviews.cases());
+    }
+
+    @GetMapping("/review-cases/before/{beforeId}")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<List<Map<String, Object>>> reviewCasesBefore(@PathVariable long beforeId) {
+        return ApiResult.ok(reviews.casesBefore(beforeId));
+    }
+
+    @GetMapping("/review-evidence/{cid}")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<Map<String, Object>> reviewEvidence(@PathVariable long cid) {
+        return ApiResult.ok(reviews.preview(cid));
     }
 
     @GetMapping("/switch-cases")
@@ -110,8 +128,9 @@ public class CregisDepositAdminController {
         long id = admin(auth);
         try {
             return ApiResult.ok(reviews.propose(id, request.cid(), request.reason(), request.evidenceHash()));
-        } catch (BizException rejected) {
-            reviews.auditRejected(id, "PROPOSE", rejected.getMessage());
+        } catch (RuntimeException rejected) {
+            reviews.auditRejected(id, "PROPOSE", rejected instanceof BizException
+                    ? rejected.getMessage() : "CREGIS_REVIEW_FAILED");
             throw rejected;
         }
     }
@@ -124,8 +143,9 @@ public class CregisDepositAdminController {
         try {
             return ApiResult.ok(reviews.check(id, caseId, request.expectedVersion(),
                     request.decision(), request.reason()));
-        } catch (BizException rejected) {
-            reviews.auditRejected(id, "DECIDE", rejected.getMessage());
+        } catch (RuntimeException rejected) {
+            reviews.auditRejected(id, "DECIDE", rejected instanceof BizException
+                    ? rejected.getMessage() : "CREGIS_REVIEW_FAILED");
             throw rejected;
         }
     }

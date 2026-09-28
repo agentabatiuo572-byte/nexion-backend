@@ -33,6 +33,20 @@ class CregisDepositServiceTest {
     private static final String BLOCK = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     @Test
+    void expiredReviewProofCannotCreditAfterWaitingForLocks() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        CregisDepositService service = new CregisDepositService(properties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        var proof = new CregisDepositService.ReviewProof(1, 77, 42, TXID, ADDRESS,
+                BigDecimal.TEN, 101, BLOCK, 0, 15, 100, BLOCK, Instant.now().minusSeconds(6));
+        assertThatThrownBy(() -> service.creditReviewedHold(77, proof))
+                .hasMessage("CREGIS_REVIEW_PROOF_EXPIRED");
+        verify(db, never()).lockEvent(88, 77);
+    }
+
+    @Test
     void creditsOnlySignedProviderAndChainConfirmedNetAmountWithFinanceVoucher() throws Exception {
         CregisProperties props = properties();
         CregisDepositMapper db = mock(CregisDepositMapper.class);
