@@ -149,9 +149,15 @@ public class CregisDepositService {
     }
 
     public Map<String, Object> exceptions() {
-        if (config.getMode() != CregisProperties.Mode.PROVIDER) return Map.of("mode", "DISABLED");
+        if (config.getMode() != CregisProperties.Mode.PROVIDER) return Map.of(
+                "mode", "DISABLED", "depositEnabled", false, "depositCreditEnabled", false,
+                "provisionGate", Map.of("state", "DISABLED"),
+                "uncertainAddresses", List.of(), "heldDeposits", List.of(),
+                "failedDeliveries", List.of(), "unattributed", List.of(), "providerMissing", List.of());
         Map<String, Object> gate = db.provisionGate();
-        return Map.of("mode", "PROVIDER", "provisionGate", gate == null ? Map.of("state", "MISSING") : gate,
+        return Map.of("mode", "PROVIDER", "depositEnabled", config.isDepositEnabled(),
+                "depositCreditEnabled", config.isDepositCreditEnabled(),
+                "provisionGate", gate == null ? Map.of("state", "MISSING") : gate,
                 "uncertainAddresses", db.uncertainAddresses(config.getProjectId()),
                 "heldDeposits", db.heldDeposits(config.getProjectId()),
                 "failedDeliveries", db.failedDeliveries(config.getProjectId()),

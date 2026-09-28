@@ -104,6 +104,29 @@ class CregisDepositServiceTest {
     }
 
     @Test
+    void exceptionsReportPayInSwitchesWithoutReadingDatabaseWhenDisabled() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        CregisDepositService disabled = new CregisDepositService(new CregisProperties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(disabled.exceptions()).containsEntry("mode", "DISABLED")
+                .containsEntry("depositEnabled", false).containsEntry("depositCreditEnabled", false);
+        verify(db, never()).provisionGate();
+
+        CregisProperties enabled = properties();
+        enabled.setDepositEnabled(true);
+        enabled.setDepositCreditEnabled(false);
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE"));
+        CregisDepositService provider = new CregisDepositService(enabled,
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(provider.exceptions()).containsEntry("mode", "PROVIDER")
+                .containsEntry("depositEnabled", true).containsEntry("depositCreditEnabled", false);
+    }
+
+    @Test
     void openingDepositPageCannotCreateAnAddressWhenPoolIsEmpty() {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
