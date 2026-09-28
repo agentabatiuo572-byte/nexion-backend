@@ -11,6 +11,8 @@
 
 ## 上线配置
 
+以下步骤是未来验收清单。当前存在本页“当前上线边界”列出的阻断项，禁止执行第 4、5 步或用真实资金测试。
+
 1. 在目标数据库执行 `scripts/migrations/20260928_cregis_deposit.sql`。服务在 `PROVIDER` 模式下检查表和关键唯一索引，缺失时拒绝启动。
 2. 配置 Cregis 项目 ID、服务端 API key、Cregis API HTTPS 地址、公开 HTTPS 回调基址及只读 BSC JSON-RPC 地址。密钥留在安全配置中，不写入仓库或日志。
 3. 在 Cregis 项目中核验 USDT-BEP20 `chain_id=2510`、`token_id=0x55d398326f99059ff775485246999027b3197955` 可创建地址，并配置回调地址、出站访问白名单及回调网络通路。回调完整路径是 `/openapi/v1/withdrawals/cregis/callbacks/deposit`。
