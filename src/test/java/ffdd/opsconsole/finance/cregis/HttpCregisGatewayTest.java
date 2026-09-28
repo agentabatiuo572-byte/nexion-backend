@@ -152,6 +152,24 @@ class HttpCregisGatewayTest {
     }
 
     @Test
+    void poolRequiresExactProjectAddressAndThreeZeroProviderBalances() throws Exception {
+        AtomicReference<String> response = new AtomicReference<>("""
+                {"code":"00000","data":{"total":1,"rows":[{"pid":42,
+                 "currency":"2510@0x55d398326f99059ff775485246999027b3197955",
+                 "address":"0x1111111111111111111111111111111111111111",
+                 "total":"0","available":"0","processing":"0"}]}}
+                """);
+        server = start("/api/v1/sub_address_balance", exchange -> respond(exchange, 200, response.get()));
+        String address = "0x1111111111111111111111111111111111111111";
+        assertThat(gateway(500).zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, address)).isTrue();
+        response.set(response.get().replace("\"processing\":\"0\"", "\"processing\":\"0.1\""));
+        assertThat(gateway(500).zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, address)).isFalse();
+        response.set(response.get().replace("\"pid\":42", "\"pid\":43"));
+        assertThatThrownBy(() -> gateway(500).zeroAddressBalance(
+                CregisConstants.USDT_BEP20_CURRENCY, address)).hasMessage("CREGIS_RESPONSE_INVALID");
+    }
+
+    @Test
     void queryBindsProjectAssetStatusAndSuccessfulTransactionHash() throws Exception {
         AtomicReference<String> response = new AtomicReference<>(queryResponse(
                 "42", "6", "0x" + "a".repeat(64)));

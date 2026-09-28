@@ -25,7 +25,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                AND EXISTS (
                    SELECT 1 FROM nx_user u
                     WHERE u.id=nx_withdrawal_order.user_id
-                      AND u.is_deleted=0 AND u.sandbox=0
+                      AND u.is_deleted=0 AND u.sandbox=0 AND u.status='ACTIVE'
                )
                AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
                  OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
@@ -87,6 +87,8 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    last_broadcast_error=NULL,updated_at=#{now}
              WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0
                AND chain IN ('USDT-TRC20','USDT-BEP20','USDT-ERC20')
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_withdrawal_order.user_id
+                           AND u.is_deleted=0 AND u.sandbox=0 AND u.status='ACTIVE')
                AND ((status='REVIEW_PASSED' AND (next_broadcast_at IS NULL OR next_broadcast_at<=#{now}))
                  OR (status='PROCESSING' AND d5_payout_lease_until<=#{now}))
             """)

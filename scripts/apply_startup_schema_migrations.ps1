@@ -276,6 +276,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260927_h3_quest_claim_event_schema.sql")
   # Home's canonical E5 display row still carries the retired network brand.
   (Join-Path $root "scripts\migrations\20260928_home_mobile_network_brand.sql")
+  # Cregis pay-in tables and wallet risk hold must exist before PROVIDER mode starts.
+  (Join-Path $root "scripts\migrations\20260928_cregis_deposit.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

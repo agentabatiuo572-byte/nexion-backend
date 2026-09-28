@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/openapi/v1/withdrawals/cregis/callbacks")
+@RequestMapping({"/openapi/v1/withdrawals/cregis/callbacks", "/api/cregis/callbacks"})
 @RequiredArgsConstructor
 public class CregisDepositCallbackController {
     private final CregisDepositService service;

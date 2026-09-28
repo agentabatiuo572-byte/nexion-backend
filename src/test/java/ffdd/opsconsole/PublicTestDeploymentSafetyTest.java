@@ -80,6 +80,21 @@ class PublicTestDeploymentSafetyTest {
     }
 
     @Test
+    void cregisPayInRequiresExactHostApprovalAndKeepsPayoutDisabled() {
+        String mode = "nexion.finance.cregis.mode";
+        String approved = "nexion.deployment.cregis-pay-in-approved";
+        assertThatThrownBy(() -> processor.validate(safe().withProperty(mode, "PROVIDER")))
+                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: " + mode);
+        assertThatCode(() -> processor.validate(safe().withProperty(mode, "PROVIDER")
+                .withProperty(approved, "true")
+                .withProperty("nexion.finance.cregis.payout-enabled", "false"))).doesNotThrowAnyException();
+        assertThatThrownBy(() -> processor.validate(safe().withProperty(mode, "PROVIDER")
+                .withProperty(approved, "true")
+                .withProperty("nexion.finance.cregis.payout-enabled", "true")))
+                .hasMessageContaining("PUBLIC_TEST_POLICY_REJECTED: " + mode);
+    }
+
+    @Test
     void approvedHdPayTransportAlsoSupportsBankPayoutWithoutLegacyPayoutSwitches() {
         var env = safe().withProperty("nexion.finance.hdpay.mode", "PROVIDER")
                 .withProperty("nexion.deployment.hdpay-pay-in-approved", "true");

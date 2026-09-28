@@ -10,7 +10,7 @@
     "nexgrid-release.service": "e081781025c43f8a0a47ce965d8cdb31fc2b8add5abd2be48e53d70203819c8c",
     "nexgrid-release.timer": "0511ccb873c65a67852cb5a7b995ea93ee975d681585c50876f36e9d56f047fc",
     "public-test-policy.properties": "6ed34f3ea7e78ea8de6211e62de9d3ebda09243cd29f0a65d0d2284c48209f5e",
-    "release_broker.py": "37088e8dea9b68b4871024537f786065136dd16e65e7549cf709454d1206b5be",
+    "release_broker.py": "74ab700dbc35d5be555e0e90b527ec68f7ad426554431802a8ee5c8d808123b2",
     "schema_fingerprint.py": "1b585c87e0c00110328ea409e1b695de8ce0b523b5fd3452426bdac918e3a3b2",
     "test-server.yml": "c8acdad7994b84473ff48c9183be91babe72b480ec283e1260f944330c332762",
     "trusted_entry.py": "8ff6ec1013de85c60248e179085a2d3e8b89c1dd37bdd74b436f0d3c7d4e0148"

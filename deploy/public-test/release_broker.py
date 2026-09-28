@@ -426,9 +426,18 @@ def backend_dropin():
             require(re.fullmatch(r'[a-z0-9.-]+', key) and re.fullmatch(r'[A-Za-z0-9.-]+', value), 'POLICY_SYNTAX')
             policy[key] = value
     require(len(policy) >= 20, 'POLICY_INCOMPLETE')
+    cregis_approval = Path('/srv/nexgrid/secrets/cregis-pay-in-approved')
+    if cregis_approval.exists():
+        trusted_root_path(cregis_approval)
+        require(cregis_approval.read_bytes() == b'PROVIDER\n', 'CREGIS_APPROVAL_INVALID')
+        require(policy.pop('nexion.finance.cregis.mode', None) == 'DISABLED', 'CREGIS_POLICY_DRIFT')
     args = ['--spring.profiles.active=dev', '--nexion.deployment.public-test=true',
             '--spring.config.additional-location=file:/srv/jenkins/release/test-server.yml']
     args += [f'--{key}={value}' for key, value in sorted(policy.items())]
+    if cregis_approval.exists():
+        args += ['--nexion.finance.cregis.mode=PROVIDER',
+                 '--nexion.deployment.cregis-pay-in-approved=true',
+                 '--nexion.finance.cregis.payout-enabled=false']
     return ('[Service]\nWorkingDirectory=/srv/nexgrid/cd/backend/current\nExecStart=\n'
             'ExecStart=/usr/bin/java -Xms1g -Xmx4g -XX:+ExitOnOutOfMemoryError '
             '-jar /srv/nexgrid/cd/backend/current/nexion-backend.jar ' + ' '.join(args) + '\n')
