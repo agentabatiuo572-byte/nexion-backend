@@ -16,12 +16,15 @@ import java.util.Optional;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.function.Predicate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** Read-only BSC receipt proof. A callback or provider trade never credits by itself. */
 @Component
 public final class BscDepositProof {
+    private static final Logger log = LoggerFactory.getLogger(BscDepositProof.class);
     private static final String TRANSFER_TOPIC =
             "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
     private final CregisProperties properties;
@@ -164,25 +167,35 @@ public final class BscDepositProof {
         boolean testLoopback = loopbackAllowed.test(uri);
         if (!("https".equalsIgnoreCase(uri.getScheme()) || testLoopback) || uri.getHost() == null
                 || uri.getUserInfo() != null || uri.getFragment() != null) throw invalid();
-        try {
-            String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"" + method
-                    + "\",\"params\":" + params + "}";
-            HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
-                    .header("Content-Type", "application/json")
-                    .header("User-Agent", "NexGrid-Cregis-ReadOnly/1.0")
-                    .POST(HttpRequest.BodyPublishers.ofString(body)).build();
-            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (InputStream stream = response.body()) {
-                byte[] bytes = stream.readNBytes(1_048_577);
-                if (response.statusCode() != 200 || bytes.length > 1_048_576) throw invalid();
-                JsonNode root = json.readTree(new String(bytes, StandardCharsets.UTF_8));
-                if (root == null || root.hasNonNull("error") || root.path("id").asInt(-1) != 1
-                        || !root.has("result")) throw invalid();
-                return root.get("result");
+        String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"" + method
+                + "\",\"params\":" + params + "}";
+        HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "NexGrid-Cregis-ReadOnly/1.0")
+                .POST(HttpRequest.BodyPublishers.ofString(body)).build();
+        Exception lastFailure = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                try (InputStream stream = response.body()) {
+                    byte[] bytes = stream.readNBytes(1_048_577);
+                    if (response.statusCode() != 200 || bytes.length > 1_048_576) throw invalid();
+                    JsonNode root = json.readTree(new String(bytes, StandardCharsets.UTF_8));
+                    if (root == null || root.hasNonNull("error") || root.path("id").asInt(-1) != 1
+                            || !root.has("result")) throw invalid();
+                    return root.get("result");
+                }
+            } catch (Exception unavailable) {
+                lastFailure = unavailable;
+                if (unavailable instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
-        } catch (Exception ex) {
-            throw new IllegalStateException("CREGIS_BSC_PROOF_UNAVAILABLE");
         }
+        log.warn("BSC RPC read unavailable method={} cause={}", method,
+                lastFailure == null ? "UNKNOWN" : lastFailure.getClass().getSimpleName());
+        throw new IllegalStateException("CREGIS_BSC_PROOF_UNAVAILABLE");
     }
 
     private static long hexLong(String value) {

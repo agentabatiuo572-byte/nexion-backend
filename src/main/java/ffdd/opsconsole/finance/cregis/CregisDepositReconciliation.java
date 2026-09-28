@@ -69,6 +69,7 @@ public class CregisDepositReconciliation {
             if (firstPass.total != secondPass.total || !firstPass.hash.equals(secondPass.hash))
                 throw new IllegalStateException("CREGIS_RECONCILE_PROVIDER_DRIFT");
             long finalized = chain.head().number() - config.getDepositConfirmations() + 1;
+            if (finalized >= 0) deposits.scanTrackedAddresses(finalized);
             Long cursor = db.cursor();
             if (finalized < 0 || cursor == null || cursor <= finalized)
                 throw new IllegalStateException("CREGIS_RECONCILE_CHAIN_CURSOR_INCOMPLETE");

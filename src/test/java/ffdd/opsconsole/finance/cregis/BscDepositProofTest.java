@@ -11,6 +11,7 @@ import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ class BscDepositProofTest {
     private String received = "1000000000000000000";
     private String balance = "0x0";
     private final AtomicReference<String> userAgent = new AtomicReference<>();
+    private final AtomicInteger unavailableResponses = new AtomicInteger();
 
     @AfterEach void close() { if (server != null) server.stop(0); }
 
@@ -52,9 +54,23 @@ class BscDepositProofTest {
         assertThat(proof.verify(TX, TO, BigDecimal.ONE, 100)).isEmpty();
     }
 
+    @Test
+    void transientRpcFailureRetriesOnceThenFailsClosed() throws Exception {
+        BscDepositProof proof = local();
+        unavailableResponses.set(1);
+        assertThat(proof.head().number()).isEqualTo(114);
+        unavailableResponses.set(2);
+        assertThatThrownBy(proof::head).hasMessage("CREGIS_BSC_PROOF_UNAVAILABLE");
+    }
+
     private BscDepositProof local() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
+            if (unavailableResponses.getAndUpdate(value -> Math.max(0, value - 1)) > 0) {
+                exchange.sendResponseHeaders(503, -1);
+                exchange.close();
+                return;
+            }
             userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
             JsonNode request = json.readTree(exchange.getRequestBody());
             String method = request.path("method").asText();

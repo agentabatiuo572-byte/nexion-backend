@@ -29,6 +29,7 @@ class CregisDepositReconciliationTest {
                 .thenReturn(1);
         when(f.db.advanceReconcileWatermark(anyLong(), anyLong(), any())).thenReturn(1);
         assertThat(f.service.runOnce()).containsEntry("status", "COMPLETE");
+        verify(f.deposits).scanTrackedAddresses(986);
         verify(f.db).completeReconcileRun(any(), anyLong(), anyLong(), anyLong(), any(), anyLong(), any());
         verify(f.db).advanceReconcileWatermark(anyLong(), anyLong(), any());
     }
@@ -52,6 +53,7 @@ class CregisDepositReconciliationTest {
                 .thenReturn(new CregisGateway.DepositPage(1, List.of(row(1))));
         when(f.db.cursor()).thenReturn(986L);
         assertThatThrownBy(f.service::runOnce).hasMessage("CREGIS_RECONCILE_CHAIN_CURSOR_INCOMPLETE");
+        verify(f.deposits).scanTrackedAddresses(986);
         verify(f.db, never()).advanceReconcileWatermark(anyLong(), anyLong(), any());
         verify(f.deposits, never()).materializeProviderRow(any());
     }

@@ -376,7 +376,7 @@ public class CregisDepositService {
             throw new IllegalStateException("CREGIS_INCIDENT_RECORD_FAILED");
     }
 
-    private void scanTrackedAddresses(long finalized) {
+    void scanTrackedAddresses(long finalized) {
         List<Map<String, Object>> allocations = db.allocations(config.getProjectId(), CHAIN);
         if (allocations.isEmpty()) return;
         if (allocations.size() > 60) throw new IllegalStateException("CREGIS_PILOT_ADDRESS_LIMIT_EXCEEDED");
