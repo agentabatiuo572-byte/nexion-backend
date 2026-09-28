@@ -98,27 +98,38 @@ class CregisDepositServiceTest {
     }
 
     @Test
-    void permanentAddressCountStopsTheFiftyFirstProvisionBeforeProviderWrite() {
+    void openingDepositPageCannotCreateAnAddressWhenPoolIsEmpty() {
         CregisProperties props = properties();
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
         CregisDepositMapper db = mock(CregisDepositMapper.class);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisGateway gateway = mock(CregisGateway.class);
-        BscDepositProof chain = mock(BscDepositProof.class);
         when(router.provider()).thenReturn(gateway);
-        when(gateway.projectCoins()).thenReturn(List.of(new CregisGateway.Coin("USDT", "USDT",
-                CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID, false, true)));
-        when(chain.head()).thenReturn(new BscDepositProof.Head(100, BLOCK));
-        when(db.claimProvisionGate()).thenReturn(1);
-        when(db.allocatedAddressCount(88, CregisConstants.BSC_CHAIN_ID)).thenReturn(50);
-        CregisDepositService service = new CregisDepositService(props, router, chain,
+        CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
                 mock(TreasuryLedgerRepository.class));
         assertThatThrownBy(() -> service.address(42))
-                .hasMessage("CREGIS_PILOT_ADDRESS_LIMIT_REACHED");
-        verify(db).releaseProvisionGate();
+                .hasMessage("CREGIS_ADDRESS_POOL_EMPTY");
+        verify(db, never()).claimProvisionGate();
+        verify(router, never()).provider();
         verify(gateway, never()).createAddress(any(), any(), any(), any());
+    }
+
+    @Test
+    void alreadyBoundAddressRemainsReadableWithoutProviderWrite() {
+        CregisProperties props = properties();
+        props.setDepositEnabled(true);
+        props.setDepositPilotUserIds("42");
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
+                "projectId", 88L, "state", "READY", "address", ADDRESS)));
+        CregisGatewayRouter router = mock(CregisGatewayRouter.class);
+        CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
+                new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class));
+        assertThat(service.address(42)).containsEntry("address", ADDRESS).containsEntry("enabled", true);
+        verify(router, never()).provider();
     }
 
     private static CregisProperties properties() {

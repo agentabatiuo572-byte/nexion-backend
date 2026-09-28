@@ -13,7 +13,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -61,53 +60,9 @@ public class CregisDepositService {
                     "minDepositUsdt", 10);
             throw new BizException(409, "CREGIS_ADDRESS_REQUIRES_REVIEW");
         }
-        CregisGateway gateway = router.provider();
-        boolean supported = gateway.projectCoins().stream().anyMatch(coin -> coin.addressEnabled()
-                && CHAIN.equals(coin.chainId()) && TOKEN.equalsIgnoreCase(coin.tokenId()));
-        if (!supported) throw new BizException(503, "CREGIS_BEP20_NOT_ENABLED");
-        // Avoid creating an unservable address while the chain reader is unavailable.
-        chain.head();
-        if (db.claimProvisionGate() != 1)
-            throw new BizException(409, "CREGIS_ADDRESS_PROVISIONING_OR_BLOCKED");
-        // The first durable attempt owns this user. A timeout can have created an address,
-        // so no request may repeat it automatically, even after process restart.
-        String requestId = UUID.randomUUID().toString();
-        try {
-            if (db.allocatedAddressCount(config.getProjectId(), CHAIN) >= 50) {
-                db.releaseProvisionGate();
-                throw new BizException(409, "CREGIS_PILOT_ADDRESS_LIMIT_REACHED");
-            }
-            db.insertAddressAttempt(userId, config.getProjectId(), CHAIN, requestId);
-        } catch (org.springframework.dao.DuplicateKeyException concurrent) {
-            db.releaseProvisionGate();
-            throw new BizException(409, "CREGIS_ADDRESS_PROVISIONING");
-        } catch (BizException rejected) {
-            throw rejected;
-        } catch (RuntimeException uncertainInsert) {
-            db.blockProvisionGate();
-            throw new BizException(503, "CREGIS_ADDRESS_REQUIRES_REVIEW");
-        }
-        try {
-            CregisGateway.Address created = gateway.createAddress(CHAIN, "NexGrid", router.depositCallbackUrl(), requestId);
-            // Preserve the candidate before any later ownership/RPC failure for manual recovery.
-            if (db.recordCandidateAddress(created.address().toLowerCase(Locale.ROOT), userId, requestId) != 1)
-                throw new IllegalStateException("CREGIS_ADDRESS_STATE_CONFLICT");
-            if (!gateway.addressBelongs(CHAIN, created.address()))
-                throw new IllegalStateException("CREGIS_ADDRESS_OWNERSHIP_UNVERIFIED");
-            if (!chain.zeroUsdtBalance(created.address()))
-                throw new IllegalStateException("CREGIS_ADDRESS_BALANCE_NONZERO");
-            BscDepositProof.Head allocation = chain.head();
-            if (db.readyAddress(created.address().toLowerCase(Locale.ROOT), allocation.number(),
-                    allocation.hash(), userId, requestId) != 1)
-                throw new IllegalStateException("CREGIS_ADDRESS_STATE_CONFLICT");
-            if (db.releaseProvisionGate() != 1)
-                throw new IllegalStateException("CREGIS_PROVISION_GATE_CONFLICT");
-            return address(userId);
-        } catch (RuntimeException unknown) {
-            db.unknownAddress(userId, requestId);
-            db.blockProvisionGate();
-            throw new BizException(503, "CREGIS_ADDRESS_REQUIRES_REVIEW");
-        }
+        // User requests must never write to the provider. A maintenance flow will
+        // prebuild, verify and bind an address before it can be returned here.
+        throw new BizException(503, "CREGIS_ADDRESS_POOL_EMPTY");
     }
 
     public List<Map<String, Object>> deposits(long userId) {
