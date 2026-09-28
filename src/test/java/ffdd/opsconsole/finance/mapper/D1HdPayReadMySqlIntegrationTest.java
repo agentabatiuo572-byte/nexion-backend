@@ -54,7 +54,7 @@ class D1HdPayReadMySqlIntegrationTest {
                     .containsExactlyInAnyOrder("VQR-1", "VQR-2", "MANUAL-1");
             var hd = rows.stream().filter(row -> "VQR-1".equals(row.get("intentNo"))).findFirst().orElseThrow();
             assertThat(hd).containsEntry("status", "CREDITED").containsEntry("viewType", "MATCHED")
-                    .containsEntry("reconciliationNo", "HDPAY-VQR-1");
+                    .containsEntry("reconciliationNo", "HDPAY-VQR-1").containsEntry("paymentRail", "HDPAY");
             assertThat(((Number) hd.get("id")).longValue()).isNegative();
             assertThat(mapper.findVietQrReconciliationForUpdate(((Number) hd.get("id")).longValue())).isNull();
             assertThat(hd.get("note").toString()).contains("HDPay", "自动入账");
@@ -82,7 +82,12 @@ class D1HdPayReadMySqlIntegrationTest {
             assertThat(mapper.countVietQrReconciliations("MATCHED")).isEqualTo(3);
             assertThat(mapper.listVietQrReconciliations("MATCHED", 50, 0))
                     .filteredOn(row -> "VQR-1".equals(row.get("intentNo")))
-                    .singleElement().satisfies(row -> assertThat(((Number) row.get("id")).longValue()).isEqualTo(101L));
+                    .singleElement().satisfies(row -> {
+                        assertThat(((Number) row.get("id")).longValue()).isEqualTo(101L);
+                        assertThat(row).containsEntry("paymentRail", "HDPAY");
+                    });
+            assertThat(mapper.listVietQrReconciliations("ORPHAN", 50, 0).get(0))
+                    .containsEntry("paymentRail", "VIETQR");
             assertThat(mapper.countVietQrReconciliations("INFLIGHT")).isEqualTo(1);
             assertThat(mapper.countVietQrReconciliations("ORPHAN")).isEqualTo(1);
             assertThat(mapper.listVietQrReconciliations("INFLIGHT", 50, 0)).hasSize(1);

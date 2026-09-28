@@ -35,7 +35,8 @@ final class D1HdPayReadSql {
     static final String MATCHED_ROWS = """
             SELECT -h.id AS id, CONCAT('HDPAY-', h.intent_no) AS reconciliationNo,
                    h.intent_no AS intentNo, h.user_id AS userId,
-                   NULL AS bankAccountId, NULL AS assignedBankAccountId, NULL AS memoCode,
+                   NULL AS bankAccountId, 'HDPAY' AS paymentRail,
+                   NULL AS assignedBankAccountId, NULL AS memoCode,
                    NULL AS mismatchReason, 'MATCHED' AS viewType, 'CREDITED' AS status,
                    h.payable_vnd AS payableVnd, h.received_vnd AS receivedVnd,
                    h.locked_fx_rate_vnd_per_usdt AS lockedFxRateVndPerUsdt,

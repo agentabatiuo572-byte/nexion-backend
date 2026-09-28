@@ -65,6 +65,7 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
     @Select("WITH " + D1HdPayReadSql.CTES + ", visible_rows AS (" + """
             SELECT r.id, r.reconciliation_no AS reconciliationNo, r.intent_no AS intentNo,
                    r.user_id AS userId, r.bank_account_id AS bankAccountId,
+                   CASE WHEN i.payment_rail = 'HDPAY' THEN 'HDPAY' ELSE 'VIETQR' END AS paymentRail,
                    i.bank_account_id AS assignedBankAccountId, i.memo_code AS memoCode,
                    CASE WHEN r.view_type <> 'MISMATCH' THEN NULL
                         WHEN i.id IS NULL OR r.bank_account_id IS NULL OR i.bank_account_id IS NULL THEN 'UNKNOWN'
