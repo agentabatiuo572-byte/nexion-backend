@@ -353,7 +353,7 @@ public final class HttpCregisGateway implements CregisGateway {
             if (!item.isObject()) throw invalidResponse();
             String coinName = requiredText(item, "coin_name");
             String chainId = requiredText(item, "chain_id");
-            String tokenId = requiredText(item, "token_id");
+            String tokenId = coinTokenId(item.get("token_id"));
             String currency = chainId + "@" + tokenId;
             MutableCoin existing = merged.get(currency.toLowerCase(Locale.ROOT));
             if (existing == null) {
@@ -365,6 +365,13 @@ public final class HttpCregisGateway implements CregisGateway {
             if (payout) existing.payoutEnabled = true;
             else existing.addressEnabled = true;
         }
+    }
+
+    private String coinTokenId(JsonNode value) {
+        if (value != null && value.isIntegralNumber() && value.canConvertToLong()
+                && value.longValue() >= 0) return value.asText();
+        if (value == null || !value.isTextual() || value.textValue().isBlank()) throw invalidResponse();
+        return value.textValue();
     }
 
     private PayoutRequest normalizePayout(PayoutRequest request) {

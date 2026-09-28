@@ -42,14 +42,15 @@ class HttpCregisGatewayTest {
             assertThat(new CregisSigner().verify(KEY, body, String.valueOf(body.get("sign")))).isTrue();
             respond(exchange, 200, """
                     {"code":"00000","msg":"ok","data":{
-                      "payout_coins":[{"coin_name":"USDT-BEP20","chain_id":"2510","token_id":"0x55d398326f99059ff775485246999027b3197955"}],
-                      "address_coins":[{"coin_name":"USDT-BEP20","chain_id":"2510","token_id":"0x55d398326f99059ff775485246999027b3197955"}]}}
+                      "payout_coins":[{"coin_name":"USDT-BEP20","chain_id":"2510","token_id":"0x55d398326f99059ff775485246999027b3197955"},
+                                      {"coin_name":"BNB","chain_id":"2510","token_id":0}],
+                      "address_coins":[{"coin_name":"USDT-BEP20","chain_id":"2510","token_id":"0x55d398326f99059ff775485246999027b3197955"},
+                                       {"coin_name":"BNB","chain_id":"2510","token_id":0}]}}
                     """);
         });
 
-        assertThat(gateway(500).projectCoins()).singleElement()
-                .extracting(CregisGateway.Coin::currency)
-                .isEqualTo(CregisConstants.USDT_BEP20_CURRENCY);
+        assertThat(gateway(500).projectCoins()).extracting(CregisGateway.Coin::currency)
+                .containsExactlyInAnyOrder(CregisConstants.USDT_BEP20_CURRENCY, "2510@0");
         assertThat(captured.get()).containsEntry("pid", 42).containsEntry("nonce", "abc123");
         assertThat(String.valueOf(captured.get().get("sign"))).matches("[0-9a-f]{32}");
     }
