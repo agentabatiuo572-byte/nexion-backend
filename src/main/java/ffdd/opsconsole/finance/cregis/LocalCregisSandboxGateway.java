@@ -57,6 +57,11 @@ public final class LocalCregisSandboxGateway implements CregisGateway {
     }
 
     @Override
+    public List<DepositTrade> depositsByTxid(String txid) {
+        return List.of();
+    }
+
+    @Override
     public PayoutSubmission createPayout(PayoutRequest request) {
         PayoutRequest normalized = normalize(request);
         PayoutFixture candidate = new PayoutFixture(normalized, deterministicCid(normalized.thirdPartyId()));

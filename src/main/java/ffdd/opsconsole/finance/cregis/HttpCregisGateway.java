@@ -123,6 +123,42 @@ public final class HttpCregisGateway implements CregisGateway {
     }
 
     @Override
+    public List<DepositTrade> depositsByTxid(String txid) {
+        if (txid == null || !BSC_TXID.matcher(txid).matches()) throw requestInvalid();
+        JsonNode data = postRead("/api/v1/trade/page", Map.of(
+                "tx_id", txid, "trade_type", 1, "business_type", 3,
+                "chain_id", CregisConstants.BSC_CHAIN_ID,
+                "token_id", CregisConstants.USDT_BEP20_TOKEN_ID,
+                "page_num", 1, "page_size", 100));
+        JsonNode rows = data.get("rows");
+        JsonNode total = data.get("total");
+        if (rows == null || !rows.isArray() || total == null || !total.canConvertToLong()
+                || total.longValue() > 100 || total.longValue() < 0) throw invalidResponse();
+        List<DepositTrade> trades = new ArrayList<>();
+        for (JsonNode row : rows) {
+            JsonNode pid = row.get("pid");
+            JsonNode cid = row.get("cid");
+            JsonNode status = row.get("status");
+            String chainId = requiredText(row, "chain_id");
+            String tokenId = requiredText(row, "token_id");
+            String address = requiredText(row, "to_address");
+            String hash = requiredText(row, "txid");
+            BigDecimal amount = positiveAmount(row.get("amount"));
+            if (pid == null || !pid.canConvertToLong() || pid.longValue() != properties.getProjectId()
+                    || cid == null || !cid.canConvertToLong() || cid.longValue() <= 0
+                    || status == null || !status.canConvertToInt()
+                    || !CregisConstants.BSC_CHAIN_ID.equals(chainId)
+                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(tokenId)
+                    || !EVM_ADDRESS.matcher(address).matches()
+                    || !hash.equalsIgnoreCase(txid)) throw invalidResponse();
+            trades.add(new DepositTrade(cid.longValue(), chainId, tokenId,
+                    address.toLowerCase(Locale.ROOT), amount, hash.toLowerCase(Locale.ROOT), status.intValue()));
+        }
+        if (trades.size() != total.longValue()) throw invalidResponse();
+        return List.copyOf(trades);
+    }
+
+    @Override
     public PayoutSubmission createPayout(PayoutRequest request) {
         PayoutRequest normalized = normalizePayout(request);
         Map<String, Object> fields = new LinkedHashMap<>();

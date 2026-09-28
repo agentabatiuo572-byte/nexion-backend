@@ -72,6 +72,7 @@ class WithdrawalPayoutExecutorTest {
         WithdrawalPayoutFinalizer finalizer = mock(WithdrawalPayoutFinalizer.class);
         var row = row("REVIEW_PASSED");
         when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);
+        when(router.payoutEnabled()).thenReturn(true);
         when(router.provider()).thenReturn(gateway);
         when(router.payoutCallbackUrl()).thenReturn("https://callback.invalid/payout");
         when(mapper.claimable(any(), anyInt())).thenReturn(List.of(row));
@@ -85,6 +86,23 @@ class WithdrawalPayoutExecutorTest {
         verify(finalizer).orphaned(row, null, "provider", "CREGIS_SUBMISSION_UNKNOWN");
         verify(finalizer, never()).retry(eq(row), any());
         verify(finalizer, never()).submitted(any(), anyLong(), any());
+    }
+
+    @Test
+    void providerPayinOnlyDoesNotSubmitCryptoPayout() {
+        WithdrawalPayoutMapper mapper = mock(WithdrawalPayoutMapper.class);
+        CregisGatewayRouter router = mock(CregisGatewayRouter.class);
+        WithdrawalPayoutFinalizer finalizer = mock(WithdrawalPayoutFinalizer.class);
+        var row = row("REVIEW_PASSED");
+        when(router.mode()).thenReturn(CregisProperties.Mode.PROVIDER);
+        when(mapper.claimable(any(), anyInt())).thenReturn(List.of(row));
+        when(mapper.claim(eq(row.withdrawalNo()), any(), any())).thenReturn(1);
+        when(mapper.payout(row.withdrawalNo())).thenReturn(row);
+
+        new WithdrawalPayoutExecutor(mapper, router, finalizer).process();
+
+        verify(router, never()).provider();
+        verify(finalizer).retry(row, "CREGIS_PAYOUT_DISABLED");
     }
 
     private WithdrawalPayoutMapper.PayoutRow row(String status) {

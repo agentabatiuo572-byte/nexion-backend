@@ -378,6 +378,7 @@ public class AppWithdrawalService {
         if (bankQuote == null && BankWithdrawalEligibility.hasUnresolvedIntent(bankWithdrawalMapper, userId, businessNow))
             return ApiResult.fail(409, "BANK_WITHDRAWAL_UNRESOLVED_INTENT");
         if (bankQuote == null) {
+        if (!cryptoPayoutAllowed()) return ApiResult.fail(409, "WITHDRAWAL_NETWORK_DISABLED");
         PayoutAddressRow payoutAddress = mapper.lockPayoutAddress(userId, chain);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             return ApiResult.fail(409, "WITHDRAWAL_PAYOUT_ADDRESS_REQUIRED");
@@ -763,8 +764,9 @@ public class AppWithdrawalService {
                 || payoutSlaHours < 1 || payoutSlaHours > 168) {
             throw new BizException(503, "D5_WD01_CONFIG_INVALID");
         }
-        List<String> enabled = CHAINS.stream().sorted().filter(this::networkEnabled).toList();
-        if (enabled.isEmpty()) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
+        List<String> enabled = cryptoPayoutAllowed()
+                ? CHAINS.stream().sorted().filter(this::networkEnabled).toList() : List.of();
+        if (enabled.isEmpty() && cryptoPayoutAllowed()) throw new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE");
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
@@ -783,6 +785,13 @@ public class AppWithdrawalService {
                 .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
                 .map(Set.of("true", "1", "on")::contains)
                 .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
+    }
+
+    private boolean cryptoPayoutAllowed() {
+        String mode = environment.getProperty("nexion.finance.cregis.mode", "DISABLED");
+        return !"PROVIDER".equalsIgnoreCase(mode)
+                || Boolean.TRUE.equals(environment.getProperty(
+                        "nexion.finance.cregis.payout-enabled", Boolean.class, false));
     }
 
     private boolean withdrawGateEnabled() {

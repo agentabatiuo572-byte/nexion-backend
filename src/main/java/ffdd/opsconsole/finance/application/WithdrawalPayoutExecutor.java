@@ -77,6 +77,10 @@ public class WithdrawalPayoutExecutor {
             finalizer.retry(row, "CREGIS_PROVIDER_DISABLED");
             return;
         }
+        if (!router.payoutEnabled()) {
+            finalizer.retry(row, "CREGIS_PAYOUT_DISABLED");
+            return;
+        }
         String source = mode == CregisProperties.Mode.LOCAL_SANDBOX ? "mock" : "provider";
         CregisGateway gateway;
         try {

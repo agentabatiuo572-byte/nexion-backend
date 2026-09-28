@@ -12,6 +12,9 @@ public interface CregisGateway {
 
     boolean addressLegal(String chainId, String address);
 
+    /** A read-only second provider observation for a single incoming transaction. */
+    List<DepositTrade> depositsByTxid(String txid);
+
     PayoutSubmission createPayout(PayoutRequest request);
 
     PayoutOrder queryPayout(PayoutQuery expected);
@@ -29,6 +32,9 @@ public interface CregisGateway {
             boolean addressEnabled) { }
 
     record Address(String chainId, String address, String requestId) { }
+
+    record DepositTrade(long cid, String chainId, String tokenId, String address,
+                        BigDecimal amount, String txid, int status) { }
 
     record PayoutRequest(
             String currency,

@@ -92,6 +92,7 @@ public class SecurityConfig {
                                 "/openapi/v1/topups/card/chargebacks",
                                 "/openapi/v1/topups/provider-statements",
                                 "/openapi/v1/withdrawals/cregis/callbacks/payout",
+                                "/openapi/v1/withdrawals/cregis/callbacks/deposit",
                                 "/openapi/v1/payments/hdpay/pay-in/callback",
                                 "/openapi/v1/payments/hdpay/payout/callback")
                         .permitAll()

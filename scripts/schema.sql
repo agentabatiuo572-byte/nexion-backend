@@ -1064,6 +1064,7 @@ CREATE TABLE IF NOT EXISTS nx_deposit_order (
   deposit_no VARCHAR(96) NOT NULL,
   chain_name VARCHAR(32) NOT NULL,
   chain_tx_hash VARCHAR(128) NOT NULL,
+  chain_log_index INT NOT NULL DEFAULT 0,
   asset VARCHAR(16) NOT NULL,
   amount DECIMAL(18,6) NOT NULL,
   confirmations INT NOT NULL DEFAULT 0,
@@ -1077,7 +1078,7 @@ CREATE TABLE IF NOT EXISTS nx_deposit_order (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_deposit_no (deposit_no),
-  UNIQUE KEY uk_deposit_chain_tx_asset (chain_tx_hash, asset),
+  UNIQUE KEY uk_deposit_chain_tx_asset_log (chain_tx_hash, asset, chain_log_index),
   KEY idx_deposit_user_time (user_id, created_at),
   KEY idx_deposit_status_time (status, created_at),
   CONSTRAINT chk_deposit_positive_amount CHECK (amount > 0)
@@ -1101,8 +1102,18 @@ CREATE TABLE IF NOT EXISTS nx_deposit_reconciliation_writeoff (
   KEY idx_deposit_reconcile_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'uk_deposit_chain_tx_asset') = 0,
-  'ALTER TABLE nx_deposit_order ADD UNIQUE KEY uk_deposit_chain_tx_asset (chain_tx_hash, asset)',
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND COLUMN_NAME = 'chain_log_index') = 0,
+  'ALTER TABLE nx_deposit_order ADD COLUMN chain_log_index INT NOT NULL DEFAULT 0 AFTER chain_tx_hash',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'uk_deposit_chain_tx_asset_log') = 0,
+  'ALTER TABLE nx_deposit_order ADD UNIQUE KEY uk_deposit_chain_tx_asset_log (chain_tx_hash, asset, chain_log_index)',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_deposit_order' AND INDEX_NAME = 'uk_deposit_chain_tx_asset') > 0,
+  'ALTER TABLE nx_deposit_order DROP INDEX uk_deposit_chain_tx_asset',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

@@ -274,6 +274,22 @@ class HttpCregisGatewayTest {
         assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(500));
     }
 
+    @Test
+    void depositTradeQueryRejectsMismatchedProjectOrTransaction() throws Exception {
+        String txid = "0x" + "a".repeat(64);
+        server = start("/api/v1/trade/page", exchange -> respond(exchange, 200,
+                "{\"code\":\"00000\",\"data\":{\"total\":1,\"rows\":[{"
+                + "\"pid\":42,\"cid\":123,\"chain_id\":\"2510\",\"token_id\":\""
+                + CregisConstants.USDT_BEP20_TOKEN_ID
+                + "\",\"to_address\":\"0x1111111111111111111111111111111111111111\","
+                + "\"amount\":\"1.25\",\"status\":1,\"txid\":\"" + txid + "\"}]}}"));
+        assertThat(gateway(500).depositsByTxid(txid)).singleElement()
+                .extracting(CregisGateway.DepositTrade::cid).isEqualTo(123L);
+        assertThatThrownBy(() -> gateway(500).depositsByTxid("0x" + "b".repeat(64)))
+                .isInstanceOf(CregisGatewayException.class)
+                .hasMessage("CREGIS_RESPONSE_INVALID");
+    }
+
     private HttpCregisGateway gateway(int readTimeoutMs) {
         CregisProperties properties = properties(readTimeoutMs);
         return new HttpCregisGateway(properties, objectMapper,

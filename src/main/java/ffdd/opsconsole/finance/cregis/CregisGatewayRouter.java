@@ -14,6 +14,11 @@ public final class CregisGatewayRouter {
         return properties.getMode();
     }
 
+    public boolean payoutEnabled() {
+        return properties.getMode() == CregisProperties.Mode.LOCAL_SANDBOX
+                || (properties.getMode() == CregisProperties.Mode.PROVIDER && properties.isPayoutEnabled());
+    }
+
     public CregisGateway provider() {
         if (properties.getMode() != CregisProperties.Mode.PROVIDER) {
             throw new CregisGatewayException(
@@ -35,10 +40,20 @@ public final class CregisGatewayRouter {
             return "https://sandbox.invalid/cregis/payout";
         }
         if (properties.getMode() != CregisProperties.Mode.PROVIDER
+                || !properties.isPayoutEnabled()
                 || properties.getCallbackBaseUrl() == null || properties.getCallbackBaseUrl().isBlank()) {
             throw new CregisGatewayException(
                     CregisGatewayException.Kind.CONFIGURATION, "CREGIS_CALLBACK_NOT_CONFIGURED");
         }
         return properties.getCallbackBaseUrl().trim().replaceAll("/+$", "") + "/payout";
+    }
+
+    public String depositCallbackUrl() {
+        if (properties.getMode() != CregisProperties.Mode.PROVIDER
+                || properties.getCallbackBaseUrl() == null || properties.getCallbackBaseUrl().isBlank()) {
+            throw new CregisGatewayException(
+                    CregisGatewayException.Kind.CONFIGURATION, "CREGIS_CALLBACK_NOT_CONFIGURED");
+        }
+        return properties.getCallbackBaseUrl().trim().replaceAll("/+$", "") + "/deposit";
     }
 }
