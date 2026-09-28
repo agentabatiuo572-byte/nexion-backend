@@ -236,7 +236,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                  AND NOT EXISTS (SELECT 1 FROM nx_cregis_deposit_event e
                                   WHERE e.project_id=#{projectId} AND e.cid=d.cid)
                GROUP BY d.cid,d.txid,d.address,d.gross_amount
-            ) rows ORDER BY createdAt DESC LIMIT 50
+            ) deposit_rows ORDER BY createdAt DESC LIMIT 50
             """)
     List<Map<String, Object>> deposits(@Param("userId") long userId, @Param("projectId") long projectId);
 
