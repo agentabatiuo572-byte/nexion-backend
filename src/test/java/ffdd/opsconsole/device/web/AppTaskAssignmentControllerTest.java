@@ -16,7 +16,8 @@ import org.springframework.security.core.Authentication;
 
 class AppTaskAssignmentControllerTest {
     private final AppTaskAssignmentService service = mock(AppTaskAssignmentService.class);
-    private final AppTaskAssignmentController controller = new AppTaskAssignmentController(service);
+    private final AppTaskAssignmentController controller = new AppTaskAssignmentController(service,
+            mock(ffdd.opsconsole.onboarding.application.PhoneNativeSessionService.class));
 
     @Test
     void receiptPaginationRejectsNonIntegerQueryValuesAsA422BusinessError() {

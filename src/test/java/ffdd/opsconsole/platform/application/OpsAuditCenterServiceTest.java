@@ -299,6 +299,23 @@ class OpsAuditCenterServiceTest {
     }
 
     @Test
+    void phoneProposalReviewReadsThePersistedCommandInsteadOfTheRequestSummary() throws Exception {
+        putTicket("WO-PHONE", "发布手机校准规则", "pending", "param", true, false);
+        var proposal = Map.of("expectedRevision", 7, "effectiveAt", 123456789L,
+                "thresholds", List.of(10, 20, 30, 40), "rules", List.of(Map.of(
+                        "id", "verified", "platform", "android", "model", "Phone", "soc", "Chip", "gpu", "GPU",
+                        "minMemoryGb", 6, "maxMemoryGb", 9, "computeValue", 26, "evidence", "lab result")));
+        ticketRows.get("WO-PHONE").setCommandJson(objectMapper.writeValueAsString(new AuditReplayCommand("E", "e6_phone_calibration", proposal)));
+        var ticket = service.overview().getData().operationQueue().get(0);
+        var details = objectMapper.readTree(ticket.phoneCalibrationProposal());
+        assertThat(details.get("expectedRevision").asInt()).isEqualTo(7);
+        assertThat(details.get("effectiveAt").asLong()).isEqualTo(123456789L);
+        assertThat(details.get("thresholds").get(3).asInt()).isEqualTo(40);
+        assertThat(details.get("rules").get(0).get("computeValue").asInt()).isEqualTo(26);
+        assertThat(details.get("rules").get(0).get("evidence").asText()).isEqualTo("lab result");
+    }
+
+    @Test
     void overviewShowsUnknownVerifierWhenNoExactDecisionAuditProvesOne() {
         putTicket("WO-LEGACY", "账户冻结", "approved", "acct", false, false);
         AuditLogRecord unrelated = new AuditLogRecord();

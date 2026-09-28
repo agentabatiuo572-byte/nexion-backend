@@ -203,7 +203,7 @@ class OpsAuditControllerTest {
         AuditOperationDecisionRequest request = new AuditOperationDecisionRequest("verified", "superadmin");
         AuditCenterOverview.AuditOperationTicket ticket =
                 new AuditCenterOverview.AuditOperationTicket("WO-8852", "提现放行", "usr", "review", "approved",
-                        "superadmin", "super", "fund", true, false, "2m", false, "超管", "verified", "approved");
+                        "superadmin", "super", "fund", true, false, "2m", false, "超管", "verified", "approved", null);
         when(auditCenterService.approve("idem-1", "WO-8852", request)).thenReturn(ApiResult.ok(ticket));
         when(auditCenterService.reject("idem-2", "WO-8851", request)).thenReturn(ApiResult.ok(ticket));
 

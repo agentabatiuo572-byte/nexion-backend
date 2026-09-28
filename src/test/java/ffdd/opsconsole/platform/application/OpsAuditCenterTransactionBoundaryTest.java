@@ -42,7 +42,7 @@ class OpsAuditCenterTransactionBoundaryTest {
         AtomicReference<String> storedHash = new AtomicReference<>();
         AuditCenterOverview.AuditOperationTicket storedTicket = new AuditCenterOverview.AuditOperationTicket(
                 "WO-1", "SKU status", "sku-1", "pending", "on", "superadmin", "商品运营",
-                "param", false, false, "now", true, "门槛者", "符合上架节奏要求", "pending");
+                "param", false, false, "now", true, "门槛者", "符合上架节奏要求", "pending", null);
         doAnswer(invocation -> new TransactionTemplate(transactionManager).execute(status -> {
             String requestHash = invocation.getArgument(2);
             if (storedHash.compareAndSet(null, requestHash) || storedHash.get().equals(requestHash)) {

@@ -130,6 +130,20 @@ public class AuditReplayBusinessPermissionGuard {
                 && !scopedMakerMayPropose(command, operation)) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_PERMISSION_DENIED:" + requiredAuthority);
         }
+        if ("E".equalsIgnoreCase(command.domain()) && "e6_phone_calibration".equals(operation)) {
+            try {
+                var proposal = new com.fasterxml.jackson.databind.ObjectMapper().convertValue(command.params(),
+                        ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal.class);
+                if (proposal.expectedRevision() < 0 || proposal.effectiveAt() < 0
+                        || proposal.effectiveAt() > System.currentTimeMillis() + 366L * 86400000) {
+                    return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
+                }
+                new ffdd.opsconsole.onboarding.application.PhoneCalibrationPolicy(1, System.currentTimeMillis(),
+                        proposal.thresholds(), proposal.rules()).validate();
+            } catch (RuntimeException invalid) {
+                return ApiResult.fail(422, "PHONE_CALIBRATION_PROPOSAL_INVALID");
+            }
+        }
         if ("E".equalsIgnoreCase(command.domain()) && "e6_compute_config_batch".equals(operation)) {
             TreeMap<String, Object> values = canonicalComputeBatchValues(command.params());
             if (values == null) return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
@@ -603,6 +617,10 @@ public class AuditReplayBusinessPermissionGuard {
             case "e5_device_unbind" -> deviceDescriptor(
                     "解绑设备资产", deviceId, "UNBOUND");
             case "e6_compute_config" -> computeConfigDescriptor(params);
+            case "e6_phone_calibration" -> new DelegatedProposalDescriptor(
+                    "发布手机校准规则", "phone-calibration", "以服务器执行时版本为准",
+                    "规则匹配后自动校准；不逐人审批", "E6", "param", true,
+                    new AuditLockTarget("E", "phone_calibration_policy", "phone-calibration"));
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
         };
@@ -956,7 +974,7 @@ public class AuditReplayBusinessPermissionGuard {
                         "e5_datacenter_delete", "e5_datacenter_resume" -> "device_e5_write";
                 case "e5_datacenter_pause" -> "device_e5_datacenter_pause";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
-                case "e6_compute_config_batch" -> "device_e6_write";
+                case "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_write";
                 default -> null;
             };
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
@@ -983,7 +1001,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         return switch (operation) {
             case "e3_config" -> "device_e3_read";
-            case "e6_compute_config", "e6_compute_config_batch" -> "device_e6_read";
+            case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration" -> "device_e6_read";
             default -> null;
         };
     }

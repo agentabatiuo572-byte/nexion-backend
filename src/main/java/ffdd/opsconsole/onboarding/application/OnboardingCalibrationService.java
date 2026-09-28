@@ -17,6 +17,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import java.time.Clock;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -25,7 +27,6 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
@@ -42,14 +43,14 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class OnboardingCalibrationService {
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final int MIN_SCORE = 62;
-    private static final int MAX_SCORE = 98;
 
     private final OnboardingCalibrationMapper mapper;
     private final WheelSandboxProfile wheelSandboxProfile;
     private final Environment environment;
     private final AuditLogService auditLogService;
     private final EventOutboxService outboxService;
+    private final PlatformConfigFacade configFacade;
+    private final Clock clock;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> calibrate(Long userId, Request request) {
@@ -71,6 +72,9 @@ public class OnboardingCalibrationService {
                     ? ApiResult.ok(project(current))
                     : ApiResult.fail(409, "ONBOARDING_IDEMPOTENCY_CONFLICT");
         }
+        if (current != null && !deviceId.equals(current.deviceId())) {
+            throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
+        }
         long expected = request.expectedRevision();
         if (current != null && expected != current.rowVersion()) {
             return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REVISION_CONFLICT");
@@ -81,12 +85,12 @@ public class OnboardingCalibrationService {
         if (!validConfig(tiers, comparisons)) {
             return ApiResult.fail(503, "ONBOARDING_CALIBRATION_CONFIG_UNAVAILABLE");
         }
-        Derived derived = derive(request.signals(), tiers);
+        Map<String, Object> derived = derive(request.signals(), tiers);
         long configRevision = Math.max(
                 tiers.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L),
                 comparisons.stream().mapToLong(row -> row.revision() == null ? 0L : row.revision()).max().orElse(0L));
         String signalJson = writeJson(request.signals());
-        String derivedJson = writeJson(derived.toMap());
+        String derivedJson = writeJson(derived);
         String comparisonJson = writeJson(comparisonMaps(comparisons));
         int changed;
         CalibrationWrite write = new CalibrationWrite(userId, deviceId, signalJson, derivedJson,
@@ -164,6 +168,9 @@ public class OnboardingCalibrationService {
         CalibrationRow current = scope.sandbox()
                 ? mapper.findForUpdateScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
                 : mapper.findForUpdate(userId, deviceId);
+        if (current != null && !deviceId.equals(current.deviceId())) {
+            throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
+        }
         if (current == null) {
             if (!"DEFERRED".equals(target)) {
                 return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REQUIRED");
@@ -210,7 +217,14 @@ public class OnboardingCalibrationService {
         }
         Long userDeviceId = current.userDeviceId();
         if ("ACTIVE".equals(target)) {
+            validateCurrentCalibration(current);
+            validateReplacement(userId, current, scope);
             userDeviceId = bindPhoneDevice(userId, current, scope);
+            if (mapper.savePhoneBinding(userId, deviceId, userDeviceId, hardwareKey(current),
+                    scope.sourceEnvironment(), scope.runId()) < 1) {
+                throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
+            }
+            if (!scope.sandbox()) mapper.restoreBoundPhoneRuntime(userId, userDeviceId);
         } else {
             // The deterministic instance identity also finds this phone when a
             // legacy calibration has lost its user_device_id link.
@@ -239,7 +253,7 @@ public class OnboardingCalibrationService {
         int memoryGb = signalMemoryGb(canonical.get("signals"));
         String instanceNo = phoneInstanceNo(userId, scope, row.deviceId());
         int changed = mapper.upsertPhoneDevice(userId, instanceNo, "TIER-" + tier,
-                "Mobile NPU · ~" + tops.stripTrailingZeros().toPlainString() + " TOPS",
+                "Mobile compute · " + tops.stripTrailingZeros().toPlainString() + " points",
                 memoryGb, tops, dailyUsdt, dailyNex, scope.sourceEnvironment(), scope.runId());
         if (changed < 1) throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
         Long userDeviceId = mapper.phoneDeviceId(userId, instanceNo, scope.sourceEnvironment(), scope.runId());
@@ -250,6 +264,90 @@ public class OnboardingCalibrationService {
         mapper.deactivateOtherPhoneDevices(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         mapper.deferOtherPhoneCalibrations(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         return userDeviceId;
+    }
+
+    private PhoneCalibrationPolicy activePolicy() {
+        return new PhoneCalibrationConfigService(configFacade, clock).activePolicy();
+    }
+
+    private void validateCurrentCalibration(CalibrationRow row) {
+        Map<String,Object> result = project(row);
+        PhoneCalibrationPolicy policy = activePolicy();
+        if (!Boolean.TRUE.equals(result.get("calibrationAvailable")) || !"MATCHED".equals(result.get("calibrationStatus"))) {
+            throw new BizException(409, "PHONE_CALIBRATION_PENDING_VERIFICATION");
+        }
+        if (policy == null || !(result.get("ruleVersion") instanceof Number version) || version.longValue() != policy.version()) {
+            throw new BizException(409, "PHONE_CALIBRATION_RULES_CHANGED");
+        }
+        try {
+            Signals signals = JSON.readValue(row.signalJson(), Signals.class);
+            var matched = policy.match(hardware(signals));
+            if (!"MATCHED".equals(matched.status()) || !matched.ruleId().equals(result.get("ruleId"))
+                    || matched.computeValue().compareTo(decimal(result.get("computeValue"))) != 0
+                    || !matched.tier().equals(((Number)result.get("tier")).intValue())) {
+                throw new BizException(409, "PHONE_CALIBRATION_RULES_CHANGED");
+            }
+        } catch (JsonProcessingException invalid) {
+            throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
+        }
+    }
+
+    private void validateReplacement(Long userId, CalibrationRow row, Scope scope) {
+        var binding = mapper.phoneBinding(userId, scope.sourceEnvironment(), scope.runId());
+        if (binding == null) return;
+        if (binding.installationId().equals(row.deviceId())
+                && (binding.hardwareKey().isBlank() || binding.hardwareKey().equals(hardwareKey(row)))) return;
+        validateReplacementPolicy(binding.changedAt());
+    }
+
+    private void validateReplacementPolicy(long changedAt) {
+        if (!"on".equals(configFacade.activeValue("E.compute.phoneBinding.allowReplacement").orElse("off"))) {
+            throw new BizException(409, "PHONE_REPLACEMENT_DISABLED");
+        }
+        String days = configFacade.activeValue("E.compute.phoneBinding.minReplacementIntervalDays").orElse("");
+        try {
+            if (!days.matches("[0-9]+")) throw new NumberFormatException();
+            long interval = Math.multiplyExact(Long.parseLong(days), 86400000L);
+            if (clock.millis() < Math.addExact(changedAt, interval)) {
+                throw new BizException(409, "PHONE_REPLACEMENT_COOLDOWN");
+            }
+        } catch (NumberFormatException | ArithmeticException invalid) {
+            throw new BizException(503, "PHONE_REPLACEMENT_POLICY_UNAVAILABLE");
+        }
+    }
+
+    /** A proved native login changes execution ownership, never activation or the replacement clock. */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String,Object> phoneLogin(Long userId, String deviceId) {
+        if (deviceId == null || !deviceId.matches("[A-Za-z0-9._:-]{1,128}")) throw new BizException(422,"ONBOARDING_DEVICE_INVALID");
+        Integer sandbox = mapper.lockUserSandbox(userId);
+        if (sandbox == null || sandbox != 0) throw new BizException(403,"ONBOARDING_USER_ENVIRONMENT_MISMATCH");
+        var binding = mapper.phoneBinding(userId,"PRODUCTION","");
+        if (binding == null) return Map.of("status","NEEDS_CALIBRATION");
+        mapper.claimPhoneExecution(userId,deviceId);
+        if (!deviceId.equals(binding.installationId())) {
+            cancelReplacedPhoneTasks(userId,-1L);
+            try { validateReplacementPolicy(binding.changedAt()); }
+            catch (BizException denied) {
+                // Keep the stop committed even when replacement is disabled or still cooling down.
+                return Map.of("status",denied.getMessage());
+            }
+            return Map.of("status","REPLACEMENT_REQUIRED");
+        }
+        CalibrationRow current = mapper.find(userId,deviceId);
+        mapper.restoreBoundPhoneRuntime(userId,binding.userDeviceId());
+        return Map.of("status",current != null && "ACTIVE".equals(current.activationStatus()) ? "BOUND" : "NEEDS_CALIBRATION");
+    }
+
+    private String hardwareKey(CalibrationRow row) {
+        try {
+            Signals signals = JSON.readValue(row.signalJson(), Signals.class);
+            return sha256(writeJson(List.of(PhoneCalibrationPolicy.normalize(signals.platform()),
+                    PhoneCalibrationPolicy.normalize(signals.model()), PhoneCalibrationPolicy.normalize(signals.soc()),
+                    PhoneCalibrationPolicy.normalize(signals.gpu()))));
+        } catch (JsonProcessingException invalid) {
+            throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
+        }
     }
 
     private String phoneInstanceNo(Long userId, Scope scope, String deviceId) {
@@ -305,6 +403,7 @@ public class OnboardingCalibrationService {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("userId", row.userId());
         output.put("deviceId", row.deviceId());
+        output.put("userDeviceId", row.userDeviceId());
         output.put("serverCanonical", Boolean.TRUE.equals(row.serverCanonical()));
         output.put("source", row.source());
         output.put("sourceEnvironment", row.sourceEnvironment());
@@ -315,7 +414,8 @@ public class OnboardingCalibrationService {
         output.put("activationStatus", activationStatus);
         try {
             Map<String, Object> derived = JSON.readValue(row.derivedJson(), new TypeReference<>() { });
-            boolean calibrationAvailable = !derived.isEmpty();
+            boolean pending = "PENDING_VERIFICATION".equals(derived.get("calibrationStatus"));
+            boolean calibrationAvailable = !derived.isEmpty() && !pending;
             output.put("calibrationAvailable", calibrationAvailable);
             if (calibrationAvailable) {
                 output.putAll(derived);
@@ -330,6 +430,11 @@ public class OnboardingCalibrationService {
                 output.put("configRevision", Math.max(row.configRevision() == null ? 0L : row.configRevision(),
                         currentComparisons.stream().mapToLong(c -> c.revision() == null ? 0L : c.revision())
                                 .max().orElse(0L)));
+            } else if (pending) {
+                output.putAll(derived);
+                output.put("calibrationAvailable", false);
+                output.put("signals", JSON.readValue(row.signalJson(), new TypeReference<Map<String, Object>>() { }));
+                output.put("comparisonConfig", List.of());
             } else {
                 if (!"DEFERRED".equals(activationStatus) || row.configRevision() == null
                         || row.configRevision() != 0L) {
@@ -380,23 +485,30 @@ public class OnboardingCalibrationService {
         }
     }
 
-    private Derived derive(Signals signals, List<TierRow> tiers) {
-        double model = modelScore(signals.model(), signals.brand());
-        // Preserve an unavailable observation as null in the canonical raw
-        // signal payload. Only the server chooses the conservative scoring
-        // baseline; the client must never turn "unknown" into a fake 0/1.
-        double memory = norm(signals.memGB() == null ? 1 : signals.memGB(), 1, 12);
-        double cores = norm(signals.cores() == null ? 2 : signals.cores(), 2, 12);
-        double pixels = norm(signals.pxDensity() == null ? 600 : signals.pxDensity(), 600, 1400);
-        double gpu = gpuScore(signals.gpu());
-        int score = (int) Math.round(MIN_SCORE + (0.30 * model + 0.25 * memory + 0.20 * cores
-                + 0.15 * gpu + 0.10 * pixels) * (MAX_SCORE - MIN_SCORE));
-        score = Math.max(MIN_SCORE, Math.min(MAX_SCORE, score));
-        BigDecimal tops = BigDecimal.valueOf(Math.max(8, Math.min(58, 28.3 + 0.99 * (score - 87))))
-                .setScale(1, RoundingMode.HALF_UP);
-        TierRow tier = tiers.stream().filter(row -> tops.doubleValue() >= row.topsMin()
-                && tops.doubleValue() <= row.topsMax()).findFirst().orElse(tiers.get(tiers.size() - 1));
-        return new Derived(score, tier.tier(), tier.name(), tops, tier.baseRateUsdt(), tier.baseRateNex());
+    private PhoneCalibrationPolicy.Hardware hardware(Signals signals) {
+        return new PhoneCalibrationPolicy.Hardware(signals.platform(), signals.model(), signals.soc(), signals.gpu(),
+                signals.memGB() == null ? null : BigDecimal.valueOf(signals.memGB()));
+    }
+
+    private Map<String,Object> derive(Signals signals, List<TierRow> tiers) {
+        PhoneCalibrationPolicy policy = activePolicy();
+        var match = policy == null ? new PhoneCalibrationPolicy.Match("RULES_UNAVAILABLE", null, null, null, 0)
+                : policy.match(hardware(signals));
+        Map<String,Object> result = new LinkedHashMap<>();
+        result.put("calibrationStatus", match.tier() == null ? "PENDING_VERIFICATION" : "MATCHED");
+        result.put("pendingReason", match.tier() == null ? match.status() : null);
+        result.put("ruleId", match.ruleId());
+        result.put("ruleVersion", match.ruleVersion());
+        result.put("computeUnit", "platform");
+        result.put("computeValue", match.computeValue());
+        result.put("score", match.computeValue() == null ? null : match.computeValue().setScale(0, RoundingMode.HALF_UP).intValue());
+        result.put("tops", match.computeValue()); // Compatibility transport field; clients display platform points.
+        result.put("tier", match.tier());
+        TierRow tier = match.tier() == null ? null : tiers.get(match.tier() - 1);
+        result.put("tierName", tier == null ? null : tier.name());
+        result.put("baseRateUsdt", tier == null ? null : tier.baseRateUsdt());
+        result.put("baseRateNex", tier == null ? null : tier.baseRateNex());
+        return result;
     }
 
     private List<Map<String, Object>> comparisonMaps(List<ComparisonRow> rows) {
@@ -437,7 +549,8 @@ public class OnboardingCalibrationService {
         return s != null && finiteOrNull(s.memGB(), 0, 128) && integerOrNull(s.cores(), 1, 256)
                 && finiteOrNull(s.pxDensity(), 1, 10000) && finiteOrNull(s.pingMs(), 0, 5000)
                 && integerOrNull(s.batteryLevel(), 0, 100)
-                && boundedText(s.model(), 128) && boundedText(s.brand(), 128) && boundedText(s.gpu(), 256);
+                && boundedText(s.model(), 128) && boundedText(s.brand(), 128) && boundedText(s.gpu(), 256)
+                && (s.platform() == null || boundedText(s.platform(), 16)) && (s.soc() == null || boundedText(s.soc(), 128));
     }
 
     private boolean validAction(ActionRequest request) {
@@ -458,25 +571,6 @@ public class OnboardingCalibrationService {
     private boolean integerOrNull(Integer value, int min, int max) {
         return value == null || (value >= min && value <= max);
     }
-    private double norm(double value, double min, double max) { return Math.max(0, Math.min(1, (value - min) / (max - min))); }
-
-    private double modelScore(String model, String brand) {
-        String value = (brand + " " + model).toLowerCase(Locale.ROOT);
-        if (value.matches(".*(iphone\\s*1[5-9]|pro\\s*max|ultra|pixel\\s*[89]|galaxy\\s*s2[2-9]).*")) return .95;
-        if (value.matches(".*(iphone\\s*1[2-4]|pixel\\s*[67]|galaxy\\s*s2[01]|oneplus|mi\\s*1[2-4]).*")) return .75;
-        if (value.matches(".*(iphone|pixel|galaxy|huawei|honor|oppo|vivo|windows|linux|macintosh|web).*")) return .55;
-        return .4;
-    }
-
-    private double gpuScore(String gpu) {
-        String value = gpu.toLowerCase(Locale.ROOT);
-        if (value.isBlank()) return .35;
-        if (value.matches(".*(a1[5-9]|a2[0-9]|adreno\\s*7[3-9]|immortalis|rtx|radeon\\s*r[x9]|apple\\s*m[1-9]).*")) return .95;
-        if (value.matches(".*(a1[1-4]|adreno\\s*6[4-9]|mali-g7|apple\\s*gpu).*")) return .70;
-        if (value.matches(".*(adreno|mali|powervr|apple).*")) return .50;
-        return .40;
-    }
-
     private String writeJson(Object value) {
         try { return JSON.writeValueAsString(value); }
         catch (JsonProcessingException exception) { throw new IllegalStateException("ONBOARDING_JSON_FAILED", exception); }
@@ -516,10 +610,11 @@ public class OnboardingCalibrationService {
     public record Request(String deviceId, long expectedRevision, String idempotencyKey, Signals signals) { }
     public record ActionRequest(String deviceId, long expectedRevision, String idempotencyKey) { }
     public record Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
-                          Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable) { }
-    private record Derived(int score, int tier, String tierName, BigDecimal tops, BigDecimal baseRateUsdt,
-                           BigDecimal baseRateNex) {
-        Map<String, Object> toMap() { return Map.of("score", score, "tier", tier, "tierName", tierName,
-                "tops", tops, "baseRateUsdt", baseRateUsdt, "baseRateNex", baseRateNex); }
+                          Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable,
+                          String platform, String soc) {
+        public Signals(Double memGB, Integer cores, String model, String brand, String gpu, Double pxDensity,
+                       Double pingMs, Integer batteryLevel, Boolean charging, Boolean networkReachable) {
+            this(memGB, cores, model, brand, gpu, pxDensity, pingMs, batteryLevel, charging, networkReachable, "", "");
+        }
     }
 }

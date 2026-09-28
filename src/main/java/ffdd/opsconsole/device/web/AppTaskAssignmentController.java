@@ -25,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppTaskAssignmentController {
     private final AppTaskAssignmentService service;
+    private final ffdd.opsconsole.onboarding.application.PhoneNativeSessionService nativeSessions;
 
     @GetMapping("/api/tasks/assignments")
     public ApiResult<AppTaskAssignmentsResponse> assignments(Authentication authentication) {
@@ -33,20 +34,24 @@ public class AppTaskAssignmentController {
     }
 
     @PostMapping("/api/tasks/assignments/claim")
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<AppTaskAssignmentView> claim(
             @RequestBody(required = false) AppTaskClaimRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
+        if (userId != null && request != null) nativeSessions.requireForDevice(authentication, request.deviceId());
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.claim(userId, idempotencyKey, request);
     }
 
     @PostMapping("/api/tasks/phone/runtime")
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<AppTaskAssignmentView> phoneRuntime(
             @RequestBody(required = false) AppPhoneRuntimeRequest request,
             Authentication authentication) {
         Long userId = userId(authentication);
+        if (userId != null && request != null) nativeSessions.requireRuntime(authentication, request.calibrationDeviceId());
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.phoneRuntime(userId, request);
     }
@@ -72,12 +77,14 @@ public class AppTaskAssignmentController {
     }
 
     @PostMapping("/api/tasks/assignments/{taskNo}/complete")
+    @org.springframework.transaction.annotation.Transactional
     public ApiResult<AppTaskAssignmentView> complete(
             @PathVariable String taskNo,
             @RequestBody(required = false) AppTaskCompleteRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
+        if (userId != null) nativeSessions.requireForTask(authentication, taskNo);
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED")
                 : service.complete(userId, taskNo, idempotencyKey, request);
     }

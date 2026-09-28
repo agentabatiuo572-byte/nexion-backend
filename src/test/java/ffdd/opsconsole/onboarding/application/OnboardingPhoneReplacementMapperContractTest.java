@@ -27,6 +27,11 @@ class OnboardingPhoneReplacementMapperContractTest {
         assertThat(cancelled).contains("status='CANCELLED'", "last_error='PHONE_REPLACED'",
                 "proof_consumed_at IS NULL", "UPPER(status) IN ('CLAIMED','RUNNING')");
         assertThat(runtime).contains("r.active_task_no=NULL", "r.online_status='OFFLINE'",
-                "r.paused_reason='PHONE_REPLACED'");
+                "THEN 'PHONE_REPLACED' ELSE r.paused_reason END", "r.heartbeat_at=NULL");
+        String restored = String.join(" ", OnboardingCalibrationMapper.class
+                .getMethod("restoreBoundPhoneRuntime", Long.class, Long.class)
+                .getAnnotation(Update.class).value());
+        assertThat(restored).contains("r.paused_reason='PHONE_REPLACED'", "r.paused_reason=NULL",
+                "r.heartbeat_at=NULL", "d.user_id=#{userId}", "d.id=#{userDeviceId}");
     }
 }

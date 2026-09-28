@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OnboardingCalibrationController {
     private final OnboardingCalibrationService service;
+    private final ffdd.opsconsole.onboarding.application.PhoneNativeSessionService nativeSessions;
 
     @PostMapping
     public ApiResult<Map<String, Object>> calibrate(
@@ -25,6 +26,7 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
+        if (userId != null && request != null) nativeSessions.require(authentication, request.deviceId());
         if (request != null && (request.idempotencyKey() == null || request.idempotencyKey().isBlank())
                 && idempotencyKey != null) {
             request = new OnboardingCalibrationService.Request(request.deviceId(), request.expectedRevision(),
@@ -45,6 +47,7 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
+        if (userId != null && request != null) nativeSessions.require(authentication, request.deviceId());
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
                 : service.activate(userId, action(request, idempotencyKey));
     }
@@ -55,6 +58,7 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
+        if (userId != null && request != null) nativeSessions.require(authentication, request.deviceId());
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
                 : service.defer(userId, action(request, idempotencyKey));
     }

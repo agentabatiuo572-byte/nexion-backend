@@ -811,7 +811,20 @@ public class OpsAuditCenterService {
                 isTrue(row.getMine()),
                 normalizeRoleGate(row.getRoleGate()),
                 row.getReason(),
-                status(row.getStatus()));
+                status(row.getStatus()), phoneCalibrationProposal(row.getCommandJson()));
+    }
+
+    private String phoneCalibrationProposal(String commandJson) {
+        AuditReplayCommand command = deserializeCommand(commandJson);
+        if (command == null || !"E".equals(command.domain()) || !"e6_phone_calibration".equals(command.op())) return null;
+        try {
+            var proposal = objectMapper.convertValue(command.params(),
+                    ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal.class);
+            return objectMapper.writeValueAsString(proposal);
+        } catch (Exception invalid) {
+            // Keep the queue readable so an invalid historical proposal can be rejected.
+            return null;
+        }
     }
 
     private List<AuditOperationHistory> history(List<AuditOperationTicket> tickets, AuditLogQueryRequest filter) {

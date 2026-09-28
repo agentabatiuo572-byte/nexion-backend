@@ -170,6 +170,9 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(403, "DEVICE_FORBIDDEN");
         }
         if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+        if (Set.of("PHONE", "MOBILE").contains(normalizeState(device.deviceType(), ""))) {
+            return ApiResult.fail(409, "PHONE_CALIBRATION_ACTIVATION_REQUIRED");
+        }
         String status = normalizeState(device.status(), "");
         boolean occupiesPhysicalSlot = !"SHARE".equals(normalizeState(device.deviceType(), "DEVICE"));
         // A lifecycle label alone is insufficient: old/incomplete rows must not acquire an activation

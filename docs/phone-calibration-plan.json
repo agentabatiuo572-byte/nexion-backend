@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 2,
+  "id": "phone-calibration-backend-20260928",
+  "title": "手机硬件规则与自动校准服务端",
+  "repo": "..",
+  "base": "66e23b8b",
+  "mode": "implement",
+  "risk": "high",
+  "owner": "/root",
+  "outOfScope": [
+    "远端部署",
+    "真机验收（主人指定交接同事）",
+    "Janus功能启用",
+    "无关资金业务"
+  ],
+  "inputs": [
+    "phone-calibration-requirements.md"
+  ],
+  "steps": [
+    {
+      "id": "guard",
+      "title": "修复手机配置独立校验",
+      "dependsOn": [],
+      "scope": [
+        "docs/phone-calibration*",
+        "scripts/verify-phone-calibration.ps1",
+        "scripts/migrations/*phone*",
+        "scripts/schema.sql",
+        "scripts/apply_startup_schema_migrations.ps1",
+        "src/main/java/ffdd/opsconsole/onboarding/**",
+        "src/main/java/ffdd/opsconsole/device/**",
+        "src/main/java/ffdd/opsconsole/platform/**",
+        "src/main/java/ffdd/opsconsole/shared/security/**",
+        "src/test/java/ffdd/opsconsole/onboarding/**",
+        "src/test/java/ffdd/opsconsole/device/**",
+        "src/test/java/ffdd/opsconsole/platform/**",
+        "src/test/java/ffdd/opsconsole/shared/security/**"
+      ],
+      "acceptance": [
+        {
+          "id": "phone-config-independent",
+          "description": "手机单写/批量写不受未改动的电脑配置阻塞，电脑非法配置仍拒绝",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "guard/tests"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "tests",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Guard"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    },
+    {
+      "id": "catalog",
+      "title": "服务端版本化规则与自动匹配",
+      "dependsOn": [
+        "guard"
+      ],
+      "scope": [
+        "docs/phone-calibration*",
+        "scripts/verify-phone-calibration.ps1",
+        "scripts/migrations/*phone*",
+        "scripts/schema.sql",
+        "scripts/apply_startup_schema_migrations.ps1",
+        "src/main/java/ffdd/opsconsole/onboarding/**",
+        "src/main/java/ffdd/opsconsole/device/**",
+        "src/main/java/ffdd/opsconsole/platform/**",
+        "src/main/java/ffdd/opsconsole/shared/security/**",
+        "src/test/java/ffdd/opsconsole/onboarding/**",
+        "src/test/java/ffdd/opsconsole/device/**",
+        "src/test/java/ffdd/opsconsole/platform/**",
+        "src/test/java/ffdd/opsconsole/shared/security/**"
+      ],
+      "acceptance": [
+        {
+          "id": "phone-rules",
+          "description": "精确规则与SoC内存规则、歧义拒绝、连续阈值、版本和生效时间正确",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "catalog/tests"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "tests",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Catalog"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    },
+    {
+      "id": "activation",
+      "title": "校准快照和激活换机约束",
+      "dependsOn": [
+        "catalog"
+      ],
+      "scope": [
+        "docs/phone-calibration*",
+        "scripts/verify-phone-calibration.ps1",
+        "scripts/migrations/*phone*",
+        "scripts/schema.sql",
+        "scripts/apply_startup_schema_migrations.ps1",
+        "src/main/java/ffdd/opsconsole/onboarding/**",
+        "src/main/java/ffdd/opsconsole/device/**",
+        "src/main/java/ffdd/opsconsole/platform/**",
+        "src/main/java/ffdd/opsconsole/shared/security/**",
+        "src/test/java/ffdd/opsconsole/onboarding/**",
+        "src/test/java/ffdd/opsconsole/device/**",
+        "src/test/java/ffdd/opsconsole/platform/**",
+        "src/test/java/ffdd/opsconsole/shared/security/**"
+      ],
+      "acceptance": [
+        {
+          "id": "phone-activation",
+          "description": "服务端自动校准，未知不可激活，换机原子替换且已购设备不变",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "activation/tests"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "tests",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Activation"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    }
+  ],
+  "integration": {
+    "id": "integration",
+    "title": "服务端集成回归与交接",
+    "dependsOn": [
+      "guard",
+      "catalog",
+      "activation"
+    ],
+    "scope": [
+      "docs/phone-calibration*",
+      "scripts/verify-phone-calibration.ps1",
+      "scripts/migrations/*phone*",
+      "scripts/schema.sql",
+      "scripts/apply_startup_schema_migrations.ps1",
+      "src/main/java/ffdd/opsconsole/onboarding/**",
+      "src/main/java/ffdd/opsconsole/device/**",
+      "src/main/java/ffdd/opsconsole/platform/**",
+      "src/main/java/ffdd/opsconsole/shared/security/**",
+      "src/test/java/ffdd/opsconsole/onboarding/**",
+      "src/test/java/ffdd/opsconsole/device/**",
+      "src/test/java/ffdd/opsconsole/platform/**",
+      "src/test/java/ffdd/opsconsole/shared/security/**"
+    ],
+    "acceptance": [
+      {
+        "id": "phone-backend-integration",
+        "description": "规则权限、审批、校准与激活接口贯通，运行未验证边界如实交接",
+        "source": {
+          "input": "phone-calibration-requirements.md",
+          "locator": "分步验收"
+        },
+        "kind": "behavior",
+        "checks": [
+          "integration/tests"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "id": "tests",
+        "argv": [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "scripts/verify-phone-calibration.ps1",
+          "-Suite",
+          "Integration"
+        ],
+        "kind": "exit",
+          "timeoutMs": 600000
+      }
+    ],
+    "reviewRequired": true
+  }
+}

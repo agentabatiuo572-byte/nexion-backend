@@ -79,6 +79,11 @@ public class OpsPlatformParamRegistryService {
                         "STRING", ComputeConfigRegistry.CONFIG_GROUP, "ADMIN", "默认值", 1, null, null)));
             }
         }
+        String phonePolicyKey = "E.compute.phoneCalibration.policy";
+        if (!rows.containsKey(phonePolicyKey)) {
+            merge(rows, fromConfig(new PlatformConfigItem(null, phonePolicyKey,
+                    "{\"revision\":0,\"current\":null,\"scheduled\":null}", "JSON", "e6_compute", "ADMIN", "尚未发布", 1, null, null)));
+        }
         int configCount = rows.size();
 
         List<Map<String, Object>> emergency = emergencyStateProvider.currentKillSwitches();
@@ -146,7 +151,9 @@ public class OpsPlatformParamRegistryService {
                 owner.code(),
                 owner.label(),
                 owner.route(),
-                retired ? "0" : secret ? "已配置（敏感值已隐藏）" : Objects.toString(item.configValue(), ""),
+                retired ? "0" : secret ? "已配置（敏感值已隐藏）"
+                        : "E.compute.phoneCalibration.policy".equals(canonicalKey)
+                        ? phonePolicySummary(item.configValue()) : Objects.toString(item.configValue(), ""),
                 valueType,
                 secret ? "" : unitFor(canonicalKey),
                 "nx_config_item",
@@ -157,6 +164,16 @@ public class OpsPlatformParamRegistryService {
                 false,
                 "",
                 false);
+    }
+
+    private String phonePolicySummary(String value) {
+        try {
+            var state = new com.fasterxml.jackson.databind.ObjectMapper().readTree(value);
+            if (!state.has("revision") || !state.path("revision").canConvertToLong()) return "配置异常，请前往 E6 检查";
+            if (state.path("revision").asLong() == 0) return "尚未发布 · 前往 E6 配置";
+            return "发布版本 " + state.path("revision").asLong()
+                    + (state.path("scheduled").isObject() ? " · 存在待生效版本" : "") + " · 前往 E6 查看规则";
+        } catch (Exception invalid) { return "配置异常，请前往 E6 检查"; }
     }
 
     /**
@@ -388,6 +405,7 @@ public class OpsPlatformParamRegistryService {
         if ("feature.ops.maintenanceBanner".equals(key)) {
             return "维护公告横幅";
         }
+        if ("E.compute.phoneCalibration.policy".equals(key)) return "手机硬件算力规则与档位分界";
         if (ComputeConfigRegistry.phoneBindingKey("allowReplacement").equals(key)) return "允许更换绑定手机";
         if (ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays").equals(key)) return "手机换绑最短间隔天数";
         if (ComputeConfigRegistry.coeffKey("h5BaseFactor").equals(key)) return "H5 基础托管系数（已退役）";

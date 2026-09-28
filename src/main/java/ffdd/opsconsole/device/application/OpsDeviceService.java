@@ -780,7 +780,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
             candidate.put(paramKey, value);
-            String invariantError = validateComputeInvariants(candidate);
+            String invariantError = validateComputeInvariants(candidate, Set.of(paramKey));
             if (invariantError == null) invariantError = validatePhonePolicyChange(candidate, Set.of(paramKey));
             if (invariantError != null) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
@@ -867,7 +867,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             Map<String, String> candidate = new LinkedHashMap<>(locked.effective());
             candidate.putAll(changed);
-            String invariantError = validateComputeInvariants(candidate);
+            String invariantError = validateComputeInvariants(candidate, changed.keySet());
             if (invariantError == null) invariantError = validatePhonePolicyChange(candidate, changed.keySet());
             if (invariantError != null) {
                 return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), invariantError);
@@ -1072,7 +1072,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     /** 跨字段结构不变量：显卡档位算力严格递增，识别词在全部档位中不产生歧义。 */
-    private String validateComputeInvariants(Map<String, String> values) {
+    private String validateComputeInvariants(Map<String, String> values, Set<String> changedKeys) {
+        // Phone policy has its own invariant below. An unchanged, unavailable
+        // computer installer must not prevent disabling or correcting phone binding.
+        if (!changedKeys.isEmpty() && changedKeys.stream().allMatch(key -> key.startsWith("E.compute.phoneBinding."))) {
+            return null;
+        }
         String shareFlag = values.getOrDefault(ComputeConfigRegistry.flagKey("computeShareEnabled"), "off");
         String installer = values.getOrDefault(ComputeConfigRegistry.downloadKey("url"), "");
         if ("on".equals(shareFlag) && sanitizeComputeDownloadUrl(installer).isBlank()) {
@@ -4911,6 +4916,33 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         decimal(p, "twoItemsPct"), decimal(p, "threeItemsPct"),
                         decimal(p, "fourPlusItemsPct"), longVal(p, "expectedVersion"), reason, operator);
                 return updateE1BundleDiscount(idem, req);
+            }
+            case "e6_phone_calibration" -> {
+                if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+                ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal proposal;
+                try {
+                    proposal = E1_AUDIT_JSON.convertValue(p,
+                            ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService.Proposal.class);
+                } catch (IllegalArgumentException invalid) {
+                    return ApiResult.fail(422, "PHONE_CALIBRATION_POLICY_INVALID");
+                }
+                ApiResult<Map<String, Object>> guard = requireCommand(idem, reason);
+                if (guard != null) return guard;
+                return deviceIdempotent("E6_PHONE_CALIBRATION", idem, "phone-calibration", proposal, () -> {
+                    var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade, clock);
+                    var before = config.read();
+                    config.candidate(proposal, before);
+                    if (coverageBelowRedline()) return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                            OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+                    var after = config.publish(proposal);
+                    auditRequired("phone.calibration_policy_published", "PHONE_CALIBRATION_POLICY", "phone-calibration",
+                            operator, detail("before", before, "after", after, "reason", reason, "idempotencyKey", idem));
+                    var published = after.scheduled() == null ? after.current() : after.scheduled();
+                    outboxService.publish("E6_COMPUTE_CONFIG", "phone-calibration",
+                            "compute.config_changed", detail("version", published.version(),
+                                    "effectiveAt", published.effectiveAt(), "operator", operator));
+                    return ApiResult.ok(after);
+                });
             }
             case "e1_sku_create" -> {
                 return createSku(idem, buildSkuUpsertRequest(p, reason, operator));

@@ -2869,6 +2869,27 @@ class OpsDeviceServiceTest {
     }
 
     @Test
+    void phonePolicyWritesIgnoreUnchangedUnavailableComputerInstaller() {
+        configFacade.values.clear();
+        configFacade.values.put(ComputeConfigRegistry.flagKey("computeShareEnabled"), "on");
+        String days = ComputeConfigRegistry.phoneBindingKey("minReplacementIntervalDays");
+        String allow = ComputeConfigRegistry.phoneBindingKey("allowReplacement");
+        A2ReplayContext.enterReplay();
+        assertThat(service.updateComputeConfigParam(days, "phone-independent-single",
+                new ComputeConfigParamUpdateRequest("30", "phone interval only", "superadmin")).getCode()).isZero();
+        assertThat(service.updateComputeConfigBatch("phone-independent-batch", new ComputeConfigBatchUpdateRequest(
+                Map.of(allow, "on", days, "60"), "phone policy only", "superadmin")).getCode()).isZero();
+        assertThat(service.computeConfig().getData().phoneBinding())
+                .isEqualTo(new ComputeConfigView.PhoneBindingView(true, 60));
+        assertThat(configFacade.values).containsEntry(ComputeConfigRegistry.flagKey("computeShareEnabled"), "on");
+        assertThat(service.updateComputeConfigBatch("phone-mixed-invalid", new ComputeConfigBatchUpdateRequest(
+                Map.of(days, "90", ComputeConfigRegistry.gpuTierKey("G1", "tops"), "41"),
+                "mixed computer and phone change", "superadmin")).getMessage())
+                .isEqualTo("COMPUTE_SHARE_INSTALLER_REQUIRED");
+        assertThat(configFacade.values).containsEntry(days, "60");
+    }
+
+    @Test
     void computeConfigReturnsDefaultsWhenConfigEmpty() {
         ApiResult<ComputeConfigView> r = newServiceWithEmptyConfig().computeConfig();
 

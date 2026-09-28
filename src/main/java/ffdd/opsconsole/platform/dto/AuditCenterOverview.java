@@ -41,7 +41,8 @@ public record AuditCenterOverview(
             boolean mine,
             String roleGate,
             String reason,
-            String status) {
+            String status,
+            String phoneCalibrationProposal) {
     }
 
     public record AuditOperationHistory(

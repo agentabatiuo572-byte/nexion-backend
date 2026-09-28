@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 2,
+  "id": "phone-calibration-backend-20260928-r4",
+  "title": "手机硬件规则与自动校准服务端",
+  "repo": "..",
+  "base": "66e23b8b",
+  "mode": "implement",
+  "risk": "high",
+  "owner": "/root",
+  "outOfScope": [
+    "远端部署",
+    "真机验收由同事执行",
+    "Janus启用",
+    "无关资金业务"
+  ],
+  "inputs": [
+    "phone-calibration-requirements.md"
+  ],
+  "steps": [
+    {
+      "id": "backend",
+      "title": "共同服务端配置、审批、校准和激活契约",
+      "dependsOn": [],
+      "scope": [
+        "docs/phone-calibration*",
+        "scripts/verify-phone-calibration.ps1",
+        "scripts/migrations/*phone*",
+        "scripts/schema.sql",
+        "scripts/apply_startup_schema_migrations.ps1",
+        "src/main/java/ffdd/opsconsole/onboarding/**",
+        "src/main/java/ffdd/opsconsole/device/**",
+        "src/main/java/ffdd/opsconsole/platform/**",
+        "src/main/java/ffdd/opsconsole/shared/security/**",
+        "src/test/java/ffdd/opsconsole/onboarding/**",
+        "src/test/java/ffdd/opsconsole/device/**",
+        "src/test/java/ffdd/opsconsole/platform/**",
+        "src/test/java/ffdd/opsconsole/shared/security/**",
+        "src/main/resources/application.yml",
+        "src/main/java/ffdd/opsconsole/shared/canonical/**",
+        "src/test/java/ffdd/opsconsole/shared/canonical/**",
+        "src/main/java/ffdd/opsconsole/shared/outbox/**",
+        "src/test/java/ffdd/opsconsole/shared/outbox/**",
+        "scripts/verify-phone-calibration*",
+        "scripts/endpoint-citation-sentinel.mjs",
+        "scripts/i18n-hardcoded-en-copy-sentinel.mjs",
+        "scripts/phone-activation-defer-contract.test.mjs",
+        "PRD/**",
+        "docs/PRD/**",
+        "docs/ops-actions.manifest.json",
+        "app/components/domain-views/a-tabs/**"
+      ],
+      "acceptance": [
+        {
+          "id": "phone-config-independent",
+          "description": "手机独立单/批写与电脑非法配置拒绝",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "backend/guard"
+          ]
+        },
+        {
+          "id": "phone-rules",
+          "description": "规则匹配、未知歧义拒绝、小数分界、版本和生效时间正确",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "backend/catalog"
+          ]
+        },
+        {
+          "id": "phone-activation",
+          "description": "服务端校准快照、激活幂等、换机约束且已购设备不受影响",
+          "source": {
+            "input": "phone-calibration-requirements.md",
+            "locator": "分步验收"
+          },
+          "kind": "behavior",
+          "checks": [
+            "backend/activation"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "guard",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Guard"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        },
+        {
+          "id": "catalog",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Catalog"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        },
+        {
+          "id": "activation",
+          "argv": [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            "scripts/verify-phone-calibration.ps1",
+            "-Suite",
+            "Activation"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    }
+  ],
+  "integration": {
+    "id": "integration",
+    "title": "服务端集成回归与交接",
+    "dependsOn": [
+      "backend"
+    ],
+    "scope": [
+      "docs/phone-calibration*",
+      "scripts/verify-phone-calibration.ps1",
+      "scripts/migrations/*phone*",
+      "scripts/schema.sql",
+      "scripts/apply_startup_schema_migrations.ps1",
+      "src/main/java/ffdd/opsconsole/onboarding/**",
+      "src/main/java/ffdd/opsconsole/device/**",
+      "src/main/java/ffdd/opsconsole/platform/**",
+      "src/main/java/ffdd/opsconsole/shared/security/**",
+      "src/test/java/ffdd/opsconsole/onboarding/**",
+      "src/test/java/ffdd/opsconsole/device/**",
+      "src/test/java/ffdd/opsconsole/platform/**",
+      "src/test/java/ffdd/opsconsole/shared/security/**",
+      "scripts/**",
+      "PRD/**",
+      "docs/PRD/**",
+      "docs/ops-actions.manifest.json"
+    ],
+    "acceptance": [
+      {
+        "id": "phone-backend-integration",
+        "description": "审批与校准激活契约回归，未执行真机和部署明确交接",
+        "source": {
+          "input": "phone-calibration-requirements.md",
+          "locator": "分步验收"
+        },
+        "kind": "behavior",
+        "checks": [
+          "integration/tests"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "id": "tests",
+        "argv": [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "scripts/verify-phone-calibration.ps1",
+          "-Suite",
+          "Integration"
+        ],
+        "kind": "exit",
+        "timeoutMs": 600000
+      },
+      {
+        "id": "mysql",
+        "argv": [
+          "pwsh",
+          "-NoProfile",
+          "-File",
+          "scripts/verify-phone-calibration-mysql.ps1"
+        ],
+        "kind": "exit",
+        "timeoutMs": 600000
+      }
+    ],
+    "reviewRequired": true
+  }
+}

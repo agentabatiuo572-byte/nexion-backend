@@ -7037,7 +7037,7 @@ ON DUPLICATE KEY UPDATE config_key=config_key;
 CREATE TABLE IF NOT EXISTS nx_onboarding_calibration (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id BIGINT NOT NULL,
-  device_id VARCHAR(128) NOT NULL,
+  device_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
   user_device_id BIGINT NULL,
   signal_json JSON NOT NULL,
   derived_json JSON NOT NULL,
@@ -7279,4 +7279,34 @@ CREATE TABLE IF NOT EXISTS nx_app_conversation_dismissal (
   through_message_id BIGINT NOT NULL,
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (user_id, conversation_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_phone_binding (
+  user_id BIGINT NOT NULL,
+  source_environment VARCHAR(16) NOT NULL,
+  run_id VARCHAR(96) NOT NULL DEFAULT '',
+  installation_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  execution_installation_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  user_device_id BIGINT NOT NULL,
+  hardware_key VARCHAR(64) NOT NULL DEFAULT '',
+  changed_at DATETIME(6) NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
+  PRIMARY KEY (user_id,source_environment,run_id),
+  KEY idx_phone_binding_device (user_device_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS nx_phone_native_session (
+  user_id BIGINT NOT NULL,
+  session_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  installation_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  nonce VARCHAR(64) NOT NULL,
+  payload VARCHAR(1024) NOT NULL,
+  challenge_expires_at BIGINT NOT NULL,
+  verified_until BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id,session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS nx_phone_installation_key (
+  user_id BIGINT NOT NULL,
+  installation_id VARCHAR(128) COLLATE utf8mb4_bin NOT NULL,
+  key_hash CHAR(64) NOT NULL,
+  PRIMARY KEY (user_id,installation_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

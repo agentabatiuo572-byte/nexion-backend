@@ -303,7 +303,9 @@ public interface OnboardingCalibrationMapper {
     @Update("""
             UPDATE nx_user_device_runtime r
               JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=#{userId}
-               SET r.active_task_no=NULL,r.online_status='OFFLINE',r.paused_reason='PHONE_REPLACED',
+               SET r.active_task_no=NULL,r.online_status='OFFLINE',
+                   r.paused_reason=CASE WHEN r.paused_reason IS NULL OR r.paused_reason IN ('','PHONE_LOW_BATTERY','PHONE_OFFLINE','PHONE_REPLACED') THEN 'PHONE_REPLACED' ELSE r.paused_reason END,
+                   r.heartbeat_at=NULL,
                    r.updated_at=NOW(6)
              WHERE d.id<>#{keepUserDeviceId} AND d.source_channel='ONBOARDING'
                AND d.source_environment='PRODUCTION' AND d.run_id=''
@@ -313,6 +315,15 @@ public interface OnboardingCalibrationMapper {
                                   @Param("keepUserDeviceId") Long keepUserDeviceId);
 
     record ReplacedPhoneTask(String taskNo, Long userDeviceId) { }
+
+    @Update("""
+            UPDATE nx_user_device_runtime r JOIN nx_user_device d ON d.id=r.user_device_id
+               SET r.paused_reason=NULL,r.online_status='OFFLINE',r.heartbeat_at=NULL,r.updated_at=NOW(6)
+             WHERE d.user_id=#{userId} AND d.id=#{userDeviceId} AND d.source_channel='ONBOARDING'
+               AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.is_deleted=0 AND r.is_deleted=0
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE') AND r.paused_reason='PHONE_REPLACED'
+            """)
+    int restoreBoundPhoneRuntime(@Param("userId") Long userId,@Param("userDeviceId") Long userDeviceId);
 
     @Update("""
             UPDATE nx_onboarding_calibration
@@ -360,6 +371,67 @@ public interface OnboardingCalibrationMapper {
              ORDER BY c.sort_order,c.config_key
             """)
     List<ComparisonRow> activeComparisons();
+
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.soc')) soc,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.gpu')) gpu,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.memGB')) AS DECIMAL(10,3)) memoryGb,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.tier')) AS SIGNED) tier,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.computeValue')) AS DECIMAL(12,3)) computeValue,
+                   COUNT(*) count
+              FROM nx_onboarding_calibration
+             WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
+             GROUP BY platform,model,soc,gpu,memoryGb,tier,computeValue
+            """)
+    List<HardwareGroup> calibrationHardwareGroups();
+
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.platform')) platform,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.model')) model,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.soc')) soc,
+                   JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.gpu')) gpu,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(signal_json,'$.memGB')) AS DECIMAL(10,3)) memoryGb,
+                   NULL tier,NULL computeValue,COUNT(*) count
+              FROM nx_onboarding_calibration
+             WHERE is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
+               AND JSON_UNQUOTE(JSON_EXTRACT(derived_json,'$.calibrationStatus'))='PENDING_VERIFICATION'
+             GROUP BY platform,model,soc,gpu,memoryGb ORDER BY count DESC LIMIT 100
+            """)
+    List<HardwareGroup> pendingHardware();
+
+    @Select("""
+            SELECT installation_id installationId,user_device_id userDeviceId,hardware_key hardwareKey,
+                   CAST(UNIX_TIMESTAMP(changed_at)*1000 AS UNSIGNED) changedAt,version
+              FROM nx_phone_binding WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment}
+                AND run_id=#{runId} FOR UPDATE
+            """)
+    PhoneBindingRow phoneBinding(@Param("userId") Long userId, @Param("sourceEnvironment") String sourceEnvironment,
+                                @Param("runId") String runId);
+
+    @Insert("""
+            INSERT INTO nx_phone_binding
+                (user_id,source_environment,run_id,installation_id,execution_installation_id,user_device_id,hardware_key,changed_at,version)
+            VALUES (#{userId},#{sourceEnvironment},#{runId},#{installationId},#{installationId},#{userDeviceId},#{hardwareKey},NOW(6),1)
+            ON DUPLICATE KEY UPDATE
+                changed_at=IF(installation_id=VALUES(installation_id)
+                    AND (hardware_key='' OR hardware_key=VALUES(hardware_key)),changed_at,NOW(6)),
+                installation_id=VALUES(installation_id),user_device_id=VALUES(user_device_id),
+                execution_installation_id=VALUES(execution_installation_id),
+                hardware_key=VALUES(hardware_key),version=version+1
+            """)
+    int savePhoneBinding(@Param("userId") Long userId, @Param("installationId") String installationId,
+                         @Param("userDeviceId") Long userDeviceId, @Param("hardwareKey") String hardwareKey,
+                         @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
+
+    record PhoneBindingRow(String installationId, Long userDeviceId, String hardwareKey, long changedAt, long version) { }
+
+    @Update("UPDATE nx_phone_binding SET execution_installation_id=#{deviceId} "
+            + "WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND run_id=''")
+    int claimPhoneExecution(@Param("userId") Long userId, @Param("deviceId") String deviceId);
+    record HardwareGroup(String platform, String model, String soc, String gpu, BigDecimal memoryGb,
+                         Integer tier, BigDecimal computeValue, long count) { }
 
     record CalibrationWrite(Long userId, String deviceId, String signalJson, String derivedJson,
                             String comparisonJson, Long configRevision, String idempotencyKey, String requestHash,

@@ -48,6 +48,15 @@ class AuditReplayBusinessPermissionGuardTest {
     }
 
     @Test
+    void invalidPhoneRulesCannotEnterTheApprovalQueue() {
+        authenticate("device_e6_write");
+        assertThat(guard.validateProposal(new AuditReplayCommand("E","e6_phone_calibration",
+                Map.of("expectedRevision",0,"effectiveAt",0,"thresholds",List.of(),"rules",List.of()))).getCode()).isEqualTo(422);
+        assertThat(guard.validateProposal(new AuditReplayCommand("E","e6_phone_calibration",
+                Map.of("expectedRevision",0,"effectiveAt",0,"thresholds",List.of(10,20,30,40),"rules",List.of()))).getCode()).isZero();
+    }
+
+    @Test
     void sensitiveSectionProposalRejectsUserWithOnlyStandardPublishPermission() {
         when(repository.listTrustSections()).thenReturn(List.of(
                 new TrustSectionView("financials", "财务", "指标", "v1", "published", "today", "合规", true)));

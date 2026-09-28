@@ -31,11 +31,18 @@ class OnboardingCalibrationServiceTest {
     private final Environment environment = mock(Environment.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
+    private final ffdd.opsconsole.platform.facade.PlatformConfigFacade configFacade =
+            mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
     private final OnboardingCalibrationService service = new OnboardingCalibrationService(
-            mapper, null, environment, audit, outbox);
+            mapper, null, environment, audit, outbox, configFacade, java.time.Clock.systemUTC());
 
     @BeforeEach
     void config() {
+        when(configFacade.activeValue(PhoneCalibrationConfigService.KEY)).thenReturn(java.util.Optional.of(
+                "{\"revision\":1,\"current\":{\"version\":1,\"effectiveAt\":0,\"thresholds\":[19,25,35,47],\"rules\":["
+                + "{\"id\":\"fixture\",\"platform\":\"android\",\"model\":\"\",\"soc\":\"test soc\",\"gpu\":\"Mali-G715\","
+                + "\"minMemoryGb\":1,\"maxMemoryGb\":129,\"computeValue\":28.3,\"evidence\":\"Test only\"}]},\"scheduled\":null}"));
+        when(mapper.savePhoneBinding(any(), any(), any(), any(), any(), any())).thenReturn(1);
         when(environment.getActiveProfiles()).thenReturn(new String[] {"prod"});
         when(mapper.userSandbox(9L)).thenReturn(0);
         when(mapper.userSandbox(10L)).thenReturn(0);
@@ -382,11 +389,68 @@ class OnboardingCalibrationServiceTest {
         return new TierRow(tier, "T" + tier, min, max, new BigDecimal(usdt), new BigDecimal(nex), 7L);
     }
 
+    @Test
+    void replacementSwitchAndCooldownAreEnforcedBeforeAnyDeviceMutation() {
+        var command = new OnboardingCalibrationService.ActionRequest("new-phone",3L,"replace-phone-001");
+        when(mapper.findForUpdate(9L,"new-phone")).thenReturn(actionRow(9L,"new-phone",null,3L,"CALIBRATED",null,null));
+        when(mapper.phoneBinding(9L,"PRODUCTION", "")).thenReturn(
+                new OnboardingCalibrationMapper.PhoneBindingRow("old-phone",33L,"",System.currentTimeMillis(),1L));
+        assertThatThrownBy(() -> service.activate(9L,command)).hasMessageContaining("PHONE_REPLACEMENT_DISABLED");
+        when(configFacade.activeValue("E.compute.phoneBinding.allowReplacement")).thenReturn(java.util.Optional.of("on"));
+        when(configFacade.activeValue("E.compute.phoneBinding.minReplacementIntervalDays")).thenReturn(java.util.Optional.of("30"));
+        assertThatThrownBy(() -> service.activate(9L,command)).hasMessageContaining("PHONE_REPLACEMENT_COOLDOWN");
+        verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
+    void nativeLoginStopsPreviousPhoneEvenWhenReplacementIsDeniedWithoutMovingTheBindingClock() {
+        when(mapper.phoneBinding(9L,"PRODUCTION", "")).thenReturn(
+                new OnboardingCalibrationMapper.PhoneBindingRow("old-phone",33L,"",System.currentTimeMillis(),1L));
+        when(mapper.lockOtherPhoneTasks(9L,-1L)).thenReturn(List.of());
+        assertThat(service.phoneLogin(9L,"new-phone").get("status")).isEqualTo("PHONE_REPLACEMENT_DISABLED");
+        verify(mapper).claimPhoneExecution(9L,"new-phone");
+        verify(mapper).clearReplacedPhoneRuntime(9L,-1L);
+        verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
+        verify(mapper,never()).deactivateOtherPhoneDevices(any(),any(),any(),any());
+        when(mapper.find(9L,"old-phone")).thenReturn(actionRow(9L,"old-phone",33L,3L,"ACTIVE",null,null));
+        assertThat(service.phoneLogin(9L,"old-phone").get("status")).isEqualTo("BOUND");
+        verify(mapper).claimPhoneExecution(9L,"old-phone");
+        verify(mapper).restoreBoundPhoneRuntime(9L,33L);
+        var order = org.mockito.Mockito.inOrder(mapper);
+        order.verify(mapper).lockUserSandbox(9L);
+        order.verify(mapper).phoneBinding(9L,"PRODUCTION", "");
+    }
+
+    @Test
+    void caseVariantCannotUseAnOldCalibrationToBypassReplacementPolicy() {
+        when(mapper.findForUpdate(9L,"PHONE")).thenReturn(actionRow(9L,"phone",44L,3L,"CALIBRATED",null,null));
+        assertThatThrownBy(() -> service.activate(9L,new OnboardingCalibrationService.ActionRequest("PHONE",3L,"case-variant-001")))
+                .hasMessageContaining("PHONE_INSTALLATION_ID_MISMATCH");
+        verify(mapper,never()).savePhoneBinding(any(),any(),any(),any(),any(),any());
+        verify(mapper,never()).upsertPhoneDevice(any(),any(),any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
+    @Test
+    void unknownHardwarePersistsPendingRatherThanAnInventedTier() {
+        var command = request("unknown-phone",0L,"pending-phone-001",8,8,"Unknown","Brand","Unknown GPU",900,50,true);
+        var saved = new java.util.concurrent.atomic.AtomicReference<OnboardingCalibrationMapper.CalibrationWrite>();
+        when(mapper.insert(any())).thenAnswer(invocation -> { saved.set(invocation.getArgument(0)); return 1; });
+        when(mapper.find(9L,"unknown-phone")).thenAnswer(invocation -> {
+            var row = saved.get();
+            return new CalibrationRow(9L,"unknown-phone",row.signalJson(),row.derivedJson(),row.comparisonJson(),"server",true,7L,1L,"pending-phone-001","hash");
+        });
+        var result = service.calibrate(9L,command);
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData()).containsEntry("calibrationStatus","PENDING_VERIFICATION")
+                .containsEntry("calibrationAvailable",false).containsEntry("tier",null).containsEntry("computeValue",null);
+        assertThat(saved.get().derivedJson()).contains("PENDING_VERIFICATION");
+    }
+
     private OnboardingCalibrationService.Request request(String deviceId, long expected, String key, double mem,
                                                           int cores, String model, String brand, String gpu,
                                                           double px, int battery, boolean charging) {
         return new OnboardingCalibrationService.Request(deviceId, expected, key,
-                new OnboardingCalibrationService.Signals(mem, cores, model, brand, gpu, px, 42.0, battery, charging, true));
+                new OnboardingCalibrationService.Signals(mem, cores, model, brand, gpu, px, 42.0, battery, charging, true, "android", "test soc"));
     }
 
     private CalibrationRow row(long userId, String deviceId, long version, String key, String hash, long revision) {
@@ -396,8 +460,10 @@ class OnboardingCalibrationServiceTest {
 
     private CalibrationRow actionRow(long userId, String deviceId, Long userDeviceId, long version,
                                      String status, String actionKey, String actionHash) {
-        return new CalibrationRow(userId, deviceId, userDeviceId, "{\"memGB\":8}",
-                "{\"score\":87,\"tier\":3,\"tops\":28.3,\"baseRateUsdt\":0.060000,\"baseRateNex\":10}",
+        return new CalibrationRow(userId, deviceId, userDeviceId,
+                "{\"memGB\":8,\"platform\":\"android\",\"soc\":\"test soc\",\"model\":\"Pixel 8\",\"gpu\":\"Mali-G715\"}",
+                "{\"score\":28,\"tier\":3,\"tops\":28.3,\"baseRateUsdt\":0.060000,\"baseRateNex\":10,"
+                        + "\"calibrationStatus\":\"MATCHED\",\"computeValue\":28.3,\"ruleId\":\"fixture\",\"ruleVersion\":1}",
                 "[{\"key\":\"phone\"}]", "server", true, 7L, version, "cal-key", "cal-hash",
                 status, actionKey, actionHash, "PRODUCTION", "");
     }

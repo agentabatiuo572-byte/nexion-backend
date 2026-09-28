@@ -34,19 +34,19 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(6);
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).extracting(row -> row.domain()).contains("A", "E", "G", "I", "J");
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).filteredOn(row -> row.canonicalKey().equals("feature.ops.maintenanceBanner"))
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(6);
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).extracting(row -> row.domain()).contains("A", "E", "G", "I", "J");
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).filteredOn(row -> row.canonicalKey().equals("feature.ops.maintenanceBanner"))
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row.currentValue()).isEqualTo("off");
                     assertThat(row.ownerCode()).isEqualTo("A3");
                     assertThat(row.ownerRoute()).isEqualTo("/platform/config");
                 });
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).filteredOn(row -> row.canonicalKey().equals("emergency.geo-block"))
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).filteredOn(row -> row.canonicalKey().equals("emergency.geo-block"))
                 .singleElement()
                 .satisfies(row -> assertThat(row.ownerRoute()).isEqualTo("/emergency/geo-block"));
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).filteredOn(row -> row.canonicalKey().equals("E.task.queueSaturation"))
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).filteredOn(row -> row.canonicalKey().equals("E.task.queueSaturation"))
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row.ownerCode()).isEqualTo("E2");
@@ -76,7 +76,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(1);
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(1);
         assertThat(overview.sources()).filteredOn(source -> source.key().equals("emergency"))
                 .singleElement()
                 .satisfies(source -> assertThat(source.status()).isEqualTo("PARTIAL"));
@@ -89,7 +89,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement().satisfies(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.currentValue()).isEqualTo("已配置（敏感值已隐藏）");
             assertThat(row.currentValue()).doesNotContain("plain-secret");
             assertThat(row.valueType()).isEqualTo("SECRET");
@@ -110,7 +110,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).extracting(row -> row.ownerCode())
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).extracting(row -> row.ownerCode())
                 .containsExactlyInAnyOrder("E2", "H3", "H1", "H8", "G4", "D5", "D3");
     }
 
@@ -123,7 +123,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(2).allSatisfy(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(2).allSatisfy(row -> {
             assertThat(row.domain()).isEqualTo("G");
             assertThat(row.ownerCode()).isEqualTo("G1");
             assertThat(row.ownerRoute()).isEqualTo("/finance-products/staking");
@@ -139,7 +139,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(2).allSatisfy(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(2).allSatisfy(row -> {
             assertThat(row.domain()).isEqualTo("E");
             assertThat(row.ownerCode()).isEqualTo("E6");
             assertThat(row.ownerRoute()).isEqualTo("/devices/compute-config");
@@ -156,11 +156,11 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).extracting(row -> row.ownerCode())
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).extracting(row -> row.ownerCode())
                 .containsExactlyInAnyOrder("D7", "K1", "H9");
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).extracting(row -> row.ownerRoute())
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).extracting(row -> row.ownerRoute())
                 .containsExactlyInAnyOrder("/finance/payout-vnd", "/risk/multi-account", "/growth/public-stats");
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).filteredOn(row -> row.ownerCode().equals("K1"))
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).filteredOn(row -> row.ownerCode().equals("K1"))
                 .singleElement()
                 .satisfies(row -> assertThat(row.domainLabel()).isEqualTo("风控与反作弊"));
     }
@@ -173,7 +173,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement().satisfies(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.domain()).isEqualTo("F");
             assertThat(row.ownerCode()).isEqualTo("F2");
             assertThat(row.ownerRoute()).isEqualTo("/network/royalty");
@@ -190,15 +190,15 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement().satisfies(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.canonicalKey()).isEqualTo("feature.ops.maintenanceBanner");
             assertThat(row.ownerCode()).isEqualTo("A3");
             assertThat(row.currentValue()).isEqualTo("off");
         });
         assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
         assertThat(overview.sources().get(0).detail()).contains("2 项", "未展示");
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(3);
-        assertThat(overview.stats().registeredCount()).isEqualTo(3);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(4);
+        assertThat(overview.stats().registeredCount()).isEqualTo(4);
         assertThat(overview.toString()).doesNotContain("private-configuration-payload");
     }
 
@@ -213,7 +213,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(4).allSatisfy(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(4).allSatisfy(row -> {
             assertThat(row.ownerCode()).isEqualTo("E1");
             assertThat(row.ownerRoute()).isEqualTo("/devices/pricing");
         });
@@ -229,12 +229,12 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement()
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement()
                 .satisfies(row -> assertThat(row.canonicalKey()).isEqualTo("emergency.gate.exchange"));
         assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(2);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(3);
         assertThat(overview.sources().get(1).rowCount()).isEqualTo(1);
-        assertThat(overview.stats().registeredCount()).isEqualTo(3);
+        assertThat(overview.stats().registeredCount()).isEqualTo(4);
         assertThat(overview.toString()).doesNotContain("private-provider-value", "future.provider.credentials");
     }
 
@@ -257,12 +257,12 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement().satisfies(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.canonicalKey()).isEqualTo("growth.public_stats.version");
             assertThat(row.ownerCode()).isEqualTo("H9");
         });
-        assertThat(overview.stats().registeredCount()).isEqualTo(3);
-        assertThat(overview.sources().get(0).rowCount()).isEqualTo(3);
+        assertThat(overview.stats().registeredCount()).isEqualTo(4);
+        assertThat(overview.sources().get(0).rowCount()).isEqualTo(4);
     }
 
     @Test
@@ -273,7 +273,7 @@ class OpsPlatformParamRegistryServiceTest {
             when(source.findAllActive()).thenReturn(List.of(unknown));
             when(emergency.currentKillSwitches()).thenReturn(List.of());
             PlatformParamRegistryOverview overview = service.overview().getData();
-            assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).isEmpty();
+            assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).isEmpty();
             assertThat(overview.sources().get(0).status()).isEqualTo("PARTIAL");
             assertThat(overview.sources().get(0).detail()).contains("1 项", "未展示");
         }
@@ -299,8 +299,8 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).hasSize(2);
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).allSatisfy(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).hasSize(2);
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).allSatisfy(row -> {
             assertThat(row.live()).isTrue();
             assertThat(row.stale()).isFalse();
             assertThat(row.observedAt()).isEqualTo("2026-09-20T04:41:07");
@@ -308,7 +308,7 @@ class OpsPlatformParamRegistryServiceTest {
             //    这里误传 false 会让 A5 整页判为一致性失败(一条参数都读不到)。
             assertThat(row.serverCanonical()).isTrue();
         });
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList())
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList())
                 .filteredOn(row -> row.canonicalKey().equals("admin.health.event_pipeline"))
                 .singleElement()
                 .satisfies(row -> {
@@ -328,7 +328,7 @@ class OpsPlatformParamRegistryServiceTest {
 
         PlatformParamRegistryOverview overview = service.overview().getData();
 
-        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.")).toList()).singleElement().satisfies(row -> {
+        assertThat(overview.rows().stream().filter(row -> !row.canonicalKey().startsWith("E.compute.phoneBinding.") && !row.canonicalKey().equals("E.compute.phoneCalibration.policy")).toList()).singleElement().satisfies(row -> {
             assertThat(row.stale()).isTrue();
             assertThat(row.sourceStatus()).isEqualTo("PARTIAL");
             assertThat(row.currentValue()).contains("读取失败");
@@ -341,7 +341,12 @@ class OpsPlatformParamRegistryServiceTest {
         when(source.findAllActive()).thenReturn(List.of(item("E.compute.h5BaseFactor", "0.9", "e6_compute")));
         when(emergency.currentKillSwitches()).thenReturn(List.of());
         var rows = service.overview().getData().rows();
-        assertThat(rows).hasSize(3);
+        assertThat(rows).hasSize(4);
+        assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneCalibration.policy"))
+                .singleElement().satisfies(row -> {
+                    assertThat(row.currentValue()).isEqualTo("尚未发布 · 前往 E6 配置");
+                    assertThat(row.ownerRoute()).isEqualTo("/devices/compute-config");
+                });
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.allowReplacement"))
                 .singleElement().satisfies(row -> assertThat(row.currentValue()).isEqualTo("off"));
         assertThat(rows).filteredOn(row -> row.canonicalKey().equals("E.compute.phoneBinding.minReplacementIntervalDays"))
