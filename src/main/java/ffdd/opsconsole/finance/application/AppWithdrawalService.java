@@ -789,9 +789,7 @@ public class AppWithdrawalService {
 
     private boolean cryptoPayoutAllowed() {
         String mode = environment.getProperty("nexion.finance.cregis.mode", "DISABLED");
-        return !"PROVIDER".equalsIgnoreCase(mode)
-                || Boolean.TRUE.equals(environment.getProperty(
-                        "nexion.finance.cregis.payout-enabled", Boolean.class, false));
+        return !"PROVIDER".equalsIgnoreCase(mode);
     }
 
     private boolean withdrawGateEnabled() {

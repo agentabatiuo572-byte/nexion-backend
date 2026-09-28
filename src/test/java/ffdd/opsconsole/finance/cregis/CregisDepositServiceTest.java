@@ -36,6 +36,7 @@ class CregisDepositServiceTest {
     void creditsOnlySignedProviderAndChainConfirmedNetAmountWithFinanceVoucher() throws Exception {
         CregisProperties props = properties();
         CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisGateway gateway = mock(CregisGateway.class);
         BscDepositProof chain = mock(BscDepositProof.class);
@@ -53,7 +54,7 @@ class CregisDepositServiceTest {
                         "allocationHash", BLOCK)));
         when(chain.blockHash(100)).thenReturn(BLOCK);
         when(db.lockEvent(88, 77)).thenReturn(List.of());
-        when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE"));
+        when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
         when(db.lockActiveUser(42)).thenReturn(42L);
         when(db.insertEvent(eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
                 argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ONE), eq(new BigDecimal("9")),
@@ -81,14 +82,63 @@ class CregisDepositServiceTest {
     }
 
     @Test
-    void rejectsUnsignedCallbackBeforeDatabaseWrite() {
+    void rejectsUnsignedCallbackAfterPreservingDeliveryEvidence() {
         CregisDepositMapper db = mock(CregisDepositMapper.class);
         CregisDepositService service = new CregisDepositService(properties(),
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
                 mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
         assertThat(service.receive("{\"pid\":88,\"cid\":77}")).isEqualTo("rejected");
-        verify(db, never()).insertDelivery(any(), any(), any(), any(), any(), any(), anyInt(), any());
+        verify(db).insertDelivery(any(), any(), any(), any(), any(), any(), anyInt(),
+                org.mockito.ArgumentMatchers.eq("INVALID_SIGNATURE"), any(), anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
+    void rejectsSignedCallbackFromUnlistedPeerWithEvidence() throws Exception {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        CregisDepositService service = new CregisDepositService(properties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(service.receive(signedCallback(), "192.0.2.5")).isEqualTo("rejected");
+        verify(db).insertDelivery(any(), any(), any(), any(), any(), any(), eq(0),
+                eq("INVALID_SOURCE_IP"), eq("192.0.2.5"), eq(1), eq(1), eq(0));
+        verify(db, never()).lockProvisionGate();
+    }
+
+    @Test
+    void verifiedDepositWhileCreditPausedBecomesReviewHoldWithoutWalletCredit() throws Exception {
+        CregisProperties props = properties();
+        props.setDepositCreditEnabled(false);
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        when(db.unresolvedExposure(88)).thenReturn(BigDecimal.ZERO);
+        when(db.lockProvisionGate()).thenReturn(Map.of("state", "BLOCKED", "creditEnabled", 0));
+        when(db.addressOwner(88, CregisConstants.BSC_CHAIN_ID, ADDRESS)).thenReturn(List.of(Map.of(
+                "userId", 42L, "allocationBlock", 100L, "allocationHash", BLOCK)));
+        when(db.insertEvent(eq(42L), eq(88L), eq(77L), eq(TXID), eq(0), eq(ADDRESS),
+                argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO),
+                eq(101L), eq(BLOCK), eq(15), eq("REVIEW_HOLD"))).thenReturn(1);
+        CregisGatewayRouter router = mock(CregisGatewayRouter.class);
+        CregisGateway provider = mock(CregisGateway.class);
+        when(router.provider()).thenReturn(provider);
+        when(provider.depositsByTxid(TXID)).thenReturn(List.of(new CregisGateway.DepositTrade(
+                77, CregisConstants.BSC_CHAIN_ID, CregisConstants.USDT_BEP20_TOKEN_ID,
+                ADDRESS, BigDecimal.TEN, TXID, 1)));
+        BscDepositProof chain = mock(BscDepositProof.class);
+        when(chain.verify(eq(TXID), eq(ADDRESS), argThat(n -> n.compareTo(BigDecimal.TEN) == 0), eq(101L)))
+                .thenReturn(Optional.of(new BscDepositProof.Proof(0, 101, BLOCK, 15)));
+        when(chain.blockHash(100)).thenReturn(BLOCK);
+        PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
+        when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        CregisDepositService service = new CregisDepositService(props, router, chain,
+                new CregisSigner(), new ObjectMapper(), db, manager,
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        String raw = signedCallback();
+        assertThat(service.receive(raw)).isEqualTo("success");
+        when(db.pendingDeliveries()).thenReturn(List.of(Map.of("id", 1L, "rawJson", raw)));
+        service.reconcile();
+        verify(db).finishDelivery(1, "REVIEW_HOLD");
+        verify(db, never()).creditWallet(any(), anyLong(), anyLong());
     }
 
     @Test
@@ -117,7 +167,7 @@ class CregisDepositServiceTest {
         CregisProperties enabled = properties();
         enabled.setDepositEnabled(true);
         enabled.setDepositCreditEnabled(false);
-        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE"));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
         CregisDepositService provider = new CregisDepositService(enabled,
                 mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
                 new ObjectMapper(), db, mock(PlatformTransactionManager.class),
@@ -132,6 +182,7 @@ class CregisDepositServiceTest {
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
         CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisGateway gateway = mock(CregisGateway.class);
         when(router.provider()).thenReturn(gateway);
@@ -151,9 +202,10 @@ class CregisDepositServiceTest {
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
         CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
         when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
                 "projectId", 88L, "state", "READY", "address", ADDRESS)));
-        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE"));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1));
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisDepositService service = new CregisDepositService(props, router, mock(BscDepositProof.class),
                 new CregisSigner(), new ObjectMapper(), db, mock(PlatformTransactionManager.class),
@@ -168,6 +220,7 @@ class CregisDepositServiceTest {
         props.setDepositEnabled(true);
         props.setDepositPilotUserIds("42");
         CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
         CregisGatewayRouter router = mock(CregisGatewayRouter.class);
         CregisGateway provider = mock(CregisGateway.class);
         BscDepositProof chain = mock(BscDepositProof.class);
@@ -178,7 +231,7 @@ class CregisDepositServiceTest {
         when(chain.blockHash(120)).thenReturn(BLOCK);
         when(db.cursor()).thenReturn(107L);
         when(db.lockCursor()).thenReturn(107L);
-        when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE"));
+        when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 1, "creditEnabled", 1));
         when(db.lockUnassignedAddress(88, CregisConstants.BSC_CHAIN_ID))
                 .thenReturn(Map.of("id", 1L, "address", ADDRESS));
         when(router.provider()).thenReturn(provider);
@@ -197,6 +250,7 @@ class CregisDepositServiceTest {
     @Test
     void lateSignedProviderFailureFreezesAccountAndReservesCoverableBalance() throws Exception {
         CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         when(db.lockEvent(88, 77)).thenReturn(List.of(Map.of(
@@ -224,13 +278,54 @@ class CregisDepositServiceTest {
         verify(db, never()).creditWallet(any(), anyLong(), anyLong());
     }
 
+    @Test
+    void exposureAtExactlyFiveHundredTripsAllThreeSwitches() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
+        when(db.unresolvedExposure(88)).thenReturn(new BigDecimal("500.000000"));
+        PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
+        when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        CregisDepositService service = new CregisDepositService(properties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, manager, mock(TreasuryLedgerRepository.class),
+                mock(FinanceWithdrawalControlFacade.class));
+        service.tripIfNeeded();
+        verify(db).tripAll("CREGIS_UNRESOLVED_EXPOSURE_500");
+        verify(db).insertRiskAlert(eq(88L), eq("unresolved-exposure-500"), eq("P0"),
+                eq("UNRESOLVED_EXPOSURE"), any());
+    }
+
+    @Test
+    void disabledDatabaseAssignmentSwitchHidesExistingAddress() {
+        CregisProperties props = properties();
+        props.setDepositEnabled(true);
+        props.setDepositPilotUserIds("42");
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        riskReady(db);
+        when(db.addressForUser(42, CregisConstants.BSC_CHAIN_ID)).thenReturn(List.of(Map.of(
+                "projectId", 88L, "state", "READY", "address", ADDRESS)));
+        when(db.provisionGate()).thenReturn(Map.of("state", "IDLE", "assignEnabled", 0));
+        CregisDepositService service = new CregisDepositService(props,
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(service.address(42)).containsEntry("enabled", false);
+    }
+
     private static CregisProperties properties() {
         CregisProperties props = new CregisProperties();
         props.setMode(CregisProperties.Mode.PROVIDER);
         props.setProjectId(88);
         props.setApiKey(KEY);
         props.setDepositCreditEnabled(true);
+        props.setCallbackSourceIps("127.0.0.1");
         return props;
+    }
+
+    private static void riskReady(CregisDepositMapper db) {
+        when(db.unresolvedExposure(88)).thenReturn(BigDecimal.ZERO);
+        when(db.lockProvisionGate()).thenReturn(Map.of("state", "IDLE",
+                "assignEnabled", 1, "creditEnabled", 1));
     }
 
     private static String signedCallback() throws Exception {

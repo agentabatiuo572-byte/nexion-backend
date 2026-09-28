@@ -24,6 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class CregisDepositService {
     private static final String CHAIN = CregisConstants.BSC_CHAIN_ID;
     private static final String TOKEN = CregisConstants.USDT_BEP20_TOKEN_ID;
+    private static final BigDecimal EXPOSURE_TRIP = new BigDecimal("500");
     private final CregisProperties config;
     private final CregisGatewayRouter router;
     private final BscDepositProof chain;
@@ -53,6 +54,7 @@ public class CregisDepositService {
     public Map<String, Object> address(long userId) {
         if (userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED");
         if (!pilot(userId)) return Map.of("enabled", false, "network", "BEP20");
+        tripIfNeeded();
         if (config.getDepositConfirmations() < 15) throw new BizException(503, "CREGIS_CONFIRMATIONS_INVALID");
         List<Map<String, Object>> rows = db.addressForUser(userId, CHAIN);
         if (!rows.isEmpty()) {
@@ -60,7 +62,7 @@ public class CregisDepositService {
             if (((Number) row.get("projectId")).longValue() != config.getProjectId())
                 throw new BizException(409, "CREGIS_PROJECT_ADDRESS_CONFLICT");
             Map<String, Object> gate = db.provisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")))
+            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
                 return Map.of("enabled", false, "network", "BEP20", "reason", "CREGIS_DEPOSIT_PAUSED");
             if ("READY".equals(row.get("state"))) return Map.of(
                     "enabled", true, "network", "BEP20", "address", row.get("address"),
@@ -81,8 +83,9 @@ public class CregisDepositService {
             if (cursor == null || cursor <= finalized)
                 throw new BizException(503, "CREGIS_ADDRESS_POOL_SCANNING");
             Map<String, Object> gate = db.lockProvisionGate();
-            if (gate == null || !"IDLE".equals(gate.get("state")))
+            if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled"))
                 throw new BizException(503, "CREGIS_ADDRESS_POOL_PAUSED");
+            if (tripLocked()) return null;
             Map<String, Object> candidate = db.lockUnassignedAddress(config.getProjectId(), CHAIN);
             if (candidate == null) throw new BizException(503, "CREGIS_ADDRESS_POOL_EMPTY");
             String value = (String) candidate.get("address");
@@ -153,40 +156,84 @@ public class CregisDepositService {
                 "mode", "DISABLED", "depositEnabled", false, "depositCreditEnabled", false,
                 "provisionGate", Map.of("state", "DISABLED"),
                 "uncertainAddresses", List.of(), "heldDeposits", List.of(),
-                "failedDeliveries", List.of(), "unattributed", List.of(), "providerMissing", List.of());
+                "failedDeliveries", List.of(), "pendingAcceptedDeliveries", 0,
+                "unattributed", List.of(), "providerMissing", List.of());
         Map<String, Object> gate = db.provisionGate();
-        return Map.of("mode", "PROVIDER", "depositEnabled", config.isDepositEnabled(),
-                "depositCreditEnabled", config.isDepositCreditEnabled(),
-                "provisionGate", gate == null ? Map.of("state", "MISSING") : gate,
-                "uncertainAddresses", db.uncertainAddresses(config.getProjectId()),
-                "heldDeposits", db.heldDeposits(config.getProjectId()),
-                "failedDeliveries", db.failedDeliveries(config.getProjectId()),
-                "unattributed", db.unattributedObservations(config.getProjectId()),
-                "providerMissing", db.providerMissing(config.getProjectId()));
+        Map<String, Object> status = new java.util.LinkedHashMap<>();
+        status.put("mode", "PROVIDER");
+        status.put("depositEnabled", config.isDepositEnabled());
+        status.put("depositCreditEnabled", config.isDepositCreditEnabled());
+        status.put("provisionGate", gate == null ? Map.of("state", "MISSING") : gate);
+        status.put("unresolvedExposureUsdt", db.unresolvedExposure(config.getProjectId()));
+        status.put("riskAlerts", db.riskAlerts(config.getProjectId()));
+        status.put("reconcileRuns", db.reconcileRuns(config.getProjectId()));
+        status.put("reviewCases", db.reviewCases(config.getProjectId()));
+        status.put("switchCases", db.switchCases(config.getProjectId()));
+        status.put("uncertainAddresses", db.uncertainAddresses(config.getProjectId()));
+        status.put("heldDeposits", db.heldDeposits(config.getProjectId()));
+        status.put("failedDeliveries", db.failedDeliveries(config.getProjectId()));
+        status.put("pendingAcceptedDeliveries", db.pendingAcceptedDeliveryCount(0));
+        status.put("unattributed", db.unattributedObservations(config.getProjectId()));
+        status.put("providerMissing", db.providerMissing(config.getProjectId()));
+        return status;
     }
 
     /** Return the provider's literal acknowledgement only after a durable signed delivery. */
     public String receive(String raw) {
-        if (config.getMode() != CregisProperties.Mode.PROVIDER || raw == null
-                || raw.getBytes(StandardCharsets.UTF_8).length > 16_384) return "rejected";
+        return receive(raw, "127.0.0.1");
+    }
+
+    public String receive(String raw, String sourceIp) {
+        if (config.getMode() != CregisProperties.Mode.PROVIDER) return "rejected";
+        String payload = raw == null ? "" : raw;
+        if (payload.getBytes(StandardCharsets.UTF_8).length > 16_384) return "rejected";
         Map<String, Object> callback;
-        String reason = "OK";
         try {
-            callback = json.readValue(raw, new TypeReference<>() { });
-            if (!valid(callback, true)) reason = "INVALID";
+            callback = json.readValue(payload, new TypeReference<>() { });
+            if (callback == null) callback = Map.of();
         } catch (Exception invalid) {
             callback = Map.of();
-            reason = "INVALID";
         }
-        boolean accepted = "OK".equals(reason);
-        if (!accepted) return "rejected";
+        long now = Instant.now().toEpochMilli();
+        boolean timestampValid = callback.get("timestamp") instanceof Number stamp
+                && stamp.longValue() >= now - 300_000 && stamp.longValue() <= now + 300_000;
+        boolean signatureValid = false;
+        try {
+            signatureValid = config.getApiKey() != null && !config.getApiKey().isBlank()
+                    && signer.verify(config.getApiKey(), callback, String.valueOf(callback.get("sign")));
+        } catch (IllegalArgumentException invalid) { /* preserve rejected delivery */ }
+        boolean ipValid = allowedCallbackSource(sourceIp);
+        boolean accepted = timestampValid && signatureValid && ipValid && valid(callback, true);
+        String reason = accepted ? "OK" : !signatureValid ? "INVALID_SIGNATURE"
+                : !ipValid ? "INVALID_SOURCE_IP" : !timestampValid ? "INVALID_TIMESTAMP" : "INVALID_FIELDS";
         String txid = accepted ? String.valueOf(callback.get("txid")).toLowerCase(Locale.ROOT) : null;
         if (txid != null && !txid.startsWith("0x")) txid = "0x" + txid;
-        db.insertDelivery(sha256(raw), raw, accepted ? ((Number) callback.get("cid")).longValue() : null,
-                txid, accepted ? String.valueOf(callback.get("address")).toLowerCase(Locale.ROOT) : null,
-                accepted ? CregisAmount.parsePositive((String) callback.get("amount")) : null,
-                accepted ? 1 : 0, reason);
-        return "OK".equals(reason) ? "success" : "rejected";
+        String peer = sourceIp != null && sourceIp.length() <= 45
+                && sourceIp.matches("[0-9a-fA-F:.]+") ? sourceIp : null;
+        Map<String, Object> parsed = callback;
+        String normalizedTxid = txid;
+        boolean verifiedSignature = signatureValid;
+        // Serialize the accepted inbox write with checker decisions and wallet credit.
+        // Invalid evidence is retained without taking the financial gate lock.
+        transactions.executeWithoutResult(ignored -> {
+            if (accepted && db.lockProvisionGate() == null)
+                throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
+            db.insertDelivery(sha256(payload), payload, accepted ? ((Number) parsed.get("cid")).longValue() : null,
+                    normalizedTxid, accepted ? String.valueOf(parsed.get("address")).toLowerCase(Locale.ROOT) : null,
+                    accepted ? CregisAmount.parsePositive((String) parsed.get("amount")) : null,
+                    accepted ? 1 : 0, reason, peer, verifiedSignature ? 1 : 0,
+                    timestampValid ? 1 : 0, ipValid ? 1 : 0);
+        });
+        return accepted ? "success" : "rejected";
+    }
+
+    private boolean allowedCallbackSource(String sourceIp) {
+        if (sourceIp == null || sourceIp.isBlank()) return false;
+        String configured = config.getCallbackSourceIps();
+        if (configured == null || configured.isBlank()) return false;
+        for (String candidate : configured.split(","))
+            if (sourceIp.equalsIgnoreCase(candidate.trim())) return true;
+        return false;
     }
 
     private boolean valid(Map<String, Object> c, boolean requireFresh) {
@@ -220,6 +267,7 @@ public class CregisDepositService {
     public void reconcile() {
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return;
         if (config.getDepositConfirmations() < 15) return;
+        tripIfNeeded();
         List<Map<String, Object>> pending = db.pendingDeliveries();
         for (Map<String, Object> delivery : pending) {
             long id = ((Number) delivery.get("id")).longValue();
@@ -327,23 +375,30 @@ public class CregisDepositService {
                         .findFirst().orElseThrow();
                 boolean assigned = "READY".equals(owner.get("state"))
                         && log.blockNumber() > ((Number) owner.get("allocationBlock")).longValue();
-                Map<String, Object> observed = db.observationByLog(config.getProjectId(),
-                        log.txid(), log.logIndex());
-                if (observed != null) {
-                    if (!log.address().equalsIgnoreCase((String) observed.get("address"))
-                            || new BigDecimal((String) observed.get("rawAmount")).compareTo(log.amount()) != 0
-                            || ((Number) observed.get("blockNumber")).longValue() != log.blockNumber()) {
+                String issue = transactions.execute(ignored -> {
+                    if (db.lockProvisionGate() == null)
+                        throw new IllegalStateException("CREGIS_RISK_GATE_MISSING");
+                    Map<String, Object> observed = db.observationByLog(config.getProjectId(),
+                            log.txid(), log.logIndex());
+                    if (observed != null) {
+                        if (!log.address().equalsIgnoreCase((String) observed.get("address"))
+                                || new BigDecimal((String) observed.get("rawAmount")).compareTo(log.amount()) != 0
+                                || ((Number) observed.get("blockNumber")).longValue() != log.blockNumber()) {
+                            db.blockProvisionGateAny();
+                            return "CREGIS_CHAIN_OBSERVATION_CONFLICT";
+                        }
+                    } else if (db.insertObservation(config.getProjectId(), log.txid(), log.logIndex(),
+                            log.address(), log.amount().toPlainString(), log.blockNumber(),
+                            assigned ? "PROVIDER_MISSING" : "UNATTRIBUTED_HOLD") != 1)
+                        throw new IllegalStateException("CREGIS_CHAIN_OBSERVATION_INSERT_FAILED");
+                    if (!assigned) {
+                        db.holdPoolAddress(config.getProjectId(), CHAIN, log.address());
                         db.blockProvisionGateAny();
-                        throw new IllegalStateException("CREGIS_CHAIN_OBSERVATION_CONFLICT");
                     }
-                } else if (db.insertObservation(config.getProjectId(), log.txid(), log.logIndex(),
-                        log.address(), log.amount().toPlainString(), log.blockNumber(),
-                        assigned ? "PROVIDER_MISSING" : "UNATTRIBUTED_HOLD") != 1)
-                    throw new IllegalStateException("CREGIS_CHAIN_OBSERVATION_INSERT_FAILED");
-                if (!assigned) {
-                    db.holdPoolAddress(config.getProjectId(), CHAIN, log.address());
-                    db.blockProvisionGateAny();
-                }
+                    tripLocked();
+                    return null;
+                });
+                if (issue != null) throw new IllegalStateException(issue);
             }
             db.advanceCursor(Math.max(cursor, to + 1), cursor);
         }
@@ -397,11 +452,11 @@ public class CregisDepositService {
             return;
         }
         if (proof == null || proof.logIndex() != ((Number) observation.get("logIndex")).intValue()) return;
-        if (!config.isDepositCreditEnabled()) return;
         long cid = trades.get(0).cid();
         long userId = ((Number) owners.get(0).get("userId")).longValue();
-        transactions.executeWithoutResult(ignored -> settle(0, userId, cid, txid, address, amount, proof));
-        db.matchObservation(((Number) observation.get("id")).longValue());
+        if (Boolean.TRUE.equals(transactions.execute(ignored ->
+                settleOrHold(0, userId, cid, txid, address, amount, proof))))
+            db.matchObservation(((Number) observation.get("id")).longValue());
     }
 
     private void process(long deliveryId, String raw) {
@@ -456,19 +511,180 @@ public class CregisDepositService {
             return;
         }
         if (proof == null) return;
-        if (!config.isDepositCreditEnabled()) return;
         Map<String, Object> owner = owners.get(0);
         if (proof.blockNumber() <= ((Number) owner.get("allocationBlock")).longValue())
             throw new IllegalStateException("CREGIS_DEPOSIT_BEFORE_ALLOCATION");
         requireAllocationAnchor(owner);
         final String verifiedTxid = txid;
-        transactions.executeWithoutResult(ignored -> settle(deliveryId,
+        transactions.execute(ignored -> settleOrHold(deliveryId,
                 ((Number) owner.get("userId")).longValue(), cid, verifiedTxid, address, amount, proof));
     }
 
-    private void settle(long deliveryId, long userId, long cid, String txid, String address,
+    /** Reuses the same provider, allocation and BSC proof path for a missed callback. */
+    boolean materializeProviderRow(CregisGateway.DepositRow row) {
+        if (row.status() != 1) return true;
+        List<Map<String, Object>> owners = db.addressOwner(config.getProjectId(), CHAIN, row.address());
+        if (owners.size() != 1) {
+            db.insertRiskAlert(config.getProjectId(), "orphan-cid-" + row.cid(), "P0",
+                    "PROVIDER_ORPHAN", "cid=" + row.cid() + ",txid=" + row.txid());
+            db.blockProvisionGateAny();
+            return false;
+        }
+        Map<String, Object> owner = owners.get(0);
+        if (row.blockHeight() <= ((Number) owner.get("allocationBlock")).longValue()) {
+            db.blockProvisionGateAny();
+            return false;
+        }
+        requireAllocationAnchor(owner);
+        List<CregisGateway.DepositTrade> fresh = router.provider().depositsByTxid(row.txid());
+        if (fresh.size() != 1 || fresh.get(0).cid() != row.cid()
+                || fresh.get(0).status() != 1 || !fresh.get(0).address().equals(row.address())
+                || fresh.get(0).amount().compareTo(row.amount()) != 0) {
+            db.blockProvisionGateAny();
+            return false;
+        }
+        BscDepositProof.Proof proof = chain.verify(row.txid(), row.address(), row.amount(),
+                row.blockHeight()).orElse(null);
+        if (proof == null) return false;
+        Map<String, Object> observed = db.observationByLog(config.getProjectId(),
+                row.txid(), proof.logIndex());
+        if (observed == null || !row.address().equalsIgnoreCase((String) observed.get("address"))
+                || row.amount().compareTo(new BigDecimal((String) observed.get("rawAmount"))) != 0
+                || row.blockHeight() != ((Number) observed.get("blockNumber")).longValue()) return false;
+        if (!"PROVIDER_MISSING".equals(observed.get("status"))
+                && !"MATCHED".equals(observed.get("status"))) return false;
+        if (db.disputedDeliveryCount(row.cid()) != 0) return false;
+        long userId = ((Number) owner.get("userId")).longValue();
+        boolean handled = Boolean.TRUE.equals(transactions.execute(ignored ->
+                settleOrHold(0, userId, row.cid(), row.txid(), row.address(), row.amount(), proof)));
+        if (handled) db.matchObservation(((Number) observed.get("id")).longValue());
+        return handled;
+    }
+
+    /** A second, independent query detects locally credited rows missing at Cregis. */
+    void auditCreditedProviderRows() {
+        long afterId = 0;
+        while (true) {
+            List<Map<String, Object>> page = db.creditedEventsForAudit(config.getProjectId(), afterId);
+            if (page.isEmpty()) return;
+            for (Map<String, Object> event : page) {
+            afterId = ((Number) event.get("id")).longValue();
+            if (!"CREDITED".equals(event.get("status"))) continue;
+            long cid = ((Number) event.get("cid")).longValue();
+            String txid = (String) event.get("txid");
+            List<CregisGateway.DepositTrade> trades = router.provider().depositsByTxid(txid);
+            boolean exact = trades.size() == 1 && trades.get(0).cid() == cid
+                    && trades.get(0).status() == 1
+                    && trades.get(0).address().equalsIgnoreCase((String) event.get("address"))
+                    && trades.get(0).amount().compareTo((BigDecimal) event.get("grossAmount")) == 0;
+            if (exact) continue;
+            String key = "credited-provider-missing-" + cid;
+            if (db.insertRiskAlert(config.getProjectId(), key, "P0", "PLATFORM_ORPHAN",
+                    "cid=" + cid + ",txid=" + txid) == 0) {
+                Long age = db.riskAlertAgeSeconds(config.getProjectId(), key);
+                if (age != null && age >= 300) creditedIncident(Map.of("cid", cid), "PROVIDER_CONFLICT_HOLD");
+            }
+            throw new IllegalStateException("CREGIS_CREDITED_PROVIDER_MISMATCH");
+            }
+        }
+    }
+
+    /** Called only inside a checked review-case transaction. */
+    void creditReviewedHold(long cid) {
+        if (config.getMode() != CregisProperties.Mode.PROVIDER || !config.isDepositCreditEnabled())
+            throw new IllegalStateException("CREGIS_CREDIT_DISABLED");
+        List<Map<String, Object>> matches = db.lockEvent(config.getProjectId(), cid);
+        if (matches.size() != 1 || !"REVIEW_HOLD".equals(matches.get(0).get("status")))
+            throw new IllegalStateException("CREGIS_REVIEW_EVENT_CHANGED");
+        Map<String, Object> event = matches.get(0);
+        Map<String, Object> gate = db.lockProvisionGate();
+        // A 500-USDT exposure trip may be reduced by a checked hold release.
+        // Emergency and incident closures still prohibit every credit.
+        boolean automatic = gate != null && "IDLE".equals(gate.get("state"))
+                && on(gate, "creditEnabled")
+                && db.unresolvedExposure(config.getProjectId()).compareTo(EXPOSURE_TRIP) < 0;
+        boolean exposureResolution = gate != null && "BLOCKED".equals(gate.get("state"))
+                && "CREGIS_UNRESOLVED_EXPOSURE_500".equals(gate.get("switchReason"))
+                && db.unresolvedExposure(config.getProjectId()).compareTo(EXPOSURE_TRIP) >= 0;
+        if ((!automatic && !exposureResolution)
+                || db.disputedDeliveryCount(cid) != 0
+                || db.disputedDeliveryCountForProject(config.getProjectId()) != 0
+                || db.pendingAcceptedDeliveryCount(0) != 0
+                || db.openNonExposureCriticalAlertCount(config.getProjectId()) != 0
+                || db.criticalHeldDepositCount(config.getProjectId()) != 0
+                || !db.providerMissing(config.getProjectId()).isEmpty()
+                || !db.unattributedObservations(config.getProjectId()).isEmpty())
+            throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_BLOCKED");
+        long userId = ((Number) event.get("userId")).longValue();
+        if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
+            throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
+        String txid = (String) event.get("txid"), address = (String) event.get("address");
+        BigDecimal amount = (BigDecimal) event.get("grossAmount");
+        List<Map<String, Object>> owners = db.addressOwner(config.getProjectId(), CHAIN, address);
+        if (owners.size() != 1 || ((Number) owners.get(0).get("userId")).longValue() != userId)
+            throw new IllegalStateException("CREGIS_REVIEW_OWNER_MISMATCH");
+        requireAllocationAnchor(owners.get(0));
+        List<CregisGateway.DepositTrade> trades = router.provider().depositsByTxid(txid);
+        if (trades.size() != 1 || trades.get(0).cid() != cid || trades.get(0).status() != 1
+                || !trades.get(0).address().equalsIgnoreCase(address)
+                || trades.get(0).amount().compareTo(amount) != 0)
+            throw new IllegalStateException("CREGIS_REVIEW_PROVIDER_MISMATCH");
+        BscDepositProof.Proof proof = chain.verify(txid, address, amount,
+                ((Number) event.get("blockNumber")).longValue()).orElse(null);
+        if (proof == null || proof.logIndex() != ((Number) event.get("logIndex")).intValue()
+                || !proof.blockHash().equalsIgnoreCase((String) event.get("blockHash")))
+            throw new IllegalStateException("CREGIS_REVIEW_CHAIN_MISMATCH");
+        BigDecimal net = amount.subtract(BigDecimal.ONE);
+        long eventId = ((Number) event.get("id")).longValue();
+        if (db.releaseReviewedEvent(eventId, BigDecimal.ONE, net, proof.confirmations()) != 1)
+            throw new IllegalStateException("CREGIS_REVIEW_EVENT_CONFLICT");
+        Map<String, Object> wallet = db.lockWallet(userId);
+        if (wallet == null) throw new IllegalStateException("CREGIS_WALLET_MISSING");
+        BigDecimal after = ((BigDecimal) wallet.get("usdtAvailable")).add(net);
+        if (db.creditWallet(net, userId, ((Number) wallet.get("version")).longValue()) != 1)
+            throw new IllegalStateException("CREGIS_WALLET_CONFLICT");
+        String bizNo = "CR-" + cid;
+        if (db.insertLedger(bizNo, userId, net, after, "Reviewed Cregis USDT-BEP20 deposit " + txid) != 1)
+            throw new IllegalStateException("CREGIS_LEDGER_INSERT_FAILED");
+        treasury.recordTopupReserve(bizNo, net, "CREGIS:" + cid);
+        Long ledgerId = db.ledgerId(bizNo);
+        if (ledgerId == null || db.linkLedger(ledgerId, eventId) != 1
+                || db.insertDepositOrder(userId, bizNo, txid, proof.logIndex(), net,
+                        proof.confirmations(), ledgerId) != 1)
+            throw new IllegalStateException("CREGIS_REVIEW_LEDGER_LINK_FAILED");
+    }
+
+    private boolean settleOrHold(long deliveryId, long userId, long cid, String txid, String address,
+                                 BigDecimal amount, BscDepositProof.Proof proof) {
+        if (db.disputedDeliveryCount(cid) != 0) return false;
+        List<Map<String, Object>> existing = db.lockEvent(config.getProjectId(), cid);
+        if (!existing.isEmpty()) return settle(deliveryId, userId, cid, txid, address, amount, proof);
+        Map<String, Object> gate = db.lockProvisionGate();
+        if (gate == null) throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
+        if (config.isDepositCreditEnabled() && "IDLE".equals(gate.get("state"))
+                && on(gate, "creditEnabled") && db.pendingAcceptedDeliveryCount(deliveryId) == 0) {
+            if (settle(deliveryId, userId, cid, txid, address, amount, proof)) return true;
+            // A trip during settlement can close the gate before this verified
+            // transfer is materialized. Keep it as a reviewed hold.
+            if (!db.lockEvent(config.getProjectId(), cid).isEmpty()) return false;
+        }
+        String status = amount.compareTo(BigDecimal.TEN) < 0 ? "DUST_HOLD" : "REVIEW_HOLD";
+        if (db.insertEvent(userId, config.getProjectId(), cid, txid, proof.logIndex(),
+                address, amount, BigDecimal.ZERO, BigDecimal.ZERO, proof.blockNumber(),
+                proof.blockHash(), proof.confirmations(), status) != 1)
+            throw new IllegalStateException("CREGIS_PAUSED_HOLD_INSERT_FAILED");
+        tripLocked();
+        if (deliveryId > 0) db.finishDelivery(deliveryId, status);
+        return true;
+    }
+
+    private boolean settle(long deliveryId, long userId, long cid, String txid, String address,
                         BigDecimal amount, BscDepositProof.Proof proof) {
         List<Map<String, Object>> existing = db.lockEvent(config.getProjectId(), cid);
+        if (db.disputedDeliveryCount(cid) != 0) {
+            db.blockProvisionGateAny();
+            return false;
+        }
         if (!existing.isEmpty()) {
             Map<String, Object> row = existing.get(0);
             boolean conflict = ((Number) row.get("userId")).longValue() != userId
@@ -480,16 +696,18 @@ public class CregisDepositService {
                 freezeLockedCreditedEvent(row, cid, "PROVIDER_CONFLICT_HOLD");
                 db.blockProvisionGateAny();
                 if (deliveryId > 0) db.finishDelivery(deliveryId, "PROVIDER_CONFLICT_HOLD");
-                return;
+                return false;
             }
             if (deliveryId > 0) db.finishDelivery(deliveryId, String.valueOf(row.get("status")));
-            return;
+            return true;
         }
         String status = amount.compareTo(BigDecimal.TEN) < 0 ? "DUST_HOLD"
                 : amount.compareTo(new BigDecimal("100")) > 0 ? "REVIEW_HOLD" : "CREDITED";
         Map<String, Object> gate = db.lockProvisionGate();
-        if (gate == null || !"IDLE".equals(gate.get("state")))
-            throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_BLOCKED");
+        if (gate == null) throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
+        if (tripLocked()) return false;
+        if (!"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
+                || db.pendingAcceptedDeliveryCount(deliveryId) != 0) return false;
         if (!Long.valueOf(userId).equals(db.lockActiveUser(userId)))
             throw new IllegalStateException("CREGIS_DEPOSIT_USER_FROZEN");
         BigDecimal fee = "CREDITED".equals(status) ? BigDecimal.ONE : BigDecimal.ZERO;
@@ -497,6 +715,7 @@ public class CregisDepositService {
         if (db.insertEvent(userId, config.getProjectId(), cid, txid, proof.logIndex(), address, amount, fee, net,
                 proof.blockNumber(), proof.blockHash(), proof.confirmations(), status) != 1)
             throw new IllegalStateException("CREGIS_EVENT_INSERT_FAILED");
+        if (!"CREDITED".equals(status)) tripLocked();
         if ("CREDITED".equals(status)) {
             Map<String, Object> wallet = db.lockWallet(userId);
             if (wallet == null) throw new IllegalStateException("CREGIS_WALLET_MISSING");
@@ -514,6 +733,7 @@ public class CregisDepositService {
                 throw new IllegalStateException("CREGIS_DEPOSIT_ORDER_FAILED");
         }
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
+        return true;
     }
 
     private void requireAllocationAnchor(Map<String, Object> owner) {
@@ -533,6 +753,35 @@ public class CregisDepositService {
         if (raw.split(",").length > 50) return false;
         for (String id : raw.split(",")) if (id.trim().equals(Long.toString(userId))) return true;
         return false;
+    }
+
+    @Scheduled(fixedDelayString = "${NEXION_CREGIS_RISK_CHECK_MS:30000}")
+    public void tripIfNeeded() {
+        if (config.getMode() != CregisProperties.Mode.PROVIDER) return;
+        transactions.executeWithoutResult(ignored -> {
+            if (db.lockProvisionGate() == null) throw new IllegalStateException("CREGIS_RISK_GATE_MISSING");
+            tripLocked();
+        });
+    }
+
+    /** The provision row serializes the trip against address assignment and credit. */
+    private boolean tripLocked() {
+        BigDecimal exposure = db.unresolvedExposure(config.getProjectId());
+        if (exposure == null) throw new IllegalStateException("CREGIS_EXPOSURE_UNAVAILABLE");
+        if (exposure.compareTo(EXPOSURE_TRIP) < 0) {
+            db.resolveExposureAlert(config.getProjectId());
+            return false;
+        }
+        db.tripAll("CREGIS_UNRESOLVED_EXPOSURE_500");
+        db.insertRiskAlert(config.getProjectId(), "unresolved-exposure-500", "P0",
+                "UNRESOLVED_EXPOSURE", "Exposure reached " + exposure.toPlainString() + " USDT");
+        db.reopenExposureAlert(config.getProjectId());
+        return true;
+    }
+
+    private static boolean on(Map<String, Object> row, String key) {
+        Object value = row.get(key);
+        return Boolean.TRUE.equals(value) || (value instanceof Number n && n.intValue() == 1);
     }
 
     private static String sha256(String raw) {

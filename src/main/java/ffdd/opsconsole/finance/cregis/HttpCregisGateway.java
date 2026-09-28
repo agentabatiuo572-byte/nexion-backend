@@ -186,6 +186,49 @@ public final class HttpCregisGateway implements CregisGateway {
     }
 
     @Override
+    public DepositPage depositPage(long startSecond, long endSecond, int page, int size) {
+        if (startSecond <= 0 || endSecond < startSecond || endSecond >= clock.instant().getEpochSecond()
+                || page < 1 || size < 1 || size > 100) throw requestInvalid();
+        JsonNode data = postRead("/api/v1/trade/page", Map.of(
+                "blocktime_start", startSecond, "blocktime_end", endSecond,
+                "trade_type", 1, "business_type", 3,
+                "chain_id", CregisConstants.BSC_CHAIN_ID,
+                "token_id", CregisConstants.USDT_BEP20_TOKEN_ID,
+                "page_num", page, "page_size", size));
+        JsonNode total = data.get("total"), rows = data.get("rows");
+        if (total == null || !total.isIntegralNumber() || !total.canConvertToLong()
+                || total.longValue() < 0 || total.longValue() > 10_000
+                || rows == null || !rows.isArray() || rows.size() > size
+                || (total.longValue() == 0 && rows.size() != 0)
+                || (total.longValue() > 0 && page == 1 && rows.size() == 0)) throw invalidResponse();
+        List<DepositRow> parsed = new ArrayList<>();
+        for (JsonNode row : rows) {
+            JsonNode pid = row.get("pid"), cid = row.get("cid"), status = row.get("status");
+            JsonNode height = row.get("block_height"), time = row.get("block_time");
+            String chainId = requiredText(row, "chain_id");
+            String tokenId = requiredText(row, "token_id");
+            String address = requiredText(row, "to_address");
+            String txid = requiredText(row, "txid");
+            BigDecimal amount = positiveAmount(row.get("amount"));
+            if (pid == null || !pid.isIntegralNumber() || pid.longValue() != properties.getProjectId()
+                    || cid == null || !cid.isIntegralNumber() || !cid.canConvertToLong() || cid.longValue() <= 0
+                    || status == null || !status.isIntegralNumber() || !status.canConvertToInt()
+                    || status.intValue() < 0 || status.intValue() > 2
+                    || !CregisConstants.BSC_CHAIN_ID.equals(chainId)
+                    || !CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(tokenId)
+                    || !EVM_ADDRESS.matcher(address).matches() || !BSC_TXID.matcher(txid).matches()
+                    || height == null || !height.asText().matches("[0-9]{1,16}")
+                    || time == null || !time.isIntegralNumber() || time.longValue() < startSecond
+                    || time.longValue() > endSecond || amount.scale() > 6 || amount.precision() > 18)
+                throw invalidResponse();
+            parsed.add(new DepositRow(cid.longValue(), chainId, tokenId.toLowerCase(Locale.ROOT),
+                    address.toLowerCase(Locale.ROOT), amount, txid.toLowerCase(Locale.ROOT),
+                    status.intValue(), Long.parseLong(height.asText()), time.longValue()));
+        }
+        return new DepositPage(total.longValue(), List.copyOf(parsed));
+    }
+
+    @Override
     public PayoutSubmission createPayout(PayoutRequest request) {
         PayoutRequest normalized = normalizePayout(request);
         Map<String, Object> fields = new LinkedHashMap<>();

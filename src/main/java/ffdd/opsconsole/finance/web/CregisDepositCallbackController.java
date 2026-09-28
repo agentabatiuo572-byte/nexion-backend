@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.cregis.CregisDepositService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,7 +16,7 @@ public class CregisDepositCallbackController {
     private final CregisDepositService service;
 
     @PostMapping(value = "/deposit", produces = MediaType.TEXT_PLAIN_VALUE)
-    public String receive(@RequestBody(required = false) String raw) {
-        return service.receive(raw);
+    public String receive(@RequestBody(required = false) String raw, HttpServletRequest request) {
+        return service.receive(raw, request.getRemoteAddr());
     }
 }

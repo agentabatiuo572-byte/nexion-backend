@@ -116,6 +116,7 @@ nexion:
       deposit-credit-enabled: ${NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED:false}
       payout-enabled: ${NEXION_CREGIS_PAYOUT_ENABLED:false}
       deposit-pilot-user-ids: ${NEXION_CREGIS_DEPOSIT_PILOT_USER_IDS:}
+      callback-source-ips: ${NEXION_CREGIS_CALLBACK_SOURCE_IPS:}
       bsc-rpc-url: ${NEXION_CREGIS_BSC_RPC_URL:}
       deposit-confirmations: ${NEXION_CREGIS_DEPOSIT_CONFIRMATIONS:15}
     hdpay:

@@ -21,6 +21,12 @@ public interface CregisGateway {
     /** A read-only second provider observation for a single incoming transaction. */
     List<DepositTrade> depositsByTxid(String txid);
 
+    /** One provider page for a closed block-time window (epoch seconds, inclusive). */
+    default DepositPage depositPage(long startSecond, long endSecond, int page, int size) {
+        throw new CregisGatewayException(CregisGatewayException.Kind.CONFIGURATION,
+                "CREGIS_TRADE_PAGE_UNSUPPORTED");
+    }
+
     PayoutSubmission createPayout(PayoutRequest request);
 
     PayoutOrder queryPayout(PayoutQuery expected);
@@ -41,6 +47,11 @@ public interface CregisGateway {
 
     record DepositTrade(long cid, String chainId, String tokenId, String address,
                         BigDecimal amount, String txid, int status) { }
+
+    record DepositPage(long total, List<DepositRow> rows) { }
+    record DepositRow(long cid, String chainId, String tokenId, String address,
+                      BigDecimal amount, String txid, int status, long blockHeight,
+                      long blockTime) { }
 
     record PayoutRequest(
             String currency,

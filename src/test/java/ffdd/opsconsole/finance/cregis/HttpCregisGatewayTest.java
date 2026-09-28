@@ -314,6 +314,33 @@ class HttpCregisGatewayTest {
                 .hasMessage("CREGIS_RESPONSE_INVALID");
     }
 
+    @Test
+    void closedDepositWindowUsesDocumentedTimeFiltersAndValidatesFullRow() throws Exception {
+        String txid = "0x" + "a".repeat(64);
+        long start = Instant.parse("2026-08-07T12:00:00Z").getEpochSecond();
+        java.util.concurrent.atomic.AtomicReference<com.fasterxml.jackson.databind.JsonNode> request =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        server = start("/api/v1/trade/page", exchange -> {
+            request.set(objectMapper.readTree(exchange.getRequestBody()));
+            respond(exchange, 200, "{\"code\":\"00000\",\"data\":{\"total\":1,\"rows\":[{"
+                    + "\"pid\":42,\"cid\":123,\"chain_id\":\"2510\",\"token_id\":\""
+                    + CregisConstants.USDT_BEP20_TOKEN_ID
+                    + "\",\"to_address\":\"0x1111111111111111111111111111111111111111\","
+                    + "\"amount\":\"10.25\",\"status\":1,\"txid\":\"" + txid + "\","
+                    + "\"block_height\":\"12345678\",\"block_time\":" + (start + 30) + "}]}}" );
+        });
+        CregisGateway.DepositPage page = gateway(500).depositPage(start, start + 60, 1, 100);
+        assertThat(page.total()).isEqualTo(1);
+        assertThat(page.rows()).singleElement().satisfies(row -> {
+            assertThat(row.cid()).isEqualTo(123);
+            assertThat(row.blockHeight()).isEqualTo(12_345_678);
+            assertThat(row.blockTime()).isEqualTo(start + 30);
+        });
+        assertThat(request.get().get("blocktime_start").longValue()).isEqualTo(start);
+        assertThat(request.get().get("blocktime_end").longValue()).isEqualTo(start + 60);
+        assertThat(request.get().get("business_type").intValue()).isEqualTo(3);
+    }
+
     private HttpCregisGateway gateway(int readTimeoutMs) {
         CregisProperties properties = properties(readTimeoutMs);
         return new HttpCregisGateway(properties, objectMapper,

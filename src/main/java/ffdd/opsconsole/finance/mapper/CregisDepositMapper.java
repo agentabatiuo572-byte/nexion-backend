@@ -22,6 +22,25 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int schemaTableCount();
 
     @Select("""
+            SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()
+              AND TABLE_NAME IN ('nx_cregis_reconcile_watermark','nx_cregis_reconcile_run',
+                                 'nx_cregis_risk_alert','nx_cregis_review_case','nx_cregis_switch_case')
+            """)
+    int controlTableCount();
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
+              AND TABLE_NAME='nx_cregis_provision_gate'
+              AND COLUMN_NAME IN ('assign_enabled','credit_enabled','payout_enabled','version','switch_reason')
+            """)
+    int controlColumnCount();
+    @Select("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_cregis_deposit_delivery'
+               AND COLUMN_NAME IN ('source_ip','signature_valid','timestamp_valid','ip_valid')
+            """)
+    int deliveryEvidenceColumnCount();
+
+    @Select("""
             SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE()
              AND (TABLE_NAME='nx_cregis_deposit_address' AND INDEX_NAME IN
                     ('uk_cregis_address_user','uk_cregis_address_value')
@@ -65,15 +84,28 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     int depositOrderLogIndexCount();
 
-    @Update("UPDATE nx_cregis_provision_gate SET state='BUSY' WHERE id=1 AND state='IDLE'")
+    @Update("""
+            UPDATE nx_cregis_provision_gate SET state='BUSY'
+             WHERE id=1 AND state='IDLE' AND assign_enabled=1
+            """)
     int claimProvisionGate();
     @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{projectId} AND chain_id=#{chainId}")
     int allocatedAddressCount(@Param("projectId") long projectId, @Param("chainId") String chainId);
     @Update("UPDATE nx_cregis_provision_gate SET state='IDLE' WHERE id=1 AND state='BUSY'")
     int releaseProvisionGate();
-    @Update("UPDATE nx_cregis_provision_gate SET state='BLOCKED' WHERE id=1 AND state='BUSY'")
+    @Update("""
+            UPDATE nx_cregis_provision_gate
+               SET state='BLOCKED',assign_enabled=0,credit_enabled=0,payout_enabled=0,
+                   version=version+1,switch_reason='CREGIS_PROVISION_UNKNOWN'
+             WHERE id=1 AND state='BUSY'
+            """)
     int blockProvisionGate();
-    @Update("UPDATE nx_cregis_provision_gate SET state='BLOCKED' WHERE id=1 AND state<>'BLOCKED'")
+    @Update("""
+            UPDATE nx_cregis_provision_gate
+               SET state='BLOCKED',assign_enabled=0,credit_enabled=0,payout_enabled=0,
+                   version=version+1,switch_reason='CREGIS_DEPOSIT_INCIDENT'
+             WHERE id=1 AND (state<>'BLOCKED' OR assign_enabled<>0 OR credit_enabled<>0 OR payout_enabled<>0)
+            """)
     int blockProvisionGateAny();
 
     @Insert("""
@@ -137,11 +169,125 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                                 @Param("address") String address, @Param("block") long block);
 
     @Select("""
-            SELECT state,updated_at AS updatedAt FROM nx_cregis_provision_gate WHERE id=1
+            SELECT state,assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,
+                   payout_enabled AS payoutEnabled,version,switch_reason AS switchReason,
+                   updated_at AS updatedAt FROM nx_cregis_provision_gate WHERE id=1
             """)
     Map<String, Object> provisionGate();
-    @Select("SELECT state,updated_at AS updatedAt FROM nx_cregis_provision_gate WHERE id=1 FOR UPDATE")
+    @Select("""
+            SELECT state,assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,
+                   payout_enabled AS payoutEnabled,version,switch_reason AS switchReason,
+                   updated_at AS updatedAt FROM nx_cregis_provision_gate WHERE id=1 FOR UPDATE
+            """)
     Map<String, Object> lockProvisionGate();
+    @Select("""
+            SELECT
+              COALESCE((SELECT SUM(gross_amount) FROM nx_cregis_deposit_event
+                         WHERE project_id=#{projectId} AND status IN
+                         ('DUST_HOLD','REVIEW_HOLD','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')),0)
+              + COALESCE((SELECT SUM(CAST(o.raw_amount AS DECIMAL(18,6)))
+                            FROM nx_cregis_chain_observation o
+                           WHERE o.project_id=#{projectId} AND o.status<>'MATCHED'
+                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
+                                             WHERE e.project_id=o.project_id
+                                               AND e.txid=o.txid AND e.log_index=o.log_index)),0)
+              + COALESCE((SELECT SUM(d.gross_amount) FROM nx_cregis_deposit_delivery d
+                           WHERE d.accepted=1 AND d.processed_at IS NULL
+                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
+                                             WHERE e.project_id=#{projectId} AND e.cid=d.cid)
+                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_chain_observation o
+                                             WHERE o.project_id=#{projectId} AND o.txid=d.txid)),0)
+              + COALESCE((SELECT SUM(d.gross_amount) FROM nx_cregis_deposit_delivery d
+                           WHERE d.accepted=1 AND d.reason IN
+                             ('PROVIDER_FAILED_HOLD','PROVIDER_MISMATCH_HOLD','CHAIN_MISMATCH_HOLD',
+                              'PROVIDER_CONFLICT_HOLD')
+                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_deposit_event e
+                                             WHERE e.project_id=#{projectId} AND e.cid=d.cid)
+                             AND NOT EXISTS(SELECT 1 FROM nx_cregis_chain_observation o
+                                             WHERE o.project_id=#{projectId} AND o.txid=d.txid)),0)
+              + COALESCE((SELECT SUM(w.amount) FROM nx_withdrawal_order w
+                           WHERE w.asset='USDT' AND w.is_deleted=0
+                             AND w.status NOT IN ('CONFIRMED','FAILED','REFUNDED','CANCELLED','REJECTED')),0)
+            """)
+    BigDecimal unresolvedExposure(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_provision_gate
+               SET assign_enabled=0,credit_enabled=0,payout_enabled=0,
+                   state='BLOCKED',switch_reason=#{reason},version=version+1
+             WHERE id=1 AND (assign_enabled<>0 OR credit_enabled<>0 OR payout_enabled<>0 OR state<>'BLOCKED')
+            """)
+    int tripAll(@Param("reason") String reason);
+    @Update("""
+            UPDATE nx_cregis_provision_gate
+               SET assign_enabled=0,credit_enabled=0,payout_enabled=0,
+                   state='BLOCKED',switch_reason=#{reason},version=version+1
+             WHERE id=1 AND version=#{expectedVersion}
+            """)
+    int forceEmergencyOff(@Param("reason") String reason,
+                          @Param("expectedVersion") long expectedVersion);
+    @Update("""
+            UPDATE nx_cregis_provision_gate
+               SET assign_enabled=#{assign},credit_enabled=#{credit},payout_enabled=#{payout},
+                   state=IF(#{assign}=1 OR #{credit}=1,'IDLE','BLOCKED'),
+                   switch_reason=#{reason},version=version+1
+             WHERE id=1 AND version=#{expectedVersion}
+            """)
+    int setSwitches(@Param("assign") int assign, @Param("credit") int credit,
+                    @Param("payout") int payout, @Param("reason") String reason,
+                    @Param("expectedVersion") long expectedVersion);
+    @Insert("""
+            INSERT IGNORE INTO nx_cregis_risk_alert(project_id,alert_key,severity,kind,evidence)
+            VALUES(#{projectId},#{key},#{severity},#{kind},#{evidence})
+            """)
+    int insertRiskAlert(@Param("projectId") long projectId, @Param("key") String key,
+                        @Param("severity") String severity, @Param("kind") String kind,
+                        @Param("evidence") String evidence);
+    @Select("""
+            SELECT id,alert_key AS alertKey,severity,kind,evidence,created_at AS createdAt
+              FROM nx_cregis_risk_alert WHERE project_id=#{projectId}
+             ORDER BY id DESC LIMIT 50
+            """)
+    List<Map<String, Object>> riskAlerts(@Param("projectId") long projectId);
+    @Select("""
+            SELECT TIMESTAMPDIFF(SECOND,created_at,NOW()) FROM nx_cregis_risk_alert
+             WHERE project_id=#{projectId} AND alert_key=#{key}
+            """)
+    Long riskAlertAgeSeconds(@Param("projectId") long projectId, @Param("key") String key);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_risk_alert
+             WHERE project_id=#{projectId} AND severity='P0' AND resolved_at IS NULL
+            """)
+    int openCriticalAlertCount(@Param("projectId") long projectId);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_risk_alert
+             WHERE project_id=#{projectId} AND severity='P0'
+               AND kind<>'UNRESOLVED_EXPOSURE' AND resolved_at IS NULL
+            """)
+    int openNonExposureCriticalAlertCount(@Param("projectId") long projectId);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_risk_alert
+             WHERE project_id=#{projectId} AND severity='P0'
+               AND kind<>'MANUAL_EMERGENCY_OFF' AND resolved_at IS NULL
+            """)
+    int openCriticalAlertCountExceptManual(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_risk_alert SET resolved_at=NOW()
+             WHERE project_id=#{projectId} AND kind='UNRESOLVED_EXPOSURE'
+               AND resolved_at IS NULL
+            """)
+    int resolveExposureAlert(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_risk_alert SET resolved_at=NULL
+             WHERE project_id=#{projectId} AND kind='UNRESOLVED_EXPOSURE'
+               AND resolved_at IS NOT NULL
+            """)
+    int reopenExposureAlert(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_risk_alert SET resolved_at=NOW()
+             WHERE project_id=#{projectId} AND kind='MANUAL_EMERGENCY_OFF'
+               AND resolved_at IS NULL
+            """)
+    int resolveManualEmergencyAlerts(@Param("projectId") long projectId);
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") long userId);
     @Select("""
@@ -161,6 +307,12 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     List<Map<String, Object>> heldDeposits(@Param("projectId") long projectId);
     @Select("""
+            SELECT COUNT(*) FROM nx_cregis_deposit_event
+             WHERE project_id=#{projectId}
+               AND status IN ('REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')
+            """)
+    int criticalHeldDepositCount(@Param("projectId") long projectId);
+    @Select("""
             SELECT id,txid,log_index AS logIndex,address,raw_amount AS rawAmount,
                    status,last_error AS lastError,checked_at AS checkedAt
               FROM nx_cregis_chain_observation
@@ -173,12 +325,24 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             SELECT d.id,d.cid,d.txid,d.address,d.gross_amount AS grossAmount,
                    d.last_error AS lastError,d.created_at AS createdAt
               FROM nx_cregis_deposit_delivery d
-              JOIN nx_cregis_deposit_address a ON a.project_id=#{projectId}
-                   AND a.address=d.address
              WHERE d.accepted=1 AND d.processed_at IS NULL AND d.last_error IS NOT NULL
              ORDER BY d.id DESC LIMIT 50
             """)
     List<Map<String, Object>> failedDeliveries(@Param("projectId") long projectId);
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_delivery WHERE accepted=1 AND processed_at IS NULL AND id<>#{exceptId}")
+    int pendingAcceptedDeliveryCount(@Param("exceptId") long exceptId);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_deposit_delivery
+             WHERE cid=#{cid} AND reason IN
+               ('PROVIDER_FAILED_HOLD','PROVIDER_MISMATCH_HOLD','CHAIN_MISMATCH_HOLD','PROVIDER_CONFLICT_HOLD')
+            """)
+    int disputedDeliveryCount(@Param("cid") long cid);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_deposit_delivery d
+             WHERE d.reason IN
+               ('PROVIDER_FAILED_HOLD','PROVIDER_MISMATCH_HOLD','CHAIN_MISMATCH_HOLD','PROVIDER_CONFLICT_HOLD')
+            """)
+    int disputedDeliveryCountForProject(@Param("projectId") long projectId);
 
     @Select("""
             SELECT address,state,project_id AS projectId,allocation_block AS allocationBlock
@@ -242,13 +406,18 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
 
     @Insert("""
             INSERT INTO nx_cregis_deposit_delivery
-            (payload_sha256,raw_json,cid,txid,address,gross_amount,accepted,reason)
-            VALUES (#{hash},#{raw},#{cid},#{txid},#{address},#{amount},#{accepted},#{reason})
+            (payload_sha256,raw_json,cid,txid,address,gross_amount,accepted,reason,
+             source_ip,signature_valid,timestamp_valid,ip_valid)
+            VALUES (#{hash},#{raw},#{cid},#{txid},#{address},#{amount},#{accepted},#{reason},
+                    #{sourceIp},#{signatureValid},#{timestampValid},#{ipValid})
             """)
     int insertDelivery(@Param("hash") String hash, @Param("raw") String raw,
                        @Param("cid") Long cid, @Param("txid") String txid,
                        @Param("address") String address, @Param("amount") BigDecimal amount,
-                       @Param("accepted") int accepted, @Param("reason") String reason);
+                       @Param("accepted") int accepted, @Param("reason") String reason,
+                       @Param("sourceIp") String sourceIp, @Param("signatureValid") int signatureValid,
+                       @Param("timestampValid") int timestampValid,
+                       @Param("ipValid") int ipValid);
 
     @Select("""
             SELECT id,raw_json AS rawJson FROM nx_cregis_deposit_delivery
@@ -290,7 +459,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int advanceCursor(@Param("next") long next, @Param("expected") long expected);
 
     @Select("""
-            SELECT address,raw_amount AS rawAmount,block_number AS blockNumber
+            SELECT id,address,raw_amount AS rawAmount,block_number AS blockNumber,status
               FROM nx_cregis_chain_observation
              WHERE project_id=#{projectId} AND txid=#{txid} AND log_index=#{logIndex}
             """)
@@ -329,15 +498,23 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
              WHERE id=#{id} AND status='PROVIDER_MISSING'
             """)
     int holdChainMismatch(@Param("id") long id);
-    @Update("UPDATE nx_cregis_chain_observation SET status='MATCHED',checked_at=NOW() WHERE id=#{id}")
+    @Update("""
+            UPDATE nx_cregis_chain_observation SET status='MATCHED',checked_at=NOW()
+             WHERE id=#{id} AND status='PROVIDER_MISSING'
+            """)
     int matchObservation(@Param("id") long id);
 
     @Select("""
             SELECT id,user_id AS userId,txid,log_index AS logIndex,address,
-                   gross_amount AS grossAmount,net_amount AS netAmount,status
+                   gross_amount AS grossAmount,net_amount AS netAmount,status,
+                   block_number AS blockNumber,block_hash AS blockHash,confirmations
               FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND cid=#{cid} FOR UPDATE
             """)
     List<Map<String, Object>> lockEvent(@Param("projectId") long projectId, @Param("cid") long cid);
+    @Select("""
+            SELECT id,cid,status FROM nx_cregis_deposit_event WHERE id=#{eventId} FOR UPDATE
+            """)
+    List<Map<String, Object>> lockReviewEvent(@Param("eventId") long eventId);
 
     @Insert("""
             INSERT INTO nx_cregis_deposit_event
@@ -394,6 +571,13 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                            @Param("confirmations") int confirmations, @Param("ledgerId") long ledgerId);
     @Update("UPDATE nx_cregis_deposit_event SET ledger_id=#{ledgerId},credited_at=NOW() WHERE id=#{eventId}")
     int linkLedger(@Param("ledgerId") long ledgerId, @Param("eventId") long eventId);
+    @Update("""
+            UPDATE nx_cregis_deposit_event SET status='CREDITED',fee_amount=#{fee},
+              net_amount=#{net},confirmations=#{confirmations}
+             WHERE id=#{id} AND status='REVIEW_HOLD' AND ledger_id IS NULL
+            """)
+    int releaseReviewedEvent(@Param("id") long id, @Param("fee") BigDecimal fee,
+                             @Param("net") BigDecimal net, @Param("confirmations") int confirmations);
 
     @Select("""
             SELECT id,user_id AS userId,cid,txid,address,gross_amount AS grossAmount,
@@ -458,4 +642,172 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int insertIncident(@Param("eventId") long eventId, @Param("projectId") long projectId,
                        @Param("cid") long cid, @Param("userId") long userId,
                        @Param("kind") String kind, @Param("heldAmount") BigDecimal heldAmount);
+
+    @Select("SELECT UNIX_TIMESTAMP(MIN(created_at)) FROM nx_cregis_deposit_address WHERE project_id=#{projectId}")
+    Long firstAddressSecond(@Param("projectId") long projectId);
+    @Insert("INSERT IGNORE INTO nx_cregis_reconcile_watermark(id,complete_through) VALUES(1,#{second})")
+    int ensureWatermark(@Param("second") long second);
+    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=1")
+    Long reconcileWatermark();
+    @Update("""
+            UPDATE nx_cregis_reconcile_watermark
+               SET active_run_id=#{runId},lease_until=DATE_ADD(NOW(), INTERVAL 30 MINUTE)
+             WHERE id=1 AND (active_run_id IS NULL OR lease_until<NOW())
+            """)
+    int claimReconcileLease(@Param("runId") String runId);
+    @Select("SELECT active_run_id FROM nx_cregis_reconcile_watermark WHERE id=1")
+    String activeReconcileRun();
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_reconcile_watermark w
+              JOIN nx_cregis_reconcile_run r ON r.run_id=w.last_run_id
+             WHERE w.id=1 AND r.project_id=#{projectId} AND r.status='COMPLETE'
+               AND r.completed_at>=DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+               AND w.complete_through>=UNIX_TIMESTAMP(NOW())-900
+               AND NOT EXISTS(SELECT 1 FROM nx_cregis_reconcile_run later
+                               WHERE later.project_id=r.project_id
+                                 AND later.status='INCOMPLETE'
+                                 AND later.created_at>=r.completed_at)
+            """)
+    int recentCompleteReconcileCount(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_reconcile_run SET status='INCOMPLETE',
+              failure_code='CREGIS_RECONCILE_INTERRUPTED',completed_at=NOW()
+             WHERE project_id=#{projectId} AND status='RUNNING' AND run_id<>#{runId}
+            """)
+    int failInterruptedReconcileRuns(@Param("projectId") long projectId, @Param("runId") String runId);
+    @Update("""
+            UPDATE nx_cregis_reconcile_watermark SET active_run_id=NULL,lease_until=NULL
+             WHERE id=1 AND active_run_id=#{runId}
+            """)
+    int releaseReconcileLease(@Param("runId") String runId);
+    @Select("SELECT complete_through FROM nx_cregis_reconcile_watermark WHERE id=1 FOR UPDATE")
+    Long lockReconcileWatermark();
+    @Update("""
+            UPDATE nx_cregis_reconcile_watermark
+               SET complete_through=#{end},last_run_id=#{runId}
+             WHERE id=1 AND complete_through=#{expected}
+            """)
+    int advanceReconcileWatermark(@Param("expected") long expected,
+                                  @Param("end") long end, @Param("runId") String runId);
+    @Insert("""
+            INSERT INTO nx_cregis_reconcile_run
+              (run_id,project_id,window_start,window_end,status)
+            VALUES(#{runId},#{projectId},#{start},#{end},'RUNNING')
+            """)
+    int createReconcileRun(@Param("runId") String runId, @Param("projectId") long projectId,
+                           @Param("start") long start, @Param("end") long end);
+    @Update("""
+            UPDATE nx_cregis_reconcile_run SET status='COMPLETE',provider_total=#{total},
+              row_count=#{count},unique_cid_count=#{uniqueCount},full_row_hash=#{hash},
+              stable_passes=2,chain_cursor_block=#{cursor},chain_cursor_hash=#{chainHash},
+              completed_at=NOW()
+            WHERE run_id=#{runId} AND status='RUNNING'
+            """)
+    int completeReconcileRun(@Param("runId") String runId, @Param("total") long total,
+                             @Param("count") long count, @Param("uniqueCount") long uniqueCount,
+                             @Param("hash") String hash, @Param("cursor") long cursor,
+                             @Param("chainHash") String chainHash);
+    @Update("""
+            UPDATE nx_cregis_reconcile_run SET status='INCOMPLETE',failure_code=#{reason},
+              completed_at=NOW() WHERE run_id=#{runId} AND status='RUNNING'
+            """)
+    int failReconcileRun(@Param("runId") String runId, @Param("reason") String reason);
+    @Select("""
+            SELECT run_id AS runId,window_start AS windowStart,window_end AS windowEnd,
+              status,provider_total AS providerTotal,row_count AS rowCount,
+              unique_cid_count AS uniqueCidCount,full_row_hash AS fullRowHash,
+              stable_passes AS stablePasses,chain_cursor_block AS chainCursorBlock,
+              chain_cursor_hash AS chainCursorHash,
+              failure_code AS failureCode,created_at AS createdAt,completed_at AS completedAt
+            FROM nx_cregis_reconcile_run WHERE project_id=#{projectId}
+            ORDER BY created_at DESC LIMIT 10
+            """)
+    List<Map<String, Object>> reconcileRuns(@Param("projectId") long projectId);
+    @Select("""
+            SELECT id,cid,txid,address,gross_amount AS grossAmount,status,block_number AS blockNumber
+            FROM nx_cregis_deposit_event WHERE project_id=#{projectId}
+              AND status IN ('CREDITED','REORG_INVESTIGATING','PROVIDER_CONFLICT_HOLD')
+              AND id>#{afterId}
+            ORDER BY id LIMIT 100
+            """)
+    List<Map<String, Object>> creditedEventsForAudit(@Param("projectId") long projectId,
+                                                     @Param("afterId") long afterId);
+
+    @Insert("""
+            INSERT INTO nx_cregis_review_case
+              (project_id,event_id,action,reason,evidence_hash,maker_id,status)
+            VALUES(#{projectId},#{eventId},'CREDIT_REVIEW_HOLD',#{reason},#{evidenceHash},
+                   #{makerId},'MAKER_DONE')
+            """)
+    int createReviewCase(@Param("projectId") long projectId, @Param("eventId") long eventId,
+                         @Param("reason") String reason, @Param("evidenceHash") String evidenceHash,
+                         @Param("makerId") long makerId);
+    @Select("""
+            SELECT COUNT(*) FROM nx_cregis_review_case WHERE project_id=#{projectId}
+              AND event_id=#{eventId} AND action='CREDIT_REVIEW_HOLD' AND status='MAKER_DONE'
+            """)
+    int pendingReviewCaseCount(@Param("projectId") long projectId, @Param("eventId") long eventId);
+    @Select("""
+            SELECT id FROM nx_cregis_review_case WHERE project_id=#{projectId}
+              AND event_id=#{eventId} AND action='CREDIT_REVIEW_HOLD'
+            """)
+    Long reviewCaseId(@Param("projectId") long projectId, @Param("eventId") long eventId);
+    @Select("""
+            SELECT id,project_id AS projectId,event_id AS eventId,action,reason,
+              evidence_hash AS evidenceHash,maker_id AS makerId,checker_id AS checkerId,
+              status,version FROM nx_cregis_review_case WHERE id=#{id} FOR UPDATE
+            """)
+    Map<String, Object> lockReviewCase(@Param("id") long id);
+    @Select("""
+            SELECT c.id,c.event_id AS eventId,e.cid,c.action,c.reason,
+              c.evidence_hash AS evidenceHash,c.maker_id AS makerId,
+              c.checker_id AS checkerId,c.status,c.version,
+              c.created_at AS createdAt,c.checked_at AS checkedAt
+            FROM nx_cregis_review_case c
+              JOIN nx_cregis_deposit_event e ON e.id=c.event_id
+            WHERE c.project_id=#{projectId}
+            ORDER BY c.id DESC LIMIT 50
+            """)
+    List<Map<String, Object>> reviewCases(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_review_case SET checker_id=#{checkerId},status=#{status},
+              version=version+1,checked_at=NOW()
+            WHERE id=#{id} AND status='MAKER_DONE' AND version=#{expectedVersion}
+              AND maker_id<>#{checkerId}
+            """)
+    int checkReviewCase(@Param("id") long id, @Param("checkerId") long checkerId,
+                        @Param("status") String status, @Param("expectedVersion") long expectedVersion);
+    @Insert("""
+            INSERT INTO nx_cregis_switch_case
+              (project_id,expected_version,assign_enabled,credit_enabled,reason,maker_id,status)
+            VALUES(#{projectId},#{version},#{assign},#{credit},#{reason},#{makerId},'MAKER_DONE')
+            """)
+    int createSwitchCase(@Param("projectId") long projectId, @Param("version") long version,
+                         @Param("assign") int assign, @Param("credit") int credit,
+                         @Param("reason") String reason, @Param("makerId") long makerId);
+    @Select("SELECT LAST_INSERT_ID()")
+    Long lastInsertId();
+    @Select("""
+            SELECT id,project_id AS projectId,expected_version AS expectedVersion,
+              assign_enabled AS assignEnabled,credit_enabled AS creditEnabled,
+              reason,maker_id AS makerId,status
+            FROM nx_cregis_switch_case WHERE id=#{id} FOR UPDATE
+            """)
+    Map<String, Object> lockSwitchCase(@Param("id") long id);
+    @Select("""
+            SELECT id,expected_version AS expectedVersion,assign_enabled AS assignEnabled,
+              credit_enabled AS creditEnabled,payout_enabled AS payoutEnabled,reason,
+              maker_id AS makerId,checker_id AS checkerId,status,
+              created_at AS createdAt,checked_at AS checkedAt
+            FROM nx_cregis_switch_case WHERE project_id=#{projectId}
+            ORDER BY id DESC LIMIT 50
+            """)
+    List<Map<String, Object>> switchCases(@Param("projectId") long projectId);
+    @Update("""
+            UPDATE nx_cregis_switch_case SET checker_id=#{checkerId},status=#{status},checked_at=NOW()
+             WHERE id=#{id} AND project_id=#{projectId} AND status='MAKER_DONE'
+               AND maker_id<>#{checkerId}
+            """)
+    int checkSwitchCase(@Param("id") long id, @Param("projectId") long projectId,
+                        @Param("checkerId") long checkerId, @Param("status") String status);
 }
