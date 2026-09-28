@@ -16,7 +16,7 @@
 1. 在目标数据库执行 `scripts/migrations/20260928_cregis_deposit.sql`。服务在 `PROVIDER` 模式下检查表和关键唯一索引，缺失时拒绝启动。
 2. 配置 Cregis 项目 ID、服务端 API key、Cregis API HTTPS 地址、公开 HTTPS 回调基址及只读 BSC JSON-RPC 地址。密钥留在安全配置中，不写入仓库或日志。
 3. 在 Cregis 项目中核验 USDT-BEP20 `chain_id=2510`、`token_id=0x55d398326f99059ff775485246999027b3197955` 可创建地址，并配置回调地址、出站访问白名单及回调网络通路。TEST 公网入口使用 `/api/cregis/callbacks/deposit`；原 `/openapi/v1/withdrawals/cregis/callbacks/deposit` 只适用于直接连到后端的环境。
-4. TEST 的发布器会把 `nexion.finance.cregis.mode=DISABLED` 写成 JVM 参数；仅设置环境变量不会启用。须通过受信任的主机更新安装支持 Cregis 的发布器，并由 root 专用许可文件授权 `PROVIDER`。然后设置 `NEXION_CREGIS_DEPOSIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_PILOT_USER_IDS=<逗号分隔的用户 ID>`、`NEXION_CREGIS_BSC_RPC_URL=<HTTPS RPC>`。试点最多 50 个用户，目标地址池 60 个。保持 `NEXION_CREGIS_PAYOUT_ENABLED=false`。
+4. TEST 的旧发布器会把 `nexion.finance.cregis.mode=DISABLED` 写成 JVM 参数；仅设置环境变量不会启用。须通过受信任的主机更新安装支持 Cregis 的发布器，并由 root 专用许可文件授权 `PROVIDER`。完成收款硬门后，再设置 `NEXION_CREGIS_DEPOSIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED=true`、`NEXION_CREGIS_DEPOSIT_PILOT_USER_IDS=<逗号分隔的用户 ID>`、`NEXION_CREGIS_BSC_RPC_URL=<HTTPS RPC>`。试点最多 50 个用户，目标地址池 60 个。保持 `NEXION_CREGIS_PAYOUT_ENABLED=false`。
 5. 使用已批准的试点账号读取 `GET /api/deposits/address?network=BEP20`，核对返回地址在 Cregis 项目中属于该项目；再做一笔受控小额真实转账，按 Cregis 交易、链上确认、回调收件箱、事件、钱包流水、充值单和 D1 储备逐项验收。未完成这些核对时保持收款开关关闭。
 
 ## 异常与恢复
@@ -32,6 +32,12 @@
 
 - 上述迁移与功能开关是发布条件。开发环境测试不代表 Cregis 正式项目、BSC RPC、HTTPS 回调及银行提现运行态已验收。
 - 现有银行提现服务只在绑定身份和 HDPay 银行出款配置就绪时开放。直接人工向银行卡打款的独立闭环需要单独验收，不能因充值本金已记入钱包而视为出款已可用。
-- 地址池维护 API 与领取前核验已有候选代码，但 TEST 尚未部署验证，也没有后台补池、未知建址恢复和孤儿资金双人认领工作面。
+- 地址池维护 API 与领取前核验已有候选代码；TEST 尚无地址池，也没有后台补池、未知建址恢复和孤儿资金双人认领工作面。
 - 充值单以 `(chain_tx_hash, asset, chain_log_index)` 唯一定位链事件。旧充值单升级时日志索引置 0；同笔交易出现相同地址和金额的多条日志，仍须等待供应商可核对的日志索引证据，不能猜测分配 CID。
-- `DUST_HOLD`、`REVIEW_HOLD` 当前仅可查询，尚无双人复核的放款、退回与认领动作；完整 `trade/page` 双次稳定闭窗对账与未决敞口三开关熔断也未完成。TEST 发布器和实际公网回调仍需验收。上述恢复与对账控制完成前，收款和入账开关必须保持关闭；本次代码不能作为真实资金试点上线依据。
+- `DUST_HOLD`、`REVIEW_HOLD` 当前仅可查询，尚无双人复核的放款、退回与认领动作；完整 `trade/page` 双次稳定闭窗对账与未决敞口三开关熔断也未完成。实际供应商签名回调和小额真实转账仍需验收。上述恢复与对账控制完成前，收款和入账开关必须保持关闭；本次代码不能作为真实资金试点上线依据。
+
+### 2026-09-28 TEST 现场状态
+
+- 受信任的主机发布器已升级，后端构建 #184（`5afdd1ba`）已部署；进程参数与 root 授权文件均允许 `PROVIDER`。Cregis 项目币种只读查询、BSC RPC、HTTPS 公网回调路由和无签名拒绝已验证。无签名拒绝不等于供应商签名回调通过。
+- `NEXION_CREGIS_DEPOSIT_ENABLED=false`、`NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED=false`、`NEXION_CREGIS_PAYOUT_ENABLED=false`；地址池、充值事件及回调收件箱均为空。App 当前不能获取可转账地址，也不能自动充值。
+- #184 修复了充值列表 SQL 中 MySQL 保留字 `rows` 别名导致的 500；完整查询已在 TEST MySQL 空表上执行通过。测试库没有历史提供的尾号 73775 App 账户；需要有效测试账号完成当前页面及接口验收。
