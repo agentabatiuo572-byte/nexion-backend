@@ -130,9 +130,12 @@ public final class HttpCregisGateway implements CregisGateway {
                 "currency", CregisConstants.USDT_BEP20_CURRENCY,
                 "address", address, "page_num", 1, "page_size", 10));
         JsonNode rows = data.get("rows"), total = data.get("total");
-        if (rows == null || !rows.isArray() || rows.size() != 1
-                || total == null || !total.canConvertToLong() || total.longValue() != 1)
+        if (rows == null || !rows.isArray() || total == null || !total.canConvertToLong()
+                || total.longValue() != rows.size() || rows.size() > 1)
             throw invalidResponse();
+        // Cregis omits a newly created address until it has a balance row.
+        // Callers must verify project ownership before treating this as zero.
+        if (rows.isEmpty()) return true;
         JsonNode row = rows.get(0), pid = row.get("pid");
         if (pid == null || !pid.canConvertToLong() || pid.longValue() != properties.getProjectId()
                 || !address.equalsIgnoreCase(requiredText(row, "address"))

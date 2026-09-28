@@ -167,6 +167,11 @@ class HttpCregisGatewayTest {
         response.set(response.get().replace("\"pid\":42", "\"pid\":43"));
         assertThatThrownBy(() -> gateway(500).zeroAddressBalance(
                 CregisConstants.USDT_BEP20_CURRENCY, address)).hasMessage("CREGIS_RESPONSE_INVALID");
+        response.set("{\"code\":\"00000\",\"data\":{\"total\":0,\"rows\":[],\"pageNum\":1,\"pageSize\":10}}");
+        assertThat(gateway(500).zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY, address)).isTrue();
+        response.set(response.get().replace("\"total\":0", "\"total\":1"));
+        assertThatThrownBy(() -> gateway(500).zeroAddressBalance(
+                CregisConstants.USDT_BEP20_CURRENCY, address)).hasMessage("CREGIS_RESPONSE_INVALID");
     }
 
     @Test
