@@ -11,6 +11,7 @@ import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,7 @@ class BscDepositProofTest {
     private String head = "0x72";
     private String received = "1000000000000000000";
     private String balance = "0x0";
+    private final AtomicReference<String> userAgent = new AtomicReference<>();
 
     @AfterEach void close() { if (server != null) server.stop(0); }
 
@@ -37,6 +39,7 @@ class BscDepositProofTest {
         assertThat(proof.scan(100, 100, java.util.List.of(TO))).singleElement()
                 .extracting(BscDepositProof.Observation::amount).isEqualTo(BigDecimal.ONE);
         assertThat(proof.zeroUsdtBalance(TO)).isTrue();
+        assertThat(userAgent).hasValue("NexGrid-Cregis-ReadOnly/1.0");
         balance = "0x1";
         assertThat(proof.zeroUsdtBalance(TO)).isFalse();
         balance = "0x0";
@@ -52,6 +55,7 @@ class BscDepositProofTest {
     private BscDepositProof local() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
+            userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
             JsonNode request = json.readTree(exchange.getRequestBody());
             String method = request.path("method").asText();
             String result = switch (method) {

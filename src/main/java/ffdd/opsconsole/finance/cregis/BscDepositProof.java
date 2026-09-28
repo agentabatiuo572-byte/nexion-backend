@@ -169,6 +169,7 @@ public final class BscDepositProof {
                     + "\",\"params\":" + params + "}";
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(8))
                     .header("Content-Type", "application/json")
+                    .header("User-Agent", "NexGrid-Cregis-ReadOnly/1.0")
                     .POST(HttpRequest.BodyPublishers.ofString(body)).build();
             HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream stream = response.body()) {
