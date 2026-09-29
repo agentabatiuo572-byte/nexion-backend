@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -83,6 +85,46 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                                 assertThat(notification.title()).isEqualTo(entry.getValue().get(0));
                                 assertThat(notification.body()).isEqualTo(entry.getValue().get(1));
                             });
+                }
+            }
+        });
+    }
+
+    @Test
+    void welcomeUvelMigrationChangesOnlyOldDefaultTitlesAndIsReplaySafe() throws Exception {
+        inSchema(connection -> {
+            seedUsersAndPreferences(connection);
+            try (var sql = connection.createStatement()) {
+                sql.execute("ALTER TABLE nx_nova_template ADD title_zh VARCHAR(255), "
+                        + "ADD title_vi VARCHAR(255), ADD title_en VARCHAR(255), ADD updated_at DATETIME");
+                sql.execute("INSERT INTO nx_nova_template VALUES "
+                        + "('welcome',0,'PUBLISHED','欢迎来到 NexGrid','Chào mừng đến Nexion','Welcome to NexGrid',NULL),"
+                        + "('market',0,'PUBLISHED','NexGrid 市场','NexGrid market','NexGrid market',NULL),"
+                        + "('welcome',1,'PUBLISHED','欢迎来到 NexGrid','Chào mừng đến NexGrid','Welcome to NexGrid',NULL)");
+                sql.execute("INSERT INTO nx_notification (biz_no,user_id,type,title,body,is_deleted) "
+                        + "VALUES ('HISTORICAL-WELCOME',1,'NOVA_WELCOME','Chào mừng đến NexGrid','old',0)");
+
+                String migration = Files.readString(Path.of(
+                        "scripts/migrations/20260929_nova_welcome_uvel_title.sql"));
+                assertThat(sql.executeUpdate(migration)).isEqualTo(1);
+                assertThat(sql.executeUpdate(migration)).isZero();
+                try (var rows = sql.executeQuery("SELECT channel_key,is_deleted,title_zh,title_vi,title_en "
+                        + "FROM nx_nova_template ORDER BY channel_key,is_deleted")) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString("channel_key")).isEqualTo("market");
+                    assertThat(rows.getString("title_zh")).isEqualTo("NexGrid 市场");
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString("title_zh")).isEqualTo("欢迎来到 UVEL");
+                    assertThat(rows.getString("title_vi")).isEqualTo("Chào mừng đến UVEL");
+                    assertThat(rows.getString("title_en")).isEqualTo("Welcome to UVEL");
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getInt("is_deleted")).isEqualTo(1);
+                    assertThat(rows.getString("title_zh")).isEqualTo("欢迎来到 NexGrid");
+                    assertThat(rows.next()).isFalse();
+                }
+                try (var rows = sql.executeQuery("SELECT title FROM nx_notification WHERE biz_no='HISTORICAL-WELCOME'")) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("Chào mừng đến NexGrid");
                 }
             }
         });
