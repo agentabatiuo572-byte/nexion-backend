@@ -13,15 +13,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
 import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.outbox.OutboxProperties;
+import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -565,6 +569,32 @@ class AppTaskAssignmentServiceTest {
         verify(mapper).insertCloudShareNexLedger(7L, 11L, "CTR-CTA-1",
                 "CLOUD_SHARE_DAILY:11:2026-08-10", new BigDecimal("3"), new BigDecimal("3.000000"), NOW);
         verify(mapper, times(2)).creditWallet(any(), any(), any(), any());
+
+        // Exercise the emitted payloads through the real A4 validator against the
+        // existing five-property task/earnings contract (revision 316).
+        EventOutboxMapper eventMapper = mock(EventOutboxMapper.class);
+        when(eventMapper.findActiveSchema(anyString()))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("task", 316, true));
+        when(eventMapper.listActiveProperties(anyString())).thenReturn(List.of(
+                new EventOutboxMapper.SchemaPropertyGateRow("task_id", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("task_no", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("device_id", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("receipt_no", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("amount_usdt", "number", true)));
+        EventOutboxService validatingOutbox = new EventOutboxService(eventMapper, new ObjectMapper(),
+                new OutboxProperties(), mock(A4RuntimePolicyService.class));
+        ArgumentCaptor<Object> eventPayloads = ArgumentCaptor.forClass(Object.class);
+        verify(outbox, times(2)).publishUserEvent(eq("COMPUTE_TASK"), anyString(), eq("task.completed"),
+                eq(7L), eq("P3"), eq(8), eq("2026-W30"), eventPayloads.capture());
+        verify(outbox, times(2)).publishUserEvent(eq("COMPUTE_TASK"), anyString(), eq("earnings.credited"),
+                eq(7L), eq("P3"), eq(8), eq("2026-W30"), eventPayloads.capture());
+        for (int i = 0; i < eventPayloads.getAllValues().size(); i++) {
+            String eventName = i < 2 ? "task.completed" : "earnings.credited";
+            assertThat(validatingOutbox.publishUserEvent("COMPUTE_TASK", "CTA-1", eventName,
+                    7L, "P3", 8, "2026-W30", eventPayloads.getAllValues().get(i))).isNotBlank();
+        }
+        verify(eventMapper, times(2)).listActiveProperties("task.completed");
+        verify(eventMapper, times(2)).listActiveProperties("earnings.credited");
     }
 
     @Test

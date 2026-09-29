@@ -60,7 +60,8 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
     private static final String[] TASK_TABLES = {
             "nx_user", "nx_user_device", "nx_user_device_runtime", "nx_compute_task",
             "nx_compute_receipt", "nx_user_wallet", "nx_wallet_ledger", "nx_earning_event",
-            "nx_compute_device_task_lock", "nx_onboarding_calibration"
+            "nx_compute_device_task_lock", "nx_onboarding_calibration",
+            "nx_product", "nx_order", "nx_order_item"
     };
     private static final String[] CAPACITY_TABLES = {
             "nx_user", "nx_user_device", "nx_compute_task", "nx_user_wallet", "nx_wallet_ledger",
@@ -112,6 +113,10 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
             assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_compute_receipt", Integer.class)).isEqualTo(1);
             assertThat(fixture.jdbc().queryForObject("SELECT reward_usdt FROM nx_compute_receipt WHERE task_no=?",
                     BigDecimal.class, TASK_NO)).isEqualByComparingTo(REWARD);
+            assertThat(fixture.jdbc().queryForObject("SELECT reward_nex FROM nx_compute_receipt WHERE task_no=?",
+                    BigDecimal.class, TASK_NO)).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(fixture.jdbc().queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=?",
+                    BigDecimal.class, USER_ID)).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(fixture.jdbc().queryForObject("SELECT earning_status FROM nx_compute_receipt WHERE task_no=?",
                     String.class, TASK_NO)).isEqualTo("CREDITED");
             assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger", Integer.class)).isEqualTo(1);
@@ -131,6 +136,32 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 assertThat(event.path("amount_usdt").decimalValue()).isEqualByComparingTo(REWARD);
                 assertThat(event.path("task_no").asText()).isEqualTo(TASK_NO);
                 assertThat(event.path("receipt_no").asText()).isNotBlank();
+                assertThat(event.has("amount_nex")).isFalse();
+            }
+        }
+    }
+
+    @Test
+    void paidCloudShareSettlementCreditsNexAndPublishesAgainstCurrentEventSchemas() throws Exception {
+        try (CanonicalEventSchemaMySqlFixture fixture = new CanonicalEventSchemaMySqlFixture(TASK_TABLES)) {
+            seedTaskSettlement(fixture);
+            seedPaidCloudShare(fixture);
+            fixture.migrate();
+
+            taskService(fixture, true).complete(USER_ID, TASK_NO, "paid-cloud-share", completionRequest());
+
+            assertThat(fixture.jdbc().queryForObject("SELECT reward_nex FROM nx_compute_receipt WHERE task_no=?",
+                    BigDecimal.class, TASK_NO)).isEqualByComparingTo("3.000000");
+            assertThat(fixture.jdbc().queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=?",
+                    BigDecimal.class, USER_ID)).isEqualByComparingTo("3.000000");
+            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE asset='NEX'",
+                    Integer.class)).isEqualTo(1);
+            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_earning_event WHERE asset='NEX'",
+                    Integer.class)).isEqualTo(1);
+            assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_event_outbox",
+                    Integer.class)).isEqualTo(2);
+            for (String payload : fixture.jdbc().queryForList("SELECT payload FROM nx_event_outbox ORDER BY id", String.class)) {
+                assertThat(JSON.readTree(payload).has("amount_nex")).isFalse();
             }
         }
     }
@@ -173,12 +204,16 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
     }
 
     private AppTaskAssignmentService taskService(CanonicalEventSchemaMySqlFixture fixture) {
+        return taskService(fixture, false);
+    }
+
+    private AppTaskAssignmentService taskService(CanonicalEventSchemaMySqlFixture fixture, boolean cloudShare) {
         AppTaskAssignmentMapper mapper = mock(AppTaskAssignmentMapper.class, delegatesTo(
                 fixture.mapper(AppTaskAssignmentMapper.class)));
         doReturn(new AppTaskAssignmentMapper.UserScope(0)).when(mapper).userScope(USER_ID);
         doReturn(USER_ID).when(mapper).lockProductionUser(USER_ID);
         doReturn(DEVICE_ID).when(mapper).assignmentDeviceId(USER_ID, TASK_NO, "PRODUCTION");
-        doReturn(taskDevice()).when(mapper).lockOwnedDevice(USER_ID, DEVICE_ID);
+        doReturn(cloudShare ? cloudShareDevice() : taskDevice()).when(mapper).lockOwnedDevice(USER_ID, DEVICE_ID);
         doReturn(taskAssignment()).when(mapper).lockAssignment(USER_ID, TASK_NO, "PRODUCTION");
         doReturn(new AppTaskAssignmentMapper.TaskRuntimeGateRow("ACTIVE", "pending", 8, 64))
                 .when(mapper).taskRuntimeGate(USER_ID, DEVICE_ID, "task-a4-settlement");
@@ -267,6 +302,27 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 NOW.minusMinutes(30), NOW.minusMinutes(30), NOW.plusHours(2), NOW.minusMinutes(30), NOW.minusMinutes(30));
     }
 
+    private void seedPaidCloudShare(CanonicalEventSchemaMySqlFixture fixture) {
+        fixture.jdbc().update("""
+                INSERT INTO nx_product(id,product_no,name,product_type,tier,price_usdt,status,stock,store_visible,
+                    inventory_mode,sold_count,created_at,updated_at,is_deleted)
+                VALUES (?, 'cloud-share', 'Cloud Share', 'SHARE', 'STANDARD', 19.9, 'ACTIVE', 0, 1,
+                    'UNLIMITED', 1, ?, ?, 0)
+                """, TARGET_PRODUCT_ID, NOW.minusDays(31), NOW.minusDays(31));
+        fixture.jdbc().update("""
+                INSERT INTO nx_order(id,user_id,order_no,product_id,quantity,order_type,amount_usdt,
+                    payment_status,order_status,activation_status,paid_at,created_at,updated_at,is_deleted)
+                VALUES (?, ?, 'ORDER-A4-CLOUD-SHARE', ?, 1, 'SINGLE', 19.9,
+                    'PAID', 'COMPLETED', 'ACTIVATED', ?, ?, ?, 0)
+                """, TARGET_PRODUCT_ID, USER_ID, TARGET_PRODUCT_ID,
+                NOW.minusDays(31), NOW.minusDays(31), NOW.minusDays(31));
+        fixture.jdbc().update("""
+                UPDATE nx_user_device SET source_order_no='ORDER-A4-CLOUD-SHARE',product_id=?,
+                    product_code='cloud-share',device_type='SHARE',source_channel='ORDER'
+                WHERE id=?
+                """, TARGET_PRODUCT_ID, DEVICE_ID);
+    }
+
     private void seedCapacityReplacement(CanonicalEventSchemaMySqlFixture fixture) {
         fixture.jdbc().update("""
                 INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox,user_level,
@@ -322,6 +378,12 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
     private AppTaskAssignmentMapper.DeviceRow taskDevice() {
         return new AppTaskAssignmentMapper.DeviceRow(DEVICE_ID, "DEV-A4-SETTLEMENT-982031", "DEVICE", "PRO",
                 "A4 settlement device", "ACTIVE", "sku-a4-settlement", NOW.minusDays(31), NOW.minusDays(30), 64,
+                null, "ONLINE", null, false);
+    }
+
+    private AppTaskAssignmentMapper.DeviceRow cloudShareDevice() {
+        return new AppTaskAssignmentMapper.DeviceRow(DEVICE_ID, "DEV-A4-SETTLEMENT-982031", "SHARE", "STANDARD",
+                "Cloud Share", "ACTIVE", "cloud-share", NOW.minusDays(31), NOW.minusDays(30), 64,
                 null, "ONLINE", null, false);
     }
 

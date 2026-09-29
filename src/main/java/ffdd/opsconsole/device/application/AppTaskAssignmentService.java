@@ -575,8 +575,7 @@ public class AppTaskAssignmentService {
             AppTaskAssignmentMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
             if (attribution == null) throw new BizException(409, "TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");
             Map<String, Object> payload = linked("task_id", task.taskId(), "task_no", taskNo,
-                    "device_id", task.deviceId(), "receipt_no", receiptNo, "amount_usdt", task.rewardUsdt(),
-                    "amount_nex", rewardNex);
+                    "device_id", task.deviceId(), "receipt_no", receiptNo, "amount_usdt", task.rewardUsdt());
             outboxService.publishUserEvent("COMPUTE_TASK", taskNo, "task.completed", userId,
                     attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), payload);
             outboxService.publishUserEvent("COMPUTE_TASK", taskNo, "earnings.credited", userId,

@@ -786,7 +786,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                        (SELECT COALESCE(SUM(oi.quantity),0) FROM nx_order_item oi
                          WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
                        ELSE o.quantity END
-             LIMIT 1 FOR UPDATE
+             LIMIT 1 FOR UPDATE OF o
             """)
     Long lockPaidCloudShareOrder(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
