@@ -70,6 +70,7 @@ public class AppUserAuthService {
     private final UserOtpDeliveryService otpDeliveryService;
     private final EventOutboxService outboxService;
     private final Environment environment;
+    private final ffdd.opsconsole.content.application.SupportActivityService supportActivity;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @PostConstruct
@@ -405,6 +406,12 @@ public class AppUserAuthService {
 
     private ApiResult<UserLoginResponse> issueSession(
             UserEntity user, String countryCode, String phone, String clientAddress, AppSessionSurface surface) {
+        return issueSession(user,countryCode,phone,clientAddress,surface,true);
+    }
+
+    private ApiResult<UserLoginResponse> issueSession(
+            UserEntity user, String countryCode, String phone, String clientAddress, AppSessionSurface surface,
+            boolean interactiveLogin) {
         ApiResult<UserLoginResponse> environmentFailure = environmentFailure(user, false);
         if (environmentFailure != null) return environmentFailure;
         String rawRefreshToken = randomRefreshToken();
@@ -425,6 +432,10 @@ public class AppUserAuthService {
         UserAuthEnvironment audience = UserAuthEnvironment.resolve(environment)
                 .orElseThrow(() -> new BizException(503, "USER_AUTH_ENVIRONMENT_FORBIDDEN"));
         String token = tokenProvider.createUserToken(user.getId(), phone, List.of(), sessionId, accessTtl, audience);
+        // Registration and the current development/mock OAuth exchange reuse session issuance,
+        // but are not proven interactive login sources. Refresh never enters this method.
+        if(interactiveLogin && audience==UserAuthEnvironment.PRODUCTION)
+            supportActivity.interactiveLogin(user.getId(),session.getSessionChainId());
         return ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), countryCode, phone, user.getNickname(),
                         userMapper.isOnboardingComplete(user.getId())),
@@ -454,7 +465,7 @@ public class AppUserAuthService {
             throw new BizException(422, "USER_REGISTRATION_PHONE_INVALID");
         }
         String countryCode = normalizeCountryCode(user.getCountryCode());
-        return issueSession(user, countryCode, user.getPhone(), clientAddress, surface);
+        return issueSession(user, countryCode, user.getPhone(), clientAddress, surface, false);
     }
 
     @Transactional

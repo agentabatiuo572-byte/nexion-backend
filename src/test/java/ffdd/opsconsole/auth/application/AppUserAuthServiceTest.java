@@ -61,6 +61,7 @@ class AppUserAuthServiceTest {
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final MockEnvironment environment = new MockEnvironment();
     private final CaptchaOtpGate captchaGate = mock(CaptchaOtpGate.class);
+    private final ffdd.opsconsole.content.application.SupportActivityService supportActivity = mock(ffdd.opsconsole.content.application.SupportActivityService.class);
     private final AppUserAuthService service;
 
     AppUserAuthServiceTest() {
@@ -76,7 +77,7 @@ class AppUserAuthServiceTest {
         when(loginGuards.countRecentOtpSendEvents(any(), any())).thenReturn(0);
         when(loginGuards.insertOtpSendEvent(any(), any())).thenReturn(1);
         service = new AppUserAuthService(
-                users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, captchaGate, otpDelivery, outbox, environment);
+                users, sessions, loginGuards, passwords, tokens, properties, blocklistVerifier, configFacade, captchaGate, otpDelivery, outbox, environment, supportActivity);
         when(captchaGate.checkAndConsume(any(), any(), any(), anyInt()))
                 .thenReturn(new CaptchaOtpGate.Decision(true, 0, "OK"));
     }
@@ -110,6 +111,7 @@ class AppUserAuthServiceTest {
         assertThat(saved.getValue().getDeviceName()).isEqualTo("NexGrid Phone App");
         assertThat(saved.getValue().getRefreshTokenId()).isNotBlank();
         assertThat(saved.getValue().getExpiresAt()).isNotNull();
+        verify(supportActivity).interactiveLogin(42L,saved.getValue().getSessionChainId());
     }
 
     @Test
@@ -142,6 +144,39 @@ class AppUserAuthServiceTest {
         assertThat(result.getCode()).isEqualTo(401);
         assertThat(result.getMessage()).isEqualTo("USER_CREDENTIAL_INVALID");
         verify(sessions, never()).insert(any(UserSessionEntity.class));
+        verify(supportActivity, never()).interactiveLogin(any(),any());
+    }
+
+    @Test
+    void registrationAndDevelopmentOAuthSessionDoNotFabricateInteractiveActivity() {
+        var result=service.issueRegisteredSession(activeUser(),"127.0.0.1");
+        assertThat(result.getCode()).isZero();
+        verify(supportActivity,never()).interactiveLogin(any(),any());
+    }
+
+    @Test
+    void activityFailurePropagatesToRollBackLoginTransaction() {
+        when(users.selectOne(any())).thenReturn(activeUser());
+        doThrow(new IllegalStateException("capture unavailable")).when(supportActivity).interactiveLogin(any(),any());
+        assertThatThrownBy(()->service.login(new UserLoginRequest("+84","901234567","secret")))
+                .hasMessage("capture unavailable");
+    }
+
+    @Test
+    void legitimateSandboxLoginSucceedsWithoutCanonicalSupportActivity() {
+        environment.setActiveProfiles("test");
+        UserEntity user=activeUser();
+        user.setSandbox(1);
+        when(users.selectOne(any())).thenReturn(user);
+        when(tokens.createUserToken(eq(42L),eq("901234567"),eq(List.of()),any(),any(Duration.class),eq(UserAuthEnvironment.SANDBOX)))
+                .thenReturn("sandbox-token");
+
+        var result=service.login(new UserLoginRequest("+84","901234567","secret"));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().accessToken()).isEqualTo("sandbox-token");
+        verify(sessions).insert(any(UserSessionEntity.class));
+        verify(supportActivity,never()).interactiveLogin(any(),any());
     }
 
     @Test
@@ -686,6 +721,7 @@ class AppUserAuthServiceTest {
 
         assertThat(refreshed.getCode()).isZero();
         assertThat(refreshed.getData().accessToken()).isEqualTo("refreshed-token");
+        verify(supportActivity,times(1)).interactiveLogin(eq(42L),any());
         assertThat(login.getData().sessionSyncKey()).isEqualTo("a".repeat(64));
         assertThat(refreshed.getData().sessionSyncKey()).isEqualTo(login.getData().sessionSyncKey());
         verify(tokens, times(2)).sessionSyncKey(initial.getSessionChainId());

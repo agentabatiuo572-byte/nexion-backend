@@ -8,6 +8,13 @@ import java.util.Map;
 import java.util.Optional;
 
 public interface ConversationRepository {
+    /** Used after durable replay wins under a pre-existing RR snapshot; caller holds the customer mutex. */
+    default List<ContentConversationMessageView> currentRecentUserVisibleMessages(String no,int limit) {
+        throw new UnsupportedOperationException("CURRENT_MESSAGE_READ_REQUIRED");
+    }
+    default int currentUnreadUserVisibleAgentMessageCount(String no) {
+        throw new UnsupportedOperationException("CURRENT_UNREAD_READ_REQUIRED");
+    }
     void ensureSeedData(LocalDateTime now);
 
     Map<String, Object> counters();

@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 2,
+  "id": "cs-backend-s4-20260929",
+  "title": "维护、有效活动、聚合与私有图片",
+  "repo": "D:/WORKS/PLAN/.wt/cs-maintenance-20260929-backend",
+  "base": "7fec53d231ebcef1e36c898bbbee61d329b69b99",
+  "mode": "implement",
+  "risk": "high",
+  "owner": "01a0ec02-4cf4-7541-97e3-0084b3427fbd",
+  "outOfScope": [
+    "不写原树或其它工作树",
+    "不改冻结S1、不改财务、邀请或BI",
+    "不生产发布、不生产SQL、不合入test"
+  ],
+  "inputs": [
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/OWNER-DECISIONS.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/HANDOFF.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/SPEC.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/CONTRACTS.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/SOURCE-MAP.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/IMPLEMENTATION-PLAN.md",
+    "D:/WORKS/PLAN/.wt/cs-maintenance-20260929-backend/docs/HANDOFF-support-s3.md",
+    "D:/WORKS/PLAN/.wt/cs-maintenance-20260929-backend/docs/specs/support-redesign-20260929/S3-R08-ticket-content.md",
+    "D:/WORKS/PLAN/.wt/cs-maintenance-20260929-backend/docs/specs/support-redesign-20260929/S4-SUPPLEMENT.md"
+  ],
+  "steps": [
+    {
+      "id": "s4",
+      "title": "维护、有效活动、聚合与私有图片",
+      "dependsOn": [],
+      "scope": [
+        "src/main/java/ffdd/opsconsole/content/**",
+        "src/main/java/ffdd/opsconsole/auth/application/**",
+        "src/main/java/ffdd/opsconsole/growth/application/**",
+        "src/test/java/ffdd/opsconsole/content/**",
+        "src/test/java/ffdd/opsconsole/auth/**",
+        "src/test/java/ffdd/opsconsole/growth/**",
+        "scripts/migrations/**",
+        "scripts/support-redesign-s4-runtime.mjs",
+        "docs/**",
+        "scripts/support-redesign-s4-*.ps1"
+      ],
+      "acceptance": [
+        {
+          "id": "s4-ac01",
+          "description": "本人六指标与列表、unknown、待回复及分页一致；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC01"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-ac07",
+          "description": "执行与成功分离、新活动与单周期去重；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC07"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-ac08",
+          "description": "排除心跳回复自动活动、乱序重放和规则重算；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC08"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-ac09",
+          "description": "能力声明图片上传、私有访问、转绑撤权、恢复；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC09"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-ac10",
+          "description": "停止恢复及转绑周期终结、历史归因和并发；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC10"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-ac13",
+          "description": "规则独立配置/继承模式/权限/CAS及无生产默认；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC13"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        },
+        {
+          "id": "s4-supplement",
+          "description": "TODO去重并集、STOPPED总量、逐日执行和成功周期业务时区、同响应快照",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-maintenance-20260929-backend/docs/specs/support-redesign-20260929/S4-SUPPLEMENT.md",
+            "locator": "已确认补充"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s4/runtime"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "runtime",
+          "argv": [
+            "node",
+            "scripts/support-redesign-s4-runtime.mjs",
+            "--report",
+            "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s4/runtime.json"
+          ],
+          "kind": "record",
+          "capability": "runtime",
+          "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s4/runtime.json",
+          "requiredChecks": [
+            "s4-ac01",
+            "s4-ac07",
+            "s4-ac08",
+            "s4-ac09",
+            "s4-ac10",
+            "s4-ac13",
+            "s4-supplement"
+          ],
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    }
+  ],
+  "integration": {
+    "id": "integration",
+    "title": "本仓阶段独立集成，不能代替三仓S7",
+    "dependsOn": [
+      "s4"
+    ],
+    "scope": [
+      "src/main/java/ffdd/opsconsole/content/**",
+      "src/main/java/ffdd/opsconsole/auth/application/**",
+      "src/main/java/ffdd/opsconsole/growth/application/**",
+      "src/test/java/ffdd/opsconsole/content/**",
+      "src/test/java/ffdd/opsconsole/auth/**",
+      "src/test/java/ffdd/opsconsole/growth/**",
+      "scripts/migrations/**",
+      "scripts/support-redesign-s4-runtime.mjs",
+      "docs/**",
+      "scripts/support-redesign-s4-*.ps1"
+    ],
+    "acceptance": [
+      {
+        "id": "s4-handoff",
+        "description": "阶段提交、上游依赖、未验证范围与逐项完整性独立审查，满足AC14",
+        "source": {
+          "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/OWNER-DECISIONS.md",
+          "locator": "阶段交付纪律"
+        },
+        "kind": "behavior",
+        "checks": [
+          "integration/closure"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "id": "closure",
+        "argv": [
+          "node",
+          "scripts/support-redesign-s4-runtime.mjs",
+          "--integration",
+          "--report",
+          "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s4/integration.json"
+        ],
+        "kind": "record",
+        "capability": "runtime",
+        "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s4/integration.json",
+        "requiredChecks": [
+          "s4-handoff"
+        ],
+        "timeoutMs": 600000
+      }
+    ],
+    "reviewRequired": true
+  }
+}

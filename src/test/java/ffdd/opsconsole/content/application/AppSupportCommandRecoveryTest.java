@@ -31,7 +31,7 @@ class AppSupportCommandRecoveryTest {
             mock(AdminIdempotencyService.class), mock(AuditLogService.class), mock(ApplicationEventPublisher.class),
             Clock.fixed(Instant.parse("2026-08-31T00:00:00Z"), ZoneOffset.UTC),
             mock(ProductionSupportPathGuard.class), records, new ObjectMapper().findAndRegisterModules(),
-            mock(SupportAgentRepository.class), mock(PlatformConfigFacade.class), ffdd.opsconsole.content.SupportTestDependencies.ownership());
+            mock(SupportAgentRepository.class), mock(PlatformConfigFacade.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages());
 
     @Test
     void committedCommandIsRecoveredOnlyFromTheAuthenticatedUsersScope() throws Exception {

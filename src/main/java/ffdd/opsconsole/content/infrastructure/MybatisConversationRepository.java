@@ -84,7 +84,16 @@ public class MybatisConversationRepository implements ConversationRepository {
         }
         // Global state-machine lock order: header first, active transfer second.
         mapper.lockPendingTransfers(conversationNo);
-        return Optional.ofNullable(mapper.findByConversationNo(conversationNo));
+        return Optional.ofNullable(mapper.findCurrentByConversationNo(conversationNo));
+    }
+
+    @Override
+    public List<ContentConversationMessageView> currentRecentUserVisibleMessages(String no,int limit) {
+        return messageMapper.listCurrentRecentUserVisibleByConversationNo(no,limit);
+    }
+    @Override
+    public int currentUnreadUserVisibleAgentMessageCount(String no) {
+        return messageMapper.countCurrentUnreadUserVisibleAgentMessages(no);
     }
 
     @Override

@@ -32,9 +32,14 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
               sender_name AS senderName,
               content,
               COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
-              msg.created_at AS createdAt
+              msg.created_at AS createdAt,
+              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
+              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
             FROM nx_conversation_message msg
-            LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
+            LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
+              LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
             WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
             ORDER BY msg.created_at ASC,msg.id ASC
             """)
@@ -44,8 +49,13 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             SELECT id,conversation_id AS conversationId,msg.conversation_no AS conversationNo,
                    sender_id AS senderId,sender_type AS senderType,sender_name AS senderName,content,
                    COALESCE(receipt.receipt_status, CASE WHEN msg.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
-                   msg.created_at AS createdAt
+                   msg.created_at AS createdAt,
+              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
+              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
               FROM nx_conversation_message msg
+              LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo}
                AND msg.sender_type IN ('user','agent')
@@ -54,29 +64,45 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     List<ContentConversationMessageView> listUserVisibleByConversationNo(@Param("conversationNo") String conversationNo);
 
     @Select("""
+            <script>
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
                    recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
-                   recent.created_at AS createdAt
+                   recent.created_at AS createdAt,
+              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
+              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
                  WHERE is_deleted=0 AND conversation_no=#{conversationNo} AND sender_type IN ('user','agent')
                  ORDER BY id DESC LIMIT #{limit}
+                 <if test="currentRead">FOR SHARE</if>
               ) recent
+              LEFT JOIN nx_support_human_message h ON h.message_id=recent.id
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
              ORDER BY recent.id ASC
+             <if test="currentRead">FOR SHARE</if>
+             </script>
             """)
-    List<ContentConversationMessageView> listRecentUserVisibleByConversationNo(
-            @Param("conversationNo") String conversationNo, @Param("limit") int limit);
+    List<ContentConversationMessageView> selectRecentVisible(
+            @Param("conversationNo") String conversationNo, @Param("limit") int limit, @Param("currentRead") boolean currentRead);
+
+    default List<ContentConversationMessageView> listRecentUserVisibleByConversationNo(String no,int limit) { return selectRecentVisible(no,limit,false); }
+    default List<ContentConversationMessageView> listCurrentRecentUserVisibleByConversationNo(String no,int limit) { return selectRecentVisible(no,limit,true); }
 
     @Select("""
             SELECT recent.id,recent.conversation_id AS conversationId,recent.conversation_no AS conversationNo,
                    recent.sender_id AS senderId,recent.sender_type AS senderType,recent.sender_name AS senderName,
                    recent.content,
                    COALESCE(receipt.receipt_status, CASE WHEN recent.sender_type IN ('agent','user') THEN 'sent' ELSE NULL END) AS receiptStatus,
-                   recent.created_at AS createdAt
+                   recent.created_at AS createdAt,
+              h.assignment_id AS assignmentId,COALESCE(h.kind,'TEXT') AS kind,COALESCE(h.intent,'SERVICE') AS intent,
+              h.client_message_id AS clientMessageId,h.attachment_id AS attachmentId,
+              CASE WHEN h.message_id IS NULL THEN 'UNKNOWN' ELSE 'VERIFIED' END AS authorConfidence,
+              DATE_FORMAT(h.committed_at,'%Y-%m-%dT%H:%i:%s.%fZ') AS committedAt
               FROM (
                 SELECT id,conversation_id,conversation_no,sender_id,sender_type,sender_name,content,created_at
                   FROM nx_conversation_message
@@ -84,6 +110,7 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                    AND (#{beforeMessageId} IS NULL OR id < #{beforeMessageId})
                  ORDER BY id DESC LIMIT #{limit}
               ) recent
+              LEFT JOIN nx_support_human_message h ON h.message_id=recent.id
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=recent.id
              ORDER BY recent.id ASC
             """)
@@ -92,13 +119,20 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
             @Param("limit") int limit);
 
     @Select("""
+            <script>
             SELECT COUNT(*)
               FROM nx_conversation_message msg
+              LEFT JOIN nx_support_human_message h ON h.message_id=msg.id
               LEFT JOIN nx_conversation_message_receipt receipt ON receipt.message_id=msg.id
              WHERE msg.is_deleted=0 AND msg.conversation_no=#{conversationNo} AND msg.sender_type='agent'
-               AND (receipt.message_id IS NULL OR receipt.receipt_status<>'read')
+               AND (receipt.message_id IS NULL OR receipt.receipt_status&lt;&gt;'read')
+            <if test="currentRead">FOR SHARE</if>
+            </script>
             """)
-    int countUnreadUserVisibleAgentMessages(@Param("conversationNo") String conversationNo);
+    int selectUnreadUserVisibleAgentMessages(@Param("conversationNo") String conversationNo,@Param("currentRead") boolean currentRead);
+
+    default int countUnreadUserVisibleAgentMessages(String no) { return selectUnreadUserVisibleAgentMessages(no,false); }
+    default int countCurrentUnreadUserVisibleAgentMessages(String no) { return selectUnreadUserVisibleAgentMessages(no,true); }
 
     @Insert("""
             INSERT INTO nx_conversation_message_receipt(message_id,conversation_no,receipt_status,read_by,read_at)

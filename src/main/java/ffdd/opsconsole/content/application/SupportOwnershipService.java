@@ -93,6 +93,12 @@ public class SupportOwnershipService {
         if (customer == null || mapper.lockCustomer(customer) == null) throw new BizException(404, "SUPPORT_CUSTOMER_NOT_FOUND");
     }
 
+    /** Authorize the immutable customer key before taking any conversation/header locks. */
+    public void lockCustomerConversation(Long customer,String no) {
+        if(customer==null || !customer.equals(conversationCustomer(no))) throw new BizException(404,"CONVERSATION_NOT_FOUND");
+        lockCustomer(customer);
+    }
+
     public SupportAssignment requireWriter(Long customer, boolean lock) {
         if (lock) lockCustomer(customer);
         Long actor = actorId();

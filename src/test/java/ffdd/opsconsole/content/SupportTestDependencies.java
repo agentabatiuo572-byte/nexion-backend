@@ -6,6 +6,12 @@ import static org.mockito.Mockito.*;
 /** Existing domain tests isolate authorization; dedicated binding tests exercise the real guard. */
 public final class SupportTestDependencies {
     private SupportTestDependencies() {}
+    public static ffdd.opsconsole.content.application.SupportHumanMessageService humanMessages() {
+        var service=mock(ffdd.opsconsole.content.application.SupportHumanMessageService.class);
+        when(service.prepare(any(),any(),any(),any(),any(),any(),nullable(String.class),nullable(String.class),nullable(String.class),nullable(String.class),nullable(Long.class)))
+            .thenReturn(new ffdd.opsconsole.content.application.SupportHumanMessageService.Prepared(42L,"ADMIN",1L,"test-message","TEXT","SERVICE",null,null,"hash",null,null));
+        return service;
+    }
     public static SupportOwnershipService ownership() {
         var guard=mock(SupportOwnershipService.class);
         when(guard.actorId()).thenReturn(1L);

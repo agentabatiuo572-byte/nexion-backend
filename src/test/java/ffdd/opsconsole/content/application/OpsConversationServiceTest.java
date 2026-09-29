@@ -81,7 +81,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
                 customerProfileRepository,
-                mock(ProductionSupportPathGuard.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
+                mock(ProductionSupportPathGuard.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
     }
 
     @Test
@@ -101,7 +101,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.user.application.OpsUserService.class),
                 mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
-                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
+                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
 
         assertThatThrownBy(direct::runTimeoutFallback).isInstanceOf(RuntimeException.class);
 

@@ -28,14 +28,14 @@ class MybatisConversationRepositoryTest {
         ContentConversationView conversation = transferredConversation();
         when(mapper.lockConversationHeader("CV-RACE")).thenReturn(1L);
         when(mapper.lockPendingTransfers("CV-RACE")).thenReturn(java.util.List.of(2L));
-        when(mapper.findByConversationNo("CV-RACE")).thenReturn(conversation);
+        when(mapper.findCurrentByConversationNo("CV-RACE")).thenReturn(conversation);
 
         assertThat(repository.findByConversationNoForUpdate("CV-RACE")).contains(conversation);
 
         InOrder order = inOrder(mapper);
         order.verify(mapper).lockConversationHeader("CV-RACE");
         order.verify(mapper).lockPendingTransfers("CV-RACE");
-        order.verify(mapper).findByConversationNo("CV-RACE");
+        order.verify(mapper).findCurrentByConversationNo("CV-RACE");
     }
 
     @Test

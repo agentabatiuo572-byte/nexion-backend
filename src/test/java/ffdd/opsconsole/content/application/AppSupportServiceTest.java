@@ -62,7 +62,7 @@ class AppSupportServiceTest {
     void setUp() {
         service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock,
                 productionPathGuard, idempotencyRecords, new ObjectMapper().findAndRegisterModules(), supportAgents,
-                configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership());
+                configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages());
         when(idempotency.executeRetained(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();

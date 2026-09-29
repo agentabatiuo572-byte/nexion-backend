@@ -125,14 +125,15 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                                                     @Param("offset") long offset);
 
     @Select("""
+            <script>
             SELECT
               c.id,
               c.conversation_no AS conversationNo,
               c.user_id AS userId,
               c.conversation_type AS conversationType,
               c.status,
-              CAST((SELECT sa.agent_admin_id FROM nx_support_agent_user_assignment sa WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0) AS CHAR) AS ownerAgentId,
-              COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') AS ownerAgentName,
+              CAST((SELECT sa.agent_admin_id FROM nx_support_agent_user_assignment sa WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0 <if test='currentRead'>FOR SHARE</if>) AS CHAR) AS ownerAgentId,
+              COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0 <if test='currentRead'>FOR SHARE</if>),'待分配') AS ownerAgentName,
               c.unread_count AS unreadCount,
               c.last_message AS lastMessage,
               c.last_message_at AS lastMessageAt,
@@ -147,7 +148,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.version,
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
-                  AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
+                  AND m.sender_type IN ('user','agent') <if test='currentRead'>FOR SHARE</if>) AS lastPublicMessageId,
               CASE WHEN c.status='CLOSED' AND EXISTS (
                 SELECT 1 FROM nx_conversation_timeout_event e
                 WHERE e.conversation_no=c.conversation_no AND e.event_type='CLOSE'
@@ -159,16 +160,23 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                       AND sm.content=c.last_message
                       AND NOT EXISTS (SELECT 1 FROM nx_conversation_message m
                         WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
-                          AND m.id>sm.id)
+                          AND m.id>sm.id <if test="currentRead">FOR SHARE</if>)
+                    <if test="currentRead">FOR SHARE</if>
                   )
+                <if test="currentRead">FOR SHARE</if>
               ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
             WHERE c.is_deleted=0 AND c.conversation_no=#{conversationNo}
             LIMIT 1
+            <if test="currentRead">FOR SHARE</if>
+            </script>
             """)
-    ContentConversationView findByConversationNo(@Param("conversationNo") String conversationNo);
+    ContentConversationView selectConversation(@Param("conversationNo") String conversationNo, @Param("currentRead") boolean currentRead);
+
+    default ContentConversationView findByConversationNo(String no) { return selectConversation(no,false); }
+    default ContentConversationView findCurrentByConversationNo(String no) { return selectConversation(no,true); }
 
     @Select("""
             SELECT id

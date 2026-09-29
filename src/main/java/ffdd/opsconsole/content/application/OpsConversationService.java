@@ -101,6 +101,7 @@ public class OpsConversationService {
     private final CustomerProfileRepository customerProfileRepository;
     private final ProductionSupportPathGuard productionPathGuard;
     private final SupportOwnershipService ownership;
+    private final SupportHumanMessageService humanMessages;
     private final SupportReplyService replies;
 
     public ApiResult<Map<String, Object>> overview() {
@@ -153,6 +154,8 @@ public class OpsConversationService {
         if (!StringUtils.hasText(normalized)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "CONVERSATION_NO_REQUIRED");
         }
+        if(authenticatedUserId==null) return ApiResult.fail(403,"CONVERSATION_USER_MISMATCH");
+        ownership.lockCustomerConversation(authenticatedUserId,normalized);
         ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(normalized).orElse(null);
         if (conversation == null) {
             return ApiResult.fail(404, "CONVERSATION_NOT_FOUND");
@@ -546,17 +549,22 @@ public class OpsConversationService {
         if (conversation == null) {
             return new MessageCommandResult(ApiResult.fail(404, "CONVERSATION_NOT_FOUND"), null);
         }
+        var prepared=humanMessages.prepare(conversation.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+                "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
+                request.attachmentId(),request.expectedAssignmentId());
+        if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);
         }
-        String body = request.body().trim();
+        String body = SupportHumanMessageService.text(request.body());
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
         Long messageId = conversationRepository.replyAndReturnMessageId(conversation, body, actor, now);
         if (messageId == null) {
             return new MessageCommandResult(invalidState(), null);
         }
+        humanMessages.committed(prepared,messageId,idempotencyKey);
         replies.handled(conversation.userId(),conversation.conversationNo(),messageId,request);
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit("I9_CONVERSATION_REPLIED", conversation.conversationNo(), actor, Map.of(
@@ -899,12 +907,17 @@ public class OpsConversationService {
             return new MessageCommandResult(guard, null);
         }
         ownership.requireWriter(request.userId(), true);
+        var prepared=humanMessages.prepare(request.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+                "CREATE",request,request.clientMessageId(),request.kind(),request.intent(),
+                request.attachmentId(),request.expectedAssignmentId());
+        if(prepared.previousMessageId()!=null) return new MessageCommandResult(
+                ApiResult.ok(conversationRepository.findByConversationNoForUpdate(prepared.previousConversationNo()).orElseThrow()),prepared.previousMessageId());
         String type = normalizeConversationType(request.conversationType());
         String actor = operator(request.operator());
         AdvisorRoutingDecision routing = routingDecision(type, request, actor);
         String ownerName = routing.targetName();
         String ownerId = routing.targetId();
-        String text = request.openingText().trim();
+        String text = SupportHumanMessageService.text(request.openingText());
         LocalDateTime now = LocalDateTime.now(clock);
         String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
         ConversationRepository.PersistedConversation persisted = conversationRepository.createConversationWithMessage(
@@ -916,6 +929,9 @@ public class OpsConversationService {
                 text,
                 now);
         ContentConversationView created = persisted.conversation();
+        humanMessages.committed(prepared,persisted.messageId(),idempotencyKey);
+        if(request.replyTargets()!=null) replies.handled(request.userId(),created.conversationNo(),persisted.messageId(),
+                new ConversationReplyRequest(text,created.status(),created.version(),request.reason(),request.operator(),request.replyTargets(),null));
         SupportTicketView fallbackTicket = routing.fallbackTicket()
                 ? createAdvisorFallbackTicket(created, text, routing, actor, now)
                 : null;
@@ -1012,10 +1028,10 @@ public class OpsConversationService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.body())) {
+        if (request == null || !SupportHumanMessageService.validContent(request.kind(),request.body())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REPLY_BODY_REQUIRED");
         }
-        if (request.body().trim().length() > 2000) {
+        if (SupportHumanMessageService.text(request.body()).length() > 2000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REPLY_BODY_TOO_LONG");
         }
         if (invalidReason(request.reason())) {
@@ -1052,10 +1068,10 @@ public class OpsConversationService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !StringUtils.hasText(request.openingText())) {
+        if (request == null || !SupportHumanMessageService.validContent(request.kind(),request.openingText())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPENING_TEXT_REQUIRED");
         }
-        if (request.openingText().trim().length() > 2000) {
+        if (SupportHumanMessageService.text(request.openingText()).length() > 2000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPENING_TEXT_TOO_LONG");
         }
         String type = normalizeConversationType(request.conversationType());
@@ -1251,7 +1267,7 @@ public class OpsConversationService {
                     .append("] ")
                     .append(message.senderName())
                     .append(": ")
-                    .append(message.content())
+                    .append(message.transcriptText())
                     .append('\n');
             if (body.length() >= 1997) {
                 return body.substring(0, 1997) + "...";

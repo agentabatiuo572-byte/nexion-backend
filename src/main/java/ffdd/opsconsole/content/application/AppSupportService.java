@@ -74,6 +74,7 @@ public class AppSupportService {
     private final SupportAgentRepository supportAgentRepository;
     private final PlatformConfigFacade configFacade;
     private final SupportOwnershipService ownership;
+    private final SupportHumanMessageService humanMessages;
 
     public ApiResult<PageResult<SupportTicketView>> tickets(
             Long userId, String status, Long pageNum, Long pageSize) {
@@ -251,6 +252,7 @@ public class AppSupportService {
             Long userId, String conversationNo, Long lastSeenMessageId, String expectedStatus, Long expectedVersion) {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
+        ownership.lockCustomerConversation(userId,safeNo(conversationNo));
         ContentConversationView conversation = conversationRepository
                 .findByConversationNoForUpdate(safeNo(conversationNo)).orElse(null);
         if (conversation == null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
@@ -282,7 +284,7 @@ public class AppSupportService {
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
         if (request == null || !CONVERSATION_TYPES.contains(normalizeUpper(request.conversationType()))
-                || !boundedText(request.openingText(), 1, 2000)) {
+                || !SupportHumanMessageService.validContent(request.kind(),request.openingText())) {
             return validation("CONVERSATION_INPUT_INVALID");
         }
         String requestedType = normalizeLower(request.conversationType());
@@ -294,16 +296,20 @@ public class AppSupportService {
             LocalDateTime now = LocalDateTime.now(clock);
             String type = requestedType;
             ownership.lockCustomer(userId);
+            var prepared=humanMessages.prepare(userId,"USER",userId,idempotencyKey,"CREATE",request,
+                    request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
+            if(prepared.previousMessageId()!=null) return replayConversation(userId,prepared.previousConversationNo());
             DedicatedAdvisorBindingView advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
             String ownerId = advisor == null ? null : String.valueOf(advisor.adminId());
             String ownerName = advisor == null ? "待分配" : advisor.name();
             ContentConversationView created = conversationRepository.createUserConversation(
-                    uniqueNo("CV-APP-", now), userId, type, request.openingText().trim(),
+                    uniqueNo("CV-APP-", now), userId, type, SupportHumanMessageService.text(request.openingText()),
                     ownerId, ownerName, now);
+            humanMessages.committed(prepared,humanMessages.latest(created.conversationNo()),idempotencyKey);
             audit("APP_CONVERSATION_CREATED", "CONVERSATION", created.conversationNo(), userId,
                     Map.of("type", created.conversationType(), "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, created.conversationNo());
-            publish(result.getData(), ConversationMessageEvent.EventType.INITIATE, request.openingText().trim());
+            publish(result.getData(), ConversationMessageEvent.EventType.INITIATE, SupportHumanMessageService.text(request.openingText()));
             return result;
         });
     }
@@ -314,22 +320,26 @@ public class AppSupportService {
         productionPathGuard.requireAllowed(userId);
         if (!validUser(userId)) return forbidden();
         if (!validKey(idempotencyKey)) return idempotencyRequired();
-        if (request == null || !boundedText(request.body(), 1, 2000) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
+        if (request == null || !SupportHumanMessageService.validContent(request.kind(),request.body()) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
             return validation("CONVERSATION_REPLY_INVALID");
         }
         return idempotent("APP_CONVERSATION_REPLY:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
             ownership.lockCustomer(userId);
             ContentConversationView conversation = ownedConversation(userId, conversationNo);
             if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
+            var prepared=humanMessages.prepare(userId,"USER",userId,idempotencyKey,"REPLY:"+conversationNo,request,
+                    request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
+            if(prepared.previousMessageId()!=null) return replayConversation(userId,conversationNo);
             if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
             if (!Set.of("OPEN", "RESOLVED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
-            if (!conversationRepository.replyAsUser(conversation, userId, request.body().trim(), LocalDateTime.now(clock))) {
+            if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
                 return conversationConflict();
             }
+            humanMessages.committed(prepared,humanMessages.latest(conversationNo),idempotencyKey);
             audit("APP_CONVERSATION_REPLIED", "CONVERSATION", conversation.conversationNo(), userId,
-                    Map.of("bodyLength", request.body().trim().length(), "idempotencyKey", idempotencyKey.trim()));
+                    Map.of("bodyLength", SupportHumanMessageService.text(request.body()).length(), "idempotencyKey", idempotencyKey.trim()));
             ApiResult<ContentConversationDetail> result = conversation(userId, conversation.conversationNo());
-            publish(result.getData(), ConversationMessageEvent.EventType.MESSAGE, request.body().trim());
+            publish(result.getData(), ConversationMessageEvent.EventType.MESSAGE, SupportHumanMessageService.text(request.body()));
             return result;
         });
     }
@@ -359,7 +369,7 @@ public class AppSupportService {
             }
             String transcript = conversationRepository
                     .recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW).stream()
-                    .map(message -> message.senderName() + ": " + message.content())
+                    .map(message -> message.senderName() + ": " + message.transcriptText())
                     .reduce((left, right) -> left + "\n" + right)
                     .orElse(conversation.lastMessage());
             SupportTicketView ticket = ticketRepository.createTicket(
@@ -390,6 +400,17 @@ public class AppSupportService {
                 .skip(truncated ? 1 : 0).toList();
         Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
         return new SupportTicketDetail(ticket, page, null, truncated, nextCursor);
+    }
+
+    private ApiResult<ContentConversationDetail> replayConversation(Long userId,String no) {
+        // The customer mutex serializes sends, but cannot refresh an older RR consistent-read snapshot.
+        var conversation=conversationRepository.findByConversationNoForUpdate(no).orElse(null);
+        if(conversation==null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
+        var fetched=conversationRepository.currentRecentUserVisibleMessages(no,APP_MESSAGE_WINDOW+1);
+        boolean truncated=fetched.size()>APP_MESSAGE_WINDOW;
+        var page=fetched.stream().skip(truncated?1:0).toList();
+        return ApiResult.ok(new ContentConversationDetail(appConversation(conversation,true),page,null,truncated,
+                truncated && !page.isEmpty()?page.get(0).id():null));
     }
 
     private ContentConversationDetail conversationDetail(ContentConversationView conversation, Long beforeMessageId) {
@@ -551,9 +572,14 @@ public class AppSupportService {
     }
 
     private ContentConversationView appConversation(ContentConversationView row) {
+        return appConversation(row,false);
+    }
+
+    private ContentConversationView appConversation(ContentConversationView row,boolean currentRead) {
         // The operations header is not a customer unread projection. Count every
         // visible agent receipt instead of deriving a badge from one latest row.
-        int userUnread = conversationRepository.unreadUserVisibleAgentMessageCount(row.conversationNo());
+        int userUnread = currentRead?conversationRepository.currentUnreadUserVisibleAgentMessageCount(row.conversationNo())
+                :conversationRepository.unreadUserVisibleAgentMessageCount(row.conversationNo());
         return new ContentConversationView(
                 row.id(), row.conversationNo(), row.userId(), row.conversationType(), row.status(),
                 row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
@@ -662,9 +688,31 @@ public class AppSupportService {
     private <T> ApiResult<T> invalidConversationState() { return ApiResult.fail(409, "CONVERSATION_INVALID_STATE"); }
 
     public record CreateTicketRequest(String category, String title, String body) {}
-    public record ReplyRequest(String body, String expectedStatus, Long expectedVersion) {}
+    public record ReplyRequest(String body, String expectedStatus, Long expectedVersion,
+            String kind,String attachmentId,String clientMessageId,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=ffdd.opsconsole.content.dto.SupportBindingRequest.StrictId.class) Long expectedAssignmentId) {
+        public ReplyRequest(String body,String expectedStatus,Long expectedVersion){this(body,expectedStatus,expectedVersion,null,null,null,null);}
+        @Override public String toString() {
+            if(kind!=null || attachmentId!=null || clientMessageId!=null || expectedAssignmentId!=null)
+                return ffdd.opsconsole.content.dto.SupportMessagePayload.encode(this);
+            String base="ReplyRequest[body="+body+", expectedStatus="+expectedStatus+", expectedVersion="+expectedVersion;
+            return base+(kind==null && attachmentId==null && clientMessageId==null && expectedAssignmentId==null ? "]"
+                : ", kind="+kind+", attachmentId="+attachmentId+", clientMessageId="+clientMessageId+", expectedAssignmentId="+expectedAssignmentId+"]");
+        }
+    }
     public record CloseRequest(String expectedStatus, Long expectedVersion) {}
-    public record StartConversationRequest(String conversationType, String openingText) {}
+    public record StartConversationRequest(String conversationType, String openingText,
+            String kind,String attachmentId,String clientMessageId,
+            @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=ffdd.opsconsole.content.dto.SupportBindingRequest.StrictId.class) Long expectedAssignmentId) {
+        public StartConversationRequest(String conversationType,String openingText){this(conversationType,openingText,null,null,null,null);}
+        @Override public String toString() {
+            if(kind!=null || attachmentId!=null || clientMessageId!=null || expectedAssignmentId!=null)
+                return ffdd.opsconsole.content.dto.SupportMessagePayload.encode(this);
+            String base="StartConversationRequest[conversationType="+conversationType+", openingText="+openingText;
+            return base+(kind==null && attachmentId==null && clientMessageId==null && expectedAssignmentId==null ? "]"
+                : ", kind="+kind+", attachmentId="+attachmentId+", clientMessageId="+clientMessageId+", expectedAssignmentId="+expectedAssignmentId+"]");
+        }
+    }
     public record ConversationCategoryAvailability(String type, boolean enabled) {}
     public record ConvertToTicketRequest(String category, String title, String expectedStatus, Long expectedVersion) {}
     public record AppSupportSlaTarget(
