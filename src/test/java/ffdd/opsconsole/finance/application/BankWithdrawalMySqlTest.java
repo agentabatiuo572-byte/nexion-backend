@@ -411,11 +411,11 @@ class BankWithdrawalMySqlTest {
             f.seedBeneficiary();
             String challenge = "PAYOUT-BANK-"+"c".repeat(32);
             f.addresses.insertOtp(71L,challenge,"123456");
-            var wrong = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"000000");
+            var wrong = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"000000",true);
             assertThrows(RuntimeException.class,()->f.service.bind(71,wrong,"bad-code"));
             assertEquals(1,f.jdbc.queryForObject("SELECT attempts FROM nx_user_otp_challenge WHERE challenge_no=?",Integer.class,challenge));
             assertEquals(0L,f.bank.beneficiary(71L).version());
-            var correct = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456");
+            var correct = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456",true);
             assertEquals(0,f.service.bind(71,correct,"valid-code").getCode());
             assertEquals(1L,f.bank.beneficiary(71L).version());
             assertEquals(NOW,f.bank.beneficiary(71L).effectiveAt());
@@ -427,7 +427,7 @@ class BankWithdrawalMySqlTest {
                 f.addresses.insertOtp(scenario.equals("other-owner") ? 72L : 71L,next,"123456");
                 if (scenario.equals("expired")) f.jdbc.update("UPDATE nx_user_otp_challenge SET expires_at=DATE_SUB(NOW(),INTERVAL 1 SECOND) WHERE challenge_no=?",next);
                 if (scenario.equals("exhausted")) f.jdbc.update("UPDATE nx_user_otp_challenge SET attempts=5 WHERE challenge_no=?",next);
-                var request=new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",next,"123456");
+                var request=new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",next,"123456",true);
                 assertThrows(RuntimeException.class,()->f.service.bind(71,request,scenario));
                 assertEquals(1L,f.bank.beneficiary(71L).version());
             }

@@ -38,7 +38,7 @@ class BankWithdrawalAuthorizationTest {
         assertThrows(RuntimeException.class,()->controller.config(null));
         assertThrows(RuntimeException.class,()->controller.recovery(null));
         assertThrows(RuntimeException.class,()->controller.verify(null));
-        var binding = new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null);
+        var binding = new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null, true);
         assertThrows(RuntimeException.class,()->controller.bind(null, "fixture-key", binding));
         var auth=new UsernamePasswordAuthenticationToken("71","unused",List.of());
         auth.setDetails(Map.of("subjectType","ADMIN"));

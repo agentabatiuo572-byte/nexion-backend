@@ -40,7 +40,8 @@ public class BankWithdrawalService {
     private final Environment environment;
     private final Clock clock;
 
-    public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code) {
+    public record BindRequest(String bankCode, String account, String holder, String challengeNo, String code,
+                              Boolean accountRoutingConfirmed) {
         @Override public String toString() { return "BindBankRequest[REDACTED]"; }
     }
     // Historical bank labels only. New bindings and BANK payout requests use an empty bank code.
@@ -126,12 +127,14 @@ public class BankWithdrawalService {
                 || (!request.bankCode().isEmpty() && !BANKS.containsKey(request.bankCode()))) throw error(422, "BANK_CODE_INVALID");
         try { HttpHdPayPayoutGateway.account(request.account()); HttpHdPayPayoutGateway.holder(request.holder()); }
         catch (HdPayGatewayException invalidRecipient) { throw error(422, "BANK_BENEFICIARY_INVALID"); }
-        // Keep the retained request hash stable so successful requests replay without consuming another OTP.
+        // Keep the retained request hash stable so pre-upgrade successes replay without another confirmation or OTP.
         String hash = HdPayPayoutDigest.sha(userId + "|" + request.bankCode() + "|" + request.account() + "|"
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
             requireUser(userId, true);
             if (!accountRouting.contractConfirmed()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
+            if (!Boolean.TRUE.equals(request.accountRoutingConfirmed()))
+                throw error(422, "BANK_ACCOUNT_ROUTING_CONFIRMATION_REQUIRED");
             // BANK payout uses an explicitly empty bnkCode; no client-selected bank routing.
             if (!request.bankCode().isEmpty()) throw error(422, "BANK_CODE_MUST_BE_EMPTY");
             LocalDateTime now = LocalDateTime.now(clock);

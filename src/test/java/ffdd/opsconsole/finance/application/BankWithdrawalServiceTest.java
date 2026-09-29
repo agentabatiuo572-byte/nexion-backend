@@ -85,9 +85,9 @@ class BankWithdrawalServiceTest {
         verifyNoInteractions(withdrawals);
     }
     @Test void invalidRecipientNeverWritesOrUsesOtp() {
-        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest("","invalid","NGUYEN VAN A",null,null),"fixture-bind"));
-        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest("","0123456789","A",null,null),"fixture-bind"));
-        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest(null,"0123456789","NGUYEN VAN A",null,null),"fixture-bind"));
+        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest("","invalid","NGUYEN VAN A",null,null,true),"fixture-bind"));
+        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest("","0123456789","A",null,null,true),"fixture-bind"));
+        assertThrows(RuntimeException.class,()->service.bind(71,new BankWithdrawalService.BindRequest(null,"0123456789","NGUYEN VAN A",null,null,true),"fixture-bind"));
         verifyNoInteractions(addresses,bank);
     }
     @Test void unverifiedBankIdentityBlocksNewBindingAndChangeSmsBeforeAnyWrite() {
@@ -194,15 +194,33 @@ class BankWithdrawalServiceTest {
         var receipt = ApiResult.ok(Map.<String, Object>of("beneficiary", Map.of("bankCode", "VCB", "maskedAccount", "****6789")));
         doReturn(receipt).when(idem).executeRetained(anyString(), anyString(), anyString(), any(), any());
 
-        assertSame(receipt, service.bind(71, binding(), "bank-already-succeeded"));
+        var legacy = new BankWithdrawalService.BindRequest("VCB", "00123456789", "NGUYEN VAN A",
+                "PAYOUT-BANK-" + "a".repeat(32), "123456", null);
+        assertSame(receipt, service.bind(71, legacy, "bank-already-succeeded"));
+        verify(idem).executeRetained(eq("BANK_BIND:71"), eq("bank-already-succeeded"),
+                eq(HdPayPayoutDigest.sha("71|VCB|00123456789|NGUYEN VAN A|" + legacy.challengeNo() + "|123456")),
+                eq(ApiResult.class), any());
         verifyNoInteractions(bank, addresses, otp, withdrawals);
+    }
+    @Test void newBindingAndReplacementRequireExplicitAccountRoutingConfirmationBeforeOtpOrWrite() {
+        enableBindingForLegacyContractTests();
+        for (Boolean confirmed : new Boolean[]{null, false}) {
+            var first = new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null, confirmed);
+            assertEquals("BANK_ACCOUNT_ROUTING_CONFIRMATION_REQUIRED",
+                    assertThrows(RuntimeException.class, () -> service.bind(71, first, "unconfirmed-first")).getMessage());
+            var replacement = new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A",
+                    bankChallenge(), "123456", confirmed);
+            assertEquals("BANK_ACCOUNT_ROUTING_CONFIRMATION_REQUIRED",
+                    assertThrows(RuntimeException.class, () -> service.bind(71, replacement, "unconfirmed-replacement")).getMessage());
+        }
+        verifyNoInteractions(bank, addresses, cipher, otp, delivery, withdrawals);
     }
     @Test void firstBindingIsImmediateWithoutOtpOrExternalVerificationAndKeepsLeadingZeros() {
         enableBindingForLegacyContractTests();
         when(cipher.encrypt(anyString(), anyString())).thenReturn("encrypted-fixture");
         when(bank.saveBeneficiary(anyLong(), anyString(), anyString(), anyString(), anyString(), any(), any(), anyLong(), any())).thenReturn(1);
         when(bank.beneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","encrypted-fixture",now,now.plusDays(7),0L));
-        var result = service.bind(71, new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null), "fixture-no-otp");
+        var result = service.bind(71, new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null, true), "fixture-no-otp");
         assertEquals(0, result.getCode());
         assertEquals("ACCOUNT_ROUTED", ((Map<?, ?>)result.getData().get("beneficiary")).get("bankName"));
         assertEquals(true, ((Map<?, ?>)result.getData().get("beneficiary")).get("bankRoutingVerified"));
@@ -300,7 +318,7 @@ class BankWithdrawalServiceTest {
         enableBindingForLegacyContractTests();
         when(bank.lockBeneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-old","","****6789","cipher",now,now,0L));
         for (String challenge : new String[]{null,"PAYOUT-"+"a".repeat(32),"REGISTER-"+"a".repeat(32),"PAYOUT-BANK-short"}) {
-            var request = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456");
+            var request = new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",challenge,"123456",true);
             assertEquals("BANK_CHANGE_OTP_INVALID",assertThrows(RuntimeException.class,()->service.bind(71,request,"wrong-purpose")).getMessage());
         }
         verifyNoInteractions(otp);
@@ -330,9 +348,9 @@ class BankWithdrawalServiceTest {
         assertEquals("BANK_WITHDRAWAL_IN_FLIGHT",assertThrows(RuntimeException.class,()->service.sendOtp(71)).getMessage());
     }
     private String bankChallenge() { return "PAYOUT-BANK-"+"a".repeat(32); }
-    private BankWithdrawalService.BindRequest changeBinding() { return new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",bankChallenge(),"123456"); }
-    private BankWithdrawalService.BindRequest emptyBinding() { return new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null); }
+    private BankWithdrawalService.BindRequest changeBinding() { return new BankWithdrawalService.BindRequest("","00123456789","NGUYEN VAN A",bankChallenge(),"123456",true); }
+    private BankWithdrawalService.BindRequest emptyBinding() { return new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null, true); }
     private BankWithdrawalService.BindRequest binding() {
-        return new BankWithdrawalService.BindRequest("VCB", "00123456789", "NGUYEN VAN A", "PAYOUT-BANK-" + "a".repeat(32), "123456");
+        return new BankWithdrawalService.BindRequest("VCB", "00123456789", "NGUYEN VAN A", "PAYOUT-BANK-" + "a".repeat(32), "123456", true);
     }
 }

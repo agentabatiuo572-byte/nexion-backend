@@ -22,7 +22,7 @@ App 用户鉴权资源前缀：`/api/withdrawals/bank`（`BankWithdrawalControll
 | GET | `/config` | 就绪状态、`payType=BANKQR`、`bankCodeRequired=false`、`bindingOtpRequired`（有绑定账户时为 true）、脱敏绑定资料 |
 | GET | `/recovery` | 当前账号全部未决银行意图；无意图为 null，多单不猜测覆盖 |
 | POST | `/beneficiary/otp` | 已绑卡用户申请换卡短信；仅发送至当前用户注册手机号，返回 challengeNo、300 秒有效期和 60 秒重发间隔，不返回验证码或完整手机号 |
-| POST | `/beneficiary` | 幂等绑定 |
+| POST | `/beneficiary` | 幂等绑定；新绑定或换绑必须提交 `accountRoutingConfirmed=true`，缺失或 false 返回 422 `BANK_ACCOUNT_ROUTING_CONFIRMATION_REQUIRED` |
 | POST | `/beneficiary/verify` | 已停用；鉴权后返回 410 `BANK_BENEFICIARY_VERIFICATION_NOT_REQUIRED`，不写核验记录 |
 | POST | `/quotes` | 服务端报价 |
 | GET | `/quotes/{quoteNo}` | 当前用户原报价恢复 |
@@ -50,6 +50,7 @@ PC：`GET /api/admin/finance/withdrawals/{withdrawalNo}/bank`；人工查原单�
 - 不再读取数据库 `finance.payout_vnd.provider_ready` 或聚合中的 `channelEnabled`；旧值保留回退，新参数保存不再写入开关。返回中的 `channelEnabled` 仅是共享配置状态的兼容投影；旧 `/channel` 接口返回 410。D7 页面只显示配置状态，未向供应商发起探测，不声称已到账。
 - 代付创建当前使用 `payType="BANK"`，并明确发送 `bnkCode=""`（不是省略或 null）；代收使用 `BANKQR`。`/config.banks` 返回空列表；新绑定拒绝非空银行编码，历史成功请求仍按旧摘要回放，旧账户/报价保留历史标签而派发时统一传空编码。
 - HDPay 官方已向用户确认：`BANK` 代付按收款账号路由，无需银行代码，文档中的该字段有误。`/config` 返回 `bankSelection="ACCOUNT_ROUTED"`、`bankSelectionNotice="BANK_ACCOUNT_ROUTED_BY_NUMBER"`、`bankNameSource="NONE"` 和 `bankRoutingVerified=true`。绑定资料、报价、原单/原报价恢复以及 D2 详情中的账户与报价视图实时读取同一账号路由契约状态，停用时返回 `bankRoutingVerified=false`。此标记仅指账号路由契约已确认，不代表系统识别了银行名称、核验了账户归属、当前供应商通道就绪或保证到账；通道就绪仍以 `/config.enabled` 和提交时服务端门禁为准。新空编码账户与报价的 `bankName="ACCOUNT_ROUTED"` 是兼容旧客户端的中性显示标记，不是银行名；历史非空编码标签只用于展示。App 提交前应确认收款账号与户名，不要求显示银行名称。
+- 服务端仅接受明确带 `accountRoutingConfirmed=true` 的新绑定/换绑请求，避免未升级的 App 在用户未确认收款账号与户名时提交。该字段不加入已有幂等摘要，旧版已成功绑定使用原键重放仍可返回原回执；新请求的缺失或 false 均拒绝，拒绝发生在查询现有绑定、消耗验证码和写入受益账户之前。
 - 绑定不采集银行卡有效期、CVV。首次绑定不需要 OTP；换卡必须提供专属 `PAYOUT-BANK-` challengeNo 和六位短信验证码，服务端校验用户、用途、过期、失败次数及单次消费。复用现有短信服务与 OTP 表，与提现地址共享 60 秒/每日 10 次发送限制；短信发送结果未知也保留计数。错误尝试和验证码消费在独立事务中持久化，成功绑定的幂等重放不二次消费。
 - 复用受管 `nexion.finance.hdpay` 传输凭据、基础地址及回调域名，以及既有金融敏感字段加密配置。不在仓库、日志或文档保存真实密钥或完整银行卡号。
 - 需执行下列全部银行提现迁移、有效加密配置及严格非沙箱运行配置。经 2026-09-16 授权，`public-test` 的银行卡代付使用已启用的 HDPay 共用配置，不再因测试环境标记而禁用；其余测试环境策略保持不变。部署还须开放精确 POST `/openapi/v1/payments/hdpay/payout/callback` 并验证通道接口，不能只凭构建成功认定已开放；此改动不代表已完成真实出款验收。
