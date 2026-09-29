@@ -61,7 +61,6 @@ import org.springframework.util.StringUtils;
 public class AppTaskAssignmentService {
     private static final int LEASE_HOURS = 24;
     private static final int PHONE_HEARTBEAT_SECONDS = 120;
-    private static final BigDecimal CLOUD_SHARE_DAILY_NEX = BigDecimal.valueOf(3);
     private static final String PROVENANCE_SOURCE = "server";
     private static final String PROVENANCE_ENVIRONMENT = "PRODUCTION";
     private static final String PROVENANCE_RUN_ID = "";
@@ -514,10 +513,10 @@ public class AppTaskAssignmentService {
         }
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
         String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
-        Long paidShareOrderId = mapper.lockPaidCloudShareOrder(userId, task.deviceId());
-        BigDecimal rewardNex = paidShareOrderId != null && paidShareOrderId > 0
+        BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
+        BigDecimal rewardNex = paidShareDailyNex != null && paidShareDailyNex.signum() > 0
                 && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
-                ? CLOUD_SHARE_DAILY_NEX : BigDecimal.ZERO;
+                ? paidShareDailyNex : BigDecimal.ZERO;
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
                 rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");

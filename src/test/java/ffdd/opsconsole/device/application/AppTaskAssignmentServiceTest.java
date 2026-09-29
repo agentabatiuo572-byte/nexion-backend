@@ -526,7 +526,7 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
-    void paidCloudShareCreditsThreeNexOnlyOnFirstProofVerifiedReceiptOfUtcDay() {
+    void paidCloudShareCreditsPurchasedDailyNexSnapshotOnlyOnFirstProofVerifiedReceiptOfUtcDay() {
         var running = assignment("RUNNING", null, null);
         var next = new AppTaskAssignmentMapper.AssignmentRow("CTA-2", 11L, "TASK-IG", "Canonical IG", "IG",
                 "model-v1", "Nexion App", "RUNNING", new BigDecimal("0.300000"), 18, 30,
@@ -539,7 +539,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.lockPaidCloudShareOrder(7L, 11L)).thenReturn(123L);
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(new BigDecimal("4.250000"));
         when(mapper.lockDailyCloudShareNex(7L, "CLOUD_SHARE_DAILY:11:2026-08-10"))
                 .thenReturn(null, 1L);
         when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
@@ -549,7 +549,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
         when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
         when(mapper.creditCloudShareNex(anyLong(), anyLong(), anyString(), any(), any())).thenReturn(1);
-        when(mapper.walletNex(7L)).thenReturn(new BigDecimal("3.000000"));
+        when(mapper.walletNex(7L)).thenReturn(new BigDecimal("4.250000"));
         when(mapper.insertCloudShareNexLedger(anyLong(), anyLong(), anyString(), anyString(), any(), any(), any()))
                 .thenReturn(1);
         when(mapper.insertCloudShareNexEvent(anyString(), anyLong(), anyLong(), anyString(), any(), any()))
@@ -562,12 +562,12 @@ class AppTaskAssignmentServiceTest {
         service.complete(7L, "CTA-2", "complete-share-2", validProof());
 
         verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
-                eq(new BigDecimal("3")), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+                eq(new BigDecimal("4.250000")), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
         verify(mapper).insertReceipt(eq(7L), eq(11L), eq(next), anyString(), anyString(),
                 eq(BigDecimal.ZERO), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
-        verify(mapper, times(1)).creditCloudShareNex(7L, 11L, "CTR-CTA-1", new BigDecimal("3"), NOW);
+        verify(mapper, times(1)).creditCloudShareNex(7L, 11L, "CTR-CTA-1", new BigDecimal("4.250000"), NOW);
         verify(mapper).insertCloudShareNexLedger(7L, 11L, "CTR-CTA-1",
-                "CLOUD_SHARE_DAILY:11:2026-08-10", new BigDecimal("3"), new BigDecimal("3.000000"), NOW);
+                "CLOUD_SHARE_DAILY:11:2026-08-10", new BigDecimal("4.250000"), new BigDecimal("4.250000"), NOW);
         verify(mapper, times(2)).creditWallet(any(), any(), any(), any());
 
         // Exercise the emitted payloads through the real A4 validator against the
@@ -598,12 +598,41 @@ class AppTaskAssignmentServiceTest {
     }
 
     @Test
+    void paidCloudShareWithZeroDailySnapshotCompletesWithoutNexCredit() {
+        var running = assignment("RUNNING", null, null);
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(
+                11L, "DEV-11", "SHARE", "Share", "Cloud Share", "ACTIVE", "cloud-share",
+                NOW.minusDays(1), NOW.minusDays(1), 0, "SG", "ONLINE", null, false));
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(running);
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
+                anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        assertThat(service.complete(7L, "CTA-1", "complete-share-zero", validProof()).getData().status())
+                .isEqualTo("COMPLETED");
+        verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
+                eq(BigDecimal.ZERO), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+        verify(mapper, never()).lockDailyCloudShareNex(anyLong(), anyString());
+        verify(mapper, never()).creditCloudShareNex(anyLong(), anyLong(), anyString(), any(), any());
+    }
+
+    @Test
     void cloudShareNexWriteFailureStopsTaskCompletionAndPublication() {
         when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(assignment("RUNNING", null, null));
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.lockPaidCloudShareOrder(7L, 11L)).thenReturn(123L);
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(new BigDecimal("3.000000"));
         when(mapper.lockDailyCloudShareNex(7L, "CLOUD_SHARE_DAILY:11:2026-08-10")).thenReturn(null);
         when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
                 anyString(), anyString(), any())).thenReturn(1);

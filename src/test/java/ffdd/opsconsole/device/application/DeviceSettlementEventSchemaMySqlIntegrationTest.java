@@ -151,9 +151,9 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
             taskService(fixture, true).complete(USER_ID, TASK_NO, "paid-cloud-share", completionRequest());
 
             assertThat(fixture.jdbc().queryForObject("SELECT reward_nex FROM nx_compute_receipt WHERE task_no=?",
-                    BigDecimal.class, TASK_NO)).isEqualByComparingTo("3.000000");
+                    BigDecimal.class, TASK_NO)).isEqualByComparingTo("4.250000");
             assertThat(fixture.jdbc().queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=?",
-                    BigDecimal.class, USER_ID)).isEqualByComparingTo("3.000000");
+                    BigDecimal.class, USER_ID)).isEqualByComparingTo("4.250000");
             assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_wallet_ledger WHERE asset='NEX'",
                     Integer.class)).isEqualTo(1);
             assertThat(fixture.jdbc().queryForObject("SELECT COUNT(*) FROM nx_earning_event WHERE asset='NEX'",
@@ -304,9 +304,9 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
 
     private void seedPaidCloudShare(CanonicalEventSchemaMySqlFixture fixture) {
         fixture.jdbc().update("""
-                INSERT INTO nx_product(id,product_no,name,product_type,tier,price_usdt,status,stock,store_visible,
+                INSERT INTO nx_product(id,product_no,name,product_type,tier,price_usdt,daily_nex,status,stock,store_visible,
                     inventory_mode,sold_count,created_at,updated_at,is_deleted)
-                VALUES (?, 'cloud-share', 'Cloud Share', 'SHARE', 'STANDARD', 19.9, 'ACTIVE', 0, 1,
+                VALUES (?, 'cloud-share', 'Cloud Share', 'SHARE', 'STANDARD', 19.9, 9, 'ACTIVE', 0, 1,
                     'UNLIMITED', 1, ?, ?, 0)
                 """, TARGET_PRODUCT_ID, NOW.minusDays(31), NOW.minusDays(31));
         fixture.jdbc().update("""
@@ -318,7 +318,7 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 NOW.minusDays(31), NOW.minusDays(31), NOW.minusDays(31));
         fixture.jdbc().update("""
                 UPDATE nx_user_device SET source_order_no='ORDER-A4-CLOUD-SHARE',product_id=?,
-                    product_code='cloud-share',device_type='SHARE',source_channel='ORDER'
+                    product_code='cloud-share',device_type='SHARE',source_channel='ORDER',daily_nex=4.25
                 WHERE id=?
                 """, TARGET_PRODUCT_ID, DEVICE_ID);
     }

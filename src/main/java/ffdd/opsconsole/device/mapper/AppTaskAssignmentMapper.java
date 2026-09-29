@@ -757,8 +757,9 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                                 @Param("expectedRowVersion") Long expectedRowVersion,
                                                 @Param("now") LocalDateTime now);
 
+    // Lock the paid order and purchased snapshot; later product config changes do not alter this unit.
     @Select("""
-            SELECT o.id
+            SELECT d.daily_nex
               FROM nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
               JOIN nx_product p ON p.id=d.product_id AND p.product_no=d.product_code
@@ -786,9 +787,9 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                        (SELECT COALESCE(SUM(oi.quantity),0) FROM nx_order_item oi
                          WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
                        ELSE o.quantity END
-             LIMIT 1 FOR UPDATE OF o
+             LIMIT 1 FOR UPDATE OF o,d
             """)
-    Long lockPaidCloudShareOrder(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+    BigDecimal lockPaidCloudShareDailyNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("""
             SELECT id FROM nx_wallet_ledger
