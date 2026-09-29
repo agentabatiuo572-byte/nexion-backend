@@ -311,10 +311,10 @@ public class BankWithdrawalService {
                 "checkedAt", evidence == null ? null : evidence.checkedAt(),
                 "amountUsdt", evidence == null ? null : evidence.amountUsdt());
     }
-    public static Map<String, Object> quoteView(Quote q) {
+    public Map<String, Object> quoteView(Quote q) {
         return map("quoteNo", q.quoteNo(), "amountUsdt", q.amountUsdt(), "feeUsdt", q.feeUsdt(), "netUsdt", q.netUsdt(),
                 "rateVnd", q.rateVnd(), "amountVnd", q.amountVnd(), "bankCode", q.bankCode(), "bankName", bankName(q.bankCode()),
-                "bankRoutingVerified", true,
+                "bankRoutingVerified", accountRouting.contractConfirmed(),
                 "maskedAccount", q.maskedAccount(), "expiresAt", q.expiresAt(), "d7Version", q.d7Version());
     }
     private static BizException error(int code, String reason) { return new BizException(code, reason); }

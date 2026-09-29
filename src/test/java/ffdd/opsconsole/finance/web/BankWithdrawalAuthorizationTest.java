@@ -20,7 +20,7 @@ class BankWithdrawalAuthorizationTest {
         var recovery=mock(BankPayoutRecoveryService.class);
         try(var context=new AnnotationConfigApplicationContext()) {
             context.register(Guards.class);
-            context.registerBean(OpsBankWithdrawalController.class,()->new OpsBankWithdrawalController(mock(BankWithdrawalMapper.class),recovery));
+            context.registerBean(OpsBankWithdrawalController.class,()->new OpsBankWithdrawalController(mock(BankWithdrawalMapper.class),recovery,mock(ffdd.opsconsole.finance.application.BankWithdrawalService.class)));
             context.refresh(); var controller=context.getBean(OpsBankWithdrawalController.class);
             for(var grants:List.of(List.<String>of(),List.of("finance_d2_read"),List.of("finance_d2_read","finance_d2_withdrawal_approve"))) {
                 SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("fixture-admin","unused",grants.stream().map(SimpleGrantedAuthority::new).toList()));

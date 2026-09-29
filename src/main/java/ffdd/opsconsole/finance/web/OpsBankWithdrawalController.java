@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 public class OpsBankWithdrawalController {
     private final BankWithdrawalMapper mapper;
     private final ffdd.opsconsole.finance.application.BankPayoutRecoveryService recovery;
+    private final BankWithdrawalService bankWithdrawal;
     @GetMapping("/{withdrawalNo}/bank")
     @PreAuthorize("hasAuthority('finance_d2_read')")
     @Transactional(readOnly = true)
@@ -28,7 +29,7 @@ public class OpsBankWithdrawalController {
                 "providerOrderId", order.providerOrderId() == null ? null : order.providerOrderId().toString(),
                 "providerStatus", order.providerStatus(), "lastError", order.lastError(),
                 "version", mapper.version(withdrawalNo),
-                "quote", BankWithdrawalService.quoteView(quote),
+                "quote", bankWithdrawal.quoteView(quote),
                 "beneficiaryEligibility", BankWithdrawalEligibility.quoteEligibilityView(mapper.beneficiary(order.userId()), quote),
                 "settlementEvidence", BankWithdrawalService.settlementView(order, mapper.settlementEvidence(withdrawalNo))));
     }

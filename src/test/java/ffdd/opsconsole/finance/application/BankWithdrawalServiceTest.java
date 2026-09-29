@@ -146,9 +146,12 @@ class BankWithdrawalServiceTest {
         var routed = new BankWithdrawalMapper.Quote(old.quoteNo(), old.userId(), old.beneficiaryNo(), old.beneficiaryVersion(),
                 "", old.maskedAccount(), old.recipientCipher(), old.amountUsdt(), old.feeUsdt(), old.netUsdt(),
                 old.rateVnd(), old.amountVnd(), old.d7Version(), old.d5Version(), old.createdAt(), old.expiresAt(), old.withdrawalNo());
-        var quoteView = BankWithdrawalService.quoteView(routed);
+        var quoteView = service.quoteView(routed);
         assertEquals("ACCOUNT_ROUTED", quoteView.get("bankName"));
         assertEquals(true, quoteView.get("bankRoutingVerified"));
+        when(accountRouting.contractConfirmed()).thenReturn(false);
+        when(bank.quote(qn)).thenReturn(routed);
+        assertEquals(false, ((Map<?, ?>)service.recoverQuote(71, qn).getData().get("quote")).get("bankRoutingVerified"));
     }
     @Test void proxiedCapacityFailureDoesNotRollbackConfigButDatabaseFailuresDo() throws Exception {
         var source = mock(javax.sql.DataSource.class);
