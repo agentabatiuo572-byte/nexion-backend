@@ -757,12 +757,52 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                                 @Param("expectedRowVersion") Long expectedRowVersion,
                                                 @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT o.id
+              FROM nx_user_device d
+              JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+              JOIN nx_product p ON p.id=d.product_id AND p.product_no=d.product_code
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.source_channel='ORDER' AND UPPER(d.ownership_status)='OWNED'
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
+               AND d.product_code='cloud-share' AND UPPER(d.device_type) IN ('SHARE','CLOUD_SHARE')
+               AND p.product_no='cloud-share' AND UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE')
+               AND o.is_deleted=0 AND o.payment_status='PAID'
+               AND o.order_status='COMPLETED' AND o.activation_status='ACTIVATED'
+               AND o.amount_usdt>0
+               AND (o.product_id=d.product_id OR EXISTS (
+                   SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no
+                     AND oi.product_id=d.product_id AND oi.is_deleted=0))
+               AND (SELECT COUNT(1) FROM nx_user_device owned
+                     WHERE owned.source_order_no=o.order_no AND owned.user_id=d.user_id
+                       AND owned.product_id=d.product_id AND owned.is_deleted=0
+                       AND owned.source_channel='ORDER' AND owned.source_environment='PRODUCTION'
+                       AND UPPER(owned.ownership_status)='OWNED'
+                       AND owned.activated_at IS NOT NULL AND owned.deactivated_at IS NULL
+                       AND UPPER(owned.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING'))
+                   <= CASE WHEN o.order_type='BUNDLE' THEN
+                       (SELECT COALESCE(SUM(oi.quantity),0) FROM nx_order_item oi
+                         WHERE oi.order_no=o.order_no AND oi.product_id=d.product_id AND oi.is_deleted=0)
+                       ELSE o.quantity END
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockPaidCloudShareOrder(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Select("""
+            SELECT id FROM nx_wallet_ledger
+             WHERE user_id=#{userId} AND biz_no=#{bizNo} AND asset='NEX' AND direction='IN'
+             LIMIT 1 FOR UPDATE
+            """)
+    Long lockDailyCloudShareNex(@Param("userId") Long userId, @Param("bizNo") String bizNo);
+
     @Insert("""
             INSERT INTO nx_compute_receipt(user_id, user_device_id, task_no, receipt_no, task_type,
               client_name, reward_usdt, reward_nex, earning_status, source_environment, proof_hash, completed_at,
               created_at, updated_at, is_deleted)
             SELECT #{userId}, #{deviceId}, #{task.taskNo}, #{receiptNo}, #{task.taskClass},
-              #{task.clientName}, #{task.rewardUsdt}, 0, #{earningStatus}, 'PRODUCTION',
+              #{task.clientName}, #{task.rewardUsdt}, #{rewardNex}, #{earningStatus}, 'PRODUCTION',
               #{proofHash}, #{now}, #{now}, #{now}, 0
               FROM nx_user u
              WHERE u.id = #{userId} AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0
@@ -781,7 +821,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             """)
     int insertReceipt(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                       @Param("task") AssignmentRow task, @Param("receiptNo") String receiptNo,
-                      @Param("proofHash") String proofHash, @Param("earningStatus") String earningStatus,
+                      @Param("proofHash") String proofHash, @Param("rewardNex") BigDecimal rewardNex,
+                      @Param("earningStatus") String earningStatus,
                       @Param("sourceEnvironment") String sourceEnvironment,
                       @Param("now") LocalDateTime now);
 
@@ -862,6 +903,57 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     int insertEarningEvent(@Param("eventNo") String eventNo, @Param("userId") Long userId,
                            @Param("deviceId") Long deviceId, @Param("receiptNo") String receiptNo,
                            @Param("amount") BigDecimal amount, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_wallet w
+               SET w.nex_available=w.nex_available+#{amount},
+                   w.lifetime_earned=w.lifetime_earned+#{amount},
+                   w.version=w.version+1,w.updated_at=#{now}
+             WHERE w.user_id=#{userId} AND w.is_deleted=0 AND w.sandbox=0
+               AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=w.user_id
+                             AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=0)
+               AND EXISTS (SELECT 1 FROM nx_compute_receipt r
+                            WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}
+                              AND r.user_device_id=#{deviceId} AND r.reward_nex=#{amount}
+                              AND r.earning_status='CREDITED' AND r.source_environment='PRODUCTION'
+                              AND r.is_deleted=0)
+            """)
+    int creditCloudShareNex(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                            @Param("receiptNo") String receiptNo, @Param("amount") BigDecimal amount,
+                            @Param("now") LocalDateTime now);
+
+    @Select("SELECT nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 AND sandbox=0")
+    BigDecimal walletNex(@Param("userId") Long userId);
+
+    @Insert("""
+            INSERT INTO nx_wallet_ledger(user_id,biz_no,biz_type,asset,direction,amount,
+              balance_after,status,remark,created_at,updated_at,is_deleted)
+            SELECT #{userId},#{bizNo},'COMPUTE_TASK_REWARD','NEX','IN',#{amount},
+                   #{balanceAfter},'SUCCESS','Cloud Share daily NEX from settled compute receipt',#{now},#{now},0
+              FROM nx_compute_receipt r
+             WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}
+               AND r.user_device_id=#{deviceId} AND r.reward_nex=#{amount}
+               AND r.earning_status='CREDITED' AND r.source_environment='PRODUCTION' AND r.is_deleted=0
+            """)
+    int insertCloudShareNexLedger(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                  @Param("receiptNo") String receiptNo, @Param("bizNo") String bizNo,
+                                  @Param("amount") BigDecimal amount,
+                                  @Param("balanceAfter") BigDecimal balanceAfter,
+                                  @Param("now") LocalDateTime now);
+
+    @Insert("""
+            INSERT INTO nx_earning_event(event_no,user_id,user_device_id,receipt_no,asset,amount,
+              status,wallet_posted_at,created_at,updated_at,is_deleted)
+            SELECT #{eventNo},#{userId},#{deviceId},#{receiptNo},'NEX',#{amount},
+                   'POSTED',#{now},#{now},#{now},0
+              FROM nx_compute_receipt r
+             WHERE r.receipt_no=#{receiptNo} AND r.user_id=#{userId}
+               AND r.user_device_id=#{deviceId} AND r.reward_nex=#{amount}
+               AND r.earning_status='CREDITED' AND r.source_environment='PRODUCTION' AND r.is_deleted=0
+            """)
+    int insertCloudShareNexEvent(@Param("eventNo") String eventNo, @Param("userId") Long userId,
+                                 @Param("deviceId") Long deviceId, @Param("receiptNo") String receiptNo,
+                                 @Param("amount") BigDecimal amount, @Param("now") LocalDateTime now);
 
     @Select("SELECT d.instance_no FROM nx_user_device d JOIN nx_user u ON u.id = d.user_id "
             + "AND u.status = 'ACTIVE' AND u.is_deleted = 0 AND u.sandbox = 0 "

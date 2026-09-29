@@ -33,7 +33,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Comparator;
@@ -58,6 +61,7 @@ import org.springframework.util.StringUtils;
 public class AppTaskAssignmentService {
     private static final int LEASE_HOURS = 24;
     private static final int PHONE_HEARTBEAT_SECONDS = 120;
+    private static final BigDecimal CLOUD_SHARE_DAILY_NEX = BigDecimal.valueOf(3);
     private static final String PROVENANCE_SOURCE = "server";
     private static final String PROVENANCE_ENVIRONMENT = "PRODUCTION";
     private static final String PROVENANCE_RUN_ID = "";
@@ -467,7 +471,9 @@ public class AppTaskAssignmentService {
 
     private ApiResult<AppTaskAssignmentView> completeInternal(
             Long userId, String taskNo, AppTaskCompleteRequest request, String sourceEnvironment) {
-        LocalDateTime now = now();
+        Instant completedAt = clock.instant();
+        LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).withNano(0);
+        LocalDate utcDay = completedAt.atZone(ZoneOffset.UTC).toLocalDate();
         // Match activation/deactivation and claim: user -> device -> task.
         // The initial unlocked lookup is only for routing; recheck under lock.
         lockProductionUser(userId);
@@ -507,8 +513,13 @@ public class AppTaskAssignmentService {
             throw new BizException(503, "TASK_ASSIGNMENT_PROOF_ENVIRONMENT_INVALID");
         }
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
+        String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
+        Long paidShareOrderId = mapper.lockPaidCloudShareOrder(userId, task.deviceId());
+        BigDecimal rewardNex = paidShareOrderId != null && paidShareOrderId > 0
+                && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
+                ? CLOUD_SHARE_DAILY_NEX : BigDecimal.ZERO;
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
-                "CREDITED", sourceEnvironment, now) != 1) {
+                rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
         }
         if (mapper.creditWallet(userId, task.deviceId(), task.rewardUsdt(), now) != 1) {
@@ -520,6 +531,19 @@ public class AppTaskAssignmentService {
                 || mapper.insertEarningEvent("EARN-" + taskNo, userId, task.deviceId(), receiptNo,
                     task.rewardUsdt(), now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_SETTLEMENT_CONFLICT");
+        }
+        if (rewardNex.signum() > 0) {
+            if (mapper.creditCloudShareNex(userId, task.deviceId(), receiptNo, rewardNex, now) != 1) {
+                throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
+            }
+            BigDecimal nexBalanceAfter = mapper.walletNex(userId);
+            if (nexBalanceAfter == null
+                    || mapper.insertCloudShareNexLedger(userId, task.deviceId(), receiptNo,
+                        dailyNexBizNo, rewardNex, nexBalanceAfter, now) != 1
+                    || mapper.insertCloudShareNexEvent("EARN-NEX-" + receiptNo, userId, task.deviceId(),
+                        receiptNo, rewardNex, now) != 1) {
+                throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
+            }
         }
         if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
@@ -544,14 +568,15 @@ public class AppTaskAssignmentService {
                 .bizNo(receiptNo).userId(userId).actorType("USER").actorId(userId)
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
-                        "rewardUsdt", task.rewardUsdt(), "lockUntil", lockUntil,
+                        "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
                         "proofHash", proof.proofHash(), "proofMode", proof.sandbox() ? "SANDBOX" : "PRODUCTION"))
                 .build());
         if (!proof.sandbox()) {
             AppTaskAssignmentMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
             if (attribution == null) throw new BizException(409, "TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");
             Map<String, Object> payload = linked("task_id", task.taskId(), "task_no", taskNo,
-                    "device_id", task.deviceId(), "receipt_no", receiptNo, "amount_usdt", task.rewardUsdt());
+                    "device_id", task.deviceId(), "receipt_no", receiptNo, "amount_usdt", task.rewardUsdt(),
+                    "amount_nex", rewardNex);
             outboxService.publishUserEvent("COMPUTE_TASK", taskNo, "task.completed", userId,
                     attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), payload);
             outboxService.publishUserEvent("COMPUTE_TASK", taskNo, "earnings.credited", userId,
