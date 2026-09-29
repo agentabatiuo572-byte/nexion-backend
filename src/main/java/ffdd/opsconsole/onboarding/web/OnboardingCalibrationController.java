@@ -58,7 +58,6 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
-        if (userId != null && request != null) nativeSessions.require(authentication, request.deviceId());
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
                 : service.defer(userId, action(request, idempotencyKey));
     }
