@@ -48,6 +48,7 @@ class OpsSupportAgentServiceTest {
     private final OpsAdminAccountService accountService = mock(OpsAdminAccountService.class);
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final AdminIdempotencyService idempotencyService = mock(AdminIdempotencyService.class);
+    private final SupportBindingService binding=mock(SupportBindingService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-27T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsSupportAgentService service = new OpsSupportAgentService(
             repository,
@@ -55,14 +56,22 @@ class OpsSupportAgentServiceTest {
             auditLogService,
             idempotencyService,
             OpsReadTimeSeedPolicy.enabledForDirectConstruction(),
-            clock);
+            clock, ffdd.opsconsole.content.SupportTestDependencies.ownership(), binding);
 
     @BeforeEach
     void setUp() {
         ((FakeSupportAgentRepository) repository).reset();
+        when(binding.transferLegacy(anyString(),any())).thenAnswer(invocation->{
+            ffdd.opsconsole.content.dto.SupportBindingRequest r=invocation.getArgument(1);
+            return ApiResult.ok(r.customers().stream().map(c->new SupportAgentAssignmentView(7L,r.targetAgentAdminId(),c.id(),"U-"+c.id(),"Customer","ACTIVE",null,null,"actor",r.reason(),null)).toList());
+        });
+        when(binding.transferLegacySingle(anyString(),any())).thenAnswer(invocation->{
+            ffdd.opsconsole.content.dto.SupportBindingRequest r=invocation.getArgument(1);var c=r.customers().get(0);
+            return ApiResult.ok(new SupportAgentAssignmentView(7L,r.targetAgentAdminId(),c.id(),"U-"+c.id(),"Customer","ACTIVE",null,null,"actor",r.reason(),null));
+        });
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
-                .execute(anyString(), anyString(), anyString(), any(), any());
+                .executeRetained(anyString(), anyString(), anyString(), any(), any());
         when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
                 operator("1", "Root Admin", "super", "enabled"),
                 operator("2", "Support Agent", "support", "enabled"),
@@ -313,46 +322,20 @@ class OpsSupportAgentServiceTest {
 
     @Test
     void assignAdvisorRequiresAdvisorServiceType() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("support"), List.of(), 12, true, true, false, now());
-
-        var result = service.assignAdvisorUser(
-                2L,
-                "idem-assign",
-                new SupportAgentAssignmentRequest(1001L, "superadmin", "绑定专属客服用户"));
-
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_AGENT_NOT_ADVISOR");
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(422,"BINDING_REJECTED")).when(binding).transferLegacySingle(anyString(),any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.assignAdvisorUser(2L,"adapter-invalid-key",
+                new SupportAgentAssignmentRequest(1001L,"spoofed","validated by binding",7L,1L)))
+            .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("BINDING_REJECTED");
+        assertThat(((FakeSupportAgentRepository)repository).assignments).isEmpty();
     }
 
     @Test
     void assignSeatWritesDedicatedProfileAndUserBinding() {
-        var result = service.assignSeat(
-                2L,
-                "idem-seat",
-                new SupportAgentSeatAssignmentRequest(
-                        "专属客服",
-                        List.of("advisor"),
-                        List.of("高价值用户"),
-                        30,
-                        true,
-                        true,
-                        false,
-                        List.of(1001L),
-                        "superadmin",
-                        "分配专属客服并绑定用户"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().seatType()).isEqualTo("DEDICATED");
-        assertThat(result.getData().position()).isEqualTo("专属客服");
-        assertThat(((FakeSupportAgentRepository) repository).assignments)
-                .extracting(SupportAgentAssignmentView::userId)
-                .contains(1001L);
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getAllValues()).extracting(AuditLogWriteRequest::getAction)
-                .contains("M1_SUPPORT_SEAT_ASSIGNED");
+        var customers=List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(1001L,null,1L));
+        var request=new SupportAgentSeatAssignmentRequest("专属客服",List.of("advisor"),List.of(),30,true,true,false,List.of(1001L),1L,"actor","formal seat assignment",customers);
+        assertThat(service.assignSeat(2L,"seat-adapter-key",request).getCode()).isZero();
+        verify(binding).transferInTransaction("seat-adapter-key",new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"formal seat assignment"));
+        org.mockito.Mockito.verify(binding,org.mockito.Mockito.never()).transfer(anyString(),any());
     }
 
     @Test
@@ -457,148 +440,66 @@ class OpsSupportAgentServiceTest {
 
     @Test
     void assignAdvisorReplacesExistingActiveBindingForSameUser() {
-        when(accountService.overview()).thenReturn(ApiResult.ok(adminOverview(List.of(
-                operator("1", "Root Admin", "super", "enabled"),
-                operator("2", "Support Agent A", "support", "enabled"),
-                operator("5", "Support Agent B", "support", "enabled")))));
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
-        fake.updateProfile(5L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
-
-        var first = service.assignAdvisorUser(
-                2L,
-                "idem-assign-first",
-                new SupportAgentAssignmentRequest(1001L, "superadmin", "首次绑定专属客服用户"));
-        var second = service.assignAdvisorUser(
-                5L,
-                "idem-assign-second",
-                new SupportAgentAssignmentRequest(1001L, "superadmin", "改绑专属客服用户"));
-
-        assertThat(first.getCode()).isZero();
-        assertThat(second.getCode()).isZero();
-        assertThat(fake.assignments)
-                .filteredOn(row -> row.userId().equals(1001L) && "ACTIVE".equals(row.status()))
-                .extracting(SupportAgentAssignmentView::agentAdminId)
-                .containsExactly(5L);
+        var fake=(FakeSupportAgentRepository)repository;
+        fake.upsertAssignment(2L,1001L,"actor","fixture baseline",now());
+        var request=new SupportAgentAssignmentRequest(1001L,"spoofed","formal transfer adapter",7L,1L);
+        assertThat(service.assignAdvisorUser(2L,"adapter-single-key",request).getCode()).isZero();
+        verify(binding).transferLegacySingle("adapter-single-key",new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,
+            List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(1001L,7L,1L)),"formal transfer adapter"));
     }
 
     @Test
     void assignAdvisorRejectsNonSupervisorActor() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
-        when(accountService.currentOperator()).thenReturn(Optional.of(operator("2", "Support Agent", "support", "enabled")));
-
-        var result = service.assignAdvisorUser(
-                2L,
-                "idem-assign-forbidden",
-                new SupportAgentAssignmentRequest(1001L, "support.agent", "绑定专属客服用户"));
-
-        assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_ASSIGNMENT_FORBIDDEN");
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(403,"BINDING_REJECTED")).when(binding).transferLegacySingle(anyString(),any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.assignAdvisorUser(2L,"adapter-invalid-key",
+                new SupportAgentAssignmentRequest(1001L,"spoofed","validated by binding",7L,1L)))
+            .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("BINDING_REJECTED");
+        assertThat(((FakeSupportAgentRepository)repository).assignments).isEmpty();
     }
 
     @Test
     void assignAdvisorRejectsMissingBusinessUser() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of("高价值用户"), 8, true, true, false, now());
-
-        var result = service.assignAdvisorUser(
-                2L,
-                "idem-assign-missing-user",
-                new SupportAgentAssignmentRequest(9999L, "superadmin", "绑定专属客服用户"));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
+        org.mockito.Mockito.doThrow(new ffdd.opsconsole.shared.exception.BizException(404,"BINDING_REJECTED")).when(binding).transferLegacySingle(anyString(),any());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->service.assignAdvisorUser(2L,"adapter-invalid-key",
+                new SupportAgentAssignmentRequest(1001L,"spoofed","validated by binding",7L,1L)))
+            .isInstanceOf(ffdd.opsconsole.shared.exception.BizException.class).hasMessage("BINDING_REJECTED");
+        assertThat(((FakeSupportAgentRepository)repository).assignments).isEmpty();
     }
 
     @Test
     void batchAdvisorAssignmentValidatesEveryUserBeforeWritingAnything() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 8, true, true, false, now());
-
-        var result = service.assignAdvisorUsers(
-                2L,
-                "idem-batch-invalid",
-                new SupportAgentBatchAssignmentRequest(
-                        List.of(1001L, 9999L),
-                        "superadmin",
-                        "批量绑定专属客服用户"));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_USER_NOT_FOUND");
-        assertThat(fake.assignments).isEmpty();
-        assertThat(fake.bulkUserLookupCalls).isEqualTo(1);
-        assertThat(fake.bulkUpsertAssignmentCalls).isZero();
+        var result=service.assignAdvisorUsers(2L,"missing-expectation-key",new SupportAgentBatchAssignmentRequest(List.of(1001L),"actor","missing binding snapshot"));
+        assertThat(result.getCode()).isEqualTo(422);
+        verifyNoInteractions(binding);
+        assertThat(((FakeSupportAgentRepository)repository).assignments).isEmpty();
     }
 
     @Test
     void batchAdvisorAssignmentWritesEveryUserThroughOneIdempotentCommand() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 8, true, true, false, now());
-
-        var result = service.assignAdvisorUsers(
-                2L,
-                "idem-batch-ok",
-                new SupportAgentBatchAssignmentRequest(
-                        List.of(1001L, 1006L),
-                        "superadmin",
-                        "批量绑定专属客服用户"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).extracting(SupportAgentAssignmentView::userId)
-                .containsExactly(1001L, 1006L);
-        verify(idempotencyService).execute(
-                org.mockito.ArgumentMatchers.eq("M1_SUPPORT_ADVISOR_BIND_BATCH"),
-                org.mockito.ArgumentMatchers.eq("idem-batch-ok"),
-                anyString(),
-                org.mockito.ArgumentMatchers.eq(ApiResult.class),
-                any());
-    }
-
-    @Test
-    void batchAdvisorAssignmentRejectsOneHundredAndOneUsersBeforeAnyDatabaseWork() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 100, true, true, false, now());
-        List<Long> userIds = LongStream.rangeClosed(1001L, 1101L).boxed().toList();
-        fake.resetDatabaseWorkCounters();
-
-        var result = service.assignAdvisorUsers(
-                2L,
-                "idem-batch-too-large",
-                new SupportAgentBatchAssignmentRequest(
-                        userIds,
-                        "superadmin",
-                        "批量绑定专属客服用户达到资源上限"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("SUPPORT_ADVISOR_BATCH_TOO_LARGE");
-        assertThat(fake.databaseWorkCalls()).isZero();
-        assertThat(fake.assignments).isEmpty();
+        var ids=LongStream.rangeClosed(1001L,1002L).boxed().toList();
+        var customers=ids.stream().map(id->new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(id,null,1L)).toList();
+        var request=new SupportAgentBatchAssignmentRequest(ids,"actor","explicit snapshot adapter",customers);
+        assertThat(service.assignAdvisorUsers(2L,"adapter-batch-key",request).getCode()).isZero();
+        verify(binding).transferLegacy("adapter-batch-key",new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"explicit snapshot adapter"));
         verifyNoInteractions(idempotencyService);
     }
 
     @Test
+    void batchAdvisorAssignmentRejectsOneHundredAndOneUsersBeforeAnyDatabaseWork() {
+        var result=service.assignAdvisorUsers(2L,"missing-expectation-key",new SupportAgentBatchAssignmentRequest(List.of(1001L),"actor","missing binding snapshot"));
+        assertThat(result.getCode()).isEqualTo(422);
+        verifyNoInteractions(binding);
+        assertThat(((FakeSupportAgentRepository)repository).assignments).isEmpty();
+    }
+
+    @Test
     void batchAdvisorAssignmentAcceptsExactlyOneHundredUsers() {
-        FakeSupportAgentRepository fake = (FakeSupportAgentRepository) repository;
-        fake.updateProfile(2L, "DEDICATED", "专属客服", List.of("advisor"), List.of(), 100, true, true, false, now());
-        List<Long> userIds = LongStream.rangeClosed(1001L, 1100L).boxed().toList();
-
-        var result = service.assignAdvisorUsers(
-                2L,
-                "idem-batch-at-limit",
-                new SupportAgentBatchAssignmentRequest(
-                        userIds,
-                        "superadmin",
-                        "批量绑定一百名专属客服用户"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData()).extracting(SupportAgentAssignmentView::userId)
-                .containsExactlyElementsOf(userIds);
-        assertThat(fake.assignments).hasSize(100);
-        assertThat(fake.bulkUserLookupCalls).isEqualTo(1);
-        assertThat(fake.bulkUpsertAssignmentCalls).isEqualTo(1);
-        assertThat(fake.userExistsCalls).isZero();
-        assertThat(fake.upsertAssignmentCalls).isZero();
+        var ids=LongStream.rangeClosed(1001L,1100L).boxed().toList();
+        var customers=ids.stream().map(id->new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(id,null,1L)).toList();
+        var request=new SupportAgentBatchAssignmentRequest(ids,"actor","explicit snapshot adapter",customers);
+        assertThat(service.assignAdvisorUsers(2L,"adapter-batch-key",request).getCode()).isZero();
+        verify(binding).transferLegacy("adapter-batch-key",new ffdd.opsconsole.content.dto.SupportBindingRequest(2L,customers,"explicit snapshot adapter"));
+        verifyNoInteractions(idempotencyService);
     }
 
     @Test

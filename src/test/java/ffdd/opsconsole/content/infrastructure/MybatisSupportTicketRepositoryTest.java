@@ -16,7 +16,7 @@ import org.mockito.ArgumentCaptor;
 class MybatisSupportTicketRepositoryTest {
     private final SupportTicketMapper ticketMapper = mock(SupportTicketMapper.class);
     private final SupportTicketMessageMapper messageMapper = mock(SupportTicketMessageMapper.class);
-    private final MybatisSupportTicketRepository repository = new MybatisSupportTicketRepository(ticketMapper, messageMapper);
+    private final MybatisSupportTicketRepository repository = new MybatisSupportTicketRepository(ffdd.opsconsole.content.SupportTestDependencies.ownership(), ticketMapper, messageMapper);
 
     @Test
     void keepsFullTranscriptInMessageAndBoundsTheTicketListHeader() {

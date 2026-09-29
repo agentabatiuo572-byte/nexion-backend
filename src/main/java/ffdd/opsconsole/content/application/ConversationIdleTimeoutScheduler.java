@@ -20,6 +20,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Service
 @RequiredArgsConstructor
 public class ConversationIdleTimeoutScheduler {
+    private final ffdd.opsconsole.content.mapper.SupportBindingMapper bindings;
     private static final int BATCH_SIZE = 100;
 
     private final ConversationTimeoutPolicyMapper mapper;
@@ -68,7 +69,7 @@ public class ConversationIdleTimeoutScheduler {
 
         for (ConversationIdleCandidate candidate : mapper.selectDueCloseCandidates(closeCutoff, BATCH_SIZE)) {
             ConversationIdleCandidate locked = mapper.lockCandidate(candidate.conversationNo());
-            if (!eligible(locked, candidate, closeCutoff)) {
+            if (!eligible(locked, candidate, closeCutoff) || bindings.pendingReplies(candidate.conversationNo()) > 0) {
                 continue;
             }
             if (mapper.insertEvent(

@@ -42,7 +42,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
              WHERE c.is_deleted=0
              <if test='status != null and status != ""'>AND c.status=UPPER(#{status})</if>
              <if test='type != null and type != ""'>AND c.conversation_type=LOWER(#{type})</if>
-             <if test='ownerAgentId != null and ownerAgentId != ""'>AND c.owner_agent_id=#{ownerAgentId}</if>
+             <if test='ownerAgentId != null and ownerAgentId != ""'>AND EXISTS(SELECT 1 FROM nx_support_agent_user_assignment sa JOIN nx_support_agent_profile sp ON sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0 JOIN nx_admin a ON a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0 WHERE sa.user_id=c.user_id AND sa.agent_admin_id=#{ownerAgentId} AND sa.status='ACTIVE' AND sa.is_deleted=0)</if>
              <if test='userId != null'>AND c.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (c.conversation_no LIKE CONCAT('%', #{keyword}, '%')
@@ -64,8 +64,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.user_id AS userId,
               c.conversation_type AS conversationType,
               c.status,
-              c.owner_agent_id AS ownerAgentId,
-              c.owner_agent_name AS ownerAgentName,
+              CAST((SELECT sa.agent_admin_id FROM nx_support_agent_user_assignment sa WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0) AS CHAR) AS ownerAgentId,
+              COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') AS ownerAgentName,
               c.unread_count AS unreadCount,
               c.last_message AS lastMessage,
               c.last_message_at AS lastMessageAt,
@@ -101,7 +101,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
             WHERE c.is_deleted=0
              <if test='status != null and status != ""'>AND c.status=UPPER(#{status})</if>
              <if test='type != null and type != ""'>AND c.conversation_type=LOWER(#{type})</if>
-             <if test='ownerAgentId != null and ownerAgentId != ""'>AND c.owner_agent_id=#{ownerAgentId}</if>
+             <if test='ownerAgentId != null and ownerAgentId != ""'>AND EXISTS(SELECT 1 FROM nx_support_agent_user_assignment sa JOIN nx_support_agent_profile sp ON sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0 JOIN nx_admin a ON a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0 WHERE sa.user_id=c.user_id AND sa.agent_admin_id=#{ownerAgentId} AND sa.status='ACTIVE' AND sa.is_deleted=0)</if>
              <if test='userId != null'>AND c.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (c.conversation_no LIKE CONCAT('%', #{keyword}, '%')
@@ -131,8 +131,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.user_id AS userId,
               c.conversation_type AS conversationType,
               c.status,
-              c.owner_agent_id AS ownerAgentId,
-              c.owner_agent_name AS ownerAgentName,
+              CAST((SELECT sa.agent_admin_id FROM nx_support_agent_user_assignment sa WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0) AS CHAR) AS ownerAgentId,
+              COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') AS ownerAgentName,
               c.unread_count AS unreadCount,
               c.last_message AS lastMessage,
               c.last_message_at AS lastMessageAt,
@@ -194,8 +194,8 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               c.user_id AS userId,
               c.conversation_type AS conversationType,
               c.status,
-              c.owner_agent_id AS ownerAgentId,
-              c.owner_agent_name AS ownerAgentName,
+              CAST((SELECT sa.agent_admin_id FROM nx_support_agent_user_assignment sa WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0) AS CHAR) AS ownerAgentId,
+              COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') AS ownerAgentName,
               c.unread_count AS unreadCount,
               c.last_message AS lastMessage,
               c.last_message_at AS lastMessageAt,

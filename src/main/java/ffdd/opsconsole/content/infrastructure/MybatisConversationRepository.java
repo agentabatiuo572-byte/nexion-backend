@@ -20,6 +20,7 @@ import org.springframework.stereotype.Repository;
 public class MybatisConversationRepository implements ConversationRepository {
     private final ConversationMapper mapper;
     private final ConversationMessageMapper messageMapper;
+    private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
 
     @Override
     public void ensureSeedData(LocalDateTime now) {
@@ -210,7 +211,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), conversation.version(), now) == 0) {
             return null;
         }
-        return insertMessage(conversation.id(), conversation.conversationNo(), null, "agent", operator, body, now);
+        return insertMessage(conversation.id(), conversation.conversationNo(), ownership.actorId(), "agent", operator, body, now);
     }
 
     @Override
@@ -323,7 +324,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        Long messageId = insertMessage(entity.getId(), conversationNo, userId, "agent", ownerAgentName, openingText, now);
+        Long messageId = insertMessage(entity.getId(), conversationNo, ownership.actorId(), "agent", ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"), openingText, now);
         ContentConversationView conversation = findByConversationNo(conversationNo)
                 .orElseGet(() -> new ContentConversationView(
                         entity.getId(),

@@ -39,12 +39,12 @@ class OpsConversationControllerTest {
     private final org.springframework.context.ApplicationEventPublisher eventPublisher = mock(org.springframework.context.ApplicationEventPublisher.class);
     private final ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService = idempotencyService();
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
-    private final OpsConversationController controller = new OpsConversationController(conversationService, productionPathGuard, eventPublisher, idempotencyService);
+    private final OpsConversationController controller = new OpsConversationController(conversationService, ffdd.opsconsole.content.SupportTestDependencies.ownership(), productionPathGuard, eventPublisher, idempotencyService);
 
     private ffdd.opsconsole.shared.idempotency.AdminIdempotencyService idempotencyService() {
         var service = mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.class);
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
-                .when(service).execute(any(), any(), any(), any(), any());
+                .when(service).executeRetained(any(), any(), any(), any(), any());
         return service;
     }
 
@@ -61,11 +61,11 @@ class OpsConversationControllerTest {
     void transferDelegatesWithIdempotencyHeader() {
         ConversationTransferRequest request =
                 new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1");
-        when(conversationService.transfer("CV-1", "idem-i9", request)).thenReturn(ApiResult.ok(null));
+        when(conversationService.transfer("CV-1", "idem-i9-key", request)).thenReturn(ApiResult.ok(null));
 
-        assertThat(controller.transfer("CV-1", "idem-i9", request).getCode()).isZero();
+        assertThat(controller.transfer("CV-1", "idem-i9-key", request).getCode()).isZero();
 
-        verify(conversationService).transfer("CV-1", "idem-i9", request);
+        verify(conversationService).transfer("CV-1", "idem-i9-key", request);
     }
 
     @Test
@@ -158,14 +158,14 @@ class OpsConversationControllerTest {
     void equalBodyRepliesKeepTheirOwnPersistedIdsWhenPublicationInterleaves() {
         ConversationReplyRequest request = new ConversationReplyRequest("hello", "agent reply", "agent-1");
         ContentConversationView view = conversation("CV-1", "hello");
-        when(conversationService.replyWithMessageId("CV-1", "reply-b", request))
+        when(conversationService.replyWithMessageId("CV-1", "reply-b-key", request))
                 .thenReturn(new OpsConversationService.MessageCommandResult(ApiResult.ok(view), 78L));
-        when(conversationService.replyWithMessageId("CV-1", "reply-a", request)).thenAnswer(invocation -> {
-            controller.reply("CV-1", "reply-b", request);
+        when(conversationService.replyWithMessageId("CV-1", "reply-a-key", request)).thenAnswer(invocation -> {
+            controller.reply("CV-1", "reply-b-key", request);
             return new OpsConversationService.MessageCommandResult(ApiResult.ok(view), 77L);
         });
 
-        controller.reply("CV-1", "reply-a", request);
+        controller.reply("CV-1", "reply-a-key", request);
 
         var captor = org.mockito.ArgumentCaptor.forClass(ConversationMessageEvent.class);
         verify(eventPublisher, org.mockito.Mockito.times(2)).publishEvent(captor.capture());

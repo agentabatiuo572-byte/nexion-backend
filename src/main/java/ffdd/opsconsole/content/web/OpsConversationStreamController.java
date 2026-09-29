@@ -43,6 +43,18 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/conversations")
 public class OpsConversationStreamController {
+    @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
+    public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
+        registry.forEach((actor,bindings)-> {
+            if(!actor.equals(String.valueOf(event.current().agentAdminId()))
+                    && (event.previous()==null || !actor.equals(String.valueOf(event.previous().agentAdminId())))) return;
+            for(EmitterBinding binding:bindings) {
+                try {if(!active(binding))continue;binding.emitter.send(SseEmitter.event().name("scope-invalidated")
+                    .data(Map.of("reason","ASSIGNMENT_CHANGED","customerId",event.customerId())));}
+                catch(IOException | IllegalStateException ex){unregister(actor,binding);}
+            }
+        });
+    }
 
     /** SSE 连接超时：30 分钟（对齐长连接诉求；到期后客户端自动重连）。 */
     private static final long SSE_TIMEOUT_MS = 30L * 60L * 1000L;
@@ -50,6 +62,11 @@ public class OpsConversationStreamController {
     private static final long HEARTBEAT_INTERVAL_SECONDS = 25L;
 
     /** 坐席 adminId → 该坐席持有的所有 SSE emitter（同一坐席多标签页会建立多条）。 */
+    private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
+    private final ffdd.opsconsole.shared.security.JwtAuthenticationFilter authentication;
+    public OpsConversationStreamController(ffdd.opsconsole.content.application.SupportOwnershipService ownership,
+            ffdd.opsconsole.shared.security.JwtAuthenticationFilter authentication) {this.ownership=ownership;this.authentication=authentication;}
+
     private final Map<String, List<EmitterBinding>> registry = new ConcurrentHashMap<>();
 
     /** 心跳调度器：所有连接共用单线程（每条连接的任务自管 cancel）。 */
@@ -66,10 +83,11 @@ public class OpsConversationStreamController {
     // SSE 会话流订阅 — M3 即时会话台 读（坐席被动接收推送/收件箱）
     @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping("/stream")
-    public SseEmitter stream() {
+    public SseEmitter stream(@org.springframework.web.bind.annotation.RequestHeader(value="Authorization",required=false) String authorization) {
+        if(authorization==null || !authorization.startsWith("Bearer ")) throw new ffdd.opsconsole.shared.exception.BizException(401,"LOGIN_REQUIRED");
         String adminId = resolveAdminId();
         SseEmitter emitter = createEmitter(SSE_TIMEOUT_MS);
-        EmitterBinding binding = new EmitterBinding(emitter, adminId);
+        EmitterBinding binding = new EmitterBinding(emitter, adminId,authorization.substring(7));
         register(adminId, binding);
 
         // 生命周期回调：任一结束路径都从 registry 移除，防内存泄漏。
@@ -95,6 +113,7 @@ public class OpsConversationStreamController {
         // 注释帧不会触发前端 onmessage，仅保活。
         binding.heartbeat = heartbeat.scheduleAtFixedRate(() -> {
             try {
+                if(!active(binding)) return;
                 emitter.send(SseEmitter.event().comment("ping"));
             } catch (IOException | IllegalStateException ex) {
                 unregister(adminId, binding);
@@ -138,6 +157,7 @@ public class OpsConversationStreamController {
         registry.forEach((adminId, bindings) -> {
             for (EmitterBinding binding : bindings) {
                 try {
+                    if (!active(binding) || !ownership.canReadConversation(Long.valueOf(adminId),event.getConversationNo())) continue;
                     binding.emitter.send(SseEmitter.event()
                             .name("message")
                             .data(event));
@@ -156,6 +176,17 @@ public class OpsConversationStreamController {
             return String.valueOf(auth.getPrincipal());
         }
         return "anonymous";
+    }
+
+    private boolean active(EmitterBinding binding) {
+        try {
+            Authentication auth=authentication.authenticateSocketToken(binding.token);
+            if(!binding.adminId.equals(auth.getName()) || !ffdd.opsconsole.content.realtime.ConversationSocketAccess.has(auth,"service_m3_read"))
+                throw new IllegalStateException("STREAM_PERMISSION_REVOKED");
+            return true;
+        } catch(RuntimeException ex) {
+            unregister(binding.adminId,binding);binding.emitter.complete();return false;
+        }
     }
 
     private void register(String adminId, EmitterBinding binding) {
@@ -202,11 +233,13 @@ public class OpsConversationStreamController {
     private static final class EmitterBinding {
         final SseEmitter emitter;
         final String adminId;
+        final String token;
         volatile ScheduledFuture<?> heartbeat;
 
-        EmitterBinding(SseEmitter emitter, String adminId) {
+        EmitterBinding(SseEmitter emitter, String adminId,String token) {
             this.emitter = emitter;
             this.adminId = adminId;
+            this.token = token;
         }
     }
 }

@@ -20,6 +20,27 @@ import org.springframework.web.socket.handler.*;
 @Component
 @RequiredArgsConstructor
 public class ConversationSocketHandler extends TextWebSocketHandler {
+    @org.springframework.transaction.event.TransactionalEventListener(phase=org.springframework.transaction.event.TransactionPhase.AFTER_COMMIT)
+    public void assignmentChanged(ffdd.opsconsole.content.application.SupportBindingService.SupportAssignmentChanged event) {
+        enqueue(()-> {
+            for(Client c:clients.values()) {
+                if(c.auth==null) continue;
+                String actor=c.auth.getName();
+                boolean customer="USER".equals(c.grant.audience()) && actor.equals(String.valueOf(event.customerId()));
+                boolean advisor="ADMIN".equals(c.grant.audience()) && (actor.equals(String.valueOf(event.current().agentAdminId()))
+                        || (event.previous()!=null && actor.equals(String.valueOf(event.previous().agentAdminId()))));
+                if(!customer && !advisor) continue;
+                try {
+                    c.auth=access.authenticate(c.grant.token(),c.grant.audience());
+                    if(c.watching!=null && access.participants(c.watching).map(p->p.userId().equals(String.valueOf(event.customerId()))).orElse(false)) {
+                        c.watching=null;c.typingUntil=0;
+                    }
+                    send(c,Map.of("type","scope-invalidated","reason","ASSIGNMENT_CHANGED","customerId",event.customerId()));
+                } catch(Exception ex) {close(c,4401);}
+            }
+            requestPresence();
+        });
+    }
     private final ObjectMapper json;
     private final ConversationSocketTickets tickets;
     private final ConversationSocketAccess access;
@@ -75,7 +96,7 @@ public class ConversationSocketHandler extends TextWebSocketHandler {
                 }
                 case "typing" -> {
                     String no=frame.path("conversationNo").asText();
-                    if(!Objects.equals(c.watching,no) || !access.canRead(c.auth,c.grant.audience(),no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
+                    if(!Objects.equals(c.watching,no) || !access.canWrite(c.auth,c.grant.audience(),no))throw new BizException(404,"CONVERSATION_NOT_FOUND");
                     access.write(c.auth,c.grant.audience());
                     c.typingUntil=frame.path("active").asBoolean()?now+5000:0;requestPresence();
                 }

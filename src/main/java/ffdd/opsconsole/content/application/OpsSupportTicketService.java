@@ -75,7 +75,9 @@ public class OpsSupportTicketService {
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final Clock clock;
+    private final SupportOwnershipService ownership;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     public ApiResult<Map<String, Object>> overview() {
         ensureSeedData();
@@ -216,12 +218,35 @@ public class OpsSupportTicketService {
             String idempotencyKey,
             String requestHash,
             java.util.function.Supplier<ApiResult<T>> action) {
-        return (ApiResult<T>) idempotencyService.execute(
-                scope,
+        ApiResult<T> result=(ApiResult<T>) idempotencyService.executeRetained(
+                scope + ":" + ownership.actorId(),
                 idempotencyKey.trim(),
                 requestHash,
                 ApiResult.class,
                 (java.util.function.Supplier) action);
+        // Keep the retained command outcome; re-project private content with current permissions.
+        if(result.getData()!=null && scope.startsWith("M2_")) {
+            boolean escalation="M2_SUPPORT_TICKET_ESCALATE".equals(scope);
+            SupportTicketEscalationResult escalated=escalation?json.convertValue(result.getData(),SupportTicketEscalationResult.class):null;
+            SupportTicketDetail stored=escalation?escalated.ticket():json.convertValue(result.getData(),SupportTicketDetail.class);
+            var current=ticketRepository.findByTicketNo(stored.ticket().ticketNo()).orElse(null);
+            if(current==null || current.contentRestricted()) {
+                SupportTicketDetail protectedDetail=current==null?null:detail(current.ticketNo()).getData();
+                Object protectedResult=escalation?new SupportTicketEscalationResult(protectedDetail,
+                        restrictedConversation(escalated.conversation())):protectedDetail;
+                return new ApiResult<>(result.getCode(),result.getMessage(),(T)protectedResult);
+            }
+        }
+        return result;
+    }
+
+    private ContentConversationView restrictedConversation(ContentConversationView c) {
+        if(c==null)return null;
+        return new ContentConversationView(c.id(),c.conversationNo(),c.userId(),c.conversationType(),c.status(),
+                c.ownerAgentId(),c.ownerAgentName(),c.unreadCount(),SupportTicketView.RESTRICTED_TEXT,c.lastMessageAt(),
+                c.transferFromAgentId(),c.transferFromAgentName(),c.transferToType(),c.transferToId(),c.transferToName(),
+                c.transferReason()==null?null:SupportTicketView.RESTRICTED_TEXT,c.transferredAt(),c.updatedAt(),
+                c.version(),c.lastPublicMessageId(),c.lastMessageKind());
     }
 
     private String requestHash(String... values) {
@@ -306,6 +331,7 @@ public class OpsSupportTicketService {
         if (guard != null) {
             return guard;
         }
+        ownership.requireWriter(request.userId(),true);
         return idempotentCommand(
                 "M2_SUPPORT_TICKET_CREATE",
                 idempotencyKey,
@@ -348,6 +374,7 @@ public class OpsSupportTicketService {
 
     @Transactional
     public ApiResult<SupportTicketDetail> reply(String ticketNo, String idempotencyKey, SupportTicketReplyRequest request) {
+        ownership.writeTicket(ticketNo,true);
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireReplyCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -386,6 +413,7 @@ public class OpsSupportTicketService {
 
     @Transactional
     public ApiResult<SupportTicketDetail> updateStatus(String ticketNo, String idempotencyKey, SupportTicketStatusRequest request) {
+        ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireStatusCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -431,6 +459,7 @@ public class OpsSupportTicketService {
 
     @Transactional
     public ApiResult<SupportTicketDetail> updatePriority(String ticketNo, String idempotencyKey, SupportTicketPriorityRequest request) {
+        ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requirePriorityCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -473,6 +502,7 @@ public class OpsSupportTicketService {
 
     @Transactional
     public ApiResult<SupportTicketDetail> assign(String ticketNo, String idempotencyKey, SupportTicketAssigneeRequest request) {
+        ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireAssignCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -519,6 +549,7 @@ public class OpsSupportTicketService {
 
     @Transactional
     public ApiResult<SupportTicketDetail> archive(String ticketNo, String idempotencyKey, SupportTicketArchiveRequest request) {
+        ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         ApiResult<SupportTicketDetail> guard = requireArchiveCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -566,6 +597,7 @@ public class OpsSupportTicketService {
             String ticketNo,
             String idempotencyKey,
             SupportTicketEscalateRequest request) {
+        ownership.writeTicket(ticketNo,true);
         ensureSeedData();
         ApiResult<SupportTicketEscalationResult> guard = requireEscalateCommand(ticketNo, idempotencyKey, request);
         if (guard != null) {
@@ -597,7 +629,7 @@ public class OpsSupportTicketService {
         if (ticket.userId() == null || ticket.userId() <= 0 || !Boolean.TRUE.equals(ticket.userExists())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_TICKET_USER_REQUIRED_FOR_ESCALATION");
         }
-        SupportAgentProfileView targetAgent = supportAgentService.assignableSupportAgent(request.ownerAgentId()).orElse(null);
+        var targetAgent = supportAgentService.routeAdvisorForUser(ticket.userId());
         if (targetAgent == null) {
             return ApiResult.fail(404, "SUPPORT_AGENT_NOT_ASSIGNABLE");
         }
@@ -606,7 +638,7 @@ public class OpsSupportTicketService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "SUPPORT_TICKET_ALREADY_ESCALATED");
         }
         String actor = authenticatedOperator(request.operator());
-        String ownerName = targetAgent.name();
+        String ownerName = targetAgent.targetName();
         String openingText = "工单 " + ticket.ticketNo() + " 已升级为即时会话：" + ticket.title();
         LocalDateTime now = LocalDateTime.now(clock);
         if (!ticketRepository.appendSystemTraceCas(
@@ -617,7 +649,7 @@ public class OpsSupportTicketService {
                 conversationNo,
                 ticket.userId(),
                 "support",
-                String.valueOf(targetAgent.adminId()),
+                String.valueOf(targetAgent.targetId()),
                 ownerName,
                 openingText,
                 now);
@@ -625,7 +657,7 @@ public class OpsSupportTicketService {
         audit("M2_SUPPORT_TICKET_ESCALATED", ticket.ticketNo(), actor, Map.of(
                 "conversationNo", conversationNo,
                 "userId", ticket.userId(),
-                "ownerAgentId", String.valueOf(targetAgent.adminId()),
+                "ownerAgentId", String.valueOf(targetAgent.targetId()),
                 "ownerAgentName", ownerName,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
@@ -637,6 +669,7 @@ public class OpsSupportTicketService {
             String ticketNo,
             String idempotencyKey,
             SupportTicketNoteRequest request) {
+        ownership.lockCustomer(ownership.ticketCustomer(ticketNo));
         ensureSeedData();
         if (!StringUtils.hasText(ticketNo)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TICKET_NO_REQUIRED");

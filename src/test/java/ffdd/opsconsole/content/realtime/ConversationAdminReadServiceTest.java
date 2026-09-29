@@ -18,7 +18,7 @@ class ConversationAdminReadServiceTest {
         when(repo.messages("CV-1")).thenReturn(List.of(new ContentConversationMessageView(10L,1L,"CV-1",12L,"user","u","hi",null,null)));
         when(repo.markUserMessagesReadThrough(eq(c),eq(10L),anyString(),any())).thenReturn(true,false);
         var events=mock(ApplicationEventPublisher.class);
-        var service=new ConversationAdminReadService(repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
+        var service=new ConversationAdminReadService(ffdd.opsconsole.content.SupportTestDependencies.ownership(), repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
         TransactionSynchronizationManager.initSynchronization();
         try {
             assertEquals(0,service.read("CV-1",new MarkReadRequest(10L,"OPEN",7L),"seat").getCode());
@@ -37,7 +37,7 @@ class ConversationAdminReadServiceTest {
         when(repo.messages("CV-1")).thenReturn(List.of(new ContentConversationMessageView(10L,1L,"CV-1",12L,"user","u","hi",null,null)));
         when(repo.markUserMessagesReadThrough(eq(c),eq(10L),anyString(),any())).thenReturn(true);
         var events=mock(ApplicationEventPublisher.class);
-        var service=new ConversationAdminReadService(repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
+        var service=new ConversationAdminReadService(ffdd.opsconsole.content.SupportTestDependencies.ownership(), repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
         TransactionSynchronizationManager.initSynchronization();
         try {
             service.read("CV-1",new MarkReadRequest(10L,"OPEN",7L),"seat");
@@ -51,7 +51,7 @@ class ConversationAdminReadServiceTest {
         when(repo.findByConversationNoForUpdate("CV-1")).thenReturn(Optional.of(c));
         when(repo.messages("CV-1")).thenReturn(List.of(new ContentConversationMessageView(10L,1L,"CV-1",12L,"user","u","hi",null,null)));
         var events=mock(ApplicationEventPublisher.class);
-        var service=new ConversationAdminReadService(repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
+        var service=new ConversationAdminReadService(ffdd.opsconsole.content.SupportTestDependencies.ownership(), repo,events,mock(ProductionSupportPathGuard.class),Clock.systemUTC());
         assertEquals(409,service.read("CV-1",new MarkReadRequest(10L,"OPEN",6L),"seat").getCode());
         assertEquals(404,service.read("CV-1",new MarkReadRequest(11L,"OPEN",7L),"seat").getCode());
         verify(repo,never()).markUserMessagesReadThrough(any(),any(),any(),any());

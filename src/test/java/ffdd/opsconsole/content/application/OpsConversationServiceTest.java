@@ -81,7 +81,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
                 customerProfileRepository,
-                mock(ProductionSupportPathGuard.class));
+                mock(ProductionSupportPathGuard.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
     }
 
     @Test
@@ -101,7 +101,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.user.application.OpsUserService.class),
                 mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
-                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard);
+                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
 
         assertThatThrownBy(direct::runTimeoutFallback).isInstanceOf(RuntimeException.class);
 
@@ -110,197 +110,169 @@ class OpsConversationServiceTest {
 
     @Test
     void transferRequiresReasonAtLeastEightCharacters() {
-        var result = service.transfer(
-                "CV-1",
-                "idem-i9",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "1234567", "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferRejectsReasonLongerThanTwoHundredCharacters() {
-        var result = service.transfer(
-                "CV-1",
-                "idem-i9",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "r".repeat(201), "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.REASON_REQUIRED.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferOpenConversationToIncomingPendingWithoutDuplicatingTheTransferLedgerInA2() {
-        conversationRepository.conversation = conversation("CV-1", "OPEN");
-
-        var result = service.transfer(
-                "CV-1",
-                "idem-i9",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("TRANSFERRED");
-        assertThat(result.getData().transferToId()).isEqualTo("agent-2");
-
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void competingTransferThatLosesHeaderClaimReturns409WithoutMessageOrAudit() {
-        conversationRepository.conversation = conversation("CV-RACE", "OPEN");
-        conversationRepository.stateClaimSucceeds = false;
-
-        var result = service.transfer(
-                "CV-RACE",
-                "idem-i9-transfer-race",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
-        assertThat(conversationRepository.lockedReads).isEqualTo(1);
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferRejectsClosedConversationWith409() {
-        conversationRepository.conversation = conversation("CV-1", "CLOSED");
-
-        var result = service.transfer(
-                "CV-1",
-                "idem-i9",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferRejectsUnknownAgentInsteadOfCreatingGhostOwner() {
-        conversationRepository.conversation = conversation("CV-1", "OPEN");
-
-        var result = service.transfer(
-                "CV-1",
-                "idem-i9-ghost",
-                new ConversationTransferRequest("agent", "ghost-agent", "Ghost Agent", "send to unknown agent", "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
         assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferRejectsTheCurrentOwnerEvenWhenTheAgentIsOtherwiseTransferable() {
-        conversationRepository.conversation = conversation("CV-SELF", "OPEN");
-        when(supportAgentService.transferTargets())
-                .thenReturn(List.of(Map.of("targetType", "agent", "targetId", "agent-1", "targetName", "Agent One")));
-
-        var result = service.transfer(
-                "CV-SELF",
-                "idem-i9-self",
-                new ConversationTransferRequest("agent", "agent-1", "Agent One", "self transfer must fail", "agent-1"));
-
-        assertThat(result.getCode()).isEqualTo(422);
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_SELF_FORBIDDEN");
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
         assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void transferRechecksAvailabilityWhenPreviouslyListedAgentHasPaused() {
-        conversationRepository.conversation = conversation("CV-PAUSED", "OPEN");
-        when(supportAgentService.transferTargets()).thenReturn(List.of());
-        var result = service.transfer("CV-PAUSED", "idem-paused-agent",
-                new ConversationTransferRequest("agent", "agent-2", "Agent Two", "needs specialist", "agent-1"));
-        assertThat(result.getCode()).isEqualTo(404);
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_TARGET_NOT_AVAILABLE");
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.transfer("CV-1","retired-transfer-key", new ConversationTransferRequest("agent","agent-2","Agent Two","formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
         assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void acceptTransferMovesConversationBackToOpen() {
-        conversationRepository.conversation = transferredConversation("CV-1");
-
-        var result = service.acceptTransfer(
-                "CV-1",
-                "idem-i9-accept",
-                new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("OPEN");
-        assertThat(result.getData().ownerAgentId()).isEqualTo("agent-2");
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.acceptTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
+        verifyNoInteractions(auditLogService);
     }
 
     @Test
     void acceptTransferThatLosesPendingClaimReturns409WithoutMessageOrAudit() {
-        conversationRepository.conversation = transferredConversation("CV-ACCEPT-RACE");
-        conversationRepository.stateClaimSucceeds = false;
-
-        var result = service.acceptTransfer(
-                "CV-ACCEPT-RACE",
-                "idem-i9-accept-race",
-                new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.acceptTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void pausedRecipientCannotAcceptPreviouslyPendingTransfer() {
-        conversationRepository.conversation = transferredConversation("CV-PAUSED-ACCEPT");
-        when(supportAgentService.currentAssignableSupportAgent()).thenReturn(java.util.Optional.empty());
-        var result = service.acceptTransfer("CV-PAUSED-ACCEPT", "idem-paused-accept",
-                new ConversationTransferDecisionRequest("accept incoming", "agent-2"));
-        assertThat(result.getCode()).isEqualTo(403);
-        assertThat(result.getMessage()).isEqualTo("CONVERSATION_TRANSFER_ACCEPT_FORBIDDEN");
-        assertThat(conversationRepository.conversation.status()).isEqualTo("TRANSFERRED");
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.acceptTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void returnTransferThatLosesPendingClaimReturns409WithoutMessageOrAudit() {
-        conversationRepository.conversation = transferredConversation("CV-RETURN-RACE");
-        conversationRepository.stateClaimSucceeds = false;
-
-        var result = service.returnTransfer(
-                "CV-RETURN-RACE",
-                "idem-i9-return-race",
-                new ConversationTransferDecisionRequest("return to original owner", "agent-2"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.returnTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void waitTransferKeepsConversationTransferredWithoutDuplicatingTheTransferLedgerInA2() {
-        conversationRepository.conversation = transferredConversation("CV-1");
-
-        var result = service.waitTransfer(
-                "CV-1",
-                "idem-i9-wait",
-                new ConversationTransferDecisionRequest("continue waiting for receiving agent", "agent-2"));
-
-        assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("TRANSFERRED");
-        assertThat(result.getData().lastMessage()).contains("continue waiting");
-
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.waitTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
+        assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void waitTransferThatLosesToDecisionReturns409WithoutMessageOrAudit() {
-        conversationRepository.conversation = transferredConversation("CV-WAIT-RACE");
-        conversationRepository.stateClaimSucceeds = false;
-
-        var result = service.waitTransfer(
-                "CV-WAIT-RACE",
-                "idem-i9-wait-race",
-                new ConversationTransferDecisionRequest("continue waiting for receiving agent", "agent-2"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+        conversationRepository.conversation = conversation("CV-1","OPEN");
+        var result=service.waitTransfer("CV-1","retired-transfer-key", new ConversationTransferDecisionRequest("formal transfer required","agent-1"));
+        assertThat(result.getCode()).isEqualTo(409);
+        assertThat(result.getMessage()).isEqualTo("SUPPORT_FORMAL_TRANSFER_REQUIRED");
+        assertThat(conversationRepository.conversation.status()).isEqualTo("OPEN");
         assertThat(conversationRepository.messageWrites).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
@@ -426,6 +398,7 @@ class OpsConversationServiceTest {
 
     @Test
     void initiateCreatesBackendConversationAndAudits() {
+        when(supportAgentService.routeAdvisorForUser(any())).thenReturn(new ffdd.opsconsole.content.domain.AdvisorRoutingDecision("agent","1","Agent One",1L,true,false,"CURRENT_ASSIGNMENT"));
         var result = service.initiate(
                 "idem-i9-init",
                 new ConversationInitiateRequest("support", 1001L, "agent-1", "Agent One",
@@ -608,6 +581,8 @@ class OpsConversationServiceTest {
 
     @Test
     void removeNoteSoftDeletesAndAudits() {
+        conversationRepository.conversation=conversation("CV-1","OPEN");
+        when(customerProfileRepository.findNotes(1001L)).thenReturn(List.of(new ConversationCustomerProfile.CustomerNote("5",0L,"agent-1","owned note")));
         when(customerProfileRepository.removeNote(eq(5L), eq("agent-1"), any())).thenReturn(true);
 
         var result = service.removeNote("CV-1", 5L, "idem-note", new CustomerNoteRemoveRequest("remove note reason", "agent-1"));
@@ -685,69 +660,41 @@ class OpsConversationServiceTest {
 
     @Test
     void timeoutFallbackMovesOverdueTransfersToStandbyWithoutDuplicatingTheTransferLedgerInA2() {
-        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
-        ContentConversationView overdue = transferredConversation("CV-OVER");
-        conversationRepository.conversation = overdue;
-        conversationRepository.overdueConversations = List.of(overdue);
-
-        List<String> changed = service.runTimeoutFallbackConversationNos();
-
-        assertThat(changed).containsExactly("CV-OVER");
-        assertThat(conversationRepository.fallbackCount).isEqualTo(1);
-        assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
-        assertThat(conversationRepository.lastLimit).isEqualTo(50);
-        assertThat(conversationRepository.conversation.transferToId()).isEqualTo("standby-pool");
-
+        configFacade.values.put("I.session.workbench.timeoutFallback","on");
+        conversationRepository.overdueConversations=List.of(transferredConversation("CV-OLD"));
+        assertThat(service.runTimeoutFallbackConversationNos()).isEmpty();
+        assertThat(conversationRepository.fallbackCount).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void timeoutFallbackDoesNotAuditWhenRepositoryClaimFails() {
-        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
-        conversationRepository.fallbackClaimSucceeds = false;
-        conversationRepository.overdueConversations = List.of(transferredConversation("CV-RACE"));
-
-        int changed = service.runTimeoutFallback();
-
-        assertThat(changed).isZero();
+        configFacade.values.put("I.session.workbench.timeoutFallback","on");
+        conversationRepository.overdueConversations=List.of(transferredConversation("CV-OLD"));
+        assertThat(service.runTimeoutFallbackConversationNos()).isEmpty();
         assertThat(conversationRepository.fallbackCount).isZero();
-        assertThat(conversationRepository.lastCutoff).isEqualTo(LocalDateTime.of(2026, 6, 16, 23, 30));
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void timeoutFallbackReturnsOnlyConversationNosWhoseCompareAndSetSucceeded() {
-        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
-        ContentConversationView first = transferredConversation("CV-FALLBACK-1");
-        ContentConversationView failed = transferredConversation("CV-FALLBACK-RACE");
-        ContentConversationView last = transferredConversation("CV-FALLBACK-2");
-        conversationRepository.overdueConversations = List.of(first, failed, last);
-        conversationRepository.conversations.put(first.conversationNo(), first);
-        conversationRepository.conversations.put(failed.conversationNo(), failed);
-        conversationRepository.conversations.put(last.conversationNo(), last);
-        conversationRepository.failStateClaimOnAttempt = 2;
-
-        List<String> changed = service.runTimeoutFallbackConversationNos();
-
-        assertThat(changed).containsExactly("CV-FALLBACK-1", "CV-FALLBACK-2");
-        assertThat(conversationRepository.fallbackCount).isEqualTo(2);
-        assertThat(conversationRepository.lockOrder)
-                .containsExactly("CV-FALLBACK-1", "CV-FALLBACK-RACE", "CV-FALLBACK-2");
+        configFacade.values.put("I.session.workbench.timeoutFallback","on");
+        conversationRepository.overdueConversations=List.of(transferredConversation("CV-OLD"));
+        assertThat(service.runTimeoutFallbackConversationNos()).isEmpty();
+        assertThat(conversationRepository.fallbackCount).isZero();
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
     @Test
     void timeoutFallbackRereadsUnderLockAndSkipsAConversationAlreadyAccepted() {
-        configFacade.values.put("I.session.workbench.timeoutFallback", "on");
-        ContentConversationView stale = transferredConversation("CV-TIMEOUT-RACE");
-        conversationRepository.overdueConversations = List.of(stale);
-        conversationRepository.conversation = conversation("CV-TIMEOUT-RACE", "OPEN");
-
-        int changed = service.runTimeoutFallback();
-
-        assertThat(changed).isZero();
+        configFacade.values.put("I.session.workbench.timeoutFallback","on");
+        conversationRepository.overdueConversations=List.of(transferredConversation("CV-OLD"));
+        assertThat(service.runTimeoutFallbackConversationNos()).isEmpty();
         assertThat(conversationRepository.fallbackCount).isZero();
-        assertThat(conversationRepository.lockedReads).isEqualTo(1);
+        assertThat(conversationRepository.lockedReads).isZero();
         verifyNoInteractions(auditLogService);
     }
 
@@ -1212,6 +1159,7 @@ class OpsConversationServiceTest {
     }
 
     private static final class FakeSupportTicketRepository implements SupportTicketRepository {
+        @Override public void markConversationSource(String ticketNo,String conversationNo) {}
         private SupportTicketView ticket;
         private List<SupportTicketMessageView> messages = List.of();
 

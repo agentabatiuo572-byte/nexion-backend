@@ -62,6 +62,7 @@ public class AppUserRegistrationService {
     private final UserLoginGuardMapper loginGuardMapper;
     private final CaptchaOtpGate captchaGate;
     private final DayOneInstanceFacade dayOneInstanceFacade;
+    private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
 
     @PostConstruct
     void ensureSchema() {
@@ -331,6 +332,7 @@ public class AppUserRegistrationService {
         } catch (DuplicateKeyException exception) {
             throw new BizException(409, "USER_REGISTRATION_IDENTITY_CONFLICT");
         }
+        supportBindingService.register(user.getId(), sponsor == null ? null : sponsor.getId());
         dayOneInstanceFacade.provisionForRegisteredUser(user.getId());
         createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());

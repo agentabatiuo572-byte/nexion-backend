@@ -10,13 +10,16 @@ public record SupportAgentSeatAssignmentRequest(
         Boolean enabled,
         Boolean transferable,
         Boolean busy,
-        List<Long> userIds,
-        Long expectedVersion,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(contentUsing=SupportBindingRequest.StrictId.class) List<Long> userIds,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=SupportBindingRequest.StrictId.class) Long expectedVersion,
         String operator,
-        String reason) {
+        String reason, List<SupportBindingRequest.Customer> customers) {
+    public SupportAgentSeatAssignmentRequest(String position,List<String> serviceTypes,List<String> tags,Integer maxConcurrent,Boolean enabled,Boolean transferable,Boolean busy,List<Long> userIds,Long expectedVersion,String operator,String reason) {
+        this(position,serviceTypes,tags,maxConcurrent,enabled,transferable,busy,userIds,expectedVersion,operator,reason,null);
+    }
     public SupportAgentSeatAssignmentRequest(
             String position, List<String> serviceTypes, List<String> tags, Integer maxConcurrent,
             Boolean enabled, Boolean transferable, Boolean busy, List<Long> userIds, String operator, String reason) {
-        this(position, serviceTypes, tags, maxConcurrent, enabled, transferable, busy, userIds, 1L, operator, reason);
+        this(position, serviceTypes, tags, maxConcurrent, enabled, transferable, busy, userIds, 1L, operator, reason, null);
     }
 }

@@ -88,7 +88,7 @@ class AppUserRegistrationServiceTest {
         service = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 transactionExecutor, environment, referralRewardService, configFacade, loginGuards, captchaGate,
-                dayOneInstanceFacade);
+                dayOneInstanceFacade, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class));
         when(configFacade.activeValue(any())).thenReturn(Optional.empty());
         when(loginGuards.lockOtpSendGuard(any())).thenAnswer(ignored -> freshOtpSendGuard());
         when(loginGuards.recordOtpSend(any(), any(), any(), anyInt(), any(), anyInt())).thenReturn(1);
@@ -374,7 +374,7 @@ class AppUserRegistrationServiceTest {
         AppUserRegistrationService transactionalService = new AppUserRegistrationService(
                 mapper, userMapper, passwordEncoder, otpDeliveryService, authService, outboxService,
                 new AppUserRegistrationTransactionExecutor(transactions), environment, referralRewardService,
-                configFacade, loginGuards, captchaGate, proxiedDayOne);
+                configFacade, loginGuards, captchaGate, proxiedDayOne, org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class));
 
         assertThatThrownBy(() -> transactionalService.register(new UserRegistrationRequest(
                 "+84", "987654320", "REG-DAY-ONE-ROLLBACK", "123456", "NexPass9a", null), "127.0.0.3"))

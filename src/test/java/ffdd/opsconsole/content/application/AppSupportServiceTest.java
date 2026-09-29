@@ -62,8 +62,8 @@ class AppSupportServiceTest {
     void setUp() {
         service = new AppSupportService(tickets, conversations, knowledge, idempotency, audit, eventPublisher, clock,
                 productionPathGuard, idempotencyRecords, new ObjectMapper().findAndRegisterModules(), supportAgents,
-                configFacade);
-        when(idempotency.execute(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+                configFacade, ffdd.opsconsole.content.SupportTestDependencies.ownership());
+        when(idempotency.executeRetained(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             return action.get();
         });
@@ -323,7 +323,7 @@ class AppSupportServiceTest {
             if (cached.get() != null) return cached.get();
             java.util.function.Supplier<?> action = invocation.getArgument(4);
             Object result = action.get(); cached.set(result); return result;
-        }).when(idempotency).execute(any(), any(), any(), any(), any());
+        }).when(idempotency).executeRetained(any(), any(), any(), any(), any());
         var request = new AppSupportService.StartConversationRequest("SUPPORT", "help");
 
         service.startConversation(42L, "stable-idempotency", request);
@@ -351,12 +351,12 @@ class AppSupportServiceTest {
                 org.mockito.ArgumentMatchers.eq("help"), org.mockito.ArgumentMatchers.eq("9"),
                 org.mockito.ArgumentMatchers.eq("Advisor A"), any());
         var ordering = inOrder(supportAgents);
-        ordering.verify(supportAgents).ensureSchema();
+        verify(supportAgents,never()).ensureSchema();
         ordering.verify(supportAgents).findActiveDedicatedAdvisor(42L);
     }
 
     @Test
-    void advisorConversationFallsBackToStandbyPoolWhenNoAdvisorIsAvailable() {
+    void unboundAdvisorConversationStoresNoInventedOwner() {
         ContentConversationView conversation = conversation(42L, "CV-STANDBY");
         when(supportAgents.findActiveDedicatedAdvisor(42L)).thenReturn(Optional.empty());
         when(conversations.createUserConversation(any(), any(), any(), any(), any(), any(), any()))
@@ -369,8 +369,8 @@ class AppSupportServiceTest {
 
         verify(conversations).createUserConversation(
                 any(), org.mockito.ArgumentMatchers.eq(42L), org.mockito.ArgumentMatchers.eq("advisor"),
-                org.mockito.ArgumentMatchers.eq("help"), org.mockito.ArgumentMatchers.eq("standby-pool"),
-                org.mockito.ArgumentMatchers.eq("备勤池"), any());
+                org.mockito.ArgumentMatchers.eq("help"), org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq("待分配"), any());
     }
 
     @Test

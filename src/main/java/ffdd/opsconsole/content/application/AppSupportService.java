@@ -73,6 +73,7 @@ public class AppSupportService {
     private final ObjectMapper objectMapper;
     private final SupportAgentRepository supportAgentRepository;
     private final PlatformConfigFacade configFacade;
+    private final SupportOwnershipService ownership;
 
     public ApiResult<PageResult<SupportTicketView>> tickets(
             Long userId, String status, Long pageNum, Long pageSize) {
@@ -292,17 +293,10 @@ public class AppSupportService {
         return idempotent("APP_CONVERSATION_CREATE:" + userId, idempotencyKey, hash(request), () -> {
             LocalDateTime now = LocalDateTime.now(clock);
             String type = requestedType;
-            DedicatedAdvisorBindingView advisor = null;
-            if ("advisor".equals(type)) {
-                // The App can be the first caller after a clean deployment; ensure the
-                // M5 routing tables exist before issuing the dedicated-advisor lookup.
-                supportAgentRepository.ensureSchema();
-                advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
-            }
-            String ownerId = advisor == null && "advisor".equals(type)
-                    ? "standby-pool" : advisor == null ? null : String.valueOf(advisor.adminId());
-            String ownerName = advisor == null && "advisor".equals(type)
-                    ? "备勤池" : advisor == null ? "Unassigned" : advisor.name();
+            ownership.lockCustomer(userId);
+            DedicatedAdvisorBindingView advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
+            String ownerId = advisor == null ? null : String.valueOf(advisor.adminId());
+            String ownerName = advisor == null ? "待分配" : advisor.name();
             ContentConversationView created = conversationRepository.createUserConversation(
                     uniqueNo("CV-APP-", now), userId, type, request.openingText().trim(),
                     ownerId, ownerName, now);
@@ -324,6 +318,7 @@ public class AppSupportService {
             return validation("CONVERSATION_REPLY_INVALID");
         }
         return idempotent("APP_CONVERSATION_REPLY:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
+            ownership.lockCustomer(userId);
             ContentConversationView conversation = ownedConversation(userId, conversationNo);
             if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
             if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
@@ -350,6 +345,7 @@ public class AppSupportService {
             return validation("CONVERSATION_TICKET_INPUT_INVALID");
         }
         return idempotent("APP_CONVERSATION_TO_TICKET:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
+            ownership.lockCustomer(userId);
             ContentConversationView conversation = conversationRepository
                     .findByConversationNoForUpdate(safeNo(conversationNo)).orElse(null);
             if (conversation == null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
@@ -357,6 +353,7 @@ public class AppSupportService {
                     || "CLOSED".equals(normalizeUpper(conversation.status()))) return conversationConflict();
             LocalDateTime now = LocalDateTime.now(clock);
             String ticketNo = uniqueNo("TK-APP-", now);
+            ownership.requireHandled(conversation.conversationNo());
             if (!conversationRepository.markConvertedToTicket(conversation, ticketNo, "user:" + userId, now)) {
                 return conversationConflict();
             }
@@ -369,6 +366,8 @@ public class AppSupportService {
                     ticketNo, userId, normalizeLower(request.category()), "NORMAL", request.title().trim(),
                     StringUtils.hasText(transcript) ? transcript : "Conversation " + conversation.conversationNo(),
                     null, "Unassigned", "user:" + userId, now);
+            ticketRepository.markConversationSource(ticket.ticketNo(),conversation.conversationNo());
+            ticket=ticketRepository.findByTicketNo(ticket.ticketNo()).orElseThrow();
             ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
             audit("APP_CONVERSATION_CONVERTED_TO_TICKET", "CONVERSATION", conversation.conversationNo(), userId,
                     Map.of("ticketNo", ticketNo, "idempotencyKey", idempotencyKey.trim()));
@@ -537,7 +536,7 @@ public class AppSupportService {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> idempotent(String scope, String key, String requestHash, Supplier<ApiResult<T>> action) {
-        return (ApiResult<T>) idempotencyService.execute(scope, key.trim(), requestHash, ApiResult.class, (Supplier) action);
+        return (ApiResult<T>) idempotencyService.executeRetained(scope, key.trim(), requestHash, ApiResult.class, (Supplier) action);
     }
 
     private SupportTicketView ownedTicket(Long userId, String ticketNo) {

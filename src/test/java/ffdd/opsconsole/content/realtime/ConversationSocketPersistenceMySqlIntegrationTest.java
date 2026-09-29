@@ -602,7 +602,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         ConversationRepository conversationRepository(
                 ConversationMapper conversations,
                 ConversationMessageMapper messages) {
-            return new MybatisConversationRepository(conversations, messages);
+            return new MybatisConversationRepository(conversations, messages, ffdd.opsconsole.content.SupportTestDependencies.ownership());
         }
 
         @Bean
@@ -695,7 +695,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 SupportAgentRepository agents,
                 PlatformConfigFacade config) {
             return new AppSupportService(tickets, conversations, knowledge, idempotency, audit, events, clock,
-                    guard, idempotencyRecords, json, agents, config);
+                    guard, idempotencyRecords, json, agents, config, ffdd.opsconsole.content.SupportTestDependencies.ownership());
         }
 
         @Bean
@@ -714,7 +714,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 CustomerProfileRepository profiles,
                 ProductionSupportPathGuard guard) {
             return new OpsConversationService(conversations, tickets, agents, config, audit, clock, seeds,
-                    users, finance, devices, risks, profiles, guard);
+                    users, finance, devices, risks, profiles, guard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
         }
 
         @Bean
@@ -733,7 +733,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 ProductionSupportPathGuard guard,
                 ApplicationEventPublisher events,
                 AdminIdempotencyService idempotency) {
-            return new OpsConversationController(service, guard, events, idempotency);
+            return new OpsConversationController(service, ffdd.opsconsole.content.SupportTestDependencies.ownership(), guard, events, idempotency);
         }
 
         @Bean
@@ -742,7 +742,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
                 ApplicationEventPublisher events,
                 ProductionSupportPathGuard guard,
                 Clock clock) {
-            return new ConversationAdminReadService(conversations, events, guard, clock);
+            return new ConversationAdminReadService(ffdd.opsconsole.content.SupportTestDependencies.ownership(), conversations, events, guard, clock);
         }
 
         @Bean
@@ -804,7 +804,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         private final ConversationRepository conversations;
 
         FixtureAccess(ConversationRepository conversations) {
-            super(null, null, null, null, conversations, null);
+            super(null, null, null, null, conversations, null, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
             this.conversations = conversations;
         }
 
@@ -852,7 +852,7 @@ class ConversationSocketPersistenceMySqlIntegrationTest {
         @Override
         public Optional<Participants> participants(String conversationNo) {
             return conversations.findByConversationNo(conversationNo)
-                    .map(row -> new Participants(String.valueOf(row.userId()), row.ownerAgentId()));
+                    .map(row -> new Participants(String.valueOf(row.userId()), row.ownerAgentId(), ffdd.opsconsole.content.SupportTestDependencies.ownership()));
         }
 
         @Override

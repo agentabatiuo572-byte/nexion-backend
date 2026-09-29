@@ -190,7 +190,7 @@ class ConversationSocketSecurityIntegrationTest {
         @Bean ConversationSocketAccess conversationSocketAccess(JwtAuthenticationFilter auth, AdminRbacAuthorizationFilter gate,
                 UserAccountBlocklistVerifier blocklist, UserBusinessWriteGateFilter userGate,
                 ffdd.opsconsole.content.domain.ConversationRepository conversations, ProductionSupportPathGuard production) {
-            return new ConversationSocketAccess(auth, gate, blocklist, userGate, conversations, production);
+            return new ConversationSocketAccess(auth, gate, blocklist, userGate, conversations, production, ffdd.opsconsole.content.SupportTestDependencies.ownership(), org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
         }
         @Bean ConversationSocketTickets conversationSocketTickets(ConversationSocketAccess access) { return new ConversationSocketTickets(access); }
         @Bean AppSupportController appSupportController() { return mock(AppSupportController.class); }

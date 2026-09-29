@@ -62,10 +62,11 @@ class OpsSupportTicketServiceTest {
     private OpsSupportTicketService service() {
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
-                .execute(anyString(), anyString(), anyString(), any(), any());
+                .executeRetained(anyString(), anyString(), anyString(), any(), any());
         when(supportAgentService.assignableSupportAgent(1L)).thenReturn(Optional.of(agent(1L, "Marina K.")));
         when(supportAgentService.assignableSupportAgent(7L)).thenReturn(Optional.of(agent(7L, "Tomas R.")));
         when(supportAgentService.assignableSupportAgent("7")).thenReturn(Optional.of(agent(7L, "Tomas R.")));
+        when(supportAgentService.routeAdvisorForUser(any())).thenReturn(new ffdd.opsconsole.content.domain.AdvisorRoutingDecision("agent","7","Tomas R.",7L,true,false,"CURRENT_ASSIGNMENT"));
         when(knowledgeRepository.listSla()).thenReturn(List.of(new SupportSlaView(
                 "withdrawal", 15, 24, "支付队列", "值班主管", 1L,
                 LocalDateTime.of(2026, 6, 18, 0, 0))));
@@ -77,8 +78,8 @@ class OpsSupportTicketServiceTest {
                 configFacade,
                 auditLogService,
                 idempotencyService,
-                clock,
-                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction());
+                clock, ffdd.opsconsole.content.SupportTestDependencies.ownership(),
+                ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy.enabledForDirectConstruction(),new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
     }
 
     @Test
@@ -101,7 +102,7 @@ class OpsSupportTicketServiceTest {
         verify(auditLogService).recordRequired(captor.capture());
         assertThat(captor.getValue().getAction()).isEqualTo("M2_SUPPORT_TICKET_CREATED");
         assertThat(detailMap(captor.getValue().getDetail())).containsEntry("idempotencyKey", "idem-m2-create");
-        verify(idempotencyService).execute(eq("M2_SUPPORT_TICKET_CREATE"), eq("idem-m2-create"), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class), any());
+        verify(idempotencyService).executeRetained(eq("M2_SUPPORT_TICKET_CREATE:1"), eq("idem-m2-create"), anyString(), eq(ffdd.opsconsole.shared.api.ApiResult.class), any());
     }
 
     @Test
@@ -173,6 +174,7 @@ class OpsSupportTicketServiceTest {
 
     @Test
     void escalateRejectsUnknownAssignedSupportAgent() {
+        when(supportAgentService.routeAdvisorForUser(any())).thenReturn(null);
         ticketRepository.ticket = ticket("TK-1", "OPEN", "HIGH");
 
         var result = service.escalate(
@@ -553,6 +555,7 @@ class OpsSupportTicketServiceTest {
     }
 
     private static final class FakeSupportTicketRepository implements SupportTicketRepository {
+        @Override public void markConversationSource(String ticketNo,String conversationNo) {}
         private SupportTicketView ticket = ticket("TK-1", "OPEN", "NORMAL");
         private int seedCalls;
         private final List<SupportTicketMessageView> messages = new ArrayList<>(List.of(

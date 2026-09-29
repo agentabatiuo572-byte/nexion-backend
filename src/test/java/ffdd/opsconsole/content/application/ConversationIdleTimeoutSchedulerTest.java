@@ -32,7 +32,7 @@ class ConversationIdleTimeoutSchedulerTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     private final ProductionSupportPathGuard productionPathGuard = enabledGuard();
-    private final ConversationIdleTimeoutScheduler scheduler = new ConversationIdleTimeoutScheduler(
+    private final ConversationIdleTimeoutScheduler scheduler = new ConversationIdleTimeoutScheduler(org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class),
             mapper,
             auditLogService,
             publisher,
@@ -77,7 +77,7 @@ class ConversationIdleTimeoutSchedulerTest {
     @Test
     void isolatedAutomationSweepDoesNotReadOrWriteOfficialConversationFacts() {
         ProductionSupportPathGuard disabled = mock(ProductionSupportPathGuard.class);
-        ConversationIdleTimeoutScheduler isolated = new ConversationIdleTimeoutScheduler(mapper, auditLogService, publisher,
+        ConversationIdleTimeoutScheduler isolated = new ConversationIdleTimeoutScheduler(org.mockito.Mockito.mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class), mapper, auditLogService, publisher,
                 Clock.systemUTC(), disabled);
         assertThat(isolated.sweep()).isEqualTo(new ConversationIdleTimeoutScheduler.SweepResult(0, 0));
         verify(mapper, never()).selectPolicy();

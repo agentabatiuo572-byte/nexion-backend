@@ -130,6 +130,12 @@ public interface ConversationTimeoutPolicyMapper extends BaseMapper<Conversation
                AND c.status='OPEN'
                AND COALESCE(c.last_message_at,c.created_at) <= #{closeCutoff}
                AND NOT EXISTS (
+                   SELECT 1 FROM nx_conversation_message m
+                    LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no
+                    WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0 AND m.sender_type='user'
+                      AND m.id>COALESCE(r.through_message_id,0)
+               )
+               AND NOT EXISTS (
                    SELECT 1
                      FROM nx_conversation_timeout_event e
                     WHERE e.conversation_no=c.conversation_no

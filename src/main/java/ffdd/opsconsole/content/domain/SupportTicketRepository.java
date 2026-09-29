@@ -55,6 +55,8 @@ public interface SupportTicketRepository {
             String operator,
             LocalDateTime now);
 
+    void markConversationSource(String ticketNo,String conversationNo);
+
     void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now);
 
     default boolean appendReplyCas(SupportTicketView ticket, String body, String operator, LocalDateTime now) {

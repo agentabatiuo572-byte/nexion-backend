@@ -74,6 +74,6 @@ class MybatisSupportAgentRepositoryTest {
         verify(mapper, times(1)).createProfileTable();
         verify(mapper, times(1)).backfillSeatType();
         verify(mapper, times(1)).createAssignmentTable();
-        verify(mapper, times(1)).deactivateDuplicateActiveAssignments();
+        verify(mapper, times(1)).countDuplicateActiveCustomers();
     }
 }

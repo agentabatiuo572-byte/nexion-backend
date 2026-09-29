@@ -17,7 +17,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 class OpsSupportWorkbenchControllerTest {
     private final OpsUserService users = mock(OpsUserService.class);
     private final OpsSupportAgentService agents = mock(OpsSupportAgentService.class);
-    private final OpsSupportWorkbenchController controller = new OpsSupportWorkbenchController(mock(OpsDeviceService.class), users, agents);
+    private final OpsSupportWorkbenchController controller = new OpsSupportWorkbenchController(mock(OpsDeviceService.class), users, agents,
+            ffdd.opsconsole.content.SupportTestDependencies.ownership(),mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class));
 
     @Test
     void usersRouteUsesTheScopedPhoneSearchAndKeepsCanonicalPagination() {

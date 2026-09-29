@@ -94,7 +94,9 @@ class ConversationSocketWireTest {
             Authentication candidate = invocation.getArgument(0);
             return candidate == user || candidate == agent;
         });
-        when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("100", "seat-9")));
+        var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();
+        when(access.canWrite(any(Authentication.class),anyString(),eq("CV-1"))).thenAnswer(invocation->access.canRead(invocation.getArgument(0),invocation.getArgument(1),"CV-1"));
+        when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("100", "seat-9", guard)));
         when(access.presenceKeys(user, "USER")).thenReturn(Set.of("USER:100"));
         when(access.presenceKeys(otherUser, "USER")).thenReturn(Set.of("USER:200"));
         when(access.presenceKeys(agent, "ADMIN")).thenReturn(Set.of("ADMIN:seat-9"));

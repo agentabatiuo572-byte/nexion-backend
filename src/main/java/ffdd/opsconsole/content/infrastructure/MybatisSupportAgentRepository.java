@@ -40,7 +40,9 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             if (mapper.countAssignmentTypeColumn() > 0) {
                 mapper.dropAssignmentTypeColumn();
             }
-            mapper.deactivateDuplicateActiveAssignments();
+            if (mapper.countDuplicateActiveCustomers() > 0) {
+                throw new IllegalStateException("SUPPORT_ASSIGNMENT_MIGRATION_REVIEW_REQUIRED");
+            }
             if (mapper.countActiveUserColumn() == 0) {
                 mapper.addActiveUserColumn();
             }

@@ -58,7 +58,8 @@ class ConversationSocketHandlerTest {
     }
     @Test void presenceRecoversAfterTheOutboundQueueRejectsABatch()throws Exception{
         when(access.canRead(auth,"USER","CV-1")).thenReturn(true);
-        when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("12","seat")));
+        var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();
+        when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("12","seat", guard)));
         when(access.presenceKeys(auth,"USER")).thenReturn(Set.of("USER:12"));
         login();frame(Map.of("type","watch","conversationNo","CV-1"));
         awaitPresence();frames.clear();

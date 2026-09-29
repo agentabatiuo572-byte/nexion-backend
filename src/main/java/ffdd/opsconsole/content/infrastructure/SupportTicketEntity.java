@@ -11,6 +11,7 @@ import lombok.EqualsAndHashCode;
 @TableName("nx_support_ticket")
 public class SupportTicketEntity extends BaseEntity {
     private String ticketNo;
+    private String sourceConversationNo;
     private Long userId;
     private String category;
     private String priority;

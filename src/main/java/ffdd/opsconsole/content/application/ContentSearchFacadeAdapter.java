@@ -22,6 +22,7 @@ public class ContentSearchFacadeAdapter implements ContentSearchFacade {
 
     @Override
     public List<AdminSearchHit> searchSupportTickets(String keyword, int limit) {
+        if(!SupportOwnershipService.hasAuthority("service_m2_read")) return List.of();
         String q = trim(keyword);
         if (!StringUtils.hasText(q)) {
             return List.of();
@@ -45,6 +46,7 @@ public class ContentSearchFacadeAdapter implements ContentSearchFacade {
 
     @Override
     public List<AdminSearchHit> searchConversations(String keyword, int limit) {
+        if(!SupportOwnershipService.hasAuthority("service_m3_read")) return List.of();
         String q = trim(keyword);
         if (!StringUtils.hasText(q)) {
             return List.of();

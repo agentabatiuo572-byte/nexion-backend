@@ -13,8 +13,11 @@ import static org.mockito.Mockito.*;
 class ConversationSocketAccessTest {
     @Test void presenceUsesTheCurrentOwnerAndExcludesReadOnlySeats() {
         var repo=mock(ConversationRepository.class);
+        var bindings=mock(ffdd.opsconsole.content.mapper.SupportBindingMapper.class);
+        when(bindings.currentAgent(12L)).thenReturn(20L);
+        when(bindings.eligibleAgent(1L)).thenReturn(1);
         var access=new ConversationSocketAccess(mock(JwtAuthenticationFilter.class),mock(AdminRbacAuthorizationFilter.class),
-                mock(UserAccountBlocklistVerifier.class),mock(UserBusinessWriteGateFilter.class),repo,mock(ProductionSupportPathGuard.class));
+                mock(UserAccountBlocklistVerifier.class),mock(UserBusinessWriteGateFilter.class),repo,mock(ProductionSupportPathGuard.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), bindings);
         var c=new ContentConversationView(1L,"CV-1",12L,"support","OPEN","seat", "Agent",0,"hi",null,null,null,null,null,null,null,null,null,7L);
         when(repo.findByConversationNo("CV-1")).thenReturn(Optional.of(c));
         var scope=access.participants("CV-1").orElseThrow();

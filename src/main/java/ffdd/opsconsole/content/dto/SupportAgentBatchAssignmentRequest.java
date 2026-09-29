@@ -8,12 +8,13 @@ import java.util.List;
 public record SupportAgentBatchAssignmentRequest(
         @NotEmpty(message = "SUPPORT_ADVISOR_USERS_REQUIRED")
         @Size(max = SupportAgentBatchAssignmentRequest.MAX_USER_IDS, message = "SUPPORT_ADVISOR_BATCH_TOO_LARGE")
-        List<Long> userIds,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(contentUsing=SupportBindingRequest.StrictId.class) List<Long> userIds,
         @NotBlank(message = "OPERATOR_REQUIRED")
         @Size(max = 64, message = "OPERATOR_TOO_LONG")
         String operator,
         @NotBlank(message = "REASON_REQUIRED")
         @Size(min = 8, max = 200, message = "REASON_LENGTH_INVALID")
-        String reason) {
+        String reason, List<SupportBindingRequest.Customer> customers) {
+    public SupportAgentBatchAssignmentRequest(List<Long> userIds,String operator,String reason){this(userIds,operator,reason,null);}
     public static final int MAX_USER_IDS = 100;
 }

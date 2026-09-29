@@ -10,6 +10,11 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
+    record Visibility(Long adminId, Long customerId, boolean privateRead, boolean supervisor) {}
+    String VISIBLE = " COALESCE((t.source_conversation_no='DIRECT' OR t.user_id=#{visibility.customerId} OR (#{visibility.privateRead} AND (#{visibility.supervisor} OR EXISTS(SELECT 1 FROM nx_support_agent_user_assignment a WHERE a.user_id=t.user_id AND a.agent_admin_id=#{visibility.adminId} AND a.status='ACTIVE' AND a.is_deleted=0)))),0) ";
+
+    @Update("UPDATE nx_support_ticket SET source_conversation_no=#{source} WHERE ticket_no=#{ticketNo} AND source_conversation_no='DIRECT' AND is_deleted=0")
+    int markConversationSource(@Param("ticketNo") String ticketNo,@Param("source") String source);
     @Update("""
             UPDATE nx_support_ticket SET user_unread_count=0, updated_at=#{now}, version=version+1
             WHERE ticket_no=#{ticketNo} AND user_id=#{userId} AND is_deleted=0
@@ -51,15 +56,17 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
              <if test='userId != null'>AND t.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (t.ticket_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR t.title LIKE CONCAT('%', #{keyword}, '%')
+                    OR (""" + VISIBLE + """
+ AND t.title LIKE CONCAT('%', #{keyword}, '%'))
                     OR t.assigned_admin_name LIKE CONCAT('%', #{keyword}, '%')
-                    OR t.last_message LIKE CONCAT('%', #{keyword}, '%'))
+                    OR (""" + VISIBLE + """
+ AND t.last_message LIKE CONCAT('%', #{keyword}, '%')))
              </if>
             </script>
             """)
     long countTickets(@Param("scope") String scope, @Param("status") String status, @Param("category") String category,
                       @Param("priority") String priority, @Param("assignedAdminId") Long assignedAdminId,
-                      @Param("userId") Long userId, @Param("keyword") String keyword);
+                      @Param("userId") Long userId, @Param("keyword") String keyword,@Param("visibility") Visibility visibility);
 
     @Select("""
             <script>
@@ -70,8 +77,10 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.category,
               t.priority,
               t.status,
-              t.title,
-              t.last_message AS lastMessage,
+              CASE WHEN """ + VISIBLE + """
+ THEN t.title ELSE '私聊内容仅当前顾问和主管可阅' END AS title,
+              CASE WHEN """ + VISIBLE + """
+ THEN t.last_message ELSE '私聊内容仅当前顾问和主管可阅' END AS lastMessage,
               t.assigned_admin_id AS assignedAdminId,
               t.assigned_admin_name AS assignedAdminName,
               t.user_unread_count AS userUnreadCount,
@@ -84,7 +93,10 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.archived,
               t.archived_at AS archivedAt,
               t.version,
-              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists
+              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists,
+              t.source_conversation_no AS sourceConversationNo,
+              NOT """ + VISIBLE + """
+ AS contentRestricted
             FROM nx_support_ticket t
             WHERE t.is_deleted=0
              <if test='scope == "active"'>AND t.archived=0</if>
@@ -99,9 +111,11 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
              <if test='userId != null'>AND t.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (t.ticket_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR t.title LIKE CONCAT('%', #{keyword}, '%')
+                    OR (""" + VISIBLE + """
+ AND t.title LIKE CONCAT('%', #{keyword}, '%'))
                     OR t.assigned_admin_name LIKE CONCAT('%', #{keyword}, '%')
-                    OR t.last_message LIKE CONCAT('%', #{keyword}, '%'))
+                    OR (""" + VISIBLE + """
+ AND t.last_message LIKE CONCAT('%', #{keyword}, '%')))
              </if>
              <if test='stableCursor != null and stableCursor and beforeId != null'>AND t.id &lt; #{beforeId}</if>
              <choose>
@@ -115,7 +129,7 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
                                         @Param("priority") String priority, @Param("assignedAdminId") Long assignedAdminId,
                                         @Param("userId") Long userId, @Param("keyword") String keyword,
                                         @Param("beforeId") Long beforeId, @Param("stableCursor") Boolean stableCursor,
-                                        @Param("pageSize") long pageSize, @Param("offset") long offset);
+                                        @Param("pageSize") long pageSize, @Param("offset") long offset,@Param("visibility") Visibility visibility);
 
     @Select("""
             SELECT
@@ -125,8 +139,10 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.category,
               t.priority,
               t.status,
-              t.title,
-              t.last_message AS lastMessage,
+              CASE WHEN """ + VISIBLE + """
+ THEN t.title ELSE '私聊内容仅当前顾问和主管可阅' END AS title,
+              CASE WHEN """ + VISIBLE + """
+ THEN t.last_message ELSE '私聊内容仅当前顾问和主管可阅' END AS lastMessage,
               t.assigned_admin_id AS assignedAdminId,
               t.assigned_admin_name AS assignedAdminName,
               t.user_unread_count AS userUnreadCount,
@@ -139,12 +155,15 @@ public interface SupportTicketMapper extends BaseMapper<SupportTicketEntity> {
               t.archived,
               t.archived_at AS archivedAt,
               t.version,
-              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists
+              EXISTS(SELECT 1 FROM nx_user u WHERE u.id=t.user_id AND u.is_deleted=0) AS userExists,
+              t.source_conversation_no AS sourceConversationNo,
+              NOT """ + VISIBLE + """
+ AS contentRestricted
             FROM nx_support_ticket t
             WHERE t.is_deleted=0 AND t.ticket_no=#{ticketNo}
             LIMIT 1
             """)
-    SupportTicketView findByTicketNo(@Param("ticketNo") String ticketNo);
+    SupportTicketView findByTicketNo(@Param("ticketNo") String ticketNo,@Param("visibility") Visibility visibility);
 
     @Update("""
             UPDATE nx_support_ticket

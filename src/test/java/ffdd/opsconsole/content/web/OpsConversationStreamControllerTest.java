@@ -30,9 +30,9 @@ class OpsConversationStreamControllerTest {
     void streamSendsReadyCommentImmediatelyAfterRegistering() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         OpsConversationStreamController controller = controllerUsing(emitter);
-        authenticateAs("m3-agent");
+        authenticateAs("1");
 
-        assertThat(controller.stream()).isSameAs(emitter);
+        assertThat(controller.stream("Bearer test")).isSameAs(emitter);
 
         verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         assertThat(controller.activeEmitterCount()).isEqualTo(1);
@@ -46,9 +46,9 @@ class OpsConversationStreamControllerTest {
                 .when(emitter)
                 .send(any(SseEmitter.SseEventBuilder.class));
         OpsConversationStreamController controller = controllerUsing(emitter);
-        authenticateAs("m3-agent");
+        authenticateAs("1");
 
-        assertThat(controller.stream()).isSameAs(emitter);
+        assertThat(controller.stream("Bearer test")).isSameAs(emitter);
 
         verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         assertThat(controller.activeEmitterCount()).isZero();
@@ -58,7 +58,7 @@ class OpsConversationStreamControllerTest {
     @Test
     void streamRetainsM3ReadOnlyAuthorityBoundary() throws Exception {
         PreAuthorize authorize = OpsConversationStreamController.class
-                .getMethod("stream")
+                .getMethod("stream",String.class)
                 .getAnnotation(PreAuthorize.class);
 
         assertThat(authorize.value()).isEqualTo("hasAuthority('service_m3_read')");
@@ -70,7 +70,7 @@ class OpsConversationStreamControllerTest {
                 .getMethod("status")
                 .getAnnotation(PreAuthorize.class);
 
-        ResponseEntity<Void> response = new OpsConversationStreamController().status();
+        ResponseEntity<Void> response = new OpsConversationStreamController(ffdd.opsconsole.content.SupportTestDependencies.ownership(), authentication()).status();
 
         assertThat(authorize.value()).isEqualTo("hasAuthority('service_m3_read')");
         assertThat(response.getStatusCode().value()).isEqualTo(204);
@@ -80,8 +80,8 @@ class OpsConversationStreamControllerTest {
     void streamDeliversConversationTerminalStatusEvent() throws Exception {
         SseEmitter emitter = mock(SseEmitter.class);
         OpsConversationStreamController controller = controllerUsing(emitter);
-        authenticateAs("m3-agent");
-        controller.stream();
+        authenticateAs("1");
+        controller.stream("Bearer test");
 
         controller.onConversationMessage(ConversationMessageEvent.builder()
                 .conversationNo("CV-TERMINAL-1")
@@ -98,7 +98,7 @@ class OpsConversationStreamControllerTest {
     }
 
     private OpsConversationStreamController controllerUsing(SseEmitter emitter) {
-        return new OpsConversationStreamController() {
+        return new OpsConversationStreamController(ffdd.opsconsole.content.SupportTestDependencies.ownership(), authentication()) {
             @Override
             protected SseEmitter createEmitter(long timeoutMs) {
                 return emitter;
@@ -106,6 +106,12 @@ class OpsConversationStreamControllerTest {
         };
     }
 
+    private ffdd.opsconsole.shared.security.JwtAuthenticationFilter authentication() {
+        var filter=mock(ffdd.opsconsole.shared.security.JwtAuthenticationFilter.class);
+        org.mockito.Mockito.when(filter.authenticateSocketToken("test")).thenReturn(
+            new UsernamePasswordAuthenticationToken("1",null,List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("service_m3_read"))));
+        return filter;
+    }
     private void authenticateAs(String adminId) {
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(adminId, null, List.of()));

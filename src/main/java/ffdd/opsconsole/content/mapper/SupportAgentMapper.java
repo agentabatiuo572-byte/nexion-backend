@@ -13,35 +13,13 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity> {
+    @Select("SELECT COUNT(*) FROM (SELECT user_id FROM nx_support_agent_user_assignment WHERE status='ACTIVE' AND is_deleted=0 GROUP BY user_id HAVING COUNT(*) > 1) conflicts")
+    long countDuplicateActiveCustomers();
     @Select("""
-            SELECT routed.adminId,routed.name
-              FROM (
-                SELECT a.id AS adminId,
-                       COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
-                       0 routePriority,ua.id routeOrder
-                  FROM nx_support_agent_user_assignment ua
-                  JOIN nx_support_agent_profile p
-                    ON p.admin_id=ua.agent_admin_id AND p.enabled=1 AND p.transferable=1 AND p.busy=0
-                   AND p.is_deleted=0 AND p.seat_type='DEDICATED'
-                   AND FIND_IN_SET('advisor', REPLACE(LOWER(p.service_types), ' ', '')) > 0
-                  JOIN nx_admin a ON a.id=ua.agent_admin_id AND a.status=1 AND a.is_deleted=0
-                 WHERE ua.user_id=#{userId} AND ua.status='ACTIVE' AND ua.is_deleted=0
-                UNION ALL
-                SELECT a.id AS adminId,
-                       COALESCE(NULLIF(TRIM(a.nickname), ''), NULLIF(TRIM(a.username), ''), CAST(a.id AS CHAR)) AS name,
-                       1 routePriority,a.id routeOrder
-                  FROM nx_support_agent_profile p
-                  JOIN nx_admin a ON a.id=p.admin_id AND a.status=1 AND a.is_deleted=0
-                 WHERE p.enabled=1 AND p.transferable=1 AND p.busy=0 AND p.is_deleted=0
-                   AND p.seat_type='DEDICATED'
-                   AND FIND_IN_SET('advisor', REPLACE(LOWER(p.service_types), ' ', '')) > 0
-                   AND (p.max_concurrent IS NULL OR (SELECT COUNT(*)
-                         FROM nx_support_agent_user_assignment load_row
-                        WHERE load_row.agent_admin_id=p.admin_id AND load_row.status='ACTIVE'
-                          AND load_row.is_deleted=0) < p.max_concurrent)
-              ) routed
-             ORDER BY routed.routePriority,routed.routeOrder DESC
-             LIMIT 1
+            SELECT a.id adminId,COALESCE(NULLIF(a.nickname,''),a.username) name
+              FROM nx_support_agent_user_assignment x JOIN nx_admin a ON a.id=x.agent_admin_id
+             WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0
+             FOR SHARE
             """)
     DedicatedAdvisorBindingView findActiveDedicatedAdvisor(@Param("userId") Long userId);
 

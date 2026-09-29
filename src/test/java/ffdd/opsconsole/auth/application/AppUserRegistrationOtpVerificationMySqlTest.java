@@ -53,7 +53,7 @@ class AppUserRegistrationOtpVerificationMySqlTest {
                 mapper, users, passwords, delivery, auth, outbox,
                 mock(AppUserRegistrationTransactionExecutor.class), environment,
                 mock(OpsReferralRewardService.class), config, mock(UserLoginGuardMapper.class),
-                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class)));
+                mock(CaptchaOtpGate.class), mock(DayOneInstanceFacade.class), org.mockito.Mockito.mock(ffdd.opsconsole.content.facade.SupportRegistrationFacade.class)));
     }
 
     @AfterEach

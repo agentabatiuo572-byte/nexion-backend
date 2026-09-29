@@ -44,11 +44,13 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+@org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/content/conversations")
 @RequiredArgsConstructor
 public class OpsConversationController {
     private final OpsConversationService conversationService;
+    private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
     private final ProductionSupportPathGuard productionPathGuard;
     /**
      * 服务内事件总线：各写端点调完 service 后用它发布 ConversationMessageEvent，
@@ -62,8 +64,9 @@ public class OpsConversationController {
     private <T> ApiResult<T> executeCommand(String scope, String idempotencyKey, String requestHash, java.util.function.Supplier<ApiResult<T>> action) {
         try {
             productionPathGuard.requireOpsWriteAllowed();
-            if (idempotencyKey == null || idempotencyKey.isBlank()) return action.get();
-            return (ApiResult<T>) idempotencyService.execute(scope, idempotencyKey.trim(), requestHash, ApiResult.class, (java.util.function.Supplier) action);
+            if (idempotencyKey == null || idempotencyKey.trim().length()<8 || idempotencyKey.trim().length()>128)
+                return ApiResult.fail(422,"IDEMPOTENCY_KEY_INVALID");
+            return (ApiResult<T>) idempotencyService.executeRetained(scope + ":" + ownership.actorId(), idempotencyKey.trim(), requestHash, ApiResult.class, (java.util.function.Supplier) action);
         } catch (OpsConversationService.ConversationStateConflictException ignored) {
             return ApiResult.fail(ffdd.opsconsole.common.api.OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     ffdd.opsconsole.common.api.OpsErrorCode.INVALID_STATE_TRANSITION.name());
@@ -103,6 +106,7 @@ public class OpsConversationController {
     public ApiResult<ContentConversationView> initiate(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationInitiateRequest request) {
+        ownership.requireWriter(request == null ? null : request.userId(),true);
         return executeCommand("M3_CONVERSATION_INITIATE", idempotencyKey, requestHash(String.valueOf(request)), () -> {
             OpsConversationService.MessageCommandResult command = conversationService.initiateWithMessageId(idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
@@ -130,6 +134,8 @@ public class OpsConversationController {
     public ApiResult<List<ContentConversationView>> archiveBatch(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationArchiveBatchRequest request) {
+        if(request!=null && request.conversationNos()!=null) ownership.lockWriters(request.conversationNos().stream()
+                .map(ownership::conversationCustomer));
         return executeCommand("M3_CONVERSATION_ARCHIVE_BATCH", idempotencyKey, requestHash(String.valueOf(request)), () -> {
             ApiResult<List<ContentConversationView>> result = conversationService.archiveBatch(idempotencyKey, request);
             if (result.getData() != null) result.getData().forEach(view -> publishStatus(view, "ARCHIVED"));
@@ -144,6 +150,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTransferRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_TRANSFER", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.transfer(conversationNo, idempotencyKey, request);
             publishTransfer(result.getData(), "TRANSFER");
@@ -158,6 +165,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationReplyRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_REPLY", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             OpsConversationService.MessageCommandResult command = conversationService.replyWithMessageId(conversationNo, idempotencyKey, request);
             ApiResult<ContentConversationView> result = command.result();
@@ -173,6 +181,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationStatusRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_STATUS", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.updateStatus(conversationNo, idempotencyKey, request);
             publishStatus(result.getData(), "STATUS_UPDATE");
@@ -187,6 +196,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationArchiveRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_ARCHIVE", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.archive(conversationNo, idempotencyKey, request);
             publishStatus(result.getData(), "ARCHIVED");
@@ -201,6 +211,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTicketRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_TO_TICKET", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ConversationTicketResult> result = conversationService.convertToTicket(conversationNo, idempotencyKey, request);
             if (result.getData() != null) publishAfterCommit(ConversationMessageEvent.builder()
@@ -218,6 +229,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTransferDecisionRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_TRANSFER_ACCEPT", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.acceptTransfer(conversationNo, idempotencyKey, request);
             publishTransfer(result.getData(), "TRANSFER_ACCEPTED");
@@ -232,6 +244,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTransferDecisionRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_TRANSFER_RETURN", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.returnTransfer(conversationNo, idempotencyKey, request);
             publishTransfer(result.getData(), "TRANSFER_RETURNED");
@@ -246,6 +259,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ConversationTransferDecisionRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CONVERSATION_TRANSFER_WAIT", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> {
             ApiResult<ContentConversationView> result = conversationService.waitTransfer(conversationNo, idempotencyKey, request);
             publishTransfer(result.getData(), "TRANSFER_WAITED");
@@ -260,6 +274,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CustomerTagRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CUSTOMER_TAG_ADD", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> conversationService.addCustomTag(conversationNo, idempotencyKey, request));
     }
 
@@ -270,6 +285,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CustomerTagRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CUSTOMER_TAG_REMOVE", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> conversationService.removeCustomTag(conversationNo, idempotencyKey, request));
     }
 
@@ -280,6 +296,7 @@ public class OpsConversationController {
             @PathVariable String conversationNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CustomerNoteRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CUSTOMER_NOTE_ADD", idempotencyKey, requestHash(conversationNo, String.valueOf(request)), () -> conversationService.addNote(conversationNo, idempotencyKey, request));
     }
 
@@ -291,6 +308,7 @@ public class OpsConversationController {
             @PathVariable Long noteId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody CustomerNoteRemoveRequest request) {
+        ownership.writeConversation(conversationNo,true);
         return executeCommand("M3_CUSTOMER_NOTE_REMOVE", idempotencyKey, requestHash(conversationNo, String.valueOf(noteId), String.valueOf(request)), () -> conversationService.removeNote(conversationNo, noteId, idempotencyKey, request));
     }
 
@@ -307,7 +325,7 @@ public class OpsConversationController {
                 .messageId(messageId)
                 .eventType(type)
                 .senderType(senderType)
-                .senderName(view.ownerAgentName())
+                .senderName(ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"))
                 .body(body)
                 .ts(view.lastMessageAt() != null ? view.lastMessageAt() : LocalDateTime.now())
                 .ownerAgentId(view.ownerAgentId())

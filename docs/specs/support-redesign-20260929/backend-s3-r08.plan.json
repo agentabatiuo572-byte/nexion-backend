@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 2,
+  "id": "cs-backend-s3-20260929-r08",
+  "title": "归属、注册继承、权限与隔离迁移",
+  "repo": "D:/WORKS/PLAN/.wt/cs-binding-20260929-backend",
+  "base": "cc5d96f928c82f081ce0d1e62c9874486634187a",
+  "mode": "implement",
+  "risk": "high",
+  "owner": "01a0ebc4-c51a-7b33-bdd1-ede2eb0e6d4b",
+  "outOfScope": [
+    "不写生产库、不部署、不改邀请财务关系、不覆盖其他WIP"
+  ],
+  "inputs": [
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/OWNER-DECISIONS.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/HANDOFF.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/SPEC.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/CONTRACTS.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/SOURCE-MAP.md",
+    "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/IMPLEMENTATION-PLAN.md",
+    "D:/WORKS/PLAN/.wt/cs-binding-20260929-backend/docs/specs/support-redesign-20260929/S3-R08-ticket-content.md"
+  ],
+  "steps": [
+    {
+      "id": "s3",
+      "title": "归属、注册继承、权限与迁移",
+      "dependsOn": [],
+      "scope": [
+        "src/main/java/ffdd/opsconsole/content/**",
+        "src/main/java/ffdd/opsconsole/auth/application/AppUserRegistrationService.java",
+        "src/main/java/ffdd/opsconsole/auth/mapper/AppUserRegistrationMapper.java",
+        "src/main/java/ffdd/opsconsole/platform/application/OpsAdminAccountService.java",
+        "src/test/java/ffdd/opsconsole/content/**",
+        "src/test/java/ffdd/opsconsole/auth/**",
+        "src/test/java/ffdd/opsconsole/platform/**",
+        "scripts/migrations/**",
+        "scripts/support-redesign-s3-runtime.mjs",
+        "docs/**",
+        "scripts/support-redesign-s3-*.ps1",
+        "src/main/java/ffdd/opsconsole/content/api/**"
+      ],
+      "acceptance": [
+        {
+          "id": "s3-ac02",
+          "description": "注册邀请继承未配/有限0/有限2/不限、防环与准确入池；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC02"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac03",
+          "description": "双人工入口严格专属、忙碌离线不回退、未绑定留言；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC03"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac04",
+          "description": "单客/显式范围转绑、历史后代不动、幂等与新段；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC04"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac05",
+          "description": "全部REST/SSE/Socket/旧入口/回查对象权限与撤权；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC05"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac06",
+          "description": "工单知识库及真实作者回归、不冒名对客发送；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC06"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac11",
+          "description": "迁移原始预检、异常裁决、幂等回滚与不改邀请财务；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC11"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-ac13",
+          "description": "规则独立配置/继承模式/权限/CAS及无生产默认；详见ACCEPTANCE完整场景",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/ACCEPTANCE.md",
+            "locator": "AC13"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        },
+        {
+          "id": "s3-r08",
+          "description": "工单私聊来源与当前阅读权、热冷迁移和未知受限，保留内部协作并保护回放/查询",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-binding-20260929-backend/docs/specs/support-redesign-20260929/S3-R08-ticket-content.md",
+            "locator": "R08 工单私聊副本权限"
+          },
+          "kind": "behavior",
+          "checks": [
+            "s3/runtime"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "regression",
+          "argv": [
+            "cmd.exe",
+            "/d",
+            "/c",
+            "D:/WORKS/PLAN/.local-runtime/phone-calibration-tools/apache-maven-3.9.9/bin/mvn.cmd",
+            "-Dtest=OpsSupportAgentServiceTest,AppSupportServiceTest,OpsConversationServiceTest,MybatisSupportAgentRepositoryTest,MybatisConversationRepositoryTest,AppUserRegistrationServiceTest,AppUserRegistrationReferralLockContractTest,ConversationSocketAccessTest,ConversationAdminReadServiceTest,OpsConversationStreamControllerTest,OpsAdminAccountServiceTest",
+            "test"
+          ],
+          "kind": "exit",
+          "timeoutMs": 600000
+        },
+        {
+          "id": "runtime",
+          "argv": [
+            "node",
+            "scripts/support-redesign-s3-runtime.mjs",
+            "--report",
+            "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s3/runtime.json"
+          ],
+          "kind": "record",
+          "capability": "runtime",
+          "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s3/runtime.json",
+          "requiredChecks": [
+            "s3-ac02",
+            "s3-ac03",
+            "s3-ac04",
+            "s3-ac05",
+            "s3-ac06",
+            "s3-ac11",
+            "s3-ac13",
+            "s3-r08"
+          ],
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    }
+  ],
+  "integration": {
+    "id": "integration",
+    "title": "本仓阶段独立集成，不能代替三仓S7",
+    "dependsOn": [
+      "s3"
+    ],
+    "scope": [
+      "src/main/java/ffdd/opsconsole/content/**",
+      "src/main/java/ffdd/opsconsole/auth/application/AppUserRegistrationService.java",
+      "src/main/java/ffdd/opsconsole/auth/mapper/AppUserRegistrationMapper.java",
+      "src/main/java/ffdd/opsconsole/platform/application/OpsAdminAccountService.java",
+      "src/test/java/ffdd/opsconsole/content/**",
+      "src/test/java/ffdd/opsconsole/auth/**",
+      "src/test/java/ffdd/opsconsole/platform/**",
+      "scripts/migrations/**",
+      "scripts/support-redesign-s3-runtime.mjs",
+      "docs/**",
+      "scripts/support-redesign-s3-*.ps1",
+      "src/main/java/ffdd/opsconsole/content/api/**"
+    ],
+    "acceptance": [
+      {
+        "id": "s3-handoff",
+        "description": "阶段提交、上游依赖、未验证范围与逐项完整性独立审查，满足AC14",
+        "source": {
+          "input": "D:/WORKS/PLAN/.wt/cs-ui-20260929-admin/docs/specs/support-redesign-20260929/OWNER-DECISIONS.md",
+          "locator": "阶段交付纪律"
+        },
+        "kind": "behavior",
+        "checks": [
+          "integration/closure"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "id": "closure",
+        "argv": [
+          "node",
+          "scripts/support-redesign-s3-runtime.mjs",
+          "--integration",
+          "--report",
+          "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s3/integration.json"
+        ],
+        "kind": "record",
+        "capability": "runtime",
+        "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/s3/integration.json",
+        "requiredChecks": [
+          "s3-handoff"
+        ],
+        "timeoutMs": 600000
+      }
+    ],
+    "reviewRequired": true
+  }
+}

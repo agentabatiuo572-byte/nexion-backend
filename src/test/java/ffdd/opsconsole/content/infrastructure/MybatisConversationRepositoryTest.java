@@ -20,7 +20,7 @@ import org.springframework.dao.DuplicateKeyException;
 class MybatisConversationRepositoryTest {
     private final ConversationMapper mapper = mock(ConversationMapper.class);
     private final ConversationMessageMapper messageMapper = mock(ConversationMessageMapper.class);
-    private final MybatisConversationRepository repository = new MybatisConversationRepository(mapper, messageMapper);
+    private final MybatisConversationRepository repository = new MybatisConversationRepository(mapper, messageMapper, ffdd.opsconsole.content.SupportTestDependencies.ownership());
     private final LocalDateTime now = LocalDateTime.of(2026, 7, 23, 12, 0);
 
     @Test

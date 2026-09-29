@@ -61,10 +61,14 @@ public class OpsSupportAgentService {
     private final AdminIdempotencyService idempotencyService;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final Clock clock;
+    private final SupportOwnershipService ownership;
+    private final SupportBindingService binding;
 
     public ApiResult<SupportAgentOverview> overview() {
+        if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
         repository.ensureSchema();
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
+        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
         ensureDefaultProfiles(operators);
         List<SupportAgentProfileView> agents = profileViews(operators);
         List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
@@ -87,8 +91,10 @@ public class OpsSupportAgentService {
     }
 
     public ApiResult<SupportAgentPageView> agents(SupportAgentQueryRequest request) {
+        if(!ownership.supervisor(ownership.actorId())) ownership.requireEligibleAgent();
         repository.ensureSchema();
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
+        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
         ensureDefaultProfiles(operators);
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
@@ -111,6 +117,7 @@ public class OpsSupportAgentService {
     public List<Map<String, Object>> transferTargets() {
         repository.ensureSchema();
         List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
+        if (!ownership.supervisor(ownership.actorId())) operators=operators.stream().filter(o->String.valueOf(ownership.actorId()).equals(o.id())).toList();
         ensureDefaultProfiles(operators);
         return transferTargets(profileViews(operators));
     }
@@ -241,61 +248,10 @@ public class OpsSupportAgentService {
     }
 
     public AdvisorRoutingDecision routeAdvisorForUser(Long userId) {
-        repository.ensureSchema();
-        List<AdminAccountOverview.OperatorRecord> operators = supportOperators();
-        ensureDefaultProfiles(operators);
-        List<SupportAgentProfileView> agents = profileViews(operators).stream()
-                .filter(agent -> dedicatedSupportSeat(agent.seatType()))
-                .filter(agent -> agent.serviceTypes().contains("advisor"))
-                .filter(agent -> Boolean.TRUE.equals(agent.enabled()))
-                .filter(agent -> Boolean.TRUE.equals(agent.transferable()))
-                .filter(agent -> !Boolean.TRUE.equals(agent.busy()))
-                .toList();
-        if (userId != null) {
-            List<Long> agentIds = agents.stream().map(SupportAgentProfileView::adminId).toList();
-            Map<Long, SupportAgentProfileView> agentById = agents.stream()
-                    .collect(Collectors.toMap(
-                            SupportAgentProfileView::adminId,
-                            Function.identity(),
-                            (left, right) -> left,
-                            LinkedHashMap::new));
-            Optional<SupportAgentAssignmentView> boundAssignment = repository.listActiveAssignments(agentIds).stream()
-                    .filter(row -> userId.equals(row.userId()))
-                    .findFirst();
-            if (boundAssignment.isPresent() && agentById.containsKey(boundAssignment.get().agentAdminId())) {
-                SupportAgentProfileView agent = agentById.get(boundAssignment.get().agentAdminId());
-                return new AdvisorRoutingDecision(
-                        "agent",
-                        String.valueOf(agent.adminId()),
-                        agent.name(),
-                        agent.adminId(),
-                        true,
-                        false,
-                        "M5_ASSIGNED_ADVISOR");
-            }
-        }
-        Optional<SupportAgentProfileView> available = agents.stream()
-                .filter(agent -> agent.maxConcurrent() == null || agent.assignedUserCount() < agent.maxConcurrent())
-                .findFirst();
-        if (available.isPresent()) {
-            SupportAgentProfileView agent = available.get();
-            return new AdvisorRoutingDecision(
-                    "agent",
-                    String.valueOf(agent.adminId()),
-                    agent.name(),
-                    agent.adminId(),
-                    false,
-                    false,
-                    "ADVISOR_POOL");
-        }
-        return new AdvisorRoutingDecision(
-                "standby",
-                "standby-pool",
-                "备勤池",
-                null,
-                false,
-                true,
-                "NO_ADVISOR_AVAILABLE");
+        var advisor=repository.findActiveDedicatedAdvisor(userId).orElse(null);
+        return advisor==null
+                ? new AdvisorRoutingDecision("unassigned", "binding-pool", "待分配", null, false, false, "UNBOUND")
+                : new AdvisorRoutingDecision("agent", String.valueOf(advisor.adminId()), advisor.name(), advisor.adminId(), true, false, "CURRENT_ASSIGNMENT");
     }
 
     @Transactional
@@ -374,6 +330,16 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
+        ownership.requireSupervisor();
+        var selected=normalizeUserIds(request.userIds());
+        ApiResult<SupportAgentProfileView> seatAuthorization=requireSeatMutationAuthorization(adminId,seatTypeForPosition(canonicalPosition(request.position())));
+        if(seatAuthorization!=null) return seatAuthorization;
+        if(!selected.isEmpty()) {
+            if(request.customers()==null || !selected.equals(request.customers().stream().map(ffdd.opsconsole.content.dto.SupportBindingRequest.Customer::id).toList()))
+                throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
+            selected.stream().sorted().forEach(ownership::lockCustomer);
+        }
+        ownership.lockAgent(adminId);
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
@@ -448,16 +414,11 @@ public class OpsSupportAgentService {
             return ApiResult.fail(409, "SUPPORT_AGENT_PROFILE_VERSION_CONFLICT");
         }
         List<Long> boundUserIds = new ArrayList<>();
-        if (SEAT_DEDICATED.equals(seatType)) {
-            for (Long userId : userIds) {
-                repository.upsertAssignment(
-                        adminId,
-                        userId,
-                        operator(request.operator()),
-                        request.reason().trim(),
-                        now);
-                boundUserIds.add(userId);
-            }
+        if (!userIds.isEmpty()) {
+            if(request.customers()==null || !userIds.equals(request.customers().stream().map(ffdd.opsconsole.content.dto.SupportBindingRequest.Customer::id).toList()))
+                throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
+            binding.transferInTransaction(idempotencyKey,new ffdd.opsconsole.content.dto.SupportBindingRequest(adminId,request.customers(),request.reason()));
+            boundUserIds.addAll(userIds);
         }
         SupportAgentProfileView view = profileView(operator, repository.findProfile(adminId).orElseThrow());
         audit("M1_SUPPORT_SEAT_ASSIGNED", "SUPPORT_AGENT_PROFILE", String.valueOf(adminId), request.operator(), Map.of(
@@ -470,120 +431,26 @@ public class OpsSupportAgentService {
         return ApiResult.ok(view);
     }
 
-    @Transactional
     public ApiResult<SupportAgentAssignmentView> assignAdvisorUser(
             Long adminId,
             String idempotencyKey,
             SupportAgentAssignmentRequest request) {
-        repository.ensureSchema();
-        ApiResult<SupportAgentAssignmentView> guard = requireAssignmentCommand(adminId, idempotencyKey, request);
-        if (guard != null) {
-            return guard;
-        }
-        return idempotentCommand(
-                "M1_SUPPORT_ADVISOR_BIND",
-                idempotencyKey,
-                requestHash(String.valueOf(adminId), String.valueOf(request)),
-                () -> assignAdvisorUserOnce(adminId, idempotencyKey, request));
+        if(request==null) return ApiResult.fail(422,"SUPPORT_BINDING_REQUEST_INVALID");
+        return binding.transferLegacySingle(idempotencyKey,new ffdd.opsconsole.content.dto.SupportBindingRequest(adminId,
+                List.of(new ffdd.opsconsole.content.dto.SupportBindingRequest.Customer(request.userId(),request.expectedAssignmentId(),request.expectedVersion())),request.reason()));
     }
 
-    private ApiResult<SupportAgentAssignmentView> assignAdvisorUserOnce(
-            Long adminId,
-            String idempotencyKey,
-            SupportAgentAssignmentRequest request) {
-        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
-        if (operator == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
-        }
-        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
-        if (profile == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
-        }
-        if (!dedicatedSupportSeat(profile.seatType())) {
-            return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
-        }
-        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
-        if (authorization != null) {
-            return authorization;
-        }
-        if (!repository.userExists(request.userId())) {
-            return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
-        }
-        LocalDateTime now = LocalDateTime.now(clock);
-        if (!profile.serviceTypes().contains("advisor")) {
-            return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
-        }
-        SupportAgentAssignmentView assignment = repository.upsertAssignment(
-                adminId,
-                request.userId(),
-                operator(request.operator()),
-                request.reason().trim(),
-                now);
-        audit("M5_SUPPORT_ADVISOR_USER_BOUND", "SUPPORT_ADVISOR_ASSIGNMENT", adminId + ":" + request.userId(), request.operator(), Map.of(
-                "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(assignment);
-    }
 
-    @Transactional
     public ApiResult<List<SupportAgentAssignmentView>> assignAdvisorUsers(
             Long adminId,
             String idempotencyKey,
             SupportAgentBatchAssignmentRequest request) {
-        if (adminId == null || request == null || request.userIds() == null || request.userIds().isEmpty()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USERS_REQUIRED");
-        }
-        if (request.userIds().size() > SupportAgentBatchAssignmentRequest.MAX_USER_IDS) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_BATCH_TOO_LARGE");
-        }
-        if (request.userIds().stream().anyMatch(userId -> userId == null || userId <= 0)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USER_ID_INVALID");
-        }
-        if (!StringUtils.hasText(idempotencyKey)) {
-            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
-        }
-        if (!StringUtils.hasText(request.reason()) || request.reason().trim().length() < 8) {
-            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
-        }
-        if (request.reason().trim().length() > 200) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
-        }
-        if (!StringUtils.hasText(request.operator()) || request.operator().trim().length() > 64) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "OPERATOR_INVALID");
-        }
-        repository.ensureSchema();
-        List<Long> userIds = normalizeUserIds(request.userIds());
-        if (userIds.isEmpty()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_USERS_REQUIRED");
-        }
-        return idempotentCommand(
-                "M1_SUPPORT_ADVISOR_BIND_BATCH",
-                idempotencyKey,
-                requestHash(String.valueOf(adminId), String.valueOf(request)),
-                () -> assignAdvisorUsersOnce(adminId, idempotencyKey, request, userIds));
+        if(request==null || request.customers()==null || request.userIds()==null
+                || !request.userIds().equals(request.customers().stream().map(ffdd.opsconsole.content.dto.SupportBindingRequest.Customer::id).toList()))
+            return ApiResult.fail(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
+        return binding.transferLegacy(idempotencyKey,new ffdd.opsconsole.content.dto.SupportBindingRequest(adminId,request.customers(),request.reason()));
     }
 
-    private ApiResult<List<SupportAgentAssignmentView>> assignAdvisorUsersOnce(
-            Long adminId, String idempotencyKey, SupportAgentBatchAssignmentRequest request, List<Long> userIds) {
-        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
-        if (operator == null) return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
-        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
-        if (profile == null) return ApiResult.fail(404, "SUPPORT_AGENT_PROFILE_NOT_CONFIGURED");
-        if (!dedicatedSupportSeat(profile.seatType())) return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
-        if (!profile.serviceTypes().contains("advisor")) return ApiResult.fail(422, "SUPPORT_AGENT_NOT_ADVISOR");
-        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
-        if (authorization != null) return ApiResult.fail(authorization.getCode(), authorization.getMessage());
-        List<Long> existingUserIds = repository.findExistingUserIds(userIds);
-        if (existingUserIds.size() != userIds.size() || !existingUserIds.containsAll(userIds)) {
-            return ApiResult.fail(404, "SUPPORT_ADVISOR_USER_NOT_FOUND");
-        }
-        LocalDateTime now = LocalDateTime.now(clock);
-        List<SupportAgentAssignmentView> assignments = repository.upsertAssignments(
-                adminId, userIds, operator(request.operator()), request.reason().trim(), now);
-        audit("M1_SUPPORT_ADVISOR_USERS_BOUND", "SUPPORT_ADVISOR_ASSIGNMENT", String.valueOf(adminId), request.operator(), Map.of(
-                "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim(), "userIds", userIds));
-        return ApiResult.ok(assignments);
-    }
 
     @Transactional
     public ApiResult<SupportAgentAssignmentView> deactivateAdvisorAssignment(
@@ -591,61 +458,10 @@ public class OpsSupportAgentService {
             Long assignmentId,
             String idempotencyKey,
             SupportAgentAssignmentRequest request) {
-        repository.ensureSchema();
-        if (adminId == null || assignmentId == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_ADVISOR_ASSIGNMENT_REQUIRED");
-        }
-        if (!StringUtils.hasText(idempotencyKey)) {
-            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
-        }
-        String reason = request == null ? null : request.reason();
-        if (!StringUtils.hasText(reason) || reason.trim().length() < 8) {
-            return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
-        }
-        if (reason.trim().length() > 200) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_TOO_LONG");
-        }
-        return idempotentCommand(
-                "M1_SUPPORT_ADVISOR_UNBIND",
-                idempotencyKey,
-                requestHash(String.valueOf(adminId), String.valueOf(assignmentId), String.valueOf(request)),
-                () -> deactivateAdvisorAssignmentOnce(adminId, assignmentId, idempotencyKey, request, reason));
+        ownership.requireSupervisor();
+        return ApiResult.fail(409,"SUPPORT_FORMAL_TRANSFER_REQUIRED");
     }
 
-    private ApiResult<SupportAgentAssignmentView> deactivateAdvisorAssignmentOnce(
-            Long adminId,
-            Long assignmentId,
-            String idempotencyKey,
-            SupportAgentAssignmentRequest request,
-            String reason) {
-        AdminAccountOverview.OperatorRecord operator = supportOperator(adminId).orElse(null);
-        if (operator == null) {
-            return ApiResult.fail(404, "SUPPORT_AGENT_NOT_FOUND");
-        }
-        SupportAgentProfileRecord profile = repository.findProfile(adminId).orElse(null);
-        if (profile == null || !dedicatedSupportSeat(profile.seatType())) {
-            return ApiResult.fail(422, "SUPPORT_AGENT_NOT_DEDICATED");
-        }
-        ApiResult<SupportAgentAssignmentView> authorization = requireAdvisorAssignmentAuthorization(adminId);
-        if (authorization != null) {
-            return authorization;
-        }
-        Optional<SupportAgentAssignmentView> deactivated = repository.deactivateAssignment(
-                adminId,
-                assignmentId,
-                operator(request.operator()),
-                reason.trim(),
-                LocalDateTime.now(clock));
-        if (deactivated.isEmpty()) {
-            return ApiResult.fail(404, "SUPPORT_ADVISOR_ASSIGNMENT_NOT_FOUND");
-        }
-        audit("M5_SUPPORT_ADVISOR_USER_UNBOUND", "SUPPORT_ADVISOR_ASSIGNMENT", String.valueOf(assignmentId), request.operator(), Map.of(
-                "reason", reason.trim(),
-                "idempotencyKey", idempotencyKey.trim(),
-                "agentAdminId", adminId,
-                "userId", deactivated.get().userId()));
-        return ApiResult.ok(deactivated.get());
-    }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> idempotentCommand(
@@ -653,8 +469,8 @@ public class OpsSupportAgentService {
             String idempotencyKey,
             String requestHash,
             java.util.function.Supplier<ApiResult<T>> action) {
-        return (ApiResult<T>) idempotencyService.execute(
-                scope,
+        return (ApiResult<T>) idempotencyService.executeRetained(
+                scope + ":" + ownership.actorId(),
                 idempotencyKey.trim(),
                 requestHash,
                 ApiResult.class,
@@ -826,6 +642,7 @@ public class OpsSupportAgentService {
             return false;
         }
         return repository.findProfile(actorAdminId)
+                .filter(profile -> Boolean.TRUE.equals(profile.enabled()))
                 .map(profile -> normalizeSeatType(profile.seatType(), profile.position()))
                 .filter(SEAT_MANAGER::equals)
                 .isPresent();

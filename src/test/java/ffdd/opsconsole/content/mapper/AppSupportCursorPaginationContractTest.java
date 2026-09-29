@@ -10,7 +10,7 @@ class AppSupportCursorPaginationContractTest {
     void ticketAndConversationCursorQueriesUseImmutableIdsInsteadOfMutableActivityOrder() throws Exception {
         String tickets = String.join(" ", SupportTicketMapper.class.getMethod("pageTickets",
                         String.class, String.class, String.class, String.class, Long.class, Long.class,
-                        String.class, Long.class, Boolean.class, long.class, long.class)
+                        String.class, Long.class, Boolean.class, long.class, long.class, SupportTicketMapper.Visibility.class)
                 .getAnnotation(Select.class).value());
         String conversations = String.join(" ", ConversationMapper.class.getMethod("pageConversations",
                         String.class, String.class, String.class, String.class, Long.class, Boolean.class,

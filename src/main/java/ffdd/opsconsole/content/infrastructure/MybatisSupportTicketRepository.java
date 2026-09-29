@@ -12,12 +12,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 @Repository
 @RequiredArgsConstructor
 public class MybatisSupportTicketRepository implements SupportTicketRepository {
+    private final ffdd.opsconsole.content.application.SupportOwnershipService ownership;
     private static final int LAST_MESSAGE_MAX_CODE_POINTS = 512;
     private final SupportTicketMapper ticketMapper;
     private final SupportTicketMessageMapper messageMapper;
@@ -49,10 +51,10 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         Long assignedAdminId = request == null ? null : request.assignedAdminId();
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
-        long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword);
+        long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword,visibility());
         List<SupportTicketView> records =
                 ticketMapper.pageTickets(scope, status, category, priority, assignedAdminId, userId, keyword,
-                        null, false, pageSize, (pageNum - 1) * pageSize);
+                        null, false, pageSize, (pageNum - 1) * pageSize,visibility());
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -67,21 +69,33 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         Long assignedAdminId = request == null ? null : request.assignedAdminId();
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
-        long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword);
+        long total = ticketMapper.countTickets(scope, status, category, priority, assignedAdminId, userId, keyword,visibility());
         List<SupportTicketView> records = ticketMapper.pageTickets(
                 scope, status, category, priority, assignedAdminId, userId, keyword,
-                beforeId, true, pageSize, 0);
+                beforeId, true, pageSize, 0,visibility());
         return new PageResult<>(total, 1, pageSize, records);
     }
 
     @Override
     public Optional<SupportTicketView> findByTicketNo(String ticketNo) {
-        return Optional.ofNullable(ticketMapper.findByTicketNo(ticketNo));
+        var reader=visibility();
+        var ticket=ticketMapper.findByTicketNo(ticketNo,reader);
+        if(ticket!=null && reader.privateRead() && !reader.supervisor()) {
+            // canRead uses a locking/current assignment read, not the enclosing command's RR snapshot.
+            boolean allowed=ownership.canRead(reader.adminId(),ticket.userId());
+            ticket=ticketMapper.findByTicketNo(ticketNo,new SupportTicketMapper.Visibility(reader.adminId(),reader.customerId(),allowed,allowed));
+        }
+        return Optional.ofNullable(ticket);
     }
 
     @Override
     public List<SupportTicketMessageView> messages(String ticketNo) {
-        return messageMapper.listByTicketNo(ticketNo);
+        var ticket=findByTicketNo(ticketNo).orElse(null);
+        var messages=messageMapper.listByTicketNo(ticketNo);
+        return ticket!=null && ticket.contentRestricted()
+                ? messages.stream().map(m -> Set.of("internal","system").contains(m.senderType()) ? m :
+                    new SupportTicketMessageView(m.id(),m.ticketId(),m.ticketNo(),m.senderId(),m.senderType(),m.senderName(),SupportTicketView.RESTRICTED_TEXT,m.createdAt())).toList()
+                : messages;
     }
 
     @Override
@@ -112,8 +126,11 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
             String assignedAdminName,
             String operator,
             LocalDateTime now) {
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        boolean admin=auth!=null && auth.getDetails() instanceof java.util.Map<?,?> details && "ADMIN".equals(details.get("subjectType"));
         SupportTicketEntity entity = new SupportTicketEntity();
         entity.setTicketNo(ticketNo);
+        entity.setSourceConversationNo(SupportTicketView.DIRECT_SOURCE);
         entity.setUserId(userId == null ? 0L : userId);
         entity.setCategory(category);
         entity.setPriority(priority);
@@ -122,8 +139,8 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         entity.setLastMessage(headerSummary(body));
         entity.setAssignedAdminId(assignedAdminId);
         entity.setAssignedAdminName(assignedAdminName);
-        entity.setUserUnreadCount(0);
-        entity.setOpsUnreadCount(1);
+        entity.setUserUnreadCount(admin?1:0);
+        entity.setOpsUnreadCount(admin?0:1);
         entity.setMessageCount(1);
         entity.setLastMessageAt(now);
         entity.setArchived(false);
@@ -133,17 +150,18 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         ticketMapper.insert(entity);
-        insertMessage(entity.getId(), ticketNo, userId, "user", "用户", body, now);
+        insertMessage(entity.getId(), ticketNo, admin?ownership.actorId():userId, admin?"agent":"user",
+                admin?ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"):"用户",body,now);
         return findByTicketNo(ticketNo).orElseGet(() -> new SupportTicketView(
                 entity.getId(), ticketNo, entity.getUserId(), category, priority, "OPEN", title, headerSummary(body),
-                assignedAdminId, assignedAdminName, 0, 1, 1, now, null, now, now, false, null,
+                assignedAdminId, assignedAdminName, admin?1:0, admin?0:1, 1, now, null, now, now, false, null,
                 0L, false));
     }
 
     @Override
     public void appendReply(SupportTicketView ticket, String body, String operator, LocalDateTime now) {
         ticketMapper.appendReplyHeader(ticket.ticketNo(), headerSummary(body), ticket.status(), safeVersion(ticket), now);
-        insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
+        insertMessage(ticket.id(), ticket.ticketNo(), ownership.actorId(), "agent", operator, body, now);
     }
 
     @Override
@@ -152,7 +170,7 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
                 ticket.ticketNo(), headerSummary(body), ticket.status(), safeVersion(ticket), now) != 1) {
             return false;
         }
-        insertMessage(ticket.id(), ticket.ticketNo(), null, "agent", operator, body, now);
+        insertMessage(ticket.id(), ticket.ticketNo(), ownership.actorId(), "agent", operator, body, now);
         return true;
     }
 
@@ -264,6 +282,26 @@ public class MybatisSupportTicketRepository implements SupportTicketRepository {
         message.setUpdatedAt(now);
         message.setIsDeleted(0);
         messageMapper.insert(message);
+    }
+
+    @Override
+    public void markConversationSource(String ticketNo,String conversationNo) {
+        if(ticketMapper.markConversationSource(ticketNo,conversationNo)!=1) throw new IllegalStateException("SUPPORT_TICKET_SOURCE_CONFLICT");
+    }
+
+    private SupportTicketMapper.Visibility visibility() {
+        var auth=org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if(auth==null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?,?> details))
+            return new SupportTicketMapper.Visibility(null,null,false,false);
+        Long actor=ownership.actorId();
+        if("USER".equals(details.get("subjectType"))) return new SupportTicketMapper.Visibility(null,actor,false,false);
+        boolean privateRead=ffdd.opsconsole.content.application.SupportOwnershipService.hasAuthority("service_m3_read");
+        boolean supervisor=privateRead && ownership.supervisor(actor);
+        boolean eligible=supervisor;
+        if(privateRead && !supervisor) {
+            try {ownership.requireEligibleAgent();eligible=true;} catch(ffdd.opsconsole.shared.exception.BizException ex) {if(ex.getCode()!=403)throw ex;}
+        }
+        return new SupportTicketMapper.Visibility(actor,null,privateRead && eligible,supervisor);
     }
 
     private long normalizePage(Long pageNum) {
