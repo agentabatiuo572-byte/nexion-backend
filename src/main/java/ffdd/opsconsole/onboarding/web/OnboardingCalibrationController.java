@@ -2,6 +2,7 @@ package ffdd.opsconsole.onboarding.web;
 
 import ffdd.opsconsole.onboarding.application.OnboardingCalibrationService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
@@ -58,8 +59,18 @@ public class OnboardingCalibrationController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
-                : service.defer(userId, action(request, idempotencyKey));
+        if (userId == null) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        var command = action(request, idempotencyKey);
+        if (request != null) {
+            try {
+                nativeSessions.require(authentication, request.deviceId());
+            } catch (BizException exception) {
+                if (!"PHONE_NATIVE_SESSION_REQUIRED".equals(exception.getMessage())) throw exception;
+                return service.deferWithoutProof(userId, command);
+            }
+            return service.defer(userId, command);
+        }
+        return service.deferWithoutProof(userId, command);
     }
 
     private OnboardingCalibrationService.ActionRequest action(

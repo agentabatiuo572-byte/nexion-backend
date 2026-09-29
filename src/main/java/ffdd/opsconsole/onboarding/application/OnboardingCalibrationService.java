@@ -146,15 +146,21 @@ public class OnboardingCalibrationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request) {
-        return transition(userId, request, "ACTIVE");
+        return transition(userId, request, "ACTIVE", false);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> defer(Long userId, ActionRequest request) {
-        return transition(userId, request, "DEFERRED");
+        return transition(userId, request, "DEFERRED", false);
     }
 
-    private ApiResult<Map<String, Object>> transition(Long userId, ActionRequest request, String target) {
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> deferWithoutProof(Long userId, ActionRequest request) {
+        return transition(userId, request, "DEFERRED", true);
+    }
+
+    private ApiResult<Map<String, Object>> transition(Long userId, ActionRequest request, String target,
+            boolean proofFree) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (!validAction(request)) return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
         Scope scope = scope(userId);
@@ -171,6 +177,17 @@ public class OnboardingCalibrationService {
         if (current != null && !deviceId.equals(current.deviceId())) {
             throw new BizException(409, "PHONE_INSTALLATION_ID_MISMATCH");
         }
+        // The account lock serializes this decision with calibration. A login
+        // session without native proof may only create the first empty defer
+        // record or replay that exact request; it cannot change a phone row.
+        if (proofFree && current != null) {
+            if ("DEFERRED".equals(current.activationStatus())
+                    && key.equals(current.activationIdempotencyKey())
+                    && hash.equals(current.activationRequestHash())) {
+                return ApiResult.ok(project(current));
+            }
+            return ApiResult.fail(403, "PHONE_NATIVE_SESSION_REQUIRED");
+        }
         if (current == null) {
             if (!"DEFERRED".equals(target)) {
                 return ApiResult.fail(409, "ONBOARDING_CALIBRATION_REQUIRED");
@@ -183,8 +200,6 @@ public class OnboardingCalibrationService {
             // instead of treating it as a local-only preference. The empty
             // JSON payloads deliberately contain no invented capability data;
             // a later retry replaces them through the normal revision-0 CAS.
-            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
-                    scope.sourceEnvironment(), scope.runId());
             String placeholderHash = sha256(userId + "|" + scope.sourceEnvironment() + "|" + scope.runId()
                     + "|" + deviceId + "|DEFERRED_WITHOUT_CALIBRATION");
             DeferredWrite deferred = new DeferredWrite(userId, deviceId,
