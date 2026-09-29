@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -32,6 +33,13 @@ public class CregisDepositAdminController {
     @PreAuthorize("hasAuthority('finance_d1_read')")
     public ApiResult<Map<String, Object>> exceptions() {
         return ApiResult.ok(deposits.exceptions());
+    }
+
+    @GetMapping("/deposits")
+    @PreAuthorize("hasAuthority('finance_d1_read')")
+    public ApiResult<Map<String, Object>> deposits(@RequestParam(defaultValue = "0") long beforeId,
+                                                   @RequestParam(defaultValue = "20") int limit) {
+        return ApiResult.ok(deposits.adminDeposits(beforeId, limit));
     }
 
     @GetMapping("/risk-alerts/{beforeId}")

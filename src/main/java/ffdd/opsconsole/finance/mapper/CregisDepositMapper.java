@@ -427,6 +427,26 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     List<Map<String, Object>> deposits(@Param("userId") long userId, @Param("projectId") long projectId);
 
+    @Select("""
+            SELECT CAST(e.id AS CHAR) AS id,CAST(e.cid AS CHAR) AS cid,
+                   CAST(e.user_id AS CHAR) AS userId,e.txid,e.log_index AS logIndex,e.address,
+                   CAST(e.gross_amount AS CHAR) AS grossAmount,
+                   CAST(e.fee_amount AS CHAR) AS feeAmount,
+                   CAST(e.net_amount AS CHAR) AS netAmount,e.confirmations,e.status,
+                   e.created_at AS createdAt,e.credited_at AS creditedAt,
+                   d.deposit_no AS depositNo
+              FROM nx_cregis_deposit_event e
+              LEFT JOIN nx_deposit_order d ON d.ledger_id=e.ledger_id AND d.is_deleted=0
+               AND d.user_id=e.user_id AND d.deposit_no=CONCAT('CR-',e.cid)
+               AND d.chain_name='CREGIS_USDT_BEP20' AND d.chain_tx_hash=e.txid
+               AND d.chain_log_index=e.log_index
+             WHERE e.project_id=#{projectId} AND (#{beforeId}=0 OR e.id<#{beforeId})
+             ORDER BY e.id DESC LIMIT #{limit}
+            """)
+    List<Map<String, Object>> adminDeposits(@Param("projectId") long projectId,
+                                            @Param("beforeId") long beforeId,
+                                            @Param("limit") int limit);
+
     @Insert("""
             INSERT INTO nx_cregis_deposit_delivery
             (payload_sha256,raw_json,cid,txid,address,gross_amount,accepted,reason,

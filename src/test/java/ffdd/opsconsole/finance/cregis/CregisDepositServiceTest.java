@@ -168,6 +168,43 @@ class CregisDepositServiceTest {
     }
 
     @Test
+    void adminDepositHistoryUsesProjectScopedCursorAndKeepsHeldEvents() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        when(db.adminDeposits(88, 0, 3)).thenReturn(List.of(
+                Map.of("id", "9", "cid", "9223372036854775807",
+                        "grossAmount", "10000000000.000001", "status", "REVIEW_HOLD"),
+                Map.of("id", "8", "status", "CREDITED"),
+                Map.of("id", "7", "status", "DUST_HOLD")));
+        CregisDepositService service = new CregisDepositService(properties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        Map<String, Object> page = service.adminDeposits(0, 2);
+        assertThat((List<?>) page.get("items")).hasSize(2);
+        Map<?, ?> first = (Map<?, ?>) ((List<?>) page.get("items")).get(0);
+        assertThat(first.get("cid")).isEqualTo("9223372036854775807");
+        assertThat(first.get("grossAmount")).isEqualTo("10000000000.000001");
+        assertThat(page).containsEntry("available", true).containsEntry("hasMore", true)
+                .containsEntry("nextBeforeId", "8");
+        verify(db).adminDeposits(88, 0, 3);
+        assertThatThrownBy(() -> service.adminDeposits(-1, 20)).hasMessage("CREGIS_DEPOSIT_PAGE_INVALID");
+        assertThatThrownBy(() -> service.adminDeposits(0, 51)).hasMessage("CREGIS_DEPOSIT_PAGE_INVALID");
+    }
+
+    @Test
+    void disabledAdminDepositHistoryDoesNotReadOptionalTables() {
+        CregisDepositMapper db = mock(CregisDepositMapper.class);
+        CregisDepositService service = new CregisDepositService(new CregisProperties(),
+                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
+                new ObjectMapper(), db, mock(PlatformTransactionManager.class),
+                mock(TreasuryLedgerRepository.class), mock(FinanceWithdrawalControlFacade.class));
+        assertThat(service.adminDeposits(0, 20)).containsEntry("available", false)
+                .containsEntry("items", List.of())
+                .containsEntry("hasMore", false);
+        verify(db, never()).adminDeposits(anyLong(), anyLong(), anyInt());
+    }
+
+    @Test
     void exceptionsReportPayInSwitchesWithoutReadingDatabaseWhenDisabled() {
         CregisDepositMapper db = mock(CregisDepositMapper.class);
         CregisDepositService disabled = new CregisDepositService(new CregisProperties(),

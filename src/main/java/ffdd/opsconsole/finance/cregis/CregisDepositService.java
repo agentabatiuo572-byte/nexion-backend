@@ -166,6 +166,18 @@ public class CregisDepositService {
         return db.deposits(userId, config.getProjectId());
     }
 
+    public Map<String, Object> adminDeposits(long beforeId, int limit) {
+        if (beforeId < 0 || limit < 1 || limit > 50)
+            throw new BizException(400, "CREGIS_DEPOSIT_PAGE_INVALID");
+        if (config.getMode() != CregisProperties.Mode.PROVIDER)
+            return Map.of("available", false, "items", List.of(), "hasMore", false, "nextBeforeId", "0");
+        List<Map<String, Object>> rows = db.adminDeposits(config.getProjectId(), beforeId, limit + 1);
+        boolean hasMore = rows.size() > limit;
+        List<Map<String, Object>> items = hasMore ? rows.subList(0, limit) : rows;
+        String nextBeforeId = items.isEmpty() ? "0" : String.valueOf(items.get(items.size() - 1).get("id"));
+        return Map.of("available", true, "items", items, "hasMore", hasMore, "nextBeforeId", nextBeforeId);
+    }
+
     public Map<String, Object> exceptions() {
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return Map.ofEntries(
                 Map.entry("mode", "DISABLED"), Map.entry("depositEnabled", false),
