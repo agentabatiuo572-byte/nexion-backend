@@ -19,7 +19,7 @@ import static org.mockito.Mockito.*;
 
 class BankWithdrawalServiceTest {
     final BankWithdrawalMapper bank=mock(BankWithdrawalMapper.class);
-    final BankBindingIdentityGate bindingIdentity=mock(BankBindingIdentityGate.class);
+    final BankAccountRoutingGate accountRouting=mock(BankAccountRoutingGate.class);
     final AppWithdrawalMapper wallet=mock(AppWithdrawalMapper.class);
     final AppWithdrawalService withdrawals=mock(AppWithdrawalService.class);
     final AppPayoutAddressMapper addresses=mock(AppPayoutAddressMapper.class);
@@ -32,7 +32,7 @@ class BankWithdrawalServiceTest {
     final PayoutAddressOtpAttemptService otp = mock(PayoutAddressOtpAttemptService.class);
     final UserOtpDeliveryService delivery = mock(UserOtpDeliveryService.class);
     final FinanceSensitiveDataCipher cipher = mock(FinanceSensitiveDataCipher.class);
-    final BankWithdrawalService service=new BankWithdrawalService(bank,bindingIdentity,wallet,addresses,delivery,
+    final BankWithdrawalService service=new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,
             otp,cipher,withdrawals,
             d7,mock(HdPayProperties.class),payout,idem,
             mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC),ZoneOffset.UTC));
@@ -44,7 +44,7 @@ class BankWithdrawalServiceTest {
         env.setActiveProfiles("dev"); when(wallet.findActiveUser(71L)).thenReturn(71L); when(wallet.lockActiveUser(71L)).thenReturn(71L);
         when(idem.executeRetained(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i->((Supplier<?>)i.getArgument(4)).get());
     }
-    private void enableBindingForLegacyContractTests() { when(bindingIdentity.verified()).thenReturn(true); }
+    private void enableBindingForLegacyContractTests() { when(accountRouting.contractConfirmed()).thenReturn(true); }
     @Test void quoteRecoveryCannotExposeAnotherUsersRecipientOrAmounts() {
         when(bank.quote(qn)).thenReturn(quote(72));
         assertThrows(RuntimeException.class,()->service.recoverQuote(71,qn));
@@ -91,7 +91,7 @@ class BankWithdrawalServiceTest {
         verifyNoInteractions(addresses,bank);
     }
     @Test void unverifiedBankIdentityBlocksNewBindingAndChangeSmsBeforeAnyWrite() {
-        assertFalse(new BankBindingIdentityGate().verified());
+        assertTrue(new BankAccountRoutingGate().contractConfirmed());
         assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED",
                 assertThrows(RuntimeException.class, () -> service.bind(71, emptyBinding(), "new-binding")).getMessage());
         assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED",
@@ -110,6 +110,8 @@ class BankWithdrawalServiceTest {
         assertEquals(false, config.get("bankCodeRequired"));
         assertEquals(false, config.get("bindingOtpRequired"));
         assertEquals("BANKQR", config.get("payType"));
+        assertEquals("ACCOUNT_ROUTED", config.get("bankSelection"));
+        assertEquals("NONE", config.get("bankNameSource"));
         assertEquals(false, config.get("bankRoutingVerified"));
         assertEquals("BANK_ROUTING_IDENTITY_UNVERIFIED", config.get("reason"));
         assertEquals(false, config.get("enabled"));
@@ -127,6 +129,27 @@ class BankWithdrawalServiceTest {
         assertNull(service.config(71).getData().get("capacity"));
         verify(withdrawals,never()).reserveBank(anyLong(),any(),anyString());
     }
+    @Test void confirmedAccountRoutingIsDistinctFromProviderReadinessAndBankIdentity() {
+        when(accountRouting.contractConfirmed()).thenReturn(true);
+        when(d7.overview()).thenReturn(ApiResult.ok(Map.of("providerReady", false)));
+        var config = service.config(71).getData();
+        assertEquals(true, config.get("bankRoutingVerified"));
+        assertEquals("NONE", config.get("bankNameSource"));
+        assertEquals(false, config.get("enabled"));
+        assertEquals("BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE", config.get("reason"));
+        var beneficiary = new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","cipher",now,now,0L);
+        when(bank.beneficiary(71L)).thenReturn(beneficiary);
+        var view = (Map<?, ?>) service.config(71).getData().get("beneficiary");
+        assertEquals("ACCOUNT_ROUTED", view.get("bankName"));
+        assertEquals(true, view.get("bankRoutingVerified"));
+        var old = quote(71);
+        var routed = new BankWithdrawalMapper.Quote(old.quoteNo(), old.userId(), old.beneficiaryNo(), old.beneficiaryVersion(),
+                "", old.maskedAccount(), old.recipientCipher(), old.amountUsdt(), old.feeUsdt(), old.netUsdt(),
+                old.rateVnd(), old.amountVnd(), old.d7Version(), old.d5Version(), old.createdAt(), old.expiresAt(), old.withdrawalNo());
+        var quoteView = BankWithdrawalService.quoteView(routed);
+        assertEquals("ACCOUNT_ROUTED", quoteView.get("bankName"));
+        assertEquals(true, quoteView.get("bankRoutingVerified"));
+    }
     @Test void proxiedCapacityFailureDoesNotRollbackConfigButDatabaseFailuresDo() throws Exception {
         var source = mock(javax.sql.DataSource.class);
         var connection = mock(java.sql.Connection.class);
@@ -139,7 +162,7 @@ class BankWithdrawalServiceTest {
         var capacityProxy = new org.springframework.aop.framework.ProxyFactory(capacityTarget);
         capacityProxy.setProxyTargetClass(true);
         capacityProxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(manager, attributes));
-        var target = new BankWithdrawalService(bank,bindingIdentity,wallet,addresses,delivery,otp,cipher,
+        var target = new BankWithdrawalService(bank,accountRouting,wallet,addresses,delivery,otp,cipher,
                 (AppWithdrawalService)capacityProxy.getProxy(),d7,mock(HdPayProperties.class),payout,idem,
                 mock(AuditLogService.class),env,Clock.fixed(now.toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
         var configProxy = new org.springframework.aop.framework.ProxyFactory(target);
@@ -178,7 +201,8 @@ class BankWithdrawalServiceTest {
         when(bank.beneficiary(71L)).thenReturn(new BankWithdrawalMapper.Beneficiary(71L,"BNK-fixture","","****6789","encrypted-fixture",now,now.plusDays(7),0L));
         var result = service.bind(71, new BankWithdrawalService.BindRequest("", "00123456789", "NGUYEN VAN A", null, null), "fixture-no-otp");
         assertEquals(0, result.getCode());
-        assertEquals("BANKQR", ((Map<?, ?>)result.getData().get("beneficiary")).get("bankName"));
+        assertEquals("ACCOUNT_ROUTED", ((Map<?, ?>)result.getData().get("beneficiary")).get("bankName"));
+        assertEquals(true, ((Map<?, ?>)result.getData().get("beneficiary")).get("bankRoutingVerified"));
         verify(cipher).encrypt(eq("00123456789\nNGUYEN VAN A"), startsWith("BANK-BENEFICIARY:71:"));
         verify(bank).saveBeneficiary(eq(71L), anyString(), eq(""), eq("****6789"), eq("encrypted-fixture"), eq(now), eq(now), eq(0L), eq(now));
         verifyNoInteractions(otp, delivery, withdrawals);

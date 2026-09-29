@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Isolation;
 @Service @RequiredArgsConstructor
 public class BankWithdrawalService {
     private final BankWithdrawalMapper bank;
-    private final BankBindingIdentityGate bindingIdentity;
+    private final BankAccountRoutingGate accountRouting;
     private final AppWithdrawalMapper wallet;
     private final AppPayoutAddressMapper addresses;
     private final UserOtpDeliveryService otpDelivery;
@@ -58,7 +58,7 @@ public class BankWithdrawalService {
         Beneficiary current = bank.beneficiary(userId);
         ApiResult<Map<String, Object>> response = d7.overview();
         Map<String, Object> data = response.getCode() == 0 ? response.getData() : Map.of();
-        boolean routingVerified = bindingIdentity.verified();
+        boolean routingVerified = accountRouting.contractConfirmed();
         boolean enabled = routingVerified && payout.ready(transport) && Boolean.TRUE.equals(data.get("providerReady"));
         Map<String, Object> capacity = null;
         try { capacity = withdrawals.bankCapacity(userId); }
@@ -71,7 +71,7 @@ public class BankWithdrawalService {
                 // rendering a bank picker whose selection the server would have to reject.
                 "bankSelection", "ACCOUNT_ROUTED", "bankSelectionNotice", "BANK_ACCOUNT_ROUTED_BY_NUMBER",
                 "bankRoutingVerified", routingVerified,
-                "bankNameSource", "PAYOUT_PROVIDER",
+                "bankNameSource", "NONE",
                 "reason", enabled ? "" : routingVerified ? "BANK_WITHDRAWAL_CHANNEL_UNAVAILABLE" : "BANK_ROUTING_IDENTITY_UNVERIFIED", "beneficiary", beneficiaryView(current),
                 "policy", data, "capacity", capacity, "source", "D7+HDPAY", "bindingDelayHours", 0, "changeCooldownDays", 0,
                 "unresolvedIntent", intent));
@@ -93,7 +93,7 @@ public class BankWithdrawalService {
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> sendOtp(long userId) {
         requireUser(userId, true);
-        if (!bindingIdentity.verified()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
+        if (!accountRouting.contractConfirmed()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
         if (bank.lockBeneficiary(userId) == null) throw error(409, "BANK_CHANGE_OTP_NOT_REQUIRED");
         requireNoPendingWithdrawal(userId);
         var contact = addresses.userContact(userId);
@@ -131,7 +131,7 @@ public class BankWithdrawalService {
                 + request.holder() + "|" + request.challengeNo() + "|" + request.code());
         return (ApiResult) idempotency.executeRetained("BANK_BIND:" + userId, key, hash, ApiResult.class, () -> {
             requireUser(userId, true);
-            if (!bindingIdentity.verified()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
+            if (!accountRouting.contractConfirmed()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
             // BANK payout uses an explicitly empty bnkCode; no client-selected bank routing.
             if (!request.bankCode().isEmpty()) throw error(422, "BANK_CODE_MUST_BE_EMPTY");
             LocalDateTime now = LocalDateTime.now(clock);
@@ -255,7 +255,7 @@ public class BankWithdrawalService {
     }
 
     private Map<String, Object> requireChannel() {
-        if (!bindingIdentity.verified()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
+        if (!accountRouting.contractConfirmed()) throw error(409, "BANK_ROUTING_IDENTITY_UNVERIFIED");
         var result = d7.overview();
         if (!payout.ready(transport) || result.getCode() != 0
                 || !Boolean.TRUE.equals(result.getData().get("providerReady")))
@@ -275,11 +275,12 @@ public class BankWithdrawalService {
     }
     public static String beneficiaryAad(long userId, String no) { return "BANK-BENEFICIARY:" + userId + ":" + no; }
     public static String quoteAad(long userId, String no) { return "BANK-QUOTE:" + userId + ":" + no; }
-    // Preserve the existing App display alias; this label never determines the provider payType.
-    private static String bankName(String code) { return "".equals(code) ? "BANKQR" : BANKS.getOrDefault(code, code); }
+    // Nonempty token for legacy clients; it is not a bank name or provider-verified identity.
+    private static String bankName(String code) { return "".equals(code) ? "ACCOUNT_ROUTED" : BANKS.getOrDefault(code, code); }
     private Map<String, Object> beneficiaryView(Beneficiary b) {
         if (b == null) return null;
         return map("beneficiaryNo", b.beneficiaryNo(), "bankCode", b.bankCode(), "bankName", bankName(b.bankCode()),
+                "bankRoutingVerified", accountRouting.contractConfirmed(),
                 "maskedAccount", b.maskedAccount(), "effectiveAt", b.effectiveAt(), "nextChangeAt", b.effectiveAt(),
                 "version", b.version(), "canWithdraw", true);
     }
@@ -313,6 +314,7 @@ public class BankWithdrawalService {
     public static Map<String, Object> quoteView(Quote q) {
         return map("quoteNo", q.quoteNo(), "amountUsdt", q.amountUsdt(), "feeUsdt", q.feeUsdt(), "netUsdt", q.netUsdt(),
                 "rateVnd", q.rateVnd(), "amountVnd", q.amountVnd(), "bankCode", q.bankCode(), "bankName", bankName(q.bankCode()),
+                "bankRoutingVerified", true,
                 "maskedAccount", q.maskedAccount(), "expiresAt", q.expiresAt(), "d7Version", q.d7Version());
     }
     private static BizException error(int code, String reason) { return new BizException(code, reason); }
