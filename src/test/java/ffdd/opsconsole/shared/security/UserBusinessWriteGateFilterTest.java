@@ -70,6 +70,18 @@ class UserBusinessWriteGateFilterTest {
     }
 
     @Test
+    void notificationInteractionsRemainAvailableBeforeOnboarding() throws Exception {
+        authenticateUser(42L);
+        when(users.isOnboardingComplete(42L)).thenReturn(false);
+
+        assertThat(invoke("POST", "/api/notifications/99/actions").getStatus()).isEqualTo(200);
+        assertThat(invoke("POST", "/api/notifications/99/read").getStatus()).isEqualTo(200);
+        assertThat(invoke("POST", "/api/notifications/read-all").getStatus()).isEqualTo(200);
+        assertThat(invoke("DELETE", "/api/notifications/read").getStatus()).isEqualTo(200);
+        assertThat(invoke("POST", "/api/notifications/99/other").getStatus()).isEqualTo(428);
+    }
+
+    @Test
     void permitsBusinessWriteOnlyAfterBothServerFactsPass() throws Exception {
         authenticateUser(42L);
         when(users.isOnboardingComplete(42L)).thenReturn(true);

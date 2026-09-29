@@ -40,7 +40,9 @@ public class UserBusinessWriteGateFilter extends OncePerRequestFilter {
                 || path.startsWith("/api/onboarding/")
                 || path.startsWith("/api/legal/")
                 || path.startsWith("/api/app/profile/")
-                || path.startsWith("/api/app/security/");
+                || path.startsWith("/api/app/security/")
+                // Reading and opening a welcome notification is not a business command.
+                || path.matches("/api/notifications/(?:[0-9]+/(?:actions|read)|read-all|read)");
     }
 
     @Override
