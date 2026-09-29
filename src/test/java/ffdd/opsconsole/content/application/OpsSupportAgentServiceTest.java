@@ -557,6 +557,10 @@ class OpsSupportAgentServiceTest {
     }
 
     private static final class FakeSupportAgentRepository implements SupportAgentRepository {
+        @Override
+        public Optional<ffdd.opsconsole.content.domain.AppSupportAdvisorView> findAppAdvisor(Long userId) {
+            throw new UnsupportedOperationException("App advisor projection is exercised by real MySQL tests");
+        }
         private final Map<Long, SupportAgentProfileRecord> profiles = new LinkedHashMap<>();
         private final List<SupportAgentAssignmentView> assignments = new ArrayList<>();
         private final List<Long> users = LongStream.rangeClosed(1001L, 1101L).boxed().toList();

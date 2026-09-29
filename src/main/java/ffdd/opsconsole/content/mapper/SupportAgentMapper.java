@@ -13,6 +13,23 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity> {
+    // One consistent SELECT: never mix current-read eligibility with a historical RR projection.
+    @Select("""
+        SELECT assignmentId,currentAdvisorId,currentAdvisorName,
+               CASE WHEN eligible THEN 'ASSIGNED' ELSE 'ADVISOR_DISABLED' END assignmentState,
+               CASE WHEN NOT eligible THEN 'DISABLED' WHEN busy=1 THEN 'BUSY' ELSE 'UNKNOWN' END availability
+          FROM (SELECT x.id assignmentId,x.agent_admin_id currentAdvisorId,
+                       COALESCE(NULLIF(a.nickname,''),a.username) currentAdvisorName,p.busy,
+                       EXISTS(SELECT 1
+        """ + SupportBindingMapper.ELIGIBLE_AGENT_FROM + """
+                          AND a.id=x.agent_admin_id) eligible
+                  FROM nx_support_agent_user_assignment x
+                  LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
+                  LEFT JOIN nx_support_agent_profile p ON p.admin_id=x.agent_admin_id
+                 WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0) projection
+        """)
+    ffdd.opsconsole.content.domain.AppSupportAdvisorView findAppAdvisor(Long userId);
+
     @Select("SELECT COUNT(*) FROM (SELECT user_id FROM nx_support_agent_user_assignment WHERE status='ACTIVE' AND is_deleted=0 GROUP BY user_id HAVING COUNT(*) > 1) conflicts")
     long countDuplicateActiveCustomers();
     @Select("""

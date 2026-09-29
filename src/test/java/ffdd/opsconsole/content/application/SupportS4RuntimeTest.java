@@ -27,7 +27,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 
 /** Actual isolated HTTP, SQL, login, multipart and private object storage; never fixture HTTP stubs. */
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=18129",
+@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}",
     "nexion.support.attachments.allowed-mime-types=image/png,image/jpeg","nexion.support.attachments.max-bytes=1048576",
     "nexion.support.attachments.max-pixels=1000000","nexion.support.attachments.ttl-seconds=300"})
 @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="S4_EVIDENCE_DIR",matches=".+")
@@ -53,7 +54,7 @@ class SupportS4RuntimeTest {
     private String adminToken,otherToken,bossToken,customerToken;
 
     @BeforeEach void fixture() throws Exception {
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_redesign");
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         boss=admin("SUPER_ADMIN","MANAGER");g1=admin("SUPPORT","DEDICATED");g2=admin("SUPPORT","DEDICATED");
         as(boss);customer=customer();transfer(customer,g1);
@@ -428,7 +429,7 @@ class SupportS4RuntimeTest {
         return ok(http("POST","/auth/users/login",null,Map.of("countryCode","+86","phone",phone,"password",System.getenv("S3_FIXTURE_PASSWORD")),null));
     }
     private JsonNode http(String method,String path,String token,Object body,String key) throws Exception {
-        var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18129"+path)).timeout(Duration.ofSeconds(20)).header("Content-Type","application/json");
+        var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(Duration.ofSeconds(20)).header("Content-Type","application/json");
         if(token!=null)b.header("Authorization","Bearer "+token);if(key!=null)b.header("Idempotency-Key",key);
         b.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         return json.readTree(client.send(b.build(),HttpResponse.BodyHandlers.ofString()).body());
@@ -447,13 +448,13 @@ class SupportS4RuntimeTest {
             out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\""+field.getKey()+"\"\r\n\r\n"+field.getValue()+"\r\n").getBytes());
         out.write(("--"+boundary+"\r\nContent-Disposition: form-data; name=\"file\"; filename=\""+name+"\"\r\nContent-Type: "+mime+"\r\n\r\n").getBytes());
         out.write(bytes);out.write(("\r\n--"+boundary+"--\r\n").getBytes());
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18129"+(app?"/api/app/support/attachments":"/api/admin/content/conversations/attachments"))).timeout(Duration.ofSeconds(20))
+        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+(app?"/api/app/support/attachments":"/api/admin/content/conversations/attachments"))).timeout(Duration.ofSeconds(20))
             .header("Authorization","Bearer "+token).header("Idempotency-Key",key).header("Content-Type","multipart/form-data; boundary="+boundary)
             .POST(HttpRequest.BodyPublishers.ofByteArray(out.toByteArray())).build();
         return json.readTree(client.send(request,HttpResponse.BodyHandlers.ofString()).body());
     }
     private HttpResponse<byte[]> download(String path,String token,String range) throws Exception {
-        var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18129"+path)).timeout(Duration.ofSeconds(20));
+        var b=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(Duration.ofSeconds(20));
         if(token!=null)b.header("Authorization","Bearer "+token);if(range!=null)b.header("Range",range);
         return client.send(b.GET().build(),HttpResponse.BodyHandlers.ofByteArray());
     }

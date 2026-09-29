@@ -76,6 +76,14 @@ public class AppSupportService {
     private final SupportOwnershipService ownership;
     private final SupportHumanMessageService humanMessages;
 
+    @Transactional(readOnly = true)
+    public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(Long userId) {
+        productionPathGuard.requireAllowed(userId);
+        if (!validUser(userId)) return forbidden();
+        return ApiResult.ok(supportAgentRepository.findAppAdvisor(userId)
+                .orElseGet(ffdd.opsconsole.content.domain.AppSupportAdvisorView::unbound));
+    }
+
     public ApiResult<PageResult<SupportTicketView>> tickets(
             Long userId, String status, Long pageNum, Long pageSize) {
         productionPathGuard.requireAllowed(userId);

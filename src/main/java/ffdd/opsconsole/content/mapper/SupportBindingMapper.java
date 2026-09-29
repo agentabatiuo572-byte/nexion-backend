@@ -46,14 +46,14 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
         @Param("mode") String mode,@Param("depth") Integer depth,@Param("version") Long version,
         @Param("actor") Long actor,@Param("reason") String reason);
 
-    @Select("""
-        SELECT COUNT(DISTINCT a.id) FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id
+    String ELIGIBLE_AGENT_FROM = """
+        FROM nx_admin a JOIN nx_support_agent_profile p ON p.admin_id=a.id
           JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
           JOIN nx_admin_role r ON r.id=rr.role_id AND r.is_deleted=0 AND r.status=1 AND r.role_code='SUPPORT'
-         WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0 AND p.is_deleted=0 AND p.enabled=1
+         WHERE a.status=1 AND a.is_deleted=0 AND p.is_deleted=0 AND p.enabled=1
            AND p.seat_type='DEDICATED' AND FIND_IN_SET('advisor',REPLACE(LOWER(p.service_types),' ',''))>0
-         FOR SHARE
-        """)
+        """;
+    @Select("SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE")
     int eligibleAgent(Long id);
 
     @Select("""

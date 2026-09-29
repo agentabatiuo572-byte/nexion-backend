@@ -16,9 +16,19 @@ class AppSupportControllerProductionPathContractTest {
                 "service.conversationCursor", "service.conversation",
                 "service.markConversationRead", "service.startConversation", "service.replyConversation",
                 "service.convertConversationToTicket", "service.faqs", "service.faqPage", "service.slaTargets",
-                "service.commandResult"};
+                "service.commandResult", "service.advisor"};
         assertThat(occurrences(source, "guarded(userId)")).isEqualTo(guardedServiceCalls.length);
         for (String serviceCall : guardedServiceCalls) {
+            if (serviceCall.equals("service.advisor")) {
+                int start=source.indexOf("@GetMapping(\"/advisor\")");
+                String endpoint=source.substring(start,source.indexOf("\n    }",start));
+                int guard=endpoint.indexOf("if (!guarded(userId)) return forbidden()");
+                int parameters=endpoint.indexOf("if (!parameters.isEmpty())");
+                int projection=endpoint.indexOf("service.advisor(userId)");
+                assertThat(guard).isGreaterThanOrEqualTo(0).isLessThan(parameters);
+                assertThat(parameters).isLessThan(projection);
+                continue;
+            }
             assertThat(source.indexOf("guarded(userId)", source.indexOf(serviceCall) - 80))
                     .as(serviceCall + " must be guarded before entering AppSupportService")
                     .isGreaterThanOrEqualTo(0);

@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "id": "cs-advisor-patch-20260929",
+  "title": "App本人顾问只读投影",
+  "repo": "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend",
+  "base": "f5e5f65bff4e0cf62ca68d8a4170c96f0fee057d",
+  "mode": "implement",
+  "risk": "high",
+  "owner": "01a0ec02-4cf4-7541-97e3-0084b3427fbd",
+  "outOfScope": [
+    "旧树与18129服务不动",
+    "不改归属写语义、数据库结构或历史作者",
+    "不合test、不部署、不改S6共享fixture"
+  ],
+  "inputs": [
+    "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend/docs/HANDOFF-support-advisor.md",
+    "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/CLIENT-SOURCE-CONFIRMATION.md"
+  ],
+  "steps": [
+    {
+      "id": "advisor",
+      "title": "本人归属投影和隔离实景",
+      "dependsOn": [],
+      "scope": [
+        "src/main/java/ffdd/opsconsole/content/**",
+        "src/test/java/ffdd/opsconsole/content/**",
+        "scripts/support-advisor-patch-*",
+        "docs/HANDOFF-support-advisor.md",
+        "docs/specs/support-redesign-20260929/backend-advisor.plan.json"
+      ],
+      "acceptance": [
+        {
+          "id": "advisor-contract",
+          "description": "当前责任身份与状态、无会话首屏、转绑freshread",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend/docs/HANDOFF-support-advisor.md",
+            "locator": "advisor-contract"
+          },
+          "kind": "behavior",
+          "checks": [
+            "advisor/runtime"
+          ]
+        },
+        {
+          "id": "advisor-security",
+          "description": "本人身份、环境、参数、最小字段及无业务副作用",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend/docs/HANDOFF-support-advisor.md",
+            "locator": "advisor-security"
+          },
+          "kind": "behavior",
+          "checks": [
+            "advisor/runtime"
+          ]
+        },
+        {
+          "id": "advisor-regression",
+          "description": "原S4 279与RR9全回归，隔离资源不影响联调",
+          "source": {
+            "input": "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend/docs/HANDOFF-support-advisor.md",
+            "locator": "advisor-regression"
+          },
+          "kind": "behavior",
+          "checks": [
+            "advisor/runtime"
+          ]
+        }
+      ],
+      "checks": [
+        {
+          "id": "runtime",
+          "argv": [
+            "node",
+            "scripts/support-advisor-patch-runtime.mjs",
+            "--report",
+            "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/advisor-patch/runtime.json"
+          ],
+          "kind": "record",
+          "capability": "runtime",
+          "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/advisor-patch/runtime.json",
+          "requiredChecks": [
+            "advisor-contract",
+            "advisor-security",
+            "advisor-regression"
+          ],
+          "timeoutMs": 600000
+        }
+      ],
+      "reviewRequired": true
+    }
+  ],
+  "integration": {
+    "id": "integration",
+    "title": "补丁当前快照独立集成",
+    "dependsOn": [
+      "advisor"
+    ],
+    "scope": [
+      "src/main/java/ffdd/opsconsole/content/**",
+      "src/test/java/ffdd/opsconsole/content/**",
+      "scripts/support-advisor-patch-*",
+      "docs/HANDOFF-support-advisor.md",
+      "docs/specs/support-redesign-20260929/backend-advisor.plan.json"
+    ],
+    "acceptance": [
+      {
+        "id": "advisor-handoff",
+        "description": "精确契约、资源、证据与未部署边界",
+        "source": {
+          "input": "D:/WORKS/PLAN/.wt/cs-app-assignment-20260929-backend/docs/HANDOFF-support-advisor.md",
+          "locator": "advisor-handoff"
+        },
+        "kind": "behavior",
+        "checks": [
+          "integration/closure"
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "id": "closure",
+        "argv": [
+          "node",
+          "scripts/support-advisor-patch-runtime.mjs",
+          "--integration",
+          "--report",
+          "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/advisor-patch/integration.json"
+        ],
+        "kind": "record",
+        "capability": "runtime",
+        "report": "C:/Users/jason/.codex/workflow-runs/customer-service-20260929/advisor-patch/integration.json",
+        "requiredChecks": [
+          "advisor-handoff"
+        ],
+        "timeoutMs": 600000
+      }
+    ],
+    "reviewRequired": true
+  }
+}

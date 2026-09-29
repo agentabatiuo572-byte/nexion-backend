@@ -30,6 +30,17 @@ public class AppSupportController {
     private final AppSupportService service;
     private final ProductionSupportPathGuard productionPathGuard;
 
+    @GetMapping("/advisor")
+    public ApiResult<ffdd.opsconsole.content.domain.AppSupportAdvisorView> advisor(
+            @RequestParam Map<String, String> parameters, Authentication authentication,
+            jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        Long userId = userId(authentication);
+        if (!guarded(userId)) return forbidden();
+        if (!parameters.isEmpty()) return ApiResult.fail(422, "SUPPORT_ADVISOR_PARAMETERS_UNSUPPORTED");
+        return service.advisor(userId);
+    }
+
     @GetMapping("/tickets")
     public ApiResult<PageResult<SupportTicketView>> tickets(
             @RequestParam(required = false) String status,

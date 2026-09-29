@@ -196,6 +196,11 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
         return Optional.ofNullable(mapper.findActiveDedicatedAdvisor(userId));
     }
 
+    @Override
+    public Optional<ffdd.opsconsole.content.domain.AppSupportAdvisorView> findAppAdvisor(Long userId) {
+        return Optional.ofNullable(mapper.findAppAdvisor(userId));
+    }
+
     private SupportAgentProfileRecord toProfileRecord(SupportAgentProfileRow row) {
         return new SupportAgentProfileRecord(
                 row.adminId(),

@@ -44,7 +44,8 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
 /** Real HTTP and two MySQL connections: the replay transaction keeps a pre-commit RR snapshot. */
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=18129",
+@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}",
     "nexion.support.attachments.allowed-mime-types=image/png,image/jpeg","nexion.support.attachments.max-bytes=1048576",
     "nexion.support.attachments.max-pixels=1000000","nexion.support.attachments.ttl-seconds=300"})
 @EnabledIfEnvironmentVariable(named="S4_EVIDENCE_DIR",matches=".+")
@@ -98,7 +99,7 @@ class SupportMessageReplayMySqlS4Test {
     }
 
     @BeforeEach void fixture() throws Exception {
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_redesign");
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(jdbc.queryForObject("SELECT @@port",Integer.class)).isEqualTo(33329);
         assertThat(System.getenv("S3_FIXTURE_PASSWORD")!=null && !System.getenv("S3_FIXTURE_PASSWORD").isBlank())
                 .as("The isolated fixture password must be configured").isTrue();
@@ -414,7 +415,7 @@ class SupportMessageReplayMySqlS4Test {
                 "confirmed",true,"idempotencyKey",key(),"runId",""),null));return token;
     }
     private JsonNode http(String method,String path,String token,Object body,String command) throws Exception {
-        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18129"+path)).timeout(Duration.ofSeconds(40)).header("Content-Type","application/json");
+        var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(Duration.ofSeconds(40)).header("Content-Type","application/json");
         if(token!=null)request.header("Authorization","Bearer "+token);
         if(command!=null)request.header("Idempotency-Key",command);
         request.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
@@ -423,7 +424,7 @@ class SupportMessageReplayMySqlS4Test {
     private JsonNode socketCommand(String token,String operation,String no,Map<String,Object> body,String command) throws Exception {
         JsonNode ticket=ok(http("POST","/api/admin/content/conversations/realtime-ticket",token,null,null));
         try(var probe=new SocketProbe()) {
-            probe.socket=client.newWebSocketBuilder().buildAsync(URI.create("ws://127.0.0.1:18129/ws/conversations"),probe)
+            probe.socket=client.newWebSocketBuilder().buildAsync(URI.create("ws://127.0.0.1:"+SupportIsolatedRuntime.port()+"/ws/conversations"),probe)
                     .get(10,TimeUnit.SECONDS);
             probe.send(Map.of("type","auth","ticket",ticket.path("ticket").asText()));
             probe.await("ready",null,10);

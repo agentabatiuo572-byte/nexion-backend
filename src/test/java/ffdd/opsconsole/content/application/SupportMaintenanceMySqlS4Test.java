@@ -22,7 +22,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.*;
 
 /** Uses only fresh random fixtures in the explicitly authorized isolated database. */
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties="server.port=18129")
+@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties="server.port=${S4_HTTP_PORT:18129}")
 @EnabledIfEnvironmentVariable(named="S4_EVIDENCE_DIR",matches=".+")
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportMaintenanceMySqlS4Test {
@@ -43,8 +44,8 @@ class SupportMaintenanceMySqlS4Test {
 
     @BeforeEach void fixture() throws Exception {
         try(var connection=dataSource.getConnection()) {
-            assertThat(connection.getMetaData().getURL()).contains("127.0.0.1:33329/cs_redesign");
-            assertThat(connection.getCatalog()).isEqualTo("cs_redesign");
+            assertThat(connection.getMetaData().getURL()).contains("127.0.0.1:33329/"+SupportIsolatedRuntime.database());
+            assertThat(connection.getCatalog()).isEqualTo(SupportIsolatedRuntime.database());
         }
         run="s4m_"+UUID.randomUUID().toString().replace("-","").substring(0,10);
         boss=admin("boss","SUPER_ADMIN","MANAGER");g1=admin("g1","SUPPORT","DEDICATED");g2=admin("g2","SUPPORT","DEDICATED");

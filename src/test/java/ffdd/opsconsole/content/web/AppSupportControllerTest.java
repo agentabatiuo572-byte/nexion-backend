@@ -21,6 +21,30 @@ class AppSupportControllerTest {
     private final ProductionSupportPathGuard productionPathGuard = mock(ProductionSupportPathGuard.class);
     private final AppSupportController controller = new AppSupportController(service, productionPathGuard);
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"test","unknown"})
+    void advisorHonorsTheRealEnvironmentGuardBeforeAnyProjection(String profile) {
+        var environment=new org.springframework.mock.env.MockEnvironment();environment.setActiveProfiles(profile);
+        var mapper=mock(ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper.class);
+        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper));
+        var auth=new UsernamePasswordAuthenticationToken("42",null,List.of());
+        auth.setDetails(Map.of("subjectType","USER"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->endpoint.advisor(Map.of(),auth,
+                new org.springframework.mock.web.MockHttpServletResponse())).isInstanceOf(BizException.class);
+        org.mockito.Mockito.verifyNoInteractions(service,mapper);
+    }
+
+    @Test void advisorRejectsSandboxBeforeAnyProjection() {
+        var environment=new org.springframework.mock.env.MockEnvironment();environment.setActiveProfiles("prod");
+        var mapper=mock(ffdd.opsconsole.content.mapper.SupportAcceptanceSandboxMapper.class);
+        when(mapper.sandboxUser(42L)).thenReturn(1);
+        var endpoint=new AppSupportController(service,new ProductionSupportPathGuard(environment,mapper));
+        var auth=new UsernamePasswordAuthenticationToken("42",null,List.of());auth.setDetails(Map.of("subjectType","USER"));
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->endpoint.advisor(Map.of(),auth,
+                new org.springframework.mock.web.MockHttpServletResponse())).isInstanceOf(BizException.class);
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
     @Test
     void adminSubjectCannotReadAnotherUsersSupportData() {
         UsernamePasswordAuthenticationToken auth =
