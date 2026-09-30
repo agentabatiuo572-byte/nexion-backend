@@ -18,9 +18,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
+import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -37,6 +41,8 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.core.env.Environment;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.jdbc.datasource.init.ScriptUtils;
 
 /**
  * A4 schema regressions for actual settlement writers. The fixture copies DDL only into an owned
@@ -65,7 +71,9 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
     };
     private static final String[] CAPACITY_TABLES = {
             "nx_user", "nx_user_device", "nx_compute_task", "nx_user_wallet", "nx_wallet_ledger",
-            "nx_product", "nx_order", "nx_order_item", "nx_tradein_application", "nx_trade_in_order"
+            "nx_product", "nx_order", "nx_order_item", "nx_tradein_application", "nx_trade_in_order",
+            "nx_config_item", "nx_compute_e3_config", "nx_admin_device_sku", "nx_team_hardware_quota_tier",
+            "nx_compute_receipt", "nx_earning_event", "nx_event_domain_extension"
     };
 
     @Test
@@ -258,8 +266,14 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
         FundsSandboxProfileGuard sandbox = mock(FundsSandboxProfileGuard.class);
         when(sandbox.isLocalSandboxEnabled()).thenReturn(false);
         when(sandbox.isStrictProductionRuntime()).thenReturn(true);
-        StorefrontProductReleasePolicy release = mock(StorefrontProductReleasePolicy.class);
-        when(release.evaluate(anyString(), any())).thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
+        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
+        when(catalog.listPhases("E1", false)).thenReturn(
+                List.of(new DevicePhaseView("1", "phase-1", "", "", 1, "active", null, null)));
+        GrowthRhythmFacade rhythm = mock(GrowthRhythmFacade.class);
+        when(rhythm.snapshot()).thenReturn(new GrowthRhythmSnapshot(
+                12, 1, "P1", 0, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
+                BigDecimal.ZERO, 1, new BigDecimal("100"), BigDecimal.ONE, false, List.of("test")));
+        StorefrontProductReleasePolicy release = new StorefrontProductReleasePolicy(catalog, rhythm);
         return fixture.transactional(new AppTradeinService(mapper, directIdempotency(), outbox, mock(AuditLogService.class),
                 release, sandbox));
     }
@@ -323,7 +337,27 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
                 """, TARGET_PRODUCT_ID, DEVICE_ID);
     }
 
-    private void seedCapacityReplacement(CanonicalEventSchemaMySqlFixture fixture) {
+    private void seedCapacityReplacement(CanonicalEventSchemaMySqlFixture fixture) throws Exception {
+        // Real settlement prerequisites stay in this owned scratch database, including release and delivery.
+        fixture.jdbc().update("""
+                INSERT INTO nx_compute_e3_config(config_key,config_value) VALUES
+                    ('tradeinEnabled','true'),('eligibility','L2+ 持有者'),
+                    ('tradeinLadderCut1','25'),('tradeinLadderCut2','50'),
+                    ('tradeinLadderCut3','75'),('tradeinLadderCut4','100'),
+                    ('tradeinLadderCredit1','75'),('tradeinLadderCredit2','60'),
+                    ('tradeinLadderCredit3','45'),('tradeinLadderCredit4','30'),
+                    ('tradeinLadderCredit5','15'),('tradeinRequireHigherPrice','true'),
+                    ('tradeinMaxDevicesPerOrder','1'),('earlyAccessEnabled','true'),('earlyAccessLeadDays','30')
+                """);
+        try (var connection = fixture.jdbc().getDataSource().getConnection()) {
+            assertThat(connection.getCatalog()).matches("nx_event_closure_test_[0-9a-f]{32}");
+            ScriptUtils.executeSqlScript(connection,
+                    new FileSystemResource("scripts/migrations/20260721_e3_user_tradein_flow.sql"));
+        }
+        fixture.jdbc().update("""
+                INSERT INTO nx_admin_device_sku(sku_id,name,power_text,datacenter,is_deleted)
+                VALUES ('sku-a4-capacity','A4 capacity target','100W','TEST-DC',0)
+                """);
         fixture.jdbc().update("""
                 INSERT INTO nx_user(id,country_code,phone,client_ip,password_hash,nickname,referral_code,status,sandbox,user_level,
                     created_at,updated_at,is_deleted)
