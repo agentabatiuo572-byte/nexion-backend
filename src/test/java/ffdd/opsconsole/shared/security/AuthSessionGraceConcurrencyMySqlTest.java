@@ -116,6 +116,27 @@ class AuthSessionGraceConcurrencyMySqlTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"owner", "revoked", "expired", "idle", "deleted"})
+    void rejectsInvalidLiveSessionWithoutTouchingActivity(String scenario) throws Exception {
+        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+            seed(fixture);
+            fixture.jdbc().update("UPDATE nx_user_session SET last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY) WHERE refresh_token_id='live'");
+            String change = switch (scenario) {
+                case "revoked" -> "revoked_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)";
+                case "expired" -> "expires_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 SECOND)";
+                case "idle" -> "last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 31 DAY)";
+                case "deleted" -> "is_deleted=1";
+                default -> null;
+            };
+            if (change != null) fixture.jdbc().update("UPDATE nx_user_session SET " + change + " WHERE refresh_token_id='live'");
+            var before = fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class);
+            assertThat(context.getBean(AuthSessionMapper.class)
+                    .touchActiveUserSession("live", scenario.equals("owner") ? 8L : 7L, 30)).isZero();
+            assertThat(fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class)).isEqualTo(before);
+        }
+    }
+
     @Test
     void concurrentRefreshPreservesBothOldBearersAndLogoutClosesTheChain() throws Exception {
         try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
@@ -232,7 +253,7 @@ class AuthSessionGraceConcurrencyMySqlTest {
                 if (id.endsWith("findActiveUserSessionInChain") && rotated.compareAndSet(false, true)) {
                     independently(fixture, "INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,last_active_at,expires_at) VALUES(7,'next','chain-a',DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),DATE_ADD(UTC_TIMESTAMP(),INTERVAL 9 HOUR))",
                             "UPDATE nx_user_session SET rotated_to_id='next',rotation_redeemed_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),revoked_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) WHERE refresh_token_id='live'");
-                } else if (id.endsWith("touchRotatedSuccessor") && Integer.valueOf(0).equals(result)) {
+                } else if (id.endsWith("lockRotatedSuccessor") && Integer.valueOf(0).equals(result)) {
                     independently(fixture, "UPDATE nx_user_session SET updated_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) WHERE refresh_token_id='live'");
                     released.set(true);
                 }
@@ -254,6 +275,75 @@ class AuthSessionGraceConcurrencyMySqlTest {
             assertThatThrownBy(() -> context.getBean(AuthSessionMapper.class)
                     .touchRecentlyRotatedUserSession("old", 7L, 30)).isInstanceOf(RuntimeException.class);
             assertThat(fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class)).isEqualTo(before);
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"grace-expiry", "grace-idle", "live-expiry", "live-idle"})
+    void sessionDeadlineDuringAnActualRowLockWaitRejectsWithoutTouching(String scenario) throws Exception {
+        try (var fixture = new CanonicalEventSchemaMySqlFixture("nx_user_session"); var context = context(fixture)) {
+            seed(fixture);
+            boolean expiry = scenario.endsWith("expiry");
+            String change = expiry
+                    ? "expires_at=DATE_ADD(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 4 SECOND),last_active_at=DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 1 DAY)"
+                    : "last_active_at=DATE_ADD(DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 30 DAY),INTERVAL 4 SECOND)";
+            fixture.jdbc().update("UPDATE nx_user_session SET " + change + " WHERE refresh_token_id='live'");
+            var before = fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class);
+            var connectionId = new java.util.concurrent.atomic.AtomicLong();
+            context.getBean(SqlSessionFactory.class).getConfiguration().addInterceptor(new CaptureUpdateConnection(connectionId));
+            var tx = new TransactionTemplate(context.getBean(DataSourceTransactionManager.class));
+            var pool = Executors.newSingleThreadExecutor();
+            var pendingGrace = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future<Integer>>();
+            try {
+                tx.executeWithoutResult(status -> {
+                    AuthSessionMapper mapper = context.getBean(AuthSessionMapper.class);
+                    mapper.findRefreshForUpdate("live");
+                    pendingGrace.set(pool.submit(() -> scenario.startsWith("live")
+                            ? mapper.touchActiveUserSession("live", 7L, 30)
+                            : mapper.touchRecentlyRotatedUserSession("old", 7L, 30)));
+                    awaitCondition(() -> connectionId.get() != 0 && fixture.jdbc().queryForObject("""
+                            SELECT COUNT(*) FROM performance_schema.data_lock_waits waits
+                            JOIN performance_schema.threads threads ON threads.THREAD_ID=waits.REQUESTING_THREAD_ID
+                            WHERE threads.PROCESSLIST_ID=?
+                            """, Integer.class, connectionId.get()) > 0, 2);
+                    String expired = expiry ? "expires_at<DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)"
+                            : "last_active_at<DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 30 DAY)";
+                    awaitCondition(() -> fixture.jdbc().queryForObject("SELECT " + expired + " FROM nx_user_session WHERE refresh_token_id='live'", Boolean.class), 6);
+                });
+                assertThat(pendingGrace.get().get(3, TimeUnit.SECONDS)).isZero();
+                assertThat(fixture.jdbc().queryForObject("SELECT last_active_at FROM nx_user_session WHERE refresh_token_id='live'", java.time.LocalDateTime.class)).isEqualTo(before);
+            } finally {
+                pool.shutdownNow();
+                assertThat(pool.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+            }
+        }
+    }
+
+    @Intercepts(@Signature(type = Executor.class, method = "update", args = {MappedStatement.class, Object.class}))
+    static class CaptureUpdateConnection implements Interceptor {
+        private final java.util.concurrent.atomic.AtomicLong connectionId;
+        CaptureUpdateConnection(java.util.concurrent.atomic.AtomicLong connectionId) { this.connectionId = connectionId; }
+        @Override
+        public Object intercept(Invocation invocation) throws Throwable {
+            try (var statement = ((Executor) invocation.getTarget()).getTransaction().getConnection().createStatement();
+                    var result = statement.executeQuery("SELECT CONNECTION_ID()")) {
+                result.next();
+                connectionId.set(result.getLong(1));
+            }
+            return invocation.proceed();
+        }
+    }
+
+    private static void awaitCondition(java.util.function.BooleanSupplier condition, int timeoutSeconds) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) throw new AssertionError("Database concurrency condition timed out");
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
         }
     }
 

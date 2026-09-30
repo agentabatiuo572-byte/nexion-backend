@@ -80,6 +80,23 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             """)
     int countActiveUserSession(@Param("sessionId") String sessionId, @Param("userId") Long userId);
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED)
+    default int touchActiveUserSession(String sessionId, Long userId, int idleDays) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Session activity requires a transaction");
+        }
+        if (lockActiveUserSession(sessionId, userId) == 0) return 0;
+        // Re-evaluate deadlines in a fresh statement after acquiring the unique-token row lock.
+        return touchLockedActiveUserSession(sessionId, userId, idleDays);
+    }
+
+    @Update("""
+            UPDATE nx_user_session SET updated_at=updated_at
+             WHERE refresh_token_id=#{sessionId} AND user_id=#{userId}
+               AND revoked_at IS NULL AND is_deleted=0
+            """)
+    int lockActiveUserSession(@Param("sessionId") String sessionId, @Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_user_session
                SET last_active_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
@@ -90,7 +107,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
                AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
                AND is_deleted=0
             """)
-    int touchActiveUserSession(
+    int touchLockedActiveUserSession(
             @Param("sessionId") String sessionId,
             @Param("userId") Long userId,
             @Param("idleDays") int idleDays);
@@ -110,17 +127,19 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
         for (int attempt = 0; attempt < 3; attempt++) {
             Long liveId = findActiveUserSessionInChain(issued.getSessionChainId(), userId, idleDays);
             if (liveId == null) return 0;
+            if (lockRotatedSuccessor(liveId, userId, issued.getSessionChainId()) == 0) continue;
+            // UTC_TIMESTAMP is fixed at statement start. Acquire the live lock without
+            // touching activity, then check expiry/idle in a fresh statement after waiting.
             int touched = touchRotatedSuccessor(liveId, userId, issued.getSessionChainId(),
                     issued.getRotationRedeemedAt(), idleDays);
-            if (touched > 0) {
-                // UPDATE clears MyBatis's local cache. Recheck the issuer after any
-                // lock wait, while revocation of the live row cannot commit.
-                UserSessionEntity confirmed = findRecentUserSessionRotation(sessionId, userId);
-                if (confirmed != null && java.util.Objects.equals(
-                        issued.getSessionChainId(), confirmed.getSessionChainId())) return touched;
-                TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
-                return 0;
-            }
+            if (touched == 0) return 0; // Never relocate while holding a matched live lock.
+            // UPDATE clears MyBatis's local cache. Recheck the issuer after any
+            // lock wait, while revocation of the live row cannot commit.
+            UserSessionEntity confirmed = findRecentUserSessionRotation(sessionId, userId);
+            if (confirmed != null && java.util.Objects.equals(
+                    issued.getSessionChainId(), confirmed.getSessionChainId())) return touched;
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            return 0;
         }
         if (findRecentUserSessionRotation(sessionId, userId) == null) return 0;
         throw new ConcurrencyFailureException("Session rotation changed during authentication");
@@ -143,6 +162,13 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             """)
     Long findActiveUserSessionInChain(@Param("chainId") String chainId, @Param("userId") Long userId,
             @Param("idleDays") int idleDays);
+
+    @Update("""
+            UPDATE nx_user_session SET updated_at=updated_at
+             WHERE id=#{id} AND user_id=#{userId} AND session_chain_id=#{chainId}
+               AND revoked_at IS NULL AND is_deleted=0
+            """)
+    int lockRotatedSuccessor(@Param("id") Long id, @Param("userId") Long userId, @Param("chainId") String chainId);
 
     @Update("""
             UPDATE nx_user_session
