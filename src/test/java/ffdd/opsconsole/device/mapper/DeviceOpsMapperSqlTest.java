@@ -199,9 +199,10 @@ class DeviceOpsMapperSqlTest {
         assertThat(offline).contains("UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE'")
                 .doesNotContain("NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')");
         assertThat(abnormal).contains("r.online_status", "d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')",
-                "d.activated_at IS NOT NULL", "r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)");
+                "d.activated_at IS NOT NULL", "r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6)");
         assertThat(datacenters).contains("UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'",
-                "UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST')",
+                "UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST')",
+                "r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6)",
                 "d.status IN ('ONLINE','BUSY','RUNNING','ACTIVE','OFFLINE')", "d.activated_at IS NOT NULL");
     }
 

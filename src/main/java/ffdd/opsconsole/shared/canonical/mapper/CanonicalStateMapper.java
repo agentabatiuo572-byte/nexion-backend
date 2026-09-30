@@ -519,6 +519,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             """)
     UserCanonicalProfile userCanonicalProfile(@Param("userId") Long userId);
 
+    // E5 and App fleet reads share the 10-minute heartbeat window; task readiness keeps its 120-second lease.
     @Select("""
             SELECT d.id,
                    d.instance_no AS instanceNo,
@@ -527,8 +528,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
                    d.product_code AS productCode,
                    d.status,
                    CASE
-                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) = 'ONLINE' THEN 'ONLINE'
-                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST') THEN 'OFFLINE'
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) = 'ONLINE'
+                          AND runtime.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6) THEN 'ONLINE'
+                     WHEN UPPER(TRIM(COALESCE(runtime.online_status, ''))) IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST') THEN 'OFFLINE'
                      ELSE 'UNKNOWN'
                    END AS runtimeStatus,
                    d.row_version AS rowVersion,

@@ -103,7 +103,9 @@ class OpsGrowthServiceTest {
                     "serverOnly", invocation.getArgument(5)));
             return 1;
         }).when(questEventMapper).upsertTrialPolicyValue(anyString(), anyString(), anyString(), anyBoolean(), anyString(), anyBoolean(), anyInt());
-        when(questEventMapper.trialSessions(anyInt())).thenAnswer(invocation -> trialSessions.stream().limit((Integer) invocation.getArgument(0)).toList());
+        when(questEventMapper.trialSessionsPage(anyLong(), anyInt())).thenAnswer(invocation -> trialSessions.stream()
+                .skip((Long) invocation.getArgument(0)).limit((Integer) invocation.getArgument(1)).toList());
+        when(questEventMapper.countTrialSessions()).thenAnswer(ignored -> (long) trialSessions.size());
         when(questEventMapper.trialSession(anyString())).thenAnswer(invocation -> findRow(trialSessions, "sid", invocation.getArgument(0)));
         doAnswer(invocation -> {
             String sid = invocation.getArgument(0);
@@ -315,6 +317,22 @@ class OpsGrowthServiceTest {
         assertThat(service.trials().getData().get("gates").toString()).contains("45 天").doesNotContain("30 天");
         when(questEventMapper.trialPolicyValue("cooldownDays")).thenReturn(null);
         assertThat(service.trials().getData().get("gates").toString()).contains("暂不可用").doesNotContain("90 天");
+    }
+
+    @Test
+    void trialsUsesThePagedMapperAndPreservesProjectedStates() {
+        trialSessions.addAll(List.of(
+                row("sid", "trial-newest", "state", "active"),
+                row("sid", "trial-next", "state", "claimed"),
+                row("sid", "trial-expired", "state", "grace"),
+                row("sid", "trial-extended", "state", "extended")));
+
+        Map<String, Object> data = service.trials(2, 2).getData();
+
+        assertThat(data.get("sessions")).isEqualTo(trialSessions.subList(2, 4));
+        assertThat(data.get("sessionsPage")).isEqualTo(Map.of("total", 4L, "pageNum", 2, "pageSize", 2));
+        verify(questEventMapper).trialSessionsPage(2L, 2);
+        verify(questEventMapper, never()).trialSessions(anyInt());
     }
 
     @Test

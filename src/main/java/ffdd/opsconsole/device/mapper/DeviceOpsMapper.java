@@ -25,13 +25,19 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String E5_PHYSICAL_SLOT = E5_ACTIVATED_OWNED + """
             AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
             """;
-    String E5_RUNTIME_ONLINE = " UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'";
-    String E5_RUNTIME_OFFLINE = " UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE'";
+    // Effective read states use database time; a persisted ONLINE flag alone is not live proof.
+    String E5_HEARTBEAT_FRESH = " (r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6))";
+    String E5_HEARTBEAT_STALE = " (r.heartbeat_at IS NULL OR NOT" + E5_HEARTBEAT_FRESH + ")";
+    String E5_REPORTED_ONLINE = " UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'";
+    String E5_RUNTIME_ONLINE = " (" + E5_REPORTED_ONLINE + " AND" + E5_HEARTBEAT_FRESH + ")";
+    String E5_RUNTIME_OFFLINE = " (UPPER(TRIM(COALESCE(r.online_status, ''))) = 'OFFLINE' OR ("
+            + E5_REPORTED_ONLINE + " AND" + E5_HEARTBEAT_STALE + "))";
     String E5_RUNTIME_UNKNOWN = " UPPER(TRIM(COALESCE(r.online_status, ''))) NOT IN ('ONLINE','OFFLINE','ERROR','ABNORMAL','LOST')";
-    String E5_RUNTIME_ABNORMAL = " UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('OFFLINE','ERROR','ABNORMAL','LOST')";
+    String E5_RUNTIME_ABNORMAL = " (" + E5_RUNTIME_OFFLINE
+            + " OR UPPER(TRIM(COALESCE(r.online_status, ''))) IN ('ERROR','ABNORMAL','LOST'))";
     // Match the PC state precedence. Pending, inventory and unbound rows have their own tabs;
     // UNKNOWN contains all remaining rows with non-active lifecycle facts or unavailable runtime telemetry.
-    String E5_VISIBLE_UNKNOWN = """
+    String E5_VISIBLE_UNKNOWN = " " + """
             d.pending_deactivate = 0
             AND UPPER(COALESCE(d.status, '')) NOT IN
                 ('RECYCLED','DEACTIVATED','RETIRED','UNBOUND','INVENTORY','PENDING','PENDING_ACTIVATION','INACTIVE')
@@ -66,7 +72,8 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                        WHERE t.source_device_id = d.id AND t.is_deleted = 0
                        ORDER BY t.created_at DESC LIMIT 1), 1) AS currentEfficiency,
             d.pending_deactivate AS pendingDeactivate,
-            r.online_status AS runtimeStatus,
+            CASE WHEN """ + E5_REPORTED_ONLINE + " AND" + E5_HEARTBEAT_STALE + """
+                 THEN 'OFFLINE' ELSE r.online_status END AS runtimeStatus,
             r.gpu_usage AS gpuUsage,
             r.gpu_temp_c AS gpuTempC,
             r.gpu_power_w AS gpuPowerW,
@@ -98,7 +105,9 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                    AND UPPER(COALESCE(NULLIF(s.device_type,''),'DEVICE')) != 'SHARE'
                    AND NOT s.id > d.id
               )
-            END AS userDeviceSlotNo
+            END AS userDeviceSlotNo,
+            CASE WHEN r.heartbeat_at IS NOT NULL AND NOT r.heartbeat_at > NOW(6)
+                 THEN TIMESTAMPDIFF(MICROSECOND, r.heartbeat_at, NOW(6)) * 0.000001 ELSE NULL END AS heartbeatAgeSeconds
             """;
 
     @Select("SELECT COUNT(*) FROM nx_user_device WHERE is_deleted = 0")
@@ -154,19 +163,14 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
               LEFT JOIN nx_user_device_runtime r ON r.user_device_id = d.id AND r.is_deleted = 0
              WHERE d.is_deleted = 0
                AND """ + E5_ACTIVATED_OWNED + """
-               AND (
-                 """ + E5_RUNTIME_ABNORMAL + """
-                 OR (""" + E5_RUNTIME_ONLINE + """
-                     AND (r.heartbeat_at IS NULL
-                          OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)))
-               )
+               AND """ + E5_RUNTIME_ABNORMAL + """
             """)
     long countAbnormalDevices();
 
     @Select("""
             SELECT
               SUM(CASE WHEN r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) AS heartbeatLost1h,
-              SUM(CASE WHEN r.online_status IN ('OFFLINE','ERROR','ABNORMAL','LOST')
+              SUM(CASE WHEN """ + E5_RUNTIME_ABNORMAL + """
                          AND (r.heartbeat_at IS NULL OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 1 HOUR)) THEN 1 ELSE 0 END) AS persistentOffline1h,
               SUM(CASE WHEN NULLIF(TRIM(r.active_task_no),'') IS NOT NULL THEN 1 ELSE 0 END) AS activeTasks,
               AVG(r.gpu_usage) AS avgGpuUsagePct,
@@ -236,8 +240,10 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              <if test='dcLocation != null and dcLocation != ""'>AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}</if>
              <if test='userId != null'>AND d.user_id = #{userId}</if>
              <if test='kind != null and kind != ""'>AND (UPPER(d.device_type) = #{kind} OR UPPER(d.product_tier) = #{kind})</if>
-             <if test='heartbeat == "fresh"'>AND r.heartbeat_at &gt;= DATE_SUB(NOW(), INTERVAL 10 MINUTE)</if>
-             <if test='heartbeat == "stale"'>AND (r.heartbeat_at IS NULL OR r.heartbeat_at &lt; DATE_SUB(NOW(), INTERVAL 10 MINUTE))</if>
+             <if test='heartbeat == "fresh"'>AND """ + E5_HEARTBEAT_FRESH + """
+             </if>
+             <if test='heartbeat == "stale"'>AND """ + E5_HEARTBEAT_STALE + """
+             </if>
              <if test='heartbeat == "missing"'>AND r.heartbeat_at IS NULL</if>
              <if test='keyword != null and keyword != ""'>
                AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
@@ -292,8 +298,10 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
              <if test='dcLocation != null and dcLocation != ""'>AND COALESCE(NULLIF(d.dc_location,''),'UNASSIGNED') = #{dcLocation}</if>
              <if test='userId != null'>AND d.user_id = #{userId}</if>
              <if test='kind != null and kind != ""'>AND (UPPER(d.device_type) = #{kind} OR UPPER(d.product_tier) = #{kind})</if>
-             <if test='heartbeat == "fresh"'>AND r.heartbeat_at &gt;= DATE_SUB(NOW(), INTERVAL 10 MINUTE)</if>
-             <if test='heartbeat == "stale"'>AND (r.heartbeat_at IS NULL OR r.heartbeat_at &lt; DATE_SUB(NOW(), INTERVAL 10 MINUTE))</if>
+             <if test='heartbeat == "fresh"'>AND """ + E5_HEARTBEAT_FRESH + """
+             </if>
+             <if test='heartbeat == "stale"'>AND """ + E5_HEARTBEAT_STALE + """
+             </if>
              <if test='heartbeat == "missing"'>AND r.heartbeat_at IS NULL</if>
              <if test='keyword != null and keyword != ""'>
                AND (d.instance_no LIKE CONCAT('%', #{keyword}, '%')
@@ -766,10 +774,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                                                THEN 1 ELSE 0 END) AS onlineDevices,
                            SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
                            SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                              AND (""" + E5_RUNTIME_ABNORMAL + """
-                                                   OR (""" + E5_RUNTIME_ONLINE + """
-                                                       AND (r.heartbeat_at IS NULL
-                                                            OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE))))
+                                               AND """ + E5_RUNTIME_ABNORMAL + """
                                     THEN 1 ELSE 0 END) AS abnormalDevices,
                            COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
                            COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
@@ -814,10 +819,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                                                THEN 1 ELSE 0 END) AS onlineDevices,
                            SUM(CASE WHEN d.pending_deactivate = 1 THEN 1 ELSE 0 END) AS pendingRecycleDevices,
                            SUM(CASE WHEN """ + E5_ACTIVATED_OWNED + """
-                                              AND (""" + E5_RUNTIME_ABNORMAL + """
-                                                   OR (""" + E5_RUNTIME_ONLINE + """
-                                                       AND (r.heartbeat_at IS NULL
-                                                            OR r.heartbeat_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE))))
+                                               AND """ + E5_RUNTIME_ABNORMAL + """
                                     THEN 1 ELSE 0 END) AS abnormalDevices,
                            COALESCE(AVG(r.gpu_usage), 0) AS avgGpuUsage,
                            COALESCE(AVG(r.gpu_temp_c), 0) AS avgGpuTempC,
