@@ -10,6 +10,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper;
 import ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper.CalibrationRow;
@@ -322,7 +323,7 @@ class OnboardingCalibrationServiceTest {
         when(mapper.insertDeferred(any())).thenReturn(1);
         when(mapper.find(9L, "dev-new")).thenReturn(deferred);
 
-        ApiResult<Map<String, Object>> result = service.defer(9L,
+        ApiResult<Map<String, Object>> result = service.deferWithoutProof(9L,
                 new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "phone-defer-new"));
 
         assertThat(result.getCode()).isZero();
@@ -333,13 +334,52 @@ class OnboardingCalibrationServiceTest {
                 .containsEntry("score", null)
                 .containsEntry("signals", null)
                 .containsEntry("comparisonConfig", List.of());
-        verify(mapper).deactivatePhoneDevice(9L, instanceNo("dev-new"), "PRODUCTION", "");
+        verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
         verify(mapper).insertDeferred(argThat(row -> row.userId().equals(9L)
                 && row.deviceId().equals("dev-new")
                 && row.activationIdempotencyKey().equals("phone-defer-new")
                 && row.sourceEnvironment().equals("PRODUCTION")
                 && row.runId().isEmpty()));
         verify(mapper, never()).upsertPhoneDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void proofFreeDeferCannotChangeExistingCalibratedOrActivePhone() {
+        var command = new OnboardingCalibrationService.ActionRequest("dev-phone", 0L, "skip-001");
+        when(mapper.findForUpdate(9L, "dev-phone"))
+                .thenReturn(actionRow(9L, "dev-phone", null, 0L, "CALIBRATED", null, null))
+                .thenReturn(actionRow(9L, "dev-phone", 44L, 0L, "ACTIVE", null, null));
+
+        assertThat(service.deferWithoutProof(9L, command).getCode()).isEqualTo(403);
+        assertThat(service.deferWithoutProof(9L, command).getCode()).isEqualTo(403);
+        verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
+        verify(mapper, never()).insertDeferred(any());
+        verify(mapper, never()).updateActivation(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void proofFreeDeferCanReplayOnlyItsExactCommittedRequest() {
+        var command = new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "skip-001");
+        // Capture the real action hash from the first transaction, then replay
+        // the row the database would have stored.
+        when(mapper.insertDeferred(any())).thenReturn(1);
+        var first = new CalibrationRow(9L, "dev-new", null, "{}", "{}", "[]",
+                "server", true, 0L, 0L, "deferred:placeholder", "placeholder-hash",
+                "DEFERRED", "skip-001", "first-hash", "PRODUCTION", "");
+        when(mapper.find(9L, "dev-new")).thenReturn(first);
+        assertThat(service.deferWithoutProof(9L, command).getCode()).isZero();
+        ArgumentCaptor<OnboardingCalibrationMapper.DeferredWrite> captured =
+                ArgumentCaptor.forClass(OnboardingCalibrationMapper.DeferredWrite.class);
+        verify(mapper).insertDeferred(captured.capture());
+        var saved = captured.getValue();
+        var replay = new CalibrationRow(9L, "dev-new", null, "{}", "{}", "[]",
+                "server", true, 0L, 0L, "deferred:placeholder", "placeholder-hash",
+                "DEFERRED", "skip-001", saved.activationRequestHash(), "PRODUCTION", "");
+        when(mapper.findForUpdate(9L, "dev-new")).thenReturn(replay);
+        assertThat(service.deferWithoutProof(9L, command).getCode()).isZero();
+        assertThat(service.deferWithoutProof(9L,
+                new OnboardingCalibrationService.ActionRequest("dev-new", 0L, "different-key")).getCode()).isEqualTo(403);
+        verify(mapper, never()).deactivatePhoneDevice(any(), any(), any(), any());
     }
 
     @Test

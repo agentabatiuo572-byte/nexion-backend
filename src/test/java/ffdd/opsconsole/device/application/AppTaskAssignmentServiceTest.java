@@ -13,15 +13,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.dto.AppTaskClaimRequest;
 import ffdd.opsconsole.device.dto.AppTaskCompleteRequest;
 import ffdd.opsconsole.device.dto.AppPhoneRuntimeRequest;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
+import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.shared.outbox.OutboxProperties;
+import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -205,7 +209,7 @@ class AppTaskAssignmentServiceTest {
         verify(mapper).updatePhoneTaskPause(7L, 11L, "CTA-PHONE", NOW, 0L, NOW);
         verify(mapper).upsertPhoneRuntime(7L, 11L, null, null, false, "OFFLINE", "PHONE_OFFLINE", NOW);
         verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
-                anyString(), anyString(), any());
+                any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
     }
 
@@ -268,7 +272,7 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.complete(7L, "CTA-PHONE", "complete-phone", null))
                 .hasMessage("TASK_ASSIGNMENT_PHONE_OFFLINE");
         verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
-                anyString(), anyString(), any());
+                any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
     }
 
@@ -285,7 +289,7 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.complete(7L, "CTA-OLD", "complete-old-phone", validProof()))
                 .hasMessage("TASK_ASSIGNMENT_STATE_INVALID");
         verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
-                anyString(), anyString(), any());
+                any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
     }
 
@@ -303,7 +307,7 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.complete(7L, "CTA-PHONE", "complete-resumed-phone", validProof()))
                 .hasMessage("TASK_ASSIGNMENT_NOT_COMPLETEABLE_UNTIL:" + NOW.plusSeconds(10));
         verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(),
-                anyString(), anyString(), any());
+                any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
     }
 
@@ -331,7 +335,7 @@ class AppTaskAssignmentServiceTest {
         verify(mapper).clearRuntimeTask(7L, 11L, "CTA-EXPIRED", NOW);
         verify(mapper).deactivatePendingDeviceAfterLeaseExpiry(7L, 11L, 7L, NOW);
         verify(mapper).markRuntimeDeactivated(7L, 11L, NOW);
-        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(anyLong(), anyLong(), any(), any());
         verify(mapper, never()).insertWalletLedger(anyLong(), anyLong(), anyString(), any(), any(), any());
         verify(mapper, never()).insertEarningEvent(anyString(), anyLong(), anyLong(), anyString(), any(), any());
@@ -371,7 +375,7 @@ class AppTaskAssignmentServiceTest {
         verify(mapper).clearRuntimeTask(7L, 11L, "CTA-EXPIRED", NOW);
         verify(mapper, never()).deactivatePendingDeviceAfterLeaseExpiry(anyLong(), anyLong(), anyLong(), any());
         verify(mapper, never()).markRuntimeDeactivated(anyLong(), anyLong(), any());
-        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).insertReceipt(anyLong(), anyLong(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
     }
 
     @Test
@@ -495,7 +499,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any())).thenReturn(1);
         when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
         when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
         when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
@@ -513,11 +517,134 @@ class AppTaskAssignmentServiceTest {
         assertThatThrownBy(() -> service.complete(7L, "CTA-1", "complete-b", proof))
                 .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_PROOF_REPLAYED");
 
-        verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         verify(mapper, times(1)).creditWallet(any(), any(), any(), any());
         verify(mapper, times(1)).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
         verify(mapper, times(1)).upsertDeviceTaskLock(any(), any(), anyString(), any(), anyString(), any());
         verify(outbox, times(2)).publishUserEvent(anyString(), anyString(), anyString(), any(),
+                anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void paidCloudShareCreditsPurchasedDailyNexSnapshotOnlyOnFirstProofVerifiedReceiptOfUtcDay() {
+        var running = assignment("RUNNING", null, null);
+        var next = new AppTaskAssignmentMapper.AssignmentRow("CTA-2", 11L, "TASK-IG", "Canonical IG", "IG",
+                "model-v1", "Nexion App", "RUNNING", new BigDecimal("0.300000"), 18, 30,
+                NOW.minusMinutes(1), NOW.plusHours(23), null, null, "a".repeat(64), NOW.plusHours(23));
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(
+                11L, "DEV-11", "SHARE", "Share", "Cloud Share", "ACTIVE", "cloud-share",
+                NOW.minusDays(1), NOW.minusDays(1), 0, "SG", "ONLINE", null, false));
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(running);
+        when(mapper.lockAssignment(7L, "CTA-2", "PRODUCTION")).thenReturn(next);
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(new BigDecimal("4.250000"));
+        when(mapper.lockDailyCloudShareNex(7L, "CLOUD_SHARE_DAILY:11:2026-08-10"))
+                .thenReturn(null, 1L);
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
+                anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.creditCloudShareNex(anyLong(), anyLong(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.walletNex(7L)).thenReturn(new BigDecimal("4.250000"));
+        when(mapper.insertCloudShareNexLedger(anyLong(), anyLong(), anyString(), anyString(), any(), any(), any()))
+                .thenReturn(1);
+        when(mapper.insertCloudShareNexEvent(anyString(), anyLong(), anyLong(), anyString(), any(), any()))
+                .thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        service.complete(7L, "CTA-1", "complete-share-1", validProof());
+        service.complete(7L, "CTA-2", "complete-share-2", validProof());
+
+        verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
+                eq(new BigDecimal("4.250000")), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+        verify(mapper).insertReceipt(eq(7L), eq(11L), eq(next), anyString(), anyString(),
+                eq(BigDecimal.ZERO), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+        verify(mapper, times(1)).creditCloudShareNex(7L, 11L, "CTR-CTA-1", new BigDecimal("4.250000"), NOW);
+        verify(mapper).insertCloudShareNexLedger(7L, 11L, "CTR-CTA-1",
+                "CLOUD_SHARE_DAILY:11:2026-08-10", new BigDecimal("4.250000"), new BigDecimal("4.250000"), NOW);
+        verify(mapper, times(2)).creditWallet(any(), any(), any(), any());
+
+        // Exercise the emitted payloads through the real A4 validator against the
+        // existing five-property task/earnings contract (revision 316).
+        EventOutboxMapper eventMapper = mock(EventOutboxMapper.class);
+        when(eventMapper.findActiveSchema(anyString()))
+                .thenReturn(new EventOutboxMapper.SchemaGateRow("task", 316, true));
+        when(eventMapper.listActiveProperties(anyString())).thenReturn(List.of(
+                new EventOutboxMapper.SchemaPropertyGateRow("task_id", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("task_no", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("device_id", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("receipt_no", "id", true),
+                new EventOutboxMapper.SchemaPropertyGateRow("amount_usdt", "number", true)));
+        EventOutboxService validatingOutbox = new EventOutboxService(eventMapper, new ObjectMapper(),
+                new OutboxProperties(), mock(A4RuntimePolicyService.class));
+        ArgumentCaptor<Object> eventPayloads = ArgumentCaptor.forClass(Object.class);
+        verify(outbox, times(2)).publishUserEvent(eq("COMPUTE_TASK"), anyString(), eq("task.completed"),
+                eq(7L), eq("P3"), eq(8), eq("2026-W30"), eventPayloads.capture());
+        verify(outbox, times(2)).publishUserEvent(eq("COMPUTE_TASK"), anyString(), eq("earnings.credited"),
+                eq(7L), eq("P3"), eq(8), eq("2026-W30"), eventPayloads.capture());
+        for (int i = 0; i < eventPayloads.getAllValues().size(); i++) {
+            String eventName = i < 2 ? "task.completed" : "earnings.credited";
+            assertThat(validatingOutbox.publishUserEvent("COMPUTE_TASK", "CTA-1", eventName,
+                    7L, "P3", 8, "2026-W30", eventPayloads.getAllValues().get(i))).isNotBlank();
+        }
+        verify(eventMapper, times(2)).listActiveProperties("task.completed");
+        verify(eventMapper, times(2)).listActiveProperties("earnings.credited");
+    }
+
+    @Test
+    void paidCloudShareWithZeroDailySnapshotCompletesWithoutNexCredit() {
+        var running = assignment("RUNNING", null, null);
+        when(mapper.lockOwnedDevice(7L, 11L)).thenReturn(new AppTaskAssignmentMapper.DeviceRow(
+                11L, "DEV-11", "SHARE", "Share", "Cloud Share", "ACTIVE", "cloud-share",
+                NOW.minusDays(1), NOW.minusDays(1), 0, "SG", "ONLINE", null, false));
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(running);
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(BigDecimal.ZERO);
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
+                anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+        when(mapper.completeAssignment(any(), anyString(), anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.userEventAttribution(7L)).thenReturn(
+                new AppTaskAssignmentMapper.UserEventAttribution("P3", 8, "2026-W30"));
+
+        assertThat(service.complete(7L, "CTA-1", "complete-share-zero", validProof()).getData().status())
+                .isEqualTo("COMPLETED");
+        verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
+                eq(BigDecimal.ZERO), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+        verify(mapper, never()).lockDailyCloudShareNex(anyLong(), anyString());
+        verify(mapper, never()).creditCloudShareNex(anyLong(), anyLong(), anyString(), any(), any());
+    }
+
+    @Test
+    void cloudShareNexWriteFailureStopsTaskCompletionAndPublication() {
+        when(mapper.lockAssignment(7L, "CTA-1", "PRODUCTION")).thenReturn(assignment("RUNNING", null, null));
+        when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
+        when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
+                .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
+        when(mapper.lockPaidCloudShareDailyNex(7L, 11L)).thenReturn(new BigDecimal("3.000000"));
+        when(mapper.lockDailyCloudShareNex(7L, "CLOUD_SHARE_DAILY:11:2026-08-10")).thenReturn(null);
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(),
+                anyString(), anyString(), any())).thenReturn(1);
+        when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
+        when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
+        when(mapper.insertWalletLedger(any(), any(), anyString(), any(), any(), any())).thenReturn(1);
+        when(mapper.insertEarningEvent(anyString(), any(), any(), anyString(), any(), any())).thenReturn(1);
+
+        assertThatThrownBy(() -> service.complete(7L, "CTA-1", "complete-share-fail", validProof()))
+                .hasMessage("TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
+        verify(mapper, never()).completeAssignment(any(), anyString(), anyString(), anyString(), any());
+        verify(outbox, never()).publishUserEvent(anyString(), anyString(), anyString(), any(),
                 anyString(), any(), anyString(), any());
     }
 
@@ -528,7 +655,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(1);
         when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
         when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
@@ -544,7 +671,7 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(result.getData().status()).isEqualTo("COMPLETED");
         var order = org.mockito.Mockito.inOrder(mapper);
-        order.verify(mapper).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        order.verify(mapper).insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         order.verify(mapper).creditWallet(any(), any(), any(), any());
         order.verify(mapper).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
         order.verify(mapper).insertEarningEvent(anyString(), any(), any(), anyString(), any(), any());
@@ -565,7 +692,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(1);
         when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
         when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.300000"));
@@ -581,7 +708,7 @@ class AppTaskAssignmentServiceTest {
         verify(mapper).clearRuntimeTask(7L, 11L, "CTA-1", NOW);
         verify(mapper).deactivatePendingDevice(7L, 11L, NOW);
         verify(mapper, never()).markRuntimeDeactivated(anyLong(), anyLong(), any());
-        verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, times(1)).insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         verify(mapper, times(1)).creditWallet(any(), any(), any(), any());
         verify(mapper, times(1)).insertWalletLedger(any(), any(), anyString(), any(), any(), any());
         verify(mapper, times(1)).insertEarningEvent(anyString(), any(), any(), anyString(), any(), any());
@@ -617,7 +744,7 @@ class AppTaskAssignmentServiceTest {
 
         assertThatThrownBy(() -> service.complete(7L, "CTA-1", "deactivated-after-claim", validProof()))
                 .isInstanceOf(BizException.class).hasMessageContaining("TASK_ASSIGNMENT_DEVICE_NOT_FOUND");
-        verify(mapper, never()).insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any());
+        verify(mapper, never()).insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any());
         verify(mapper, never()).creditWallet(any(), any(), any(), any());
     }
 
@@ -766,7 +893,7 @@ class AppTaskAssignmentServiceTest {
         when(mapper.deviceInstanceNo(7L, 11L)).thenReturn("DEV-11");
         when(proofVerifier.verify(anyLong(), anyString(), anyLong(), anyString(), anyString(), any(), any()))
                 .thenReturn(new ComputeTaskProofVerifier.Verification(false, "b".repeat(64)));
-        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), anyString(), anyString(), any()))
+        when(mapper.insertReceipt(any(), any(), any(), anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(1);
         when(mapper.creditWallet(any(), any(), any(), any())).thenReturn(1);
         when(mapper.walletUsdt(7L)).thenReturn(new BigDecimal("10.257374"));
@@ -780,7 +907,7 @@ class AppTaskAssignmentServiceTest {
 
         assertThat(result.getData().rewardUsdt()).isEqualByComparingTo(adjustedReward);
         verify(mapper).insertReceipt(eq(7L), eq(11L), eq(running), anyString(), anyString(),
-                eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
+                eq(BigDecimal.ZERO), eq("CREDITED"), eq("PRODUCTION"), eq(NOW));
         verify(mapper).creditWallet(7L, 11L, adjustedReward, NOW);
         verify(mapper).insertWalletLedger(7L, 11L, "CTA-1", adjustedReward,
                 new BigDecimal("10.257374"), NOW);

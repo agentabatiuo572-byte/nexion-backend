@@ -33,7 +33,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Comparator;
@@ -467,7 +470,9 @@ public class AppTaskAssignmentService {
 
     private ApiResult<AppTaskAssignmentView> completeInternal(
             Long userId, String taskNo, AppTaskCompleteRequest request, String sourceEnvironment) {
-        LocalDateTime now = now();
+        Instant completedAt = clock.instant();
+        LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).withNano(0);
+        LocalDate utcDay = completedAt.atZone(ZoneOffset.UTC).toLocalDate();
         // Match activation/deactivation and claim: user -> device -> task.
         // The initial unlocked lookup is only for routing; recheck under lock.
         lockProductionUser(userId);
@@ -507,8 +512,13 @@ public class AppTaskAssignmentService {
             throw new BizException(503, "TASK_ASSIGNMENT_PROOF_ENVIRONMENT_INVALID");
         }
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
+        String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
+        BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
+        BigDecimal rewardNex = paidShareDailyNex != null && paidShareDailyNex.signum() > 0
+                && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
+                ? paidShareDailyNex : BigDecimal.ZERO;
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
-                "CREDITED", sourceEnvironment, now) != 1) {
+                rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
         }
         if (mapper.creditWallet(userId, task.deviceId(), task.rewardUsdt(), now) != 1) {
@@ -520,6 +530,19 @@ public class AppTaskAssignmentService {
                 || mapper.insertEarningEvent("EARN-" + taskNo, userId, task.deviceId(), receiptNo,
                     task.rewardUsdt(), now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_SETTLEMENT_CONFLICT");
+        }
+        if (rewardNex.signum() > 0) {
+            if (mapper.creditCloudShareNex(userId, task.deviceId(), receiptNo, rewardNex, now) != 1) {
+                throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
+            }
+            BigDecimal nexBalanceAfter = mapper.walletNex(userId);
+            if (nexBalanceAfter == null
+                    || mapper.insertCloudShareNexLedger(userId, task.deviceId(), receiptNo,
+                        dailyNexBizNo, rewardNex, nexBalanceAfter, now) != 1
+                    || mapper.insertCloudShareNexEvent("EARN-NEX-" + receiptNo, userId, task.deviceId(),
+                        receiptNo, rewardNex, now) != 1) {
+                throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
+            }
         }
         if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
@@ -544,7 +567,7 @@ public class AppTaskAssignmentService {
                 .bizNo(receiptNo).userId(userId).actorType("USER").actorId(userId)
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
-                        "rewardUsdt", task.rewardUsdt(), "lockUntil", lockUntil,
+                        "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
                         "proofHash", proof.proofHash(), "proofMode", proof.sandbox() ? "SANDBOX" : "PRODUCTION"))
                 .build());
         if (!proof.sandbox()) {
