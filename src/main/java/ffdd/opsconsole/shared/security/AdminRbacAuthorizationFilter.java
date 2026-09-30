@@ -214,6 +214,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // Socket tickets authorize only the following read-only WebSocket session. Keep this
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
+        if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
+            return RequiredAuthority.exact("device_e6_read", "device_e2_read");
+        }
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/config/phone-calibration/preview")) {
+            return RequiredAuthority.exact("device_e6_read");
+        }
         if (HttpMethod.POST.matches(method)
                 && path.equals("/api/admin/content/conversations/realtime-ticket")) {
             return RequiredAuthority.exact("service_m3_read");
@@ -275,7 +281,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             String domainPrefix,
             boolean read,
             boolean authenticatedOnly,
-            String exactAuthority) {
+            Set<String> exactAuthorities) {
         static RequiredAuthority domainRead(String prefix) {
             return new RequiredAuthority(prefix, true, false, null);
         }
@@ -288,16 +294,16 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             return new RequiredAuthority(null, false, true, null);
         }
 
-        static RequiredAuthority exact(String authority) {
-            return new RequiredAuthority(null, false, false, authority);
+        static RequiredAuthority exact(String... authorities) {
+            return new RequiredAuthority(null, false, false, Set.of(authorities));
         }
 
         String describe() {
             if (authenticatedOnly) {
                 return "AUTHENTICATED";
             }
-            if (exactAuthority != null) {
-                return exactAuthority;
+            if (exactAuthorities != null) {
+                return String.join(" OR ", exactAuthorities);
             }
             return domainPrefix + (read ? "*_read" : "*_(write/high)");
         }
@@ -306,8 +312,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             if (authenticatedOnly) {
                 return true;
             }
-            if (exactAuthority != null) {
-                return actualAuthorities.contains(exactAuthority);
+            if (exactAuthorities != null) {
+                return actualAuthorities.stream().anyMatch(exactAuthorities::contains);
             }
             if (domainPrefix == null) {
                 return false;
