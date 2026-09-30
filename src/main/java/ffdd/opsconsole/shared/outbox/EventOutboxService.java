@@ -451,6 +451,7 @@ public class EventOutboxService {
             "staking.claimed",
             "staking.early_withdrawn",
             "staking.opened",
+            "store.viewed",
             "tradein.completed",
             "trial.started",
             "voucher.claimed",
