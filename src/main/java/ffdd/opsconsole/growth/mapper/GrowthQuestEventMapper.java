@@ -286,7 +286,10 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT CONCAT('trial-', claim_no) AS sid,
-                   LOWER(status) AS state,
+                   CASE
+                     WHEN UPPER(status) IN ('CLAIMED','ACTIVE') AND expires_at <= NOW() THEN 'grace'
+                     ELSE LOWER(status)
+                   END AS state,
                    CONCAT(
                      ROUND(
                        CASE
