@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.domain.DeviceDatacenterView;
+import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.infrastructure.MybatisDeviceOpsRepository;
 import ffdd.opsconsole.device.web.OpsDeviceController;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -37,7 +38,7 @@ class E5ReadEndpointsMySqlIntegrationTest {
         String database = "nx_e5_read_" + UUID.randomUUID().toString().replace("-", "");
         assertThat(database).matches("nx_e5_read_[a-f0-9]{32}");
         try (Connection connection = DriverManager.getConnection(
-                "jdbc:mysql://127.0.0.1:13307/?useSSL=false&allowPublicKeyRetrieval=true", "root", "")) {
+                isolatedUrl(), "root", "")) {
             JdbcTemplate jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
             jdbc.execute("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
             try {
@@ -82,6 +83,141 @@ class E5ReadEndpointsMySqlIntegrationTest {
         }
     }
 
+    @Test
+    void effectiveRuntimeMatchesOverviewFiltersDatacentersAndGlobeAtHeartbeatBoundaries() throws Exception {
+        String database = "nx_e5_read_" + UUID.randomUUID().toString().replace("-", "");
+        assertThat(database).matches("nx_e5_read_[a-f0-9]{32}");
+        try (Connection connection = DriverManager.getConnection(isolatedUrl(), "root", "")) {
+            JdbcTemplate jdbc = new JdbcTemplate(new SingleConnectionDataSource(connection, true));
+            jdbc.execute("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+            try {
+                jdbc.execute("USE `" + database + "`");
+                jdbc.execute("SET time_zone = '+00:00'");
+                jdbc.execute("SET timestamp = UNIX_TIMESTAMP('2026-09-30 12:00:00')");
+                createTables(jdbc);
+                jdbc.execute("INSERT INTO nx_compute_datacenter (dc_location,region_label,location,display_name,status,sort_order,is_deleted) "
+                        + "VALUES ('DC-1','Asia','Tokyo','Tokyo DC','active',1,0)");
+                jdbc.execute("INSERT INTO nx_user VALUES (7,'viewer','ACTIVE',0,0),(8,'sandbox','ACTIVE',1,0)");
+                device(jdbc, 1, "ACTIVE", "ONLINE", "2026-09-30 11:50:00");
+                device(jdbc, 2, "BUSY", "ONLINE", "2026-09-30 11:49:59.999999");
+                device(jdbc, 3, "ACTIVE", "ONLINE", null);
+                device(jdbc, 4, "ACTIVE", "ONLINE", "2026-09-30 12:00:00.001");
+                device(jdbc, 5, "OFFLINE", "OFFLINE", "2026-09-30 12:00:00");
+                device(jdbc, 6, "ACTIVE", "ERROR", "2026-09-30 12:00:00");
+                device(jdbc, 7, "ACTIVE", "UNKNOWN", "2026-09-30 12:00:00");
+                device(jdbc, 8, "ACTIVE", "ONLINE", "2026-09-30 10:59:59");
+                device(jdbc, 9, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET device_type='SHARE' WHERE id=9");
+                device(jdbc, 10, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET pending_deactivate=1 WHERE id=10");
+                device(jdbc, 11, "INVENTORY", "ONLINE", "2026-09-30 12:00:00");
+                device(jdbc, 12, "DEACTIVATED", "ONLINE", "2026-09-30 12:00:00");
+                device(jdbc, 13, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET activated_at=NULL WHERE id=13");
+                device(jdbc, 14, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET deactivated_at=NOW() WHERE id=14");
+                device(jdbc, 16, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device_runtime SET is_deleted=1 WHERE user_device_id=16");
+                device(jdbc, 17, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET is_deleted=1 WHERE id=17");
+                device(jdbc, 18, "ACTIVE", "ONLINE", "2026-09-30 12:00:00");
+                jdbc.execute("UPDATE nx_user_device SET user_id=8 WHERE id=18");
+
+                DeviceOpsMapper mapper = mapper(connection);
+                assertStateIds(mapper, "ACTIVE", 1L, 9L, 18L);
+                assertStateIds(mapper, "ONLINE", 1L, 9L, 18L);
+                assertStateIds(mapper, "BUSY");
+                assertStateIds(mapper, "OFFLINE", 2L, 3L, 4L, 5L, 8L);
+                assertStateIds(mapper, "ABNORMAL", 6L);
+                assertStateIds(mapper, "UNKNOWN", 7L, 13L, 14L, 16L);
+                assertStateIds(mapper, "INVENTORY", 11L);
+                assertStateIds(mapper, "UNBOUND", 12L);
+                assertStateIds(mapper, "PENDING-DEACTIVATE", 10L);
+                assertHeartbeatIds(mapper, "ONLINE", "fresh", 1L, 9L, 18L);
+                assertHeartbeatIds(mapper, "ONLINE", "stale");
+                assertHeartbeatIds(mapper, "OFFLINE", "fresh", 5L);
+                assertHeartbeatIds(mapper, "OFFLINE", "stale", 2L, 3L, 4L, 8L);
+                assertHeartbeatIds(mapper, "OFFLINE", "missing", 3L);
+                assertThat(mapper.countOnlineDevices()).isEqualTo(3);
+                assertThat(mapper.countOfflineDevices()).isEqualTo(5);
+                assertThat(mapper.countAbnormalDevices()).isEqualTo(6);
+                assertThat(mapper.e5FleetObservabilityMetrics().heartbeatLost1h()).isEqualTo(3);
+                assertThat(mapper.e5FleetObservabilityMetrics().persistentOffline1h()).isEqualTo(2);
+                assertThat(mapper.datacenterSummaries().get(0).onlineDevices()).isEqualTo(3);
+                assertThat(mapper.datacenterSummaries().get(0).abnormalDevices()).isEqualTo(6);
+                assertThat(mapper.findDatacenter("DC-1").onlineDevices()).isEqualTo(3);
+                assertThat(mapper.findDatacenter("DC-1").abnormalDevices()).isEqualTo(6);
+                assertThat(mapper.findDevice(1L).heartbeatAgeSeconds()).isEqualByComparingTo("600");
+                assertThat(mapper.findDevice(2L).heartbeatAgeSeconds()).isEqualByComparingTo("600.000001");
+                assertThat(mapper.findDevice(3L).heartbeatAgeSeconds()).isNull();
+                assertThat(mapper.findDevice(4L).heartbeatAgeSeconds()).isNull();
+                assertThat(mapper.findDevice(5L).heartbeatAgeSeconds()).isEqualByComparingTo("0");
+                assertThat(mapper.findDevice(2L).runtimeStatus()).isEqualTo("OFFLINE");
+                assertThat(mapper.findDevice(3L).runtimeStatus()).isEqualTo("OFFLINE");
+                assertThat(mapper.findDevice(4L).runtimeStatus()).isEqualTo("OFFLINE");
+                assertThat(mapper.findDevice(2L).status()).isEqualTo("BUSY");
+                assertThat(mapper.findDevice(2L).activeTaskNo()).isEqualTo("task-2");
+                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(9);
+                assertThat(mapper.findDevice(2L).activeDevicesForUser()).isEqualTo(9);
+                assertThat(mapper.findDevice(2L).userDeviceSlotNo()).isEqualTo(2);
+                assertThat(mapper.listUserDevices(7L, 100L).stream().filter(d -> d.id() == 2L).findFirst().orElseThrow()
+                        .runtimeStatus()).isEqualTo("OFFLINE");
+                AppNetworkRegionMapper globe = regionMapper(connection);
+                assertThat(globe.regions(7L).get(0).activeNodes()).isEqualTo(2);
+
+                // A new genuine heartbeat restores visibility, without changing lifecycle or capacity.
+                jdbc.execute("UPDATE nx_user_device_runtime SET heartbeat_at=NOW() WHERE user_device_id IN (2,8)");
+                assertStateIds(mapper, "BUSY", 2L);
+                assertStateIds(mapper, "ONLINE", 1L, 2L, 8L, 9L, 18L);
+                assertStateIds(mapper, "OFFLINE", 3L, 4L, 5L);
+                assertThat(mapper.countOnlineDevices()).isEqualTo(5);
+                assertThat(mapper.countAbnormalDevices()).isEqualTo(4);
+                assertThat(mapper.e5FleetObservabilityMetrics().persistentOffline1h()).isEqualTo(1);
+                assertThat(mapper.datacenterSummaries().get(0).onlineDevices()).isEqualTo(5);
+                assertThat(globe.regions(7L).get(0).activeNodes()).isEqualTo(4);
+                assertThat(mapper.countActiveDevicesByUser(7L)).isEqualTo(9);
+                assertThat(mapper.findDevice(2L).status()).isEqualTo("BUSY");
+                assertThat(mapper.findDevice(2L).activeTaskNo()).isEqualTo("task-2");
+            } finally {
+                jdbc.execute("DROP DATABASE `" + database + "`");
+            }
+        }
+    }
+
+    private static String isolatedUrl() {
+        int port = Integer.parseInt(System.getenv().getOrDefault("NEXION_E5_MYSQL_PORT", "13307"));
+        assertThat(port).isBetween(1024, 65535).isNotEqualTo(3306);
+        return "jdbc:mysql://127.0.0.1:" + port + "/?useSSL=false&allowPublicKeyRetrieval=true";
+    }
+
+    private static void device(JdbcTemplate jdbc, long id, String lifecycle, String runtime, String heartbeat) {
+        jdbc.update("INSERT INTO nx_user_device (id,user_id,instance_no,name,dc_location,status,ownership_status,"
+                        + "activated_at,device_type,pending_deactivate,is_deleted,last_seen_at) "
+                        + "VALUES (?,7,CONCAT('device-',?),'fixture','DC-1',?,'OWNED',NOW(),'DEVICE',0,0,NOW())",
+                id, id, lifecycle);
+        jdbc.update("INSERT INTO nx_user_device_runtime (user_device_id,online_status,heartbeat_at,active_task_no,is_deleted) "
+                + "VALUES (?,?,?,CONCAT('task-',?),0)", id, runtime, heartbeat, id);
+    }
+
+    private static void assertStateIds(DeviceOpsMapper mapper, String status, Long... ids) {
+        assertHeartbeatIds(mapper, status, null, ids);
+    }
+
+    private static void assertHeartbeatIds(DeviceOpsMapper mapper, String status, String heartbeat, Long... ids) {
+        assertThat(mapper.countDevices(status, null, null, null, null, heartbeat)).isEqualTo(ids.length);
+        assertThat(mapper.pageDevices(status, null, null, null, null, heartbeat, 100L, 0L))
+                .extracting(DeviceOpsView::id).containsExactlyInAnyOrder(ids);
+    }
+
+    private static AppNetworkRegionMapper regionMapper(Connection connection) {
+        var source = new SingleConnectionDataSource(connection, true);
+        Configuration configuration = new Configuration(new Environment(
+                "e5-globe-test", new SpringManagedTransactionFactory(), source));
+        configuration.addMapper(AppNetworkRegionMapper.class);
+        return new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration))
+                .getMapper(AppNetworkRegionMapper.class);
+    }
+
     private static DeviceOpsMapper mapper(Connection connection) {
         var source = new SingleConnectionDataSource(connection, true);
         Configuration configuration = new Configuration(new Environment(
@@ -94,10 +230,19 @@ class E5ReadEndpointsMySqlIntegrationTest {
     private static void createTables(JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE nx_user_device (id BIGINT PRIMARY KEY,dc_location VARCHAR(128),status VARCHAR(32),"
                 + "ownership_status VARCHAR(32),activated_at DATETIME,deactivated_at DATETIME,"
-                + "pending_deactivate TINYINT,is_deleted TINYINT)");
+                + "pending_deactivate TINYINT,is_deleted TINYINT,user_id BIGINT,instance_no VARCHAR(96),name VARCHAR(96),"
+                + "product_tier VARCHAR(32),product_code VARCHAR(96),device_type VARCHAR(32),source_order_no VARCHAR(96),"
+                + "hashrate DECIMAL(18,6),daily_usdt DECIMAL(18,6),daily_nex DECIMAL(18,6),last_seen_at DATETIME,"
+                + "purchased_at DATETIME,created_at DATETIME DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
         jdbc.execute("CREATE TABLE nx_user_device_runtime (user_device_id BIGINT PRIMARY KEY,online_status VARCHAR(32),"
-                + "heartbeat_at DATETIME,active_task_no VARCHAR(96),gpu_usage DECIMAL(10,6),"
-                + "gpu_temp_c DECIMAL(10,6),gpu_power_w DECIMAL(18,6),updated_at DATETIME,is_deleted TINYINT)");
+                + "heartbeat_at DATETIME(6),active_task_no VARCHAR(96),gpu_usage DECIMAL(10,6),"
+                + "gpu_temp_c DECIMAL(10,6),gpu_power_w DECIMAL(18,6),updated_at DATETIME,is_deleted TINYINT,"
+                + "paused_reason VARCHAR(96),battery_level INT,is_charging TINYINT,network_reachable TINYINT,thermal_state VARCHAR(32),"
+                + "latitude DOUBLE,longitude DOUBLE)");
+        jdbc.execute("CREATE TABLE nx_user (id BIGINT PRIMARY KEY,nickname VARCHAR(96),status VARCHAR(32),sandbox TINYINT,is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_admin_device_sku (sku_id VARCHAR(96),base_rate VARCHAR(96),is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_tradein_application (source_device_id BIGINT,current_efficiency DECIMAL(18,6),created_at DATETIME,is_deleted TINYINT)");
+        jdbc.execute("CREATE TABLE nx_compute_task (user_device_id BIGINT,status VARCHAR(32),completed_at DATETIME,source_environment VARCHAR(32),is_deleted TINYINT)");
         jdbc.execute("CREATE TABLE nx_compute_datacenter (dc_location VARCHAR(128) PRIMARY KEY,region_label VARCHAR(128),"
                 + "location VARCHAR(128),display_name VARCHAR(128),status VARCHAR(24),sort_order INT,"
                 + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,is_deleted TINYINT)");

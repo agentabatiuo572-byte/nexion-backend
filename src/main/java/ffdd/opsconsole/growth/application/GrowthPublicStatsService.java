@@ -124,7 +124,7 @@ public class GrowthPublicStatsService {
         verified.put("registeredAccounts", aggregate(longValue(realUserCount), "nx_user.is_deleted=0", "COUNT"));
         verified.put("installedDevices", aggregate(deviceOps.countTotalDevices(), "nx_user_device.is_deleted=0", "COUNT"));
         verified.put("onlineDevices", aggregate(deviceOps.countOnlineDevices(),
-                "nx_user_device OWNED+ACTIVATED 且 runtime.online_status=ONLINE", "COUNT"));
+                "nx_user_device OWNED+ACTIVATED 且 runtime.online_status=ONLINE、有效心跳在服务端最近10分钟内", "COUNT"));
         verified.put("completedPayoutUsdt", aggregate(deviceOps.completedWithdrawalTotal(),
                 "nx_withdrawal_order.status=COMPLETED 的 amount 合计", "SUM_USDT"));
         verified.put("capturedAt", Instant.ofEpochMilli(clock.millis()).toString());
