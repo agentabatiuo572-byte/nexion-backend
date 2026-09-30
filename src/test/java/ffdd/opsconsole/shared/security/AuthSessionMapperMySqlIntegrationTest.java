@@ -3,14 +3,10 @@ package ffdd.opsconsole.shared.security;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.baomidou.mybatisplus.core.MybatisSqlSessionFactoryBuilder;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.util.UUID;
-import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
-import org.apache.ibatis.session.Configuration;
-import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -85,11 +81,8 @@ class AuthSessionMapperMySqlIntegrationTest {
                     (4,8,'other-user','chain-c',NULL,NULL,NULL,
                      DATE_SUB(NOW(),INTERVAL 1 MINUTE),DATE_ADD(NOW(),INTERVAL 1 HOUR),NOW(),NOW(),0)
                     """);
-            Configuration configuration = new Configuration(
-                    new Environment("auth-grace-fixture", new JdbcTransactionFactory(), dataSource));
-            configuration.addMapper(AuthSessionMapper.class);
-            try (var session = new MybatisSqlSessionFactoryBuilder().build(configuration).openSession(true)) {
-                AuthSessionMapper mapper = session.getMapper(AuthSessionMapper.class);
+            try (var context = AuthSessionGraceConcurrencyMySqlTest.context(dataSource)) {
+                AuthSessionMapper mapper = context.getBean(AuthSessionMapper.class);
                 jdbc.update("UPDATE nx_user_session SET revoked_at=NOW() WHERE id=2");
                 assertThat(mapper.touchRecentlyRotatedUserSession("old", 7L, 30)).isZero();
                 jdbc.update("UPDATE nx_user_session SET revoked_at=NULL WHERE id=2");

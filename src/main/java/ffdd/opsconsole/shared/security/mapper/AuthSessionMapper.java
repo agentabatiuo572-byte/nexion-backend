@@ -6,6 +6,12 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import java.util.List;
+import org.springframework.dao.ConcurrencyFailureException;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     // nx_user_session DATETIME values use UTC+08; SQL session time_zone can differ on a host.
@@ -92,26 +98,63 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     // Access requests already in flight when another H5 tab rotates the shared
     // cookie may still carry the previous bearer. The grace is bounded and
     // requires a live successor in the same chain; logout/reuse revokes it.
-    @Update("""
-            UPDATE nx_user_session live
-              JOIN nx_user_session issued
-                ON issued.session_chain_id=live.session_chain_id
-               AND issued.user_id=live.user_id
-               SET live.last_active_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),live.updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-             WHERE issued.refresh_token_id=#{sessionId}
-               AND issued.user_id=#{userId}
-               AND issued.rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL 10 SECOND)
-               AND issued.rotated_to_id IS NOT NULL
-               AND issued.is_deleted=0
-               AND live.revoked_at IS NULL
-               AND live.expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-               AND COALESCE(live.last_active_at,live.created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
-               AND live.is_deleted=0
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED)
+    default int touchRecentlyRotatedUserSession(String sessionId, Long userId, int idleDays) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("Session grace requires a transaction");
+        }
+        UserSessionEntity issued = findRecentUserSessionRotation(sessionId, userId);
+        if (issued == null) return 0;
+        // Only the matching live row is locked. READ_COMMITTED releases nonmatching
+        // UPDATE locks when a concurrent refresh retires a candidate.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            Long liveId = findActiveUserSessionInChain(issued.getSessionChainId(), userId, idleDays);
+            if (liveId == null) return 0;
+            int touched = touchRotatedSuccessor(liveId, userId, issued.getSessionChainId(),
+                    issued.getRotationRedeemedAt(), idleDays);
+            if (touched > 0) {
+                // UPDATE clears MyBatis's local cache. Recheck the issuer after any
+                // lock wait, while revocation of the live row cannot commit.
+                UserSessionEntity confirmed = findRecentUserSessionRotation(sessionId, userId);
+                if (confirmed != null && java.util.Objects.equals(
+                        issued.getSessionChainId(), confirmed.getSessionChainId())) return touched;
+                TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+                return 0;
+            }
+        }
+        if (findRecentUserSessionRotation(sessionId, userId) == null) return 0;
+        throw new ConcurrencyFailureException("Session rotation changed during authentication");
+    }
+
+    @Select("""
+            SELECT * FROM nx_user_session
+             WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0
+               AND rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL 10 SECOND)
+               AND rotated_to_id IS NOT NULL
             """)
-    int touchRecentlyRotatedUserSession(
-            @Param("sessionId") String sessionId,
-            @Param("userId") Long userId,
+    UserSessionEntity findRecentUserSessionRotation(@Param("sessionId") String sessionId, @Param("userId") Long userId);
+
+    @Select("""
+            SELECT id FROM nx_user_session
+             WHERE session_chain_id=#{chainId} AND user_id=#{userId} AND revoked_at IS NULL AND is_deleted=0
+               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+             ORDER BY id DESC LIMIT 1
+            """)
+    Long findActiveUserSessionInChain(@Param("chainId") String chainId, @Param("userId") Long userId,
             @Param("idleDays") int idleDays);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET last_active_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+             WHERE id=#{id} AND user_id=#{userId} AND session_chain_id=#{chainId}
+               AND #{redeemedAt}>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL 10 SECOND)
+               AND revoked_at IS NULL AND is_deleted=0
+               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+            """)
+    int touchRotatedSuccessor(@Param("id") Long id, @Param("userId") Long userId, @Param("chainId") String chainId,
+            @Param("redeemedAt") java.time.LocalDateTime redeemedAt, @Param("idleDays") int idleDays);
 
     @Select("""
             SELECT *
