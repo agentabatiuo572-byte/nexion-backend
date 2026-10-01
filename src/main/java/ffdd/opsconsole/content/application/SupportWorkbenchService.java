@@ -129,6 +129,14 @@ public class SupportWorkbenchService {
 
     static Map<String,Object> customerView(Map<String,Object> source,SupportRules rules) {
         var row=new LinkedHashMap<>(source);
+        var asset=row.remove("advisorAvatarAssetId");var avatarVersion=row.remove("advisorAvatarVersion");
+        if(asset==null || asset.toString().isBlank()) {
+            row.put("advisorAvatar",null);row.put("advisorAvatarRef",null);
+        } else {
+            var avatar=new LinkedHashMap<String,Object>();avatar.put("assetId",asset);avatar.put("version",avatarVersion);
+            row.put("advisorAvatar",avatar);
+            row.put("advisorAvatarRef","/api/admin/content/support-agents/"+row.get("agentAdminId")+"/avatar?customerId="+row.get("customerId"));
+        }
         for(String name:List.of("enabled","waitingReply","firstContact","due")) row.put(name,number(row.get(name))!=0);
         if(rules.maintenanceDays()==null) row.put("due",null);
         for(String name:List.of("lastEffectiveAt","lastExecutionAt","lastSucceededAt","nextDueAt","openCycleId","stoppedReason",

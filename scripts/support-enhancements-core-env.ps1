@@ -53,8 +53,10 @@ if ($env:WORKFLOW_TASK_ID -like 'cs-enhance-backend-20261001-bulk-*') {
     }
 } elseif ($env:CS_ENHANCE_OUTPUT_ROOT) {
     $runEvidence = [IO.Path]::GetFullPath($env:CS_ENHANCE_OUTPUT_ROOT)
-    $allowedOutput = [IO.Path]::GetFullPath('C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-bulk/')
-    if (!$runEvidence.StartsWith($allowedOutput,[StringComparison]::OrdinalIgnoreCase)) { throw 'Evidence directory must stay in P2 evidence root' }
+    $allowedOutputs = @('backend-bulk','backend-avatar-read') | ForEach-Object {
+        [IO.Path]::GetFullPath("C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/$_/")
+    }
+    if (!($allowedOutputs | Where-Object {$runEvidence.StartsWith($_,[StringComparison]::OrdinalIgnoreCase)})) { throw 'Evidence directory must stay in an authorized backend evidence root' }
 }
 New-Item -ItemType Directory -Force -Path $runEvidence | Out-Null
 foreach ($baseline in @('storage-bucket-claim.txt','storage-baseline-attached-keys.json')) {

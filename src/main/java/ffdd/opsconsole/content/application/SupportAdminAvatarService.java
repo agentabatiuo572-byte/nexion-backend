@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.SupportAvatarAsset;
 import ffdd.opsconsole.content.mapper.SupportAdminAvatarMapper;
+import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.io.*;
@@ -17,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class SupportAdminAvatarService {
     private final SupportAdminAvatarMapper mapper;
+    private final AdminRoleRelationMapper roles;
     private final SupportOwnershipService ownership;
     private final SupportAttachmentService attachments;
     private final SupportAttachmentPolicy policy;
@@ -40,7 +42,7 @@ public class SupportAdminAvatarService {
         mapper.insertAsset(row);
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCompletion(int status) {
-                if(status!=STATUS_COMMITTED)try{storage.remove(location);}catch(RuntimeException ex){
+                if(status==STATUS_ROLLED_BACK)try{storage.remove(location);}catch(RuntimeException ex){
                     org.slf4j.LoggerFactory.getLogger(SupportAdminAvatarService.class).error("Avatar rollback cleanup failed: {}",id);
                 }
             }
@@ -89,6 +91,28 @@ public class SupportAdminAvatarService {
         } else {
             attachments.actor("ADMIN");if(!SupportOwnershipService.hasAuthority("platform_a1_read"))throw new BizException(403,"AVATAR_READ_FORBIDDEN");
         }
+        return attachedContent(admin);
+    }
+    @Transactional(isolation=Isolation.READ_COMMITTED)
+    public SupportAttachmentService.Content supportContent(Long admin,Long customer) {
+        Long actor=attachments.actor("ADMIN");SupportWorkbenchService.requireSafeId(admin);
+        boolean roster=SupportOwnershipService.hasAuthority("service_m1_read");
+        if(!roster && !SupportOwnershipService.hasAuthority("service_m3_read"))throw new BizException(403,"AVATAR_READ_FORBIDDEN");
+        if(customer!=null) {
+            SupportWorkbenchService.requireSafeId(customer);
+            ownership.lockCustomer(customer);ownership.requireRead(customer);
+            if(mapper.appVisible(customer,admin)!=1)throw missing();
+        } else {
+            if(!roster)throw new BizException(403,"AVATAR_READ_FORBIDDEN");
+            if(!ownership.supervisor(actor)) {
+                ownership.requireEligibleAgent();
+                if(!admin.equals(actor))throw missing();
+            }
+            if(mapper.rosterAdminForShare(admin)==null || !"SUPPORT".equals(roles.activeRoleCode(admin)))throw missing();
+        }
+        return attachedContent(admin);
+    }
+    private SupportAttachmentService.Content attachedContent(Long admin) {
         var ref=mapper.reference(admin);if(ref==null || ref.get("assetId")==null)throw missing();
         var row=find(ref.get("assetId").toString());
         if(!"ATTACHED".equals(row.state()) || !admin.equals(row.attachedAdminId()))throw missing();
