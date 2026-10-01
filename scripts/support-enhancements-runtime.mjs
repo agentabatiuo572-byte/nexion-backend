@@ -7,18 +7,28 @@ const { values } = parseArgs({ options: { phase: { type: 'string' }, plan: { typ
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+if (values.phase === 'bulk' || values.phase === 'integration') {
+  await import('./support-enhancements-bulk-runtime.mjs');
+  process.exit(0);
+}
 assert(values.phase === 'core', 'Only the authorized core phase has an evidence producer');
 assert(values.plan && values.report, '--plan and --report required');
 const plan = read(values.plan), core = plan.steps.find(step => step.id === 'core');
-const root = 'C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-core';
-const summaryFile = path.join(root, 'core-check-summary.json'), summary = read(summaryFile);
+let root = plan.id.startsWith('cs-enhance-backend-20261001-bulk-')
+  ? path.join('C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-bulk/runs', process.env.WORKFLOW_RUN_ID || 'missing', process.env.WORKFLOW_STEP_ID || 'missing')
+  : 'C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-core';
 const identity = Object.fromEntries(['TASK_ID','STEP_ID','CHECK_ID','RUN_ID','REPO','SNAPSHOT_HASH'].map(key => [key, process.env['WORKFLOW_' + key]]));
+const integrated = identity.STEP_ID === 'integration';
+if (integrated) root = path.join(root, 'core');
+const summaryFile = path.join(root, 'core-check-summary.json'), summary = read(summaryFile);
 assert(Object.values(identity).every(value => typeof value === 'string' && value.length), 'Workflow identity missing');
-assert(identity.TASK_ID === plan.id && identity.STEP_ID === 'core' && identity.CHECK_ID === 'runtime', 'Wrong workflow phase or plan');
+assert(identity.TASK_ID === plan.id && identity.STEP_ID === (integrated ? 'integration' : 'core')
+  && identity.CHECK_ID === (integrated ? 'step-0-check-1' : 'runtime'), 'Wrong workflow phase or plan');
+if (integrated) assert(plan.steps[0].id === 'core', 'Integration core check index changed');
 for (const [field, key] of Object.entries({ taskId: 'TASK_ID', stepId: 'STEP_ID', runId: 'RUN_ID', repo: 'REPO', snapshotHash: 'SNAPSHOT_HASH' })) {
   assert(summary[field] === identity[key], 'Regression identity mismatch: ' + field);
 }
-assert(summary.checkId === 'regression' && summary.database === 'cs_enhance_20261001' && summary.port === 18141, 'Independent regression boundary missing');
+assert(summary.checkId === (integrated ? 'step-0-check-0' : 'regression') && summary.database === 'cs_enhance_20261001' && summary.port === 18141, 'Independent regression boundary missing');
 const started = Date.parse(summary.startedAt), finished = Date.parse(summary.checkedAt);
 assert(Number.isFinite(started) && finished >= started && Date.now() - finished < 600000, 'Stale regression summary');
 const suites = new Map(summary.suites.map(suite => [suite.suite, suite]));
@@ -59,6 +69,8 @@ for (const filename of ['random-runtime.json','random-partial-runtime.json','ran
   }
 }
 const bindingSuite = 'SupportBindingRuntimeTest';
+add('core-A11', caseEvidence('SupportEnhancementCoreRuntimeTest', 'originalOrphanCycleAndUnknownInheritanceRemainReviewRequired'));
+add('core-A11', caseEvidence('SupportEnhancementCoreRuntimeTest', 'originalDuplicateAndOrphanMigrationAbortBeforeChangingRows'));
 const privateTicket = fresh('legacy-s3/ticket-private-evidence.json');
 assert(Object.values(read(privateTicket)).every(value => value === true), 'Protected ticket regression failed');
 add('core-R22', caseEvidence(bindingSuite, 'convertedPrivateTextIsHiddenButInternalCollaborationRemains'));

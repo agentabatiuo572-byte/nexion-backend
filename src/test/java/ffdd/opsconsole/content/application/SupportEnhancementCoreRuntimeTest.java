@@ -34,6 +34,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 class SupportEnhancementCoreRuntimeTest {
     @DynamicPropertySource static void boundary(DynamicPropertyRegistry registry) {SupportEnhancementPreparationTest.isolatedBoundary(registry);}
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.mybatis.spring.SqlSessionTemplate mybatisSession;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingRandomService random;
     @Autowired SupportBindingMapper mapper;
@@ -743,6 +744,76 @@ class SupportEnhancementCoreRuntimeTest {
             assertThat(mapper.current(waiting)).isNull();assertThat(jdbc.queryForObject("SELECT auto_attempt_state FROM nx_support_binding_pool WHERE customer_id=?",String.class,waiting)).isEqualTo("PAUSED");
             proof("A07","Held rules row blocks separate retry transaction; committed supervisor mode wins before drawing");writeProof("random-concurrency-runtime.json");
         }finally{executor.shutdownNow();}
+    }
+    @Test void originalDuplicateAndOrphanMigrationAbortBeforeChangingRows() throws Exception {
+        String schema="cs_enhance_20261001_c1_audit";
+        String base="jdbc:mysql://127.0.0.1:33329/";
+        String options="?serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true";
+        var server=new org.springframework.jdbc.core.JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                base+options,System.getenv("NEXION_DB_USERNAME"),System.getenv("NEXION_DB_PASSWORD")));
+        boolean ownsSchema=false;
+        try {
+            server.execute("CREATE DATABASE "+schema+" CHARACTER SET utf8mb4");ownsSchema=true;
+            var fixture=new org.springframework.jdbc.core.JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                    base+schema+options,System.getenv("NEXION_DB_USERNAME"),System.getenv("NEXION_DB_PASSWORD")));
+            for(String ddl:List.of(
+                    "CREATE TABLE nx_support_agent_user_assignment(id BIGINT PRIMARY KEY,user_id BIGINT,agent_admin_id BIGINT,status VARCHAR(16),is_deleted INT,starts_at DATETIME,ends_at DATETIME)",
+                    "CREATE TABLE nx_admin(id BIGINT PRIMARY KEY,status INT,is_deleted INT)",
+                    "CREATE TABLE nx_support_agent_profile(admin_id BIGINT PRIMARY KEY,enabled INT,is_deleted INT,seat_type VARCHAR(16),service_types VARCHAR(64))",
+                    "CREATE TABLE nx_user(id BIGINT PRIMARY KEY,is_deleted INT)",
+                    "CREATE TABLE nx_admin_role_relation(admin_id BIGINT,role_id BIGINT,is_deleted INT)",
+                    "CREATE TABLE nx_admin_role(id BIGINT PRIMARY KEY,role_code VARCHAR(16),status INT,is_deleted INT)"))fixture.execute(ddl);
+            fixture.update("INSERT INTO nx_admin VALUES(10,1,0)");
+            fixture.update("INSERT INTO nx_support_agent_profile VALUES(10,1,0,'DEDICATED','advisor')");
+            fixture.update("INSERT INTO nx_user VALUES(1,0)");
+            fixture.update("INSERT INTO nx_admin_role VALUES(1,'SUPPORT',1,0)");
+            fixture.update("INSERT INTO nx_admin_role_relation VALUES(10,1,0)");
+            String sql=Files.readString(Path.of("scripts/migrations/20260929_support_binding_s3.sql"));
+            int start=sql.indexOf("CREATE PROCEDURE"),end=sql.indexOf("END$$",start);
+            assertThat(start).isGreaterThanOrEqualTo(0);assertThat(end).isGreaterThan(start);
+            fixture.execute(sql.substring(start,end+3));
+            fixture.update("INSERT INTO nx_support_agent_user_assignment VALUES(1,1,10,'ACTIVE',0,NOW(),NULL),(2,1,10,'ACTIVE',0,NOW(),NULL)");
+            assertThatThrownBy(()->fixture.execute("CALL support_binding_s3_migrate()"))
+                    .hasStackTraceContaining("SUPPORT_DUPLICATE_ASSIGNMENT_REVIEW_REQUIRED");
+            assertThat(fixture.queryForObject("SELECT COUNT(*) FROM nx_support_agent_user_assignment",Long.class)).isEqualTo(2L);
+            assertThat(fixture.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='nx_support_agent_user_assignment' AND column_name='version'",Long.class,schema)).isZero();
+            fixture.update("DELETE FROM nx_support_agent_user_assignment");
+            fixture.update("INSERT INTO nx_support_agent_user_assignment VALUES(3,999,10,'ACTIVE',0,NOW(),NULL)");
+            assertThatThrownBy(()->fixture.execute("CALL support_binding_s3_migrate()"))
+                    .hasStackTraceContaining("SUPPORT_ORPHAN_ASSIGNMENT_REVIEW_REQUIRED");
+            assertThat(fixture.queryForObject("SELECT user_id FROM nx_support_agent_user_assignment",Long.class)).isEqualTo(999L);
+        } finally {
+            if(ownsSchema) server.execute("DROP DATABASE "+schema);
+        }
+    }
+
+    @Test void originalOrphanCycleAndUnknownInheritanceRemainReviewRequired() {
+        rules("UNLIMITED",null,"AUTO_RANDOM");
+        for(String malformed:List.of("ORPHAN_ROOT","SPONSOR_CYCLE","UNKNOWN_DEPTH","UNKNOWN_PARENT")) {
+            new TransactionTemplate(transactions).executeWithoutResult(status -> {
+                status.setRollbackOnly();
+                long inviter=customer(null),other=customer(null);
+                var assignment=mapper.current(inviter);
+                if("ORPHAN_ROOT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET segment_root_id=9007199254740991 WHERE id=?",assignment.id());
+                if("SPONSOR_CYCLE".equals(malformed)) {
+                    jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",other,inviter);
+                    jdbc.update("UPDATE nx_user SET sponsor_user_id=? WHERE id=?",inviter,other);
+                }
+                if("UNKNOWN_DEPTH".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=NULL WHERE id=?",assignment.id());
+                if("UNKNOWN_PARENT".equals(malformed)) jdbc.update("UPDATE nx_support_agent_user_assignment SET depth=1,parent_assignment_id=9007199254740991 WHERE id=?",assignment.id());
+                mybatisSession.clearCache();
+                long child=customer(inviter);
+                assertThat(mapper.current(child)).as(malformed).isNull();
+                assertThat(mapper.poolReason(child)).as(malformed).isEqualTo("MIGRATION_REVIEW");
+                assertThat(mapper.autoEligible(child)).as(malformed).isFalse();
+                bindings.retryAutomatic(child);
+                assertThat(mapper.current(child)).isNull();
+                as(boss);
+                var preview=random.preview(new SupportRandomRequest.Preview(List.of(pool(child)),false,null,null));
+                assertThat(preview.count()).isZero();
+                assertThat(preview.excluded()).extracting(SupportRandom.Excluded::reason).containsExactly("REVIEW_REQUIRED");
+            });
+        }
     }
     private void writeProof(String filename) throws Exception {Files.writeString(Path.of(System.getenv("CS_ENHANCE_EVIDENCE_DIR"),filename),json.writeValueAsString(Map.of("run",run,"checkedAt",java.time.Instant.now().toString(),"database","cs_enhance_20261001","checks",proofs,"workflowRunId",System.getenv().getOrDefault("WORKFLOW_RUN_ID",""),"snapshotHash",System.getenv().getOrDefault("WORKFLOW_SNAPSHOT_HASH",""))));}
     private SupportRandom.Customer pool(long customer){return new SupportRandom.Customer(customer,mapper.poolVersion(customer));}

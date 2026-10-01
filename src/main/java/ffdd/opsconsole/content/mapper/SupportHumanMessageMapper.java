@@ -14,6 +14,17 @@ public interface SupportHumanMessageMapper extends BaseMapper<SupportHumanMessag
     @Select("SELECT h.message_id messageId,h.customer_id customerId,h.payload_hash payloadHash,m.conversation_no conversationNo FROM nx_support_human_message h JOIN nx_conversation_message m ON m.id=h.message_id WHERE h.actor_type=#{type} AND h.actor_id=#{actor} AND h.client_message_id=#{client} FOR SHARE")
     Map<String,Object> find(@Param("type") String type,@Param("actor") Long actor,@Param("client") String client);
 
+    @Select("""
+        SELECT h.message_id metadataMessageId,h.customer_id customerId,h.payload_hash payloadHash,
+               h.actor_id actorId,h.actor_type actorType,m.id messageId,m.sender_id senderId,
+               m.sender_type senderType,m.conversation_no conversationNo,c.user_id messageCustomerId
+          FROM nx_support_human_message h
+          LEFT JOIN nx_conversation_message m ON m.id=h.message_id
+          LEFT JOIN nx_conversation c ON c.conversation_no=m.conversation_no AND c.id=m.conversation_id
+         WHERE h.actor_type='ADMIN' AND h.actor_id=#{actor} AND h.client_message_id=#{client}
+        """)
+    Map<String,Object> findCommittedAdmin(@Param("actor") Long actor,@Param("client") String client);
+
     @Select("SELECT MAX(id) FROM nx_conversation_message WHERE conversation_no=#{no} AND is_deleted=0 AND sender_type IN ('user','agent')")
     Long latest(String no);
 

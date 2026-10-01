@@ -225,10 +225,16 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     @Override
     public Long replyAndReturnMessageId(ContentConversationView conversation, String body, String operator, LocalDateTime now) {
+        return replyAndReturnMessageId(conversation,body,ownership.actorId(),operator,now);
+    }
+
+    @Override
+    public Long replyAndReturnMessageId(ContentConversationView conversation,String body,Long senderAdminId,String senderName,LocalDateTime now) {
+        if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
         if (mapper.replyConversation(conversation.conversationNo(), body, conversation.status(), conversation.version(), now) == 0) {
             return null;
         }
-        return insertMessage(conversation.id(), conversation.conversationNo(), ownership.actorId(), "agent", operator, body, now);
+        return insertMessage(conversation.id(), conversation.conversationNo(), senderAdminId, "agent", senderName, body, now);
     }
 
     @Override
@@ -325,6 +331,15 @@ public class MybatisConversationRepository implements ConversationRepository {
             String ownerAgentName,
             String openingText,
             LocalDateTime now) {
+        return createConversationWithMessage(conversationNo,userId,conversationType,ownerAgentId,ownerAgentName,
+                openingText,ownership.actorId(),ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"),now);
+    }
+
+    @Override
+    public PersistedConversation createConversationWithMessage(
+            String conversationNo,Long userId,String conversationType,String ownerAgentId,String ownerAgentName,
+            String openingText,Long senderAdminId,String senderName,LocalDateTime now) {
+        if(senderAdminId==null || senderAdminId<=0) throw new IllegalArgumentException("EXPLICIT_MESSAGE_ACTOR_REQUIRED");
         ConversationEntity entity = new ConversationEntity();
         entity.setConversationNo(conversationNo);
         entity.setUserId(userId);
@@ -340,7 +355,7 @@ public class MybatisConversationRepository implements ConversationRepository {
         entity.setUpdatedAt(now);
         entity.setIsDeleted(0);
         mapper.insert(entity);
-        Long messageId = insertMessage(entity.getId(), conversationNo, ownership.actorId(), "agent", ffdd.opsconsole.shared.security.AdminActorResolver.resolve("system"), openingText, now);
+        Long messageId = insertMessage(entity.getId(), conversationNo, senderAdminId, "agent", senderName, openingText, now);
         ContentConversationView conversation = findByConversationNo(conversationNo)
                 .orElseGet(() -> new ContentConversationView(
                         entity.getId(),

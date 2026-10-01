@@ -36,6 +36,9 @@ public interface SupportAttachmentMapper extends BaseMapper<SupportAttachmentEnt
     @Select("SELECT id FROM nx_support_attachment WHERE state='READY' AND expires_at<=UTC_TIMESTAMP(6) ORDER BY customer_id,id LIMIT 100")
     List<String> expired();
 
+    @Select("SELECT COUNT(*) FROM nx_support_attachment WHERE object_key=#{key} AND (state='ATTACHED' OR (state='READY' AND expires_at>UTC_TIMESTAMP(6)))")
+    long liveObjectReferences(String key);
+
     @Select("SELECT attachment_id FROM nx_support_attachment_command WHERE actor_type=#{type} AND actor_id=#{actor} AND operation=#{operation} AND command_key=#{key}")
     String command(@Param("type") String type, @Param("actor") Long actor, @Param("operation") String operation, @Param("key") String key);
 

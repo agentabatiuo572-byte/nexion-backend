@@ -23,6 +23,7 @@
         <lombok.version>1.18.34</lombok.version>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <support.test.reportsDirectory>${project.build.directory}/surefire-reports</support.test.reportsDirectory>
     </properties>
 
     <dependencyManagement>
@@ -193,6 +194,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
+                    <reportsDirectory>${support.test.reportsDirectory}</reportsDirectory>
                     <systemPropertyVariables>
                         <!-- Tests boot the same strict dev/prod contract as the application. -->
                         <spring.profiles.active>dev</spring.profiles.active>

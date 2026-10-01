@@ -15,12 +15,13 @@ $suites = @(
 )
 $started = [DateTime]::UtcNow
 $log = Join-Path $env:CS_ENHANCE_EVIDENCE_DIR ('core-check-' + $started.ToString('yyyyMMdd-HHmmss') + '.log')
-& 'D:/WORKS/PLAN/.local-runtime/phone-calibration-tools/apache-maven-3.9.9/bin/mvn.cmd' "-Dtest=$($suites -join ',')" test *> $log
+$reportDirectory = "$env:CS_ENHANCE_EVIDENCE_DIR/surefire-reports"
+& 'D:/WORKS/PLAN/.local-runtime/phone-calibration-tools/apache-maven-3.9.9/bin/mvn.cmd' "-Dsupport.test.reportsDirectory=$reportDirectory" "-Dtest=$($suites -join ',')" test *> $log
 if ($LASTEXITCODE -ne 0) { Write-Output "Core Maven check failed. Private log: $log"; exit 1 }
 $finished = [DateTime]::UtcNow
 $summary = @()
 foreach ($suite in $suites) {
-    $reports = @(Get-ChildItem -LiteralPath "$repo/target/surefire-reports" -Filter "TEST-*.$suite.xml")
+    $reports = @(Get-ChildItem -LiteralPath $reportDirectory -Filter "TEST-*.$suite.xml")
     if ($reports.Count -ne 1 -or $reports[0].LastWriteTimeUtc -lt $started) { throw "Missing or stale core report: $suite" }
     [xml]$xml = Get-Content -Raw -LiteralPath $reports[0].FullName
     $result = $xml.testsuite

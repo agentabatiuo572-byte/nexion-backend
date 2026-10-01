@@ -71,6 +71,16 @@ class SupportMaintenanceServiceTest {
         assertThat(open.baselineActivitySeq()).isEqualTo(baseline);
         assertThat(open.lastExecutionAt()).isEqualTo(now);assertThat(closed).isEmpty();
     }
+    @Test void persistedActorExecutionDoesNotUseAmbientIdentityAndKeepsMessageDeduplication() {
+        when(ownership.requireWriterForActor(2L,1L,true)).thenReturn(assignment);
+        maintenance.executedForActor(1L,2L,assignment,100L,"command-key-100");
+        maintenance.executedForActor(1L,2L,assignment,100L,"command-key-100");
+        assertThat(messages).hasSize(1);
+        assertThat(open.agentAdminId()).isEqualTo(2L);
+        verify(mapper,times(1)).insertExecution(eq(1L),eq(10L),eq(2L),anyLong(),eq(100L),eq("command-key-100"),any());
+        verify(ownership,never()).actorId();
+        verify(ownership,never()).requireWriter(anyLong(),anyBoolean());
+    }
     @Test void activeAndUnknownBothRequireANewEventAndSuccessCanBeFollowedImmediatelyByNewCycle() {
         String old=login();execute(100);activity.interactiveLogin(1L,old);
         assertThat(open).isNotNull();login();assertThat(closed).singleElement().extracting(Cycle::status).isEqualTo("SUCCEEDED");

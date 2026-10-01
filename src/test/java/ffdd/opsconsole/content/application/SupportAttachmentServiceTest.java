@@ -31,8 +31,10 @@ class SupportAttachmentServiceTest {
     private final ObjectStorageService storage = mock(ObjectStorageService.class);
     private final SupportAttachmentPolicy policy = new SupportAttachmentPolicy();
     private final ProductionSupportPathGuard production = mock(ProductionSupportPathGuard.class);
+    private final ffdd.opsconsole.content.mapper.SupportBulkMapper bulk = mock(ffdd.opsconsole.content.mapper.SupportBulkMapper.class);
     private final SupportAttachmentService service = new SupportAttachmentService(mapper, bindings, ownership,
-            storage, policy, production, mock(PlatformTransactionManager.class));
+            storage, policy, production, mock(PlatformTransactionManager.class),
+            bulk,new com.fasterxml.jackson.databind.ObjectMapper());
     private final String id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
     @BeforeEach void setup() {
@@ -109,6 +111,44 @@ class SupportAttachmentServiceTest {
         authenticate("ADMIN", 10L);
         code(403, () -> service.content(id, "USER", 10L));
         verifyNoInteractions(storage);
+    }
+
+    @Test void cancellingOneBulkReferenceNeverRemovesSharedBytes() {
+        authenticate("ADMIN",2L);
+        when(ownership.canRead(2L,10L)).thenReturn(true);
+        var original=row("ADMIN",2L,"READY",null,false);
+        when(mapper.find(id)).thenReturn(new SupportAttachment(original.id(),original.customerId(),original.uploaderType(),
+                original.uploaderId(),original.assignmentId(),original.clientUploadId(),original.requestHash(),original.mime(),
+                original.bytes(),original.width(),original.height(),"private/support-bulk/shared/key",original.state(),original.expiresAt(),null));
+        service.cancel(id,"ADMIN",2L,"cancel-bulk-key");
+        verify(mapper).retire(id,"REJECTED");
+        verifyNoInteractions(storage);
+    }
+
+    @Test void bulkUploadCannotAcceptAnUnrecordedCommandAlias() throws Exception {
+        authenticate("ADMIN",2L);
+        when(bulk.assetByUpload(2L,"bulk-upload-client")).thenReturn(Map.of("commandKey","bulk-key-original","id",id));
+        code(409,()->service.uploadBulk(2L,"bulk-key-new","bulk-upload-client",
+                new MockMultipartFile("file","x.png","image/png",image("png"))));
+        verifyNoInteractions(storage);
+        verify(bulk,never()).insertAsset(anyString(),anyLong(),anyString(),anyString(),anyString(),anyString(),any());
+    }
+
+    @Test void uncertainCommitNeverDeletesUploadedBytesInEitherPath() throws Exception {
+        var file=new MockMultipartFile("file","x.png","image/png",image("png"));
+        for(boolean batch:List.of(false,true)) {
+            TransactionSynchronizationManager.initSynchronization();
+            if(batch) {
+                authenticate("ADMIN",2L);
+                when(bulk.assetByCommand(2L,"bulk-key-original")).thenReturn(null);
+                when(bulk.assetByUpload(2L,"bulk-upload-client")).thenReturn(null);
+                service.uploadBulk(2L,"bulk-key-original","bulk-upload-client",file);
+            } else service.upload(10L,"USER",10L,null,"client-unknown","key-unknown",file);
+            var callback=TransactionSynchronizationManager.getSynchronizations().get(0);
+            callback.afterCompletion(org.springframework.transaction.support.TransactionSynchronization.STATUS_UNKNOWN);
+            verify(storage,never()).remove(anyString());
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test void readyOnlyUploaderAndTransferRevokesOldAndNewAdvisorDraftAccess() {

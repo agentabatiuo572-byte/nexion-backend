@@ -84,15 +84,19 @@ class SupportBindingRuntimeTest {
     }
 
     @Test void unansweredOldRowsCannotStarveHandledIdleCandidate() {
-        String prefix="starve_"+run;
-        for(int i=0;i<101;i++) {
-            String no=prefix+i;
-            jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,last_message_at,created_at,updated_at) VALUES(?,0,'support','OPEN','probe',DATE_SUB(NOW(),INTERVAL 30 DAY),DATE_SUB(NOW(),INTERVAL 30 DAY),NOW())",no);
-            if(i<100) jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','probe','pending',NOW(),NOW() FROM nx_conversation WHERE conversation_no=?",no);
-        }
-        var rows=timeoutMapper.selectDueCloseCandidates(java.time.LocalDateTime.now().minusDays(1),100);
-        assertThat(rows).anyMatch(row->row.conversationNo().equals(prefix+100));
-        assertThat(rows).noneMatch(row->row.conversationNo().startsWith(prefix) && !row.conversationNo().equals(prefix+100));
+        new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            status.setRollbackOnly();
+            String prefix="starve_"+run;
+            for(int i=0;i<101;i++) {
+                String no=prefix+i;
+                var at=java.time.LocalDateTime.of(1000,1,i<100?1:2,0,0);
+                jdbc.update("INSERT INTO nx_conversation(conversation_no,user_id,conversation_type,status,last_message,last_message_at,created_at,updated_at) VALUES(?,0,'support','OPEN','probe',?,?,NOW())",no,at,at);
+                if(i<100) jdbc.update("INSERT INTO nx_conversation_message(conversation_id,conversation_no,sender_type,sender_name,content,created_at,updated_at) SELECT id,conversation_no,'user','probe','pending',NOW(),NOW() FROM nx_conversation WHERE conversation_no=?",no);
+            }
+            var rows=timeoutMapper.selectDueCloseCandidates(java.time.LocalDateTime.of(1000,1,3,0,0),100);
+            assertThat(rows).anyMatch(row->row.conversationNo().equals(prefix+100));
+            assertThat(rows).noneMatch(row->row.conversationNo().startsWith(prefix) && !row.conversationNo().equals(prefix+100));
+        });
     }
 
     @Test void sendingAndTransferSerializeInBothOrders() throws Exception {

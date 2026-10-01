@@ -65,6 +65,7 @@ class OpsConversationServiceTest {
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final CustomerProfileRepository customerProfileRepository = mock(CustomerProfileRepository.class);
     private final SupportOwnershipService ownership = ffdd.opsconsole.content.SupportTestDependencies.ownership();
+    private final SupportHumanMessageService humanMessages = ffdd.opsconsole.content.SupportTestDependencies.humanMessages();
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsConversationService service = service();
 
@@ -89,7 +90,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
                 customerProfileRepository,
-                mock(ProductionSupportPathGuard.class), ownership, ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(SupportCustomerProfileService.class));
+                mock(ProductionSupportPathGuard.class), ownership, humanMessages, org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(SupportCustomerProfileService.class));
     }
 
     @Test
@@ -348,6 +349,65 @@ class OpsConversationServiceTest {
                 new ConversationReplyRequest("Please wait", "agent reply", "Marina K."));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
+    }
+
+    @Test void httpAndInternalReplyBothRejectArchivedConversationWithoutWriting() {
+        conversationRepository.conversation=conversation("CV-ARCHIVED","OPEN");
+        conversationRepository.archive(conversationRepository.conversation,true,"agent-1",LocalDateTime.now(clock));
+        var request=new ConversationReplyRequest("hello","OPEN",1L,"Archived reply regression","spoofed",List.of(),null,
+            "TEXT",null,"SERVICE","bulk-client-01",3L);
+        when(ownership.conversationCustomer("CV-ARCHIVED")).thenReturn(1001L);
+        var p=new SupportHumanMessageService.Prepared(1001L,"ADMIN",7L,"bulk-client-01","TEXT","SERVICE",null,null,"hash",null,null,null,null,null);
+        when(humanMessages.prepareForActor(eq(7L),eq(1001L),any(),any(),eq(request),any(),any(),any(),org.mockito.ArgumentMatchers.isNull(),eq(3L))).thenReturn(p);
+        assertThat(service.replyWithMessageId("CV-ARCHIVED","archive-http-key",request).result().getCode()).isEqualTo(409);
+        assertThat(service.replyWithMessageIdForActor(7L,"CV-ARCHIVED","archive-bulk-key",request).result().getCode()).isEqualTo(409);
+        assertThat(conversationRepository.messageWrites).isZero();
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test void persistedActorReplyIgnoresMissingOrStaleSecurityContext() {
+        when(ownership.conversationCustomer("CV-BULK")).thenReturn(1001L);
+        var request=new ConversationReplyRequest("hello","OPEN",0L,"Persisted actor regression","spoofed",List.of(),null,
+            "TEXT",null,"SERVICE","bulk-client-01",3L);
+        var p=new SupportHumanMessageService.Prepared(1001L,"ADMIN",7L,"bulk-client-01","TEXT","SERVICE",null,null,"hash",null,null,null,null,null);
+        when(humanMessages.prepareForActor(eq(7L),eq(1001L),any(),any(),eq(request),any(),any(),any(),org.mockito.ArgumentMatchers.isNull(),eq(3L))).thenReturn(p);
+        for(boolean stale:List.of(false,true)) {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext();
+            if(stale) {
+                var auth=new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("999",null,List.of());
+                auth.setDetails(Map.of("subjectType","ADMIN","username","wrong-admin"));
+                org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+            }
+            conversationRepository.conversation=conversation("CV-BULK","OPEN");
+            var result=service.replyWithMessageIdForActor(7L,"CV-BULK","bulk-reply-"+stale,request);
+            assertThat(result.result().getCode()).isZero();
+            assertThat(conversationRepository.lastSenderId).isEqualTo(7L);
+            assertThat(conversationRepository.lastSenderName).isEqualTo("admin:7");
+            verify(humanMessages).committedForActor(p,result.messageId(),"bulk-reply-"+stale);
+        }
+        var audit=ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        org.mockito.Mockito.verify(auditLogService,org.mockito.Mockito.times(2)).recordRequiredForTrustedActor(audit.capture());
+        assertThat(audit.getAllValues()).allSatisfy(row->{assertThat(row.getActorUsername()).isEqualTo("admin:7");assertThat(row.getActorId()).isEqualTo(7L);});
+        verify(ownership,org.mockito.Mockito.never()).actorId();
+    }
+
+    @Test void persistedActorInitiationWritesAndAuditsTheTaskActor() {
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
+        var request=new ConversationInitiateRequest("support",1001L,"spoofed-owner","Spoofed Owner","hello","Persisted contact regression",
+            "spoofed-operator","TEXT",null,"SERVICE","bulk-client-01",3L,List.of());
+        var p=new SupportHumanMessageService.Prepared(1001L,"ADMIN",7L,"bulk-client-01","TEXT","SERVICE",null,null,"hash",null,null,null,null,null);
+        when(humanMessages.prepareForActor(eq(7L),eq(1001L),any(),eq("CREATE"),eq(request),any(),any(),any(),org.mockito.ArgumentMatchers.isNull(),eq(3L))).thenReturn(p);
+        when(supportAgentService.routeAdvisorForUser(1001L)).thenReturn(new AdvisorRoutingDecision("agent","7","Task Advisor",7L,true,false,"CURRENT_ASSIGNMENT"));
+        var result=service.initiateWithMessageIdForActor(7L,"bulk-initiate-key",request);
+        assertThat(result.result().getCode()).isZero();
+        assertThat(result.result().getData().ownerAgentId()).isEqualTo("7");
+        assertThat(conversationRepository.lastSenderId).isEqualTo(7L);
+        assertThat(conversationRepository.lastSenderName).isEqualTo("admin:7");
+        var audit=ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(auditLogService).recordRequiredForTrustedActor(audit.capture());
+        assertThat(audit.getValue().getActorUsername()).isEqualTo("admin:7");
+        assertThat(audit.getValue().getActorId()).isEqualTo(7L);
+        verify(ownership,org.mockito.Mockito.never()).actorId();
     }
 
     @Test
@@ -841,6 +901,8 @@ class OpsConversationServiceTest {
         private int stateWriteAttempts;
         private int messageWrites;
         private long nextMessageId = 100L;
+        private Long lastSenderId;
+        private String lastSenderName;
         private int lockedReads;
         private final Map<String, ContentConversationView> conversations = new LinkedHashMap<>();
         private final List<String> lockOrder = new ArrayList<>();
@@ -1051,6 +1113,12 @@ class OpsConversationServiceTest {
         }
 
         @Override
+        public Long replyAndReturnMessageId(ContentConversationView conversation,String body,Long senderId,String senderName,LocalDateTime now) {
+            lastSenderId=senderId;lastSenderName=senderName;
+            return reply(conversation,body,senderName,now) ? ++nextMessageId : null;
+        }
+
+        @Override
         public boolean updateStatus(ContentConversationView conversation, String status, String operator, LocalDateTime now) {
             if (!claimState()) return false;
             store(new ContentConversationView(
@@ -1142,6 +1210,13 @@ class OpsConversationServiceTest {
             return new PersistedConversation(
                     createConversation(conversationNo, userId, conversationType, ownerAgentId, ownerAgentName, openingText, now),
                     ++nextMessageId);
+        }
+
+        @Override
+        public PersistedConversation createConversationWithMessage(String no,Long user,String type,String owner,String ownerName,
+                String text,Long senderId,String senderName,LocalDateTime now) {
+            lastSenderId=senderId;lastSenderName=senderName;
+            return new PersistedConversation(createConversation(no,user,type,owner,ownerName,text,now),++nextMessageId);
         }
 
         private boolean claimState() {

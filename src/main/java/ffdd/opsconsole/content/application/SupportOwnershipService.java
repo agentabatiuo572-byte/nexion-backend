@@ -121,6 +121,25 @@ public class SupportOwnershipService {
         return assignment;
     }
 
+    /** Internal persisted-actor authorization; never derives permission from an ambient session. */
+    public void requireSendingActor(Long actor) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("SUPPORT_WRITER_TRANSACTION_REQUIRED");
+        if (actor == null || actor <= 0 || actor > 9007199254740991L
+                || mapper.lockAgent(actor) == null || mapper.eligibleAgent(actor) != 1)
+            throw new BizException(403,"SUPPORT_AGENT_UNAVAILABLE");
+        if (mapper.writerGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
+    }
+
+    public SupportAssignment requireWriterForActor(Long actor, Long customer, boolean lock) {
+        if (lock) lockCustomer(customer);
+        requireSendingActor(actor);
+        SupportAssignment assignment = mapper.current(customer);
+        if (assignment == null || !actor.equals(assignment.agentAdminId()))
+            throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
+        return assignment;
+    }
+
     public void writeConversation(String no, boolean lock) { requireWriter(conversationCustomer(no), lock); }
     public void writeTicket(String no, boolean lock) { requireWriter(ticketCustomer(no), lock); }
 }

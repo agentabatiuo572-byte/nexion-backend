@@ -20,10 +20,12 @@ public class OpsSupportCommandController {
     private final ObjectMapper json;
     private final ffdd.opsconsole.content.domain.SupportTicketRepository tickets;
     private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
+    private final ffdd.opsconsole.content.application.SupportBulkService bulk;
     private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES","SUPPORT_RANDOM",
             "M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
             "M3_CONVERSATION_ARCHIVE_BATCH","M3_CONVERSATION_TO_TICKET","M3_CUSTOMER_TAG_ADD","M3_CUSTOMER_TAG_REMOVE",
-            "M3_CUSTOMER_NOTE_ADD","M3_CUSTOMER_NOTE_REMOVE","M2_SUPPORT_TICKET_CREATE","M2_SUPPORT_TICKET_REPLY","M2_SUPPORT_TICKET_ESCALATE");
+            "M3_CUSTOMER_NOTE_ADD","M3_CUSTOMER_NOTE_REMOVE","M2_SUPPORT_TICKET_CREATE","M2_SUPPORT_TICKET_REPLY","M2_SUPPORT_TICKET_ESCALATE",
+            "M3_SUPPORT_BULK_CREATE","M3_SUPPORT_BULK_CANCEL","M3_SUPPORT_BULK_RETRY");
 
     @GetMapping("/api/admin/content/support-workbench/commands/{key}")
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m2_read','service_m3_read')")
@@ -32,9 +34,21 @@ public class OpsSupportCommandController {
         if(key.trim().length()<8 || key.length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
         long actor=ownership.actorId();
         var found=records.selectSupportCommand(SCOPES.stream().map(s->s+":"+actor).toList(),key.trim());
-        if(found.isEmpty()) throw new BizException(404,"SUPPORT_COMMAND_NOT_FOUND");
+        if(found.isEmpty()) {
+            var restored=bulk.recover(key);
+            if("SUCCEEDED".equals(restored.get("status"))) return ApiResult.ok(restored);
+            throw new BizException(404,"SUPPORT_COMMAND_NOT_FOUND");
+        }
         if(found.size()!=1) throw new BizException(409,"SUPPORT_COMMAND_AMBIGUOUS");
         var receipt=found.get(0);
+        if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));
+        if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CANCEL:") || receipt.getScope().startsWith("M3_SUPPORT_BULK_RETRY:")) {
+            if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
+            JsonNode result=json.readTree(receipt.getResponseJson()).path("data");
+            if(!result.path("batchId").isTextual()) throw new BizException(409,"SUPPORT_COMMAND_RESULT_INVALID");
+            return ApiResult.ok(Map.of("status","SUCCEEDED","resultType",receipt.getScope().split(":")[0],
+                    "result",bulk.detail(result.path("batchId").asText())));
+        }
         String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":receipt.getScope().startsWith("M2_")?"service_m2_read":"service_m1_read";
         if(!SupportOwnershipService.hasAuthority(permission)) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
         if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));

@@ -30,11 +30,28 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     Long lockAgent(Long id);
 
     @Select("""
+        SELECT p.id FROM nx_admin a
+          JOIN nx_admin_role_relation rr ON rr.admin_id=a.id AND rr.is_deleted=0
+          JOIN nx_admin_role r ON r.id=rr.role_id AND r.status=1 AND r.is_deleted=0
+          JOIN nx_admin_role_permission rp ON rp.role_id=r.id AND rp.is_deleted=0
+          JOIN nx_admin_permission p ON p.id=rp.permission_id AND p.status=1 AND p.is_deleted=0
+         WHERE a.id=#{id} AND a.status=1 AND a.is_deleted=0
+           AND p.resource_type='API' AND p.permission_code='service_m3_write'
+         ORDER BY r.id,rp.id FOR SHARE
+        """)
+    List<Long> writerGrant(Long id);
+
+    @Select("""
         SELECT id,user_id customerId,agent_admin_id agentAdminId,version,source,
                segment_root_id segmentRootId,depth,parent_assignment_id parentAssignmentId,rule_version ruleVersion
           FROM nx_support_agent_user_assignment WHERE user_id=#{id} AND status='ACTIVE' AND is_deleted=0 FOR SHARE
         """)
     SupportAssignment current(Long id);
+
+    @Select("SELECT id,sponsor_user_id sponsorUserId FROM nx_user WHERE id=#{id} AND is_deleted=0")
+    Map<String,Object> invitationSnapshot(Long id);
+    @Select("SELECT id,user_id customerId,agent_admin_id agentAdminId,version,source,segment_root_id segmentRootId,depth,parent_assignment_id parentAssignmentId,rule_version ruleVersion FROM nx_support_agent_user_assignment WHERE id=#{id} AND is_deleted=0")
+    SupportAssignment inheritanceSnapshot(Long id);
 
     @Select("SELECT version,dormant_days dormantDays,maintenance_days maintenanceDays,activity_window_days activityWindowDays,inheritance_mode inheritanceMode,max_inheritance_depth maxInheritanceDepth,unbound_assignment_mode unboundAssignmentMode,mode_effective_at modeEffectiveAt FROM nx_support_rules WHERE id=1 FOR SHARE")
     SupportRules rules();

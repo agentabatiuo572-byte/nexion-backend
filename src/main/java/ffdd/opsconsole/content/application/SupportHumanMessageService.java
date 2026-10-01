@@ -30,9 +30,29 @@ public class SupportHumanMessageService {
     @Transactional(propagation=Propagation.MANDATORY)
     public Prepared prepare(Long customer,String actorType,Long actor,String key,String operation,Object payload,
             String client,String kind,String intent,String attachment,Long expectedAssignment) {
+        if("ADMIN".equals(actorType) && client!=null && client.startsWith("bulk_"))
+            throw new BizException(422,"SUPPORT_CLIENT_MESSAGE_ID_RESERVED");
         ownership.lockCustomer(customer);
         if(messages.captureFence()==null) throw new BizException(503,"SUPPORT_MESSAGE_CAPTURE_UNAVAILABLE");
         SupportAssignment assignment="ADMIN".equals(actorType) ? ownership.requireWriter(customer,true) : bindings.current(customer);
+        if ("ADMIN".equals(actorType) && assignment != null && !Objects.equals(actor,assignment.agentAdminId())
+                || "USER".equals(actorType) && !Objects.equals(customer,actor))
+            throw new BizException(403,"SUPPORT_SUBJECT_REQUIRED");
+        return prepareWithAssignment(customer,actorType,actor,key,operation,payload,client,kind,intent,attachment,expectedAssignment,assignment);
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public Prepared prepareForActor(Long actor,Long customer,String key,String operation,Object payload,
+            String client,String kind,String intent,String attachment,Long expectedAssignment) {
+        requireAdminPayload(payload);
+        ownership.lockCustomer(customer);
+        if(messages.captureFence()==null) throw new BizException(503,"SUPPORT_MESSAGE_CAPTURE_UNAVAILABLE");
+        SupportAssignment assignment=ownership.requireWriterForActor(actor,customer,true);
+        return prepareWithAssignment(customer,"ADMIN",actor,key,operation,payload,client,kind,intent,attachment,expectedAssignment,assignment);
+    }
+
+    private Prepared prepareWithAssignment(Long customer,String actorType,Long actor,String key,String operation,Object payload,
+            String client,String kind,String intent,String attachment,Long expectedAssignment,SupportAssignment assignment) {
         String normalizedKind=kind==null?"TEXT":kind, normalizedIntent=intent==null?"SERVICE":intent;
         String sku=payload instanceof ffdd.opsconsole.content.dto.ConversationReplyRequest r?r.skuId():payload instanceof ffdd.opsconsole.content.dto.ConversationInitiateRequest r?r.skuId():null;
         var link=payload instanceof ffdd.opsconsole.content.dto.ConversationReplyRequest r?r.linkTarget():payload instanceof ffdd.opsconsole.content.dto.ConversationInitiateRequest r?r.linkTarget():null;
@@ -52,7 +72,7 @@ public class SupportHumanMessageService {
             || expectedAssignment!=null && (assignment==null || !expectedAssignment.equals(assignment.id())))
             throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
         String clientId=modern?client:"legacy_"+sha(operation+":"+key);
-        String digest=sha(ffdd.opsconsole.content.dto.SupportMessagePayload.encode(java.util.Arrays.asList(customer,operation,payload)));
+        String digest=payloadHash(customer,operation,payload);
         Map<String,Object> old=messages.find(actorType,actor,clientId);
         if(old!=null && (!Objects.equals(digest,old.get("payloadHash")) || !customer.equals(((Number)old.get("customerId")).longValue())))
             throw new BizException(409,"SUPPORT_CLIENT_MESSAGE_CONFLICT");
@@ -81,9 +101,67 @@ public class SupportHumanMessageService {
     public void committed(Prepared p,Long messageId,String commandKey) {
         if(messageId==null) throw new IllegalStateException("Durable message id is required");
         if(p.attachment()!=null) attachments.attachToMessage(p.customer(),p.actorType(),p.actor(),p.assignment()==null?null:p.assignment().id(),p.attachment(),messageId);
+        insertMetadata(p,messageId);
+        if("MAINTENANCE".equals(p.intent())) maintenance.executed(p.customer(),p.assignment(),messageId,commandKey);
+    }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void committedForActor(Prepared p,Long messageId,String commandKey) {
+        if(messageId==null) throw new IllegalStateException("Durable message id is required");
+        if(!"ADMIN".equals(p.actorType())) throw new BizException(403,"SUPPORT_SUBJECT_REQUIRED");
+        SupportAssignment current=ownership.requireWriterForActor(p.actor(),p.customer(),true);
+        if(p.assignment()==null || !Objects.equals(current.id(),p.assignment().id()))
+            throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
+        if(p.attachment()!=null) attachments.attachToMessageForActor(p.customer(),p.actor(),current.id(),p.attachment(),messageId);
+        insertMetadata(p,messageId);
+        if("MAINTENANCE".equals(p.intent())) maintenance.executedForActor(p.customer(),p.actor(),current,messageId,commandKey);
+    }
+
+    private void insertMetadata(Prepared p,Long messageId) {
         messages.insertMetadata(messageId,p.customer(),p.assignment()==null?null:p.assignment().id(),p.actorType(),p.actor(),
             p.client(),p.kind(),p.intent(),p.attachment(),p.hash(),p.skuId(),p.skuName(),p.linkTargetJson());
-        if("MAINTENANCE".equals(p.intent())) maintenance.executed(p.customer(),p.assignment(),messageId,commandKey);
+    }
+
+    /** Internal reconciliation before new-send eligibility; never expose this result as a public receipt. */
+    @Transactional(propagation=Propagation.MANDATORY)
+    public boolean hasCommittedAdminFact(Long actor,String client) {
+        SupportAttachmentService.positiveId(actor);
+        if(client==null || !client.matches("[A-Za-z0-9_-]{8,128}"))
+            throw new BizException(422,"SUPPORT_CLIENT_MESSAGE_ID_REQUIRED");
+        return messages.findCommittedAdmin(actor,client)!=null;
+    }
+
+    // A mismatched immutable fact requires review; the caller must still persist that review state.
+    @Transactional(propagation=Propagation.MANDATORY,noRollbackFor=BizException.class)
+    public Optional<CommittedAdminMessage> findCommittedAdmin(Long actor,String client,Long customer,String operation,Object payload) {
+        SupportAttachmentService.positiveId(actor);
+        SupportAttachmentService.positiveId(customer);
+        requireAdminPayload(payload);
+        if(client==null || !client.matches("[A-Za-z0-9_-]{8,128}") || operation==null || operation.isBlank())
+            throw new BizException(422,"SUPPORT_CLIENT_MESSAGE_ID_REQUIRED");
+        Map<String,Object> old=messages.findCommittedAdmin(actor,client);
+        if(old==null) return Optional.empty();
+        if(!sameId(old.get("customerId"),customer) || !sameId(old.get("messageCustomerId"),customer)
+                || !sameId(old.get("actorId"),actor) || !"ADMIN".equals(old.get("actorType"))
+                || !sameId(old.get("senderId"),actor) || !"agent".equalsIgnoreCase(String.valueOf(old.get("senderType")))
+                || !Objects.equals(payloadHash(customer,operation,payload),old.get("payloadHash"))
+                || !(old.get("messageId") instanceof Number message) || message.longValue()<=0
+                || !sameId(old.get("metadataMessageId"),message.longValue())
+                || !(old.get("conversationNo") instanceof String no) || no.isBlank())
+            throw new BizException(409,"SUPPORT_CLIENT_MESSAGE_CONFLICT");
+        return Optional.of(new CommittedAdminMessage(message.longValue(),no));
+    }
+
+    public record CommittedAdminMessage(Long messageId,String conversationNo) {}
+
+    private static boolean sameId(Object value,Long expected) {return value instanceof Number n && expected.equals(n.longValue());}
+    private static String payloadHash(Long customer,String operation,Object payload) {
+        return sha(ffdd.opsconsole.content.dto.SupportMessagePayload.encode(java.util.Arrays.asList(customer,operation,payload)));
+    }
+    private static void requireAdminPayload(Object payload) {
+        if(!(payload instanceof ffdd.opsconsole.content.dto.ConversationInitiateRequest)
+                && !(payload instanceof ffdd.opsconsole.content.dto.ConversationReplyRequest))
+            throw new BizException(422,"SUPPORT_MESSAGE_INPUT_INVALID");
     }
     public Long latest(String no) { return messages.latest(no); }
     public record Prepared(Long customer,String actorType,Long actor,String client,String kind,String intent,String attachment,

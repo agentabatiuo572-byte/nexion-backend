@@ -251,39 +251,60 @@ public class OpsConversationService {
             String conversationNo,
             String idempotencyKey,
             ConversationReplyRequest request) {
+        return replyWithMessageId(null,conversationNo,idempotencyKey,request);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public MessageCommandResult replyWithMessageIdForActor(Long actorId,String conversationNo,String idempotencyKey,ConversationReplyRequest request) {
+        SupportAttachmentService.positiveId(actorId);
+        if(request!=null && (request.replyTargets()==null || !request.replyTargets().isEmpty() || request.replyThroughMessageId()!=null))
+            throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_REPLY_TARGETS_INVALID");
+        return replyWithMessageId(actorId,conversationNo,idempotencyKey,request);
+    }
+
+    private MessageCommandResult replyWithMessageId(Long persistedActor,String conversationNo,String idempotencyKey,ConversationReplyRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireReplyCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
             return new MessageCommandResult(guard, null);
         }
-        ownership.writeConversation(conversationNo, true);
+        if(persistedActor==null) ownership.writeConversation(conversationNo,true);
+        else ownership.requireWriterForActor(persistedActor,ownership.conversationCustomer(conversationNo),true);
         ContentConversationView conversation = conversationRepository.findByConversationNoForUpdate(conversationNo.trim()).orElse(null);
         if (conversation == null) {
             return new MessageCommandResult(ApiResult.fail(404, "CONVERSATION_NOT_FOUND"), null);
         }
-        var prepared=humanMessages.prepare(conversation.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+        var prepared=persistedActor==null ? humanMessages.prepare(conversation.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+                "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
+                request.attachmentId(),request.expectedAssignmentId())
+            : humanMessages.prepareForActor(persistedActor,conversation.userId(),idempotencyKey,
                 "REPLY:"+conversationNo,request,request.clientMessageId(),request.kind(),request.intent(),
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(ApiResult.ok(conversation),prepared.previousMessageId());
         if (!matchesExpectedSnapshot(request.expectedStatus(), request.expectedVersion(), conversation)
-                || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
+                || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())
+                || Boolean.TRUE.equals(conversation.archived())) {
             return new MessageCommandResult(invalidState(), null);
         }
         String body = prepared.content(request.body());
-        String actor = operator(request.operator());
+        String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
         LocalDateTime now = LocalDateTime.now(clock);
-        Long messageId = conversationRepository.replyAndReturnMessageId(conversation, body, actor, now);
+        Long messageId = persistedActor==null ? conversationRepository.replyAndReturnMessageId(conversation,body,actor,now)
+            : conversationRepository.replyAndReturnMessageId(conversation,body,persistedActor,actor,now);
         if (messageId == null) {
             return new MessageCommandResult(invalidState(), null);
         }
-        humanMessages.committed(prepared,messageId,idempotencyKey);
+        if(persistedActor==null) humanMessages.committed(prepared,messageId,idempotencyKey);
+        else humanMessages.committedForActor(prepared,messageId,idempotencyKey);
         replies.handled(conversation.userId(),conversation.conversationNo(),messageId,request);
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
-        audit("I9_CONVERSATION_REPLIED", conversation.conversationNo(), actor, Map.of(
+        Map<String,Object> detail=Map.of(
                 "bodyLength", body.length(),
                 "reason", reasonOrDefault(request.reason(), "agent reply"),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim());
+        if(persistedActor==null) audit("I9_CONVERSATION_REPLIED",conversation.conversationNo(),actor,detail);
+        else auditForActor("I9_CONVERSATION_REPLIED",conversation.conversationNo(),persistedActor,detail);
         return new MessageCommandResult(ApiResult.ok(updated), messageId);
     }
 
@@ -619,36 +640,48 @@ public class OpsConversationService {
     public MessageCommandResult initiateWithMessageId(
             String idempotencyKey,
             ConversationInitiateRequest request) {
+        return initiateWithMessageId(null,idempotencyKey,request);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public MessageCommandResult initiateWithMessageIdForActor(Long actorId,String idempotencyKey,ConversationInitiateRequest request) {
+        SupportAttachmentService.positiveId(actorId);
+        if(request!=null && (request.replyTargets()==null || !request.replyTargets().isEmpty()))
+            throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_REPLY_TARGETS_INVALID");
+        return initiateWithMessageId(actorId,idempotencyKey,request);
+    }
+
+    private MessageCommandResult initiateWithMessageId(Long persistedActor,String idempotencyKey,ConversationInitiateRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
         ApiResult<ContentConversationView> guard = requireInitiateCommand(idempotencyKey, request);
         if (guard != null) {
             return new MessageCommandResult(guard, null);
         }
-        ownership.requireWriter(request.userId(), true);
-        var prepared=humanMessages.prepare(request.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+        if(persistedActor==null) ownership.requireWriter(request.userId(),true);
+        else ownership.requireWriterForActor(persistedActor,request.userId(),true);
+        var prepared=persistedActor==null ? humanMessages.prepare(request.userId(),"ADMIN",ownership.actorId(),idempotencyKey,
+                "CREATE",request,request.clientMessageId(),request.kind(),request.intent(),
+                request.attachmentId(),request.expectedAssignmentId())
+            : humanMessages.prepareForActor(persistedActor,request.userId(),idempotencyKey,
                 "CREATE",request,request.clientMessageId(),request.kind(),request.intent(),
                 request.attachmentId(),request.expectedAssignmentId());
         if(prepared.previousMessageId()!=null) return new MessageCommandResult(
                 ApiResult.ok(conversationRepository.findByConversationNoForUpdate(prepared.previousConversationNo()).orElseThrow()),prepared.previousMessageId());
         String type = normalizeConversationType(request.conversationType());
-        String actor = operator(request.operator());
+        String actor = persistedActor==null ? operator(request.operator()) : "admin:"+persistedActor;
         AdvisorRoutingDecision routing = routingDecision(type, request, actor);
         String ownerName = routing.targetName();
         String ownerId = routing.targetId();
         String text = prepared.content(request.openingText());
         LocalDateTime now = LocalDateTime.now(clock);
         String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
-        ConversationRepository.PersistedConversation persisted = conversationRepository.createConversationWithMessage(
-                conversationNo,
-                request.userId(),
-                type,
-                ownerId,
-                ownerName,
-                text,
-                now);
+        ConversationRepository.PersistedConversation persisted = persistedActor==null
+            ? conversationRepository.createConversationWithMessage(conversationNo,request.userId(),type,ownerId,ownerName,text,now)
+            : conversationRepository.createConversationWithMessage(conversationNo,request.userId(),type,ownerId,ownerName,text,persistedActor,actor,now);
         ContentConversationView created = persisted.conversation();
-        humanMessages.committed(prepared,persisted.messageId(),idempotencyKey);
+        if(persistedActor==null) humanMessages.committed(prepared,persisted.messageId(),idempotencyKey);
+        else humanMessages.committedForActor(prepared,persisted.messageId(),idempotencyKey);
         if(request.replyTargets()!=null) replies.handled(request.userId(),created.conversationNo(),persisted.messageId(),
                 new ConversationReplyRequest(text,created.status(),created.version(),request.reason(),request.operator(),request.replyTargets(),null));
         SupportTicketView fallbackTicket = routing.fallbackTicket()
@@ -669,7 +702,8 @@ public class OpsConversationService {
         if (fallbackTicket != null) {
             detail.put("fallbackTicketNo", fallbackTicket.ticketNo());
         }
-        audit("I9_CONVERSATION_INITIATED", created.conversationNo(), actor, detail);
+        if(persistedActor==null) audit("I9_CONVERSATION_INITIATED",created.conversationNo(),actor,detail);
+        else auditForActor("I9_CONVERSATION_INITIATED",created.conversationNo(),persistedActor,detail);
         return new MessageCommandResult(ApiResult.ok(created), persisted.messageId());
     }
 
@@ -1008,16 +1042,26 @@ public class OpsConversationService {
     }
 
     private void audit(String action, String conversationNo, String operator, Map<String, Object> detail) {
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+        auditLogService.recordRequired(auditRequest(action,conversationNo,operator(operator),detail));
+    }
+
+    private void auditForActor(String action,String conversationNo,Long actor,Map<String,Object> detail) {
+        AuditLogWriteRequest request=auditRequest(action,conversationNo,"admin:"+actor,detail);
+        request.setActorId(actor);
+        auditLogService.recordRequiredForTrustedActor(request);
+    }
+
+    private AuditLogWriteRequest auditRequest(String action,String conversationNo,String operator,Map<String,Object> detail) {
+        return AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("CONVERSATION")
                 .resourceId(conversationNo)
                 .bizNo(conversationNo)
                 .actorType("ADMIN")
-                .actorUsername(operator(operator))
+                .actorUsername(operator)
                 .result("SUCCESS")
                 .riskLevel("MEDIUM")
                 .detail(detail)
-                .build());
+                .build();
     }
 }

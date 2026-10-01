@@ -148,8 +148,7 @@ public class SupportBindingService {
         SupportRules rules=mapper.rules();
         String reason;
         SupportAssignment parent=inviter==null?null:mapper.current(inviter);
-        if(Objects.equals(inviter,customer) || parent!=null && (parent.depth()==null || parent.depth()<0
-                || parent.depth()==Integer.MAX_VALUE || parent.segmentRootId()==null || parent.segmentRootId().equals(customer))) reason="MIGRATION_REVIEW";
+        if(!trustedInvitation(customer,inviter) || parent!=null && !trustedSegment(customer,parent)) reason="MIGRATION_REVIEW";
         else if(rules==null || "UNCONFIGURED".equals(rules.inheritanceMode())) reason="RULE_UNCONFIGURED";
         else if(inviter==null) reason="NO_INVITER";
         else if(parent==null) reason="INVITER_UNBOUND";
@@ -173,6 +172,36 @@ public class SupportBindingService {
             mapper.eligiblePool(customer,rules.version(),"registration:"+customer);
             randomUnbound(customer,rules,"registration:"+customer,"registration","Automatic new customer assignment",null);
         }
+    }
+
+    /** Read immutable ancestry without acquiring ancestor customer locks in reverse order. */
+    private boolean trustedInvitation(Long customer,Long inviter) {
+        Set<Long> visited=new HashSet<>();visited.add(customer);
+        for(Long current=inviter;current!=null;) {
+            if(!visited.add(current)) return false;
+            var row=mapper.invitationSnapshot(current);
+            if(row==null) return false;
+            current=row.get("sponsorUserId") instanceof Number value?value.longValue():null;
+        }
+        return true;
+    }
+
+    private boolean trustedSegment(Long customer,SupportAssignment parent) {
+        Long root=parent.segmentRootId();
+        if(root==null || root.equals(customer) || mapper.invitationSnapshot(root)==null) return false;
+        Set<Long> visited=new HashSet<>();
+        for(SupportAssignment row=parent;row!=null;) {
+            if(row.id()==null || !visited.add(row.id()) || row.depth()==null || row.depth()<0
+                    || row.depth()==Integer.MAX_VALUE || !Objects.equals(root,row.segmentRootId())
+                    || row.source()==null || !Set.of("MANUAL","RANDOM","INHERITED","MIGRATED").contains(row.source())) return false;
+            if(row.depth()==0) return root.equals(row.customerId()) && row.parentAssignmentId()==null;
+            if(row.parentAssignmentId()==null) return false;
+            var ancestor=mapper.inheritanceSnapshot(row.parentAssignmentId());
+            if(ancestor==null || ancestor.depth()==null || ancestor.depth()!=row.depth()-1
+                    || !Objects.equals(row.agentAdminId(),ancestor.agentAdminId())) return false;
+            row=ancestor;
+        }
+        return false;
     }
 
     /** The caller holds customer then rules locks. Candidate choice never uses presence or workload. */

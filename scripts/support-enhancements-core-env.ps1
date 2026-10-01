@@ -43,13 +43,31 @@ $env:NEXION_SUPPORT_ATTACHMENTS_MAXBYTES = '1048576'
 $env:NEXION_SUPPORT_ATTACHMENTS_MAXPIXELS = '1000000'
 $env:NEXION_SUPPORT_ATTACHMENTS_TTLSECONDS = '300'
 $env:CS_ENHANCE_PREP_ENABLED = 'true'
-$env:CS_ENHANCE_EVIDENCE_DIR = $evidence
+$runEvidence = $evidence
+if ($env:WORKFLOW_TASK_ID -like 'cs-enhance-backend-20261001-bulk-*') {
+    if ($env:WORKFLOW_RUN_ID -notmatch '^[a-zA-Z0-9_-]+$' -or $env:WORKFLOW_STEP_ID -notin @('core','bulk','integration')) { throw 'Workflow evidence identity required' }
+    $runEvidence = "C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-bulk/runs/$env:WORKFLOW_RUN_ID/$env:WORKFLOW_STEP_ID"
+    if ($env:WORKFLOW_STEP_ID -eq 'integration' -and $env:WORKFLOW_CHECK_ID -match '^step-([01])-check-') {
+        $phase = if ($Matches[1] -eq '0') {'core'} else {'bulk'}
+        $runEvidence = "$runEvidence/$phase"
+    }
+} elseif ($env:CS_ENHANCE_OUTPUT_ROOT) {
+    $runEvidence = [IO.Path]::GetFullPath($env:CS_ENHANCE_OUTPUT_ROOT)
+    $allowedOutput = [IO.Path]::GetFullPath('C:/Users/jason/.codex/workflow-runs/customer-service-enhancements-20261001/backend-bulk/')
+    if (!$runEvidence.StartsWith($allowedOutput,[StringComparison]::OrdinalIgnoreCase)) { throw 'Evidence directory must stay in P2 evidence root' }
+}
+New-Item -ItemType Directory -Force -Path $runEvidence | Out-Null
+foreach ($baseline in @('storage-bucket-claim.txt','storage-baseline-attached-keys.json')) {
+    if ($runEvidence -ne $evidence -and !(Test-Path -LiteralPath "$runEvidence/$baseline")) { Copy-Item -LiteralPath "$evidence/$baseline" -Destination "$runEvidence/$baseline" }
+}
+$env:CS_ENHANCE_EVIDENCE_DIR = $runEvidence
+$env:NEXION_LOG_FILE = "$runEvidence/backend.log"
 $env:CS_ENHANCE_CORE_ENABLED = 'true'
 $env:NEXION_C1_AUDIT_MYSQL = 'true'
 $env:SUPPORT_PATCH_ISOLATED = 'true'
 $env:S4_HTTP_PORT = '18141'
-$env:S3_EVIDENCE_DIR = "$evidence/legacy-s3"
-$env:S4_EVIDENCE_DIR = "$evidence/legacy-s4"
+$env:S3_EVIDENCE_DIR = "$runEvidence/legacy-s3"
+$env:S4_EVIDENCE_DIR = "$runEvidence/legacy-s4"
 $env:S3_FIXTURE_PASSWORD = 'Aa1!' + [Guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Force -Path $env:S3_EVIDENCE_DIR,$env:S4_EVIDENCE_DIR | Out-Null
 $env:LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_BOOT_AUTOCONFIGURE_SECURITY_SERVLET_USERDETAILSSERVICEAUTOCONFIGURATION = 'ERROR'
