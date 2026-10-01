@@ -189,6 +189,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
                AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+               AND (UPPER(d.device_type) IN ('MOBILE','PHONE')
+                    OR r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6))
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                     OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
                         AND r.battery_level >= 20 AND r.network_reachable = 1))
@@ -209,6 +211,14 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
              WHERE t.source_environment = #{sourceEnvironment}
                AND t.is_deleted = 0
                AND t.status IN ('ASSIGNED','CLAIMED','RUNNING','PROCESSING')
+               AND (UPPER(d.device_type) IN ('MOBILE','PHONE')
+                    OR (UPPER(d.ownership_status) = 'OWNED'
+                        AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE')
+                        AND d.activated_at IS NOT NULL
+                        AND d.deactivated_at IS NULL
+                        AND d.pending_deactivate = 0
+                        AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+                        AND r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6)))
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                     OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
                         AND r.battery_level >= 20 AND r.network_reachable = 1
@@ -258,6 +268,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object> {
                AND d.deactivated_at IS NULL
                AND d.pending_deactivate = 0
                AND UPPER(TRIM(COALESCE(r.online_status, ''))) = 'ONLINE'
+               AND (UPPER(d.device_type) IN ('MOBILE','PHONE')
+                    OR r.heartbeat_at BETWEEN DATE_SUB(NOW(6), INTERVAL 10 MINUTE) AND NOW(6))
                AND (UPPER(d.device_type) NOT IN ('MOBILE','PHONE')
                     OR (r.heartbeat_at >= DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 120 SECOND)
                         AND r.battery_level >= 20 AND r.network_reachable = 1))
