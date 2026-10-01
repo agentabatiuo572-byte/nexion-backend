@@ -25,12 +25,44 @@ public interface AppProofMapper extends BaseMapper<Object> {
             """)
     long onlineDevices(@Param("userId") Long userId);
 
+    /** CLAIM ledgers return principal too; their separate issued interest alone is earned. */
     @Select("""
-            SELECT COALESCE(SUM(amount), 0)
-              FROM nx_wallet_ledger
-             WHERE user_id = #{userId} AND is_deleted = 0
-               AND UPPER(asset) = 'USDT' AND UPPER(direction) = 'IN'
-               AND UPPER(status) IN ('SUCCESS', 'POSTED', 'CREDITED', 'SETTLED', 'AVAILABLE')
+            SELECT COALESCE(SUM(earned.amount), 0)
+              FROM (
+                SELECT amount
+                  FROM nx_wallet_ledger
+                 WHERE user_id = #{userId} AND is_deleted = 0
+                   AND UPPER(asset) = 'USDT' AND UPPER(direction) = 'IN'
+                   AND UPPER(status) IN ('SUCCESS', 'POSTED', 'CREDITED', 'SETTLED', 'AVAILABLE')
+                   AND UPPER(biz_type) IN ('COMPUTE_TASK_REWARD', 'TEAM_COMMISSION',
+                                           'WHEEL_REWARD', 'EVENT_REWARD', 'DAILY_MILESTONE',
+                                           'GENESIS_EMISSION', 'REFERRAL_REWARD', 'TRIAL_BONUS')
+                UNION ALL
+                SELECT e.amount
+                  FROM nx_earnings_release_entry e
+                 WHERE e.user_id = #{userId} AND e.is_deleted = 0 AND e.status = 'ACTIVE'
+                   AND e.source_environment = 'PRODUCTION' AND e.asset = 'USDT'
+                   AND e.source_type = 'staking_interest'
+                   AND EXISTS (
+                     SELECT 1 FROM nx_wallet_ledger claim
+                      WHERE claim.user_id = e.user_id AND claim.is_deleted = 0
+                        AND claim.biz_no = CONCAT(e.source_ref, '-CLAIM')
+                        AND claim.biz_type = 'STAKING_CLAIM'
+                        AND claim.asset = 'USDT' AND claim.direction = 'IN' AND claim.status = 'SUCCESS'
+                   )
+                UNION ALL
+                SELECT p.estimated_interest_usdt
+                  FROM nx_staking_position p
+                 WHERE p.user_id = #{userId} AND p.is_deleted = 0
+                   AND p.product_code = 'REPURCHASE_90D' AND UPPER(p.status) = 'CLAIMED'
+                   AND EXISTS (
+                     SELECT 1 FROM nx_wallet_ledger claim
+                      WHERE claim.user_id = p.user_id AND claim.is_deleted = 0
+                        AND claim.biz_no = CONCAT(p.position_no, '-CLAIM')
+                        AND claim.biz_type = 'REPURCHASE_CLAIM'
+                        AND claim.asset = 'USDT' AND claim.direction = 'IN' AND claim.status = 'SUCCESS'
+                   )
+              ) earned
             """)
     BigDecimal earningsTotalUsdt(@Param("userId") Long userId);
 
