@@ -94,7 +94,7 @@ class OpsAdminAccountServiceTest {
             new OpsAdminAccountService(auditLogService, adminMapper, roleRelationMapper, roleMapper,
                     accountStateMapper, rbacActionMapper, rbacGrantMapper, securityBaselineMapper, passwordEncoder,
                     adminSessionRegistry, permissionCache, auditCenterService, lockMapper, platformRoleService,
-                    configFacade);
+                    configFacade,mock(ffdd.opsconsole.content.application.SupportAdminAvatarService.class));
 
     @BeforeEach
     void setUp() {

@@ -53,6 +53,9 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 @Execution(ExecutionMode.SAME_THREAD)
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportMessageReplayMySqlS4Test {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;

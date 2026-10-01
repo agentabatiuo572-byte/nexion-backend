@@ -246,7 +246,7 @@ public class OpsSupportTicketService {
                 c.ownerAgentId(),c.ownerAgentName(),c.unreadCount(),SupportTicketView.RESTRICTED_TEXT,c.lastMessageAt(),
                 c.transferFromAgentId(),c.transferFromAgentName(),c.transferToType(),c.transferToId(),c.transferToName(),
                 c.transferReason()==null?null:SupportTicketView.RESTRICTED_TEXT,c.transferredAt(),c.updatedAt(),
-                c.version(),c.lastPublicMessageId(),c.lastMessageKind());
+                c.version(),c.lastPublicMessageId(),c.lastMessageKind(),c.archived());
     }
 
     private String requestHash(String... values) {

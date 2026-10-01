@@ -14,7 +14,7 @@ class SupportWorkbenchProfileTest {
         var environment=new MockEnvironment();environment.setActiveProfiles(profiles.split(","));
         var workbench=mock(SupportWorkbenchService.class);var maintenance=mock(SupportMaintenanceService.class);
         var controller=new SupportWorkbenchController(workbench,maintenance,
-                new ProductionSupportPathGuard(environment,mock(SupportAcceptanceSandboxMapper.class)));
+                new ProductionSupportPathGuard(environment,mock(SupportAcceptanceSandboxMapper.class)),mock(SupportCustomerProfileService.class));
         assertThatThrownBy(()->controller.snapshot(null,"ALL",null,1,20,null,null)).hasMessage("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
         assertThatThrownBy(()->controller.detail(1L)).hasMessage("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
         assertThatThrownBy(()->controller.history(1L,1,20)).hasMessage("SUPPORT_PRODUCTION_PATH_FORBIDDEN");
@@ -25,7 +25,7 @@ class SupportWorkbenchProfileTest {
         var environment=new MockEnvironment();environment.setActiveProfiles(profile);
         var workbench=mock(SupportWorkbenchService.class);var maintenance=mock(SupportMaintenanceService.class);
         var controller=new SupportWorkbenchController(workbench,maintenance,
-                new ProductionSupportPathGuard(environment,mock(SupportAcceptanceSandboxMapper.class)));
+                new ProductionSupportPathGuard(environment,mock(SupportAcceptanceSandboxMapper.class)),mock(SupportCustomerProfileService.class));
         controller.snapshot(null,"ALL",null,1,20,null,null);controller.detail(1L);controller.history(1L,1,20);
         verify(workbench).snapshot(null,"ALL",null,1,20,null,null);verify(workbench).detail(1L);
         verify(maintenance).history(1L,1,20);

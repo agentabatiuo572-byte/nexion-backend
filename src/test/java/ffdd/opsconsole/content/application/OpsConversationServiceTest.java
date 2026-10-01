@@ -51,12 +51,20 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DuplicateKeyException;
 
 class OpsConversationServiceTest {
+    @org.junit.jupiter.api.BeforeEach void authenticatedEditor() {
+        var auth=new org.springframework.security.authentication.UsernamePasswordAuthenticationToken("1",null,
+                List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("service_m3_write")));
+        auth.setDetails(Map.of("subjectType","ADMIN","username","agent-1"));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
+    }
+    @org.junit.jupiter.api.AfterEach void clearAuthentication(){org.springframework.security.core.context.SecurityContextHolder.clearContext();}
     private final FakeConversationRepository conversationRepository = new FakeConversationRepository();
     private final FakeSupportTicketRepository ticketRepository = new FakeSupportTicketRepository();
     private final OpsSupportAgentService supportAgentService = mock(OpsSupportAgentService.class);
     private final FakePlatformConfigFacade configFacade = new FakePlatformConfigFacade();
     private final AuditLogService auditLogService = mock(AuditLogService.class);
     private final CustomerProfileRepository customerProfileRepository = mock(CustomerProfileRepository.class);
+    private final SupportOwnershipService ownership = ffdd.opsconsole.content.SupportTestDependencies.ownership();
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final OpsConversationService service = service();
 
@@ -81,7 +89,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
                 mock(ffdd.opsconsole.risk.application.OpsRiskService.class),
                 customerProfileRepository,
-                mock(ProductionSupportPathGuard.class), ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
+                mock(ProductionSupportPathGuard.class), ownership, ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(SupportCustomerProfileService.class));
     }
 
     @Test
@@ -101,7 +109,7 @@ class OpsConversationServiceTest {
                 mock(ffdd.opsconsole.user.application.OpsUserService.class),
                 mock(ffdd.opsconsole.finance.application.OpsFinanceService.class),
                 mock(ffdd.opsconsole.device.application.OpsDeviceService.class),
-                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class));
+                mock(ffdd.opsconsole.risk.application.OpsRiskService.class), profiles, productionGuard, ffdd.opsconsole.content.SupportTestDependencies.ownership(), ffdd.opsconsole.content.SupportTestDependencies.humanMessages(), org.mockito.Mockito.mock(ffdd.opsconsole.content.application.SupportReplyService.class), mock(SupportCustomerProfileService.class));
 
         assertThatThrownBy(direct::runTimeoutFallback).isInstanceOf(RuntimeException.class);
 
@@ -566,7 +574,7 @@ class OpsConversationServiceTest {
     void addNoteReturnsCreatedNoteAndAudits() {
         conversationRepository.conversation = conversation("CV-1", "OPEN");
         ConversationCustomerProfile.CustomerNote created = new ConversationCustomerProfile.CustomerNote("1", 0L, "agent-1", "测试备注");
-        when(customerProfileRepository.addNote(eq(1001L), eq("agent-1"), eq("测试备注"), eq("agent-1"), any())).thenReturn(created);
+        when(customerProfileRepository.addNote(eq(1001L),eq(1L), eq("agent-1"), eq("测试备注"), eq("agent-1"), any())).thenReturn(created);
 
         var result = service.addNote("CV-1", "idem-note", new CustomerNoteRequest("测试备注", "add note reason", "agent-1"));
 
@@ -596,7 +604,7 @@ class OpsConversationServiceTest {
     }
 
     @Test
-    void archiveResolvedConversationClosesIt() {
+    void archiveResolvedConversationKeepsItsLifecycleStatus() {
         conversationRepository.conversation = conversation("CV-1", "RESOLVED");
 
         var result = service.archive(
@@ -605,7 +613,7 @@ class OpsConversationServiceTest {
                 new ConversationArchiveRequest(true, "archive resolved session", "Marina K."));
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().status()).isEqualTo("CLOSED");
+        assertThat(result.getData().status()).isEqualTo("RESOLVED");assertThat(result.getData().archived()).isTrue();
     }
 
     @Test
@@ -747,6 +755,7 @@ class OpsConversationServiceTest {
 
     @Test
     void overviewExposesI9TransferStateMachine() {
+        when(ownership.supervisor(1L)).thenReturn(true);
         var result = service.overview();
 
         assertThat(result.getCode()).isZero();
@@ -1069,7 +1078,11 @@ class OpsConversationServiceTest {
 
         @Override
         public boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
-            return updateStatus(conversation, archived ? "CLOSED" : "RESOLVED", operator, now);
+            if(!claimState())return false;
+            store(new ContentConversationView(conversation.id(),conversation.conversationNo(),conversation.userId(),conversation.conversationType(),conversation.status(),
+                conversation.ownerAgentId(),conversation.ownerAgentName(),conversation.unreadCount(),conversation.lastMessage(),conversation.lastMessageAt(),
+                conversation.transferFromAgentId(),conversation.transferFromAgentName(),conversation.transferToType(),conversation.transferToId(),conversation.transferToName(),
+                conversation.transferReason(),conversation.transferredAt(),now,conversation.version()+1,conversation.lastPublicMessageId(),conversation.lastMessageKind(),archived));return true;
         }
 
         @Override

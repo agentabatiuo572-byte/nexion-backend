@@ -593,7 +593,7 @@ public class AppSupportService {
                 row.ownerAgentId(), row.ownerAgentName(), userUnread, row.lastMessage(), row.lastMessageAt(),
                 row.transferFromAgentId(), row.transferFromAgentName(), row.transferToType(), row.transferToId(),
                 row.transferToName(), row.transferReason(), row.transferredAt(), row.updatedAt(), row.version(),
-                row.lastPublicMessageId(), row.lastMessageKind());
+                row.lastPublicMessageId(), row.lastMessageKind(),row.archived());
     }
 
     private boolean validHistoryCursor(Long cursor) {

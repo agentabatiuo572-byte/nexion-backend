@@ -165,9 +165,14 @@ public class OpsAdminAccountController {
             Object request,
             Supplier<ApiResult<T>> action) {
         try {
+            String actor=accountService.commandActor(scope,target,request);
             String requestHash = sha256(target + "|" + String.valueOf(request));
+            // Legacy receipts have no provable actor. Never replay their privileged payload or execute twice.
+            var legacy=idempotencyService.recoveryStatus("A1:"+scope,idempotencyKey,requestHash);
+            if(legacy!=null && legacy!=AdminIdempotencyService.RecoveryStatus.NOT_FOUND)
+                return ApiResult.fail(409,"ACCOUNT_LEGACY_COMMAND_REVIEW_REQUIRED");
             return (ApiResult<T>) idempotencyService.execute(
-                    "A1:" + scope,
+                    "A1:" + scope+":"+actor,
                     idempotencyKey,
                     requestHash,
                     ApiResult.class,

@@ -19,7 +19,8 @@ public class OpsSupportCommandController {
     private final SupportOwnershipService ownership;
     private final ObjectMapper json;
     private final ffdd.opsconsole.content.domain.SupportTicketRepository tickets;
-    private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES",
+    private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
+    private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES","SUPPORT_RANDOM",
             "M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
             "M3_CONVERSATION_ARCHIVE_BATCH","M3_CONVERSATION_TO_TICKET","M3_CUSTOMER_TAG_ADD","M3_CUSTOMER_TAG_REMOVE",
             "M3_CUSTOMER_NOTE_ADD","M3_CUSTOMER_NOTE_REMOVE","M2_SUPPORT_TICKET_CREATE","M2_SUPPORT_TICKET_REPLY","M2_SUPPORT_TICKET_ESCALATE");
@@ -36,6 +37,7 @@ public class OpsSupportCommandController {
         var receipt=found.get(0);
         String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":receipt.getScope().startsWith("M2_")?"service_m2_read":"service_m1_read";
         if(!SupportOwnershipService.hasAuthority(permission)) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
+        if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));
         if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
         JsonNode response=json.readTree(receipt.getResponseJson());
         Set<Long> customers=new TreeSet<>();

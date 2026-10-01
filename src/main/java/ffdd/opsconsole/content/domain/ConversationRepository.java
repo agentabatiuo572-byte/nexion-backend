@@ -18,6 +18,9 @@ public interface ConversationRepository {
     void ensureSeedData(LocalDateTime now);
 
     Map<String, Object> counters();
+    default Map<String,Object> counters(Long agent) {
+        if(agent!=null)throw new UnsupportedOperationException("SCOPED_CONVERSATION_COUNTERS_REQUIRED");return counters();
+    }
 
     PageResult<ContentConversationView> pageConversations(ConversationQueryRequest request);
 

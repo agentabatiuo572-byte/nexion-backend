@@ -18,4 +18,6 @@ public class AdminAccountStateEntity extends BaseEntity {
     private LocalDateTime tfaResetAt;
     private LocalDateTime sessionsRevokedAt;
     private String credentialDeliveryStatus;
+    private String avatarAssetId;
+    private Long avatarVersion;
 }

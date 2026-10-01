@@ -42,6 +42,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @org.springframework.transaction.annotation.Transactional(rollbackFor=Exception.class)
@@ -96,6 +97,13 @@ public class OpsConversationController {
     // 收件箱/会话列表 — M3 即时会话台 读
     @PreAuthorize("hasAuthority('service_m3_read')")
     @GetMapping
+    public ApiResult<PageResult<ContentConversationView>> conversationsQuery(
+            @RequestParam(required=false) String status,@RequestParam(required=false) String type,
+            @RequestParam(required=false) String ownerAgentId,@RequestParam(required=false) Long userId,
+            @RequestParam(required=false) String keyword,@RequestParam(required=false) Boolean unreadOnly,
+            @RequestParam(required=false) Long pageNum,@RequestParam(required=false) Long pageSize,@RequestParam(required=false) Boolean archived) {
+        return conversations(new ConversationQueryRequest(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,archived));
+    }
     public ApiResult<PageResult<ContentConversationView>> conversations(ConversationQueryRequest request) {
         return conversationService.conversations(request);
     }
@@ -369,15 +377,6 @@ public class OpsConversationController {
 
     /** A socket invalidation must only describe a durable conversation projection. */
     private void publishAfterCommit(ConversationMessageEvent event) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            eventPublisher.publishEvent(event);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                eventPublisher.publishEvent(event);
-            }
-        });
+        ffdd.opsconsole.content.application.OpsConversationAfterCommitPublisher.publish(eventPublisher,event);
     }
 }

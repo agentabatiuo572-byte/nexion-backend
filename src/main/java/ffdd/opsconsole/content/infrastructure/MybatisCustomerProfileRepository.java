@@ -40,15 +40,20 @@ public class MybatisCustomerProfileRepository implements CustomerProfileReposito
 
     @Override
     public ConversationCustomerProfile.CustomerNote addNote(Long userId, String author, String content, String operator, LocalDateTime now) {
+        return addNote(userId,null,author,content,operator,now);
+    }
+    @Override
+    public ConversationCustomerProfile.CustomerNote addNote(Long userId,Long authorId,String author,String content,String operator,LocalDateTime now) {
         CustomerNoteRow row = new CustomerNoteRow();
         row.setUserId(userId);
         row.setAuthor(author);
+        row.setAuthorAdminId(authorId);
         row.setContent(content);
         row.setOperator(operator);
         row.setNow(now);
         mapper.insertNote(row);  // useGeneratedKeys 回填 row.id
-        long ts = now.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
-        return new ConversationCustomerProfile.CustomerNote(String.valueOf(row.getId()), ts, author, content);
+        var at=now.atZone(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
+        return new ConversationCustomerProfile.CustomerNote(String.valueOf(row.getId()), at.toEpochMilli(), author, content,authorId,author,at.toString());
     }
 
     @Override

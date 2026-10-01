@@ -33,7 +33,8 @@ public interface CustomerProfileMapper {
 
     // 列别名 ts/text 对齐 CustomerNote record 构造器参数(id BIGINT→String, ts 毫秒 epoch)
     @Select("""
-            SELECT id, UNIX_TIMESTAMP(created_at) * 1000 AS ts, author, content AS text
+            SELECT id, TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',CONVERT_TZ(created_at,'+08:00','+00:00')) DIV 1000 AS ts, author, content AS text,
+             author_admin_id AS authorId,author AS authorName,DATE_FORMAT(CONVERT_TZ(created_at,'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') AS createdAt
               FROM nx_customer_note
              WHERE user_id=#{userId} AND is_deleted=0
              ORDER BY created_at ASC, id ASC
@@ -41,8 +42,8 @@ public interface CustomerProfileMapper {
     List<ConversationCustomerProfile.CustomerNote> findNotes(@Param("userId") Long userId);
 
     @Insert("""
-            INSERT INTO nx_customer_note (user_id, author, content, last_operator, is_deleted, created_at, updated_at)
-            VALUES (#{userId}, #{author}, #{content}, #{operator}, 0, #{now}, #{now})
+            INSERT INTO nx_customer_note (user_id, author, author_admin_id,content, last_operator, is_deleted, created_at, updated_at)
+            VALUES (#{userId}, #{author},#{authorAdminId}, #{content}, #{operator}, 0, #{now}, #{now})
             """)
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insertNote(CustomerNoteRow row);

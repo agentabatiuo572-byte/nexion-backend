@@ -330,7 +330,7 @@ public class OpsSupportAgentService {
         if (guard != null) {
             return guard;
         }
-        ownership.requireSupervisor();
+        ownership.requireSupervisorSnapshot();
         var selected=normalizeUserIds(request.userIds());
         ApiResult<SupportAgentProfileView> seatAuthorization=requireSeatMutationAuthorization(adminId,seatTypeForPosition(canonicalPosition(request.position())));
         if(seatAuthorization!=null) return seatAuthorization;
@@ -339,7 +339,8 @@ public class OpsSupportAgentService {
                 throw new ffdd.opsconsole.shared.exception.BizException(422,"SUPPORT_BINDING_EXPECTATION_REQUIRED");
             selected.stream().sorted().forEach(ownership::lockCustomer);
         }
-        ownership.lockAgent(adminId);
+        new java.util.TreeSet<>(java.util.List.of(ownership.actorId(),adminId)).forEach(ownership::lockAgent);
+        ownership.requireSupervisor();
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
@@ -551,7 +552,7 @@ public class OpsSupportAgentService {
                 profile.busy(),
                 repository.countActiveAssignments(adminId),
                 profile.version(),
-                profile.updatedAt());
+                profile.updatedAt(),operator.avatarAssetId(),operator.avatarVersion());
     }
 
     private List<Map<String, Object>> transferTargets(List<SupportAgentProfileView> agents) {

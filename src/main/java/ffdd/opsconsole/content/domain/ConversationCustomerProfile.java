@@ -7,7 +7,7 @@ import java.util.List;
  *
  * <p>由 {@code OpsConversationService.detail} 按 {@code conversation.userId} 聚合
  * user / finance / device / risk / content 工单域的真实数据,供坐席接待时一眼看清客户价值与风险。
- * 客户侧真实账户操作仍回 C/D 域;此处仅做只读辅助呈现,任一子域查不到时以合理兜底值填充,
+ * 客户侧真实账户操作仍回 C/D 域;缺失、无权或失败事实以独立分组状态与 null 表达,
  * 绝不阻断会话详情返回。</p>
  *
  * <p>字段与前端 {@code CustomerProfile} 类型对齐(见 m-tabs/data.ts):
@@ -38,7 +38,13 @@ public record ConversationCustomerProfile(
         String joined,
         String lastActive,
         List<LedgerEntry> ledger,
-        List<CustomerNote> notes) {
+        List<CustomerNote> notes,
+        java.util.Map<String,Object> groups) {
+    public ConversationCustomerProfile(String uid,String nickname,String phone,String vlevel,List<String> systemTags,List<String> customTags,
+            String risk,String riskNote,String recharge,String withdraw,String balance,Integer tickets,String device,String hashrate,String idle,
+            String region,String joined,String lastActive,List<LedgerEntry> ledger,List<CustomerNote> notes) {
+        this(uid,nickname,phone,vlevel,systemTags,customTags,risk,riskNote,recharge,withdraw,balance,tickets,device,hashrate,idle,region,joined,lastActive,ledger,notes,java.util.Map.of());
+    }
 
     // record 紧凑构造器:列表字段兜底为空列表,避免前端空指针
     public ConversationCustomerProfile {
@@ -62,6 +68,11 @@ public record ConversationCustomerProfile(
             String id,
             Long ts,
             String author,
-            String text) {
+            String text,Long authorId,String authorName,String createdAt) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public CustomerNote {}
+        public CustomerNote(String id,Long ts,String author,String text) {
+            this(id,ts,author,text,null,author,ts==null?null:java.time.Instant.ofEpochMilli(ts).toString());
+        }
     }
 }

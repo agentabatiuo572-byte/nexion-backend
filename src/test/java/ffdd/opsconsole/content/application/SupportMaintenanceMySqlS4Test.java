@@ -27,6 +27,9 @@ import static org.assertj.core.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="S4_EVIDENCE_DIR",matches=".+")
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportMaintenanceMySqlS4Test {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired SupportBindingService bindings;

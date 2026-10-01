@@ -19,6 +19,7 @@ public class SupportWorkbenchController {
     private final SupportWorkbenchService workbench;
     private final SupportMaintenanceService maintenance;
     private final ProductionSupportPathGuard productionPathGuard;
+    private final ffdd.opsconsole.content.application.SupportCustomerProfileService profiles;
 
     @GetMapping({"/overview","/customers"})
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
@@ -30,11 +31,29 @@ public class SupportWorkbenchController {
         return ApiResult.ok(workbench.snapshot(agentId,filter,keyword,pageNum,pageSize,from,to));
     }
 
-    @GetMapping("/customers/{customerId}")
+    @GetMapping({"/customers/{customerId}","/customers/{customerId}/360"})
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     public ApiResult<Map<String,Object>> detail(@PathVariable Long customerId) {
         productionPathGuard.requireOpsWriteAllowed();
         return ApiResult.ok(workbench.detail(customerId));
+    }
+    @GetMapping("/customers/{customerId}/flows")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> flows(@PathVariable Long customerId,@RequestParam(defaultValue="1") long pageNum,
+            @RequestParam(defaultValue="20") int pageSize,@RequestParam(required=false) String currency,@RequestParam(required=false) String status,
+            @RequestParam(required=false) String from,@RequestParam(required=false) String to) {
+        productionPathGuard.requireOpsWriteAllowed();return ApiResult.ok(profiles.flows(customerId,pageNum,pageSize,currency,status,from,to));
+    }
+    @GetMapping("/customers/{customerId}/avatar")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public org.springframework.http.ResponseEntity<byte[]> avatar(@PathVariable Long customerId) {
+        productionPathGuard.requireOpsWriteAllowed();return OpsSupportAdminAvatarController.image(profiles.avatar(customerId));
+    }
+    @GetMapping("/customers/{customerId}/devices")
+    @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
+    public ApiResult<Map<String,Object>> devices(@PathVariable Long customerId,@RequestParam(defaultValue="1") long pageNum,
+            @RequestParam(defaultValue="20") int pageSize) {
+        productionPathGuard.requireOpsWriteAllowed();return ApiResult.ok(profiles.devices(customerId,pageNum,pageSize));
     }
 
     @GetMapping({"/customers/{customerId}/maintenance","/customers/{customerId}/maintenance/history"})

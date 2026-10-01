@@ -35,6 +35,9 @@ import static org.assertj.core.api.Assertions.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class SupportS4RuntimeTest {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired SupportBindingService bindings;
@@ -199,7 +202,7 @@ class SupportS4RuntimeTest {
         assertThat(pre.headers().firstValue("cache-control").orElse("")).contains("no-store");
         assertThat(ImageIO.read(new ByteArrayInputStream(pre.body())).getWidth()).isEqualTo(4);
         String object=jdbc.queryForObject("SELECT object_key FROM nx_support_attachment WHERE id=?",String.class,attachment);
-        var anonymous=client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:19029/"+storageProperties.getBucket()+"/"+object)).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
+        var anonymous=client.send(HttpRequest.newBuilder(URI.create(storageProperties.getEndpoint()+"/"+storageProperties.getBucket()+"/"+object)).GET().build(),HttpResponse.BodyHandlers.ofByteArray());
         assertThat(anonymous.statusCode()).isEqualTo(403);
         var body=new LinkedHashMap<String,Object>();
         body.put("conversationType","support");body.put("userId",customer);body.put("openingText","");

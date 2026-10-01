@@ -23,10 +23,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='OPEN'")
     long countOpen();
 
-    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='TRANSFERRED'")
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='TRANSFERRED' AND archived=0")
     long countIncomingPending();
 
-    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status<>'CLOSED'")
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND unread_count>0 AND status<>'CLOSED' AND archived=0")
     long countUnread();
 
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='RESOLVED'")
@@ -35,26 +35,36 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND status='CLOSED'")
     long countClosed();
 
+    @Select("SELECT COUNT(*) FROM nx_conversation WHERE is_deleted=0 AND archived=1")
+    long countArchived();
+
+    @Update("UPDATE nx_conversation SET archived=#{archived},version=version+1,updated_at=#{now} WHERE conversation_no=#{no} AND is_deleted=0 AND archived=#{previous} AND version=#{version}")
+    int updateArchived(@Param("no") String no,@Param("archived") boolean archived,@Param("previous") boolean previous,@Param("version") Long version,@Param("now") LocalDateTime now);
+
     @Select("""
             <script>
             SELECT COUNT(*)
               FROM nx_conversation c
              WHERE c.is_deleted=0
+             <if test='archived != null'>AND c.archived=#{archived}</if>
              <if test='status != null and status != ""'>AND c.status=UPPER(#{status})</if>
              <if test='type != null and type != ""'>AND c.conversation_type=LOWER(#{type})</if>
              <if test='ownerAgentId != null and ownerAgentId != ""'>AND EXISTS(SELECT 1 FROM nx_support_agent_user_assignment sa JOIN nx_support_agent_profile sp ON sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0 JOIN nx_admin a ON a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0 WHERE sa.user_id=c.user_id AND sa.agent_admin_id=#{ownerAgentId} AND sa.status='ACTIVE' AND sa.is_deleted=0)</if>
              <if test='userId != null'>AND c.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (c.conversation_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR c.owner_agent_name LIKE CONCAT('%', #{keyword}, '%')
+                    OR COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') LIKE CONCAT('%', #{keyword}, '%')
                     OR c.last_message LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-             <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED'</if>
+             <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED' AND c.archived=0</if>
             </script>
             """)
     long countConversations(@Param("status") String status, @Param("type") String type,
                             @Param("ownerAgentId") String ownerAgentId, @Param("userId") Long userId,
-                            @Param("keyword") String keyword, @Param("unreadOnly") Boolean unreadOnly);
+                            @Param("keyword") String keyword, @Param("unreadOnly") Boolean unreadOnly,@Param("archived") Boolean archived);
+    default long countConversations(String status,String type,String owner,Long user,String keyword,Boolean unread) {
+        return countConversations(status,type,owner,user,keyword,unread,null);
+    }
 
     @Select("""
             <script>
@@ -94,21 +104,22 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                         WHERE m.conversation_no=c.conversation_no AND m.sender_type IN ('user','agent')
                           AND m.id>sm.id)
                   )
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
             WHERE c.is_deleted=0
+             <if test='archived != null'>AND c.archived=#{archived}</if>
              <if test='status != null and status != ""'>AND c.status=UPPER(#{status})</if>
              <if test='type != null and type != ""'>AND c.conversation_type=LOWER(#{type})</if>
              <if test='ownerAgentId != null and ownerAgentId != ""'>AND EXISTS(SELECT 1 FROM nx_support_agent_user_assignment sa JOIN nx_support_agent_profile sp ON sp.admin_id=sa.agent_admin_id AND sp.enabled=1 AND sp.is_deleted=0 JOIN nx_admin a ON a.id=sa.agent_admin_id AND a.status=1 AND a.is_deleted=0 WHERE sa.user_id=c.user_id AND sa.agent_admin_id=#{ownerAgentId} AND sa.status='ACTIVE' AND sa.is_deleted=0)</if>
              <if test='userId != null'>AND c.user_id=#{userId}</if>
              <if test='keyword != null and keyword != ""'>
                AND (c.conversation_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR c.owner_agent_name LIKE CONCAT('%', #{keyword}, '%')
+                    OR COALESCE((SELECT COALESCE(NULLIF(a.nickname,''),a.username) FROM nx_support_agent_user_assignment sa JOIN nx_admin a ON a.id=sa.agent_admin_id WHERE sa.user_id=c.user_id AND sa.status='ACTIVE' AND sa.is_deleted=0),'待分配') LIKE CONCAT('%', #{keyword}, '%')
                     OR c.last_message LIKE CONCAT('%', #{keyword}, '%'))
              </if>
-             <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED'</if>
+             <if test='unreadOnly != null and unreadOnly'>AND c.unread_count &gt; 0 AND c.status &lt;&gt; 'CLOSED' AND c.archived=0</if>
              <if test='stableCursor != null and stableCursor and beforeId != null'>AND c.id &lt; #{beforeId}</if>
              <choose>
                <when test='stableCursor != null and stableCursor'>ORDER BY c.id DESC</when>
@@ -122,7 +133,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                                                      @Param("userId") Long userId, @Param("unreadOnly") Boolean unreadOnly,
                                                      @Param("beforeId") Long beforeId, @Param("stableCursor") Boolean stableCursor,
                                                      @Param("pageSize") long pageSize,
-                                                    @Param("offset") long offset);
+                                                    @Param("offset") long offset,@Param("archived") Boolean archived);
+    default List<ContentConversationView> pageConversations(String status,String type,String owner,String keyword,Long user,Boolean unread,Long before,Boolean stable,long size,long offset) {
+        return pageConversations(status,type,owner,keyword,user,unread,before,stable,size,offset,null);
+    }
 
     @Select("""
             <script>
@@ -164,7 +178,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                     <if test="currentRead">FOR SHARE</if>
                   )
                 <if test="currentRead">FOR SHARE</if>
-              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind
+              ) THEN 'IDLE_TIMEOUT_CLOSE' ELSE NULL END AS lastMessageKind, c.archived
             FROM nx_conversation c
             LEFT JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0
@@ -219,7 +233,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
               (SELECT COALESCE(MAX(m.id),0) FROM nx_conversation_message m
                 WHERE m.conversation_no=c.conversation_no AND m.is_deleted=0
                   AND m.sender_type IN ('user','agent')) AS lastPublicMessageId,
-              NULL AS lastMessageKind
+              NULL AS lastMessageKind, c.archived
             FROM nx_conversation c
             JOIN nx_conversation_transfer t
               ON t.conversation_no=c.conversation_no AND t.status='PENDING' AND t.is_deleted=0

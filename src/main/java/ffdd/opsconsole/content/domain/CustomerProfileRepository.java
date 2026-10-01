@@ -26,6 +26,9 @@ public interface CustomerProfileRepository {
 
     /** 新增备注,返回带 id / ts 的回显对象(对齐前端 CustomerNote)。 */
     ConversationCustomerProfile.CustomerNote addNote(Long userId, String author, String content, String operator, LocalDateTime now);
+    default ConversationCustomerProfile.CustomerNote addNote(Long userId,Long authorId,String author,String content,String operator,LocalDateTime now) {
+        return addNote(userId,author,content,operator,now);
+    }
 
     /** 软删除备注(is_deleted=1);返回是否命中。 */
     boolean removeNote(Long noteId, String operator, LocalDateTime now);

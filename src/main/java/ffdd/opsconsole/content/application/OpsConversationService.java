@@ -103,12 +103,14 @@ public class OpsConversationService {
     private final SupportOwnershipService ownership;
     private final SupportHumanMessageService humanMessages;
     private final SupportReplyService replies;
+    private final SupportCustomerProfileService customerProfiles;
 
     public ApiResult<Map<String, Object>> overview() {
         productionPathGuard.requireOpsWriteAllowed();
         ensureSeedData();
-        ownership.requireSupervisor();
-        Map<String, Object> response = new LinkedHashMap<>(conversationRepository.counters());
+        Long actor=ownership.actorId(),scope=null;
+        if(!ownership.supervisor(actor)){ownership.requireEligibleAgent();scope=actor;}
+        Map<String, Object> response = new LinkedHashMap<>(conversationRepository.counters(scope));
         response.put("domain", "I9");
         response.put("statuses", List.of("OPEN", "TRANSFERRED", "RESOLVED", "CLOSED"));
         response.put("conversationTypes", List.of("advisor", "support", "ai"));
@@ -125,11 +127,12 @@ public class OpsConversationService {
         if (!ownership.supervisor(actor)) {
             ownership.requireEligibleAgent();
             if (request == null) request=new ConversationQueryRequest(null,null,null,null,null,null,1L,20L);
-            request=new ConversationQueryRequest(request.status(),request.type(),String.valueOf(actor),request.userId(),request.keyword(),request.unreadOnly(),request.pageNum(),request.pageSize());
+            request=new ConversationQueryRequest(request.status(),request.type(),String.valueOf(actor),request.userId(),request.keyword(),request.unreadOnly(),request.pageNum(),request.pageSize(),request.archived());
         }
         return ApiResult.ok(conversationRepository.pageConversations(request));
     }
 
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<ContentConversationDetail> detail(String conversationNo) {
         ownership.readConversation(conversationNo);
         productionPathGuard.requireOpsWriteAllowed();
@@ -185,302 +188,12 @@ public class OpsConversationService {
         return ApiResult.ok();
     }
 
-    /**
-     * 跨域聚合会话客户档案(只读辅助)。
-     *
-     * <p>按 {@code conversation.userId} 调用 user / finance / device / risk / content 工单域,
-     * 复用 user360 同款 service,不另造查询。每个子域独立 try/catch 降级,任何子查询失败都不得
-     * 中断会话详情返回;查不到的字段用合理兜底("—" / 0 / "未绑定" 等),只要数据源能查到就用真实值。</p>
-     *
-     * <p>会话未关联具体用户(userId 为空,如受众群发)时返回 null,前端降级显示"未关联用户"。</p>
-     */
+    /** Shared service facts; unknown and failed groups stay explicit rather than becoming zero. */
     private ConversationCustomerProfile buildCustomerProfile(ContentConversationView conversation) {
-        Long userId = conversation.userId();
-        String conversationType = conversation.conversationType();
-        if (userId == null || userId <= 0) {
-            return null;
-        }
-
-        // 1. user 域:基础资料 / 账龄 / 地区
-        UserAccountView profile = null;
-        try {
-            ApiResult<UserAccountView> profileResult = userService.profile(userId);
-            if (profileResult.getCode() == 0) {
-                profile = profileResult.getData();
-            }
-        } catch (RuntimeException ignored) {
-            // 降级:profile 维持 null,后续走最小档案兜底
-        }
-        if (profile == null) {
-            return minimalProfile(userId, conversationType);
-        }
-
-        String uid = StringUtils.hasText(profile.userNo()) ? profile.userNo().trim() : formatUid(userId);
-        String nickname = StringUtils.hasText(profile.nickname()) ? profile.nickname().trim() : ("用户 " + uid);
-        String phone = StringUtils.hasText(profile.phoneMasked()) ? profile.phoneMasked().trim() : "未绑定";
-        String vlevel = firstNonBlank(profile.vRank(), profile.userLevel());
-        String region = StringUtils.hasText(profile.countryCode()) ? profile.countryCode().trim() : "未知";
-        String joined = formatDate(profile.registeredAt());
-        String lastActive = formatDateTime(profile.lastLoginAt());
-        BigDecimal balance = profile.walletUsdt() == null ? BigDecimal.ZERO : profile.walletUsdt();
-
-        // 2. risk 域:风险评分 / 带级 / 未结案件
-        int effectiveScore = -1;
-        String bandLabel = null;
-        long openCases = 0;
-        try {
-            RiskScoreUserView scoreView = dataOrNull(riskService.scoreUser(profile.userNo()));
-            if (scoreView != null) {
-                if (scoreView.effectiveScore() != null) {
-                    effectiveScore = scoreView.effectiveScore();
-                }
-                bandLabel = scoreView.bandLabel();
-            }
-            List<RiskCaseView> cases = pageRecords(riskService.cases(new RiskCaseQueryRequest(userId, null, null, 1, 20, null)), 20);
-            openCases = cases.stream().filter(rc -> !"FINALIZED".equalsIgnoreCase(statusText(rc.status()))).count();
-        } catch (RuntimeException ignored) {
-            // 降级:风险字段走兜底
-        }
-        if (effectiveScore < 0 && profile.riskScore() != null) {
-            effectiveScore = profile.riskScore();
-        }
-        String risk = riskLevel(effectiveScore, profile, openCases);
-        List<String> systemTags = buildTags(profile, conversationType, openCases);
-        String riskNote = buildRiskNote(profile, bandLabel, openCases, effectiveScore);
-
-        // 客户自定义标签(持久化于 nx_customer_tag;独立 try/catch 降级,绝不中断会话详情)
-        List<String> customTags = List.of();
-        try {
-            List<String> persistedTags = customerProfileRepository.findCustomTags(userId);
-            customTags = persistedTags == null ? List.of() : persistedTags;
-        } catch (RuntimeException ignored) {
-            // 降级:customTags 维持空列表
-        }
-
-        // 3. finance 域:累计充值 / 提现 / 流水条目(最近若干条进 ledger)
-        BigDecimal recharge = BigDecimal.ZERO;
-        BigDecimal withdraw = BigDecimal.ZERO;
-        List<ConversationCustomerProfile.LedgerEntry> ledger = new ArrayList<>();
-        try {
-            List<DepositFlowView> deposits = pageRecords(financeService.topupFlows("confirmed", userId, null, 1, 20), 20);
-            recharge = deposits.stream()
-                    .map(d -> d.providerReceived() != null ? d.providerReceived() : (d.amount() != null ? d.amount() : BigDecimal.ZERO))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            for (DepositFlowView d : deposits) {
-                ledger.add(new ConversationCustomerProfile.LedgerEntry(
-                        "充值 " + channelOrAsset(d),
-                        formatDateTime(d.confirmedAt() != null ? d.confirmedAt() : d.createdAt()),
-                        money(d.providerReceived() != null ? d.providerReceived() : d.amount()),
-                        Boolean.TRUE,
-                        !"CONFIRMED".equalsIgnoreCase(statusText(d.status()))));
-            }
-        } catch (RuntimeException ignored) {
-            // 降级:recharge 维持 0
-        }
-        try {
-            List<WithdrawalOrderView> withdrawals = pageRecords(
-                    financeService.withdrawals(new WithdrawalQueryRequest(null, userId, null, 1, 20)), 20);
-            withdraw = withdrawals.stream()
-                    .filter(w -> List.of("SUCCESS", "COMPLETED").contains(statusText(w.status())))
-                    .map(w -> w.amount() != null ? w.amount() : BigDecimal.ZERO)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            for (WithdrawalOrderView w : withdrawals) {
-                ledger.add(new ConversationCustomerProfile.LedgerEntry(
-                        "提现 " + (w.asset() != null ? w.asset() : ""),
-                        formatDateTime(w.completedAt() != null ? w.completedAt() : w.createdAt()),
-                        money(w.amount()),
-                        Boolean.FALSE,
-                        !List.of("SUCCESS", "COMPLETED").contains(statusText(w.status()))));
-            }
-        } catch (RuntimeException ignored) {
-            // 降级:withdraw 维持 0
-        }
-
-        // 4. device 域:设备数 / 算力 / 闲置
-        long deviceTotal = 0;
-        long deviceActive = 0;
-        long deviceIdle = 0;
-        BigDecimal hashrateTotal = BigDecimal.ZERO;
-        try {
-            List<DeviceOpsView> devices = dataOrNull(deviceService.userDevices(userId, 200));
-            if (devices == null) {
-                devices = List.of();
-            }
-            deviceTotal = devices.size();
-            for (DeviceOpsView d : devices) {
-                if (List.of("ONLINE", "ACTIVE", "RUNNING").contains(statusText(d.status()))) {
-                    deviceActive++;
-                } else {
-                    deviceIdle++;
-                }
-                if (d.hashrate() != null) {
-                    hashrateTotal = hashrateTotal.add(d.hashrate());
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // 降级:device 字段走兜底
-        }
-        // device 域查不到时,回退 profile 自带的设备计数(nx_user 冗余字段)
-        if (deviceTotal == 0 && profile.deviceCount() != null && profile.deviceCount() > 0) {
-            deviceTotal = profile.deviceCount();
-            if (profile.activeDeviceCount() != null) {
-                deviceActive = profile.activeDeviceCount();
-                deviceIdle = Math.max(0, deviceTotal - deviceActive);
-            }
-        }
-        String device = deviceTotal > 0 ? (deviceActive + "/" + deviceTotal + " 在网") : "无设备";
-        String hashrate = hashrateTotal.signum() > 0 ? (money(hashrateTotal) + " TH/s") : "—";
-        String idle = deviceIdle > 0 ? ("闲置 " + deviceIdle) : null;
-
-        // 5. content 域:关联工单数(本域 ticketRepository,按 userId 过滤)
-        Integer tickets = 0;
-        try {
-            PageResult<SupportTicketView> ticketPage = ticketRepository.pageTickets(
-                    new SupportTicketQueryRequest(null, null, null, null, null, userId, null, 1L, 1L));
-            if (ticketPage != null) {
-                tickets = (int) ticketPage.getTotal();
-            }
-        } catch (RuntimeException ignored) {
-            // 降级:tickets 维持 0
-        }
-
-        // 客户内部备注(持久化于 nx_customer_note;独立 try/catch 降级)
-        List<ConversationCustomerProfile.CustomerNote> notes = List.of();
-        try {
-            List<ConversationCustomerProfile.CustomerNote> persistedNotes = customerProfileRepository.findNotes(userId);
-            notes = persistedNotes == null ? List.of() : persistedNotes;
-        } catch (RuntimeException ignored) {
-            // 降级:notes 维持空列表
-        }
-
-        return new ConversationCustomerProfile(
-                uid, nickname, phone, vlevel, systemTags, customTags, risk, riskNote,
-                money(recharge) + " USDT", money(withdraw) + " USDT", money(balance) + " USDT",
-                tickets, device, hashrate, idle, region, joined, lastActive,
-                ledger, notes);
+        Long customer=conversation.userId();
+        return customer==null || customer<1?null:customerProfiles.conversationProfile(customer);
     }
 
-    /** userId 存在但 user 域查不到档案时的最小兜底档案(只读辅助,不阻断会话)。 */
-    private ConversationCustomerProfile minimalProfile(Long userId, String conversationType) {
-        String uid = formatUid(userId);
-        List<String> tags = new ArrayList<>();
-        tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
-        return new ConversationCustomerProfile(
-                uid, "用户 " + uid, "未绑定", "—",
-                tags, List.of(), "中", "未取到客户档案,按客服流程核对",
-                "—", "—", "—", 0, "无设备", "—", null,
-                "未知", "—", "—", List.of(), List.of());
-    }
-
-    private String formatUid(Long userId) {
-        return "U-" + String.format("%05d", userId);
-    }
-
-    private String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (StringUtils.hasText(value)) {
-                return value.trim();
-            }
-        }
-        return "—";
-    }
-
-    private String riskLevel(int effectiveScore, UserAccountView profile, long openCases) {
-        int score = effectiveScore;
-        if (score < 0) {
-            score = fallbackRiskScore(profile, openCases);
-        }
-        if (score >= 70) {
-            return "高";
-        }
-        if (score >= 40) {
-            return "中";
-        }
-        return "低";
-    }
-
-    private int fallbackRiskScore(UserAccountView profile, long openCases) {
-        int statusScore = switch (statusText(profile.status())) {
-            case "BANNED", "RESTRICTED" -> 88;
-            case "FROZEN" -> 76;
-            default -> 20;
-        };
-        int caseScore = openCases > 0 ? 35 : 0;
-        return Math.min(100, statusScore + caseScore);
-    }
-
-    private List<String> buildTags(UserAccountView profile, String conversationType, long openCases) {
-        List<String> tags = new ArrayList<>();
-        tags.add("advisor".equalsIgnoreCase(statusText(conversationType)) ? "顾问会话" : "客服会话");
-        if (StringUtils.hasText(profile.vRank())) {
-            tags.add("V:" + profile.vRank().trim());
-        }
-        if (openCases > 0) {
-            tags.add("风控介入");
-        }
-        String accountStatus = statusText(profile.status());
-        if (!"ACTIVE".equals(accountStatus) && !accountStatus.isEmpty()) {
-            tags.add(accountStatus);
-        }
-        return tags;
-    }
-
-    private String buildRiskNote(UserAccountView profile, String bandLabel, long openCases, int effectiveScore) {
-        List<String> parts = new ArrayList<>();
-        if (StringUtils.hasText(bandLabel)) {
-            parts.add(bandLabel.trim());
-        }
-        if (openCases > 0) {
-            parts.add("未结风控案件 " + openCases + " 件");
-        }
-        String accountStatus = statusText(profile.status());
-        if (!"ACTIVE".equals(accountStatus) && !accountStatus.isEmpty()) {
-            parts.add("账号 " + accountStatus);
-        }
-        if (effectiveScore >= 0) {
-            parts.add("评分 " + effectiveScore);
-        }
-        return parts.isEmpty() ? "正常" : String.join(" / ", parts);
-    }
-
-    private String channelOrAsset(DepositFlowView deposit) {
-        return StringUtils.hasText(deposit.asset()) ? deposit.asset().trim()
-                : (StringUtils.hasText(deposit.channel()) ? deposit.channel().trim() : "");
-    }
-
-    private String money(BigDecimal value) {
-        return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP).toPlainString();
-    }
-
-    private String formatDate(LocalDateTime time) {
-        return time == null ? "—" : time.toLocalDate().toString();
-    }
-
-    private String formatDateTime(LocalDateTime time) {
-        return time == null ? "—" : time.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-    }
-
-    private String statusText(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private <T> T dataOrNull(ApiResult<T> result) {
-        if (result == null || result.getCode() != 0) {
-            return null;
-        }
-        return result.getData();
-    }
-
-    private <T> List<T> pageRecords(ApiResult<PageResult<T>> result, int limit) {
-        if (result == null || result.getCode() != 0 || result.getData() == null) {
-            return List.of();
-        }
-        List<T> records = result.getData().getRecords();
-        if (records == null) {
-            return List.of();
-        }
-        return records.size() > limit ? new ArrayList<>(records.subList(0, limit)) : records;
-    }
 
     public ApiResult<List<Map<String, Object>>> transferTargets() {
         productionPathGuard.requireOpsWriteAllowed();
@@ -557,7 +270,7 @@ public class OpsConversationService {
                 || "TRANSFERRED".equalsIgnoreCase(conversation.status()) || "CLOSED".equalsIgnoreCase(conversation.status())) {
             return new MessageCommandResult(invalidState(), null);
         }
-        String body = SupportHumanMessageService.text(request.body());
+        String body = prepared.content(request.body());
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
         Long messageId = conversationRepository.replyAndReturnMessageId(conversation, body, actor, now);
@@ -577,6 +290,8 @@ public class OpsConversationService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> addCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
+        ownership.writeConversation(conversationNo,true);
+        if(!SupportOwnershipService.hasAuthority("service_m3_write")) throw new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_EDIT_FORBIDDEN");
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -606,6 +321,8 @@ public class OpsConversationService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<List<String>> removeCustomTag(String conversationNo, String idempotencyKey, CustomerTagRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
+        ownership.writeConversation(conversationNo,true);
+        if(!SupportOwnershipService.hasAuthority("service_m3_write")) throw new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_EDIT_FORBIDDEN");
         ensureSeedData();
         ApiResult<List<String>> guard = requireProfileTagCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -632,6 +349,8 @@ public class OpsConversationService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<ConversationCustomerProfile.CustomerNote> addNote(String conversationNo, String idempotencyKey, CustomerNoteRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
+        ownership.writeConversation(conversationNo,true);
+        if(!SupportOwnershipService.hasAuthority("service_m3_write")) throw new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_EDIT_FORBIDDEN");
         ensureSeedData();
         ApiResult<ConversationCustomerProfile.CustomerNote> guard = requireProfileNoteCommand(conversationNo, idempotencyKey, request);
         if (guard != null) {
@@ -644,7 +363,7 @@ public class OpsConversationService {
         String text = request.text().trim();
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
-        ConversationCustomerProfile.CustomerNote created = customerProfileRepository.addNote(userId, actor, text, actor, now);
+        ConversationCustomerProfile.CustomerNote created = customerProfileRepository.addNote(userId,ownership.actorId(), actor, text, actor, now);
         audit("I9_CUSTOMER_NOTE_ADDED", "U-" + userId, actor, Map.of(
                 "userId", userId,
                 "conversationNo", conversationNo,
@@ -657,6 +376,8 @@ public class OpsConversationService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Void> removeNote(String conversationNo, Long noteId, String idempotencyKey, CustomerNoteRemoveRequest request) {
         productionPathGuard.requireOpsWriteAllowed();
+        ownership.writeConversation(conversationNo,true);
+        if(!SupportOwnershipService.hasAuthority("service_m3_write")) throw new ffdd.opsconsole.shared.exception.BizException(403,"SUPPORT_EDIT_FORBIDDEN");
         ensureSeedData();
         ApiResult<Void> guard = requireReasonCommand(conversationNo, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -740,9 +461,7 @@ public class OpsConversationService {
         if (archived && "TRANSFERRED".equalsIgnoreCase(conversation.status())) {
             return invalidState();
         }
-        if (!archived && !"CLOSED".equalsIgnoreCase(conversation.status())) {
-            return invalidState();
-        }
+        if (archived == Boolean.TRUE.equals(conversation.archived())) return ApiResult.ok(conversation);
         String actor = operator(request.operator());
         LocalDateTime now = LocalDateTime.now(clock);
         if (!conversationRepository.archive(conversation, archived, actor, now)) {
@@ -750,8 +469,8 @@ public class OpsConversationService {
         }
         ContentConversationView updated = conversationRepository.findByConversationNo(conversation.conversationNo()).orElse(conversation);
         audit(archived ? "I9_CONVERSATION_ARCHIVED" : "I9_CONVERSATION_UNARCHIVED", conversation.conversationNo(), actor, Map.of(
-                "from", conversation.status(),
-                "to", archived ? "CLOSED" : "RESOLVED",
+                "status", conversation.status(),
+                "fromArchived", conversation.archived(), "toArchived", archived,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return ApiResult.ok(updated);
@@ -782,7 +501,7 @@ public class OpsConversationService {
             ContentConversationView row = conversationRepository.findByConversationNoForUpdate(id).orElse(null);
             if (row == null) return ApiResult.fail(404, "CONVERSATION_NOT_FOUND:" + id);
             Long expectedVersion = request.expectedVersions() == null ? null : request.expectedVersions().get(id);
-            if (!"RESOLVED".equalsIgnoreCase(row.status())
+            if ("TRANSFERRED".equalsIgnoreCase(row.status()) || Boolean.TRUE.equals(row.archived())
                     || expectedVersion == null
                     || !expectedVersion.equals(row.version())) return invalidBatchState();
             replies.requireHandled(id);
@@ -798,7 +517,7 @@ public class OpsConversationService {
                 throw new ConversationStateConflictException();
             }
             audit("I9_CONVERSATION_ARCHIVED", row.conversationNo(), actor, Map.of(
-                    "from", row.status(), "to", "CLOSED", "reason", request.reason().trim(),
+                    "status", row.status(), "fromArchived", false, "toArchived", true, "reason", request.reason().trim(),
                     "idempotencyKey", idempotencyKey.trim(), "batchSize", rows.size()));
             updatedRows.add(conversationRepository.findByConversationNo(row.conversationNo()).orElse(row));
         }
@@ -917,7 +636,7 @@ public class OpsConversationService {
         AdvisorRoutingDecision routing = routingDecision(type, request, actor);
         String ownerName = routing.targetName();
         String ownerId = routing.targetId();
-        String text = SupportHumanMessageService.text(request.openingText());
+        String text = prepared.content(request.openingText());
         LocalDateTime now = LocalDateTime.now(clock);
         String conversationNo = "CV-OUT-" + now.format(CONVERSATION_NO_TIME);
         ConversationRepository.PersistedConversation persisted = conversationRepository.createConversationWithMessage(

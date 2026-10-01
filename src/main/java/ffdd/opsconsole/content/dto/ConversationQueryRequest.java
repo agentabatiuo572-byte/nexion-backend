@@ -8,5 +8,9 @@ public record ConversationQueryRequest(
         String keyword,
         Boolean unreadOnly,
         Long pageNum,
-        Long pageSize) {
+        Long pageSize,
+        Boolean archived) {
+    public ConversationQueryRequest(String status,String type,String ownerAgentId,Long userId,String keyword,Boolean unreadOnly,Long pageNum,Long pageSize) {
+        this(status,type,ownerAgentId,userId,keyword,unreadOnly,pageNum,pageSize,null);
+    }
 }

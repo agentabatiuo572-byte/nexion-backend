@@ -18,9 +18,26 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /** Opt-in runner supplies the complete isolated MySQL/Redis bundle; no fallback catalog. */
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=18129"})
+@org.springframework.context.annotation.Import(SupportIsolatedRuntime.class)
+@org.springframework.test.annotation.DirtiesContext(classMode=org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.DEFINED_PORT,properties={"server.port=${S4_HTTP_PORT:18129}"})
 @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="S3_EVIDENCE_DIR",matches=".+")
 class SupportBindingRuntimeTest {
+    @org.springframework.test.context.DynamicPropertySource static void coreBoundary(org.springframework.test.context.DynamicPropertyRegistry registry) {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED")))SupportEnhancementPreparationTest.isolatedBoundary(registry);
+    }
+    private ffdd.opsconsole.content.domain.SupportRules originalRules;
+    @org.junit.jupiter.api.BeforeEach void legacyMode() {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) {
+            assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_enhance_20261001");
+            originalRules=mapper.rules();jdbc.update("UPDATE nx_support_rules SET unbound_assignment_mode='SUPERVISOR',version=version+1 WHERE id=1");
+        }
+    }
+    @org.junit.jupiter.api.AfterEach void restoreCoreRules() {
+        if(originalRules!=null)jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
+                originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt());
+        SecurityContextHolder.clearContext();
+    }
     @Autowired JdbcTemplate jdbc;
     @Autowired SupportBindingService bindings;
     @Autowired SupportBindingMapper mapper;
@@ -313,15 +330,17 @@ class SupportBindingRuntimeTest {
         registrationMapper.insertChallengeInEnvironment(challenge,"+86",phone,clientIp,"PRODUCTION","123456",10);
         var request=new ffdd.opsconsole.auth.dto.UserRegistrationRequest("+86",phone,challenge,"123456",
             System.getenv("S3_FIXTURE_PASSWORD"),null,"zh");
-        String trigger="s3_fail_"+run;
-        jdbc.execute("CREATE TRIGGER "+trigger+" BEFORE INSERT ON nx_support_binding_pool FOR EACH ROW BEGIN IF EXISTS(SELECT 1 FROM nx_user WHERE id=NEW.customer_id AND phone='"+phone+"') THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='S3_BINDING_FAILURE_INJECTION'; END IF; END");
+        String constraint="s3_fail_"+run;
+        long currentMax=jdbc.queryForObject("SELECT COALESCE(MAX(id),0) FROM nx_user",Long.class);
+        // information_schema AUTO_INCREMENT may be cached after earlier fixture inserts.
+        jdbc.execute("ALTER TABLE nx_support_binding_pool ADD CONSTRAINT "+constraint+" CHECK(customer_id<="+currentMax+")");
         try {
             assertThatThrownBy(()->{
                 var result=registration.register(request,clientIp);
                 fail("Failure injection was not reached: "+result.getCode()+" "+result.getMessage());
-            }).hasStackTraceContaining("S3_BINDING_FAILURE_INJECTION");
+            }).hasStackTraceContaining(constraint);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user WHERE phone=?",Long.class,phone)).isZero();
-        } finally {jdbc.execute("DROP TRIGGER "+trigger);}
+        } finally {jdbc.execute("ALTER TABLE nx_support_binding_pool DROP CHECK "+constraint);}
         var created=registration.register(request,clientIp);
         assertThat(created.getCode()).as("registration retry: %s",created.getMessage()).isZero();
         long id=created.getData().user().userId();
@@ -345,8 +364,8 @@ class SupportBindingRuntimeTest {
     }
 
     @Test void isolatedApplicationStartsWithBindingSchema() throws Exception {
-        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:33329/cs_redesign?");
-        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo("cs_redesign");
+        assertThat(System.getenv("NEXION_DB_URL")).startsWith("jdbc:mysql://127.0.0.1:33329/"+SupportIsolatedRuntime.database()+"?");
+        assertThat(jdbc.queryForObject("SELECT DATABASE()",String.class)).isEqualTo(SupportIsolatedRuntime.database());
         assertThat(mapper.rules()).isNotNull();
         superId=admin("SUPER","SUPER_ADMIN","MANAGER");manager=admin("MANAGER","SUPPORT","MANAGER");
         g1=admin("G1","SUPPORT","DEDICATED");g2=admin("G2","SUPPORT","DEDICATED");
@@ -529,7 +548,7 @@ class SupportBindingRuntimeTest {
     private void transfer(long target,List<Long> customers,String key){assertThat(bindings.transfer(key,request(target,customers)).getCode()).isZero();}
     private void assertPool(long id,String reason){assertThat(mapper.current(id)).isNull();assertThat(jdbc.queryForObject("SELECT reason FROM nx_support_binding_pool WHERE customer_id=?",String.class,id)).isEqualTo(reason);}
     private com.fasterxml.jackson.databind.JsonNode http(String method,String path,String token,Object body,String key) throws Exception {
-        var b=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:18129"+path)).timeout(java.time.Duration.ofSeconds(20));
+        var b=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+path)).timeout(java.time.Duration.ofSeconds(20));
         if(token!=null)b.header("Authorization","Bearer "+token);if(key!=null)b.header("Idempotency-Key",key);
         b.header("Content-Type","application/json");b.method(method,body==null?java.net.http.HttpRequest.BodyPublishers.noBody():java.net.http.HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
         var response=java.net.http.HttpClient.newHttpClient().send(b.build(),java.net.http.HttpResponse.BodyHandlers.ofString());
@@ -554,7 +573,7 @@ class SupportBindingRuntimeTest {
         assertThat(ticket.path("code").asInt()).as("socket ticket: %s",ticket).isZero();
         var probe=new SocketProbe();
         probe.socket=java.net.http.HttpClient.newHttpClient().newWebSocketBuilder()
-                .buildAsync(java.net.URI.create("ws://127.0.0.1:18129/ws/conversations"),probe).get(10,java.util.concurrent.TimeUnit.SECONDS);
+                .buildAsync(java.net.URI.create("ws://127.0.0.1:"+SupportIsolatedRuntime.port()+"/ws/conversations"),probe).get(10,java.util.concurrent.TimeUnit.SECONDS);
         probe.send(Map.of("type","auth","ticket",ticket.path("data").path("ticket").asText()));probe.await("ready");return probe;
     }
     private final class SocketProbe implements java.net.http.WebSocket.Listener,AutoCloseable {
@@ -575,7 +594,7 @@ class SupportBindingRuntimeTest {
     }
     private StreamProbe stream(String token) throws Exception {
         var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
-            java.net.URI.create("http://127.0.0.1:18129/api/admin/content/conversations/stream"))
+            java.net.URI.create("http://127.0.0.1:"+SupportIsolatedRuntime.port()+"/api/admin/content/conversations/stream"))
             .header("Authorization","Bearer "+token).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofInputStream());
         assertThat(response.statusCode()).isEqualTo(200);return new StreamProbe(response.body());
     }

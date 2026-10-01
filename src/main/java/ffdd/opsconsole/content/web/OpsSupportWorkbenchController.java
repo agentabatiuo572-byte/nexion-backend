@@ -33,7 +33,7 @@ public class OpsSupportWorkbenchController {
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")
     @GetMapping("/skus")
     public ApiResult<PageResult<DeviceSkuView>> skus(DeviceSkuQueryRequest request) {
-        return deviceService.skus(request);
+        return deviceService.skus(new DeviceSkuQueryRequest("on",request==null?null:request.keyword(),request==null?null:request.pageNum(),request==null?null:request.pageSize()));
     }
 
     // 用户账号列表 — M1 客服总览 读

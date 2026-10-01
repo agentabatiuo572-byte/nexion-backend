@@ -38,6 +38,18 @@ public class SupportOwnershipService {
     public void requireSupervisor() {
         if (!supervisor(actorId())) throw new BizException(403, "SUPPORT_MANAGEMENT_FORBIDDEN");
     }
+    /** Preflight only; mutating callers recheck after their ordered customer/rules/admin locks. */
+    public void requireSupervisorSnapshot() {
+        Long actor=actorId();List<String> roles=mapper.rolesSnapshot(actor);
+        if(roles.stream().noneMatch(SupportOwnershipService::superRole)
+                && !(roles.stream().anyMatch("SUPPORT"::equalsIgnoreCase) && mapper.supervisorProfileSnapshot(actor)==1))
+            throw new BizException(403,"SUPPORT_MANAGEMENT_FORBIDDEN");
+    }
+    public void requireSuperAdminSnapshot() {
+        if(mapper.rolesSnapshot(actorId()).stream().noneMatch(SupportOwnershipService::superRole))
+            throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
+    }
+    private static boolean superRole(String role) {return "SUPER".equalsIgnoreCase(role) || "SUPERADMIN".equalsIgnoreCase(role) || "SUPER_ADMIN".equalsIgnoreCase(role);}
 
     public void requireSuperAdmin() {
         if (mapper.roles(actorId()).stream().noneMatch(r -> "SUPER".equalsIgnoreCase(r) || "SUPERADMIN".equalsIgnoreCase(r) || "SUPER_ADMIN".equalsIgnoreCase(r)))

@@ -35,7 +35,15 @@ public class MybatisConversationRepository implements ConversationRepository {
         counters.put("unread", mapper.countUnread());
         counters.put("resolved", mapper.countResolved());
         counters.put("closed", mapper.countClosed());
+        counters.put("archived", mapper.countArchived());
         return counters;
+    }
+    @Override public Map<String,Object> counters(Long agent) {
+        if(agent==null)return counters();String scope=String.valueOf(agent);var counts=new LinkedHashMap<String,Object>();
+        for(String status:List.of("OPEN","RESOLVED","CLOSED"))counts.put(status.toLowerCase(java.util.Locale.ROOT),mapper.countConversations(status,null,scope,null,null,null,null));
+        counts.put("incomingPending",mapper.countConversations("TRANSFERRED",null,scope,null,null,null,false));
+        counts.put("unread",mapper.countConversations(null,null,scope,null,null,true,false));
+        counts.put("archived",mapper.countConversations(null,null,scope,null,null,null,true));return counts;
     }
 
     @Override
@@ -48,11 +56,11 @@ public class MybatisConversationRepository implements ConversationRepository {
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
         Boolean unreadOnly = request == null ? null : request.unreadOnly();
-        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
+        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly, request==null?null:request.archived());
         List<ContentConversationView> records = total == 0
                 ? List.of()
                 : mapper.pageConversations(status, type, ownerAgentId, keyword, userId, unreadOnly,
-                        null, false, pageSize, (pageNum - 1) * pageSize);
+                        null, false, pageSize, (pageNum - 1) * pageSize, request==null?null:request.archived());
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -66,9 +74,9 @@ public class MybatisConversationRepository implements ConversationRepository {
         Long userId = request == null ? null : request.userId();
         String keyword = request == null ? null : trim(request.keyword());
         Boolean unreadOnly = request == null ? null : request.unreadOnly();
-        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly);
+        long total = mapper.countConversations(status, type, ownerAgentId, userId, keyword, unreadOnly, request==null?null:request.archived());
         List<ContentConversationView> records = mapper.pageConversations(
-                status, type, ownerAgentId, keyword, userId, unreadOnly, beforeId, true, pageSize, 0);
+                status, type, ownerAgentId, keyword, userId, unreadOnly, beforeId, true, pageSize, 0, request==null?null:request.archived());
         return new PageResult<>(total, 1, pageSize, records);
     }
 
@@ -255,8 +263,7 @@ public class MybatisConversationRepository implements ConversationRepository {
 
     @Override
     public boolean archive(ContentConversationView conversation, boolean archived, String operator, LocalDateTime now) {
-        String status = archived ? "CLOSED" : "RESOLVED";
-        if (mapper.updateConversationStatus(conversation.conversationNo(), status, conversation.status(), conversation.version(), now) == 0) {
+        if (mapper.updateArchived(conversation.conversationNo(), archived, conversation.archived(), conversation.version(), now) == 0) {
             return false;
         }
         insertMessage(conversation.id(), conversation.conversationNo(), null, "system", "系统",
