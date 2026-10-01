@@ -13,6 +13,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ import java.util.function.Supplier;
 public class AppEarningGoalService {
     private static final BigDecimal MIN_TARGET = new BigDecimal("100");
     private static final int MAX_DEADLINE_DAYS = 3650;
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final AppEarningGoalMapper mapper;
     private final AppProductCatalogService productCatalogService;
@@ -154,8 +156,8 @@ public class AppEarningGoalService {
                         .min(BigDecimal.valueOf(100));
         boolean achieved = row.achieved() || (row.targetUsdt() != null && row.targetUsdt().signum() > 0
                 && lifetime.compareTo(row.targetUsdt()) >= 0);
-        return new GoalView(row.id(), row.targetUsdt(), epoch(row.deadlineAt()), epoch(row.createdAt()), achieved,
-                epoch(row.achievedAt()), progress, lifetime);
+        return new GoalView(row.id(), row.targetUsdt(), epoch(row.deadlineAt()), metadataEpoch(row.createdAt()), achieved,
+                metadataEpoch(row.achievedAt()), progress, lifetime);
     }
 
     private List<Map<String, Object>> productRows(Object value) {
@@ -203,6 +205,8 @@ public class AppEarningGoalService {
     private boolean truthy(Object value) { return Boolean.TRUE.equals(value) || value instanceof Number n && n.intValue() != 0 || "true".equalsIgnoreCase(String.valueOf(value)); }
     private String text(Object value, String fallback) { return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value); }
     private Long epoch(LocalDateTime value) { return value == null ? null : value.toInstant(ZoneOffset.UTC).toEpochMilli(); }
+    // NOW() metadata uses database business time; deadline_at retains its UTC contract.
+    private Long metadataEpoch(LocalDateTime value) { return value == null ? null : value.atZone(BUSINESS_ZONE).toInstant().toEpochMilli(); }
 
     public record GoalListView(boolean serverCanonical, String source, BigDecimal lifetimeEarningsUsdt,
                                List<GoalView> goals) { }

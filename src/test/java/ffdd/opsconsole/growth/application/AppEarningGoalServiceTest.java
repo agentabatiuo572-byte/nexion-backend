@@ -25,6 +25,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class AppEarningGoalServiceTest {
     private final AppEarningGoalMapper mapper = mock(AppEarningGoalMapper.class);
@@ -79,6 +81,72 @@ class AppEarningGoalServiceTest {
             assertThat(goal.achieved()).isTrue();
             assertThat(goal.progressPct()).isEqualByComparingTo("100");
         });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"UTC", "Asia/Shanghai", "Asia/Tokyo"})
+    void listConvertsBusinessMetadataIndependentlyOfUtcDeadlineAndClockZone(String clockZone) {
+        AppEarningGoalService zonedService = new AppEarningGoalService(mapper, catalog, eligibility, idempotency,
+                Clock.fixed(Instant.parse("2026-10-01T13:44:09Z"), ZoneId.of(clockZone)));
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("250"));
+        LocalDateTime deadlineUtc = LocalDateTime.of(2027, 3, 30, 13, 43, 38);
+        LocalDateTime createdBusiness = LocalDateTime.of(2026, 10, 1, 21, 44, 9);
+        when(mapper.list(42L)).thenReturn(List.of(
+                new AppEarningGoalMapper.GoalRow(17L, 42L, new BigDecimal("1000.123456"), deadlineUtc,
+                        false, null, createdBusiness, createdBusiness),
+                new AppEarningGoalMapper.GoalRow(18L, 42L, new BigDecimal("1000"), deadlineUtc,
+                        false, null, null, null)));
+
+        var result = zonedService.list(42L);
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().serverCanonical()).isTrue();
+        assertThat(result.getData().source()).isEqualTo("nx_earning_goal");
+        assertThat(result.getData().goals()).hasSize(2);
+        var goal = result.getData().goals().get(0);
+        assertThat(goal.createdAt()).isEqualTo(Instant.parse("2026-10-01T13:44:09Z").toEpochMilli());
+        assertThat(goal.deadlineAt()).isEqualTo(Instant.parse("2027-03-30T13:43:38Z").toEpochMilli());
+        assertThat(goal.achievedAt()).isNull();
+        assertThat(goal.achieved()).isFalse();
+        assertThat(goal.targetUsdt()).isEqualByComparingTo("1000.123456");
+        assertThat(goal.lifetimeEarningsUsdt()).isEqualByComparingTo("250");
+        assertThat(goal.progressPct()).isEqualByComparingTo("24.996900");
+        var missingMetadata = result.getData().goals().get(1);
+        assertThat(missingMetadata.createdAt()).isNull();
+        assertThat(missingMetadata.achievedAt()).isNull();
+        assertThat(missingMetadata.achieved()).isFalse();
+        assertThat(missingMetadata.deadlineAt()).isEqualTo(goal.deadlineAt());
+        assertThat(missingMetadata.progressPct()).isEqualByComparingTo("25");
+        verify(mapper).list(42L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"UTC", "Asia/Shanghai", "Asia/Tokyo"})
+    void statusConvertsBusinessAchievedTimeAcrossUtcDateBoundary(String clockZone) {
+        AppEarningGoalService zonedService = new AppEarningGoalService(mapper, catalog, eligibility, idempotency,
+                Clock.fixed(Instant.parse("2026-10-01T22:00:00Z"), ZoneId.of(clockZone)));
+        when(mapper.activeUser(42L)).thenReturn(42L);
+        when(mapper.updateStatus(42L, 17L, true)).thenReturn(1);
+        when(mapper.lifetimeEarnings(42L)).thenReturn(new BigDecimal("250"));
+        when(mapper.list(42L)).thenReturn(List.of(new AppEarningGoalMapper.GoalRow(
+                17L, 42L, new BigDecimal("1000"), LocalDateTime.of(2027, 3, 30, 13, 43, 38), true,
+                LocalDateTime.of(2026, 10, 2, 6, 0), LocalDateTime.of(2026, 10, 1, 21, 44, 9),
+                LocalDateTime.of(2026, 10, 2, 6, 0))));
+
+        var result = zonedService.updateStatus(42L, 17L, true);
+
+        assertThat(result.getCode()).isZero();
+        var goal = result.getData();
+        assertThat(goal.achievedAt()).isEqualTo(Instant.parse("2026-10-01T22:00:00Z").toEpochMilli());
+        assertThat(goal.createdAt()).isEqualTo(Instant.parse("2026-10-01T13:44:09Z").toEpochMilli());
+        assertThat(goal.deadlineAt()).isEqualTo(Instant.parse("2027-03-30T13:43:38Z").toEpochMilli());
+        assertThat(goal.achieved()).isTrue();
+        assertThat(goal.progressPct()).isEqualByComparingTo("25");
+        assertThat(goal.targetUsdt()).isEqualByComparingTo("1000");
+        assertThat(goal.lifetimeEarningsUsdt()).isEqualByComparingTo("250");
+        verify(mapper).updateStatus(42L, 17L, true);
+        verify(mapper).list(42L);
     }
 
     @Test
@@ -273,7 +341,7 @@ class AppEarningGoalServiceTest {
         });
         AppEarningGoalMapper.GoalRow inserted = new AppEarningGoalMapper.GoalRow(17L, 42L,
                 new BigDecimal("1000"), LocalDateTime.of(2026, 9, 30, 0, 0), false,
-                null, LocalDateTime.of(2026, 8, 31, 0, 0), LocalDateTime.of(2026, 8, 31, 0, 0));
+                null, LocalDateTime.of(2026, 8, 31, 8, 0), LocalDateTime.of(2026, 8, 31, 8, 0));
         when(mapper.findById(42L, 17L)).thenReturn(inserted);
         when(mapper.lifetimeEarnings(42L)).thenReturn(BigDecimal.ZERO);
 
@@ -282,6 +350,15 @@ class AppEarningGoalServiceTest {
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().id()).isEqualTo(17L);
+        assertThat(result.getData().createdAt()).isEqualTo(Instant.parse("2026-08-31T00:00:00Z").toEpochMilli());
+        assertThat(result.getData().deadlineAt()).isEqualTo(Instant.parse("2026-09-30T00:00:00Z").toEpochMilli());
+        assertThat(result.getData().achievedAt()).isNull();
+        assertThat(result.getData().achieved()).isFalse();
+        assertThat(result.getData().targetUsdt()).isEqualByComparingTo("1000");
+        assertThat(result.getData().progressPct()).isEqualByComparingTo("0");
+        verify(mapper).insert(org.mockito.ArgumentMatchers.argThat((AppEarningGoalMapper.GoalInsert input) -> input.getUserId().equals(42L)
+                && input.getDeadlineAt().equals(LocalDateTime.of(2026, 9, 30, 0, 0))
+                && input.getTargetUsdt().equals(new BigDecimal("1000.000000"))));
         verify(idempotency).execute(eq("APP:GOAL_CREATE:USER:42"), eq("goal-save-1"),
                 org.mockito.ArgumentMatchers.anyString(), eq(ApiResult.class), any());
         verify(mapper).findById(42L, 17L);
