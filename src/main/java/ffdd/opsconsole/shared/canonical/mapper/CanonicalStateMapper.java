@@ -797,10 +797,15 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity> {
             <script>
             SELECT o.order_no AS orderNo,
                    o.product_id AS productId,
-                   COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_no, '×', oi.quantity)
+                   CASE WHEN UPPER(o.order_type) = 'SINGLE'
+                        THEN COALESCE((SELECT oi.product_no FROM nx_order_item oi
+                                        WHERE oi.order_no = o.order_no AND oi.is_deleted = 0
+                                        ORDER BY oi.sort_order, oi.id LIMIT 1), p.product_no)
+                        ELSE COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_no, '×', oi.quantity)
                                                        ORDER BY oi.sort_order, oi.id SEPARATOR ' + ')
                                FROM nx_order_item oi
-                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0), p.product_no) AS productNo,
+                              WHERE oi.order_no = o.order_no AND oi.is_deleted = 0), p.product_no)
+                   END AS productNo,
                    COALESCE((SELECT GROUP_CONCAT(CONCAT(oi.product_name, '×', oi.quantity)
                                                        ORDER BY oi.sort_order, oi.id SEPARATOR ' + ')
                                FROM nx_order_item oi
