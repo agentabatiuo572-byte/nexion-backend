@@ -1182,6 +1182,25 @@ class OpsAdminAccountServiceTest {
                 .singleElement().satisfies(account -> assertThat(account.avatarAssetId()).isEqualTo(fixture.assetId));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"Avatar.New", " avatar.new "})
+    void a2AvatarCreateKeepsOriginalUsernameNormalization(String username) {
+        AvatarApprovalFixture fixture = new AvatarApprovalFixture();
+        AuditReplayCommand command = new AuditReplayCommand("A", "a1_account_create", Map.of(
+                "username", username, "displayName", "New Support", "email", "avatar-new@example.test",
+                "role", "support", "avatarAssetId", fixture.assetId));
+        String operationId = fixture.propose(command);
+        assertThat(fixture.ticketRows.get(operationId).getObjectText()).isEqualTo("avatar.new");
+        assertThat(fixture.activeLocks.get(operationId).getTargetId()).isEqualTo("avatar.new");
+
+        var result = fixture.approve(operationId);
+
+        assertThat(result.getCode()).as(result.getMessage()).isZero();
+        AdminEntity created = admins.stream().filter(admin -> "avatar.new".equals(admin.getUsername()))
+                .findFirst().orElseThrow();
+        fixture.assertAttached(created.getId());
+    }
+
     @Test
     void a2ApprovalUpdatesAccountWithMakersAvatarAsDifferentChecker() {
         AvatarApprovalFixture fixture = new AvatarApprovalFixture();

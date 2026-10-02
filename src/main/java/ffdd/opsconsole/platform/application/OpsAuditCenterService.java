@@ -236,9 +236,12 @@ public class OpsAuditCenterService {
         AuditLockTarget target = request.target();
         if (A2ReplayContext.isAvatarCommand(command)) {
             var expectedTarget = A2ReplayContext.avatarTarget(command);
+            if ("a1_account_create".equals(command.op()) && target != null && target.id() != null)
+                target = new AuditLockTarget(target.domain(), target.type(), target.id().trim().toLowerCase(Locale.ROOT));
             if (expectedTarget == null || !expectedTarget.equals(target)
                     || (request.targets() != null && !request.targets().isEmpty()))
                 return fail(OpsErrorCode.VALIDATION_FAILED, "A2_AVATAR_TARGET_MISMATCH");
+            target = expectedTarget;
             ticket.setObjectText(expectedTarget.id());
             sourceDomain = "A";
             ticket.setSourceDomain(sourceDomain);
