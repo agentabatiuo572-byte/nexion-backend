@@ -238,7 +238,7 @@ class DeviceSettlementEventSchemaMySqlIntegrationTest {
         when(environment.getActiveProfiles()).thenReturn(new String[]{"dev"});
         return fixture.transactional(new AppTaskAssignmentService(mapper, directIdempotency(), fixture.outbox(),
                 mock(AuditLogService.class), proof, environment, Clock.fixed(Instant.parse("2026-08-31T12:00:00Z"),
-                        ZoneOffset.UTC)));
+                        ZoneOffset.UTC), mock(TestComputeWorkerService.class)));
     }
 
     private AppTradeinService capacityService(CanonicalEventSchemaMySqlFixture fixture) {

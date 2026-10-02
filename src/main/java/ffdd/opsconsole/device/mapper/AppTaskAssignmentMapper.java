@@ -15,6 +15,76 @@ import org.apache.ibatis.annotations.Update;
 public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
 
     @Select("""
+            SELECT r.online_status AS onlineStatus, r.active_task_no AS activeTaskNo,
+                   r.client_name AS clientName, r.agent_version AS agentVersion,
+                   r.heartbeat_at AS heartbeatAt, r.paused_reason AS pausedReason
+              FROM nx_user_device_runtime r
+              JOIN nx_user_device d ON d.id=r.user_device_id
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.instance_no=#{instanceNo}
+               AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND r.is_deleted=0 LIMIT 1 FOR UPDATE
+            """)
+    TestWorkerRuntimeRow lockTestWorkerRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                               @Param("instanceNo") String instanceNo);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_user_device_runtime(user_device_id,online_status,active_task_no,client_name,
+              agent_version,heartbeat_at,created_at,updated_at,is_deleted)
+            SELECT id,'ONLINE',#{taskNo},'UVEL TEST deterministic',#{marker},#{now},#{now},#{now},0
+              FROM nx_user_device
+             WHERE id=#{deviceId} AND user_id=#{userId} AND instance_no=#{instanceNo} AND is_deleted=0
+               AND source_environment='PRODUCTION' AND run_id='' AND UPPER(ownership_status)='OWNED'
+               AND UPPER(status) IN ('ACTIVE','ONLINE') AND activated_at IS NOT NULL AND deactivated_at IS NULL
+            """)
+    int insertTestWorkerRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                                @Param("instanceNo") String instanceNo, @Param("taskNo") String taskNo,
+                                @Param("marker") String marker, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device_runtime r JOIN nx_user_device d ON d.id=r.user_device_id
+               SET r.online_status='ONLINE',r.active_task_no=#{taskNo},r.client_name='UVEL TEST deterministic',
+                   r.agent_version=#{marker},r.heartbeat_at=#{now},r.updated_at=#{now}
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.instance_no=#{instanceNo}
+               AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND UPPER(d.ownership_status)='OWNED' AND UPPER(d.status) IN ('ACTIVE','ONLINE')
+               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL AND r.is_deleted=0
+               AND COALESCE(r.paused_reason,'')='' AND r.online_status IN ('OFFLINE','ONLINE')
+               AND (COALESCE(r.active_task_no,'')='' OR r.active_task_no=#{taskNo})
+               AND (r.online_status='OFFLINE' OR COALESCE(r.agent_version,'')='' OR r.agent_version=#{marker})
+            """)
+    int markTestWorkerOnline(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                             @Param("instanceNo") String instanceNo, @Param("taskNo") String taskNo,
+                             @Param("marker") String marker, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device_runtime r JOIN nx_user_device d ON d.id=r.user_device_id
+               SET r.online_status='OFFLINE',r.updated_at=#{now}
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.instance_no=#{instanceNo}
+               AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND r.is_deleted=0 AND r.online_status='ONLINE' AND r.active_task_no=#{taskNo}
+               AND r.agent_version=#{marker} AND r.client_name='UVEL TEST deterministic'
+               AND COALESCE(r.paused_reason,'')=''
+            """)
+    int closeTestWorkerRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                               @Param("instanceNo") String instanceNo, @Param("taskNo") String taskNo,
+                               @Param("marker") String marker, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_compute_task SET task_name='UVEL TEST vector statistics v1',
+              model_name='TEST_DETERMINISTIC_V1',client_name='UVEL TEST deterministic',updated_at=#{now}
+             WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND task_no=#{taskNo}
+               AND task_config_id=#{taskConfigId} AND is_deleted=0 AND source_environment='PRODUCTION'
+               AND UPPER(status) IN ('CLAIMED','RUNNING') AND proof_consumed_at IS NULL
+               AND lease_expires_at>#{now} AND proof_expires_at>#{now}
+            """)
+    int markTestWorkerTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+                           @Param("taskNo") String taskNo, @Param("taskConfigId") String taskConfigId,
+                           @Param("now") LocalDateTime now);
+
+    record TestWorkerRuntimeRow(String onlineStatus, String activeTaskNo, String clientName, String agentVersion,
+                                LocalDateTime heartbeatAt, String pausedReason) { }
+
+    @Select("""
             SELECT d.id, d.instance_no AS instanceNo, d.device_type AS deviceType,
                    d.product_tier AS productTier, d.name, d.status,
                    d.product_code AS productCode, d.purchased_at AS purchasedAt, d.activated_at AS activatedAt,

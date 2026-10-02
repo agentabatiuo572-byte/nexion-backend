@@ -171,7 +171,8 @@ class AppTaskAssignmentLeaseExpirySpringTransactionMySqlIntegrationTest {
         var proof = mock(ComputeTaskProofVerifier.class);
         org.mockito.Mockito.when(proof.sourceEnvironment()).thenReturn("PRODUCTION");
         AppTaskAssignmentService target = new AppTaskAssignmentService(mapper,
-                mock(AdminIdempotencyService.class), outbox, audit, proof, new StandardEnvironment(), CLOCK);
+                mock(AdminIdempotencyService.class), outbox, audit, proof, new StandardEnvironment(), CLOCK,
+                mock(TestComputeWorkerService.class));
         ProxyFactory factory = new ProxyFactory(target);
         factory.addAdvice(new TransactionInterceptor(new DataSourceTransactionManager(source),
                 new AnnotationTransactionAttributeSource()));

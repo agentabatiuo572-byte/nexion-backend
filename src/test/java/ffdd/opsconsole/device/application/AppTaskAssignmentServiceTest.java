@@ -52,7 +52,7 @@ class AppTaskAssignmentServiceTest {
     private final AppTaskAssignmentService service = new AppTaskAssignmentService(
             mapper, idempotency, outbox, audit, proofVerifier,
             environment,
-            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC));
+            Clock.fixed(Instant.parse("2026-08-10T12:00:00Z"), ZoneOffset.UTC), mock(TestComputeWorkerService.class));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})

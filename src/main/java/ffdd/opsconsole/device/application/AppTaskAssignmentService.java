@@ -17,6 +17,8 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.DeviceRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.PhoneRuntimeRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ReceiptRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
+import ffdd.opsconsole.device.application.TestComputeWorkerService.Grant;
+import ffdd.opsconsole.device.application.TestComputeWorkerService.CompleteRequest;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.HistorySnapshotId;
@@ -81,6 +83,59 @@ public class AppTaskAssignmentService {
     private final ComputeTaskProofVerifier proofVerifier;
     private final Environment environment;
     private final Clock clock;
+    private final TestComputeWorkerService testWorker;
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> testWorkerClaim(Grant grant, String taskNo, String key) {
+        testWorker.requireTaskPath(grant, taskNo);
+        testWorker.requireFixedKey(grant, "CLAIM", key);
+        requireProductionRuntime(grant.ownerId());
+        return executeOnce(testWorker.scope(grant, "CLAIM"), key, sha256("{}"), () -> {
+            claimInternal(grant.ownerId(), grant.deviceId(), "PRODUCTION", grant);
+            LocalDateTime now = LocalDateTime.now(clock);
+            AssignmentRow original = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
+            testWorker.requireTask(grant, original, now);
+            if (mapper.markTestWorkerTask(grant.ownerId(), grant.deviceId(), taskNo, grant.taskConfigId(), now) != 1) {
+                throw new BizException(409, "TEST_COMPUTE_WORKER_MARK_CONFLICT");
+            }
+            AssignmentRow task = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
+            testWorker.requireTask(grant, task, LocalDateTime.now(clock));
+            testWorker.requireRuntime(grant, LocalDateTime.now(clock));
+            Map<String, Object> detail = testWorker.bindings(grant);
+            detail.put("originalTaskName", original.taskName()); detail.put("originalModelName", original.modelName());
+            detail.put("originalClientName", original.clientName());
+            testWorker.record(grant, "TEST_COMPUTE_WORKER_CLAIMED", taskNo, detail);
+            testWorker.requireTask(grant, task, LocalDateTime.now(clock));
+            return ApiResult.ok(testWorker.claimView(grant, task));
+        });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> testWorkerComplete(Grant grant, String taskNo, String key, CompleteRequest request) {
+        testWorker.requireTaskPath(grant, taskNo);
+        requireProductionRuntime(grant.ownerId());
+        if (key == null || !key.matches("[A-Za-z0-9._:-]{8,128}")) throw new BizException(422, "TEST_COMPUTE_WORKER_IDEMPOTENCY_INVALID");
+        return executeOnce(testWorker.scope(grant, "COMPLETE"), key, sha256(String.valueOf(request)), () ->
+                completeInternal(grant.ownerId(), taskNo, null, "PRODUCTION", grant, request));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> testWorkerRelease(Grant grant, String taskNo, String key) {
+        testWorker.requireTaskPath(grant, taskNo);
+        testWorker.requireFixedKey(grant, "RELEASE", key);
+        requireProductionRuntime(grant.ownerId());
+        return executeOnce(testWorker.scope(grant, "RELEASE"), key, sha256("{}"), () -> {
+            testWorker.requireCurrent(grant);
+            lockProductionUser(grant.ownerId());
+            DeviceRow device = mapper.lockOwnedDevice(grant.ownerId(), grant.deviceId());
+            if (device == null || !grant.instanceNo().equals(device.instanceNo())) throw new BizException(403, "TEST_COMPUTE_WORKER_BINDING_INVALID");
+            mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
+            boolean released = testWorker.close(grant, now());
+            if (released) testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, testWorker.bindings(grant));
+            testWorker.requireCurrent(grant);
+            return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo, "released", released));
+        });
+    }
 
     @Transactional(readOnly = true)
     public ApiResult<AppTaskAssignmentsResponse> assignments(Long userId) {
@@ -399,9 +454,35 @@ public class AppTaskAssignmentService {
     }
 
     private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment) {
+        return claimInternal(userId, deviceId, sourceEnvironment, null);
+    }
+
+    private ApiResult<AppTaskAssignmentView> claimInternal(Long userId, Long deviceId, String sourceEnvironment, Grant grant) {
         LocalDateTime now = now();
         lockProductionUser(userId);
         DeviceRow device = mapper.lockOwnedDevice(userId, deviceId);
+        if (grant != null) {
+            testWorker.requireDevice(grant, device);
+            AssignmentRow target = mapper.lockAssignment(userId, grant.taskNo(), sourceEnvironment);
+            AssignmentRow activeTask = mapper.lockActiveAssignment(userId, deviceId, sourceEnvironment);
+            now = LocalDateTime.now(clock);
+            if (target != null) testWorker.requireTask(grant, target, now);
+            else if (!testWorker.newTaskNo(grant).equals(grant.taskNo())) throw new BizException(404, "TEST_COMPUTE_WORKER_TASK_NOT_FOUND");
+            if (activeTask != null && !activeTask.taskNo().equals(grant.taskNo())) {
+                if (activeTask.leaseExpiresAt() == null || activeTask.leaseExpiresAt().isAfter(now)) {
+                    throw new BizException(409, "TEST_COMPUTE_WORKER_OTHER_TASK_ACTIVE");
+                }
+                if (mapper.expireAssignment(userId, activeTask.taskNo(), sourceEnvironment, now) != 1) {
+                    throw new BizException(409, "TASK_ASSIGNMENT_EXPIRY_CONFLICT");
+                }
+                mapper.clearRuntimeTask(userId, deviceId, activeTask.taskNo(), now);
+            }
+            now = LocalDateTime.now(clock);
+            if (target != null) testWorker.requireTask(grant, target, now);
+            testWorker.markOnline(grant, now);
+            if (target != null) testWorker.requireTask(grant, target, LocalDateTime.now(clock));
+            device = mapper.lockOwnedDevice(userId, deviceId);
+        }
         validateDevice(device);
         DeviceLockRow lock = mapper.lockDeviceTaskLock(userId, deviceId, sourceEnvironment);
         if (lock != null && lock.lockUntil() != null && lock.lockUntil().isAfter(now)) {
@@ -415,7 +496,10 @@ public class AppTaskAssignmentService {
             if ("PRODUCTION".equals(sourceEnvironment)) mapper.clearRuntimeTask(userId, deviceId, existing.taskNo(), now);
             existing = null;
         }
-        if (existing != null) return ApiResult.ok(view(existing, phonePaused(userId, device, now)));
+        if (existing != null) {
+            if (grant != null) testWorker.requireTask(grant, existing, LocalDateTime.now(clock));
+            return ApiResult.ok(view(existing, phonePaused(userId, device, now)));
+        }
         if (phone(device)) requirePhoneReady(mapper.phoneRuntime(userId, deviceId), now);
 
         int routingVram = effectiveRoutingVram(device);
@@ -436,11 +520,14 @@ public class AppTaskAssignmentService {
             throw new BizException(503, invalid.getMessage());
         }
         int requiredSeconds = requiredSeconds(task.taskClass());
+        if (grant != null && (!grant.taskConfigId().equals(task.taskId()) || requiredSeconds > 60)) {
+            throw new BizException(409, "TEST_COMPUTE_WORKER_TASK_CONFIG_INVALID");
+        }
         int taskLockMinutes = taskLockMinutes(device, capacityRows.stream()
                 .filter(row -> row != null && Set.of("taskLockS1", "taskLockPro", "taskLockRack")
                         .contains(row.configKey()))
                 .toList());
-        String taskNo = "CTA-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+        String taskNo = grant == null ? "CTA-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT) : grant.taskNo();
         String completionNonce = UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT)
                 + UUID.randomUUID().toString().replace("-", "").toLowerCase(Locale.ROOT);
         LocalDateTime leaseExpiresAt = now.plusHours(LEASE_HOURS);
@@ -449,27 +536,40 @@ public class AppTaskAssignmentService {
                 now, leaseExpiresAt) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_CREATE_CONFLICT");
         }
-        if ("PRODUCTION".equals(sourceEnvironment)) mapper.bindRuntimeTask(deviceId, taskNo, userId, now);
+        if ("PRODUCTION".equals(sourceEnvironment) && grant == null) mapper.bindRuntimeTask(deviceId, taskNo, userId, now);
         AppTaskAssignmentView result = new AppTaskAssignmentView(taskNo, deviceId, task.taskId(), task.name(),
                 task.taskClass(), task.modelName(), "UVEL App", "RUNNING", reward, requiredSeconds,
                 now, now.plusSeconds(requiredSeconds), null, null, completionNonce, leaseExpiresAt,
                 PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+        Map<String, Object> claimDetail = linked("deviceId", deviceId, "taskId", task.taskId(), "rewardUsdt", reward,
+                "requiredSeconds", requiredSeconds, "taskLockMinutes", taskLockMinutes);
+        if (grant != null) claimDetail.putAll(testWorker.bindings(grant));
+        AuditLogWriteRequest claimAudit = AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_CLAIMED").resourceType("COMPUTE_TASK").resourceId(taskNo)
-                .bizNo(taskNo).userId(userId).actorType("USER").actorId(userId)
+                .bizNo(taskNo).userId(userId).actorType(grant == null ? "USER" : "TEST_COMPUTE_WORKER")
+                .actorId(grant == null ? userId : null).actorUsername(grant == null ? null : grant.getName())
                 .result("SUCCESS").riskLevel("MEDIUM")
-                .detail(linked("deviceId", deviceId, "taskId", task.taskId(), "rewardUsdt", reward,
-                        "requiredSeconds", requiredSeconds, "taskLockMinutes", taskLockMinutes))
-                .build());
+                .detail(claimDetail)
+                .build();
+        if (grant == null) auditLogService.recordRequired(claimAudit);
+        else auditLogService.recordRequiredForTrustedActor(claimAudit);
         if ("PRODUCTION".equals(sourceEnvironment)) {
             outboxService.publish("COMPUTE_TASK", taskNo, "TASK_ASSIGNMENT_CLAIMED",
                     linked("userId", userId, "deviceId", deviceId, "taskId", task.taskId()));
         }
+        if (grant != null) testWorker.requireTask(grant,
+                mapper.lockAssignment(userId, taskNo, sourceEnvironment), LocalDateTime.now(clock));
         return ApiResult.ok(result);
     }
 
     private ApiResult<AppTaskAssignmentView> completeInternal(
             Long userId, String taskNo, AppTaskCompleteRequest request, String sourceEnvironment) {
+        return completeInternal(userId, taskNo, request, sourceEnvironment, null, null);
+    }
+
+    private <T> ApiResult<T> completeInternal(Long userId, String taskNo, AppTaskCompleteRequest request,
+            String sourceEnvironment, Grant grant, CompleteRequest testRequest) {
+        if (grant != null) testWorker.requireCurrent(grant);
         Instant completedAt = clock.instant();
         LocalDateTime now = LocalDateTime.ofInstant(completedAt, clock.getZone()).withNano(0);
         LocalDate utcDay = completedAt.atZone(ZoneOffset.UTC).toLocalDate();
@@ -506,17 +606,27 @@ public class AppTaskAssignmentService {
         }
         String deviceInstanceNo = mapper.deviceInstanceNo(userId, task.deviceId());
         if (!StringUtils.hasText(deviceInstanceNo)) throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_BINDING_MISSING");
-        ComputeTaskProofVerifier.Verification proof = proofVerifier.verify(userId, taskNo, task.deviceId(),
-                deviceInstanceNo, task.completionNonce(), task.proofExpiresAt(), request);
+        TestComputeWorkerService.Verified verified = null;
+        ComputeTaskProofVerifier.Verification proof;
+        if (grant == null) {
+            proof = proofVerifier.verify(userId, taskNo, task.deviceId(), deviceInstanceNo,
+                    task.completionNonce(), task.proofExpiresAt(), request);
+        } else {
+            testWorker.requireDevice(grant, activeBinding);
+            verified = testWorker.verify(grant, task, testRequest, LocalDateTime.now(clock));
+            proof = new ComputeTaskProofVerifier.Verification(false, verified.proofHash());
+        }
         if (proof.sandbox() || !"PRODUCTION".equals(sourceEnvironment)) {
             throw new BizException(503, "TASK_ASSIGNMENT_PROOF_ENVIRONMENT_INVALID");
         }
+        if (grant != null) testWorker.requireCurrent(grant);
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
         String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
         BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
         BigDecimal rewardNex = paidShareDailyNex != null && paidShareDailyNex.signum() > 0
                 && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
                 ? paidShareDailyNex : BigDecimal.ZERO;
+        if (grant != null) testWorker.requireTask(grant, task, LocalDateTime.now(clock));
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
                 rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_REWARD_CONFLICT");
@@ -544,12 +654,14 @@ public class AppTaskAssignmentService {
                 throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
             }
         }
-        if (mapper.completeAssignment(userId, taskNo, request.proofNonce(), sourceEnvironment, now) != 1) {
+        if (grant != null) testWorker.requireTask(grant, task, LocalDateTime.now(clock));
+        if (mapper.completeAssignment(userId, taskNo, grant == null ? request.proofNonce() : testRequest.proofNonce(), sourceEnvironment, now) != 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_PROOF_REPLAYED");
         }
         boolean deferredDeviceDeactivated = false;
         Long deferredDeviceVersion = null;
         if ("PRODUCTION".equals(sourceEnvironment)) {
+            if (grant != null && !testWorker.close(grant, now)) throw new BizException(409, "TEST_COMPUTE_WORKER_CLOSE_CONFLICT");
             mapper.clearRuntimeTask(userId, task.deviceId(), taskNo, now);
             if (mapper.deactivatePendingDevice(userId, task.deviceId(), now) > 0) {
                 mapper.markRuntimeDeactivated(userId, task.deviceId(), now);
@@ -562,14 +674,18 @@ public class AppTaskAssignmentService {
         }
         LocalDateTime lockUntil = now.plusMinutes(Math.max(0, task.taskLockMinutes()));
         mapper.upsertDeviceTaskLock(userId, task.deviceId(), sourceEnvironment, lockUntil, taskNo, now);
-        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+        Map<String, Object> completionDetail = linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
+                "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
+                "proofHash", proof.proofHash(), "proofMode", grant == null ? (proof.sandbox() ? "SANDBOX" : "PRODUCTION") : TestComputeWorkerService.KIND);
+        if (grant != null) completionDetail.putAll(testWorker.proofDetail(grant, verified));
+        AuditLogWriteRequest completionAudit = AuditLogWriteRequest.builder()
                 .action("TASK_ASSIGNMENT_COMPLETED").resourceType("COMPUTE_TASK").resourceId(taskNo)
-                .bizNo(receiptNo).userId(userId).actorType("USER").actorId(userId)
+                .bizNo(receiptNo).userId(userId).actorType(grant == null ? "USER" : "TEST_COMPUTE_WORKER")
+                .actorId(grant == null ? userId : null).actorUsername(grant == null ? null : grant.getName())
                 .result("SUCCESS").riskLevel("HIGH")
-                .detail(linked("deviceId", task.deviceId(), "receiptNo", receiptNo,
-                        "rewardUsdt", task.rewardUsdt(), "rewardNex", rewardNex, "lockUntil", lockUntil,
-                        "proofHash", proof.proofHash(), "proofMode", proof.sandbox() ? "SANDBOX" : "PRODUCTION"))
-                .build());
+                .detail(completionDetail).build();
+        if (grant == null) auditLogService.recordRequired(completionAudit);
+        else auditLogService.recordRequiredForTrustedActor(completionAudit);
         if (!proof.sandbox()) {
             AppTaskAssignmentMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
             if (attribution == null) throw new BizException(409, "TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");
@@ -588,18 +704,29 @@ public class AppTaskAssignmentService {
                 auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
                         .action("USER_DEVICE_DEFERRED_DEACTIVATED").resourceType("USER_DEVICE")
                         .resourceId(String.valueOf(task.deviceId())).bizNo(activeBinding.instanceNo())
-                        .userId(userId).actorId(userId).actorType("USER").actorUsername("user:" + userId)
-                        .method("POST").path("/api/tasks/" + taskNo + "/complete")
+                        .userId(userId).actorId(grant == null ? userId : null).actorType(grant == null ? "USER" : "TEST_COMPUTE_WORKER")
+                        .actorUsername(grant == null ? "user:" + userId : grant.getName())
+                        .method("POST").path(grant == null ? "/api/tasks/" + taskNo + "/complete"
+                                : "/api/test/compute-workers/v1/tasks/" + taskNo + "/complete")
                         .result("SUCCESS").riskLevel("MEDIUM")
                         .detail(linked("trigger", "TASK_SETTLEMENT_COMPLETED", "state", deviceState))
                         .build());
             }
         }
-        return ApiResult.ok(new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
+        AppTaskAssignmentView completion = new AppTaskAssignmentView(task.taskNo(), task.deviceId(), task.taskId(),
                 task.taskName(), task.taskClass(), task.modelName(), task.clientName(), "COMPLETED",
                 task.rewardUsdt(), task.requiredSeconds(), task.startedAt(), completableAt, now, receiptNo,
-                null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true));
+                null, null, PROVENANCE_SOURCE, PROVENANCE_ENVIRONMENT, PROVENANCE_RUN_ID, true);
+        if (grant == null) return typedResult(completion);
+        testWorker.requireTask(grant, task, LocalDateTime.now(clock));
+        Map<String, Object> result = testWorker.bindings(grant);
+        result.put("inputHash", verified.input().hash()); result.put("resultHash", verified.resultHash());
+        result.put("receiptNo", receiptNo); result.put("completion", completion);
+        return typedResult(result);
     }
+
+    @SuppressWarnings("unchecked")
+    private <T> ApiResult<T> typedResult(Object value) { return ApiResult.ok((T) value); }
 
     private void lockProductionUser(Long userId) {
         if (!userId.equals(mapper.lockProductionUser(userId))) {
