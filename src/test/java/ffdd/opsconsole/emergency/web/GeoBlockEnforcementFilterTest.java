@@ -29,6 +29,61 @@ class GeoBlockEnforcementFilterTest {
     private final GeoBlockEnforcementFilter filter =
             new GeoBlockEnforcementFilter(policyService, repository, properties, healthMonitor);
 
+    @ParameterizedTest
+    @CsvSource({"claim", "complete", "release"})
+    void exactTestWorkerPostReachesItsDedicatedChainWithoutCountry(String operation) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "POST", "/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/" + operation);
+        request.setRemoteAddr("127.0.0.1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        verify(chain).doFilter(request, response);
+        verifyNoInteractions(policyService, repository);
+        assertThat(healthMonitor.snapshot("nexion-gateway").sampleCount()).isZero();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "GET,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim",
+        "PUT,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/complete",
+        "PATCH,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/release",
+        "DELETE,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim",
+        "OPTIONS,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim",
+        "HEAD,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim",
+        "POST,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim/",
+        "POST,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/claim-extra",
+        "POST,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/extra/claim",
+        "POST,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE/complete/extra",
+        "POST,/api/test/compute-workers/v1/tasks//claim",
+        "POST,/api/test/compute-workers/v1/tasks/./claim",
+        "POST,/api/test/compute-workers/v1/tasks/../claim",
+        "POST,/api/test/compute-workers/v1/tasks/CTA%2FTEST/claim",
+        "POST,/api/test/compute-workers/v1/tasks/CTA-TEST-ONE;param=x/claim",
+        "POST,/api/test/compute-workers/v2/tasks/CTA-TEST-ONE/claim",
+        "POST,/api/test/compute-workers-extra/v1/tasks/CTA-TEST-ONE/claim",
+        "POST,/api/test/compute-workers/v1/other",
+        "POST,/api/app/devices/11/task/claim",
+        "POST,/auth/users/login"
+    })
+    void testWorkerExceptionDoesNotCoverOtherMethodsPathsOrUserRequests(String method, String path) throws Exception {
+        when(repository.settingValue("emergency.geo.edgeJudgeSource"))
+                .thenReturn(Optional.of("nexion-gateway"));
+        MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        request.setRemoteAddr("127.0.0.1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getContentAsString()).contains("GEO_COUNTRY_UNRESOLVED");
+        verify(chain, never()).doFilter(request, response);
+        verifyNoInteractions(policyService);
+    }
+
     @Test
     void exactHdPayPostReachesSignatureValidationWithoutUserGeoMetadata() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(

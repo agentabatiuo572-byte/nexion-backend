@@ -13,6 +13,11 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.content.terms.LegalTermsService;
 import ffdd.opsconsole.developer.application.AppDeveloperApiService;
 import ffdd.opsconsole.developer.web.DeveloperApiKeyAuthenticationFilter;
+import ffdd.opsconsole.emergency.application.GeoBlockPolicyService;
+import ffdd.opsconsole.emergency.application.GeoEdgeHealthMonitor;
+import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.emergency.web.GeoBlockEnforcementFilter;
+import ffdd.opsconsole.emergency.web.GeoBlockEnforcementProperties;
 import ffdd.opsconsole.shared.audit.AuditTraceFilter;
 import ffdd.opsconsole.shared.security.*;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
@@ -26,8 +31,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Optional;
 import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration;
@@ -50,6 +58,71 @@ class TestComputeWorkerSecurityContractTest {
             assertThat(response.statusCode()).isEqualTo(503);
             assertThat(response.body()).contains("TEST_COMPUTE_WORKER_DISABLED");
             verifyNoInteractions(context.getBean(AppTaskAssignmentService.class), context.getBean(AppTaskAssignmentMapper.class));
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false,TEST", "true,PRODUCTION"})
+    void geoEnabledMachinePostsStillRequireEnabledTestScope(boolean enabled, String deploymentScope) throws Exception {
+        try (var context = start(enabled, true, deploymentScope)) {
+            var assignments = context.getBean(AppTaskAssignmentService.class);
+            clearInvocations(assignments);
+            var geo = context.getBean(GeoBlockEnforcementProperties.class);
+            assertThat(geo.isEnabled()).isTrue();
+            assertThat(geo.isAllowLoopbackWithoutCountry()).isFalse();
+            for (String operation : new String[]{"claim", "complete", "release"}) {
+                var response = request(context, "POST", "/api/test/compute-workers/v1/tasks/" + TASK + "/" + operation, null, "{}");
+                assertThat(response.statusCode()).as(operation).isEqualTo(503);
+                assertThat(response.body()).contains("TEST_COMPUTE_WORKER_DISABLED");
+            }
+            verifyNoInteractions(assignments, context.getBean(AppTaskAssignmentMapper.class),
+                    context.getBean(GeoBlockPolicyService.class), context.getBean(EmergencyControlRepository.class));
+        }
+    }
+
+    @Test
+    void geoEnabledWorkerPostsKeepAuthenticationAndTaskBindingWhileAppAndSimilarPathsFailClosed() throws Exception {
+        try (var context = start(true, true, "TEST")) {
+            var assignments = context.getBean(AppTaskAssignmentService.class);
+            clearInvocations(assignments);
+            String route = "/api/test/compute-workers/v1/tasks/" + TASK;
+            for (String operation : new String[]{"claim", "complete", "release"}) {
+                for (String bearer : new String[]{null, "fixture-user", TOKEN + "="}) {
+                    var response = request(context, "POST", route + "/" + operation, bearer, "{}");
+                    assertThat(response.statusCode()).as(operation + ":" + bearer).isEqualTo(401);
+                    assertThat(response.body()).contains("TEST_COMPUTE_WORKER_AUTH_INVALID");
+                }
+                var wrongTask = request(context, "POST", route.replace(TASK, "CTA-ANOTHER") + "/" + operation, TOKEN, "{}");
+                assertThat(wrongTask.statusCode()).as(operation).isEqualTo(403);
+                assertThat(wrongTask.body()).contains("TEST_COMPUTE_WORKER_BINDING_INVALID");
+            }
+            verifyNoInteractions(assignments, context.getBean(AppTaskAssignmentMapper.class),
+                    context.getBean(GeoBlockPolicyService.class), context.getBean(EmergencyControlRepository.class));
+
+            when(assignments.testWorkerClaim(any(), eq(TASK), any()))
+                    .thenReturn(ApiResult.ok(Map.of("executionKind", TestComputeWorkerService.KIND)));
+            var claimed = request(context, "POST", route + "/claim", TOKEN, "{}");
+            assertThat(claimed.statusCode()).isEqualTo(200);
+            assertThat(claimed.body()).contains(TestComputeWorkerService.KIND);
+            var captor = org.mockito.ArgumentCaptor.forClass(TestComputeWorkerService.Grant.class);
+            verify(assignments).testWorkerClaim(captor.capture(), eq(TASK), any());
+            assertThat(captor.getValue().getName()).isEqualTo("test-worker:executor-one");
+            clearInvocations(assignments);
+
+            for (String[] rejected : new String[][]{
+                    {"GET", "/api/fixture/who"}, {"POST", "/api/fixture/write"},
+                    {"GET", route + "/claim"}, {"PUT", route + "/complete"},
+                    {"POST", route + "/claim/"}, {"POST", route + "/claim-extra"},
+                    {"POST", route + "/extra/release"}, {"POST", "/api/test/compute-workers/v1/other"}}) {
+                var response = request(context, rejected[0], rejected[1], TOKEN, "{}");
+                assertThat(response.statusCode()).as(rejected[0] + " " + rejected[1]).isEqualTo(503);
+                assertThat(response.body()).contains("GEO_COUNTRY_UNRESOLVED");
+            }
+            var appUser = request(context, "GET", "/api/fixture/who", "fixture-user", "");
+            assertThat(appUser.statusCode()).isEqualTo(503);
+            assertThat(appUser.body()).contains("GEO_COUNTRY_UNRESOLVED");
+            verifyNoInteractions(assignments, context.getBean(AppTaskAssignmentMapper.class),
+                    context.getBean(GeoBlockPolicyService.class));
         }
     }
 
@@ -104,18 +177,23 @@ class TestComputeWorkerSecurityContractTest {
     }
 
     static ServletWebServerApplicationContext start(boolean enabled) {
+        return start(enabled, false, "TEST");
+    }
+
+    static ServletWebServerApplicationContext start(boolean enabled, boolean geoEnabled, String deploymentScope) {
         var builder = new SpringApplicationBuilder(WireConfig.class).properties(
                 "server.port=0", "server.address=127.0.0.1", "spring.main.banner-mode=off", "spring.profiles.active=dev",
                 "spring.cloud.discovery.enabled=false", "spring.cloud.nacos.config.enabled=false",
                 "spring.cloud.nacos.discovery.enabled=false", "spring.config.location=optional:classpath:/no-fixture-config.yml",
                 "nexion.compute-task.test-worker.enabled=" + enabled,
-                "nexion.compute-task.test-worker.deployment-scope=TEST",
+                "nexion.compute-task.test-worker.deployment-scope=" + deploymentScope,
                 "nexion.compute-task.test-worker.executor-id=executor-one", "nexion.compute-task.test-worker.owner-id=7",
                 "nexion.compute-task.test-worker.device-id=11", "nexion.compute-task.test-worker.instance-no=NEX-TEST-INSTANCE",
                 "nexion.compute-task.test-worker.task-no=" + TASK, "nexion.compute-task.test-worker.task-config-id=TASK-EM",
                 "nexion.compute-task.test-worker.run-id=TEST355-WIRE", "nexion.compute-task.test-worker.issued-at=1790942340000",
                 "nexion.compute-task.test-worker.expires-at=1790943000000",
                 "nexion.compute-task.test-worker.credential-sha256=" + TestComputeWorkerService.sha256(new byte[32]));
+        if (geoEnabled) builder.sources(GeoWireConfig.class);
         // Same runnable test on the original baseline: absent TEST chain naturally returns the old 401.
         for (String name : new String[]{"ffdd.opsconsole.device.application.TestComputeWorkerService",
                 "ffdd.opsconsole.device.web.TestComputeWorkerSecurityConfig", "ffdd.opsconsole.device.web.TestComputeWorkerController"}) {
@@ -158,6 +236,19 @@ class TestComputeWorkerSecurityContractTest {
             when(users.selectById(7L)).thenReturn(user);
             return new JwtAuthenticationFilter(provider, sessions, users, env, new GatewaySecurityProperties(), mock(AdminSessionRegistry.class),
                     mock(AdminPermissionCache.class), mock(ImpersonationSessionVerifier.class), mock(PlatformConfigFacade.class));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(GeoBlockEnforcementFilter.class)
+    static class GeoWireConfig {
+        @Bean GeoBlockEnforcementProperties geoProperties() { return new GeoBlockEnforcementProperties(); }
+        @Bean GeoBlockPolicyService geoPolicy() { return mock(GeoBlockPolicyService.class); }
+        @Bean GeoEdgeHealthMonitor geoHealth(Clock clock) { return new GeoEdgeHealthMonitor(clock); }
+        @Bean EmergencyControlRepository geoRepository() {
+            var repository = mock(EmergencyControlRepository.class);
+            when(repository.settingValue(anyString())).thenReturn(Optional.empty());
+            return repository;
         }
     }
 

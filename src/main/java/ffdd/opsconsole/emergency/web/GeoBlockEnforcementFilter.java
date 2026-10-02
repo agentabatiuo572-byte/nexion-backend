@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -30,6 +31,8 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     private static final String EDGE_FALLBACK_UNTIL_SETTING = "emergency.geo.edgeJudgeFallbackUntilEpochMs";
     private static final String ORIGINAL_REMOTE_ADDRESS = "org.apache.catalina.AccessLog.RemoteAddr";
     private static final Set<String> ISO_COUNTRIES = Set.of(Locale.getISOCountries());
+    private static final Pattern TEST_WORKER_POST_PATH = Pattern.compile(
+            "/api/test/compute-workers/v1/tasks/(?!\\.{1,2}/)[A-Za-z0-9._:-]{1,96}/(?:claim|complete|release)");
 
     private final GeoBlockPolicyService policyService;
     private final EmergencyControlRepository repository;
@@ -39,6 +42,12 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
+        // These exact machine POSTs use the dedicated TEST-only, default-disabled
+        // worker chain below this filter. It enforces credentials and task binding.
+        if ("POST".equals(request.getMethod()) && path != null
+                && TEST_WORKER_POST_PATH.matcher(path).matches()) {
+            return true;
+        }
         // Provider settlement notifications are not user-origin requests. The exact
         // pay-in endpoint independently enforces mode, signature and order-query
         // reconciliation; a provider's hosting country must not strand a payment.
