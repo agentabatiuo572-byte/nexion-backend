@@ -37,6 +37,10 @@ class SupportBindingRuntimeTest {
         }
     }
     @org.junit.jupiter.api.AfterEach void restoreCoreRules() {
+        if("true".equals(System.getenv("CS_ENHANCE_CORE_ENABLED"))) createdAdmins.forEach(id->{
+            jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);
+            jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);sessions.revokeSessions(id);permissions.evict(id);
+        });
         if(originalRules!=null)jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
                 originalRules.dormantDays(),originalRules.maintenanceDays(),originalRules.activityWindowDays(),originalRules.inheritanceMode(),originalRules.maxInheritanceDepth(),originalRules.unboundAssignmentMode(),originalRules.modeEffectiveAt());
         SecurityContextHolder.clearContext();
@@ -61,6 +65,7 @@ class SupportBindingRuntimeTest {
     private long superId,manager,g1,g2,a,b,c,d;
     private final Map<String,Object> fixture=new LinkedHashMap<>();
     private final Map<String,String> proofs=new LinkedHashMap<>();
+    private final List<Long> createdAdmins=new ArrayList<>();
 
     @Test void globalSearchDoesNotSubstituteForModuleReadAndDisabledManagerCannotMutate() throws Exception {
         long boss=admin("GLOBAL_BOSS","SUPER_ADMIN","MANAGER"),manager=admin("DISABLED_MANAGER","SUPPORT","MANAGER"),agent=admin("GLOBAL_AGENT","SUPPORT","DEDICATED");
@@ -539,6 +544,7 @@ class SupportBindingRuntimeTest {
         String hash=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
         jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",username,hash,label,"SUPER_ADMIN".equals(role)?1:0);
         Long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);
+        createdAdmins.add(id);SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,username);
         jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
         jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
         fixture.put(label,Map.of("id",id,"username",username));return id;

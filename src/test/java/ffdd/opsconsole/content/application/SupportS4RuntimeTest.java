@@ -458,8 +458,10 @@ class SupportS4RuntimeTest {
         String password=new org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder().encode(System.getenv("S3_FIXTURE_PASSWORD"));
         jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,?,?,?,1)",name,password,name,"SUPER_ADMIN".equals(role)?1:0);
         long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,name);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,name);
         jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
-        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);return id;
+        jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
+        return id;
     }
     private long customer(){
         return new TransactionTemplate(transactions).execute(status->{

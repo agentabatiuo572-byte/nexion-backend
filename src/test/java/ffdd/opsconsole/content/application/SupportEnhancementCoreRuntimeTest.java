@@ -71,7 +71,7 @@ class SupportEnhancementCoreRuntimeTest {
     }
     @AfterEach void restore() {
         if(originallyEnabled!=null) originallyEnabled.forEach(id->jdbc.update("UPDATE nx_support_agent_profile SET enabled=1 WHERE admin_id=?",id));
-        createdAdmins.forEach(id->{jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);});
+        createdAdmins.forEach(id->{jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);sessions.revokeSessions(id);permissions.evict(id);});
         if(oldRules!=null) jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt());
         SecurityContextHolder.clearContext();
@@ -397,6 +397,7 @@ class SupportEnhancementCoreRuntimeTest {
         var createBody=Map.of("username",run+"_avatar_created","displayName","Avatar creator","email",run+"@example.invalid","role","support","reason","Create optional avatar proof","operator",run,"avatarAssetId",assetId);String createKey=key();
         var created=http("POST","/api/admin/platform/accounts",superToken,createBody,createKey);
         assertThat(created.path("code").asInt()).as("account creation: %s",created.path("message").asText()).isZero();var account=created.path("data");long target=account.path("id").asLong();createdAdmins.add(target);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),target,run+"_avatar_created");
         assertThat(account.path("credentialDeliveryStatus").asText()).isEqualTo("PASSWORD_CHANGE_REQUIRED");
         // Read-capability fixture readiness is separate from the unchanged password-change workflow.
         jdbc.update("UPDATE nx_admin_account_state SET credential_delivery_status='ACTIVE' WHERE admin_id=?",target);
@@ -412,7 +413,9 @@ class SupportEnhancementCoreRuntimeTest {
         assertThat(jdbc.queryForObject("SELECT avatar_asset_id FROM nx_admin_account_state WHERE admin_id=?",String.class,target)).isEqualTo(assetId);
         jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,'DEDICATED','DEDICATED','support,advisor','',0,1,1,0)",target);
         var noAvatar=http("POST","/api/admin/platform/accounts",superToken,Map.of("username",run+"_no_avatar","displayName","No avatar allowed","email",run+"_empty@example.invalid","role","support","reason","Optional avatar remains optional","operator",run),key());
-        assertThat(noAvatar.path("code").asInt()).isZero();createdAdmins.add(noAvatar.path("data").path("id").asLong());assertThat(noAvatar.path("data").path("avatarAssetId").isNull()).isTrue();
+        assertThat(noAvatar.path("code").asInt()).isZero();long noAvatarAdmin=noAvatar.path("data").path("id").asLong();createdAdmins.add(noAvatarAdmin);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),noAvatarAdmin,run+"_no_avatar");
+        assertThat(noAvatar.path("data").path("avatarAssetId").isNull()).isTrue();
         var before=jdbc.queryForMap("SELECT username,nickname,email,password_hash,status,super_admin,version FROM nx_admin WHERE id=?",target);
         String nextAsset=uploadAvatar(superToken,replacement,"image/png",key(),key()).path("data").path("assetId").asText();
         var edit=new LinkedHashMap<String,Object>();edit.put("username",account.path("username").asText());edit.put("displayName",account.path("name").asText());edit.put("email",account.path("email").asText());
@@ -586,7 +589,8 @@ class SupportEnhancementCoreRuntimeTest {
     @Test void accountCommandReplayUsesCurrentActorAndLegacyReceiptsFailClosed() throws Exception {
         long otherSuper=admin("other_super","SUPER_ADMIN","MANAGER");String actorToken=token(boss),otherToken=token(otherSuper),operation=key();
         var body=Map.of("username",run+"_replay_account","displayName","Replay account","email",run+"_replay@example.invalid","role","support","reason","Current actor replay isolation proof","operator",run);
-        var created=http("POST","/api/admin/platform/accounts",actorToken,body,operation);assertThat(created.path("code").asInt()).isZero();createdAdmins.add(created.path("data").path("id").asLong());
+        var created=http("POST","/api/admin/platform/accounts",actorToken,body,operation);assertThat(created.path("code").asInt()).isZero();long replayAdmin=created.path("data").path("id").asLong();createdAdmins.add(replayAdmin);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),replayAdmin,run+"_replay_account");
         assertThat(http("POST","/api/admin/platform/accounts",actorToken,body,operation)).isEqualTo(created);
         var foreign=http("POST","/api/admin/platform/accounts",otherToken,body,operation);assertThat(foreign.path("code").asInt()).isNotZero();assertThat(foreign.toString()).doesNotContain("temporaryPassword");
         var dto=json.convertValue(body,ffdd.opsconsole.platform.dto.AdminAccountCreateRequest.class);String legacyKey=key();
@@ -821,9 +825,11 @@ class SupportEnhancementCoreRuntimeTest {
         String name=run+"_"+label;
         jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,'fixture-disabled-password',?,?,1)",name,label,"SUPER_ADMIN".equals(role)?1:0);
         long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,name);
+        createdAdmins.add(id);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,name);
         jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
         jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
-        createdAdmins.add(id);return id;
+        return id;
     }
     private long customer(Long inviter) {
         return new TransactionTemplate(transactions).execute(status->{

@@ -72,7 +72,7 @@ abstract class SupportBulkRuntimeFixture {
     }
     void restoreFixture() {
         if(previouslyEnabled!=null) previouslyEnabled.forEach(id->jdbc.update("UPDATE nx_support_agent_profile SET enabled=1 WHERE admin_id=?",id));
-        admins.stream().filter(id->!retainedAdmins.contains(id)).forEach(id->{jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);permissions.evict(id);});
+        admins.stream().filter(id->!retainedAdmins.contains(id)).forEach(id->{jdbc.update("UPDATE nx_support_agent_profile SET enabled=0 WHERE admin_id=?",id);jdbc.update("UPDATE nx_admin SET status=0 WHERE id=?",id);sessions.revokeSessions(id);permissions.evict(id);});
         if(oldRules!=null) jdbc.update("UPDATE nx_support_rules SET dormant_days=?,maintenance_days=?,activity_window_days=?,inheritance_mode=?,max_inheritance_depth=?,unbound_assignment_mode=?,mode_effective_at=?,version=version+1 WHERE id=1",
             oldRules.dormantDays(),oldRules.maintenanceDays(),oldRules.activityWindowDays(),oldRules.inheritanceMode(),oldRules.maxInheritanceDepth(),oldRules.unboundAssignmentMode(),oldRules.modeEffectiveAt());
         SecurityContextHolder.clearContext();
@@ -81,9 +81,11 @@ abstract class SupportBulkRuntimeFixture {
         String username=run+"_"+label+"_"+admins.size();
         jdbc.update("INSERT INTO nx_admin(username,password_hash,nickname,super_admin,status) VALUES(?,'fixture-disabled-password',?,?,1)",username,label,"SUPER_ADMIN".equals(role)?1:0);
         long id=jdbc.queryForObject("SELECT id FROM nx_admin WHERE username=?",Long.class,username);
+        admins.add(id);
+        SupportEnhancementPreparationTest.recordFixtureActor(jdbc,json,run,getClass().getSimpleName(),id,username);
         jdbc.update("INSERT INTO nx_admin_role_relation(admin_id,role_id) SELECT ?,id FROM nx_admin_role WHERE role_code=? AND is_deleted=0",id,role);
         jdbc.update("INSERT INTO nx_support_agent_profile(admin_id,seat_type,position,service_types,tags,max_concurrent,enabled,transferable,busy) VALUES(?,?,?,'support,advisor','',0,1,1,0)",id,seat,seat);
-        admins.add(id);return id;
+        return id;
     }
     long customer(long actor) {
         long customer=new TransactionTemplate(transactions).execute(status->{
