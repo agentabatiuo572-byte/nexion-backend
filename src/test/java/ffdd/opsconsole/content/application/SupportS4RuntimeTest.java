@@ -143,46 +143,102 @@ class SupportS4RuntimeTest {
     }
 
     @Test void snapshotPaginationUnknownAndTodoUnionAgree() throws Exception {
-        rules(10,2,3);
-        as(boss);long second=customer();transfer(second,g1);
-        long third=customer();transfer(third,g1);
-        ok(http("POST","/api/app/support/conversations",customerToken,Map.of("conversationType","support","openingText","One customer multiple reasons"),key()));
-        // Explicit historical fixture is isolated to this customer; never invent production history.
-        jdbc.update("INSERT INTO nx_support_activity_event(customer_id,seq,source_ref,occurred_at) VALUES(?,1,?,UTC_TIMESTAMP(6)-INTERVAL 5 DAY)",customer,"fixture:"+key());
-        var all=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
-        assertThat(all.path("overview").path("boundTotal").asInt()).isEqualTo(3);
-        assertThat(all.path("overview").path("todoTotal").asInt()).isEqualTo(3);
-        assertThat(all.path("overview").path("waitingReplyTotal").asInt()).isEqualTo(1);
-        assertThat(all.path("customers").path("total").asInt()).isEqualTo(3);
-        assertThat(all.path("customers").path("records").size()).isEqualTo(1);
-        assertThat(all.path("overview").path("activeTotal").isNull()).isTrue();
-        var active=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
-        assertThat(active.path("customers").path("total").asInt()).isEqualTo(1);
-        var window=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
-        assertThat(window.path("customers").path("total").asInt()).isZero();
-        var seen=new HashSet<Long>();
-        for(int page=1;page<=3;page++) {
-            var response=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1&pageNum="+page,adminToken,null,null));
-            assertThat(response.path("overview").path("todoTotal").asInt()).isEqualTo(response.path("customers").path("total").asInt());
-            seen.add(response.path("customers").path("records").get(0).path("customerId").asLong());
+        var originalCoverageStart=jdbc.queryForObject("SELECT coverage_start_at FROM nx_support_activity_coverage WHERE id=1",java.sql.Timestamp.class);
+        assertThat(originalCoverageStart).isNotNull();
+        try {
+            rules(10,2,3);
+            as(boss);long second=customer();transfer(second,g1);
+            long third=customer();transfer(third,g1);
+            ok(http("POST","/api/app/support/conversations",customerToken,Map.of("conversationType","support","openingText","One customer multiple reasons"),key()));
+            // Explicit historical fixture is isolated to this customer; never invent production history.
+            jdbc.update("INSERT INTO nx_support_activity_event(customer_id,seq,source_ref,occurred_at) VALUES(?,1,?,UTC_TIMESTAMP(6)-INTERVAL 5 DAY)",customer,"fixture:"+key());
+            assertThat(jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 1 DAY) WHERE id=1")).isEqualTo(1);
+            var all=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
+            assertThat(all.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(all.path("customers").path("total").longValue()).isEqualTo(3L);
+            assertThat(all.path("customers").path("records").isArray()).isTrue();
+            assertThat(all.path("customers").path("records")).hasSize(1);
+            assertThat(all.path("overview").path("activeTotal").isNull()).isTrue();
+            for(var expected:Map.of("boundTotal",3L,"todoTotal",3L,"waitingReplyTotal",1L,
+                    "knownActiveCount",0L,"unknownWindowCount",3L,"unknownCount",2L).entrySet()) {
+                var actual=all.path("overview").path(expected.getKey());
+                assertThat(actual.isIntegralNumber()).as("Partial coverage %s must be an integer",expected.getKey()).isTrue();
+                assertThat(actual.longValue()).isEqualTo(expected.getValue());
+            }
+            var active=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
+            assertThat(active.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(active.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertThat(active.path("customers").path("records").isArray()).isTrue();
+            assertThat(active.path("customers").path("records")).hasSize(1);
+            var activeCustomer=active.path("customers").path("records").get(0).path("customerId");
+            assertThat(activeCustomer.isIntegralNumber()).isTrue();assertThat(activeCustomer.longValue()).isEqualTo(customer);
+            var window=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
+            assertThat(window.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(window.path("customers").path("total").longValue()).isZero();
+            assertThat(window.path("customers").path("records").isArray()).isTrue();
+            assertThat(window.path("customers").path("records")).isEmpty();
+            samples.put("partialWindowCoverage",Map.of("snapshot",all,"active",active,"windowActive",window));
+
+            assertThat(jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 4 DAY) WHERE id=1")).isEqualTo(1);
+            var covered=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1",adminToken,null,null));
+            for(var expected:Map.of("boundTotal",3L,"todoTotal",3L,"waitingReplyTotal",1L,
+                    "activeTotal",0L,"knownActiveCount",0L,"unknownWindowCount",0L,"unknownCount",2L).entrySet()) {
+                var actual=covered.path("overview").path(expected.getKey());
+                assertThat(actual.isIntegralNumber()).as("Complete coverage %s must be an integer",expected.getKey()).isTrue();
+                assertThat(actual.longValue()).isEqualTo(expected.getValue());
+            }
+            var coveredActive=ok(http("GET","/api/admin/content/support-workbench/customers?filter=ACTIVE",adminToken,null,null));
+            assertThat(coveredActive.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(coveredActive.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertThat(coveredActive.path("customers").path("records").isArray()).isTrue();
+            assertThat(coveredActive.path("customers").path("records")).hasSize(1);
+            assertThat(coveredActive.path("customers").path("records").get(0).path("customerId")).isEqualTo(activeCustomer);
+            var coveredWindow=ok(http("GET","/api/admin/content/support-workbench/customers?filter=WINDOW_ACTIVE",adminToken,null,null));
+            assertThat(coveredWindow.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(coveredWindow.path("customers").path("total").longValue()).isZero();
+            assertThat(coveredWindow.path("customers").path("records").isArray()).isTrue();
+            assertThat(coveredWindow.path("customers").path("records")).isEmpty();
+            samples.put("completeWindowCoverage",Map.of("snapshot",covered,"active",coveredActive,"windowActive",coveredWindow));
+
+            var seen=new HashSet<Long>();
+            for(int page=1;page<=3;page++) {
+                var response=ok(http("GET","/api/admin/content/support-workbench/customers?filter=TODO&pageSize=1&pageNum="+page,adminToken,null,null));
+                var todoTotal=response.path("overview").path("todoTotal");var pageTotal=response.path("customers").path("total");
+                assertThat(todoTotal.isIntegralNumber()).isTrue();assertThat(pageTotal.isIntegralNumber()).isTrue();
+                assertThat(todoTotal.longValue()).isEqualTo(3L);assertThat(pageTotal.longValue()).isEqualTo(todoTotal.longValue());
+                assertThat(response.path("customers").path("records").isArray()).isTrue();
+                assertThat(response.path("customers").path("records")).hasSize(1);
+                var id=response.path("customers").path("records").get(0).path("customerId");
+                assertThat(id.isIntegralNumber()).isTrue();seen.add(id.longValue());
+            }
+            assertThat(seen).hasSize(3);
+            var preference=Map.of("enabled",false,"reason","Pause just proactive maintenance","expectedVersion",1,"expectedAssignmentId",mapper.current(customer).id());
+            ok(http("PATCH",maintenancePath(),adminToken,preference,key()));
+            var stopped=ok(http("GET","/api/admin/content/support-workbench/customers?filter=STOPPED",adminToken,null,null));
+            for(String field:List.of("stoppedTotal","waitingReplyTotal")) {
+                var total=stopped.path("overview").path(field);assertThat(total.isIntegralNumber()).isTrue();
+                assertThat(total.longValue()).isEqualTo(1L);
+            }
+            assertThat(stopped.path("customers").path("total").isIntegralNumber()).isTrue();
+            assertThat(stopped.path("customers").path("total").longValue()).isEqualTo(1L);
+            assertCode(http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null),403);
+            assertCode(http("GET","/api/admin/content/support-workbench/customers/"+customer,otherToken,null,null),404);
+            rules(null,2,null);
+            var partial=ok(http("GET","/api/admin/content/support-workbench/overview",adminToken,null,null));
+            assertThat(partial.path("overview").path("activeTotal").isNull()).isTrue();
+            assertThat(partial.path("overview").path("dormantTotal").isNull()).isTrue();
+            assertThat(partial.path("overview").path("dueTotal").isIntegralNumber()).isTrue();
+            assertThat(partial.path("overview").path("dueTotal").longValue()).isEqualTo(2L);
+            assertThat(partial.path("performance").path("timeZone").asText()).isEqualTo("Asia/Shanghai");
+            assertThat(partial.path("evaluatedAt").asText()).endsWith("Z");
+            samples.put("workbenchSnapshot",all);samples.put("stoppedSnapshot",stopped);samples.put("independentRules",partial);
+        } finally {
+            jdbc.update("UPDATE nx_support_activity_coverage SET coverage_start_at=? WHERE id=1",originalCoverageStart);
+            var restoredCoverageStart=jdbc.queryForObject("SELECT coverage_start_at FROM nx_support_activity_coverage WHERE id=1",java.sql.Timestamp.class);
+            assertThat(restoredCoverageStart).as("Restore the original activity coverage start without changing its watermark").isEqualTo(originalCoverageStart);
+            samples.put("activityCoverageRestoration",Map.of("before",originalCoverageStart.toLocalDateTime().toString(),
+                    "after",restoredCoverageStart.toLocalDateTime().toString(),"restored",true));
         }
-        assertThat(seen).hasSize(3);
-        var preference=Map.of("enabled",false,"reason","Pause just proactive maintenance","expectedVersion",1,"expectedAssignmentId",mapper.current(customer).id());
-        ok(http("PATCH",maintenancePath(),adminToken,preference,key()));
-        var stopped=ok(http("GET","/api/admin/content/support-workbench/customers?filter=STOPPED",adminToken,null,null));
-        assertThat(stopped.path("overview").path("stoppedTotal").asInt()).isEqualTo(1);
-        assertThat(stopped.path("customers").path("total").asInt()).isEqualTo(1);
-        assertThat(stopped.path("overview").path("waitingReplyTotal").asInt()).isEqualTo(1);
-        assertCode(http("GET","/api/admin/content/support-workbench/overview?agentId="+g2,adminToken,null,null),403);
-        assertCode(http("GET","/api/admin/content/support-workbench/customers/"+customer,otherToken,null,null),404);
-        rules(null,2,null);
-        var partial=ok(http("GET","/api/admin/content/support-workbench/overview",adminToken,null,null));
-        assertThat(partial.path("overview").path("activeTotal").isNull()).isTrue();
-        assertThat(partial.path("overview").path("dormantTotal").isNull()).isTrue();
-        assertThat(partial.path("overview").path("dueTotal").asInt()).isEqualTo(2);
-        assertThat(partial.path("performance").path("timeZone").asText()).isEqualTo("Asia/Shanghai");
-        assertThat(partial.path("evaluatedAt").asText()).endsWith("Z");
-        samples.put("workbenchSnapshot",all);samples.put("stoppedSnapshot",stopped);samples.put("independentRules",partial);
         checks.put("s4-ac01",true);checks.put("s4-ac13",true);checks.put("s4-supplement",true);
     }
 

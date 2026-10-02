@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.dto.*;
 import ffdd.opsconsole.shared.security.*;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.nio.file.*;
 import org.junit.jupiter.api.Test;
@@ -182,7 +185,30 @@ class SupportBindingRuntimeTest {
                 assertThat(escalated.path("code").asInt()).as("restricted escalate: %s",escalated).isZero();
                 assertThat(escalated.path("data").path("conversation").path("conversationNo").asText()).isNotBlank();
                 assertThat(escalated.toString()).doesNotContain(marker);
-                assertThat(http("POST",endpoint+"/escalate",two,escalation,escalationKey)).isEqualTo(escalated);
+                String escalatedNo=escalated.path("data").path("conversation").path("conversationNo").asText();
+                var beforeReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
+                assertThat(beforeReplay.get("tickets")).isEqualTo(1L);
+                assertThat(beforeReplay.get("conversations")).isEqualTo(2L);
+                assertThat(((Map<?,?>)beforeReplay.get("conversationMessages")).get("escalationOpenings")).isEqualTo(1L);
+                assertThat(beforeReplay.get("successAudits")).isEqualTo(1L);
+                var replay=http("POST",endpoint+"/escalate",two,escalation,escalationKey);
+                assertThat(replay.toString()).doesNotContain(marker);
+                var firstTime=escalated.at("/data/ticket/slaTarget/evaluatedAt");
+                var replayTime=replay.at("/data/ticket/slaTarget/evaluatedAt");
+                assertThat(firstTime.isTextual()).isTrue();assertThat(replayTime.isTextual()).isTrue();
+                var firstAt=LocalDateTime.parse(firstTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
+                var replayAt=LocalDateTime.parse(replayTime.textValue(),DateTimeFormatConfig.DATE_TIME_FORMATTER);
+                assertThat(firstAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(firstTime.textValue());
+                assertThat(replayAt.format(DateTimeFormatConfig.DATE_TIME_FORMATTER)).isEqualTo(replayTime.textValue());
+                assertThat(replayAt).isAfterOrEqualTo(firstAt);
+                var retained=escalated.deepCopy();var repeated=replay.deepCopy();
+                // The restricted detail re-evaluates SLA time; every other response field remains exact.
+                ((ObjectNode)retained.at("/data/ticket/slaTarget")).remove("evaluatedAt");
+                ((ObjectNode)repeated.at("/data/ticket/slaTarget")).remove("evaluatedAt");
+                assertThat(repeated).isEqualTo(retained);
+                var afterReplay=escalationFacts(customer,no,escalatedNo,second,escalationKey);
+                assertThat(afterReplay.get("successAudits")).isEqualTo(1L);
+                assertThat(afterReplay).as("Same-key escalation must not duplicate persisted facts").isEqualTo(beforeReplay);
             } finally {grants.forEach(id->jdbc.update("UPDATE nx_admin_role_permission SET is_deleted=0 WHERE id=?",id));permissions.evict(second);}
             jdbc.update("UPDATE nx_support_ticket SET source_conversation_no=NULL WHERE ticket_no=?",no);
             assertThat(http("GET",endpoint,one,null,null).toString()).doesNotContain(marker);
@@ -536,6 +562,18 @@ class SupportBindingRuntimeTest {
     private String token(long id) {
         String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);
         return tokens.createToken(id,"ADMIN",username,List.of(),sessions.createSession(id,username));
+    }
+    private Map<String,Object> escalationFacts(long customer,String ticketNo,String conversationNo,long actor,String commandKey) {
+        return Map.of(
+                "tickets",jdbc.queryForObject("SELECT COUNT(*) FROM nx_support_ticket WHERE user_id=?",Long.class,customer),
+                "conversations",jdbc.queryForObject("SELECT COUNT(*) FROM nx_conversation WHERE user_id=?",Long.class,customer),
+                "ticketMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN sender_type='system' THEN 1 END) systemCount FROM nx_support_ticket_message WHERE ticket_no=?",ticketNo),
+                "conversationMessages",jdbc.queryForMap("SELECT COUNT(*) total,COUNT(CASE WHEN m.conversation_no=? AND m.sender_type='agent' THEN 1 END) escalationOpenings "
+                        + "FROM nx_conversation_message m JOIN nx_conversation c ON c.conversation_no=m.conversation_no WHERE c.user_id=?",conversationNo,customer),
+                "ticket",jdbc.queryForMap("SELECT status,version,message_count,updated_at FROM nx_support_ticket WHERE ticket_no=?",ticketNo),
+                "conversation",jdbc.queryForMap("SELECT status,version,unread_count,updated_at FROM nx_conversation WHERE conversation_no=?",conversationNo),
+                "successAudits",jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='M2_SUPPORT_TICKET_ESCALATED' AND resource_type='SUPPORT_TICKET' "
+                        + "AND resource_id=? AND actor_id=? AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=?",Long.class,ticketNo,actor,commandKey));
     }
     private void assertModuleRecoveryRevoked(long actor,String role,String permission,String token,String commandKey) throws Exception {
         var ids=jdbc.queryForList("SELECT rp.id FROM nx_admin_role_permission rp JOIN nx_admin_role r ON r.id=rp.role_id JOIN nx_admin_permission p ON p.id=rp.permission_id WHERE r.role_code=? AND p.permission_code=? AND rp.is_deleted=0",Long.class,role,permission);
