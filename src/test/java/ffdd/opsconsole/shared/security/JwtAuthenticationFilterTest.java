@@ -9,6 +9,9 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.platform.infrastructure.AdminAccountStateEntity;
+import ffdd.opsconsole.platform.mapper.AdminAccountStateMapper;
+import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -20,6 +23,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -38,6 +43,9 @@ class JwtAuthenticationFilterTest {
     private final AdminPermissionCache permissionCache = mock(AdminPermissionCache.class);
     private final ImpersonationSessionVerifier impersonationSessionVerifier = mock(ImpersonationSessionVerifier.class);
     private final PlatformConfigFacade configFacade = mock(PlatformConfigFacade.class);
+    private final AdminAccountStateMapper accountStateMapper = mock(AdminAccountStateMapper.class);
+    private final AdminRbacAuthorizationFilter rbacFilter = new AdminRbacAuthorizationFilter(
+            mock(AuditLogService.class), accountStateMapper);
     private final JwtAuthenticationFilter filter = new JwtAuthenticationFilter(
             tokenProvider,
             authSessionMapper,
@@ -425,6 +433,144 @@ class JwtAuthenticationFilterTest {
         filter.doFilter(request, new MockHttpServletResponse(), (servletRequest, servletResponse) -> { });
 
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"service_m3_read", ""})
+    void reasonPolicyJwtAdminChainAllowsCurrentAdminWithoutPlatformPermissions(String currentPermission)
+            throws Exception {
+        Set<String> currentPermissions = currentPermission.isEmpty() ? Set.of() : Set.of(currentPermission);
+        when(adminSessionRegistry.isSessionActive(2791L, "reason-policy-admin-session")).thenReturn(true);
+        when(permissionCache.getPermissionCodes(2791L)).thenReturn(currentPermissions);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                2791L, "ADMIN", "support-reason-policy", List.of("platform_a1_read"),
+                "reason-policy-admin-session"));
+        request.setRequestURI("/api/admin/platform/audit/reason-policy");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                rbacFilter.doFilter(servletRequest, servletResponse, (ignoredRequest, ignoredResponse) ->
+                        invoked.set(true)));
+
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(authentication).isNotNull();
+        assertThat(authentication.getPrincipal()).isEqualTo("2791");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "ADMIN", "username", "support-reason-policy",
+                "sessionId", "reason-policy-admin-session"));
+        assertThat(authentication.getAuthorities()).extracting(GrantedAuthority::getAuthority)
+                .containsExactlyInAnyOrderElementsOf(currentPermissions);
+        assertThat(invoked).isTrue();
+        assertThat(response.getStatus()).isEqualTo(200);
+        org.mockito.Mockito.verify(adminSessionRegistry).isSessionActive(2791L, "reason-policy-admin-session");
+        org.mockito.Mockito.verify(permissionCache).getPermissionCodes(2791L);
+    }
+
+    @Test
+    void reasonPolicyJwtUserChainRejectsActualUserWithClaimedPlatformAuthority() throws Exception {
+        when(userMapper.selectById(42L)).thenReturn(user(0));
+        when(authSessionMapper.touchActiveUserSession("reason-policy-user-session", 42L, 30)).thenReturn(1);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createUserToken(
+                42L, "user-42", List.of("platform_a1_read"), "reason-policy-user-session",
+                java.time.Duration.ofHours(1), UserAuthEnvironment.PRODUCTION));
+        request.setRequestURI("/api/admin/platform/audit/reason-policy");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                rbacFilter.doFilter(servletRequest, servletResponse, (ignoredRequest, ignoredResponse) ->
+                        invoked.set(true)));
+
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(authentication).isNotNull();
+        assertThat(authentication.getPrincipal()).isEqualTo("42");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "USER", "username", "user-42", "sessionId", "reason-policy-user-session"));
+        assertThat(authentication.getAuthorities()).extracting(GrantedAuthority::getAuthority)
+                .containsExactly("platform_a1_read");
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        org.mockito.Mockito.verify(authSessionMapper).touchActiveUserSession("reason-policy-user-session", 42L, 30);
+        verifyNoInteractions(adminSessionRegistry, permissionCache);
+    }
+
+    @Test
+    void reasonPolicyJwtImpersonationChainRejectsActualImpersonationWithClaimedPlatformAuthority()
+            throws Exception {
+        when(impersonationSessionVerifier.isActive(7L, "reason-policy-impersonation-session")).thenReturn(true);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                7L, "IMPERSONATION", "U00000007", List.of("platform_a1_read"),
+                "reason-policy-impersonation-session"));
+        request.setRequestURI("/api/admin/platform/audit/reason-policy");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                rbacFilter.doFilter(servletRequest, servletResponse, (ignoredRequest, ignoredResponse) ->
+                        invoked.set(true)));
+
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        assertThat(authentication).isNotNull();
+        assertThat(authentication.getPrincipal()).isEqualTo("7");
+        assertThat(authentication.getDetails()).isEqualTo(Map.of(
+                "subjectType", "IMPERSONATION", "username", "U00000007",
+                "sessionId", "reason-policy-impersonation-session"));
+        assertThat(authentication.getAuthorities()).extracting(GrantedAuthority::getAuthority)
+                .containsExactly("platform_a1_read");
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_SUBJECT_REQUIRED");
+        org.mockito.Mockito.verify(impersonationSessionVerifier).isActive(7L, "reason-policy-impersonation-session");
+        verifyNoInteractions(adminSessionRegistry, permissionCache);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PASSWORD_CHANGE_REQUIRED", "MAIL_DISPATCHED", "HANDOFF_PENDING"})
+    void reasonPolicyJwtAdminChainStillEnforcesEveryForcedPasswordChangeStatus(String status) throws Exception {
+        when(adminSessionRegistry.isSessionActive(2791L, "reason-policy-admin-session")).thenReturn(true);
+        when(permissionCache.getPermissionCodes(2791L)).thenReturn(Set.of());
+        AdminAccountStateEntity state = new AdminAccountStateEntity();
+        state.setAdminId(2791L);
+        state.setCredentialDeliveryStatus(status);
+        when(accountStateMapper.selectActiveByAdminId(2791L)).thenReturn(state);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                2791L, "ADMIN", "support-reason-policy", List.of(), "reason-policy-admin-session"));
+        request.setRequestURI("/api/admin/platform/audit/reason-policy");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                rbacFilter.doFilter(servletRequest, servletResponse, (ignoredRequest, ignoredResponse) ->
+                        invoked.set(true)));
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(403);
+        assertThat(response.getContentAsString()).contains("ADMIN_PASSWORD_CHANGE_REQUIRED");
+        org.mockito.Mockito.verify(accountStateMapper).selectActiveByAdminId(2791L);
+    }
+
+    @Test
+    void reasonPolicyJwtAdminChainRejectsRevokedSessionBeforeRbacException() throws Exception {
+        when(adminSessionRegistry.isSessionActive(2791L, "reason-policy-revoked-session")).thenReturn(false);
+        MockHttpServletRequest request = requestWithBearer(tokenProvider.createToken(
+                2791L, "ADMIN", "support-reason-policy", List.of("platform_a1_read"),
+                "reason-policy-revoked-session"));
+        request.setRequestURI("/api/admin/platform/audit/reason-policy");
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (servletRequest, servletResponse) ->
+                rbacFilter.doFilter(servletRequest, servletResponse, (ignoredRequest, ignoredResponse) ->
+                        invoked.set(true)));
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        assertThat(invoked).isFalse();
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).contains("ADMIN_AUTH_REQUIRED");
+        verifyNoInteractions(permissionCache, accountStateMapper);
     }
 
     private MockHttpServletRequest requestWithBearer(String token) {

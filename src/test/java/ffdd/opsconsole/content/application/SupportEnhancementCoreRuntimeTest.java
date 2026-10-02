@@ -645,6 +645,54 @@ class SupportEnhancementCoreRuntimeTest {
         proof("R24","Real original freeze/unfreeze and revoked financial grant checked independently; service profile remains readable without finance write and forbidden operation writes nothing");
         proof("R33","Actual timeout read/save/refresh uses original manage grant, ordinary advisor denied and binding unchanged");writeProof("original-actions-runtime.json");
     }
+    @Test void reasonPolicyGetAcceptsOnlyTrustedAdminsWithoutExpandingAuditPermissions() throws Exception {
+        String path="/api/admin/platform/audit/reason-policy",owner=token(first),supervisor=token(boss);
+        assertThat(permissions.getPermissionCodes(first)).noneMatch(permission->permission.startsWith("platform_"));
+        var observed=new LinkedHashMap<String,Integer>();
+        var expected=http("GET",path,supervisor,null,null).path("data");
+        assertThat(expected.path("minChars").asInt()).isPositive();assertThat(expected.path("maxChars").asInt()).isGreaterThanOrEqualTo(expected.path("minChars").asInt());
+        assertThat(expected.path("sourceKey").asText()).isEqualTo(ffdd.opsconsole.platform.application.A2RuntimePolicy.REASON_MIN_KEY);
+        for(long id:List.of(first,second,boss)) {
+            var response=httpResponse("GET",path,id==first?owner:token(id),null,null);observed.put("ADMIN_"+id,response.statusCode());
+            assertThat(response.statusCode()).isEqualTo(200);assertThat(json.readTree(response.body()).path("data")).isEqualTo(expected);
+        }
+        for(String method:List.of("HEAD","POST","PUT","PATCH","DELETE")) {
+            var response=httpResponse(method,path,owner,null,null);observed.put(method,response.statusCode());assertThat(response.statusCode()).isEqualTo(403);
+        }
+        for(String neighbor:List.of(path+"/extra",path+"/","/api/admin/platform/audit/retention-runs/latest")) {
+            var response=httpResponse("GET",neighbor,owner,null,null);observed.put(neighbor,response.statusCode());assertThat(response.statusCode()).isEqualTo(403);
+        }
+        long customer=customer(null);String userSession=UUID.randomUUID().toString(),impersonation=key();
+        try {
+            jdbc.update("INSERT INTO nx_user_session(user_id,refresh_token_id,session_chain_id,expires_at,last_active_at) VALUES(?,?,?,DATE_ADD(NOW(),INTERVAL 1 DAY),NOW())",customer,userSession,userSession);
+            jdbc.update("INSERT INTO nx_user_impersonation_session(session_no,user_id,status,ttl_minutes,operator,reason,expires_at) VALUES(?,?,'ACTIVE',10,?,'Owned reason-policy negative test',DATE_ADD(NOW(),INTERVAL 10 MINUTE))",impersonation,customer,run);
+            jdbc.update("INSERT INTO nx_admin_account_state(admin_id,credential_delivery_status) VALUES(?,'ACTIVE')",first);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_impersonation_session WHERE session_no=? AND user_id=? AND status='ACTIVE' AND expires_at>NOW()",Long.class,impersonation,customer)).isEqualTo(1);
+            String user=tokens.createUserToken(customer,run,List.of("platform_a2_read"),userSession,java.time.Duration.ofHours(1),UserAuthEnvironment.PRODUCTION);
+            var userResponse=httpResponse("GET",path,user,null,null);observed.put("USER",userResponse.statusCode());
+            assertThat(userResponse.statusCode()).isEqualTo(403);assertThat(json.readTree(userResponse.body()).path("message").asText()).isEqualTo("ADMIN_SUBJECT_REQUIRED");
+            String impersonated=tokens.createToken(customer,"IMPERSONATION",run,List.of("platform_a2_read"),impersonation);
+            var impersonationResponse=httpResponse("GET",path,impersonated,null,null);observed.put("IMPERSONATION",impersonationResponse.statusCode());
+            assertThat(impersonationResponse.statusCode()).isEqualTo(403);assertThat(json.readTree(impersonationResponse.body()).path("message").asText()).isEqualTo("IMPERSONATION_SCOPE_DENIED");
+            for(String status:List.of("PASSWORD_CHANGE_REQUIRED","MAIL_DISPATCHED","HANDOFF_PENDING")) {
+                jdbc.update("UPDATE nx_admin_account_state SET credential_delivery_status=? WHERE admin_id=?",status,first);
+                var response=httpResponse("GET",path,owner,null,null);observed.put(status,response.statusCode());
+                assertThat(response.statusCode()).isEqualTo(403);assertThat(json.readTree(response.body()).path("message").asText()).isEqualTo("ADMIN_PASSWORD_CHANGE_REQUIRED");
+            }
+        } finally {
+            jdbc.update("UPDATE nx_admin_account_state SET credential_delivery_status='ACTIVE' WHERE admin_id=?",first);
+            jdbc.update("UPDATE nx_user_session SET revoked_at=NOW() WHERE user_id=? AND refresh_token_id=?",customer,userSession);
+            jdbc.update("UPDATE nx_user_impersonation_session SET status='TERMINATED',terminated_by=?,terminate_reason='Owned reason-policy test cleanup',terminated_at=NOW() WHERE user_id=? AND session_no=?",run,customer,impersonation);
+        }
+        var anonymous=httpResponse("GET",path,null,null,null);observed.put("ANONYMOUS",anonymous.statusCode());assertThat(anonymous.statusCode()).isEqualTo(401);
+        String expired=tokens.createToken(second,"ADMIN",run,List.of(),sessions.createSession(second,run),java.time.Duration.ofMillis(1));
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(2)).untilAsserted(()->assertThatThrownBy(()->tokens.parse(expired)).isInstanceOf(io.jsonwebtoken.ExpiredJwtException.class));
+        var expiredResponse=httpResponse("GET",path,expired,null,null);observed.put("EXPIRED_ADMIN",expiredResponse.statusCode());assertThat(expiredResponse.statusCode()).isEqualTo(401);
+        sessions.revokeSessions(first);var revoked=httpResponse("GET",path,owner,null,null);observed.put("REVOKED_ADMIN",revoked.statusCode());assertThat(revoked.statusCode()).isEqualTo(401);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_session WHERE user_id=? AND refresh_token_id=? AND revoked_at IS NULL",Long.class,customer,userSession)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_impersonation_session WHERE user_id=? AND session_no=? AND status='ACTIVE'",Long.class,customer,impersonation)).isZero();
+        proofs.put("REASON_POLICY",Map.of("httpStatuses",observed,"adminIds",List.of(first,second,boss),"policy",expected,"supportPlatformPermissionAbsent",true,"ownedUserSessionsRevoked",true));writeProof("reason-policy-runtime.json");
+    }
     @Test void presenceTypingAndReadReceiptsUseActualSignalsWithoutReplying() throws Exception {
         rules("UNLIMITED",null,"SUPERVISOR");long customer=customer(null);transfer(first,customer);String owner=token(first),client=userToken(customer);
         var created=http("POST","/api/app/support/conversations",client,Map.of("conversationType","support","openingText","Actual pending customer signal"),key());assertThat(created.path("code").asInt()).isZero();String no=created.path("data").path("conversation").path("conversationNo").asText();
@@ -845,9 +893,12 @@ class SupportEnhancementCoreRuntimeTest {
     private String token(long id){String username=jdbc.queryForObject("SELECT username FROM nx_admin WHERE id=?",String.class,id);return tokens.createToken(id,"ADMIN",username,List.of(),sessions.createSession(id,username));}
     private String key(){return "enhance-"+UUID.randomUUID();}
     private com.fasterxml.jackson.databind.JsonNode http(String method,String path,String token,Object body,String key) throws Exception {
+        return json.readTree(httpResponse(method,path,token,body,key).body());
+    }
+    private HttpResponse<String> httpResponse(String method,String path,String token,Object body,String key) throws Exception {
         var request=HttpRequest.newBuilder(URI.create("http://127.0.0.1:18141"+path)).timeout(java.time.Duration.ofSeconds(20));
         if(token!=null)request.header("Authorization","Bearer "+token);if(key!=null)request.header("Idempotency-Key",key);
         request.header("Content-Type","application/json");request.method(method,body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)));
-        return json.readTree(HttpClient.newHttpClient().send(request.build(),HttpResponse.BodyHandlers.ofString()).body());
+        return HttpClient.newHttpClient().send(request.build(),HttpResponse.BodyHandlers.ofString());
     }
 }
