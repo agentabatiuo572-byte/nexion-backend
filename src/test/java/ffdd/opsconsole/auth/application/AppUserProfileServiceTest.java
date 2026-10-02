@@ -13,6 +13,7 @@ import ffdd.opsconsole.auth.mapper.AppUserProfileMapper;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
+import ffdd.opsconsole.shared.storage.StorageProperties;
 import java.util.Map;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,7 +35,15 @@ class AppUserProfileServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final ObjectStorageService storage = mock(ObjectStorageService.class);
     private final ffdd.opsconsole.growth.application.H3DayOneBusinessFactService facts = mock(ffdd.opsconsole.growth.application.H3DayOneBusinessFactService.class);
-    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage, facts);
+    private final StorageProperties storageProperties = new StorageProperties();
+    private final AppUserAvatarImageService avatarImages = avatarImages();
+    private final AppUserProfileService service = new AppUserProfileService(mapper, idempotency, audit, storage, facts, avatarImages);
+
+    private AppUserAvatarImageService avatarImages() {
+        storageProperties.setPublicMediaOrigin("https://avatar-test.example");
+        storageProperties.setSecretKey("test-only-avatar-signing-secret");
+        return new AppUserAvatarImageService(mapper, storage, storageProperties);
+    }
 
     @BeforeEach
     void executeIdempotentAction() {
@@ -148,11 +157,54 @@ class AppUserProfileServiceTest {
     }
 
     @Test
+    void avatarReadAndUploadMustUseThePublicApiOrigin() {
+        String key = "users/42/avatar/a76f323e5177470f86471a42bb8fcb62.png";
+        when(mapper.profile(42L)).thenReturn(Map.of("nickname", "Nova Rover 42",
+                "avatarObjectKey", key, "language", "en"));
+        when(storage.presignGet(any(), any())).thenReturn("http://127.0.0.1:9000/nexion/" + key);
+
+        assertThat(service.profile(42L).get("avatarUrl"))
+                .as("the authoritative profile must issue a browser-reachable avatar URL")
+                .isInstanceOf(String.class)
+                .asString().startsWith("https://avatar-test.example/api/app/profile/avatar/image/42/");
+        assertThat(service.profile(42L).get("avatarRevision"))
+                .isEqualTo(java.util.HexFormat.of().formatHex(digest(key)));
+
+        byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
+        when(mapper.currentAvatarForUpdate(42L)).thenReturn(null);
+        when(mapper.updateAvatarObjectKey(eq(42L), any(), eq(null))).thenReturn(1);
+        assertThat(service.uploadAvatar(42L, "public-avatar", new MockMultipartFile(
+                "file", "test-avatar.png", "image/png", png)).get("avatarUrl"))
+                .isInstanceOf(String.class)
+                .asString().startsWith("https://avatar-test.example/api/app/profile/avatar/image/42/");
+        verify(storage, never()).presignGet(any(), any());
+    }
+
+    private byte[] digest(String value) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new AssertionError(ex);
+        }
+    }
+
+    @Test
+    void missingPublicOriginFailsBeforeAnyAvatarMutation() {
+        storageProperties.setPublicMediaOrigin("");
+        assertThatThrownBy(() -> service.uploadAvatar(42L, "missing-origin", new MockMultipartFile(
+                "file", "avatar.png", "image/png",
+                new byte[] {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})))
+                .hasMessage("USER_AVATAR_IMAGE_PUBLIC_ORIGIN_REQUIRED");
+        org.mockito.Mockito.verifyNoInteractions(storage, audit, facts);
+        verify(mapper, never()).updateAvatarObjectKey(any(), any(), any());
+    }
+
+    @Test
     void avatarAcceptsOnlyMagicVerifiedImagesAndStoresAnOpaqueObjectKey() {
         byte[] png = {(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
         when(mapper.currentAvatarForUpdate(42L)).thenReturn(null);
         when(mapper.updateAvatarObjectKey(eq(42L), any(), eq(null))).thenReturn(1);
-        when(storage.presignGet(any(), any())).thenReturn("https://objects.example/avatar");
 
         Map<String, Object> result = service.uploadAvatar(42L, "avatar-key",
                 new MockMultipartFile("file", "avatar.png", "text/plain", png));

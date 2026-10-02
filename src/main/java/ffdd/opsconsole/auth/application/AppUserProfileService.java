@@ -18,7 +18,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.time.Duration;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -48,6 +47,7 @@ public class AppUserProfileService {
     private final AuditLogService audit;
     private final ObjectStorageService objectStorage;
     private final H3DayOneBusinessFactService dayOneFacts;
+    private final AppUserAvatarImageService avatarImages;
 
     @Transactional(readOnly = true)
     public Map<String, Object> profile(Long userId) {
@@ -57,7 +57,7 @@ public class AppUserProfileService {
         return Map.of(
                 "nickname", text(row.get("nickname")),
                 "avatarUrl", StringUtils.hasText(objectKey)
-                        ? avatarUrl(objectKey) : "",
+                        ? avatarUrl(userId, objectKey) : "",
                 "avatarRevision", StringUtils.hasText(objectKey) ? hash(objectKey) : "",
                 "language", normalizedLanguage(row.get("language")));
     }
@@ -153,6 +153,7 @@ public class AppUserProfileService {
         String previous = mapper.currentAvatarForUpdate(userId);
         String objectKey = "users/" + userId + "/avatar/" + UUID.randomUUID().toString().replace("-", "")
                 + avatar.extension();
+        String avatarUrl = avatarImages.issueUrl(userId, objectKey);
         try {
             objectStorage.put(objectKey, avatar.contentType(),
                     new ByteArrayInputStream(avatar.bytes()), avatar.bytes().length);
@@ -174,7 +175,7 @@ public class AppUserProfileService {
                     .build());
             removeAfterCommit(previous);
             return Map.of(
-                    "avatarUrl", objectStorage.presignGet(objectKey, Duration.ofHours(24)),
+                    "avatarUrl", avatarUrl,
                     "avatarRevision", hash(objectKey),
                     "status", "UPDATED");
         } catch (RuntimeException exception) {
@@ -288,9 +289,9 @@ public class AppUserProfileService {
         return StringUtils.hasText(objectKey) && objectKey.startsWith("users/") && objectKey.contains("/avatar/");
     }
 
-    private String avatarUrl(String storedValue) {
+    private String avatarUrl(Long userId, String storedValue) {
         if (storedValue.startsWith("https://") || storedValue.startsWith("http://")) return storedValue;
-        return objectStorage.presignGet(storedValue, Duration.ofHours(24));
+        return avatarImages.issueUrl(userId, storedValue);
     }
 
     private String text(Object value) {
