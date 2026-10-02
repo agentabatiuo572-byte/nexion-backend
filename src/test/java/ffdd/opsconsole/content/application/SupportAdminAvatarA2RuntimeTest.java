@@ -309,14 +309,30 @@ class SupportAdminAvatarA2RuntimeTest extends SupportBulkRuntimeFixture {
 
     private void assertRejectedCreate(String username, String asset, int code, String assetState) throws Exception {
         assertThat(accountCount(username)).isZero();
+        List<Long> orphanRoleAdminsBefore = jdbc.queryForList("SELECT DISTINCT rr.admin_id FROM nx_admin_role_relation rr "
+                + "LEFT JOIN nx_admin a ON a.id=rr.admin_id WHERE a.id IS NULL ORDER BY rr.admin_id", Long.class);
+        List<Long> orphanStateAdminsBefore = jdbc.queryForList("SELECT DISTINCT s.admin_id FROM nx_admin_account_state s "
+                + "LEFT JOIN nx_admin a ON a.id=s.admin_id WHERE a.id IS NULL ORDER BY s.admin_id", Long.class);
         String ticket = propose(proposal("a1_account_create", createParams(username, asset)), key());
-        assertCode(approve(ticket, checker, key()), code);
+        String approveKey = key();
+        assertCode(approve(ticket, checker, approveKey), code);
         assertPending(ticket);
-        assertThat(accountCount(username)).as("Actual inserted account, primary role and account state must roll back").isZero();
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_admin_account_state s JOIN nx_admin a ON a.id=s.admin_id WHERE a.username=?",
-                Long.class, username)).isZero();
+        assertThat(accountCount(username)).as("Actual inserted account must roll back").isZero();
+        assertThat(jdbc.queryForList("SELECT DISTINCT rr.admin_id FROM nx_admin_role_relation rr "
+                + "LEFT JOIN nx_admin a ON a.id=rr.admin_id WHERE a.id IS NULL ORDER BY rr.admin_id", Long.class))
+                .as("Failed create must leave existing orphan role admin IDs unchanged").isEqualTo(orphanRoleAdminsBefore);
+        assertThat(jdbc.queryForList("SELECT DISTINCT s.admin_id FROM nx_admin_account_state s "
+                + "LEFT JOIN nx_admin a ON a.id=s.admin_id WHERE a.id IS NULL ORDER BY s.admin_id", Long.class))
+                .as("Failed create must leave existing orphan account-state admin IDs unchanged").isEqualTo(orphanStateAdminsBefore);
         assertThat(jdbc.queryForObject("SELECT attached_admin_id FROM nx_support_admin_avatar_asset WHERE id=?", Long.class, asset)).isNull();
         assertThat(jdbc.queryForObject("SELECT state FROM nx_support_admin_avatar_asset WHERE id=?", String.class, asset)).isEqualTo(assetState);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action='A2_OPERATION_APPROVED' "
+                + "AND resource_id=? AND result='SUCCESS'", Long.class, ticket))
+                .as("Failed create must not leave a successful A2 approval audit for this ticket").isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_audit_log WHERE action LIKE 'A1_%' AND actor_id=? "
+                + "AND result='SUCCESS' AND JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.idempotencyKey'))=?",
+                Long.class, checker, approveKey))
+                .as("Failed create must not leave a successful A1 audit for this checker and approval key").isZero();
         withdraw(ticket);
     }
 
