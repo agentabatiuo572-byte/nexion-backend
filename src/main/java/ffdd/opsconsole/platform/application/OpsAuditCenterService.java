@@ -234,6 +234,15 @@ public class OpsAuditCenterService {
         }
         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor descriptor = proposalContext.getData();
         AuditLockTarget target = request.target();
+        if (A2ReplayContext.isAvatarCommand(command)) {
+            var expectedTarget = A2ReplayContext.avatarTarget(command);
+            if (expectedTarget == null || !expectedTarget.equals(target)
+                    || (request.targets() != null && !request.targets().isEmpty()))
+                return fail(OpsErrorCode.VALIDATION_FAILED, "A2_AVATAR_TARGET_MISMATCH");
+            ticket.setObjectText(expectedTarget.id());
+            sourceDomain = "A";
+            ticket.setSourceDomain(sourceDomain);
+        }
         if (descriptor != null) {
             ticket.setAction(descriptor.action());
             ticket.setObjectText(descriptor.objectId());
@@ -252,7 +261,15 @@ public class OpsAuditCenterService {
         }
         if (command != null) {
             try {
-                ticket.setCommandJson(objectMapper.writeValueAsString(command));
+                com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (A2ReplayContext.isAvatarCommand(command)) {
+                    Long maker = A2ReplayContext.authenticatedAdminId();
+                    if (maker == null || !A2ReplayContext.hasAuthority("platform_a1_write"))
+                        return fail(OpsErrorCode.FORBIDDEN, "A2_AVATAR_MAKER_REQUIRED");
+                    // Root metadata is server-only: the client command record can supply domain/op/params only.
+                    stored.put("avatarMakerAdminId", maker);
+                }
+                ticket.setCommandJson(objectMapper.writeValueAsString(stored));
             } catch (Exception ex) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
             }
@@ -613,13 +630,27 @@ public class OpsAuditCenterService {
         if (makerOnly && !sameActor(ticket.getOperatorName(), authenticatedOperator)) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
         }
-        if (STATUS_APPROVED.equals(nextStatus)
-                && sameActor(ticket.getOperatorName(), authenticatedOperator)) {
+        AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? deserializeCommand(ticket.getCommandJson()) : null;
+        Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd) ? avatarMakerId(ticket.getCommandJson()) : null;
+        if (STATUS_APPROVED.equals(nextStatus) && A2ReplayContext.isAvatarCommand(cmd)) {
+            var expectedTarget = A2ReplayContext.avatarTarget(cmd);
+            var locks = lockMapper.selectActiveByTicketId(ticket.getOperationId());
+            if (expectedTarget == null || !expectedTarget.id().equals(ticket.getObjectText())
+                    || !"A".equals(ticket.getSourceDomain()) || locks == null || locks.size() != 1
+                    || !ticket.getOperationId().equals(locks.get(0).getTicketId())
+                    || !expectedTarget.equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
+                            locks.get(0).getTargetType(), locks.get(0).getTargetId())))
+                return fail(OpsErrorCode.VALIDATION_FAILED, "A2_AVATAR_TARGET_MISMATCH");
+            Long checker = A2ReplayContext.authenticatedAdminId();
+            if (avatarMaker == null || checker == null || !A2ReplayContext.hasAuthority("platform_a2_operation_approve")
+                    || !A2ReplayContext.hasAuthority("platform_a1_write"))
+                return fail(OpsErrorCode.FORBIDDEN, "A2_AVATAR_APPROVAL_REQUIRED");
+            if (avatarMaker.equals(checker)) return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
+        } else if (STATUS_APPROVED.equals(nextStatus) && sameActor(ticket.getOperatorName(), authenticatedOperator)) {
             return fail(OpsErrorCode.FORBIDDEN, "A2_MAKER_CHECKER_REQUIRED");
         }
         // approve 才回放目标域;reject/withdrawn 只删锁不回放(原值天然保持)
         if (STATUS_APPROVED.equals(nextStatus)) {
-            AuditReplayCommand cmd = deserializeCommand(ticket.getCommandJson());
             if (cmd == null) {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_REQUIRED");
             }
@@ -629,7 +660,12 @@ public class OpsAuditCenterService {
             }
             AuditReplayContext ctx = new AuditReplayContext(
                     authenticatedOperator, request.reason().trim(), idempotencyKey.trim());
-            A2ReplayContext.enterReplay(ticket.getOperationId());
+            if (avatarMaker != null) {
+                A2ReplayContext.enterAvatarApproval(ticket.getOperationId(), avatarMaker,
+                        A2ReplayContext.authenticatedAdminId(), deserializeCommand(ticket.getCommandJson()));
+            } else {
+                A2ReplayContext.enterReplay(ticket.getOperationId());
+            }
             try {
                 ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
                 if (replayResult.getCode() != 0) {
@@ -769,10 +805,21 @@ public class OpsAuditCenterService {
             return null;
         }
         try {
-            return objectMapper.readValue(commandJson, AuditReplayCommand.class);
+            com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
+            stored.remove("avatarMakerAdminId");
+            return objectMapper.treeToValue(stored, AuditReplayCommand.class);
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private Long avatarMakerId(String commandJson) {
+        try {
+            var maker = objectMapper.readTree(commandJson).get("avatarMakerAdminId");
+            if (maker == null || !maker.isIntegralNumber() || !maker.canConvertToLong()) return null;
+            long id = maker.longValue();
+            return id > 0 && id <= 9_007_199_254_740_991L ? id : null;
+        } catch (Exception ex) { return null; }
     }
 
     private Map<String, PlatformConfigItem> loadConfigMap(Collection<String> groups) {

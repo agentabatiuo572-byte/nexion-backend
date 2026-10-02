@@ -198,7 +198,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         admin.setSuperAdmin("super".equals(role) ? 1 : 0);
         admin.setStatus(1);
         admin.setIsDeleted(0);
-        adminMapper.insert(admin);
+        int inserted = adminMapper.insert(admin);
+        if (A2ReplayContext.isReplaying() && request.avatarAssetId() != null && (inserted != 1 || admin.getId() == null))
+            throw new ffdd.opsconsole.shared.exception.BizException(500, "ADMIN_ID_MISSING");
         Long adminId = admin.getId();
         if (adminId == null) {
             adminId = adminByUsername(admin.getUsername()).map(AdminEntity::getId).orElse(null);
@@ -210,7 +212,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         String credentialStatus = PASSWORD_CHANGE_REQUIRED;
         accountStateMapper.upsertCreatedState(adminId, credentialStatus);
-        if(request.avatarAssetId()!=null) avatars.attach(adminId,request.avatarAssetId());
+        if(request.avatarAssetId()!=null) {
+            if(A2ReplayContext.isReplaying()) A2ReplayContext.bindAvatarTarget(adminId,request.avatarAssetId(),true);
+            avatars.attach(adminId,request.avatarAssetId());
+        }
         String accountId = String.valueOf(adminId);
 
         AdminAccountOverview.OperatorRecord created = requireOperator(accountId);
@@ -301,7 +306,10 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (adminMapper.updateProfileIfVersion(adminId, accountVersionNumber(current.version()), username, displayName, firstText(email)) != 1) {
             return ApiResult.fail(409, "ACCOUNT_VERSION_STALE");
         }
-        if(avatarChanged) avatars.attach(adminId,request.avatarAssetId());
+        if(avatarChanged) {
+            if(A2ReplayContext.isReplaying()) A2ReplayContext.bindAvatarTarget(adminId,request.avatarAssetId(),false);
+            avatars.attach(adminId,request.avatarAssetId());
+        }
         if (usernameChanged) {
             adminSessionRegistry.revokeSessions(adminId);
             accountStateMapper.upsertSessionsRevokedAt(adminId, LocalDateTime.now());
@@ -1592,6 +1600,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     @Override
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
+        if(A2ReplayContext.hasAvatarApproval() || A2ReplayContext.isAvatarCommand(cmd)) A2ReplayContext.requireAvatarCommand(cmd);
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
         String operator = ctx.operator();
         String reason = ctx.reason();

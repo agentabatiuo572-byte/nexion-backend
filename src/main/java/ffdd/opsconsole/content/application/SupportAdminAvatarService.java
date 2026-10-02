@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.content.domain.SupportAvatarAsset;
 import ffdd.opsconsole.content.mapper.SupportAdminAvatarMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.io.*;
@@ -54,7 +55,8 @@ public class SupportAdminAvatarService {
     @Transactional(propagation=Propagation.MANDATORY)
     public void attach(Long admin,String assetId) {
         Long actor=superWriter();SupportWorkbenchService.requireSafeId(admin);
-        var row=find(assetId);if(!actor.equals(row.uploaderId()))throw missing();
+        Long uploader=A2ReplayContext.isReplaying() ? A2ReplayContext.approvedAvatarUploader(actor,admin,assetId) : actor;
+        var row=find(assetId);if(!uploader.equals(row.uploaderId()))throw missing();
         var current=mapper.reference(admin);
         if(current!=null && assetId.equals(current.get("assetId")))return;
         ready(row);if(!storage.exists(row.objectKey()))throw new BizException(503,"AVATAR_STORAGE_UNAVAILABLE");
