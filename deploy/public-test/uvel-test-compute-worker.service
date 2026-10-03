@@ -1,0 +1,33 @@
+[Unit]
+Description=UVEL persistent TEST Cloud Share computation worker
+After=nexgrid-backend.service
+Wants=nexgrid-backend.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=uvel-test-worker
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/uvel-test-worker
+Environment=UVEL_TEST_WORKER_ENABLED=false
+Environment=UVEL_TEST_WORKER_SCOPE=TEST
+EnvironmentFile=-/etc/uvel-test-worker/worker.env
+LoadCredential=test-worker-token:/srv/nexgrid/secrets/test-compute-worker.credential
+ExecStart=/usr/bin/python3 -I -B /opt/uvel-test-worker/test-compute-worker-daemon.py --interval 60 --executor test355-continuous
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=10
+TimeoutStopSec=95
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

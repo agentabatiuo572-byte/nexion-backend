@@ -30,6 +30,32 @@ class GeoBlockEnforcementFilterTest {
             new GeoBlockEnforcementFilter(policyService, repository, properties, healthMonitor);
 
     @ParameterizedTest
+    @CsvSource({"POST,/api/test/compute-workers/v2/next-task", "POST,/api/test/compute-workers/v2/tasks/CTA-ONE/complete",
+            "POST,/api/test/compute-workers/v2/tasks/CTA-ONE/release", "GET,/api/test/compute-workers/v2/tasks/CTA-ONE/receipt"})
+    void continuousExactMachineRoutesRequireTheUnforwardedLoopbackSocketEvenWhenGeoIsDisabled(String method, String path) throws Exception {
+        properties.setEnabled(false);
+        MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        request.setRemoteAddr("127.0.0.1");
+        var chain = mock(FilterChain.class);
+        var response = new MockHttpServletResponse();
+        filter.doFilter(request, response, chain);
+        verify(chain).doFilter(request, response);
+        org.mockito.Mockito.clearInvocations(chain);
+        for (String header : List.of("X-Forwarded-For", "Forwarded", "X-Real-IP")) {
+            request = new MockHttpServletRequest(method, path);
+            request.setRemoteAddr("127.0.0.1"); request.addHeader(header, "127.0.0.1");
+            response = new MockHttpServletResponse();
+            filter.doFilter(request, response, chain);
+            assertThat(response.getStatus()).isEqualTo(403);
+            assertThat(response.getContentAsString()).contains("TEST_COMPUTE_WORKER_LOCAL_ONLY");
+        }
+        request = new MockHttpServletRequest(method, path); request.setRemoteAddr("198.51.100.1");
+        response = new MockHttpServletResponse(); filter.doFilter(request, response, chain);
+        assertThat(response.getStatus()).isEqualTo(403);
+        verifyNoInteractions(chain, policyService, repository);
+    }
+
+    @ParameterizedTest
     @CsvSource({"claim", "complete", "release"})
     void exactTestWorkerPostReachesItsDedicatedChainWithoutCountry(String operation) throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest(

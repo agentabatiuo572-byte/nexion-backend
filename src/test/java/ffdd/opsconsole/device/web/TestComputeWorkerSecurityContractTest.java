@@ -50,6 +50,46 @@ import org.springframework.core.env.Environment;
 class TestComputeWorkerSecurityContractTest {
     static final String TASK = "CTA-TEST-ONE";
     static final String TOKEN = "tw1_" + Base64.getUrlEncoder().withoutPadding().encodeToString(new byte[32]);
+    static final String CONTINUOUS_TOKEN = "tc1_" + TOKEN.substring(4);
+
+    @Test void continuousIsDefaultDisabledAndDistinctFromTheFiniteWorker() throws Exception {
+        try (var context = start(true, true, "TEST")) {
+            var response = request(context, "POST", "/api/test/compute-workers/v2/next-task", CONTINUOUS_TOKEN, "{}");
+            assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.body()).contains("TEST_COMPUTE_CONTINUOUS_DISABLED");
+            verifyNoInteractions(context.getBean(AppTaskAssignmentService.class), context.getBean(AppTaskAssignmentMapper.class));
+        }
+    }
+
+    @Test void continuousExactLocalRoutesRetainDedicatedIdentityAndRejectProxyAndOrdinaryTokens() throws Exception {
+        try (var context = start(true, true, "TEST", true)) {
+            var assignments = context.getBean(AppTaskAssignmentService.class);
+            when(assignments.continuousWorkerNext(any(), any())).thenReturn(ApiResult.ok(Map.of("idle", true)));
+            for (String bearer : new String[]{TOKEN, "fixture-user", CONTINUOUS_TOKEN + "="}) {
+                assertThat(request(context, "POST", "/api/test/compute-workers/v2/next-task", bearer, "{}").statusCode()).isEqualTo(401);
+            }
+            var response = request(context, "POST", "/api/test/compute-workers/v2/next-task", CONTINUOUS_TOKEN, "{}");
+            assertThat(response.statusCode()).isEqualTo(200);
+            var captor = org.mockito.ArgumentCaptor.forClass(TestComputeWorkerService.ContinuousIdentity.class);
+            verify(assignments).continuousWorkerNext(captor.capture(), any());
+            assertThat(captor.getValue().getName()).isEqualTo("test-worker-continuous:test355-continuous");
+            clearInvocations(assignments);
+            assertThat(request(context, "POST", "/api/test/compute-workers/v1/tasks/" + TASK + "/claim", CONTINUOUS_TOKEN, "{}").statusCode()).isEqualTo(401);
+            assertThat(request(context, "GET", "/api/fixture/who", CONTINUOUS_TOKEN, "").statusCode()).isEqualTo(503);
+            for (String header : new String[]{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"}) {
+                var proxied = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + context.getWebServer().getPort() + "/api/test/compute-workers/v2/next-task"))
+                        .header(header, "127.0.0.1").header("Authorization", "Bearer " + CONTINUOUS_TOKEN)
+                        .POST(HttpRequest.BodyPublishers.ofString("{}")).build();
+                assertThat(HttpClient.newHttpClient().send(proxied, HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(403);
+            }
+            for (String[] rejected : new String[][]{{"GET", "/api/test/compute-workers/v2/next-task"},
+                    {"POST", "/api/test/compute-workers/v2/next-task/"}, {"POST", "/api/test/compute-workers/v2/tasks/CTA-ONE/claim"},
+                    {"POST", "/api/test/compute-workers/v2/tasks/CTA-ONE/complete/extra"}, {"POST", "/api/test/compute-workers/v2/tasks/CTA-ONE/receipt"}}) {
+                assertThat(request(context, rejected[0], rejected[1], CONTINUOUS_TOKEN, "{}").statusCode()).isEqualTo(503);
+            }
+            verifyNoInteractions(assignments, context.getBean(AppTaskAssignmentMapper.class));
+        }
+    }
     @Test
     void disabledNamespaceIs503BeforeAuthenticationOrAnyDatabaseWork() throws Exception {
         try (var context = start(false)) {
@@ -181,6 +221,10 @@ class TestComputeWorkerSecurityContractTest {
     }
 
     static ServletWebServerApplicationContext start(boolean enabled, boolean geoEnabled, String deploymentScope) {
+        return start(enabled, geoEnabled, deploymentScope, false);
+    }
+
+    static ServletWebServerApplicationContext start(boolean enabled, boolean geoEnabled, String deploymentScope, boolean continuousEnabled) {
         var builder = new SpringApplicationBuilder(WireConfig.class).properties(
                 "server.port=0", "server.address=127.0.0.1", "spring.main.banner-mode=off", "spring.profiles.active=dev",
                 "spring.cloud.discovery.enabled=false", "spring.cloud.nacos.config.enabled=false",
@@ -192,6 +236,14 @@ class TestComputeWorkerSecurityContractTest {
                 "nexion.compute-task.test-worker.task-no=" + TASK, "nexion.compute-task.test-worker.task-config-id=TASK-EM",
                 "nexion.compute-task.test-worker.run-id=TEST355-WIRE", "nexion.compute-task.test-worker.issued-at=1790942340000",
                 "nexion.compute-task.test-worker.expires-at=1790943000000",
+                "server.forward-headers-strategy=none",
+                "nexion.compute-task.test-worker.continuous.enabled=" + continuousEnabled,
+                "nexion.compute-task.test-worker.continuous.executor-id=test355-continuous",
+                "nexion.compute-task.test-worker.continuous.owner-id=" + TestComputeWorkerService.CONTINUOUS_OWNER,
+                "nexion.compute-task.test-worker.continuous.device-id=" + TestComputeWorkerService.CONTINUOUS_DEVICE,
+                "nexion.compute-task.test-worker.continuous.instance-no=" + TestComputeWorkerService.CONTINUOUS_INSTANCE,
+                "nexion.compute-task.test-worker.continuous.task-config-id=" + TestComputeWorkerService.CONTINUOUS_CONFIG,
+                "nexion.compute-task.test-worker.continuous.credential-sha256=" + TestComputeWorkerService.sha256(new byte[32]),
                 "nexion.compute-task.test-worker.credential-sha256=" + TestComputeWorkerService.sha256(new byte[32]));
         if (geoEnabled) builder.sources(GeoWireConfig.class);
         // Same runnable test on the original baseline: absent TEST chain naturally returns the old 401.

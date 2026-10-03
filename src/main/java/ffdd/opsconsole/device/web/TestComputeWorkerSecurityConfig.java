@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.web;
 
 import ffdd.opsconsole.device.application.TestComputeWorkerService;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.emergency.web.GeoBlockEnforcementFilter;
 import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -42,6 +43,10 @@ public class TestComputeWorkerSecurityConfig {
                 .authorizeHttpRequests(auth -> auth.requestMatchers(HttpMethod.POST,
                         "/api/test/compute-workers/v1/tasks/*/claim", "/api/test/compute-workers/v1/tasks/*/complete",
                         "/api/test/compute-workers/v1/tasks/*/release").hasRole("TEST_COMPUTE_WORKER")
+                        .requestMatchers(HttpMethod.POST, "/api/test/compute-workers/v2/next-task",
+                                "/api/test/compute-workers/v2/tasks/*/complete", "/api/test/compute-workers/v2/tasks/*/release")
+                        .hasRole("TEST_COMPUTE_WORKER_CONTINUOUS")
+                        .requestMatchers(HttpMethod.GET, "/api/test/compute-workers/v2/tasks/*/receipt").hasRole("TEST_COMPUTE_WORKER_CONTINUOUS")
                         .anyRequest().denyAll())
                 .addFilterBefore(new WorkerAuthenticationFilter(worker), UsernamePasswordAuthenticationFilter.class).build();
     }
@@ -63,6 +68,18 @@ public class TestComputeWorkerSecurityConfig {
             // No inherited gateway, developer, USER or ADMIN identity is accepted in this namespace.
             SecurityContextHolder.clearContext();
             try {
+                if (request.getRequestURI().startsWith("/api/test/compute-workers/v2/")) {
+                    worker.requireContinuousEnabled();
+                    if (!GeoBlockEnforcementFilter.isContinuousWorkerRoute(request)
+                            || !GeoBlockEnforcementFilter.isDirectLoopback(request)) throw new BizException(403, "TEST_COMPUTE_WORKER_LOCAL_ONLY");
+                    var identity = worker.authenticateContinuous(request.getHeader("Authorization"));
+                    var auth = new UsernamePasswordAuthenticationToken(identity, null,
+                            List.of(new SimpleGrantedAuthority("ROLE_TEST_COMPUTE_WORKER_CONTINUOUS")));
+                    auth.setDetails(Map.of("subjectType", "TEST_COMPUTE_WORKER", "username", identity.getName()));
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                    chain.doFilter(request, response);
+                    return;
+                }
                 var grant = worker.authenticate(request.getHeader("Authorization"));
                 var auth = new UsernamePasswordAuthenticationToken(grant, null,
                         List.of(new SimpleGrantedAuthority("ROLE_TEST_COMPUTE_WORKER")));

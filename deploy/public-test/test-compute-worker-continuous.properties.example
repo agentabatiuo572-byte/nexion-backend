@@ -1,0 +1,11 @@
+# Non-secret backend properties. Add only to the verified TEST deployment configuration.
+# This is an independent continuous authority; v1 enabled/issued-at/expires-at remain untouched.
+nexion.compute-task.test-worker.deployment-scope=TEST
+nexion.compute-task.test-worker.continuous.enabled=false
+nexion.compute-task.test-worker.continuous.executor-id=test355-continuous
+nexion.compute-task.test-worker.continuous.owner-id=60723153007
+nexion.compute-task.test-worker.continuous.device-id=1152
+nexion.compute-task.test-worker.continuous.instance-no=NEX-ORD-A86AD2E23EF62D719AEFB67A
+nexion.compute-task.test-worker.continuous.task-config-id=E2-20260924-EM
+# continuous.credential-sha256 is supplied through protected backend configuration.
+# Never put a real token or hash in this versioned example.

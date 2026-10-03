@@ -27,6 +27,11 @@ public class TestComputeWorkerService {
     public static final String CLIENT = "UVEL TEST deterministic";
     public static final String TASK_NAME = "UVEL TEST vector statistics v1";
     private static final String PREFIX = "nexion.compute-task.test-worker.";
+    private static final String CONTINUOUS_RUN = "TEST355-CONTINUOUS";
+    public static final long CONTINUOUS_OWNER = 60723153007L;
+    public static final long CONTINUOUS_DEVICE = 1152L;
+    public static final String CONTINUOUS_INSTANCE = "NEX-ORD-A86AD2E23EF62D719AEFB67A";
+    public static final String CONTINUOUS_CONFIG = "E2-20260924-EM";
     private final AppTaskAssignmentMapper mapper;
     private final AuditLogService audit;
     private final Clock clock;
@@ -34,7 +39,11 @@ public class TestComputeWorkerService {
 
     // Deliberately contains no credential or credential hash. Safe even through generic audit/principal code.
     public record Grant(String executorId, long ownerId, long deviceId, String instanceNo, String taskNo,
-                        String taskConfigId, String runId, long issuedAt, long expiresAt) implements Principal {
+                        String taskConfigId, String runId, long issuedAt, long expiresAt, boolean continuous) implements Principal {
+        public Grant(String executorId, long ownerId, long deviceId, String instanceNo, String taskNo,
+                     String taskConfigId, String runId, long issuedAt, long expiresAt) {
+            this(executorId, ownerId, deviceId, instanceNo, taskNo, taskConfigId, runId, issuedAt, expiresAt, false);
+        }
         @Override public String getName() { return "test-worker:" + executorId; }
         @Override public String toString() { return getName(); }
     }
@@ -42,6 +51,84 @@ public class TestComputeWorkerService {
                                   String resultArtifactBase64, String proofNonce, Long proofTimestamp) { }
     public record Input(byte[] bytes, String hash, int[] values) { }
     public record Verified(String proofHash, Input input, byte[] result, String resultHash) { }
+    /** A separately authorized service identity. Never a USER identity or a permanent v1 grant. */
+    public record ContinuousIdentity(String executorId) implements Principal {
+        @Override public String getName() { return "test-worker-continuous:" + executorId; }
+        @Override public String toString() { return getName(); }
+    }
+
+    public void requireContinuousEnabled() {
+        if (!"true".equals(property("continuous.enabled")) || !"TEST".equals(property("deployment-scope"))
+                || !Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))
+                || !"none".equals(environment.getProperty("server.forward-headers-strategy"))) {
+            throw new BizException(503, "TEST_COMPUTE_CONTINUOUS_DISABLED");
+        }
+    }
+
+    public ContinuousIdentity authenticateContinuous(String authorization) {
+        requireContinuousEnabled();
+        try {
+            if (authorization == null || !authorization.matches("Bearer tc1_[A-Za-z0-9_-]{43}")) throw new IllegalArgumentException();
+            String encoded = authorization.substring("Bearer tc1_".length());
+            byte[] credential = Base64.getUrlDecoder().decode(encoded);
+            String hash = property("continuous.credential-sha256");
+            if (credential.length != 32 || !Base64.getUrlEncoder().withoutPadding().encodeToString(credential).equals(encoded)
+                    || !hash.matches("[a-fA-F0-9]{64}") || !MessageDigest.isEqual(digest(credential), HexFormat.of().parseHex(hash))) {
+                throw new IllegalArgumentException();
+            }
+            var identity = configuredContinuousIdentity();
+            requireContinuousCurrent(identity);
+            return identity;
+        } catch (BizException | IllegalArgumentException invalid) {
+            throw new BizException(401, "TEST_COMPUTE_WORKER_AUTH_INVALID");
+        }
+    }
+
+    private ContinuousIdentity configuredContinuousIdentity() {
+        String executor = safe(property("continuous.executor-id"), 32);
+        if (executor.length() < 3 || !Long.toString(CONTINUOUS_OWNER).equals(property("continuous.owner-id"))
+                || !Long.toString(CONTINUOUS_DEVICE).equals(property("continuous.device-id"))
+                || !CONTINUOUS_INSTANCE.equals(property("continuous.instance-no"))
+                || !CONTINUOUS_CONFIG.equals(property("continuous.task-config-id"))) throw new IllegalArgumentException();
+        return new ContinuousIdentity(executor);
+    }
+
+    public void requireContinuousCurrent(ContinuousIdentity identity) {
+        requireContinuousEnabled();
+        try {
+            if (!configuredContinuousIdentity().equals(identity)
+                    || !property("continuous.credential-sha256").matches("[a-fA-F0-9]{64}")) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException invalid) { throw new BizException(401, "TEST_COMPUTE_WORKER_AUTH_INVALID"); }
+    }
+
+    /** Continuous authority uses the actual task's normal lease/proof bounds, never a v1 grant TTL. */
+    public Grant continuousGrant(ContinuousIdentity identity, String taskNo, long issuedAt, long expiresAt) {
+        requireContinuousCurrent(identity);
+        safe(taskNo, 96);
+        return new Grant(identity.executorId(), CONTINUOUS_OWNER, CONTINUOUS_DEVICE, CONTINUOUS_INSTANCE,
+                taskNo, CONTINUOUS_CONFIG, CONTINUOUS_RUN, issuedAt, expiresAt, true);
+    }
+
+    public Grant continuousTaskGrant(ContinuousIdentity identity, String taskNo) {
+        requireContinuousCurrent(identity);
+        var runtime = mapper.lockTestWorkerRuntime(CONTINUOUS_OWNER, CONTINUOUS_DEVICE, CONTINUOUS_INSTANCE);
+        if (runtime == null || runtime.heartbeatAt() == null || !taskNo.equals(runtime.activeTaskNo())) {
+            throw new BizException(409, "TEST_COMPUTE_WORKER_RUNTIME_STALE");
+        }
+        var task = mapper.lockAssignment(CONTINUOUS_OWNER, taskNo, "PRODUCTION");
+        if (task == null || task.startedAt() == null || task.leaseExpiresAt() == null || task.proofExpiresAt() == null) {
+            throw new BizException(409, "TEST_COMPUTE_WORKER_TASK_INVALID");
+        }
+        Grant grant = continuousGrant(identity, taskNo, epoch(task.startedAt()),
+                Math.min(epoch(task.leaseExpiresAt()), epoch(task.proofExpiresAt())));
+        if (!marker(grant).equals(runtime.agentVersion()) || !CLIENT.equals(runtime.clientName())) {
+            throw new BizException(409, "TEST_COMPUTE_WORKER_RUNTIME_STALE");
+        }
+        requireCurrent(grant);
+        return grant;
+    }
+
+    public boolean continuous(Grant grant) { return grant.continuous(); }
 
     public void requireEnabled() {
         if (!"TEST".equals(property("deployment-scope")) || !"true".equals(property("enabled"))) {
@@ -71,6 +158,16 @@ public class TestComputeWorkerService {
     }
 
     public void requireCurrent(Grant grant) {
+        if (continuous(grant)) {
+            requireContinuousCurrent(new ContinuousIdentity(grant.executorId()));
+            if (grant.ownerId() != CONTINUOUS_OWNER || grant.deviceId() != CONTINUOUS_DEVICE
+                    || !CONTINUOUS_INSTANCE.equals(grant.instanceNo()) || !CONTINUOUS_CONFIG.equals(grant.taskConfigId())
+                    || grant.issuedAt() < 0 || grant.expiresAt() <= grant.issuedAt()
+                    || clock.millis() < grant.issuedAt() || clock.millis() >= grant.expiresAt()) {
+                throw new BizException(401, "TEST_COMPUTE_WORKER_AUTH_INVALID");
+            }
+            return;
+        }
         requireEnabled();
         Grant current;
         try { current = configuredGrant(); } catch (RuntimeException badConfig) {
@@ -109,17 +206,19 @@ public class TestComputeWorkerService {
     public String scope(Grant grant, String operation) {
         return "TEST355:" + operation + ":" + sha256((grant.runId() + "\n" + grant.executorId() + "\n"
                 + grant.ownerId() + "\n" + grant.deviceId() + "\n" + grant.instanceNo() + "\n" + grant.taskNo()
-                + "\n" + grant.taskConfigId() + "\n" + grant.issuedAt() + "\n" + grant.expiresAt()).getBytes(StandardCharsets.UTF_8));
+                + "\n" + grant.taskConfigId() + (continuous(grant) ? "" : "\n" + grant.issuedAt() + "\n" + grant.expiresAt())).getBytes(StandardCharsets.UTF_8));
     }
 
     public String newTaskNo(Grant grant) {
+        if (continuous(grant)) return grant.taskNo(); // Only minted internally under the normal device/task locks.
         return "CTA-TEST-" + sha256((grant.runId() + "\n" + grant.executorId() + "\n" + grant.ownerId()
                 + "\n" + grant.deviceId() + "\n" + grant.instanceNo() + "\n").getBytes(StandardCharsets.UTF_8))
                 .substring(0, 32).toUpperCase(Locale.ROOT);
     }
 
     public String marker(Grant grant) {
-        return "test355-v1:" + sha256((grant.executorId() + "\n" + grant.taskNo()).getBytes(StandardCharsets.UTF_8)).substring(0, 32);
+        return (continuous(grant) ? "test355-v2:" : "test355-v1:")
+                + sha256((grant.executorId() + "\n" + grant.taskNo()).getBytes(StandardCharsets.UTF_8)).substring(0, 32);
     }
 
     public void requireDevice(Grant grant, DeviceRow device) {
@@ -132,6 +231,8 @@ public class TestComputeWorkerService {
                 || mapper.lockPaidCloudShareDailyNex(grant.ownerId(), grant.deviceId()) == null) {
             throw new BizException(403, "TEST_COMPUTE_WORKER_DEVICE_INVALID");
         }
+        if (continuous(grant) && mapper.lockPaidCloudShareDailyNex(grant.ownerId(), grant.deviceId())
+                .compareTo(new java.math.BigDecimal("3")) > 0) throw new BizException(403, "TEST_COMPUTE_WORKER_REWARD_LIMIT");
     }
 
     public void requireTask(Grant grant, AssignmentRow task, LocalDateTime now) {
@@ -145,6 +246,10 @@ public class TestComputeWorkerService {
                 || task.proofExpiresAt() == null || !task.proofExpiresAt().isAfter(now)
                 || task.completionNonce() == null || !task.completionNonce().matches("[a-f0-9]{64}")) {
             throw new BizException(409, "TEST_COMPUTE_WORKER_TASK_INVALID");
+        }
+        if (continuous(grant) && (task.rewardUsdt() == null || task.rewardUsdt().signum() < 0
+                || task.rewardUsdt().compareTo(new java.math.BigDecimal("0.045005")) > 0)) {
+            throw new BizException(403, "TEST_COMPUTE_WORKER_REWARD_LIMIT");
         }
     }
 
@@ -182,6 +287,10 @@ public class TestComputeWorkerService {
         data.put("completableAt", epoch(task.startedAt().plusSeconds(task.requiredSeconds())));
         data.put("inputBytesBase64", Base64.getEncoder().encodeToString(input.bytes()));
         data.put("inputHash", input.hash());
+        if (continuous(grant)) {
+            data.put("jobIssuedAt", grant.issuedAt()); data.put("jobExpiresAt", grant.expiresAt());
+            data.put("deploymentScope", "TEST"); data.put("serverCanonical", true); data.put("serverNow", clock.millis());
+        }
         return data;
     }
 
@@ -267,6 +376,7 @@ public class TestComputeWorkerService {
     @Transactional(rollbackFor = Exception.class)
     public void cleanupExpiredRuntime() {
         if (!"TEST".equals(property("deployment-scope"))) return;
+        cleanupContinuousRuntime();
         Grant grant;
         try { grant = configuredGrant(); } catch (RuntimeException absent) { return; }
         // The non-secret binding intentionally remains usable after enabled=false or credential removal.
@@ -281,6 +391,26 @@ public class TestComputeWorkerService {
                     .resourceType("COMPUTE_TASK").resourceId(grant.taskNo()).bizNo(grant.taskNo()).userId(grant.ownerId())
                     .actorType("SYSTEM").actorUsername("system").result("SUCCESS").riskLevel("MEDIUM")
                     .detail(bindings(grant)).build());
+        }
+    }
+
+    private void cleanupContinuousRuntime() {
+        ContinuousIdentity identity;
+        try { identity = configuredContinuousIdentity(); } catch (RuntimeException absent) { return; }
+        if (!Set.of(environment.getActiveProfiles()).equals(Set.of("dev"))
+                || !Objects.equals(mapper.lockProductionUser(CONTINUOUS_OWNER), CONTINUOUS_OWNER)) return;
+        var device = mapper.lockOwnedDevice(CONTINUOUS_OWNER, CONTINUOUS_DEVICE);
+        if (device == null || !CONTINUOUS_INSTANCE.equals(device.instanceNo())) return;
+        var runtime = mapper.lockTestWorkerRuntime(CONTINUOUS_OWNER, CONTINUOUS_DEVICE, CONTINUOUS_INSTANCE);
+        if (runtime == null || runtime.activeTaskNo() == null) return;
+        // No enabled flag or credential is needed to close only our own stale runtime.
+        long issued = runtime.heartbeatAt() == null ? 0 : epoch(runtime.heartbeatAt());
+        Grant grant = new Grant(identity.executorId(), CONTINUOUS_OWNER, CONTINUOUS_DEVICE, CONTINUOUS_INSTANCE,
+                runtime.activeTaskNo(), CONTINUOUS_CONFIG, CONTINUOUS_RUN, issued, Long.MAX_VALUE, true);
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+        if ((runtime.heartbeatAt() == null
+                || runtime.heartbeatAt().isBefore(now.minusSeconds(120))) && close(grant, now)) {
+            record(grant, "TEST_COMPUTE_WORKER_RUNTIME_EXPIRED", grant.taskNo(), bindings(grant));
         }
     }
 

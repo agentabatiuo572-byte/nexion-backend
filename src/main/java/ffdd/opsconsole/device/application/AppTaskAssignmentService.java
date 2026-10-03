@@ -19,6 +19,7 @@ import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.ReceiptRow;
 import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper.TaskConfigRow;
 import ffdd.opsconsole.device.application.TestComputeWorkerService.Grant;
 import ffdd.opsconsole.device.application.TestComputeWorkerService.CompleteRequest;
+import ffdd.opsconsole.device.application.TestComputeWorkerService.ContinuousIdentity;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.HistorySnapshotId;
@@ -91,6 +92,11 @@ public class AppTaskAssignmentService {
         testWorker.requireFixedKey(grant, "CLAIM", key);
         requireProductionRuntime(grant.ownerId());
         return executeOnce(testWorker.scope(grant, "CLAIM"), key, sha256("{}"), () -> {
+            return claimTestWorker(grant, taskNo);
+        });
+    }
+
+    private ApiResult<Map<String, Object>> claimTestWorker(Grant grant, String taskNo) {
             claimInternal(grant.ownerId(), grant.deviceId(), "PRODUCTION", grant);
             LocalDateTime now = LocalDateTime.now(clock);
             AssignmentRow original = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
@@ -107,8 +113,88 @@ public class AppTaskAssignmentService {
             testWorker.record(grant, "TEST_COMPUTE_WORKER_CLAIMED", taskNo, detail);
             testWorker.requireTask(grant, task, LocalDateTime.now(clock));
             return ApiResult.ok(testWorker.claimView(grant, task));
+    }
+
+    /** Normal claim/dispatch and TEST marking remain in one transaction under the existing locks. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> continuousWorkerNext(ContinuousIdentity identity, String key) {
+        testWorker.requireContinuousCurrent(identity);
+        if (key == null || !key.matches("TEST355-NEXT-[a-f0-9]{32}")) throw new BizException(422, "TEST_COMPUTE_WORKER_IDEMPOTENCY_INVALID");
+        long owner = TestComputeWorkerService.CONTINUOUS_OWNER, deviceId = TestComputeWorkerService.CONTINUOUS_DEVICE;
+        requireProductionRuntime(owner);
+        return executeOnce("TEST355:CONTINUOUS:NEXT:" + identity.executorId(), key, sha256("{}"), () -> {
+            lockProductionUser(owner);
+            DeviceRow device = mapper.lockOwnedDevice(owner, deviceId);
+            AssignmentRow activeTask = mapper.lockActiveAssignment(owner, deviceId, "PRODUCTION");
+            LocalDateTime time = LocalDateTime.now(clock);
+            DeviceLockRow deviceLock = mapper.lockDeviceTaskLock(owner, deviceId, "PRODUCTION");
+            if (deviceLock != null && deviceLock.lockUntil() != null && deviceLock.lockUntil().isAfter(time)) {
+                return ApiResult.ok(linked("idle", true, "serverCanonical", true, "deploymentScope", "TEST"));
+            }
+            boolean reusable = activeTask != null && activeTask.leaseExpiresAt() != null && activeTask.leaseExpiresAt().isAfter(time);
+            if (reusable && TestComputeWorkerService.KIND.equals(activeTask.modelName())) {
+                // A second client may not take over a possibly in-flight/unknown computation.
+                throw new BizException(409, "TEST_COMPUTE_WORKER_ALREADY_CLAIMED");
+            }
+            String taskNo = reusable ? activeTask.taskNo()
+                    : "CTA-TEST-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+            long issued = reusable && activeTask.startedAt() != null ? epochMillis(activeTask.startedAt()) : epochMillis(time);
+            long expires = reusable && activeTask.proofExpiresAt() != null
+                    ? Math.min(epochMillis(activeTask.leaseExpiresAt()), epochMillis(activeTask.proofExpiresAt()))
+                    : epochMillis(time.plusHours(LEASE_HOURS));
+            Grant grant = testWorker.continuousGrant(identity, taskNo, issued, expires);
+            testWorker.requireDevice(grant, device);
+            ApiResult<Map<String, Object>> result = claimTestWorker(grant, taskNo);
+            // Use the actual persisted lease/proof timestamps for the response and future calls.
+            Grant actual = testWorker.continuousTaskGrant(identity, taskNo);
+            testWorker.requireTask(actual, mapper.lockAssignment(owner, taskNo, "PRODUCTION"), LocalDateTime.now(clock));
+            result.getData().put("jobIssuedAt", actual.issuedAt()); result.getData().put("jobExpiresAt", actual.expiresAt());
+            return result;
         });
     }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> continuousWorkerComplete(ContinuousIdentity identity, String taskNo, String key, CompleteRequest request) {
+        Grant grant = lockedContinuousGrant(identity, taskNo);
+        return testWorkerComplete(grant, taskNo, key, request);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> continuousWorkerRelease(ContinuousIdentity identity, String taskNo, String key) {
+        Grant grant = lockedContinuousGrant(identity, taskNo);
+        return testWorkerRelease(grant, taskNo, key);
+    }
+
+    private Grant lockedContinuousGrant(ContinuousIdentity identity, String taskNo) {
+        testWorker.requireContinuousCurrent(identity);
+        requireProductionRuntime(TestComputeWorkerService.CONTINUOUS_OWNER);
+        lockProductionUser(TestComputeWorkerService.CONTINUOUS_OWNER);
+        DeviceRow device = mapper.lockOwnedDevice(TestComputeWorkerService.CONTINUOUS_OWNER, TestComputeWorkerService.CONTINUOUS_DEVICE);
+        Grant grant = testWorker.continuousTaskGrant(identity, taskNo);
+        testWorker.requireDevice(grant, device);
+        return grant;
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> continuousWorkerReceipt(ContinuousIdentity identity, String taskNo) {
+        testWorker.requireContinuousCurrent(identity);
+        requireProductionRuntime(TestComputeWorkerService.CONTINUOUS_OWNER);
+        String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
+        ReceiptRow receipt = mapper.receipt(TestComputeWorkerService.CONTINUOUS_OWNER, receiptNo);
+        if (receipt == null || !taskNo.equals(receipt.taskNo())
+                || !Long.valueOf(TestComputeWorkerService.CONTINUOUS_DEVICE).equals(receipt.deviceId())
+                || !TestComputeWorkerService.CONTINUOUS_INSTANCE.equals(receipt.deviceInstanceNo())
+                || !TestComputeWorkerService.CONTINUOUS_CONFIG.equals(receipt.taskId())
+                || !TestComputeWorkerService.KIND.equals(receipt.modelName()) || !TestComputeWorkerService.CLIENT.equals(receipt.clientName())) {
+            return ApiResult.ok(linked("serverCanonical", true, "deploymentScope", "TEST", "taskNo", taskNo, "receiptFound", false));
+        }
+        testWorker.requireContinuousCurrent(identity);
+        return ApiResult.ok(linked("serverCanonical", true, "deploymentScope", "TEST", "taskNo", taskNo,
+                "receiptFound", true, "receiptNo", receipt.receiptNo(), "earningStatus", receipt.earningStatus(),
+                "rewardUsdt", receipt.rewardUsdt(), "rewardNex", receipt.rewardNex(), "proofHash", receipt.proofHash()));
+    }
+
+    private long epochMillis(LocalDateTime time) { return time.atZone(clock.getZone()).toInstant().toEpochMilli(); }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> testWorkerComplete(Grant grant, String taskNo, String key, CompleteRequest request) {

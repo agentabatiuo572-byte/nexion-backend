@@ -77,6 +77,78 @@ class TestComputeWorkerServiceTest {
                 Base64.getEncoder().encodeToString(result), NONCE, INSTANT.toEpochMilli());
     }
 
+    static MockEnvironment continuousEnvironment() {
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles("dev");
+        environment.setProperty("server.forward-headers-strategy", "none");
+        Map<String, String> values = Map.ofEntries(Map.entry("deployment-scope", "TEST"),
+                Map.entry("continuous.enabled", "true"), Map.entry("continuous.executor-id", "test355-continuous"),
+                Map.entry("continuous.credential-sha256", sha256(new byte[32])),
+                Map.entry("continuous.owner-id", Long.toString(CONTINUOUS_OWNER)),
+                Map.entry("continuous.device-id", Long.toString(CONTINUOUS_DEVICE)),
+                Map.entry("continuous.instance-no", CONTINUOUS_INSTANCE), Map.entry("continuous.task-config-id", CONTINUOUS_CONFIG));
+        values.forEach((key, value) -> environment.setProperty("nexion.compute-task.test-worker." + key, value));
+        return environment;
+    }
+
+    @Test void continuousDefaultOffAndSeparateCredentialNeverExtendFiniteAuthority() {
+        assertThatThrownBy(() -> service.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4)))
+                .hasMessage("TEST_COMPUTE_CONTINUOUS_DISABLED");
+        MockEnvironment continuous = continuousEnvironment();
+        var worker = new TestComputeWorkerService(mapper, audit, Clock.fixed(INSTANT, ZoneOffset.UTC), continuous);
+        assertThat(worker.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4)).getName()).isEqualTo("test-worker-continuous:test355-continuous");
+        assertThatThrownBy(() -> worker.authenticateContinuous("Bearer " + TOKEN)).hasMessage("TEST_COMPUTE_WORKER_AUTH_INVALID");
+        assertThatThrownBy(() -> worker.authenticate("Bearer tc1_" + TOKEN.substring(4))).hasMessage("TEST_COMPUTE_WORKER_DISABLED");
+        verifyNoInteractions(mapper, audit);
+    }
+
+    @Test void continuousRequiresActualDevTestFixedBindingAndUnmodifiedSocketAddressesBeforeSql() {
+        MockEnvironment continuous = continuousEnvironment();
+        var worker = new TestComputeWorkerService(mapper, audit, Clock.fixed(INSTANT, ZoneOffset.UTC), continuous);
+        for (String[] profiles : List.of(new String[]{"prod"}, new String[]{"dev", "prod"}, new String[0])) {
+            continuous.setActiveProfiles(profiles);
+            assertThatThrownBy(() -> worker.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4)))
+                    .hasMessage("TEST_COMPUTE_CONTINUOUS_DISABLED");
+        }
+        continuous.setActiveProfiles("dev");
+        continuous.setProperty("server.forward-headers-strategy", "native");
+        assertThatThrownBy(worker::requireContinuousEnabled).hasMessage("TEST_COMPUTE_CONTINUOUS_DISABLED");
+        continuous.setProperty("server.forward-headers-strategy", "none");
+        continuous.setProperty("nexion.compute-task.test-worker.continuous.device-id", "1153");
+        assertThatThrownBy(() -> worker.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4)))
+                .hasMessage("TEST_COMPUTE_WORKER_AUTH_INVALID");
+        verifyNoInteractions(mapper, audit);
+    }
+
+    @Test void continuousUsesActualBusinessLeaseAndStableTaskScopeWithoutInventingFifteenMinuteExpiry() {
+        MockEnvironment continuous = continuousEnvironment();
+        var worker = new TestComputeWorkerService(mapper, audit, Clock.fixed(INSTANT, ZoneOffset.UTC), continuous);
+        var identity = worker.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4));
+        Grant job = worker.continuousGrant(identity, "CTA-CONTINUOUS", INSTANT.minusSeconds(3600).toEpochMilli(), INSTANT.plusSeconds(3600).toEpochMilli());
+        worker.requireCurrent(job);
+        assertThat(worker.marker(job)).startsWith("test355-v2:");
+        assertThat(worker.scope(job, "COMPLETE")).isEqualTo(worker.scope(worker.continuousGrant(identity,
+                job.taskNo(), job.issuedAt() - 1000, job.expiresAt() + 1000), "COMPLETE"));
+        Grant expired = worker.continuousGrant(identity, job.taskNo(), job.issuedAt(), INSTANT.toEpochMilli());
+        assertThatThrownBy(() -> worker.requireCurrent(expired)).hasMessage("TEST_COMPUTE_WORKER_AUTH_INVALID");
+        continuous.setProperty("nexion.compute-task.test-worker.continuous.enabled", "false");
+        assertThatThrownBy(() -> worker.requireCurrent(job)).hasMessage("TEST_COMPUTE_CONTINUOUS_DISABLED");
+    }
+
+    @Test void continuousTaskCannotUseForeignDeviceConfigOrAgentAndKeepsTestRewardLimit() {
+        MockEnvironment continuous = continuousEnvironment();
+        var worker = new TestComputeWorkerService(mapper, audit, Clock.fixed(INSTANT, ZoneOffset.UTC), continuous);
+        var identity = worker.authenticateContinuous("Bearer tc1_" + TOKEN.substring(4));
+        Grant job = worker.continuousGrant(identity, "CTA-CONTINUOUS", INSTANT.minusSeconds(60).toEpochMilli(), INSTANT.plusSeconds(3600).toEpochMilli());
+        var row = new AssignmentRow(job.taskNo(), CONTINUOUS_DEVICE, CONTINUOUS_CONFIG, TASK_NAME, "EM", KIND, CLIENT,
+                "RUNNING", new BigDecimal("0.045006"), 5, 0, NOW.minusSeconds(60), NOW.plusHours(1), null, null, NONCE, NOW.plusHours(1));
+        assertThatThrownBy(() -> worker.requireTask(job, row, NOW)).hasMessage("TEST_COMPUTE_WORKER_REWARD_LIMIT");
+        when(mapper.lockAssignment(CONTINUOUS_OWNER, job.taskNo(), "PRODUCTION")).thenReturn(row);
+        when(mapper.lockTestWorkerRuntime(CONTINUOUS_OWNER, CONTINUOUS_DEVICE, CONTINUOUS_INSTANCE)).thenReturn(
+                new TestWorkerRuntimeRow("ONLINE", job.taskNo(), CLIENT, "foreign-agent", NOW, null));
+        assertThatThrownBy(() -> worker.continuousTaskGrant(identity, job.taskNo())).hasMessage("TEST_COMPUTE_WORKER_RUNTIME_STALE");
+    }
+
     @ParameterizedTest @ValueSource(strings={"sum", "sort", "crlf", "extra", "bom", "hash", "nonce", "version", "input", "base64", "oversize"})
     void correctClientDigestDoesNotAuthorizeWrongSemanticsOrNoncanonicalArtifact(String change) {
         CompleteRequest valid = validRequest();
